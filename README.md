@@ -18,9 +18,10 @@ To start DCP API server run
 make run-dcpd
 ```
 
-To connect to the API server using `kubectl` and similar Kubernetes tools use the kubeconfig file in the root of this repository. For example:
+To connect to the API server using `kubectl` and similar Kubernetes tools use the kubeconfig file in the root of this repository. For example (the command lists available API resources):
 
 ```shell
 kubectl --kubeconfig ./kubeconfig api-resources
 ```
 
+To shut down the DCP API server just press Ctrl+c in the terminal.

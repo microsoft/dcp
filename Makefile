@@ -4,6 +4,8 @@
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+build: build-dcpd
+
 LOCALBIN ?= $(shell pwd)/bin
 ${LOCALBIN}:
 	mkdir -p ${LOCALBIN}
