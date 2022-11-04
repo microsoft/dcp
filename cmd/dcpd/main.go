@@ -2,63 +2,62 @@ package main
 
 import (
 	"context"
-	"flag"
+	"fmt"
 	"os"
-
-	serverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
-	serverstart "github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/usvc-dev/apiserver/internal/apiserver"
 	"github.com/usvc-dev/apiserver/internal/ctrlmanager"
+	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/apiserver/internal/logger"
 )
 
 type DcpdExitCode int
 
 const (
-	ServerOptionsErrorExit   DcpdExitCode = 1
-	ServerExecutionErrorExit DcpdExitCode = 2
+	OK                  DcpdExitCode = 0
+	MemberServiceFailed DcpdExitCode = 1
 )
 
 func main() {
 	logger, flushLogger := logger.NewLogger()
 	ctrlruntime.SetLogger(logger)
-	log := runtimelog.Log.WithName("main")
-
-	builder := serverbuilder.NewServerBuilder()
-	options, err := builder.ToServerOptions()
-	if err != nil {
-		log.Error(err, "unable to create server options")
-		flushLogger()
-		os.Exit(int(ServerOptionsErrorExit))
-	}
-
-	// TODO
-	// The API server and controller manager functionality should be run
-	// via hosting package
+	log := runtimelog.Log.WithName("dcpd")
 
 	ctx, cancelFn := context.WithCancel(kubeapiserver.SetupSignalContext())
 
-	// Start controller manager
-	managerStopCh := make(chan struct{})
-	go func() {
-		// The controller manager will do all the logging so there is no need to handle the error from running it
-		_ = ctrlmanager.RunManager(options.ServingOptions.BindPort, flushLogger, ctx)
-		close(managerStopCh)
-	}()
-
-	// Run the API server
-	cmd := serverstart.NewCommandStartTiltServer(options, ctx)
-	cmd.Flags().AddGoFlagSet(flag.CommandLine)
-	err = cmd.Execute()
-	if err != nil {
-		log.Error(err, "server execution error")
-		flushLogger()
-		os.Exit(int(ServerExecutionErrorExit))
+	apiServer := apiserver.NewApiServer("api-server", flushLogger)
+	hostingSvc := []hosting.Service{
+		apiServer,
+		ctrlmanager.NewManager(apiServer.PortInfo, flushLogger, "controller-manager"),
 	}
 
+	var exitCode DcpdExitCode = OK
+	host := &hosting.Host{
+		Services: hostingSvc,
+		Logger:   log,
+	}
+	stopped, serviceErrors := host.RunAsync(ctx)
+
+	select {
+	case <-ctx.Done():
+		// Shutdown triggered
+		log.Info("shutting down")
+	case svcErr := <-serviceErrors:
+		log.Error(svcErr.Err, fmt.Sprintf("service %s exited with an error", svcErr.Name))
+		exitCode = MemberServiceFailed
+	}
 	cancelFn()
+
+	// Finished shutting down. An error returned here is a failure to terminate gracefully,
+	// so just crash if that happens.
+	err := <-stopped
+	if err == nil {
+		os.Exit(int(exitCode))
+	} else {
+		panic(err)
+	}
 }

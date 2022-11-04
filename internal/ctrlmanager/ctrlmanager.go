@@ -2,12 +2,17 @@ package ctrlmanager
 
 import (
 	"context"
+	"fmt"
 
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+const (
+	msgManagerCreationFailed = "unable to create controller manager"
 )
 
 var (
@@ -18,10 +23,39 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 }
 
-func RunManager(port int, flushLogger func(), ctx context.Context) error {
-	// Assumes log.SetLogger() was called by the caller
-	log := runtimelog.Log.WithName("controller-manager")
-	defer flushLogger()
+type CtrlManager struct {
+	portSource  <-chan int
+	flushLogger func()
+	name        string
+}
+
+func NewManager(portSource <-chan int, flushLogger func(), name string) *CtrlManager {
+	return &CtrlManager{portSource: portSource, flushLogger: flushLogger, name: name}
+}
+
+func (m *CtrlManager) Name() string {
+	return m.name
+}
+
+func (m *CtrlManager) Run(ctx context.Context) error {
+	// Assumes log.SetLogger() was already called
+	log := runtimelog.Log.WithName(m.name)
+	defer m.flushLogger()
+
+	var port int
+	select {
+	case port = <-m.portSource:
+		break
+	case <-ctx.Done():
+		err := fmt.Errorf("Did not receive port information for connecting to API server before request to shut down: %w", ctx.Err())
+		log.Error(err, msgManagerCreationFailed)
+		return err
+	}
+	if port == 0 {
+		err := fmt.Errorf("Did not receive port information for connecting to API server")
+		log.Error(err, msgManagerCreationFailed)
+		return err
+	}
 
 	mgr, err := ctrlruntime.NewManager(ctrlruntime.GetConfigOrDie(), ctrlruntime.Options{
 		Scheme:         scheme,
@@ -29,7 +63,7 @@ func RunManager(port int, flushLogger func(), ctx context.Context) error {
 		LeaderElection: false,
 	})
 	if err != nil {
-		log.Error(err, "unable to create new  contoller manager")
+		log.Error(err, msgManagerCreationFailed)
 		return err
 	}
 

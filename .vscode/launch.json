@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "dcpd launch",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/dcpd/main.go",
+            "args": [
+                "--secure-port=9562", 
+                "--token=outdoor-salad",
+                "--kubeconfig", "${workspaceFolder}/kubeconfig"
+            ],
+        },
+    ]
+}

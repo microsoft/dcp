@@ -19,7 +19,7 @@ test:
 
 .PHONY: run-dcpd
 run-dcpd:
-	go run ./cmd/dcpd/main.go --secure-port=9562 --token=outdoor-salad
+	go run ./cmd/dcpd/main.go --secure-port=9562 --token=outdoor-salad --kubeconfig ./kubeconfig
 
 .PHONY: build-dcpd
 build-dcpd: ${LOCALBIN}

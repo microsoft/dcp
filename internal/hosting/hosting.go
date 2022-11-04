@@ -27,8 +27,8 @@ type Host struct {
 	// Slice of services to run. Started in order.
 	Services []Service
 
-	// LoggerValues is key-value-pairs passed to .WithValues to initialize the logger for the host.
-	LoggerValues []interface{}
+	// The logger to be used by the host
+	Logger logr.Logger
 
 	// TimeoutFunc allows you to control the timeout behavior for testing
 	TimeoutFunc func()
@@ -63,9 +63,9 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 		return errors.New("at least one service is required")
 	}
 
-	logger := logr.FromContextOrDiscard(ctx)
-	logger = logger.WithValues(host.LoggerValues...)
-	ctx = logr.NewContext(ctx, logger)
+	if host.Logger == (logr.Logger{}) {
+		host.Logger = logr.Discard()
+	}
 
 	messages := make(chan LifecycleMessage, len(host.Services))
 	defer close(messages)
@@ -89,7 +89,7 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 
 	for i := range host.Services {
 		service := host.Services[i]
-		logger.Info(fmt.Sprintf("Starting %s", service.Name()))
+		host.Logger.Info(fmt.Sprintf("Starting %s", service.Name()))
 
 		// Error reporting is asynchronous. We don't early exit on first error.
 		go func() {
@@ -99,7 +99,7 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 				if value != nil {
 					// Log here to force the original call stack to be logged.
 					err := fmt.Errorf("service %s panicked: %v", service.Name(), value)
-					logger.WithValues().Error(err, "recovered from panic")
+					host.Logger.Error(err, "recovered from panic")
 					messages <- LifecycleMessage{Name: service.Name(), Err: err}
 				}
 			}()
@@ -124,7 +124,7 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 		close(timeout)
 	}()
 
-	logger.Info("Started all services", "count", len(host.Services))
+	host.Logger.Info("Started all services", "count", len(host.Services))
 
 	// Now that all services are running we just need to wait for all services to stop, or for a timeout
 	// to occur
@@ -135,14 +135,14 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 			delete(running, message.Name)
 
 			if message.Err != nil {
-				logger.Error(message.Err, fmt.Sprintf("Service %s terminated with error: %v", message.Name, message.Err))
+				host.Logger.Error(message.Err, fmt.Sprintf("Service %s terminated with error: %v", message.Name, message.Err))
 
 				// Report error to client
 				if serviceErrors != nil {
 					serviceErrors <- message
 				}
 			} else {
-				logger.Info(fmt.Sprintf("Service %s terminated gracefully", message.Name))
+				host.Logger.Info(fmt.Sprintf("Service %s terminated gracefully", message.Name))
 			}
 
 		case <-timeout:
@@ -153,7 +153,7 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 			sort.Strings(names)
 
 			err := fmt.Errorf("shutdown timeout reached while the following services are still running: %s", strings.Join(names, ", "))
-			logger.Error(err, "Shutdown timeout reached")
+			host.Logger.Error(err, "Shutdown timeout reached")
 			return err
 		}
 	}
@@ -162,11 +162,6 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 }
 
 func (host *Host) runService(ctx context.Context, service Service, messages chan<- LifecycleMessage) error {
-	// Create a new logger and context for the service to use.
-	logger := logr.FromContextOrDiscard(ctx)
-	logger = logger.WithName(service.Name())
-	ctx = logr.NewContext(ctx, logger)
-
 	err := service.Run(ctx)
 
 	// Suppress a cancellation-related error. That's a graceful exit.
