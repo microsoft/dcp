@@ -9,6 +9,10 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
+
+	stdtypes_apiv1 "github.com/usvc-dev/stdtypes/api/v1"
+	stdcontrollers "github.com/usvc-dev/stdtypes/controllers"
+	"github.com/usvc-dev/stdtypes/pkg/process"
 )
 
 const (
@@ -21,6 +25,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(stdtypes_apiv1.AddToScheme(scheme))
 }
 
 type CtrlManager struct {
@@ -64,6 +69,16 @@ func (m *CtrlManager) Run(ctx context.Context) error {
 	})
 	if err != nil {
 		log.Error(err, msgManagerCreationFailed)
+		return err
+	}
+
+	exCtrl := stdcontrollers.ExecutableReconciler{
+		Client:          mgr.GetClient(),
+		Log:             log,
+		ProcessExecutor: process.NewOSExecutor(),
+	}
+	if err = exCtrl.SetupWithManager(mgr); err != nil {
+		log.Error(err, "unable to set up Executable controller")
 		return err
 	}
 
