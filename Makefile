@@ -4,7 +4,7 @@
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
-build: build-dcpd
+build: build-dcpd build-dcp
 
 LOCALBIN ?= $(shell pwd)/bin
 ${LOCALBIN}:
@@ -25,10 +25,14 @@ run-dcpd:
 build-dcpd: ${LOCALBIN}
 	go build -o ${LOCALBIN}/dcpd ./cmd/dcpd
 
+.PHONY: build-dcp
+build-dcp: ${LOCALBIN}
+	go build -o ${LOCALBIN}/dcp ./cmd/dcp
+
 .PHONY: clean
 clean:
 	rm -f ${LOCALBIN}/dcpd
-
+	rm -f ${LOCALBIN}/dcp
 
 .PHONY: lint
 lint:
