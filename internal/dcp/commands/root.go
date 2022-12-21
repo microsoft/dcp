@@ -1,8 +1,6 @@
 package commands
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +16,6 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
-	rootCmd.Flags().BoolP("help", "h", false, fmt.Sprintf("Gets helpt for %s", rootCmd.Name()))
 
 	rootCmd.AddCommand(NewGenerateFileCommand())
 
