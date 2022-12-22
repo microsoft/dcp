@@ -67,9 +67,9 @@ Additional functions that can be used inside the template are:
 		Args: cobra.NoArgs,
 	}
 
-	generateFileCmd.LocalFlags().StringVarP(&generateFileFlags.input, inputFlag, inputFlagShort, "", "Name of the file containing the template for file generation. If omitted, the template will be read from standard input.")
-	generateFileCmd.LocalFlags().StringVarP(&generateFileFlags.output, outputFlag, outputFlagShort, "", "Output file name. If omitted, standard output will be used.")
-	generateFileCmd.LocalFlags().BoolVar(&generateFileFlags.overwrite, overwriteFlag, false, "If present, and the output file exists already, the file will be truncated and overwritten.")
+	generateFileCmd.Flags().StringVarP(&generateFileFlags.input, inputFlag, inputFlagShort, "", "Name of the file containing the template for file generation. If omitted, the template will be read from standard input.")
+	generateFileCmd.Flags().StringVarP(&generateFileFlags.output, outputFlag, outputFlagShort, "", "Output file name. If omitted, standard output will be used.")
+	generateFileCmd.Flags().BoolVar(&generateFileFlags.overwrite, overwriteFlag, false, "If present, and the output file exists already, the file will be truncated and overwritten.")
 
 	return generateFileCmd
 }
