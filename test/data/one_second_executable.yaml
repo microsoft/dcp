@@ -3,7 +3,7 @@ kind: Executable
 metadata:
   name: one-second
 spec:
-  executable: "/usr/bin/env"
+  executablePath: "/usr/bin/env"
   workingDirectory: $HOME
   args:
     - bash
