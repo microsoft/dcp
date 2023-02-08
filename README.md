@@ -33,3 +33,11 @@ kubectl --kubeconfig ./kubeconfig api-resources
 ```
 
 To shut down the DCP API server just press Ctrl+c in the terminal.
+
+
+## Debugging `dcpd`
+
+A debugging configuration named `dcpd launch` is provided to run dcpd under the debugger. You can F5 it in vs code normally, nothing extra is required other than VS Code Go extension. You might want to change the current working directory though, so that relative paths to executables are resolved properly.
+
+If you want to debug one of the controllers, the code is under `${GOPATH}/pkg/mod/github.com/usvc-dev/stdtypes@vX.Y.Z/controllers`, where `vX.Y.X` is the current version of the `stdtypes` package that this repository consumes (check `go.mod` file in the root of the repository).
+
