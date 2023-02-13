@@ -18,6 +18,7 @@ func NewRootCmd() *cobra.Command {
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
 	rootCmd.AddCommand(NewGenerateFileCommand())
+	rootCmd.AddCommand(NewUpCommand())
 
 	return rootCmd
 }
