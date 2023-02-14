@@ -1,14 +1,17 @@
 package commands
 
 import (
+	"flag"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/multierr"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 	rnd "github.com/usvc-dev/stdtypes/renderers"
 )
 
@@ -36,6 +39,11 @@ This command currently supports only Azure CLI-enabled applications of certain t
 		RunE: runApp,
 		Args: cobra.NoArgs,
 	}
+
+	// controller-runtime will register --kubeconfig flag in the default flag.CommandLine flag set.
+	// See https://github.com/kubernetes-sigs/controller-runtime/blob/master/pkg/client/config/config.go for details.
+	// The following line is necessary to ensure that this flag is recognized.
+	upCmd.Flags().AddGoFlagSet(flag.CommandLine)
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, appRootDirFlag, appRootDirFlagShort, "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 
@@ -112,7 +120,13 @@ func getClient() (ctrl_client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Could not configure the client for the API server: %w", err)
 	}
-	client, err := ctrl_client.New(config, ctrl_client.Options{})
+
+	scheme := apiruntime.NewScheme()
+	if err = apiv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("Could not add standard type information to the client: %w", err)
+	}
+
+	client, err := ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
 	}

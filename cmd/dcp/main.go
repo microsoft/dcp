@@ -11,6 +11,10 @@ import (
 	"github.com/usvc-dev/apiserver/internal/logger"
 )
 
+const (
+	errCommandError = 1
+)
+
 func main() {
 	logger, flushLogger := logger.NewLogger()
 	ctrlruntime.SetLogger(logger)
@@ -22,6 +26,6 @@ func main() {
 	flushLogger()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(errCommandError)
 	}
 }

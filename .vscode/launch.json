@@ -22,8 +22,6 @@
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/dcp/main.go",
             "args": [
-                "--secure-port=9562", 
-                "--token=outdoor-salad",
                 "--kubeconfig", "${workspaceFolder}/kubeconfig",
                 "--root-dir", "${workspaceFolder}/../todo-csharp-sql-swa-func",
                 "up"

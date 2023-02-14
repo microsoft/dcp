@@ -9,7 +9,8 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.8.1
 	github.com/tilt-dev/tilt-apiserver v0.7.0
-	github.com/usvc-dev/stdtypes v0.2.10
+	github.com/usvc-dev/stdtypes v0.2.11
+	go.uber.org/multierr v1.9.0
 	go.uber.org/zap v1.21.0
 	k8s.io/apimachinery v0.25.0
 	k8s.io/apiserver v0.25.0
@@ -75,7 +76,6 @@ require (
 	go.opentelemetry.io/otel/trace v1.9.0 // indirect
 	go.opentelemetry.io/proto/otlp v0.18.0 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
-	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/net v0.0.0-20221014081412-f15817d10f9b // indirect
 	golang.org/x/oauth2 v0.0.0-20221014153046-6fdb5e3db783 // indirect
 	golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4 // indirect
