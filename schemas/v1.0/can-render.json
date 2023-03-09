@@ -1,0 +1,48 @@
+{
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "$id": "https://github.com/usvc-dev/apiserver/schemas/v1.0/capabilities.json",
+
+    "title": "Can-render command response schema",
+    "description": "The schema for JSON document that DCP extension should return when can-render command is invoked.",
+    "type": "object",
+    "required": [ "response" ],
+
+    "properties": {
+        "result": {
+            "type": "string",
+            "description": "Analysis result of can-render command (yes/no).",
+            "enum": [
+                "yes",
+                "no"
+            ]
+        },
+
+        "reason": {
+            "type": "string",
+            "description": "Reason for why the extension can, or cannot render a workload for the application."
+        }
+    },
+
+    "dependencies": {
+        "result": {
+            "description": "Must specify reason if result is no.",
+            "oneOf": [
+                {
+                    "properties": {
+                        "result": {
+                            "enum": ["yes"]
+                        }
+                    }
+                },
+                {
+                    "properties": {
+                        "result": {
+                            "enum": ["no"]
+                        }
+                    },
+                    "required": ["reason"]
+                }
+            ]
+        }
+    }
+}

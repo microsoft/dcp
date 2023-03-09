@@ -37,7 +37,7 @@ const (
 	overwriteFlag   = "overwrite"
 )
 
-func NewGenerateFileCommand() *cobra.Command {
+func NewGenerateFileCommand() (*cobra.Command, error) {
 	generateFileCmd := &cobra.Command{
 		Use:   "generate-file",
 		Short: "Generate file from a template.",
@@ -71,7 +71,7 @@ Additional functions that can be used inside the template are:
 	generateFileCmd.Flags().StringVarP(&generateFileFlags.output, outputFlag, outputFlagShort, "", "Output file name. If omitted, standard output will be used.")
 	generateFileCmd.Flags().BoolVar(&generateFileFlags.overwrite, overwriteFlag, false, "If present, and the output file exists already, the file will be truncated and overwritten.")
 
-	return generateFileCmd
+	return generateFileCmd, nil
 }
 
 func generateFile(cmd *cobra.Command, args []string) error {
