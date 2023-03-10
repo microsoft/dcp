@@ -73,7 +73,7 @@ export CGO_ENABLED=0
 GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
 
 ## Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.50.1
+GOLANGCI_LINT_VERSION ?= v1.51.2
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary
