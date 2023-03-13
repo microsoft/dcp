@@ -20,15 +20,17 @@ Until `usvc-dev` project becomes public (no plans for that currently), the Go mo
 go env -w 'GOPRIVATE=github.com/usvc-dev/*'
 ```
 
+This setting applies to your Go installation (is shared between all repositories cloned onto your development machine). For more information see [Go private modules documentation](https://go.dev/ref/mod#private-modules).
+
 ### GitHub authentication setup
-Finally, if you are using SSH to authenticate to GitHub, you want the following in your `~/.gitconfig` file:
+If you are using SSH to authenticate to GitHub, you want the following in your `~/.gitconfig` file:
 
 ```shell
 [url "ssh://git@github.com/"]
 	insteadOf = https://github.com/
 ```
 
-Form more information see [Go private modules documentation](https://go.dev/ref/mod#private-modules) and [Go configuration for SSH Git authentication](https://go.dev/doc/faq#git_https).
+ For more information see [Go configuration for SSH Git authentication](https://go.dev/doc/faq#git_https).
 
 
 ## Running `dcpd`
