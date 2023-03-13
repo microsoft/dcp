@@ -1,0 +1,26 @@
+{
+    "$schema": "https://json-schema.org/draft/2019-09/schema",
+    "$id": "https://github.com/usvc-dev/apiserver/schemas/v1.0/capabilities.json",
+
+    "title": "DCP extension capabilities schema",
+    "description": "The schema for JSON document that DCP extension should return when launched with get-capabilities invocation parameter.",
+    "type": "object",
+    "required": [ "capabilities" ],
+
+    "properties": {
+
+        "capabilities": {
+            "type": "array",
+            "uniqueItems": true,
+            "description": "Capabilities supported by given extension",
+            "items" : {
+                "type": "string",
+                "enum": [
+                    "controller",
+                    "workload-renderer"
+                ]
+            }
+        }
+
+    }
+}
