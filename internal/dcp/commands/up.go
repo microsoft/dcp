@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"flag"
 	"fmt"
 	"os"
 
@@ -11,6 +10,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/usvc-dev/apiserver/internal/kubeconfig"
 	apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 	rnd "github.com/usvc-dev/stdtypes/renderers"
 )
@@ -40,10 +40,8 @@ This command currently supports only Azure CLI-enabled applications of certain t
 		Args: cobra.NoArgs,
 	}
 
-	// controller-runtime will register --kubeconfig flag in the default flag.CommandLine flag set.
-	// See https://github.com/kubernetes-sigs/controller-runtime/blob/master/pkg/client/config/config.go for details.
-	// The following line is necessary to ensure that this flag is recognized.
-	upCmd.Flags().AddGoFlagSet(flag.CommandLine)
+	// Make sure --kubeconfig flag is recognized
+	upCmd.Flags().AddGoFlag(kubeconfig.GetKubeconfigFlag())
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, appRootDirFlag, appRootDirFlagShort, "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 
