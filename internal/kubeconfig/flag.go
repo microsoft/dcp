@@ -12,8 +12,5 @@ import (
 func GetKubeconfigFlag() *flag.Flag {
 	ctrl_config.RegisterFlags(flag.CommandLine)
 	f := flag.CommandLine.Lookup(ctrl_config.KubeconfigFlagName)
-	if f == nil {
-		panic("'kubeconfig' command-line flag could not be registered")
-	}
 	return f
 }
