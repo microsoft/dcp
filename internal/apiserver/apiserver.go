@@ -4,13 +4,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	serverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
+	"github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/usvc-dev/apiserver/internal/kubeconfig"
 	stdtypes_apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 	stdtypes_openapi "github.com/usvc-dev/stdtypes/pkg/generated/openapi"
 )
@@ -18,12 +20,12 @@ import (
 const (
 	msgApiServerStartupFailed = "API server could not be started"
 	dataFolderPath            = "data" // Not really used for in-memory storage, but needs to be consistent between CRDs.
+	invalidPort               = -1
 )
 
 type ApiServer struct {
 	name         string
 	flushLogger  func()
-	PortInfo     chan int
 	runCompleted bool
 }
 
@@ -31,7 +33,6 @@ func NewApiServer(name string, flushLogger func()) *ApiServer {
 	return &ApiServer{
 		name:         name,
 		flushLogger:  flushLogger,
-		PortInfo:     make(chan int, 1),
 		runCompleted: false,
 	}
 }
@@ -49,26 +50,42 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		log.Error(err, msgApiServerStartupFailed)
 		return err
 	}
-
 	defer func() {
-		close(s.PortInfo)
 		s.runCompleted = true
 	}()
 
 	// The two constants below are just metadata for Swagger UI
 	const openApiConfigrationName = "DCP"
 	const openApiConfigurationVersion = "1.0.0" // TODO: use DCP executable version
+
+	// Add well-known DCP types to API server metadata.
 	builder := serverbuilder.NewServerBuilder().
 		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.Container{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.ContainerVolume{}, dataFolderPath).
 		WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, stdtypes_openapi.GetOpenAPIDefinitions)
 
+	options, err := computeServerOptions(builder, log)
+	if err != nil {
+		return err
+	}
+
+	stoppedCh, err := options.RunTiltServer(ctx)
+	if err != nil {
+		log.Error(err, "API server execution error")
+		return err
+	}
+
+	<-stoppedCh
+	return nil
+}
+
+func computeServerOptions(builder *serverbuilder.Server, log logr.Logger) (*start.TiltServerOptions, error) {
 	options, err := builder.ToServerOptions()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
-		return err
+		return nil, err
 	}
 
 	fs := pflag.NewFlagSet("DCP API server", pflag.ContinueOnError)
@@ -79,36 +96,45 @@ func (s *ApiServer) Run(ctx context.Context) error {
 	if err != nil {
 		err = fmt.Errorf("invalid API server invocation options: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
-		return err
+		return nil, err
+	}
+
+	// If --secure-port and/or --token were not specified, figure them out from Kubeconfig file
+	havePort := isValidPort(options.ServingOptions.BindPort)
+	haveToken := options.ServingOptions.BearerToken != ""
+	if !havePort || !haveToken {
+		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(fs)
+		if err != nil {
+			log.Error(err, msgApiServerStartupFailed)
+			return nil, err
+		}
+
+		port, token, err := kubeconfig.GetKubeConfigData(kubeconfigPath)
+		if err != nil {
+			err = fmt.Errorf("could not obtain port and security token information from Kubeconfig file: %w", err)
+			log.Error(err, msgApiServerStartupFailed)
+			return nil, err
+		}
+
+		if !havePort {
+			options.ServingOptions.BindPort = port
+		}
+
+		if !haveToken {
+			options.ServingOptions.BearerToken = token
+		}
 	}
 
 	err = options.Validate(nil)
 	if err != nil {
 		err = fmt.Errorf("unable to validate API server options: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
-		return err
+		return nil, err
 	}
 
-	stoppedCh, err := options.RunTiltServer(ctx)
-	if err != nil {
-		log.Error(err, "API server execution error")
-		return err
-	}
-
-	// Report the port we will be using
-	s.PortInfo <- getPort(options.ServingOptions.Listener.Addr())
-
-	<-stoppedCh
-	return nil
+	return options, nil
 }
 
-func getPort(addr net.Addr) int {
-	switch a := addr.(type) {
-	case *net.UDPAddr:
-		return int(a.Port)
-	case *net.TCPAddr:
-		return int(a.Port)
-	default:
-		return 0
-	}
+func isValidPort(port int) bool {
+	return port >= 1 && port <= 65535
 }

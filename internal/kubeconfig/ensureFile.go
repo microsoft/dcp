@@ -3,13 +3,14 @@ package kubeconfig
 import (
 	"errors"
 	"fmt"
-	"io/fs"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/pflag"
+	clientcmd "k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
-	"sigs.k8s.io/yaml"
 
 	"github.com/usvc-dev/stdtypes/pkg/randdata"
 )
@@ -21,23 +22,24 @@ const DefaultDcpPort = 9562
 // If the --kubeconfig parameter is passed, the returned value will be the parameter value.
 // If the --kubeconfig parameter is missing, the default location (~/.dcp/kubeconfig) will be checked,
 // and if the kubeconfig file is not there, it will be created.
-func EnsureKubeconfigFile() (string, error) {
-	f := GetKubeconfigFlag()
+func EnsureKubeconfigFile(fs *pflag.FlagSet) (string, error) {
+	f := GetKubeconfigFlag(fs)
 	if f != nil {
 		path := strings.TrimSpace(f.Value.String())
-		if path == "" {
-			return "", fmt.Errorf("Value of the --kubeconfig parameter must not be empty")
-		}
 
-		info, err := os.Stat(path)
-		if err != nil {
-			return "", fmt.Errorf("Could not access Kubeconfig file '%s': %w", path, err)
-		}
-		if info.IsDir() {
-			return "", fmt.Errorf("The Kubeconfig file path '%s' points to a directory, not a file", path)
-		}
+		// If path is empty, this means the user did not pass the --kubeconfig parameter,
+		// so fall back to the "check default location" case.
+		if path != "" {
+			info, err := os.Stat(path)
+			if err != nil {
+				return "", fmt.Errorf("Could not access Kubeconfig file '%s': %w", path, err)
+			}
+			if info.IsDir() {
+				return "", fmt.Errorf("The Kubeconfig file path '%s' points to a directory, not a file", path)
+			}
 
-		return path, nil
+			return path, nil
+		}
 	}
 
 	homePath, err := os.UserHomeDir()
@@ -48,7 +50,7 @@ func EnsureKubeconfigFile() (string, error) {
 	defaultPath := filepath.Join(homePath, ".dcp", "kubeconfig")
 	info, err := os.Stat(defaultPath)
 	switch {
-	case err != nil && !errors.Is(err, fs.ErrNotExist):
+	case err != nil && !errors.Is(err, iofs.ErrNotExist):
 		return "", fmt.Errorf("Could not check whether default Kubeconfig file ('%s') exists: %w", defaultPath, err)
 	case err == nil && info.IsDir():
 		return "", fmt.Errorf("Kubeconfig file path was not provided and the default location ('%s') is a directory", defaultPath)
@@ -97,12 +99,7 @@ func createKubeconfigFile(path string) error {
 		CurrentContext: "apiserver",
 	}
 
-	content, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("Could not serialize Kubernetes configuration into YAML when writing to Kubeconfig file: %w", err)
-	}
-	const userReadWrite os.FileMode = 0600
-	err = os.WriteFile(path, content, userReadWrite)
+	err = clientcmd.WriteToFile(config, path)
 	if err != nil {
 		return fmt.Errorf("Could not write Kubeconfig file: %w", err)
 	}

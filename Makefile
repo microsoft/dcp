@@ -43,7 +43,7 @@ test: ## Run all tests in the repository
 
 .PHONY: run-dcpd
 run-dcpd: ## Runs DCP API server (dcpd) from the sources
-	go run ./cmd/dcpd/main.go --secure-port=9562 --token=outdoor-salad --kubeconfig ./kubeconfig
+	go run ./cmd/dcpd/main.go
 
 .PHONY: clean
 clean: ## Deletes build output (all binaries), and all cached tool binaries.

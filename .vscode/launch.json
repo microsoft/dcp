@@ -8,9 +8,6 @@
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/dcpd/main.go",
             "args": [
-                "--secure-port=9562", 
-                "--token=outdoor-salad",
-                "--kubeconfig", "${workspaceFolder}/kubeconfig",
                 "--v=1"
             ],
         },

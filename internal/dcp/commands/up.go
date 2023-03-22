@@ -41,8 +41,8 @@ This command currently supports only Azure CLI-enabled applications of certain t
 	}
 
 	// Make sure --kubeconfig flag is recognized
-	if f := kubeconfig.GetKubeconfigFlag(); f != nil {
-		upCmd.Flags().AddGoFlag(f)
+	if f := kubeconfig.GetKubeconfigFlag(nil); f != nil {
+		upCmd.Flags().AddFlag(f)
 	}
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, appRootDirFlag, appRootDirFlagShort, "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
