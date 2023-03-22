@@ -10,6 +10,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
 	"github.com/usvc-dev/apiserver/internal/kubeconfig"
 	apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 	rnd "github.com/usvc-dev/stdtypes/renderers"
@@ -50,12 +51,6 @@ This command currently supports only Azure CLI-enabled applications of certain t
 	return upCmd
 }
 
-var (
-	renderers = []rnd.WorkloadRenderer{
-		rnd.NewAzdRenderer(),
-	}
-)
-
 func runApp(cmd *cobra.Command, args []string) error {
 	appRootDir := upFlags.appRootDir
 	var err error
@@ -66,31 +61,46 @@ func runApp(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	renderer, err := getRenderer(appRootDir)
+	// Discover controllers
+	extDir, err := bootstrap.GetExtensionsDir()
 	if err != nil {
-		return err
+		return fmt.Errorf("could not determine extensions directory: %w", err)
 	}
 
-	// TODO: instead of assuming that DCPD is already running, we should launch it on demand.
+	// TODO:
+	// 1. Start API server
+	// 2. Discover and start controllers.
+	// 3. Discover and interrogate renderers.
+	// 4. If more than one renderer reports ready, prompt the user to choose one.
+	// The renderer will be responsible for creating the workload objects.
 
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
+	// Old code, keep for reference
+	/*
 
-	workload, err := renderer.Render(cmd.Context(), appRootDir, client)
-	if err != nil {
-		return fmt.Errorf("Could not determine how to run the application: %w", err)
-	}
-
-	for _, obj := range workload {
-		err = client.Create(cmd.Context(), obj, &ctrl_client.CreateOptions{})
+		renderer, err := getRenderer(appRootDir)
 		if err != nil {
-			// TODO: "roll back", i.e. delete, all objects that have been created up to this point
-
-			return fmt.Errorf("Application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
+			return err
 		}
-	}
+
+		client, err := getClient()
+		if err != nil {
+			return err
+		}
+
+		workload, err := renderer.Render(cmd.Context(), appRootDir, client)
+		if err != nil {
+			return fmt.Errorf("Could not determine how to run the application: %w", err)
+		}
+
+		for _, obj := range workload {
+			err = client.Create(cmd.Context(), obj, &ctrl_client.CreateOptions{})
+			if err != nil {
+				// TODO: "roll back", i.e. delete, all objects that have been created up to this point
+
+				return fmt.Errorf("Application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
+			}
+		}
+	*/
 
 	fmt.Fprintln(os.Stderr, "Application create successfully")
 	return nil
