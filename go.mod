@@ -1,6 +1,6 @@
 module github.com/usvc-dev/apiserver
 
-go 1.19
+go 1.20
 
 require (
 	github.com/go-logr/logr v1.2.3
@@ -10,7 +10,6 @@ require (
 	github.com/stretchr/testify v1.8.1
 	github.com/tilt-dev/tilt-apiserver v0.8.0
 	github.com/usvc-dev/stdtypes v0.4.3
-	go.uber.org/multierr v1.9.0
 	go.uber.org/zap v1.24.0
 	k8s.io/apimachinery v0.26.1
 	k8s.io/apiserver v0.26.1
@@ -80,6 +79,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.10.0 // indirect
 	go.opentelemetry.io/proto/otlp v0.19.0 // indirect
 	go.uber.org/atomic v1.9.0 // indirect
+	go.uber.org/multierr v1.8.0 // indirect
 	golang.org/x/net v0.7.0 // indirect
 	golang.org/x/oauth2 v0.0.0-20221014153046-6fdb5e3db783 // indirect
 	golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4 // indirect

@@ -1,19 +1,19 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
-	"go.uber.org/multierr"
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
+	kubeapiserver "k8s.io/apiserver/pkg/server"
+	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
+	"github.com/usvc-dev/apiserver/internal/dcp/extensions"
+	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/apiserver/internal/kubeconfig"
-	apiv1 "github.com/usvc-dev/stdtypes/api/v1"
-	rnd "github.com/usvc-dev/stdtypes/renderers"
+	"github.com/usvc-dev/stdtypes/pkg/slices"
 )
 
 type upFlagData struct {
@@ -61,11 +61,61 @@ func runApp(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Discover controllers
-	extDir, err := bootstrap.GetExtensionsDir()
+	ctx, cancelFn := context.WithCancel(kubeapiserver.SetupSignalContext())
+	log := runtimelog.Log.WithName("up")
+
+	// Discover extensions.
+	allExtensions, err := extensions.GetExtensions(ctx)
 	if err != nil {
-		return fmt.Errorf("could not determine extensions directory: %w", err)
+		return err
 	}
+	controllers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
+		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
+	})
+	rederers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
+		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
+	})
+
+	// Start API server and controllers.
+	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
+	if err != nil {
+		return err
+	}
+
+	apiServerSvc, err := bootstrap.NewDcpdService(kubeconfigPath)
+	if err != nil {
+		return err
+	}
+	hostedServices := []hosting.Service{}
+	for _, controller := range controllers {
+		// TODO: implement NewControllerService()
+		controllerService, err := bootstrap.NewControllerService(controller)
+	}
+
+	host := &hosting.Host{
+		Services: hostedServices,
+		Logger:   log,
+	}
+	shutdownErrors, lifecycleMsgs := host.RunAsync(ctx)
+	cancelFn()
+
+	// Wait till user presses Ctrl-C or all controllers shut down (the latter is an error condition).
+	// The following is NOT DONE YET.
+
+	select {
+	case <-ctx.Done():
+		// The user pressed Ctrl-C
+		log.Info("shutting down application...")
+	case msg := <-lifecycleMsgs:
+		// TODO: log error OR info that controller exited
+		// TODO: special-case API server. API server failure should always terminate the whole command.
+		log.Error(svcErr.Err, fmt.Sprintf("'%s' exited with an error", svcErr.Name))
+	}
+
+	// Finished shutting down. An error returned here is a failure to terminate gracefully,
+	// so just crash if that happens.
+	shutdownErr := <-shutdownErrors
+	// TODO : handle shutdown error
 
 	// TODO:
 	// 1. Start API server
@@ -101,11 +151,9 @@ func runApp(cmd *cobra.Command, args []string) error {
 			}
 		}
 	*/
-
-	fmt.Fprintln(os.Stderr, "Application create successfully")
-	return nil
 }
 
+/* TODO: old code, keep for reference
 func getRenderer(cwd string) (rnd.WorkloadRenderer, error) {
 	// TODO: if more than one workload renderer is ready to render the application,
 	// ask the user which one to use.
@@ -142,3 +190,4 @@ func getClient() (ctrl_client.Client, error) {
 	}
 	return client, nil
 }
+*/

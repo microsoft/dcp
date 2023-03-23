@@ -13,7 +13,7 @@ import (
 
 const ShutdownTimeout = time.Second * 10
 
-// Service is an abstraction for a long-running subsystem of the RP.
+// Service is an abstraction for a long-running subsystem of some kind.
 type Service interface {
 	// Name returns the name of the service.
 	Name() string

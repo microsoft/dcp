@@ -5,14 +5,18 @@
     "title": "DCP extension capabilities schema",
     "description": "The schema for JSON document that DCP extension should return when launched with get-capabilities invocation parameter.",
     "type": "object",
-    "required": [ "capabilities" ],
+    "required": [ "name", "capabilities" ],
 
     "properties": {
+        "name": {
+            "type": "string",
+            "description": "Name of the extensio, to be used for error reporting and similar purposes."
+        },
 
         "capabilities": {
             "type": "array",
             "uniqueItems": true,
-            "description": "Capabilities supported by given extension",
+            "description": "Capabilities supported by given extension.",
             "items" : {
                 "type": "string",
                 "enum": [

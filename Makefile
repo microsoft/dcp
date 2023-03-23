@@ -52,7 +52,7 @@ clean: ## Deletes build output (all binaries), and all cached tool binaries.
 
 .PHONY: lint
 lint: golangci-lint ## Runs the linter
-	${GOLANGCI_LINT} run
+	${GOLANGCI_LINT} run --timeout 5m
 
 
 ##@ Build dependencies and environment variables
