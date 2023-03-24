@@ -55,3 +55,9 @@ To shut down the DCP API server just press Ctrl+c in the terminal.
 A debugging configuration named `dcpd launch` is provided to run dcpd under the debugger. You can F5 it in vs code normally, nothing extra is required other than VS Code Go extension. You might want to change the current working directory though, so that relative paths to executables are resolved properly.
 
 If you want to debug one of the controllers, the code is under `${GOPATH}/pkg/mod/github.com/usvc-dev/stdtypes@vX.Y.Z/controllers`, where `vX.Y.X` is the current version of the `stdtypes` package that this repository consumes (check `go.mod` file in the root of the repository).
+
+## Troubleshooting tips
+
+| Issue | Tip |
+| --- | ------- |
+| `make lint` times out (or ends with an error that says "Killed") | We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again. |

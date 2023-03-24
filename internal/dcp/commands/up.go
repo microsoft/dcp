@@ -62,6 +62,7 @@ func runApp(cmd *cobra.Command, args []string) error {
 	}
 
 	ctx, cancelFn := context.WithCancel(kubeapiserver.SetupSignalContext())
+	defer cancelFn()
 	log := runtimelog.Log.WithName("up")
 
 	// Discover extensions.
@@ -72,9 +73,11 @@ func runApp(cmd *cobra.Command, args []string) error {
 	controllers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
-	rederers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
-		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
-	})
+	/*
+		renderers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
+			return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
+		})
+	*/
 
 	// Start API server and controllers.
 	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
@@ -82,14 +85,18 @@ func runApp(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	apiServerSvc, err := bootstrap.NewDcpdService(kubeconfigPath)
+	apiServerSvc, err := bootstrap.NewDcpdService(kubeconfigPath, appRootDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("Could not start the API server: %w", err)
 	}
-	hostedServices := []hosting.Service{}
+
+	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
-		// TODO: implement NewControllerService()
-		controllerService, err := bootstrap.NewControllerService(controller)
+		controllerService, err := bootstrap.NewControllerService(kubeconfigPath, appRootDir, controller)
+		if err != nil {
+			return fmt.Errorf("Could not start controller '%s': %w", controller.Name, err)
+		}
+		hostedServices = append(hostedServices, controllerService)
 	}
 
 	host := &hosting.Host{
@@ -97,61 +104,73 @@ func runApp(cmd *cobra.Command, args []string) error {
 		Logger:   log,
 	}
 	shutdownErrors, lifecycleMsgs := host.RunAsync(ctx)
-	cancelFn()
 
-	// Wait till user presses Ctrl-C or all controllers shut down (the latter is an error condition).
-	// The following is NOT DONE YET.
+serviceMessageLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			// The user pressed Ctrl-C
+			log.Info("shutting down application...")
+			break serviceMessageLoop
 
-	select {
-	case <-ctx.Done():
-		// The user pressed Ctrl-C
-		log.Info("shutting down application...")
-	case msg := <-lifecycleMsgs:
-		// TODO: log error OR info that controller exited
-		// TODO: special-case API server. API server failure should always terminate the whole command.
-		log.Error(svcErr.Err, fmt.Sprintf("'%s' exited with an error", svcErr.Name))
+		case msg := <-lifecycleMsgs:
+			if ctx.Err() != nil && msg.Err != nil {
+				// We are not cancelling yet, but a service has already exited with an error.
+				if msg.ServiceName == apiServerSvc.Name() {
+					log.Error(msg.Err, "API server exited with an error, terminating...")
+					cancelFn()
+					break serviceMessageLoop
+				} else {
+					log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
+					// Let the user decide whether to continue or not, do not break the loop yet.
+				}
+			}
+		}
 	}
 
 	// Finished shutting down. An error returned here is a failure to terminate gracefully,
-	// so just crash if that happens.
 	shutdownErr := <-shutdownErrors
-	// TODO : handle shutdown error
+	if shutdownErr != nil {
+		return fmt.Errorf("The API server or some controllers failed to shut down gracefully: %w", shutdownErr)
+	}
 
-	// TODO:
-	// 1. Start API server
-	// 2. Discover and start controllers.
-	// 3. Discover and interrogate renderers.
-	// 4. If more than one renderer reports ready, prompt the user to choose one.
-	// The renderer will be responsible for creating the workload objects.
-
-	// Old code, keep for reference
-	/*
-
-		renderer, err := getRenderer(appRootDir)
-		if err != nil {
-			return err
-		}
-
-		client, err := getClient()
-		if err != nil {
-			return err
-		}
-
-		workload, err := renderer.Render(cmd.Context(), appRootDir, client)
-		if err != nil {
-			return fmt.Errorf("Could not determine how to run the application: %w", err)
-		}
-
-		for _, obj := range workload {
-			err = client.Create(cmd.Context(), obj, &ctrl_client.CreateOptions{})
-			if err != nil {
-				// TODO: "roll back", i.e. delete, all objects that have been created up to this point
-
-				return fmt.Errorf("Application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
-			}
-		}
-	*/
+	return nil
 }
+
+// TODO:
+// 1. Start API server
+// 2. Discover and start controllers.
+// 3. Discover and interrogate renderers.
+// 4. If more than one renderer reports ready, prompt the user to choose one.
+// The renderer will be responsible for creating the workload objects.
+
+// Old code, keep for reference
+/*
+
+	renderer, err := getRenderer(appRootDir)
+	if err != nil {
+		return err
+	}
+
+	client, err := getClient()
+	if err != nil {
+		return err
+	}
+
+	workload, err := renderer.Render(cmd.Context(), appRootDir, client)
+	if err != nil {
+		return fmt.Errorf("Could not determine how to run the application: %w", err)
+	}
+
+	for _, obj := range workload {
+		err = client.Create(cmd.Context(), obj, &ctrl_client.CreateOptions{})
+		if err != nil {
+			// TODO: "roll back", i.e. delete, all objects that have been created up to this point
+
+			return fmt.Errorf("Application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
+		}
+	}
+*/
 
 /* TODO: old code, keep for reference
 func getRenderer(cwd string) (rnd.WorkloadRenderer, error) {

@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 
 	"github.com/usvc-dev/stdtypes/pkg/process"
-
-	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
 )
 
 type DcpExtension struct {
@@ -40,7 +38,7 @@ var (
 )
 
 func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
-	extDir, err := bootstrap.GetExtensionsDir()
+	extDir, err := GetExtensionsDir()
 	if err != nil {
 		return nil, err
 	}
