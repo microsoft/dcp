@@ -3,7 +3,7 @@
     "$id": "https://github.com/usvc-dev/apiserver/schemas/v1.0/capabilities.json",
 
     "title": "DCP extension capabilities schema",
-    "description": "The schema for JSON document that DCP extension should return when launched with get-capabilities invocation parameter.",
+    "description": "The schema for JSON document that DCP extension should return when get-capabilities command is invoked.",
     "type": "object",
     "required": [ "name", "capabilities" ],
 
