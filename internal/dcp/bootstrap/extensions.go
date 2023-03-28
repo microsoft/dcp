@@ -1,4 +1,4 @@
-package extensions
+package bootstrap
 
 import (
 	"bytes"
@@ -10,13 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/usvc-dev/apiserver/pkg/extensions"
 	"github.com/usvc-dev/stdtypes/pkg/process"
 )
 
 type DcpExtension struct {
 	Name         string
 	Path         string
-	Capabilities []ExtensionCapability
+	Capabilities []extensions.ExtensionCapability
 }
 
 type FilePermission uint32
@@ -99,7 +100,7 @@ func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, e
 		}
 	}
 
-	var caps ExtensionCapabilities
+	var caps extensions.ExtensionCapabilities
 	err = json.Unmarshal(stdout.Bytes(), &caps)
 	if err != nil {
 		return DcpExtension{}, fmt.Errorf("extension capabilities response ('%s') is invalid: %w", stdout.String(), err)

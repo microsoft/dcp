@@ -10,9 +10,9 @@ import (
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
-	"github.com/usvc-dev/apiserver/internal/dcp/extensions"
 	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/apiserver/internal/kubeconfig"
+	"github.com/usvc-dev/apiserver/pkg/extensions"
 	"github.com/usvc-dev/stdtypes/pkg/slices"
 )
 
@@ -66,11 +66,11 @@ func runApp(cmd *cobra.Command, args []string) error {
 	log := runtimelog.Log.WithName("up")
 
 	// Discover extensions.
-	allExtensions, err := extensions.GetExtensions(ctx)
+	allExtensions, err := bootstrap.GetExtensions(ctx)
 	if err != nil {
 		return err
 	}
-	controllers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
+	controllers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
 	/*
