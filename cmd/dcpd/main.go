@@ -9,7 +9,7 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	"github.com/usvc-dev/apiserver/internal/apiserver"
-	"github.com/usvc-dev/apiserver/internal/logger"
+	"github.com/usvc-dev/apiserver/pkg/logger"
 )
 
 type DcpdExitCode int
