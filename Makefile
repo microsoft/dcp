@@ -72,11 +72,11 @@ $(TOOL_BIN):
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
 
-## Tool binaries
-GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
-
-## Tool Versions
+# Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.51.2
+
+# Tool binary rules
+GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT)
