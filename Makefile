@@ -37,14 +37,6 @@ build-dcpd: ${OUTPUT_BIN} ## Builds DCP API server binary (dcpd)
 build-dcp: ${OUTPUT_BIN} ## Builds DCP CLI binary
 	go build -o ${OUTPUT_BIN}/dcp ./cmd/dcp
 
-.PHONY: test
-test: ## Run all tests in the repository
-	go test ./...
-
-.PHONY: run-dcpd
-run-dcpd: ## Runs DCP API server (dcpd) from the sources
-	go run ./cmd/dcpd/main.go
-
 .PHONY: clean
 clean: ## Deletes build output (all binaries), and all cached tool binaries.
 	rm -rf ${OUTPUT_BIN}/*
@@ -55,9 +47,19 @@ lint: golangci-lint ## Runs the linter
 	${GOLANGCI_LINT} run --timeout 5m
 
 
-##@ Build dependencies and environment variables
+# TODO: add "install" and "uninstall targets
 
-## Location for binaries built from this repo
+
+##@ Testing
+.PHONY: test
+test: ## Run all tests in the repository
+	go test ./...
+
+
+
+## Build dependencies and environment variables
+
+# Location for binaries built from this repo
 OUTPUT_BIN ?= $(shell pwd)/bin
 ${OUTPUT_BIN}:
 	mkdir -p ${OUTPUT_BIN}
@@ -77,6 +79,6 @@ GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
 GOLANGCI_LINT_VERSION ?= v1.51.2
 
 .PHONY: golangci-lint
-golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary
+golangci-lint: $(GOLANGCI_LINT)
 $(GOLANGCI_LINT): $(TOOL_BIN)
 	[[ -s $(TOOL_BIN)/golangci-lint ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
