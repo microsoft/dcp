@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	errCommandError = 1
+	errCommand = 1
+	errSetup   = 2
 )
 
 func main() {
@@ -21,11 +22,16 @@ func main() {
 
 	ctx := kubeapiserver.SetupSignalContext()
 
-	root := commands.NewRootCmd()
-	err := root.ExecuteContext(ctx)
+	root, err := commands.NewRootCmd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(errSetup)
+	}
+
+	err = root.ExecuteContext(ctx)
 	flushLogger()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(errCommandError)
+		os.Exit(errCommand)
 	}
 }

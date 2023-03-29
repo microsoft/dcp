@@ -12,7 +12,7 @@ import (
 	"github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/usvc-dev/apiserver/internal/kubeconfig"
+	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
 	stdtypes_apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 	stdtypes_openapi "github.com/usvc-dev/stdtypes/pkg/generated/openapi"
 )

@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 )
 
-func NewRootCmd() *cobra.Command {
+func NewRootCmd() (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		Use:   "dcp",
 		Short: "Runs and manages multi-service application and their dependencies",
@@ -17,8 +19,20 @@ func NewRootCmd() *cobra.Command {
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	rootCmd.AddCommand(NewGenerateFileCommand())
-	rootCmd.AddCommand(NewUpCommand())
+	var err error
+	var cmd *cobra.Command
 
-	return rootCmd
+	if cmd, err = NewGenerateFileCommand(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	} else {
+		return nil, fmt.Errorf("Could not set up 'generate-file' command: %w", err)
+	}
+
+	if cmd, err = NewUpCommand(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	} else {
+		return nil, fmt.Errorf("Could not set up 'generate-file' command: %w", err)
+	}
+
+	return rootCmd, nil
 }

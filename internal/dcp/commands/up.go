@@ -11,8 +11,8 @@ import (
 
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
 	"github.com/usvc-dev/apiserver/internal/hosting"
-	"github.com/usvc-dev/apiserver/internal/kubeconfig"
 	"github.com/usvc-dev/apiserver/pkg/extensions"
+	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
 	"github.com/usvc-dev/stdtypes/pkg/slices"
 )
 
@@ -30,7 +30,7 @@ const (
 	appRootDirFlagShort = "r"
 )
 
-func NewUpCommand() *cobra.Command {
+func NewUpCommand() (*cobra.Command, error) {
 	upCmd := &cobra.Command{
 		Use:   "up",
 		Short: "Runs an application",
@@ -44,11 +44,13 @@ This command currently supports only Azure CLI-enabled applications of certain t
 	// Make sure --kubeconfig flag is recognized
 	if f := kubeconfig.GetKubeconfigFlag(nil); f != nil {
 		upCmd.Flags().AddFlag(f)
+	} else {
+		return nil, fmt.Errorf("could not set up the --kubeconfig flag")
 	}
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, appRootDirFlag, appRootDirFlagShort, "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 
-	return upCmd
+	return upCmd, nil
 }
 
 func runApp(cmd *cobra.Command, args []string) error {
