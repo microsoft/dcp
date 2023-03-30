@@ -4,8 +4,8 @@ package extensions
 type CanRenderResult string
 
 const (
-	ResultYes CanRenderResult = "yes"
-	ResultNo  CanRenderResult = "no"
+	CanRenderResultYes CanRenderResult = "yes"
+	CanRenderResultNo  CanRenderResult = "no"
 )
 
 type CanRenderResponse struct {
