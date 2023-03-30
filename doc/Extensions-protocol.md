@@ -70,7 +70,7 @@ The `render-workload` command is a request to analyze application code and produ
 
 | Parameter | Description | Mandatory |
 | --- | ------ | --- |
-| `--appRootDir <path>` | The path to application root directory. The rendered should start its analysis from this directory. | Yes |
+| `--root-dir <path>` or `-r <path>` | The path to application root directory. The rendered should start its analysis from this directory. | Yes |
 | `--kubeconfig <path>` | The path to `kubeconfig` file that should be used to connect to the API server. Extensions can assume that the current context specified in the file is the correct context to use (no need to prompt for context even if multiple contexts are defined). | Yes |
 
 After the application is analyzed, the extension should connect to the API server and create necessary DCP objects (Executables, Containers etc) to instantiate the application. To the greatest extent possible, the rendering should be an atomic operation, that is, the renderer should create all application workload objects, or report an error without creating anything.
@@ -83,7 +83,7 @@ The `can-render` command is a request to determine whether the extension can ren
 
 | Parameter | Description | Mandatory |
 | --- | ------ | --- |
-| `--appRootDir <path>` | The path to application root directory. The rendered should start its analysis from this directory. | Yes |
+| `--root-dir <path>` or `-r <path>` | The path to application root directory. The rendered should start its analysis from this directory. | Yes |
 
 The renderer communicates the result of the analysis via exit code a JSON document written to standard output:
 
