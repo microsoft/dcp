@@ -1,3 +1,4 @@
+.DEFAULT_GOAL := help
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -6,6 +7,29 @@ SHELL = /usr/bin/env bash -o pipefail
 ifneq (3.81,$(firstword $(sort $(MAKE_VERSION) 3.81)))
 $(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
 endif
+
+## Environment variables affecting build and installation
+# Note these have to be defined before they are used in targets
+
+# Locations and names for binaries built from this repository
+OUTPUT_BIN ?= $(shell pwd)/bin
+EXTENSIONS_DIR ?= ~/.dcp/ext
+INSTALL_DIR ?= /usr/local/bin
+DCPD_BINARY ?= ${OUTPUT_BIN}/dcpd
+DCP_BINARY ?= ${OUTPUT_BIN}/dcp
+
+# Locations and definitions for tool binaries
+TOOL_BIN ?= $(shell pwd)/.toolbin
+GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
+INSTALL ?= install -p
+MKDIR ?= mkdir -p -m 0755
+
+# Tool Versions
+GOLANGCI_LINT_VERSION ?= v1.51.2
+
+# Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
+export CGO_ENABLED=0
+
 
 ##@ General
 
@@ -30,24 +54,34 @@ help: ## Display this help.
 build: build-dcpd build-dcp ## Builds all binaries (DCP CLI and DCP API server)
 
 .PHONY: build-dcpd
-build-dcpd: ${OUTPUT_BIN} ## Builds DCP API server binary (dcpd)
-	go build -o ${OUTPUT_BIN}/dcpd ./cmd/dcpd
+build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
+$(DCPD_BINARY): $(OUTPUT_BIN)
+	go build -o $(DCPD_BINARY) ./cmd/dcpd
 
 .PHONY: build-dcp
-build-dcp: ${OUTPUT_BIN} ## Builds DCP CLI binary
-	go build -o ${OUTPUT_BIN}/dcp ./cmd/dcp
+build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
+$(DCP_BINARY): ${OUTPUT_BIN}
+	go build -o $(DCP_BINARY) ./cmd/dcp
 
 .PHONY: clean
 clean: ## Deletes build output (all binaries), and all cached tool binaries.
-	rm -rf ${OUTPUT_BIN}/*
-	rm -rf ${TOOL_BIN}/*
+	rm -rf $(OUTPUT_BIN)/*
+	rm -rf $(TOOL_BIN)/*
 
 .PHONY: lint
 lint: golangci-lint ## Runs the linter
 	${GOLANGCI_LINT} run --timeout 5m
 
+.PHONY: install
+install: build ## Installs all binaries to their destinations (putting DCP CLI on PATH)
+	$(MKDIR) $(EXTENSIONS_DIR)
+	$(INSTALL) $(DCPD_BINARY) $(EXTENSIONS_DIR)
+	$(INSTALL) $(DCP_BINARY) $(INSTALL_DIR)
 
-# TODO: add "install" and "uninstall targets
+.PHONY: uninstall
+uninstall: ## Uninstalls all binaries from their destinations (removing DCP CLI from PATH)
+	rm -f $(EXTENSIONS_DIR)/dcpd
+	rm -f $(INSTALL_DIR)/dcp
 
 
 ##@ Testing
@@ -56,27 +90,13 @@ test: ## Run all tests in the repository
 	go test ./...
 
 
+## Development and test support targets
 
-## Build dependencies and environment variables
-
-# Location for binaries built from this repo
-OUTPUT_BIN ?= $(shell pwd)/bin
 ${OUTPUT_BIN}:
 	mkdir -p ${OUTPUT_BIN}
 
-# Location for tool binaries
-TOOL_BIN ?= $(shell pwd)/.toolbin
 $(TOOL_BIN):
 	mkdir -p $(TOOL_BIN)
-
-# Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
-export CGO_ENABLED=0
-
-# Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.51.2
-
-# Tool binary rules
-GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT)
