@@ -7,8 +7,10 @@ import (
 	"runtime"
 )
 
+const DcpRootDir = ".dcp"
 const DcpExtensionsDir = "ext"
 
+// Get path to DCP CLI executable
 func GetDcpDir() (string, error) {
 	const errFmt = "could not determine the path to the DCP CLI executable: %w"
 
@@ -27,17 +29,16 @@ func GetDcpDir() (string, error) {
 }
 
 func GetExtensionsDir() (string, error) {
-	dir, err := GetDcpDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("could not determine the path to the user's home directory: %w", err)
 	}
 
-	extDir := filepath.Join(dir, DcpExtensionsDir)
-	return extDir, nil
+	return filepath.Join(home, DcpRootDir, DcpExtensionsDir), nil
 }
 
 func GetDcpdPath() (string, error) {
-	dir, err := GetDcpDir()
+	dir, err := GetExtensionsDir()
 	if err != nil {
 		return "", err
 	}
