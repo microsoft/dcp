@@ -10,5 +10,6 @@ const (
 
 type ExtensionCapabilities struct {
 	Name         string                `json:"name"` // Name of the extension, for error reporting and similar purposes.
+	Id           string                `json:"id"`   // Unique ID of the extension, primarily for referring to the extension via command-line arguments.
 	Capabilities []ExtensionCapability `json:"capabilities"`
 }

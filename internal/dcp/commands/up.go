@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
@@ -18,16 +19,11 @@ import (
 
 type upFlagData struct {
 	appRootDir string
+	renderer   string
 }
 
 var (
 	upFlags upFlagData
-)
-
-const (
-	// Flag names
-	appRootDirFlag      = "root-dir"
-	appRootDirFlagShort = "r"
 )
 
 func NewUpCommand() (*cobra.Command, error) {
@@ -48,7 +44,9 @@ This command currently supports only Azure CLI-enabled applications of certain t
 		return nil, fmt.Errorf("could not set up the --kubeconfig flag")
 	}
 
-	upCmd.Flags().StringVarP(&upFlags.appRootDir, appRootDirFlag, appRootDirFlagShort, "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
+	upCmd.Flags().StringVarP(&upFlags.appRootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
+
+	upCmd.Flags().StringVarP(&upFlags.renderer, "app-type", "", "", "Specifies the type of application to run, if the type cannot be inferred unambiguously.")
 
 	return upCmd, nil
 }
@@ -75,11 +73,6 @@ func runApp(cmd *cobra.Command, args []string) error {
 	controllers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
-	/*
-		renderers := slices.Select(allExtensions, func(ext extensions.DcpExtension) bool {
-			return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
-		})
-	*/
 
 	// Start API server and controllers.
 	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
@@ -137,6 +130,47 @@ serviceMessageLoop:
 	}
 
 	return nil
+}
+
+func getEffectiveRenderer(appRootDir string, allExtensions []bootstrap.DcpExtension) (bootstrap.DcpExtension, error) {
+	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
+		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
+	})
+
+	// A. If the user specified a renderer:
+	// A1. If the renderer is not available, error, giving the list of available renderers.
+	// A2. If the renderer is available, but cannot render, report error with the reason.
+	// A3. If the renderer is available and can render, use it.
+	//
+	// B. If the user did not specify a renderer:
+	// B1. If there are no renderers that can render, error, giving all the reasons why renderes cannot render.
+	// B2. If there is only one renderer that can render, use it.
+	// B3. If there are multiple renderers that can render, error, giving the list of renderers that can render.
+
+	// TODO: implement the logic above. The code below is NOT correct.
+	var renderer bootstrap.DcpExtension
+
+	if upFlags.renderer != "" {
+		matching := slices.Select(renderers, func(r bootstrap.DcpExtension) bool { return r.Id == upFlags.renderer })
+
+		if len(matching) != 1 {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("The specified application type '%' is not valid. Available application types are:\n", upFlags.renderer))
+			for _, r := range renderers {
+				sb.WriteString(fmt.Sprintf("%s (%s)\n", r.Id, r.Name))
+			}
+			return fmt.Errorf(sb.String())
+		} else {
+			renderer = matching[0]
+		}
+	} else {
+		if len(renderers) == 0 {
+			return fmt.Errorf("There are no application runners available. Please re-install DCP with the appropriate extensions.")
+		}
+		if len(renderers) > 1 {
+			return fmt.Errorf("Multiple application types")
+		}
+	}
 }
 
 // TODO:

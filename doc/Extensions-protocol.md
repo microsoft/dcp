@@ -44,11 +44,12 @@ The extension should reply with a JSON document that declares its capabilities, 
 > my-controller get-capabilties
 {
     "name": "My Controller",
+    "id": "my-controller",
     "capabilities": [ "controller" ]
 }
 ```
 
-The value of the `name` property will be used by DCP CLI in any prompts or error messages when referring to the extension. The output document should conform to [capabilities document schema](https://github.com/usvc-dev/apiserver/schemas/v1.0/capabilities.json).
+The value of the `name` property will be used by DCP CLI in any prompts or error messages when referring to the extension. The extension identifier (`id` property) is used when referring to the extension via command-line arguments (e.g. `--app-type` argument of the DCP `up` command). The output document should conform to [capabilities document schema](https://github.com/usvc-dev/apiserver/schemas/v1.0/capabilities.json).
 
 If there is an error, a non-zero exit code should be used, and the error message should be written to `stderr`. If an executable program placed in the extensions directory does not declare its capabilites as expected, DCP CLI will warn about it, but continue execution using other extensions.
 

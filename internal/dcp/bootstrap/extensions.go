@@ -16,6 +16,7 @@ import (
 
 type DcpExtension struct {
 	Name         string
+	Id           string
 	Path         string
 	Capabilities []extensions.ExtensionCapability
 }
@@ -85,19 +86,7 @@ func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, e
 	code, err := process.Run(ctx, processExecutor, cmd)
 
 	if err != nil || code != 0 {
-		formattedOutput := ""
-		if stdout.Len() > 0 {
-			formattedOutput = "\n" + stdout.String()
-		}
-		if stderr.Len() > 0 {
-			formattedOutput += "\n" + stderr.String()
-		}
-		if err != nil {
-			return DcpExtension{}, fmt.Errorf("could not determine capabilities of extension '%s': %w%s", path, err, formattedOutput)
-		}
-		if code != 0 {
-			return DcpExtension{}, fmt.Errorf("could not determine capabilities of extension '%s': exit code %d%s", path, code, formattedOutput)
-		}
+		return DcpExtension{}, getCommandExecutionError(fmt.Sprintf("could not determine capabilities of extension '%s'", path), stdout, stderr, err, code)
 	}
 
 	var caps extensions.ExtensionCapabilities
@@ -108,7 +97,45 @@ func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, e
 
 	return DcpExtension{
 		Name:         caps.Name,
+		Id:           caps.Id,
 		Path:         path,
 		Capabilities: caps.Capabilities,
 	}, nil
+}
+
+func canRender(ctx context.Context, ext DcpExtension, appRootDir string) (extensions.CanRenderResponse, error) {
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, ext.Path, "can-render")
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	code, err := process.Run(ctx, processExecutor, cmd)
+
+	if err != nil || code != 0 {
+		return extensions.CanRenderResponse{}, getCommandExecutionError(fmt.Sprintf("could not determine if application type '%s' (%s) can be run", ext.Id, ext.Name), stdout, stderr, err, code)
+	}
+
+	var canRenderResponse extensions.CanRenderResponse
+	err = json.Unmarshal(stdout.Bytes(), &canRenderResponse)
+	if err != nil {
+		return extensions.CanRenderResponse{}, fmt.Errorf("a test whether application type '%s' (%s) can be run resulted in invalid response: %w", ext.Id, ext.Name, err)
+	}
+
+	return canRenderResponse, nil
+}
+
+func getCommandExecutionError(prefix string, stdout bytes.Buffer, stderr bytes.Buffer, err error, exitCode int32) error {
+	formattedOutput := ""
+	if stdout.Len() > 0 {
+		formattedOutput = "\n" + stdout.String()
+	}
+	if stderr.Len() > 0 {
+		formattedOutput += "\n" + stderr.String()
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w%s", prefix, err, formattedOutput)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("%s: exit code %d%s", prefix, exitCode, formattedOutput)
+	}
+	panic("there should be an error, or exit code should be non-zero") // this should never happen
 }
