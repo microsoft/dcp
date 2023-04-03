@@ -103,7 +103,7 @@ func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, e
 	}, nil
 }
 
-func canRender(ctx context.Context, ext DcpExtension, appRootDir string) (extensions.CanRenderResponse, error) {
+func (ext *DcpExtension) CanRender(ctx context.Context, appRootDir string) (extensions.CanRenderResponse, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, ext.Path, "can-render")
 	cmd.Stdout = &stdout

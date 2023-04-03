@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/apiserver/pkg/extensions"
 	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
+	"github.com/usvc-dev/stdtypes/pkg/maps"
 	"github.com/usvc-dev/stdtypes/pkg/slices"
 )
 
@@ -73,6 +75,14 @@ func runApp(cmd *cobra.Command, args []string) error {
 	controllers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
+	if len(controllers) == 0 {
+		log.Info("No controllers found. Check DCP installation.")
+	}
+
+	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
+		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
+	})
+	// TODO: get effective renderer
 
 	// Start API server and controllers.
 	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
@@ -132,45 +142,113 @@ serviceMessageLoop:
 	return nil
 }
 
-func getEffectiveRenderer(appRootDir string, allExtensions []bootstrap.DcpExtension) (bootstrap.DcpExtension, error) {
-	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
-		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
-	})
-
-	// A. If the user specified a renderer:
-	// A1. If the renderer is not available, error, giving the list of available renderers.
-	// A2. If the renderer is available, but cannot render, report error with the reason.
-	// A3. If the renderer is available and can render, use it.
-	//
-	// B. If the user did not specify a renderer:
-	// B1. If there are no renderers that can render, error, giving all the reasons why renderes cannot render.
-	// B2. If there is only one renderer that can render, use it.
-	// B3. If there are multiple renderers that can render, error, giving the list of renderers that can render.
-
-	// TODO: implement the logic above. The code below is NOT correct.
-	var renderer bootstrap.DcpExtension
+// The logic of getEffectiveRenderer() is as follows:
+// A. If there are no renderers available, just tell the user to reinstall DCP.
+// B. If the user specified a renderer:
+// B1. If the renderer is not available, error, giving the list of available renderers.
+// B2. If the renderer is available, but cannot render, report error with the reason.
+// B3. If the renderer is available and can render, use it.
+//
+// C. If the user did not specify a renderer:
+// C1. If there are no renderers that can render, error, giving all the reasons why renderes cannot render.
+// C2. If there is only one renderer that can render, use it.
+// C3. If there are multiple renderers that can render, error, giving the list of renderers that can render.
+func getEffectiveRenderer(ctx context.Context, appRootDir string, renderers []bootstrap.DcpExtension) (bootstrap.DcpExtension, error) {
+	if len(renderers) == 0 {
+		// A. No renderers available.
+		return bootstrap.DcpExtension{}, fmt.Errorf("No application runners found. Check DCP installation.")
+	}
 
 	if upFlags.renderer != "" {
-		matching := slices.Select(renderers, func(r bootstrap.DcpExtension) bool { return r.Id == upFlags.renderer })
+		// B. The user has specified a renderer.
 
+		matching := slices.Select(renderers, func(r bootstrap.DcpExtension) bool { return r.Id == upFlags.renderer })
 		if len(matching) != 1 {
+			// B1: The specified renderer is not available.
 			var sb strings.Builder
 			sb.WriteString(fmt.Sprintf("The specified application type '%' is not valid. Available application types are:\n", upFlags.renderer))
 			for _, r := range renderers {
 				sb.WriteString(fmt.Sprintf("%s (%s)\n", r.Id, r.Name))
 			}
-			return fmt.Errorf(sb.String())
+			return bootstrap.DcpExtension{}, fmt.Errorf(sb.String())
+		}
+
+		candidate := matching[0]
+
+		canRenderResponse, err := candidate.CanRender(ctx, appRootDir)
+		if err != nil {
+			return bootstrap.DcpExtension{}, err // Unexpected error: the extension should be able to tell us whether it can render or not.
+		}
+
+		if canRenderResponse.Result == extensions.CanRenderResultNo {
+			// B2: The specified renderer is available, but cannot render.
+			return bootstrap.DcpExtension{}, fmt.Errorf("The specified application type '%s' does not match application located in '%s': %s", candidate.Id, appRootDir, canRenderResponse.Reason)
 		} else {
-			renderer = matching[0]
+			// B3: The specified renderer is available and can render.
+			return candidate, nil
 		}
 	} else {
-		if len(renderers) == 0 {
-			return fmt.Errorf("There are no application runners available. Please re-install DCP with the appropriate extensions.")
+		// C. The user has not specified a renderer.
+		// Need to gather responses to "can-render" from all available renderers.
+		responses, err := whoCanRender(ctx, renderers, appRootDir)
+		if err != nil {
+			return bootstrap.DcpExtension{}, err // Unexpected error: all extension should be able to tell us whether it can render or not.
 		}
-		if len(renderers) > 1 {
-			return fmt.Errorf("Multiple application types")
+		positiveResponses := maps.Select(responses, func(i int, resp extensions.CanRenderResponse) bool {
+			return resp.Result == extensions.CanRenderResultYes
+		})
+		if len(positiveResponses) == 0 {
+			// C1: No renderers can render.
+			var sb strings.Builder
+			sb.WriteString("No application runner can run the application. The reasouns are:\n")
+			for i, resp := range responses {
+				sb.WriteString(fmt.Sprintf("%s: %s\n", renderers[i].Name, resp.Reason))
+			}
+			return bootstrap.DcpExtension{}, fmt.Errorf(sb.String())
+		} else if len(positiveResponses) == 1 {
+			// C2: Only one renderer can render (success).
+			index := maps.Keys(positiveResponses)[0]
+			return renderers[index], nil
+		} else {
+			// C3: Multiple renderers can render.
+			var sb strings.Builder
+			sb.WriteString("You must specify an application runner to use. Applicable runners are: ")
+			for i, _ := range positiveResponses {
+				sb.WriteString(fmt.Sprintf("%s (%s)", renderers[i].Id, renderers[i].Name))
+			}
+			return bootstrap.DcpExtension{}, fmt.Errorf(sb.String())
 		}
 	}
+}
+
+// Returns a map of renderer index to CanRenderResponse.
+// The index refers to the passed-in renderers slice.
+// Only renderes that gave valid response (i.e. no error occurred) are included in the map.
+func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRootDir string) (map[int]extensions.CanRenderResponse, error) {
+	const concurrency = uint16(4) // How many renderers to interrogate in parallel.
+	type rendererResponseWithErr struct {
+		Response extensions.CanRenderResponse
+		Err      error
+	}
+
+	rendererResponses := slices.MapConcurrent[bootstrap.DcpExtension, rendererResponseWithErr](
+		renderers,
+		func(r bootstrap.DcpExtension) rendererResponseWithErr {
+			resp, err := r.CanRender(ctx, appRootDir)
+			return rendererResponseWithErr{resp, err}
+		}, concurrency)
+
+	retval := make(map[int]extensions.CanRenderResponse)
+	var eList []error
+	for i, r := range rendererResponses {
+		if r.Err != nil {
+			eList = append(eList, fmt.Errorf("Could not determine whether application type '%s' can be started: %w", renderers[i].Id, r.Err))
+		} else {
+			retval[i] = r.Response
+		}
+	}
+
+	return retval, errors.Join(eList...)
 }
 
 // TODO:

@@ -9,7 +9,7 @@ require (
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.8.1
 	github.com/tilt-dev/tilt-apiserver v0.8.0
-	github.com/usvc-dev/stdtypes v0.4.4
+	github.com/usvc-dev/stdtypes v0.4.6
 	go.uber.org/zap v1.24.0
 	k8s.io/apimachinery v0.26.1
 	k8s.io/apiserver v0.26.1
