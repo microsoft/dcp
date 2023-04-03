@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/usvc-dev/apiserver/internal/appmgmt"
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
 	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/apiserver/pkg/extensions"
@@ -144,9 +146,14 @@ serviceMessageLoop:
 		}
 	}
 
-	// TODO: Gracefully shut down by deleting all application resources.
+	// Shut down the application.
+	shutdownCtx, cancelShutdownCtx := context.WithTimeout(commandCtx, 1*time.Minute)
+	defer cancelShutdownCtx()
+	err = appmgmt.ShutdownApp(shutdownCtx)
+	if err != nil {
+		return fmt.Errorf("Could not shut down the application gracefully: %w", err)
+	}
 
-	// Finished shutting down. An error returned here is a failure to terminate gracefully.
 	cancelHostCtx()
 	shutdownErr := <-shutdownErrors
 	if shutdownErr != nil {
@@ -181,7 +188,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, renderers []bo
 		if len(matching) != 1 {
 			// B1: The specified renderer is not available.
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("The specified application type '%' is not valid. Available application types are:\n", upFlags.renderer))
+			sb.WriteString(fmt.Sprintf("The specified application type '%s' is not valid. Available application types are:\n", upFlags.renderer))
 			for _, r := range renderers {
 				sb.WriteString(fmt.Sprintf("%s (%s)\n", r.Id, r.Name))
 			}
@@ -228,9 +235,16 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, renderers []bo
 			// C3: Multiple renderers can render.
 			var sb strings.Builder
 			sb.WriteString("You must specify an application runner to use. Applicable runners are: ")
-			for i, _ := range positiveResponses {
+			firstComma := true
+			for i := range positiveResponses {
+				if !firstComma {
+					sb.WriteString(",")
+				} else {
+					firstComma = false
+				}
 				sb.WriteString(fmt.Sprintf("%s (%s)", renderers[i].Id, renderers[i].Name))
 			}
+			sb.WriteString(".")
 			return bootstrap.DcpExtension{}, fmt.Errorf(sb.String())
 		}
 	}
@@ -265,77 +279,3 @@ func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRo
 
 	return retval, errors.Join(eList...)
 }
-
-// TODO:
-// 1. Start API server
-// 2. Discover and start controllers.
-// 3. Discover and interrogate renderers.
-// 4. If more than one renderer reports ready, prompt the user to choose one.
-// The renderer will be responsible for creating the workload objects.
-
-// Old code, keep for reference
-/*
-
-	renderer, err := getRenderer(appRootDir)
-	if err != nil {
-		return err
-	}
-
-	client, err := getClient()
-	if err != nil {
-		return err
-	}
-
-	workload, err := renderer.Render(cmd.Context(), appRootDir, client)
-	if err != nil {
-		return fmt.Errorf("Could not determine how to run the application: %w", err)
-	}
-
-	for _, obj := range workload {
-		err = client.Create(cmd.Context(), obj, &ctrl_client.CreateOptions{})
-		if err != nil {
-			// TODO: "roll back", i.e. delete, all objects that have been created up to this point
-
-			return fmt.Errorf("Application run failed. An error occurred when creating object '%s' of type '%s': %w", obj.GetName(), obj.GetObjectKind().GroupVersionKind().Kind, err)
-		}
-	}
-*/
-
-/* TODO: old code, keep for reference
-func getRenderer(cwd string) (rnd.WorkloadRenderer, error) {
-	// TODO: if more than one workload renderer is ready to render the application,
-	// ask the user which one to use.
-	// We should also have an invocation flag that tells DCP which renderer to use.
-
-	var rendererErrs error = nil
-
-	for _, r := range renderers {
-		err := r.CanRender(cwd)
-		if err == nil {
-			return r, nil // We found one that will render the application
-		} else {
-			rendererErrs = multierr.Append(rendererErrs, err)
-		}
-	}
-
-	return nil, multierr.Combine(fmt.Errorf("The application cannot be started"), rendererErrs)
-}
-
-func getClient() (ctrl_client.Client, error) {
-	config, err := ctrl_config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("Could not configure the client for the API server: %w", err)
-	}
-
-	scheme := apiruntime.NewScheme()
-	if err = apiv1.AddToScheme(scheme); err != nil {
-		return nil, fmt.Errorf("Could not add standard type information to the client: %w", err)
-	}
-
-	client, err := ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
-	if err != nil {
-		return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
-	}
-	return client, nil
-}
-*/
