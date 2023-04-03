@@ -30,6 +30,8 @@ GOLANGCI_LINT_VERSION ?= v1.51.2
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
 
+GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./external/*")
+
 
 ##@ General
 
@@ -55,12 +57,12 @@ build: build-dcpd build-dcp ## Builds all binaries (DCP CLI and DCP API server)
 
 .PHONY: build-dcpd
 build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
-$(DCPD_BINARY): $(OUTPUT_BIN)
+$(DCPD_BINARY): $(OUTPUT_BIN) $(GO_SOURCES)
 	go build -o $(DCPD_BINARY) ./cmd/dcpd
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
-$(DCP_BINARY): ${OUTPUT_BIN}
+$(DCP_BINARY): ${OUTPUT_BIN} $(GO_SOURCES)
 	go build -o $(DCP_BINARY) ./cmd/dcp
 
 .PHONY: clean
