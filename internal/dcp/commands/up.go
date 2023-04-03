@@ -63,12 +63,17 @@ func runApp(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	ctx, cancelFn := context.WithCancel(kubeapiserver.SetupSignalContext())
-	defer cancelFn()
+	commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
+	defer cancelCommandCtx()
 	log := runtimelog.Log.WithName("up")
 
+	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
+	if err != nil {
+		return err
+	}
+
 	// Discover extensions.
-	allExtensions, err := bootstrap.GetExtensions(ctx)
+	allExtensions, err := bootstrap.GetExtensions(commandCtx)
 	if err != nil {
 		return err
 	}
@@ -82,14 +87,12 @@ func runApp(cmd *cobra.Command, args []string) error {
 	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
 	})
-	// TODO: get effective renderer
-
-	// Start API server and controllers.
-	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
+	effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, renderers)
 	if err != nil {
 		return err
 	}
 
+	// Start API server and controllers.
 	apiServerSvc, err := bootstrap.NewDcpdService(kubeconfigPath, appRootDir)
 	if err != nil {
 		return fmt.Errorf("Could not start the API server: %w", err)
@@ -104,41 +107,53 @@ func runApp(cmd *cobra.Command, args []string) error {
 		hostedServices = append(hostedServices, controllerService)
 	}
 
+	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
+	defer cancelHostCtx()
 	host := &hosting.Host{
 		Services: hostedServices,
 		Logger:   log,
 	}
-	shutdownErrors, lifecycleMsgs := host.RunAsync(ctx)
+	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
 
+	// Start the application
+	err = effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
+	if err != nil {
+		return err
+	}
+
+	// Wait for the user to signal that they want to shut down the application.
 serviceMessageLoop:
 	for {
 		select {
-		case <-ctx.Done():
+		case <-commandCtx.Done():
 			// The user pressed Ctrl-C
-			log.Info("shutting down application...")
+			log.Info("Shutting down application...")
 			break serviceMessageLoop
 
 		case msg := <-lifecycleMsgs:
-			if ctx.Err() != nil && msg.Err != nil {
-				// We are not cancelling yet, but a service has already exited with an error.
-				if msg.ServiceName == apiServerSvc.Name() {
-					log.Error(msg.Err, "API server exited with an error, terminating...")
-					cancelFn()
-					break serviceMessageLoop
-				} else {
-					log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
-					// Let the user decide whether to continue or not, do not break the loop yet.
-				}
+			if msg.Err != nil && msg.ServiceName == apiServerSvc.Name() {
+				err = fmt.Errorf("API server exited with an error: %w.\nApplication cannot be shut down gracefully. Terminating...", msg.Err)
+				cancelHostCtx()
+				return err
+			}
+
+			if msg.Err != nil {
+				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
+				// Let the user decide whether to continue or not, do not break the loop yet.
 			}
 		}
 	}
 
-	// Finished shutting down. An error returned here is a failure to terminate gracefully,
+	// TODO: Gracefully shut down by deleting all application resources.
+
+	// Finished shutting down. An error returned here is a failure to terminate gracefully.
+	cancelHostCtx()
 	shutdownErr := <-shutdownErrors
 	if shutdownErr != nil {
 		return fmt.Errorf("The API server or some controllers failed to shut down gracefully: %w", shutdownErr)
 	}
 
+	log.Info("Application shut down gracefully.")
 	return nil
 }
 
