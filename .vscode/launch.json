@@ -8,7 +8,19 @@
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/dcpd/main.go",
             "args": [
-                "--v=1"
+                "-v=1"
+            ],
+        },
+
+        {
+            "name": "dcp start-apiserver",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/dcp/main.go",
+            "args": [
+                "start-apiserver",
+                "-v=1"
             ],
         },
 
@@ -19,7 +31,6 @@
             "mode": "debug",
             "program": "${workspaceFolder}/cmd/dcp/main.go",
             "args": [
-                "--kubeconfig", "${workspaceFolder}/kubeconfig",
                 "--root-dir", "${workspaceFolder}/../todo-csharp-sql-swa-func",
                 "up"
             ],

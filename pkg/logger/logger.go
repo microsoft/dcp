@@ -43,5 +43,5 @@ func NewLogger(fs *pflag.FlagSet) (logr.Logger, func()) {
 
 func AddLevelFlag(fs *pflag.FlagSet, onLevelEnablerAvailabe func(zapcore.LevelEnabler)) {
 	levelVal := NewLevelFlagValue(onLevelEnablerAvailabe)
-	fs.Var(&levelVal, "v", "Logging verbosity level. Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity")
+	fs.VarP(&levelVal, "verbosity", "v", "Logging verbosity level. Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity")
 }
