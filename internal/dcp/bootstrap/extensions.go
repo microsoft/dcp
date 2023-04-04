@@ -59,7 +59,7 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 		}
 
 		// This will interrogate each extension serially. If we have a lot of extensions,
-		// we may want to parallelise this.
+		// we may want to parallelise this (e.g. using MapConcurrent()).
 
 		if (info.Mode().Perm() & UserExecute) != 0 {
 			ext, err := getExtensionCapabilities(ctx, path)

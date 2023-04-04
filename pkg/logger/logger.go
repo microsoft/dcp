@@ -13,11 +13,13 @@ import (
 
 // Create a logger and return it together with a function to flush the output buffers.
 // The logger also understands the "-v" logging verbosity level parameter.
-func NewLogger() (logr.Logger, func()) {
+func NewLogger(fs *pflag.FlagSet) (logr.Logger, func()) {
 	opts := []kubezap.Opts{}
 
-	fs := pflag.NewFlagSet("DCP logger", pflag.ContinueOnError)
-	fs.ParseErrorsWhitelist.UnknownFlags = true
+	if fs == nil {
+		fs := pflag.NewFlagSet("DCP logger", pflag.ContinueOnError)
+		fs.ParseErrorsWhitelist.UnknownFlags = true
+	}
 	AddLevelFlag(fs, func(le zapcore.LevelEnabler) {
 		opts = append(opts, func(o *kubezap.Options) {
 			o.Level = le

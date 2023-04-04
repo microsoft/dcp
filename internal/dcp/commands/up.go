@@ -14,7 +14,6 @@ import (
 
 	"github.com/usvc-dev/apiserver/internal/appmgmt"
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
-	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/apiserver/pkg/extensions"
 	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
 	"github.com/usvc-dev/stdtypes/pkg/maps"
@@ -65,8 +64,6 @@ func runApp(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
-	defer cancelCommandCtx()
 	log := runtimelog.Log.WithName("up")
 
 	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
@@ -74,94 +71,40 @@ func runApp(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Discover extensions.
+	commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
+	defer cancelCommandCtx()
+
 	allExtensions, err := bootstrap.GetExtensions(commandCtx)
 	if err != nil {
 		return err
 	}
-	controllers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
-		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
-	})
-	if len(controllers) == 0 {
-		log.Info("No controllers found. Check DCP installation.")
-	}
 
-	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
-		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
-	})
-	effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, renderers)
+	effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, allExtensions)
 	if err != nil {
 		return err
 	}
 
-	// Start API server and controllers.
-	apiServerSvc, err := bootstrap.NewDcpdService(kubeconfigPath, appRootDir)
-	if err != nil {
-		return fmt.Errorf("Could not start the API server: %w", err)
-	}
-
-	hostedServices := []hosting.Service{apiServerSvc}
-	for _, controller := range controllers {
-		controllerService, err := bootstrap.NewControllerService(kubeconfigPath, appRootDir, controller)
-		if err != nil {
-			return fmt.Errorf("Could not start controller '%s': %w", controller.Name, err)
-		}
-		hostedServices = append(hostedServices, controllerService)
-	}
-
-	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
-	defer cancelHostCtx()
-	host := &hosting.Host{
-		Services: hostedServices,
-		Logger:   log,
-	}
-	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
-
-	// Start the application
-	err = effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
-	if err != nil {
-		return err
-	}
-
-	// Wait for the user to signal that they want to shut down the application.
-serviceMessageLoop:
-	for {
-		select {
-		case <-commandCtx.Done():
-			// The user pressed Ctrl-C
-			log.Info("Shutting down application...")
-			break serviceMessageLoop
-
-		case msg := <-lifecycleMsgs:
-			if msg.Err != nil && msg.ServiceName == apiServerSvc.Name() {
-				err = fmt.Errorf("API server exited with an error: %w.\nApplication cannot be shut down gracefully. Terminating...", msg.Err)
-				cancelHostCtx()
-				return err
+	runEvtHandlers := bootstrap.DcpRunEventHandlers{
+		AfterApiSrvStart: func() error {
+			// Start the application
+			err := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
+			return err
+		},
+		BeforeApiSrvShutdown: func() error {
+			// Shut down the application.
+			shutdownCtx, cancelShutdownCtx := context.WithTimeout(commandCtx, 1*time.Minute)
+			defer cancelShutdownCtx()
+			err := appmgmt.ShutdownApp(shutdownCtx)
+			if err != nil {
+				return fmt.Errorf("Could not shut down the application gracefully: %w", err)
+			} else {
+				return nil
 			}
-
-			if msg.Err != nil {
-				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
-				// Let the user decide whether to continue or not, do not break the loop yet.
-			}
-		}
+		},
 	}
 
-	// Shut down the application.
-	shutdownCtx, cancelShutdownCtx := context.WithTimeout(commandCtx, 1*time.Minute)
-	defer cancelShutdownCtx()
-	err = appmgmt.ShutdownApp(shutdownCtx)
-	if err != nil {
-		return fmt.Errorf("Could not shut down the application gracefully: %w", err)
-	}
-
-	cancelHostCtx()
-	shutdownErr := <-shutdownErrors
-	if shutdownErr != nil {
-		return fmt.Errorf("The API server or some controllers failed to shut down gracefully: %w", shutdownErr)
-	}
-
-	log.Info("Application shut down gracefully.")
-	return nil
+	err = bootstrap.DcpRun(commandCtx, appRootDir, kubeconfigPath, log, allExtensions, runEvtHandlers)
+	return err
 }
 
 // The logic of getEffectiveRenderer() is as follows:
@@ -175,7 +118,10 @@ serviceMessageLoop:
 // C1. If there are no renderers that can render, error, giving all the reasons why renderes cannot render.
 // C2. If there is only one renderer that can render, use it.
 // C3. If there are multiple renderers that can render, error, giving the list of renderers that can render.
-func getEffectiveRenderer(ctx context.Context, appRootDir string, renderers []bootstrap.DcpExtension) (bootstrap.DcpExtension, error) {
+func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions []bootstrap.DcpExtension) (bootstrap.DcpExtension, error) {
+	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
+		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
+	})
 	if len(renderers) == 0 {
 		// A. No renderers available.
 		return bootstrap.DcpExtension{}, fmt.Errorf("No application runners found. Check DCP installation.")

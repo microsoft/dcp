@@ -3,7 +3,16 @@ package commands
 import (
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	ctrlruntime "sigs.k8s.io/controller-runtime"
+
+	"github.com/usvc-dev/apiserver/pkg/logger"
+)
+
+var (
+	rootCmdLogger      logr.Logger
+	rootCmdFlushLogger func()
 )
 
 func NewRootCmd() (*cobra.Command, error) {
@@ -15,6 +24,9 @@ func NewRootCmd() (*cobra.Command, error) {
 	It integrates your code, emulators and containers to give you an development environment
 	with minimum remote dependencies and maximum ease of use.`,
 		SilenceUsage: true,
+		PersistentPostRun: func(_ *cobra.Command, _ []string) {
+			rootCmdFlushLogger()
+		},
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
@@ -33,6 +45,15 @@ func NewRootCmd() (*cobra.Command, error) {
 	} else {
 		return nil, fmt.Errorf("Could not set up 'generate-file' command: %w", err)
 	}
+
+	if cmd, err = NewStartApiSrvCommand(); cmd != nil {
+		rootCmd.AddCommand(cmd)
+	} else {
+		return nil, fmt.Errorf("Could not set up 'start-apiserver' command: %w", err)
+	}
+
+	rootCmdLogger, rootCmdFlushLogger = logger.NewLogger(rootCmd.PersistentFlags())
+	ctrlruntime.SetLogger(rootCmdLogger)
 
 	return rootCmd, nil
 }

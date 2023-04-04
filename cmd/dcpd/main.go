@@ -20,7 +20,7 @@ const (
 )
 
 func main() {
-	logger, flushLogger := logger.NewLogger()
+	logger, flushLogger := logger.NewLogger(nil)
 	ctrlruntime.SetLogger(logger)
 
 	ctx, cancelFn := context.WithCancel(kubeapiserver.SetupSignalContext())
