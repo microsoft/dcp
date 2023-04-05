@@ -13,7 +13,7 @@ endif
 
 # Locations and names for binaries built from this repository
 OUTPUT_BIN ?= $(shell pwd)/bin
-EXTENSIONS_DIR ?= ~/.dcp/ext
+EXTENSIONS_DIR ?= $(HOME)/.dcp/ext
 INSTALL_DIR ?= /usr/local/bin
 DCPD_BINARY ?= ${OUTPUT_BIN}/dcpd
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp
@@ -75,16 +75,14 @@ lint: golangci-lint ## Runs the linter
 	${GOLANGCI_LINT} run --timeout 5m
 
 .PHONY: install
-install: build ## Installs all binaries to their destinations (putting DCP CLI on PATH)
-	$(MKDIR) $(EXTENSIONS_DIR)
-	$(INSTALL) $(DCPD_BINARY) $(EXTENSIONS_DIR)
-	$(INSTALL) $(DCP_BINARY) $(INSTALL_DIR)
+install: build | $(EXTENSIONS_DIR) ## Installs all binaries to their destinations (putting DCP CLI on PATH)
+	$(INSTALL) -t $(EXTENSIONS_DIR) $(DCPD_BINARY)
+	$(INSTALL) -t $(INSTALL_DIR) $(DCP_BINARY)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations (removing DCP CLI from PATH)
 	rm -f $(EXTENSIONS_DIR)/dcpd
 	rm -f $(INSTALL_DIR)/dcp
-
 
 ##@ Testing
 .PHONY: test
@@ -95,10 +93,13 @@ test: ## Run all tests in the repository
 ## Development and test support targets
 
 ${OUTPUT_BIN}:
-	mkdir -p ${OUTPUT_BIN}
+	$(MKDIR) ${OUTPUT_BIN}
 
 $(TOOL_BIN):
-	mkdir -p $(TOOL_BIN)
+	$(MKDIR) $(TOOL_BIN)
+
+$(EXTENSIONS_DIR):
+	$(MKDIR) $(EXTENSIONS_DIR)
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT)

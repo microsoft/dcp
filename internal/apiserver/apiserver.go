@@ -45,6 +45,8 @@ func (s *ApiServer) Run(ctx context.Context) error {
 	log := runtimelog.Log.WithName(s.name)
 	defer s.flushLogger()
 
+	log.Info("Starting API server...")
+
 	if s.runCompleted {
 		err := fmt.Errorf("API server has already been run")
 		log.Error(err, msgApiServerStartupFailed)
@@ -76,7 +78,10 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		return err
 	}
 
+	log.Info("API server started")
+
 	<-stoppedCh
+	log.Info("API server shut down")
 	return nil
 }
 
