@@ -39,7 +39,7 @@ To start DCP API server run
 
 ```shell
 make build
-sudo HOME=$HOME make install
+sudo -E make install
 ~/.dcp/ext/dcpd -v=debug
 ```
 

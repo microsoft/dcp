@@ -1,37 +1,31 @@
 package main
 
 import (
-	"context"
-	"errors"
+	"fmt"
 	"os"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
-	ctrlruntime "sigs.k8s.io/controller-runtime"
 
-	"github.com/usvc-dev/apiserver/internal/apiserver"
-	"github.com/usvc-dev/apiserver/pkg/logger"
+	"github.com/usvc-dev/apiserver/internal/dcpd/commands"
 )
 
-type DcpdExitCode int
-
 const (
-	OK              DcpdExitCode = 0
-	ApiServerFailed DcpdExitCode = 1
+	errCommand = 1
+	errSetup   = 2
 )
 
 func main() {
-	logger, flushLogger := logger.NewLogger(nil)
-	ctrlruntime.SetLogger(logger)
+	ctx := kubeapiserver.SetupSignalContext()
 
-	ctx, cancelFn := context.WithCancel(kubeapiserver.SetupSignalContext())
+	root, err := commands.NewRootCmd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(errSetup)
+	}
 
-	apiServer := apiserver.NewApiServer("api-server", flushLogger)
-	err := apiServer.Run(ctx)
-	cancelFn()
-	// The API server guarantees the logger is flushed before Run() exits
-	if err == nil || errors.Is(err, context.Canceled) {
-		os.Exit(int(OK))
-	} else {
-		os.Exit(int(ApiServerFailed))
+	err = root.ExecuteContext(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(errCommand)
 	}
 }

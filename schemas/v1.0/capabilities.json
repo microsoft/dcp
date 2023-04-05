@@ -26,7 +26,8 @@
                 "type": "string",
                 "enum": [
                     "controller",
-                    "workload-renderer"
+                    "workload-renderer",
+                    "api-server"
                 ]
             }
         }

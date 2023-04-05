@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 const DcpRootDir = ".dcp"
@@ -35,32 +34,4 @@ func GetExtensionsDir() (string, error) {
 	}
 
 	return filepath.Join(home, DcpRootDir, DcpExtensionsDir), nil
-}
-
-func GetDcpdPath() (string, error) {
-	dir, err := GetExtensionsDir()
-	if err != nil {
-		return "", err
-	}
-
-	dcpdPath := ""
-	if isWindows() {
-		dcpdPath = filepath.Join(dir, "dcpd.exe")
-	} else {
-		dcpdPath = filepath.Join(dir, "dcpd")
-	}
-
-	info, err := os.Stat(dcpdPath)
-	if err != nil {
-		return "", fmt.Errorf("could not determine the path to the DCPD executable: %w", err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("Path '%s' points to a directory (expected DCPd executable)", dcpdPath)
-	}
-
-	return dcpdPath, nil
-}
-
-func isWindows() bool {
-	return runtime.GOOS == "windows"
 }

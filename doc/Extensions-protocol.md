@@ -1,12 +1,16 @@
 # DCP extensions protocol
 
-A DCP extension is a program that interacts with DCP API server and updates the running application workload model. Two types of extensions are supported today:
+A DCP extension is a program that interacts with DCP API server and updates the running application workload model. The following types of extensions are supported today:
 
 - **Controllers** react to changes to the workload model,  and strive to make the running application conform to the workload model (reconciliation). They also augment the workload model with detailed information about the running application.
 
 - **Workload renderers** examine the source code of an application and generate a workload model for the application based on the source code.
 
+- **API server** is the Kubernetes-compatible API server that holds the workload model(s) and facilitates information exchange between DCP CLI, controllers, and workload renderers. There must be exactly one API server available for the CLI.
+
 > The same program can function as a controller and as a workload renderer, but it will be invoked differently depending on desired role.
+
+> Replacing the API server is an advanced scenario that is not currently supported.
 
 The extension protocol is a set of conventions for invoking extension programs. The protocol includes commands, command parameters, expected response schemas, ways to request extenion shutdown, and conventions for exit codes.
 

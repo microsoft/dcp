@@ -134,7 +134,7 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 			// Remove from running table
 			delete(running, message.ServiceName)
 
-			if message.Err != nil {
+			if message.Err != nil && !errors.Is(message.Err, context.Canceled) {
 				host.Logger.Error(message.Err, fmt.Sprintf("Service %s terminated with error: %v", message.ServiceName, message.Err))
 
 				// Report error to client

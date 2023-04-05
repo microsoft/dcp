@@ -55,7 +55,13 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 		}
 
 		if info.IsDir() {
-			return filepath.SkipDir
+			if path != extDir {
+				// We don't want to recurse into subdirectories
+				return filepath.SkipDir
+			} else {
+				// We don't want to process the extensions directory itself
+				return nil
+			}
 		}
 
 		// This will interrogate each extension serially. If we have a lot of extensions,
