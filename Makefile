@@ -1,39 +1,107 @@
+.DEFAULT_GOAL := help
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
-.SHELLFLAGS = -ec
 
-build: build-dcpd build-dcp
+ifneq (3.81,$(firstword $(sort $(MAKE_VERSION) 3.81)))
+$(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
+endif
 
-LOCALBIN ?= $(shell pwd)/bin
-${LOCALBIN}:
-	mkdir -p ${LOCALBIN}
+## Environment variables affecting build and installation
+# Note these have to be defined before they are used in targets
 
-GOLANGCI_LINT := golangci-lint
+# Locations and names for binaries built from this repository
+OUTPUT_BIN ?= $(shell pwd)/bin
+EXTENSIONS_DIR ?= $(HOME)/.dcp/ext
+INSTALL_DIR ?= /usr/local/bin
+DCPD_BINARY ?= ${OUTPUT_BIN}/dcpd
+DCP_BINARY ?= ${OUTPUT_BIN}/dcp
+
+# Locations and definitions for tool binaries
+TOOL_BIN ?= $(shell pwd)/.toolbin
+GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
+INSTALL ?= install -p
+MKDIR ?= mkdir -p -m 0755
+
+# Tool Versions
+GOLANGCI_LINT_VERSION ?= v1.51.2
+
+# Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
 
-.PHONY: test
-test:
-	go test ./...
+GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./external/*")
 
-.PHONY: run-dcpd
-run-dcpd:
-	go run ./cmd/dcpd/main.go --secure-port=9562 --token=outdoor-salad --kubeconfig ./kubeconfig
+
+##@ General
+
+# The help target prints out all targets with their descriptions organized
+# beneath their categories. The categories are represented by '##@' and the
+# target descriptions by '##'. The awk commands is responsible for reading the
+# entire set of makefiles included in this invocation, looking for lines of the
+# file as xyz: ## something, and then pretty-format the target and help. Then,
+# if there's a line with ##@ something, that gets pretty-printed as a category.
+# More info on the usage of ANSI control characters for terminal formatting:
+# https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_parameters
+# More info on the awk command:
+# http://linuxcommand.org/lc3_adv_awk.php
+
+.PHONY: help
+help: ## Display this help.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
+
+
+##@ Development
+
+build: build-dcpd build-dcp ## Builds all binaries (DCP CLI and DCP API server)
 
 .PHONY: build-dcpd
-build-dcpd: ${LOCALBIN}
-	go build -o ${LOCALBIN}/dcpd ./cmd/dcpd
+build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
+$(DCPD_BINARY): $(GO_SOURCES) | $(OUTPUT_BIN) 
+	go build -o $(DCPD_BINARY) ./cmd/dcpd
 
 .PHONY: build-dcp
-build-dcp: ${LOCALBIN}
-	go build -o ${LOCALBIN}/dcp ./cmd/dcp
+build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
+$(DCP_BINARY): $(GO_SOURCES) | ${OUTPUT_BIN}
+	go build -o $(DCP_BINARY) ./cmd/dcp
 
 .PHONY: clean
-clean:
-	rm -f ${LOCALBIN}/dcpd
-	rm -f ${LOCALBIN}/dcp
+clean: ## Deletes build output (all binaries), and all cached tool binaries.
+	rm -rf $(OUTPUT_BIN)/*
+	rm -rf $(TOOL_BIN)/*
 
 .PHONY: lint
-lint:
-	${GOLANGCI_LINT} run
+lint: golangci-lint ## Runs the linter
+	${GOLANGCI_LINT} run --timeout 5m
+
+.PHONY: install
+install: build | $(EXTENSIONS_DIR) ## Installs all binaries to their destinations (putting DCP CLI on PATH)
+	$(INSTALL) -t $(EXTENSIONS_DIR) $(DCPD_BINARY)
+	$(INSTALL) -t $(INSTALL_DIR) $(DCP_BINARY)
+
+.PHONY: uninstall
+uninstall: ## Uninstalls all binaries from their destinations (removing DCP CLI from PATH)
+	rm -f $(EXTENSIONS_DIR)/dcpd
+	rm -f $(INSTALL_DIR)/dcp
+
+##@ Testing
+.PHONY: test
+test: ## Run all tests in the repository
+	go test ./...
+
+
+## Development and test support targets
+
+${OUTPUT_BIN}:
+	$(MKDIR) ${OUTPUT_BIN}
+
+$(TOOL_BIN):
+	$(MKDIR) $(TOOL_BIN)
+
+$(EXTENSIONS_DIR):
+	$(MKDIR) $(EXTENSIONS_DIR)
+
+.PHONY: golangci-lint
+golangci-lint: $(GOLANGCI_LINT)
+$(GOLANGCI_LINT): | $(TOOL_BIN)
+	[[ -s $(TOOL_BIN)/golangci-lint ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)

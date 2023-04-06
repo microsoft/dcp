@@ -103,7 +103,7 @@ func Test_Host_RunMultipleServices_HandlesExit(t *testing.T) {
 
 	// Should have an error from D
 	message := <-serviceErrors
-	require.Equal(t, "D", message.Name)
+	require.Equal(t, "D", message.ServiceName)
 	require.Error(t, message.Err)
 
 	// Trigger shutdown - it's not considered a timeout in this case.
@@ -113,11 +113,11 @@ func Test_Host_RunMultipleServices_HandlesExit(t *testing.T) {
 
 	// Could be E or F (order is random)
 	message = <-serviceErrors
-	require.Regexp(t, "[EF]", message.Name)
+	require.Regexp(t, "[EF]", message.ServiceName)
 	require.Error(t, message.Err)
 
 	message = <-serviceErrors
-	require.Regexp(t, "[EF]", message.Name)
+	require.Regexp(t, "[EF]", message.ServiceName)
 	require.Error(t, message.Err)
 }
 

@@ -13,7 +13,7 @@ import (
 
 const ShutdownTimeout = time.Second * 10
 
-// Service is an abstraction for a long-running subsystem of the RP.
+// Service is an abstraction for a long-running subsystem of some kind.
 type Service interface {
 	// Name returns the name of the service.
 	Name() string
@@ -36,27 +36,27 @@ type Host struct {
 
 // LifecycleMessage is a message returned when a service terminates.
 type LifecycleMessage struct {
-	Name string
-	Err  error
+	ServiceName string
+	Err         error
 }
 
 func (host *Host) RunAsync(ctx context.Context) (<-chan error, <-chan LifecycleMessage) {
 	stopped := make(chan error, 1)
-	serviceErrors := make(chan LifecycleMessage, len(host.Services))
+	lifecycleMsgs := make(chan LifecycleMessage, len(host.Services))
 
 	go func() {
-		err := host.Run(ctx, serviceErrors)
+		err := host.Run(ctx, lifecycleMsgs)
 		stopped <- err
 		close(stopped)
 	}()
 
-	return stopped, serviceErrors
+	return stopped, lifecycleMsgs
 }
 
-// Run launches and runs as a blocking call all services until graceful shutdown or timeout occurs.
-func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage) error {
-	if serviceErrors != nil {
-		defer close(serviceErrors)
+// Run launches all services and blocks until all services shut down or timeout occurs.
+func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage) error {
+	if lifecycleMsgs != nil {
+		defer close(lifecycleMsgs)
 	}
 
 	if len(host.Services) == 0 {
@@ -100,12 +100,12 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 					// Log here to force the original call stack to be logged.
 					err := fmt.Errorf("service %s panicked: %v", service.Name(), value)
 					host.Logger.Error(err, "recovered from panic")
-					messages <- LifecycleMessage{Name: service.Name(), Err: err}
+					messages <- LifecycleMessage{ServiceName: service.Name(), Err: err}
 				}
 			}()
 
 			err := host.runService(ctx, service, messages)
-			messages <- LifecycleMessage{Name: service.Name(), Err: err}
+			messages <- LifecycleMessage{ServiceName: service.Name(), Err: err}
 		}()
 	}
 
@@ -132,17 +132,17 @@ func (host *Host) Run(ctx context.Context, serviceErrors chan<- LifecycleMessage
 		select {
 		case message := <-messages:
 			// Remove from running table
-			delete(running, message.Name)
+			delete(running, message.ServiceName)
 
-			if message.Err != nil {
-				host.Logger.Error(message.Err, fmt.Sprintf("Service %s terminated with error: %v", message.Name, message.Err))
+			if message.Err != nil && !errors.Is(message.Err, context.Canceled) {
+				host.Logger.Error(message.Err, fmt.Sprintf("Service %s terminated with error: %v", message.ServiceName, message.Err))
 
 				// Report error to client
-				if serviceErrors != nil {
-					serviceErrors <- message
+				if lifecycleMsgs != nil {
+					lifecycleMsgs <- message
 				}
 			} else {
-				host.Logger.Info(fmt.Sprintf("Service %s terminated gracefully", message.Name))
+				host.Logger.Info(fmt.Sprintf("Service %s terminated gracefully", message.ServiceName))
 			}
 
 		case <-timeout:
