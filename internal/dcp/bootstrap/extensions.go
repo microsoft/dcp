@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/usvc-dev/apiserver/pkg/extensions"
 	"github.com/usvc-dev/stdtypes/pkg/process"
@@ -86,11 +87,15 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 }
 
 func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, error) {
-	var stdout, stderr bytes.Buffer
+	// Give an extension up to 10 seconds to respond to a capabilities request
+	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelTimeoutCtx()
+
 	cmd := exec.CommandContext(ctx, path, "get-capabilities")
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	code, err := process.Run(ctx, processExecutor, cmd)
+	code, err := process.Run(timeoutCtx, processExecutor, cmd)
 
 	if err != nil || code != 0 {
 		return DcpExtension{}, getCommandExecutionError(fmt.Sprintf("could not determine capabilities of extension '%s'", path), &stdout, &stderr, err, code)
@@ -150,7 +155,7 @@ func (ext *DcpExtension) Render(ctx context.Context, appRootDir string, kubeconf
 	code, err := process.Run(ctx, processExecutor, cmd)
 
 	if err != nil || code != 0 {
-		return getCommandExecutionError("could not application", nil, &stderr, err, code)
+		return getCommandExecutionError("could not run application", nil, &stderr, err, code)
 	}
 	return nil
 }

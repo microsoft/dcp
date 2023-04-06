@@ -181,15 +181,10 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 			// C3: Multiple renderers can render.
 			var sb strings.Builder
 			sb.WriteString("You must specify an application runner to use. Applicable runners are: ")
-			firstComma := true
-			for i := range positiveResponses {
-				if !firstComma {
-					sb.WriteString(",")
-				} else {
-					firstComma = false
-				}
-				sb.WriteString(fmt.Sprintf("%s (%s)", renderers[i].Id, renderers[i].Name))
-			}
+			runners := maps.MapToSlice[int, extensions.CanRenderResponse, string](positiveResponses, func(i int, _ extensions.CanRenderResponse) string {
+				return fmt.Sprintf("%s (%s)", renderers[i].Id, renderers[i].Name)
+			})
+			sb.WriteString(strings.Join(runners, ", "))
 			sb.WriteString(".")
 			return bootstrap.DcpExtension{}, fmt.Errorf(sb.String())
 		}
@@ -198,7 +193,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 
 // Returns a map of renderer index to CanRenderResponse.
 // The index refers to the passed-in renderers slice.
-// Only renderes that gave valid response (i.e. no error occurred) are included in the map.
+// Only renderers that gave valid response (i.e. no error occurred) are included in the map.
 func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRootDir string) (map[int]extensions.CanRenderResponse, error) {
 	const concurrency = uint16(4) // How many renderers to interrogate in parallel.
 	type rendererResponseWithErr struct {

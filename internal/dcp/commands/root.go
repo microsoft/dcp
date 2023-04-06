@@ -18,10 +18,10 @@ var (
 func NewRootCmd() (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		Use:   "dcp",
-		Short: "Runs and manages multi-service application and their dependencies",
+		Short: "Runs and manages multi-service applications and their dependencies",
 		Long: `DCP is a developer tool for running multi-service applications.
 
-	It integrates your code, emulators and containers to give you an development environment
+	It integrates your code, emulators and containers to give you a development environment
 	with minimum remote dependencies and maximum ease of use.`,
 		SilenceUsage: true,
 		PersistentPostRun: func(_ *cobra.Command, _ []string) {
@@ -43,7 +43,7 @@ func NewRootCmd() (*cobra.Command, error) {
 	if cmd, err = NewUpCommand(); cmd != nil {
 		rootCmd.AddCommand(cmd)
 	} else {
-		return nil, fmt.Errorf("Could not set up 'generate-file' command: %w", err)
+		return nil, fmt.Errorf("Could not set up 'up' command: %w", err)
 	}
 
 	if cmd, err = NewStartApiSrvCommand(); cmd != nil {

@@ -12,7 +12,7 @@ A DCP extension is a program that interacts with DCP API server and updates the 
 
 > Replacing the API server is an advanced scenario that is not currently supported.
 
-The extension protocol is a set of conventions for invoking extension programs. The protocol includes commands, command parameters, expected response schemas, ways to request extenion shutdown, and conventions for exit codes.
+The extension protocol is a set of conventions for invoking extension programs. The protocol includes commands, command parameters, expected response schemas, ways to request extension shutdown, and conventions for exit codes.
 
 
 ## Installation
@@ -33,7 +33,7 @@ Upon successful execution the command should return zero as the exit code. Non-z
 
 | Parameter | Description | Mandatory |
 | --- | ------ | --- |
-| `--v <level>` | Verbosity level. Zero means normal verbosity (only errors should be reported--to standard output). Any non-zero value means higher verbosity, the higer the value, the more "chatty" the program should be. | No. If absent, assume normal ("zero") verbosity level. |
+| `--v <level>` | Verbosity level. Zero means normal verbosity (only errors should be reported--to standard output). Any non-zero value means higher verbosity, the higer the value, the more "chatty" the program should be (in practice, levels above 6 are rarely, if ever, used). The flag also recognizes predefined level names "error", "info", and "debug". | No. If absent, assume normal ("error") verbosity level. |
 
 
 ## Commands
