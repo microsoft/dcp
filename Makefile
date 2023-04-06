@@ -57,12 +57,12 @@ build: build-dcpd build-dcp ## Builds all binaries (DCP CLI and DCP API server)
 
 .PHONY: build-dcpd
 build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
-$(DCPD_BINARY): $(GO_SOURCES) | $(OUTPUT_BIN) 
+$(DCPD_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN) 
 	go build -o $(DCPD_BINARY) ./cmd/dcpd
 
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
-$(DCP_BINARY): $(GO_SOURCES) | ${OUTPUT_BIN}
+$(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 	go build -o $(DCP_BINARY) ./cmd/dcp
 
 .PHONY: clean
