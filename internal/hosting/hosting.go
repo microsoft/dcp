@@ -53,7 +53,7 @@ func (host *Host) RunAsync(ctx context.Context) (<-chan error, <-chan LifecycleM
 	return stopped, lifecycleMsgs
 }
 
-// Run launches and runs as a blocking call all services until graceful shutdown or timeout occurs.
+// Run launches all services and blocks until all services shut down or timeout occurs.
 func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage) error {
 	if lifecycleMsgs != nil {
 		defer close(lifecycleMsgs)
