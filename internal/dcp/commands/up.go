@@ -40,12 +40,7 @@ This command currently supports only Azure CLI-enabled applications of certain t
 		Args: cobra.NoArgs,
 	}
 
-	// Make sure --kubeconfig flag is recognized
-	if f := kubeconfig.GetKubeconfigFlag(nil); f != nil {
-		upCmd.Flags().AddFlag(f)
-	} else {
-		return nil, fmt.Errorf("could not set up the --kubeconfig flag")
-	}
+	kubeconfig.EnsureKubeconfigFlag(upCmd.Flags())
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 
@@ -66,7 +61,7 @@ func runApp(cmd *cobra.Command, args []string) error {
 
 	log := runtimelog.Log.WithName("up")
 
-	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
+	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
 	if err != nil {
 		return err
 	}
@@ -92,12 +87,17 @@ func runApp(cmd *cobra.Command, args []string) error {
 		},
 		BeforeApiSrvShutdown: func() error {
 			// Shut down the application.
-			shutdownCtx, cancelShutdownCtx := context.WithTimeout(commandCtx, 1*time.Minute)
+			//
+			// Don't use commandCtx here--it is already cancelled when this function is called,
+			// so using it would result in immediate failure.
+			shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer cancelShutdownCtx()
+			log.Info("Stopping the application...")
 			err := appmgmt.ShutdownApp(shutdownCtx)
 			if err != nil {
 				return fmt.Errorf("Could not shut down the application gracefully: %w", err)
 			} else {
+				log.Info("Application stopped.")
 				return nil
 			}
 		},

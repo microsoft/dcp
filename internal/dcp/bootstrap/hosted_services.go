@@ -3,14 +3,30 @@ package bootstrap
 import (
 	"os"
 	"os/exec"
+	"syscall"
 
 	"github.com/usvc-dev/apiserver/internal/hosting"
 	"github.com/usvc-dev/stdtypes/pkg/process"
 )
 
-func NewDcpExtensionService(kubeconfigPath string, appRootDir string, ext DcpExtension) (*hosting.CommandService, error) {
-	cmd := exec.Command(ext.Path, "--kubeconfig", kubeconfigPath)
+func NewDcpExtensionService(kubeconfigPath string, appRootDir string, ext DcpExtension, command string) (*hosting.CommandService, error) {
+	var allArgs []string
+	if command != "" {
+		allArgs = append(allArgs, command)
+	}
+	allArgs = append(allArgs, "--kubeconfig", kubeconfigPath)
+	cmd := exec.Command(ext.Path, allArgs...)
 	cmd.Env = os.Environ() // Use DCP CLI environment
 	cmd.Dir = appRootDir
+
+	// Do not share the process group with dcp CLI process.
+	// This allows us, upon reception of Ctrl-C, to delay the shutdown
+	// of DCP API server and controllers processes, and perform application shutdown/cleanup
+	// before terminating the API server.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+		Pgid:    0,
+	}
+
 	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor()), nil
 }

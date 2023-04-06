@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -44,14 +45,14 @@ func DcpRun(
 	} else if len(apiServerExtensions) > 1 {
 		return fmt.Errorf("Multiple API servers found. Exactly one API server is required. Check DCP installation.")
 	}
-	apiServerSvc, err := NewDcpExtensionService(kubeconfigPath, cwd, apiServerExtensions[0])
+	apiServerSvc, err := NewDcpExtensionService(kubeconfigPath, cwd, apiServerExtensions[0], "")
 	if err != nil {
 		return fmt.Errorf("Could not start the API server: %w", err)
 	}
 
 	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
-		controllerService, err := NewDcpExtensionService(kubeconfigPath, cwd, controller)
+		controllerService, err := NewDcpExtensionService(kubeconfigPath, cwd, controller, "run-controllers")
 		if err != nil {
 			return fmt.Errorf("Could not start controller '%s': %w", controller.Name, err)
 		}
@@ -59,16 +60,24 @@ func DcpRun(
 	}
 
 	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
-	defer cancelHostCtx()
 	host := &hosting.Host{
 		Services: hostedServices,
 		Logger:   log,
 	}
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
+	shutdownHost := func() error {
+		cancelHostCtx()
+		shutdownErr := <-shutdownErrors
+		if shutdownErr != nil {
+			return fmt.Errorf("The API server or some controllers failed to shut down gracefully: %w", shutdownErr)
+		} else {
+			return nil
+		}
+	}
 
 	if evtHandlers.AfterApiSrvStart != nil {
 		if err := evtHandlers.AfterApiSrvStart(); err != nil {
-			return err
+			return errors.Join(err, shutdownHost())
 		}
 	}
 
@@ -84,8 +93,7 @@ serviceMessageLoop:
 		case msg := <-lifecycleMsgs:
 			if msg.Err != nil && msg.ServiceName == apiServerSvc.Name() {
 				err = fmt.Errorf("API server exited with an error: %w.\nGraceful shutdown is not possible. Terminating...", msg.Err)
-				cancelHostCtx()
-				return err
+				return errors.Join(err, shutdownHost())
 			}
 
 			if msg.Err != nil {
@@ -97,17 +105,14 @@ serviceMessageLoop:
 
 	if evtHandlers.BeforeApiSrvShutdown != nil {
 		if err := evtHandlers.BeforeApiSrvShutdown(); err != nil {
-			return err
+			return errors.Join(err, shutdownHost())
 		}
 	}
 
-	cancelHostCtx()
-	shutdownErr := <-shutdownErrors
-	if shutdownErr != nil {
-		return fmt.Errorf("The API server or some controllers failed to shut down gracefully: %w", shutdownErr)
+	if err := shutdownHost(); err != nil {
+		return err
+	} else {
+		log.Info("Shutdown complete.")
+		return nil
 	}
-
-	log.Info("Shutdown complete.")
-
-	return nil
 }
