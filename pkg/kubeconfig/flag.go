@@ -12,9 +12,13 @@ import (
 // Instead of registering the flag ourselves, we will call controller-runtime RegisterFlags() function, then look it up and return.
 func GetKubeconfigFlag(fs *pflag.FlagSet) *pflag.Flag {
 	if fs == nil {
-		ctrl_config.RegisterFlags(goflag.CommandLine)
+		ctrl_config.RegisterFlags(goflag.CommandLine) // Idempotent: will register the flag only once in goflag.CommandLine
 		return pflag.PFlagFromGoFlag(goflag.CommandLine.Lookup(ctrl_config.KubeconfigFlagName))
 	} else {
+		f := fs.Lookup(ctrl_config.KubeconfigFlagName)
+		if f != nil {
+			return f
+		}
 		gfs := goflag.NewFlagSet("tmp", goflag.ContinueOnError)
 		ctrl_config.RegisterFlags(gfs)
 		fs.AddGoFlagSet(gfs)
