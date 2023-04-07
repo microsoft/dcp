@@ -40,12 +40,7 @@ This command currently supports only Azure CLI-enabled applications of certain t
 		Args: cobra.NoArgs,
 	}
 
-	// Make sure --kubeconfig flag is recognized
-	if f := kubeconfig.GetKubeconfigFlag(nil); f != nil {
-		upCmd.Flags().AddFlag(f)
-	} else {
-		return nil, fmt.Errorf("could not set up the --kubeconfig flag")
-	}
+	kubeconfig.EnsureKubeconfigFlag(upCmd.Flags())
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 

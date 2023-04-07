@@ -10,6 +10,7 @@ import (
 
 	"github.com/usvc-dev/apiserver/internal/apiserver"
 	"github.com/usvc-dev/apiserver/pkg/extensions"
+	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
 	"github.com/usvc-dev/apiserver/pkg/logger"
 )
 
@@ -25,14 +26,21 @@ func NewRootCmd() (*cobra.Command, error) {
 		Long: `DCP is a developer tool for running multi-service applications.
 
 	This executable is the DCP API server, which holds the application workload model(s),
-	and facilitates communication between DCP CLI, application renderers, and DCP controllers.`,
+	and facilitates communication between DCP CLI, application renderers, and DCP controllers.
+	
+	By default (no command specified), this executable runs the DCP API server.
+	`,
 		RunE: runApiServer,
 		PersistentPostRun: func(_ *cobra.Command, _ []string) {
 			rootCmdFlushLogger()
 		},
 	}
 
+	rootCmd.CompletionOptions.HiddenDefaultCmd = true
+
 	rootCmd.AddCommand(NewGetCapabilitiesCommand())
+
+	kubeconfig.EnsureKubeconfigFlag(rootCmd.Flags())
 
 	rootCmdLogger, rootCmdFlushLogger = logger.NewLogger(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(rootCmdLogger)

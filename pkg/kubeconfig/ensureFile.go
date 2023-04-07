@@ -23,7 +23,7 @@ const DefaultDcpPort = 9562
 // If the --kubeconfig parameter is missing, the default location (~/.dcp/kubeconfig) will be checked,
 // and if the kubeconfig file is not there, it will be created.
 func EnsureKubeconfigFile(fs *pflag.FlagSet) (string, error) {
-	f := GetKubeconfigFlag(fs)
+	f := EnsureKubeconfigFlag(fs)
 	if f != nil {
 		path := strings.TrimSpace(f.Value.String())
 
