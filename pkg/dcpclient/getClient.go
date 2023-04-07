@@ -32,14 +32,20 @@ func New(ctx context.Context, timeout time.Duration) (ctrl_client.Client, error)
 
 	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, timeout)
 	defer cancelRetryCtx()
+	var lastAttemptErr error
 
-	client, err := backoff.RetryWithData(func() (ctrl_client.Client, error) {
-		return ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
-	}, backoff.WithContext(backoff.NewExponentialBackOff(), retryCtx))
-
+	client, err := backoff.RetryNotifyWithData(
+		func() (ctrl_client.Client, error) {
+			return ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
+		},
+		backoff.WithContext(backoff.NewExponentialBackOff(), retryCtx),
+		func(err error, d time.Duration) {
+			lastAttemptErr = err
+		},
+	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("Could not create the client for the API server: timed out waiting for the API server to become available.")
+			return nil, fmt.Errorf("Could not create the client for the API server: timed out waiting for the API server to become available. Last error was: %w", lastAttemptErr)
 		} else {
 			return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
 		}
