@@ -44,14 +44,14 @@ func DcpRun(
 	} else if len(apiServerExtensions) > 1 {
 		return fmt.Errorf("Multiple API servers found. Exactly one API server is required. Check DCP installation.")
 	}
-	apiServerSvc, err := NewDcpExtensionService(kubeconfigPath, cwd, apiServerExtensions[0])
+	apiServerSvc, err := NewDcpExtensionService(kubeconfigPath, cwd, apiServerExtensions[0], "")
 	if err != nil {
 		return fmt.Errorf("Could not start the API server: %w", err)
 	}
 
 	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
-		controllerService, err := NewDcpExtensionService(kubeconfigPath, cwd, controller)
+		controllerService, err := NewDcpExtensionService(kubeconfigPath, cwd, controller, "run-controllers")
 		if err != nil {
 			return fmt.Errorf("Could not start controller '%s': %w", controller.Name, err)
 		}
