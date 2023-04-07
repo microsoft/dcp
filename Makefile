@@ -76,8 +76,8 @@ lint: golangci-lint ## Runs the linter
 
 .PHONY: install
 install: build | $(EXTENSIONS_DIR) ## Installs all binaries to their destinations (putting DCP CLI on PATH)
-	$(INSTALL) -t $(EXTENSIONS_DIR) $(DCPD_BINARY)
-	$(INSTALL) -t $(INSTALL_DIR) $(DCP_BINARY)
+	$(INSTALL) $(DCPD_BINARY) $(EXTENSIONS_DIR)
+	$(INSTALL) $(DCP_BINARY) $(INSTALL_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations (removing DCP CLI from PATH)
