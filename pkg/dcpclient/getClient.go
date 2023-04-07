@@ -2,6 +2,7 @@ package dcpclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -37,7 +38,11 @@ func New(ctx context.Context, timeout time.Duration) (ctrl_client.Client, error)
 	}, backoff.WithContext(backoff.NewExponentialBackOff(), retryCtx))
 
 	if err != nil {
-		return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("Could not create the client for the API server: timed out waiting for the API server to become available.")
+		} else {
+			return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
+		}
 	}
 
 	return client, nil
