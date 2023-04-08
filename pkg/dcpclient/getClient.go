@@ -2,15 +2,14 @@ package dcpclient
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
-	backoff "github.com/cenkalti/backoff/v4"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/usvc-dev/apiserver/pkg/resiliency"
 	apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 )
 
@@ -30,25 +29,11 @@ func New(ctx context.Context, timeout time.Duration) (ctrl_client.Client, error)
 		return nil, fmt.Errorf("Could not add standard type information to the client: %w", err)
 	}
 
-	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, timeout)
-	defer cancelRetryCtx()
-	var lastAttemptErr error
-
-	client, err := backoff.RetryNotifyWithData(
-		func() (ctrl_client.Client, error) {
-			return ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
-		},
-		backoff.WithContext(backoff.NewExponentialBackOff(), retryCtx),
-		func(err error, d time.Duration) {
-			lastAttemptErr = err
-		},
-	)
+	client, err := resiliency.RetryGet(ctx, timeout, func() (ctrl_client.Client, error) {
+		return ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
+	})
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("Could not create the client for the API server: timed out waiting for the API server to become available. Last error was: %w", lastAttemptErr)
-		} else {
-			return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
-		}
+		return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
 	}
 
 	return client, nil
