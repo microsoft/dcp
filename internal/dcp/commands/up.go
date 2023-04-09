@@ -61,7 +61,7 @@ func runApp(cmd *cobra.Command, args []string) error {
 
 	log := runtimelog.Log.WithName("up")
 
-	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(cmd.Flags())
+	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
 	if err != nil {
 		return err
 	}

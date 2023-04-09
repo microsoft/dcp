@@ -2,6 +2,7 @@ package kubeconfig
 
 import (
 	goflag "flag"
+	"fmt"
 
 	"github.com/spf13/pflag"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -28,4 +29,28 @@ func EnsureKubeconfigFlag(fs *pflag.FlagSet) *pflag.Flag {
 		fs.AddFlag(f)
 		return f
 	}
+}
+
+func EnsureKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
+	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
+	if f == nil {
+		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
+	}
+
+	kubeconfigPath := f.Value.String()
+	if kubeconfigPath != "" {
+		return kubeconfigPath, nil // already set
+	}
+
+	kubeconfigPath, err := EnsureKubeconfigFile(flags)
+	if err != nil {
+		return "", fmt.Errorf("unable to ensure existence of a Kubeconfig file: %w", err)
+	}
+
+	err = f.Value.Set(kubeconfigPath)
+	if err != nil {
+		return "", fmt.Errorf("unable to set kubeconfig flag value: %w", err)
+	}
+
+	return kubeconfigPath, nil
 }
