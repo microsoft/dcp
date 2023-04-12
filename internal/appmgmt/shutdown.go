@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/usvc-dev/apiserver/pkg/dcpclient"
 	apiv1 "github.com/usvc-dev/stdtypes/api/v1"
 )
 
@@ -17,7 +17,7 @@ const (
 )
 
 func ShutdownApp(ctx context.Context) error {
-	client, err := getClient()
+	client, err := dcpclient.New(ctx, 5*time.Second)
 	if err != nil {
 		return err
 	}
@@ -36,22 +36,4 @@ func ShutdownApp(ctx context.Context) error {
 		return errors.Join(deletionErrors...)
 	}
 	return nil
-}
-
-func getClient() (ctrl_client.Client, error) {
-	config, err := ctrl_config.GetConfig()
-	if err != nil {
-		return nil, fmt.Errorf("Could not configure the client for the API server: %w", err)
-	}
-
-	scheme := apiruntime.NewScheme()
-	if err = apiv1.AddToScheme(scheme); err != nil {
-		return nil, fmt.Errorf("Could not add standard type information to the client: %w", err)
-	}
-
-	client, err := ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
-	if err != nil {
-		return nil, fmt.Errorf("Could not create the client for the API server: %w", err)
-	}
-	return client, nil
 }

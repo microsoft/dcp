@@ -32,7 +32,8 @@
             "program": "${workspaceFolder}/cmd/dcp/main.go",
             "args": [
                 "--root-dir", "${workspaceFolder}/../todo-csharp-sql-swa-func",
-                "up"
+                "up",
+                "-v=1"
             ],
         },
     ]

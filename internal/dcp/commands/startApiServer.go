@@ -24,12 +24,7 @@ func NewStartApiSrvCommand() (*cobra.Command, error) {
 		Hidden: true, // This command is mostly for testing
 	}
 
-	// Make sure --kubeconfig flag is recognized
-	if f := kubeconfig.GetKubeconfigFlag(nil); f != nil {
-		startApiSrvCmd.Flags().AddFlag(f)
-	} else {
-		return nil, fmt.Errorf("could not set up the --kubeconfig flag")
-	}
+	kubeconfig.EnsureKubeconfigFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 
