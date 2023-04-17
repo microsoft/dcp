@@ -13,8 +13,9 @@ endif
 
 # Locations and names for binaries built from this repository
 OUTPUT_BIN ?= $(shell pwd)/bin
+DCP_DIR ?= $(HOME)/.dcp
 EXTENSIONS_DIR ?= $(HOME)/.dcp/ext
-INSTALL_DIR ?= /usr/local/bin
+LOCAL_BIN_DIR ?= /usr/local/bin
 DCPD_BINARY ?= ${OUTPUT_BIN}/dcpd
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp
 
@@ -75,14 +76,18 @@ lint: golangci-lint ## Runs the linter
 	${GOLANGCI_LINT} run --timeout 5m
 
 .PHONY: install
-install: build | $(EXTENSIONS_DIR) ## Installs all binaries to their destinations (putting DCP CLI on PATH)
+install: build | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to their destinations
 	$(INSTALL) $(DCPD_BINARY) $(EXTENSIONS_DIR)
-	$(INSTALL) $(DCP_BINARY) $(INSTALL_DIR)
+	$(INSTALL) $(DCP_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
-uninstall: ## Uninstalls all binaries from their destinations (removing DCP CLI from PATH)
+uninstall: ## Uninstalls all binaries from their destinations
 	rm -f $(EXTENSIONS_DIR)/dcpd
-	rm -f $(INSTALL_DIR)/dcp
+	rm -f $(DCP_DIR)/dcp
+
+.PHONY: link-dcp-to-local-bin
+link-dcp-to-local-bin: ## Links the dcp binary to /usr/local/bin. Use 'sudo -E" to run this target (sudo -E make link-dcp-to-local-bin). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
+	ln -s -v $(DCP_DIR)/dcp $(LOCAL_BIN_DIR)/dcp
 
 ##@ Testing
 .PHONY: test
@@ -100,6 +105,9 @@ $(TOOL_BIN):
 
 $(EXTENSIONS_DIR):
 	$(MKDIR) $(EXTENSIONS_DIR)
+
+$(DCP_DIR):
+	$(MKDIR) $(DCP_DIR)
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT)
