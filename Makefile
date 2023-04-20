@@ -85,8 +85,8 @@ uninstall: ## Uninstalls all binaries from their destinations
 	rm -f $(EXTENSIONS_DIR)/dcpd
 	rm -f $(DCP_DIR)/dcp
 
-.PHONY: link-dcp-to-local-bin
-link-dcp-to-local-bin: ## Links the dcp binary to /usr/local/bin. Use 'sudo -E" to run this target (sudo -E make link-dcp-to-local-bin). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
+.PHONY: link-dcp
+link-dcp: ## Links the dcp binary to /usr/local/bin. Use 'sudo -E" to run this target (sudo -E make link-dcp). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
 	ln -s -v $(DCP_DIR)/dcp $(LOCAL_BIN_DIR)/dcp
 
 ##@ Testing

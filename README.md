@@ -58,7 +58,7 @@ A debugging configuration named `dcpd launch` is provided to run dcpd under the 
 
 ## Making DCP available from $PATH
 
-To make `dcp` CLI available from command line, run `sudo -E make link-dcp-to-local-bin`. This is a one-time operation that will create a link from `/usr/local/bin/dcp` to `~/.dcp/dcp` executable. Not recommended for machines shared by many people :-) but handy for a development box.
+To make `dcp` CLI available from command line, run `sudo -E make link-dcp`. This is a one-time operation that will create a link from `/usr/local/bin/dcp` to `~/.dcp/dcp` executable. Not recommended for machines shared by many people :-) but handy for a development box.
 
 ## Debugging DCP CLI
 
