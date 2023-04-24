@@ -11,6 +11,7 @@ import (
 
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
 	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
+	"github.com/usvc-dev/apiserver/pkg/logger"
 )
 
 var rootDir string
@@ -55,6 +56,10 @@ func startApiSrv(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	err = bootstrap.DcpRun(commandCtx, rootDir, kubeconfigPath, log, allExtensions, bootstrap.DcpRunEventHandlers{})
+	invocationFlags := []string{"--kubeconfig", kubeconfigPath}
+	if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
+		invocationFlags = append(invocationFlags, verbosityArg)
+	}
+	err = bootstrap.DcpRun(commandCtx, rootDir, log, allExtensions, invocationFlags, bootstrap.DcpRunEventHandlers{})
 	return err
 }

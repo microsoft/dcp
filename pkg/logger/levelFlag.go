@@ -18,19 +18,19 @@ var (
 	}
 )
 
-type levelFlagValue struct {
+type LevelFlagValue struct {
 	// This function will be called when we know what the "level enabler" is
 	onLevelEnablerAvailable func(zapcore.LevelEnabler)
 	value                   string
 }
 
-func NewLevelFlagValue(onLevelEnablerAvailable func(zapcore.LevelEnabler)) levelFlagValue {
-	return levelFlagValue{
+func NewLevelFlagValue(onLevelEnablerAvailable func(zapcore.LevelEnabler)) LevelFlagValue {
+	return LevelFlagValue{
 		onLevelEnablerAvailable: onLevelEnablerAvailable,
 	}
 }
 
-func (lfv *levelFlagValue) Set(flagValue string) error {
+func (lfv *LevelFlagValue) Set(flagValue string) error {
 	level, namedLevel := levelStrings[strings.ToLower(flagValue)]
 
 	if !namedLevel {
@@ -53,12 +53,12 @@ func (lfv *levelFlagValue) Set(flagValue string) error {
 	return nil
 }
 
-func (lfv *levelFlagValue) String() string {
+func (lfv *LevelFlagValue) String() string {
 	return lfv.value
 }
 
-func (_ *levelFlagValue) Type() string {
+func (_ *LevelFlagValue) Type() string {
 	return "level"
 }
 
-var _ pflag.Value = &levelFlagValue{}
+var _ pflag.Value = &LevelFlagValue{}

@@ -23,9 +23,9 @@ type DcpRunEventHandlers struct {
 func DcpRun(
 	ctx context.Context,
 	cwd string,
-	kubeconfigPath string,
 	log logr.Logger,
 	allExtensions []DcpExtension,
+	invocationFlags []string,
 	evtHandlers DcpRunEventHandlers,
 ) error {
 
@@ -45,14 +45,14 @@ func DcpRun(
 	} else if len(apiServerExtensions) > 1 {
 		return fmt.Errorf("Multiple API servers found. Exactly one API server is required. Check DCP installation.")
 	}
-	apiServerSvc, err := NewDcpExtensionService(kubeconfigPath, cwd, apiServerExtensions[0], "")
+	apiServerSvc, err := NewDcpExtensionService(cwd, apiServerExtensions[0], "", invocationFlags)
 	if err != nil {
 		return fmt.Errorf("Could not start the API server: %w", err)
 	}
 
 	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
-		controllerService, err := NewDcpExtensionService(kubeconfigPath, cwd, controller, "run-controllers")
+		controllerService, err := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags)
 		if err != nil {
 			return fmt.Errorf("Could not start controller '%s': %w", controller.Name, err)
 		}

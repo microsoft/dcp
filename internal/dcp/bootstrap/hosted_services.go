@@ -9,12 +9,12 @@ import (
 	"github.com/usvc-dev/stdtypes/pkg/process"
 )
 
-func NewDcpExtensionService(kubeconfigPath string, appRootDir string, ext DcpExtension, command string) (*hosting.CommandService, error) {
+func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string, invocationFlags []string) (*hosting.CommandService, error) {
 	var allArgs []string
 	if command != "" {
 		allArgs = append(allArgs, command)
 	}
-	allArgs = append(allArgs, "--kubeconfig", kubeconfigPath)
+	allArgs = append(allArgs, invocationFlags...)
 	cmd := exec.Command(ext.Path, allArgs...)
 	cmd.Env = os.Environ() // Use DCP CLI environment
 	cmd.Dir = appRootDir
@@ -28,5 +28,5 @@ func NewDcpExtensionService(kubeconfigPath string, appRootDir string, ext DcpExt
 		Pgid:    0,
 	}
 
-	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor()), nil
+	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor(), hosting.CommandServiceRunOptionShowStderr), nil
 }

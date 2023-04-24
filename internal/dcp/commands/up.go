@@ -16,6 +16,7 @@ import (
 	"github.com/usvc-dev/apiserver/internal/dcp/bootstrap"
 	"github.com/usvc-dev/apiserver/pkg/extensions"
 	"github.com/usvc-dev/apiserver/pkg/kubeconfig"
+	"github.com/usvc-dev/apiserver/pkg/logger"
 	"github.com/usvc-dev/stdtypes/pkg/maps"
 	"github.com/usvc-dev/stdtypes/pkg/slices"
 )
@@ -90,7 +91,7 @@ func runApp(cmd *cobra.Command, args []string) error {
 			//
 			// Don't use commandCtx here--it is already cancelled when this function is called,
 			// so using it would result in immediate failure.
-			shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
+			shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 100*time.Minute)
 			defer cancelShutdownCtx()
 			log.Info("Stopping the application...")
 			err := appmgmt.ShutdownApp(shutdownCtx)
@@ -103,7 +104,11 @@ func runApp(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	err = bootstrap.DcpRun(commandCtx, appRootDir, kubeconfigPath, log, allExtensions, runEvtHandlers)
+	invocationFlags := []string{"--kubeconfig", kubeconfigPath}
+	if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
+		invocationFlags = append(invocationFlags, verbosityArg)
+	}
+	err = bootstrap.DcpRun(commandCtx, appRootDir, log, allExtensions, invocationFlags, runEvtHandlers)
 	return err
 }
 

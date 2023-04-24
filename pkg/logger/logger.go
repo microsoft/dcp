@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/go-logr/logr"
@@ -9,6 +10,10 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	kubezap "sigs.k8s.io/controller-runtime/pkg/log/zap"
+)
+
+const (
+	verbosityFlagName = "verbosity"
 )
 
 // Create a logger and return it together with a function to flush the output buffers.
@@ -43,5 +48,31 @@ func NewLogger(fs *pflag.FlagSet) (logr.Logger, func()) {
 
 func AddLevelFlag(fs *pflag.FlagSet, onLevelEnablerAvailable func(zapcore.LevelEnabler)) {
 	levelVal := NewLevelFlagValue(onLevelEnablerAvailable)
-	fs.VarP(&levelVal, "verbosity", "v", "Logging verbosity level (e.g. -v=debug). Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity. Levels more than 6 are rarely used in practice.")
+	fs.VarP(&levelVal, verbosityFlagName, "v", "Logging verbosity level (e.g. -v=debug). Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity. Levels more than 6 are rarely used in practice.")
+}
+
+func GetLevelFlagValue(fs *pflag.FlagSet) (*LevelFlagValue, bool) {
+	if fs == nil {
+		return nil, false
+	}
+
+	levelFlag := fs.Lookup(verbosityFlagName)
+	if levelFlag == nil {
+		return nil, false
+	}
+
+	levelVal, ok := levelFlag.Value.(*LevelFlagValue)
+	if !ok {
+		return nil, false
+	}
+
+	return levelVal, true
+}
+
+func GetVerbosityArg(fs *pflag.FlagSet) string {
+	if levelFlagValue, found := GetLevelFlagValue(fs); found && levelFlagValue.String() != "" {
+		return fmt.Sprintf("-v=%s", levelFlagValue.String())
+	} else {
+		return ""
+	}
 }
