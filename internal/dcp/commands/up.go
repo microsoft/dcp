@@ -91,7 +91,7 @@ func runApp(cmd *cobra.Command, args []string) error {
 			//
 			// Don't use commandCtx here--it is already cancelled when this function is called,
 			// so using it would result in immediate failure.
-			shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 100*time.Minute)
+			shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 			defer cancelShutdownCtx()
 			log.Info("Stopping the application...")
 			err := appmgmt.ShutdownApp(shutdownCtx)
