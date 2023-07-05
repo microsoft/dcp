@@ -3,7 +3,6 @@ package bootstrap
 import (
 	"os"
 	"os/exec"
-	"syscall"
 
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
 	"github.com/microsoft/usvc-stdtypes/pkg/process"
@@ -23,10 +22,7 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	// This allows us, upon reception of Ctrl-C, to delay the shutdown
 	// of DCP API server and controllers processes, and perform application shutdown/cleanup
 	// before terminating the API server.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-		Pgid:    0,
-	}
+	process.DecoupleFromParent(cmd)
 
 	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor(), hosting.CommandServiceRunOptionShowStderr), nil
 }
