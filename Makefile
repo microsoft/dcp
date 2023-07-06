@@ -51,7 +51,7 @@ GOLANGCI_LINT_VERSION ?= v1.51.2
 export CGO_ENABLED=0
 
 ifeq ($(detected_OS),Windows)
-    GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Recurse -File | Select-Object -ExpandProperty FullName | Select-String -NotMatch 'external')
+    GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Recurse -File | Select-Object -ExpandProperty FullName | Select-String -NotMatch 'external\\')
 else
     GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./external/*")
 endif
