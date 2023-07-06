@@ -142,7 +142,7 @@ $(DCP_DIR):
 ifeq ($(detected_OS),Windows)
 # golangci-lint does not have pwsh-compatible install script, so the user must install it manually
 golangci-lint:
-	@ try { golangci-lint --version } catch { Write-Error "golangci-lint tool is missing. See https://golangci-lint.run/usage/install/#local-installation for installation instructions." }
+	@ try { golangci-lint --version } catch { throw "golangci-lint tool is missing. See https://golangci-lint.run/usage/install/#local-installation for installation instructions." }
 else
 golangci-lint: $(GOLANGCI_LINT)
 $(GOLANGCI_LINT): | $(TOOL_BIN)
