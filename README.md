@@ -9,12 +9,16 @@ This repository contains core components of Developer Control Plane tool:
 ## Development environment setup
 You will need:
 - Go 1.20 or newer
-- `make` tool (`make` version 3.81 or newer)
+- `make` tool (`make` version 3.81 or newer; `make` 4.4.0 or newer is recommended)
 
-Supported operating systems for development are Linux and MacOS; Windows is not supported at this time.
+Supported operating systems for development are Linux, MacOS, and Windows. On Windows, in addition to the `make` tool, you will need the following command-line tools to be installed and on `PATH`:
+- awk (tested with GNU awk 5.2.2)
+- curl (tested with curl 8.0.1)
+- golangci-lint (tested with golangci-lint 1.53.3)
+
 
 ### Go module system setup
-Until `usvc-dev` project becomes public (no plans for that currently), the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
+Until DCP project becomes public (no plans for that currently), the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
 
 ```shell
 go env -w 'GOPRIVATE=github.com/microsoft/usvc-*'
@@ -58,7 +62,11 @@ A debugging configuration named `dcpd launch` is provided to run dcpd under the 
 
 ## Making DCP available from $PATH
 
-To make `dcp` CLI available from command line, run `sudo -E make link-dcp`. This is a one-time operation that will create a link from `/usr/local/bin/dcp` to `~/.dcp/dcp` executable. Not recommended for machines shared by many people :-) but handy for a development box.
+### macOS, Linux, WSL
+To make `dcp` CLI available from command line on non-Windows system, run `sudo -E make link-dcp`. This is a one-time operation that will create a link from `/usr/local/bin/dcp` to `~/.dcp/dcp` executable. Not recommended for machines shared by many people :-) but handy for a development box.
+
+### Windows
+On Windows open the Environment Variables applet and add `$USERPROFILE\.dcp` to PATH.
 
 ## Debugging DCP CLI
 

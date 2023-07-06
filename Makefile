@@ -1,29 +1,48 @@
 .DEFAULT_GOAL := help
 
-# Setting SHELL to bash allows bash commands to be executed by recipes.
-# Options are set to exit when a recipe line exits non-zero or a piped command fails.
-SHELL = /usr/bin/env bash -o pipefail
-
 ifneq (3.81,$(firstword $(sort $(MAKE_VERSION) 3.81)))
-$(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
+    $(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
+endif
+
+# Detect the operating system, and configure shell and shell commands.
+ifeq ($(OS),Windows_NT)
+    detected_OS := Windows
+	SHELL := pwsh.exe
+	.SHELLFLAGS := -Command
+	repo_dir := $(shell Get-Location | Select-Object -ExpandProperty Path)
+	exe_suffix := .exe
+	mkdir := New-Item -ItemType Directory -Force -Path
+	rm_rf := Remove-Item -Recurse -Force -Path
+	rm_f := Remove-Item -Force -Path
+	home_dir := $(USERPROFILE)
+	install := Copy-Item
+else
+    # -o pipefail will treat a pipeline as failed if one of the elements fail.
+    SHELL := /usr/bin/env bash -o pipefail
+
+    detected_OS := $(shell uname -s)
+	repo_dir := $(shell pwd)
+	exe_suffix :=
+	mkdir := mkdir -p -m 0755
+	rm_rf := rm -rf
+	rm_f := rm -f
+	home_dir := $(HOME)
+	install := install -p
 endif
 
 ## Environment variables affecting build and installation
 # Note these have to be defined before they are used in targets
 
 # Locations and names for binaries built from this repository
-OUTPUT_BIN ?= $(shell pwd)/bin
-DCP_DIR ?= $(HOME)/.dcp
-EXTENSIONS_DIR ?= $(HOME)/.dcp/ext
-LOCAL_BIN_DIR ?= /usr/local/bin
-DCPD_BINARY ?= ${OUTPUT_BIN}/dcpd
-DCP_BINARY ?= ${OUTPUT_BIN}/dcp
+OUTPUT_BIN ?= $(repo_dir)/bin
+DCP_DIR ?= $(home_dir)/.dcp
+EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
+DCPD_BINARY ?= ${OUTPUT_BIN}/dcpd$(exe_suffix)
+DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(exe_suffix)
 
 # Locations and definitions for tool binaries
-TOOL_BIN ?= $(shell pwd)/.toolbin
-GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint
-INSTALL ?= install -p
-MKDIR ?= mkdir -p -m 0755
+TOOL_BIN ?= $(repo_dir)/.toolbin
+GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.51.2
@@ -31,8 +50,11 @@ GOLANGCI_LINT_VERSION ?= v1.51.2
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
 
-GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./external/*")
-
+ifeq ($(detected_OS),Windows)
+    GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Recurse -File | Select-Object -ExpandProperty FullName | Select-String -NotMatch 'external\\')
+else
+    GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./external/*")
+endif
 
 ##@ General
 
@@ -67,27 +89,34 @@ $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 	go build -o $(DCP_BINARY) ./cmd/dcp
 
 .PHONY: clean
-clean: ## Deletes build output (all binaries), and all cached tool binaries.
-	rm -rf $(OUTPUT_BIN)/*
-	rm -rf $(TOOL_BIN)/*
+clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.
+	$(rm_rf) $(OUTPUT_BIN)/*
+	$(rm_rf) $(TOOL_BIN)/*
 
 .PHONY: lint
 lint: golangci-lint ## Runs the linter
-	${GOLANGCI_LINT} run --timeout 5m
+# On Windows we use the global golangci-lint binary.
+ifeq ($(detected_OS),Windows)
+	golangci-lint run --timeout 5m
+else
+	$(GOLANGCI_LINT) run --timeout 5m
+endif
 
 .PHONY: install
 install: build | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to their destinations
-	$(INSTALL) $(DCPD_BINARY) $(EXTENSIONS_DIR)
-	$(INSTALL) $(DCP_BINARY) $(DCP_DIR)
+	$(install) $(DCPD_BINARY) $(EXTENSIONS_DIR)
+	$(install) $(DCP_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
-	rm -f $(EXTENSIONS_DIR)/dcpd
-	rm -f $(DCP_DIR)/dcp
+	$(rm_f) $(EXTENSIONS_DIR)/dcpd$(exe_suffix)
+	$(rm_f) $(DCP_DIR)/dcp$(exe_suffix)
 
+ifneq ($(detected_OS),Windows)
 .PHONY: link-dcp
-link-dcp: ## Links the dcp binary to /usr/local/bin. Use 'sudo -E" to run this target (sudo -E make link-dcp). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
-	ln -s -v $(DCP_DIR)/dcp $(LOCAL_BIN_DIR)/dcp
+link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sudo -E" to run this target (sudo -E make link-dcp). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
+	ln -s -v $(DCP_DIR)/dcp$(exe_suffix) /usr/local/bin/dcp$(exe_suffix)
+endif
 
 ##@ Testing
 .PHONY: test
@@ -98,18 +127,25 @@ test: ## Run all tests in the repository
 ## Development and test support targets
 
 ${OUTPUT_BIN}:
-	$(MKDIR) ${OUTPUT_BIN}
+	$(mkdir) ${OUTPUT_BIN}
 
 $(TOOL_BIN):
-	$(MKDIR) $(TOOL_BIN)
+	$(mkdir) $(TOOL_BIN)
 
 $(EXTENSIONS_DIR):
-	$(MKDIR) $(EXTENSIONS_DIR)
+	$(mkdir) $(EXTENSIONS_DIR)
 
 $(DCP_DIR):
-	$(MKDIR) $(DCP_DIR)
+	$(mkdir) $(DCP_DIR)
 
 .PHONY: golangci-lint
+ifeq ($(detected_OS),Windows)
+# golangci-lint does not have pwsh-compatible install script, so the user must install it manually
+golangci-lint:
+	@ try { golangci-lint --version } catch { throw "golangci-lint tool is missing. See https://golangci-lint.run/usage/install/#local-installation for installation instructions." }
+else
 golangci-lint: $(GOLANGCI_LINT)
 $(GOLANGCI_LINT): | $(TOOL_BIN)
-	[[ -s $(TOOL_BIN)/golangci-lint ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
+	[[ -s $(GOLANGCI_LINT) ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
+endif
+

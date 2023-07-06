@@ -193,8 +193,8 @@ github.com/mailru/easyjson v0.7.7/go.mod h1:xzfreul335JAWq5oZzymOObrkdz5UnU4kGfJ
 github.com/matttproud/golang_protobuf_extensions v1.0.1/go.mod h1:D8He9yQNgCq6Z5Ld7szi9bcBfOoFv/3dc6xSMkL2PC0=
 github.com/matttproud/golang_protobuf_extensions v1.0.2 h1:hAHbPm5IJGijwng3PWk09JkG9WeqChjprR5s9bBZ+OM=
 github.com/matttproud/golang_protobuf_extensions v1.0.2/go.mod h1:BSXmuO+STAnVfrANrmjBb36TMTDstsz7MSK+HVaYKv4=
-github.com/microsoft/usvc-stdtypes v0.4.17 h1:VHHTqiAQtDEexS6RqOxp5uMo9K1rA0awQ7xStEI/7l8=
-github.com/microsoft/usvc-stdtypes v0.4.17/go.mod h1:vXbnoHM1SgcD07az5Tm1cN5W+aNuL5mZHUwaXTUfmxg=
+github.com/microsoft/usvc-stdtypes v0.4.19 h1:eUTO7y/V5NqmS+5Khuuzz8sigvWbllVuRA7x4+nbmrU=
+github.com/microsoft/usvc-stdtypes v0.4.19/go.mod h1:vXbnoHM1SgcD07az5Tm1cN5W+aNuL5mZHUwaXTUfmxg=
 github.com/mitchellh/go-ps v1.0.0 h1:i6ampVEEF4wQFF+bkYfwYgY+F/uYJDktmvLPf7qIgjc=
 github.com/mitchellh/go-ps v1.0.0/go.mod h1:J4lOc8z8yJs6vUwklHw2XEIiT4z4C40KtWVN3nvg8Pg=
 github.com/modern-go/concurrent v0.0.0-20180228061459-e0a39a4cb421/go.mod h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q=
