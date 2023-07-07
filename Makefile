@@ -133,7 +133,7 @@ test: ## Run all tests in the repository
 ifeq ($(detected_OS),Windows)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
-test-ci: ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: 
 	$(run-tests)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
