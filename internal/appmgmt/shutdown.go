@@ -55,7 +55,7 @@ func ShutdownApp(ctx context.Context) error {
 }
 
 func waitAllDeleted(ctx context.Context, client client.Client, kinds []commonapi.ListWithObjectItems) error {
-	err := wait.PollUntilWithContext(ctx, 1*time.Second, func(ctx context.Context) (bool, error) {
+	allDeleted := func(ctx context.Context) (bool, error) {
 		for _, objList := range kinds {
 			listErr := client.List(ctx, objList)
 			if listErr != nil {
@@ -65,9 +65,11 @@ func waitAllDeleted(ctx context.Context, client client.Client, kinds []commonapi
 				return false, nil
 			}
 		}
-
 		return true, nil
-	})
+	}
+
+	const pollImmediately = true // Don't wait before polling for the first time
+	err := wait.PollUntilContextCancel(ctx, 1*time.Second, pollImmediately, allDeleted)
 	if err != nil {
 		return fmt.Errorf("Could not ensure that all application assets were deleted: %w", err)
 	} else {

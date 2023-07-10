@@ -45,7 +45,7 @@ TOOL_BIN ?= $(repo_dir)/.toolbin
 GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.51.2
+GOLANGCI_LINT_VERSION ?= v1.53.3
 
 # Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
 export CGO_ENABLED=0
@@ -118,10 +118,29 @@ link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sud
 	ln -s -v $(DCP_DIR)/dcp$(exe_suffix) /usr/local/bin/dcp$(exe_suffix)
 endif
 
-##@ Testing
+##@ Test targets
+
+define run-tests
+go test ./... $(TEST_OPTS)
+endef
+
 .PHONY: test
+test: TEST_OPTS = -coverprofile cover.out
 test: ## Run all tests in the repository
-	go test ./...
+	$(run-tests)
+
+.PHONY: test-ci
+ifeq ($(detected_OS),Windows)
+# On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
+test-ci: TEST_OPTS = -coverprofile cover.out -count 1
+test-ci: 
+	$(run-tests)
+else
+test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
+test-ci: ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+	CGO_ENABLED=1 $(run-tests)
+endif
+
 
 
 ## Development and test support targets
