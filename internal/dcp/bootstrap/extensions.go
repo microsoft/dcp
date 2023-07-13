@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
@@ -65,10 +66,16 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 			}
 		}
 
-		// This will interrogate each extension serially. If we have a lot of extensions,
+		// The following will interrogate each extension serially. If we have a lot of extensions,
 		// we may want to parallelise this (e.g. using MapConcurrent()).
 
-		if (info.Mode().Perm() & UserExecute) != 0 {
+		isExe := false
+		if runtime.GOOS == "windows" {
+			isExe = filepath.Ext(path) == ".exe"
+		} else {
+			isExe = info.Mode().Perm()&UserExecute != 0
+		}
+		if isExe {
 			ext, err := getExtensionCapabilities(ctx, path)
 			if err != nil {
 				return err
