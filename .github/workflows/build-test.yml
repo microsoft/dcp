@@ -1,0 +1,51 @@
+name: Build and validate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  GOPRIVATE: github.com/microsoft/usvc-*
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        token: ${{ secrets.PRIVATE_MODULE_PAT }}
+        submodules: recursive
+
+    - name: Setup Go environment
+      uses: actions/setup-go@v4.0.1
+      with:
+        go-version-file: 'go.mod'
+        architecture: 'x64'
+
+    - name: Install required tools (Windows)
+      run: choco install make gawk curl golangci-lint -y
+      if: matrix.os == 'windows-latest'
+
+    - name: Setup GitHub PAT
+      run: git config --global url.https://${{ secrets.PRIVATE_MODULE_PAT }}@github.com/.insteadOf https://github.com/
+
+    - name: Install dependencies
+      run: go mod download
+
+    - name: Build
+      run: make build
+
+    - name: Run tests
+      run: make test-ci
+      env:
+        TEST_CONTEXT_TIMEOUT: 6 # Increase test timeout to six minutes
