@@ -63,6 +63,7 @@ func (s *ApiServer) Run(ctx context.Context) error {
 	// Add well-known DCP types to API server metadata.
 	builder := serverbuilder.NewServerBuilder().
 		WithResourceMemoryStorage(&stdtypes_apiv1.Executable{}, dataFolderPath).
+		WithResourceMemoryStorage(&stdtypes_apiv1.ExecutableReplicaSet{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.Container{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.ContainerVolume{}, dataFolderPath).
 		WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, stdtypes_openapi.GetOpenAPIDefinitions)

@@ -23,7 +23,7 @@ func ShutdownApp(ctx context.Context) error {
 	// Delete Executables and Containers first, then ContainerVolumes, if any.
 	// Do not use client.DeleteAllOf() because it does not seem to give the controllers an opportunity to handle the deletion
 	// (probably a bug in controller-runtime or Tilt API server). E.g. https://github.com/kubernetes-sigs/controller-runtime/issues/1842
-	kinds := []commonapi.ListWithObjectItems{&apiv1.ExecutableList{}, &apiv1.ContainerList{}, &apiv1.ContainerVolumeList{}}
+	kinds := []commonapi.ListWithObjectItems{&apiv1.ExecutableReplicaSetList{}, &apiv1.ExecutableList{}, &apiv1.ContainerList{}, &apiv1.ContainerVolumeList{}}
 	shutdownErrors := []error{}
 
 	for _, objList := range kinds {
@@ -43,7 +43,7 @@ func ShutdownApp(ctx context.Context) error {
 	}
 
 	if len(shutdownErrors) > 0 {
-		return fmt.Errorf("Not all application assets could be deleted: %w", errors.Join(shutdownErrors...))
+		return fmt.Errorf("not all application assets could be deleted: %w", errors.Join(shutdownErrors...))
 	}
 
 	err = waitAllDeleted(ctx, client, kinds)
@@ -71,7 +71,7 @@ func waitAllDeleted(ctx context.Context, client client.Client, kinds []commonapi
 	const pollImmediately = true // Don't wait before polling for the first time
 	err := wait.PollUntilContextCancel(ctx, 1*time.Second, pollImmediately, allDeleted)
 	if err != nil {
-		return fmt.Errorf("Could not ensure that all application assets were deleted: %w", err)
+		return fmt.Errorf("could not ensure that all application assets were deleted: %w", err)
 	} else {
 		return nil
 	}

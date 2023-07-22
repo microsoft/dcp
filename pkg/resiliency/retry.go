@@ -9,14 +9,12 @@ import (
 )
 
 // Try calling factory function with exponential back-off until timeout is reached.
-func RetryGet[T any](ctx context.Context, timeout time.Duration, factory func() (T, error)) (T, error) {
-	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, timeout)
-	defer cancelRetryCtx()
+func RetryGet[T any](ctx context.Context, factory func() (T, error)) (T, error) {
 	var lastAttemptErr error
 
 	retval, err := backoff.RetryNotifyWithData(
 		factory,
-		backoff.WithContext(backoff.NewExponentialBackOff(), retryCtx),
+		backoff.WithContext(backoff.NewExponentialBackOff(), ctx),
 		func(err error, d time.Duration) {
 			lastAttemptErr = err
 		},
