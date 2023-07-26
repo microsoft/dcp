@@ -230,8 +230,8 @@ github.com/mailru/easyjson v0.7.7 h1:UGYAvKxe3sBsEDzO8ZeWOSlIQfWFlxbzLZe7hwFURr0
 github.com/mailru/easyjson v0.7.7/go.mod h1:xzfreul335JAWq5oZzymOObrkdz5UnU4kGfJJLY9Nlc=
 github.com/matttproud/golang_protobuf_extensions v1.0.4 h1:mmDVorXM7PCGKw94cs5zkfA9PSy5pEvNWRP0ET0TIVo=
 github.com/matttproud/golang_protobuf_extensions v1.0.4/go.mod h1:BSXmuO+STAnVfrANrmjBb36TMTDstsz7MSK+HVaYKv4=
-github.com/microsoft/usvc-stdtypes v0.4.23 h1:hr8wNkvS6l84taVhUOS+euhAFbW7Bz2GATQd2V8f3E0=
-github.com/microsoft/usvc-stdtypes v0.4.23/go.mod h1:9BUQjVWbW352F0r0oRXPyxfl/bu8RNdkhcGilfOj9K4=
+github.com/microsoft/usvc-stdtypes v0.4.26 h1:RqPhYIwRPMjbFm4QuRtO3YDQBjVJy6F33iNMVFrDToQ=
+github.com/microsoft/usvc-stdtypes v0.4.26/go.mod h1:9BUQjVWbW352F0r0oRXPyxfl/bu8RNdkhcGilfOj9K4=
 github.com/mitchellh/go-ps v1.0.0 h1:i6ampVEEF4wQFF+bkYfwYgY+F/uYJDktmvLPf7qIgjc=
 github.com/mitchellh/go-ps v1.0.0/go.mod h1:J4lOc8z8yJs6vUwklHw2XEIiT4z4C40KtWVN3nvg8Pg=
 github.com/mitchellh/mapstructure v1.4.1 h1:CpVNEelQCZBooIPDn+AR3NpivK/TIKU8bDxdASFVQag=
