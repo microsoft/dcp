@@ -1,0 +1,22 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/go
+{
+	"name": "Go",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"image": "mcr.microsoft.com/devcontainers/go:1-1.20-bullseye",
+	"features": {
+		"ghcr.io/devcontainers/features/azure-cli:1": {},
+		"ghcr.io/devcontainers/features/powershell:1": {},
+		"ghcr.io/jungaretti/features/make:1": {},
+		"ghcr.io/azure/azure-dev/azd:0": {}
+	},
+	"postCreateCommand": "go env -w 'GOPRIVATE=github.com/microsoft/usvc-*'",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"golang.Go",
+				"ms-vscode.makefile-tools"
+			]
+		}
+	}
+}
