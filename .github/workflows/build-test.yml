@@ -22,9 +22,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-      with:
-        token: ${{ secrets.PRIVATE_MODULE_PAT }}
-        submodules: recursive
 
     - name: Setup Go environment
       uses: actions/setup-go@v4.0.1
