@@ -1,0 +1,129 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.12.0
+  name: executables.usvc-dev.developer.microsoft.com
+spec:
+  group: usvc-dev.developer.microsoft.com
+  names:
+    kind: Executable
+    listKind: ExecutableList
+    plural: executables
+    singular: executable
+  scope: Cluster
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: Executable resource represents an OS process, with one or more
+          replicas
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ExecutableSpec defines the desired state of an Executable
+            properties:
+              args:
+                description: Launch arguments to be passed to the Executable
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+              env:
+                description: Environment variables to be set for the Executable
+                items:
+                  description: EnvVar represents an environment variable present in
+                    a Container or Executable.
+                  properties:
+                    name:
+                      description: Name of the environment variable
+                      type: string
+                    value:
+                      description: Value of the environment variable. Defaults to
+                        "" (empty string).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              envFiles:
+                description: Environment files to use to populate Executable environment
+                  during startup.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+              executablePath:
+                description: Path to Executable binary
+                type: string
+              executionType:
+                default: Process
+                description: The execution type for the Executable.
+                type: string
+              workingDirectory:
+                description: The working directory for the Executable
+                type: string
+            required:
+            - executablePath
+            type: object
+          status:
+            description: ExecutableStatus describes the status of an Executable.
+            properties:
+              executionID:
+                description: The execution ID is the identifier for the actual-state
+                  counterpart of the Executable. For ExecutionType == Process it is
+                  the process ID. Process IDs will be eventually reused by OS, but
+                  a combination of process ID and startup timestamp is unique for
+                  each Executable instance. For ExecutionType == IDE it is the IDE
+                  session ID.
+                type: string
+              exitCode:
+                description: Exit code of the process associated with the Executable.
+                  The value is equal to UnknownExitCode if the Executable was not
+                  started, is still running, or the exit code is not available.
+                format: int32
+                type: integer
+              finishTimestamp:
+                description: The time when the process/IDE session finished execution
+                format: date-time
+                type: string
+              startupTimestamp:
+                description: Start (attempt) timestamp.
+                format: date-time
+                type: string
+              state:
+                description: The current state of the process/IDE session started
+                  for this executable
+                type: string
+              stdErrFile:
+                description: The path of a temporary file that contains captured standard
+                  error data from the Executable process.
+                type: string
+              stdOutFile:
+                description: The path of a temporary file that contains captured standard
+                  output data from the Executable process.
+                type: string
+            required:
+            - executionID
+            - state
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

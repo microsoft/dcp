@@ -22,6 +22,10 @@
                 "start-apiserver",
                 "-v=1"
             ],
+            "env": {
+                "DCP_EXTENSIONS_PATH": "${workspaceFolder}/bin/ext"
+            },
+            "preLaunchTask": "compile"
         },
 
         {
@@ -36,5 +40,39 @@
                 "-v=1"
             ],
         },
+
+        {
+            "name": "render-workload todo C# func SQL",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/azdRenderer/azdRenderer.go",
+            "args": [
+                "render-workload",
+                "--root-dir", "${workspaceFolder}/../todo-csharp-sql-swa-func",
+                "-v=1"
+            ],
+        },
+
+        {
+            "name": "run-controllers for todo C# func SQL",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/cmd/dcpctrl/dcpctrl.go",
+            "args": [
+                "run-controllers",
+                "-v=1"
+            ],
+            "cwd": "${workspaceFolder}/../todo-csharp-sql-swa-func"
+        },
+
+        {
+            "name": "attach to controllers process",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": "dcpctrl"
+        }
     ]
 }

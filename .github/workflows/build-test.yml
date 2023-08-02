@@ -16,7 +16,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
@@ -36,14 +36,18 @@ jobs:
       run: choco install make gawk curl golangci-lint -y
       if: matrix.os == 'windows-latest'
 
-    - name: Setup GitHub PAT
-      run: git config --global url.https://${{ secrets.PRIVATE_MODULE_PAT }}@github.com/.insteadOf https://github.com/
-
-    - name: Install dependencies
-      run: go mod download
-
     - name: Build
       run: make build
+
+    - name: Verify generated files up-to-date
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const result = await exec.getExecOutput('git status -s');
+          if (result.exitCode != 0 || result.stdout.trim() != '') {
+            core.setFailed('Generated files not up-to-date. Please commit the latest versions.')
+          }
+      if: matrix.os != 'windows-latest'
 
     - name: Run tests
       run: make test-ci

@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const DcpRootDir = ".dcp"
 const DcpExtensionsDir = "ext"
+const DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
 
 // Get path to DCP CLI executable
 func GetDcpDir() (string, error) {
@@ -27,11 +29,25 @@ func GetDcpDir() (string, error) {
 	return dir, nil
 }
 
-func GetExtensionsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+func GetExtensionsDirs() ([]string, error) {
+	extensionPaths := []string{}
+	if extensionPath, found := os.LookupEnv(DcpExtensionsPathEnv); found {
+		for _, path := range strings.Split(extensionPath, string(os.PathListSeparator)) {
+			path := strings.Trim(path, " ")
+			if path != "" {
+				extensionPaths = append(extensionPaths, path)
+			}
+		}
 	}
 
-	return filepath.Join(home, DcpRootDir, DcpExtensionsDir), nil
+	if len(extensionPaths) == 0 {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+		}
+
+		extensionPaths = []string{filepath.Join(home, DcpRootDir, DcpExtensionsDir)}
+	}
+
+	return extensionPaths, nil
 }

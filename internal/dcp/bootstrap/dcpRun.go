@@ -9,7 +9,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
-	"github.com/microsoft/usvc-stdtypes/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type DcpRunEventHandlers struct {

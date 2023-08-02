@@ -9,9 +9,9 @@ import (
 	wait "k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
-	apiv1 "github.com/microsoft/usvc-stdtypes/api/v1"
-	"github.com/microsoft/usvc-stdtypes/pkg/commonapi"
 )
 
 func ShutdownApp(ctx context.Context) error {

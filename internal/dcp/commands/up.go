@@ -17,8 +17,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-stdtypes/pkg/maps"
-	"github.com/microsoft/usvc-stdtypes/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type upFlagData struct {

@@ -12,7 +12,7 @@ import (
 	clientcmd "k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/microsoft/usvc-stdtypes/pkg/randdata"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
 const DefaultDcpPort = 9562

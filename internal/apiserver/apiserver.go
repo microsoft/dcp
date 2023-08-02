@@ -12,9 +12,9 @@ import (
 	"github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 	runtimelog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	stdtypes_apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	stdtypes_openapi "github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
-	stdtypes_apiv1 "github.com/microsoft/usvc-stdtypes/api/v1"
-	stdtypes_openapi "github.com/microsoft/usvc-stdtypes/pkg/generated/openapi"
 )
 
 const (

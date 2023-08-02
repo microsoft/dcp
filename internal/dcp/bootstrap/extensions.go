@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
-	"github.com/microsoft/usvc-stdtypes/pkg/process"
-	"github.com/microsoft/usvc-stdtypes/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type DcpExtension struct {
@@ -43,49 +43,51 @@ var (
 )
 
 func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
-	extDir, err := GetExtensionsDir()
+	extDirs, err := GetExtensionsDirs()
 	if err != nil {
 		return nil, err
 	}
 
 	extensions := []DcpExtension{}
 
-	err = filepath.Walk(extDir, func(path string, info os.FileInfo, err error) error {
-		// err means some path was discovered, but is not accessible
-		if err != nil {
-			return err
-		}
-
-		if info.IsDir() {
-			if path != extDir {
-				// We don't want to recurse into subdirectories
-				return filepath.SkipDir
-			} else {
-				// We don't want to process the extensions directory itself
-				return nil
-			}
-		}
-
-		// The following will interrogate each extension serially. If we have a lot of extensions,
-		// we may want to parallelise this (e.g. using MapConcurrent()).
-
-		isExe := false
-		if runtime.GOOS == "windows" {
-			isExe = filepath.Ext(path) == ".exe"
-		} else {
-			isExe = info.Mode().Perm()&UserExecute != 0
-		}
-		if isExe {
-			ext, err := getExtensionCapabilities(ctx, path)
+	for _, extDir := range extDirs {
+		err = filepath.Walk(extDir, func(path string, info os.FileInfo, err error) error {
+			// err means some path was discovered, but is not accessible
 			if err != nil {
 				return err
 			}
 
-			extensions = append(extensions, ext)
-		}
+			if info.IsDir() {
+				if path != extDir {
+					// We don't want to recurse into subdirectories
+					return filepath.SkipDir
+				} else {
+					// We don't want to process the extensions directory itself
+					return nil
+				}
+			}
 
-		return nil
-	})
+			// The following will interrogate each extension serially. If we have a lot of extensions,
+			// we may want to parallelise this (e.g. using MapConcurrent()).
+
+			isExe := false
+			if runtime.GOOS == "windows" {
+				isExe = filepath.Ext(path) == ".exe"
+			} else {
+				isExe = info.Mode().Perm()&UserExecute != 0
+			}
+			if isExe {
+				ext, err := getExtensionCapabilities(ctx, path)
+				if err != nil {
+					return err
+				}
+
+				extensions = append(extensions, ext)
+			}
+
+			return nil
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("could not determine installed DCP extensions: %w", err)
 	}

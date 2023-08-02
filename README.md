@@ -1,9 +1,10 @@
-# DCP API server and DCP CLI
-This repository contains core components of Developer Control Plane tool:
+# DCP monorepo
+This repository contains the core components of the Developer Control Plane tool:
 -  `dcp` CLI that users invoke to run applications and for other, related tasks.
 -  `dcpd` is the DCP API server that holds the workload model. It is used by controllers, workload renderers, and API providers to create workload definition, run it, and expose information about it.
 
 	`dcpd` is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
+-  `dcpctrl` is the core DCP controllers that implement the standard behavior for DCP workload models.
 
 
 ## Development environment setup
