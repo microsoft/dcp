@@ -111,7 +111,7 @@ func (r *VolumeReconciler) deleteVolume(ctx context.Context, volumeName string, 
 			return nil // If the volume is not there, that's the desired state.
 		}
 	} else if len(removed) != 1 || removed[0] != volumeName {
-		log.Error(fmt.Errorf("Unexpected response received from container volume removal request. Number of volumes removed: %d", len(removed)), "")
+		log.Error(fmt.Errorf("unexpected response received from container volume removal request. Number of volumes removed: %d", len(removed)), "")
 		// .. but it did not fail, so assume the volume was removed.
 	}
 
@@ -121,7 +121,7 @@ func (r *VolumeReconciler) deleteVolume(ctx context.Context, volumeName string, 
 func (r *VolumeReconciler) ensureVolume(ctx context.Context, volumeName string, log logr.Logger) objectChange {
 	volumeName = strings.TrimSpace(volumeName)
 	if volumeName == "" {
-		log.Error(fmt.Errorf("Specified volume name is empty"), "")
+		log.Error(fmt.Errorf("specified volume name is empty"), "")
 
 		// Hopefully someone will notice the error and update the Spec.
 		// Once the Spec is changed, another reconciliation will kick in automatically.

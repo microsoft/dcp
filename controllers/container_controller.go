@@ -401,7 +401,7 @@ func (r *ContainerReconciler) scheduleContainerReconciliation(rti reconcileTrigg
 		return nil // Reconciliation scheduled successfully
 
 	default:
-		err := fmt.Errorf("Could not schedule reconciliation for Container whose state has changed")
+		err := fmt.Errorf("could not schedule reconciliation for Container whose state has changed")
 		r.Log.Error(err, "Container", rti.target.Name, "ContainerID", rti.input)
 		return err
 	}

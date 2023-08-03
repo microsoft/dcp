@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -48,7 +47,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	// Setup a client side index to allow quickly finding all Executables owned by an ExecutableReplicaSet.
 	// Behind the scenes this is using listers and informers to keep an index on an internal cache owned by
 	// the Manager up to date.
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Executable{}, exeOwnerKey, func(rawObj client.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Executable{}, exeOwnerKey, func(rawObj ctrl_client.Object) []string {
 		exe := rawObj.(*apiv1.Executable)
 		owner := metav1.GetControllerOf(exe)
 
@@ -160,7 +159,7 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 	if numReplicas > replicaSet.Spec.Replicas {
 		// Scale down the replica set if there are too many
 		for _, exe := range replicas.Items[0 : numReplicas-replicaSet.Spec.Replicas] {
-			if err := r.Delete(ctx, &exe, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+			if err := r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
 				log.Error(err, "unable to delete Executable", "exe", exe)
 				change |= additionalReconciliationNeeded
 			} else {
@@ -222,7 +221,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	}
 
 	var childExecutables apiv1.ExecutableList
-	if err := r.List(ctx, &childExecutables, client.InNamespace(req.Namespace), client.MatchingFields{exeOwnerKey: req.Name}); err != nil {
+	if err := r.List(ctx, &childExecutables, ctrl_client.InNamespace(req.Namespace), ctrl_client.MatchingFields{exeOwnerKey: req.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 
