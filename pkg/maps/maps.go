@@ -60,6 +60,27 @@ func MapToSlice[K comparable, V any, T any, MF MapFunc[K, V, T]](m map[K]V, mapp
 	return res
 }
 
+// Maps a slice to a map. The slice is processed in order, and entries produced by later elements
+// may override entries produced by earlier elements (if keys are equal).
+// So in general case it should NOT be assumed that the resulting map will contain as many elements
+// as the original slice.
+type KeyValFunc[T any, K comparable, V any] interface {
+	~func(T) (K, V)
+}
+
+func SliceToMap[T any, K comparable, V any, KVF KeyValFunc[T, K, V]](s []T, f KVF) map[K]V {
+	if len(s) == 0 {
+		return nil
+	}
+
+	res := make(map[K]V, len(s))
+	for _, t := range s {
+		k, v := f(t)
+		res[k] = v
+	}
+	return res
+}
+
 type SelectFunc[K comparable, V any] interface {
 	~func(K) bool | ~func(K, V) bool
 }

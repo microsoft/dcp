@@ -158,10 +158,10 @@ $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 ##@ Development
 
 release: BUILD_ARGS ?= -ldflags "-s -w"
-release: generate compile ## Builds all binaries with flags to reduce binary size
+release: generate compile ## Runs codegen and builds all binaries with flags to reduce binary size
 
-build: generate compile ## Builds all binaries (DCP CLI and DCP API server)
-compile: build-dcpd build-dcpctrl build-dcp
+build: generate compile ## Runs codegen and builds all binaries (DCP CLI, DCP API server, and controller host)
+compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
 
 .PHONY: build-dcpd
 build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
@@ -179,7 +179,7 @@ $(DCPCTRL_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 	go build -o $(DCPCTRL_BINARY) $(BUILD_ARGS) ./cmd/dcpctrl
 
 .PHONY: build-azdRenderer
-build-azdRenderer: $(AZD_RENDERER_BINARY) ## Builds DCP Azure Developer CLI workload renderer
+build-azdRenderer: $(AZD_RENDERER_BINARY) ## Builds DCP Azure Developer CLI workload renderer (experimental)
 $(AZD_RENDERER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 	go build -o $(AZD_RENDERER_BINARY) $(BUILD_ARGS) ./cmd/azdRenderer
 
@@ -198,7 +198,7 @@ else
 endif
 
 .PHONY: install
-install: build | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to their destinations
+install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to their destinations
 	$(install) $(DCPD_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCPCTRL_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCP_BINARY) $(DCP_DIR)
