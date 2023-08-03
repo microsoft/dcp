@@ -74,6 +74,50 @@ func TestMapToSlice(t *testing.T) {
 	require.Equal(t, expected, actual)
 }
 
+type keyValPair struct {
+	key   string
+	value string
+}
+
+func TestSliceToMap(t *testing.T) {
+	// Mapping empty slice returns empty result
+	var s []keyValPair = nil
+	result := SliceToMap(s, func(kvp keyValPair) (string, string) { return kvp.key, kvp.value })
+	require.Empty(t, result)
+
+	s = make([]keyValPair, 0)
+	result = SliceToMap(s, func(kvp keyValPair) (string, string) { return kvp.key, kvp.value })
+	require.Empty(t, result)
+
+	// Map with all keys unique
+	s = []keyValPair{
+		{"a", "alpha"},
+		{"b", "bravo"},
+		{"c", "charlie"},
+	}
+	expected := map[string]string{
+		"a": "alpha",
+		"b": "bravo",
+		"c": "charlie",
+	}
+	require.Equal(t, expected, SliceToMap(s, func(kvp keyValPair) (string, string) { return kvp.key, kvp.value }))
+
+	// Map with duplicate keys
+	s = []keyValPair{
+		{"a", "alpha"},
+		{"b", "bravo"},
+		{"a", "ALPHA"},
+		{"c", "charlie"},
+		{"b", "BRAVO"},
+	}
+	expected = map[string]string{
+		"a": "ALPHA",
+		"b": "BRAVO",
+		"c": "charlie",
+	}
+	require.Equal(t, expected, SliceToMap(s, func(kvp keyValPair) (string, string) { return kvp.key, kvp.value }))
+}
+
 func TestSelect(t *testing.T) {
 	// Filtering empty data set should return empty result
 	var data map[int]string

@@ -17,20 +17,56 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type runState struct {
+	runID             controllers.RunID
 	completionHandler controllers.RunCompletionHandler
-	handlerLock       *sync.Mutex
+	handlerWG         *sync.WaitGroup
+	finished          bool
+	exitCode          int32
+}
+
+func NewRunState() *runState {
+	rs := &runState{
+		runID:             "",
+		completionHandler: nil,
+		handlerWG:         &sync.WaitGroup{},
+		finished:          false,
+		exitCode:          apiv1.UnknownExitCode,
+	}
+
+	// Three things need to happen before the completion handler is called:
+	// 1. The StartRun() method of the IDE runner must get a chance to set the completion handler.
+	// 2. The run session notification must be received from the IDE (with the exit code).
+	// 3. The IDE runner consumer must call startWaitForRunCompletion() for the run.
+	rs.handlerWG.Add(3)
+
+	return rs
+}
+
+func (rs *runState) NotifyRunCompletedAsync() {
+	go func() {
+		rs.handlerWG.Wait()
+
+		if rs.completionHandler != nil {
+			rs.completionHandler.OnRunCompleted(rs.runID, rs.exitCode, nil)
+		}
+	}()
+}
+
+func (rs *runState) IncreaseCompletionCallReadiness() {
+	rs.handlerWG.Done()
 }
 
 type IdeExecutableRunner struct {
 	notifySocket *websocket.Conn
 	lock         *sync.Mutex
-	activeRuns   syncmap.Map[controllers.RunID, runState]
+	activeRuns   syncmap.Map[controllers.RunID, *runState]
 	log          logr.Logger
 	portStr      string // The local port on which the IDE is listening for run session requests
 	tokenStr     string // The security token to use when connecting to the IDE
@@ -59,7 +95,7 @@ func NewIdeExecutableRunner(log logr.Logger) (*IdeExecutableRunner, error) {
 
 	return &IdeExecutableRunner{
 		lock:       &sync.Mutex{},
-		activeRuns: syncmap.Map[controllers.RunID, runState]{},
+		activeRuns: syncmap.Map[controllers.RunID, *runState]{},
 		log:        log,
 		portStr:    portStr,
 		tokenStr:   tokenStr,
@@ -86,9 +122,22 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		markAsFailedToStart(exe)
 		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"missing required annotation '%s'", csharpProjectPathAnnotation)
 	}
+
+	// Start with orchestrator process environemnt, then override with Executable environment.
+	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
+		parts := strings.SplitN(envStr, "=", 2)
+		return parts[0], parts[1]
+	})
+	for _, envVar := range exe.Spec.Env {
+		envMap[envVar.Name] = envVar.Value
+	}
+	effectiveEnv := maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key, value string) apiv1.EnvVar {
+		return apiv1.EnvVar{Name: key, Value: value}
+	})
+
 	isr := ideRunSessionRequest{
 		ProjectPath: projectPath,
-		Env:         exe.Spec.Env,
+		Env:         effectiveEnv,
 		Args:        exe.Spec.Args,
 	}
 	isrBody, err := json.Marshal(isr)
@@ -128,22 +177,34 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	}
 
 	r.log.Info("IDE run session started", "RunID", runID)
-
-	startWaitForRunCompletion := func() {}
-	if runCompletionHandler != nil {
-		rs := runState{
-			completionHandler: runCompletionHandler,
-			handlerLock:       &sync.Mutex{},
-		}
-		rs.handlerLock.Lock()
-		startWaitForRunCompletion = func() {
-			rs.handlerLock.Unlock() // It is OK to unlock a mutex from a different goroutine
-		}
-	}
 	exe.Status.ExecutionID = string(runID)
-	exe.Status.State = apiv1.ExecutableStateRunning
 	exe.Status.StartupTimestamp = metav1.Now()
 
+	startWaitForRunCompletion := func() {}
+	// We might receive notifications for this run before we have a chance to create the run state instance here.
+	// That is why we use LoadOrStoreNew instead of just creating a new instance of runState.
+	rs, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runState {
+		return NewRunState()
+	})
+	defer rs.IncreaseCompletionCallReadiness()
+
+	if runCompletionHandler != nil {
+		r.lock.Lock()
+		defer r.lock.Unlock()
+
+		rs.completionHandler = runCompletionHandler
+		startWaitForRunCompletion = func() {
+			rs.IncreaseCompletionCallReadiness()
+		}
+		if rs.finished {
+			r.activeRuns.Delete(runID)
+			exe.Status.State = apiv1.ExecutableStateFinished
+			exe.Status.FinishTimestamp = metav1.Now()
+			return runID, startWaitForRunCompletion, nil
+		}
+	}
+
+	exe.Status.State = apiv1.ExecutableStateRunning
 	return runID, startWaitForRunCompletion, nil
 }
 
@@ -255,25 +316,26 @@ func (r *IdeExecutableRunner) handleSessionNotification(scn ideRunSessionChangeN
 
 	case notificationTypeSessionTerminated:
 		runID := controllers.RunID(scn.SessionID)
-		runState, found := r.activeRuns.LoadAndDelete(runID)
-		if !found {
-			// This can happen if StartRun() was called without a completion handler, in which case we do not track the run.
-			// Also, it may be a notification for a run session that this orchestrator instance did not start.
-			// Either way, we can ignore this notification.
-			return
-		}
-
 		exitCode := int32(apiv1.UnknownExitCode)
 		if scn.ExitCode != nil {
 			exitCode = *scn.ExitCode
 		}
 
-		// Call the completion handler asynchronously so that the handling of other notifications is not blocked.
-		go func() {
-			runState.handlerLock.Lock()
-			defer runState.handlerLock.Unlock()
-			runState.completionHandler.OnRunCompleted(runID, exitCode, nil)
-		}()
+		r.lock.Lock()
+		defer r.lock.Unlock()
+
+		runState, found := r.activeRuns.LoadAndDelete(runID)
+		if !found {
+			// This happens if we receive an early notification for run session that has just started.
+			// Store the run status and exit code. The run completion handler will be filled by the StartRun method.
+			runState = NewRunState()
+			r.activeRuns.Store(runID, runState)
+		}
+
+		runState.finished = true
+		runState.exitCode = exitCode
+		runState.IncreaseCompletionCallReadiness()
+		runState.NotifyRunCompletedAsync()
 
 	default:
 		r.log.Error(fmt.Errorf("received unexpected IDE run session notification type '%s'", scn.NotificationType), "ignoring...")
