@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/go-logr/logr"
+	"gopkg.in/yaml.v3"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -26,7 +28,8 @@ import (
 
 type ServiceReconciler struct {
 	ctrl_client.Client
-	Log logr.Logger
+	Log            logr.Logger
+	ProxyConfigDir string
 }
 
 var (
@@ -35,13 +38,22 @@ var (
 
 func NewServiceReconciler(client ctrl_client.Client, log logr.Logger) *ServiceReconciler {
 	r := ServiceReconciler{
-		Client: client,
-		Log:    log,
+		Client:         client,
+		Log:            log,
+		ProxyConfigDir: filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
 	}
 	return &r
 }
 
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceController", func(rawObj ctrl_client.Object) []string {
+		endpoint := rawObj.(*apiv1.Endpoint)
+		return []string{endpoint.Spec.Service}
+	}); err != nil {
+		r.Log.Error(err, "failed to create index for Endpoint")
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
@@ -63,8 +75,6 @@ func requestReconcileForEndpoint(ctx context.Context, obj ctrl_client.Object) []
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log.WithValues("ServiceName", req.NamespacedName)
 
-	log.Info(req.Namespace, req.Name)
-
 	select {
 	case _, isOpen := <-ctx.Done():
 		if !isOpen {
@@ -79,7 +89,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
-			log.Info("the Service object was deleted")
+			log.Info("the Service object does not exist yet or was deleted")
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Service object")
@@ -92,7 +102,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.Info("Service object is being deleted")
-		err := r.deleteService(ctx, svc.Spec.Name, log)
+		err := r.deleteService(ctx, svc, log)
 		if err != nil {
 			// deleteService() logged the error already
 			change = additionalReconciliationNeeded
@@ -101,7 +111,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer)
-		change |= r.ensureService(ctx, svc.Spec.Name, log)
+		change |= r.ensureService(ctx, svc, log)
 	}
 
 	if (change & (metadataChanged | specChanged)) != 0 {
@@ -121,27 +131,22 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 }
 
-func (r *ServiceReconciler) deleteService(ctx context.Context, serviceName string, log logr.Logger) error {
-	// const force = false
+func (r *ServiceReconciler) deleteService(ctx context.Context, svc apiv1.Service, log logr.Logger) error {
+	if err := r.stopProxyIfNeeded(ctx); err != nil {
+		log.Error(err, "could not start the proxy")
+		return err
+	}
 
-	// removed, err := r.orchestrator.RemoveVolumes(ctx, []string{volumeName}, force)
-	// if err != nil {
-	// 	if err != ct.ErrNotFound {
-	// 		log.Error(err, "could not remove a container volume")
-	// 		return err
-	// 	} else {
-	// 		return nil // If the volume is not there, that's the desired state.
-	// 	}
-	// } else if len(removed) != 1 || removed[0] != volumeName {
-	// 	log.Error(fmt.Errorf("Unexpected response received from container volume removal request. Number of volumes removed: %d", len(removed)), "")
-	// 	// .. but it did not fail, so assume the volume was removed.
-	// }
+	if err := r.deleteServiceConfigFile(svc.ObjectMeta.Name); err != nil {
+		log.Error(err, "could not delete the service config file")
+		return err
+	}
 
 	return nil
 }
 
-func (r *ServiceReconciler) ensureService(ctx context.Context, serviceName string, log logr.Logger) objectChange {
-	serviceName = strings.TrimSpace(serviceName)
+func (r *ServiceReconciler) ensureService(ctx context.Context, svc apiv1.Service, log logr.Logger) objectChange {
+	serviceName := strings.TrimSpace(svc.ObjectMeta.Name)
 	if serviceName == "" {
 		log.Error(fmt.Errorf("specified service name is empty"), "")
 
@@ -155,28 +160,16 @@ func (r *ServiceReconciler) ensureService(ctx context.Context, serviceName strin
 		return additionalReconciliationNeeded
 	}
 
-	_, err := getServiceConfigFile(serviceName)
-	if err != nil {
-		log.Error(err, "could not get service config file")
+	var serviceEndpoints apiv1.EndpointList
+	if err := r.List(ctx, &serviceEndpoints, ctrl_client.InNamespace(svc.Namespace), ctrl_client.MatchingFields{".metadata.serviceController": serviceName}); err != nil {
+		log.Error(err, "could not get associated endpoints")
 		return additionalReconciliationNeeded
 	}
 
-	// Open config file and defer close
-	// Write config file
-
-	// _, err := r.orchestrator.InspectVolumes(ctx, []string{volumeName})
-	// if err == nil {
-	// 	return noChange // Volume exists, nothing to do
-	// } else if !errors.Is(err, ct.ErrNotFound) {
-	// 	log.Error(err, "could not determine whether volume exists")
-	// 	return additionalReconciliationNeeded
-	// }
-
-	// err = r.orchestrator.CreateVolume(ctx, volumeName)
-	// if err != nil {
-	// 	log.Error(err, "could not create a volume")
-	// 	return additionalReconciliationNeeded
-	// }
+	if err := r.ensureServiceConfigFile(serviceName, &serviceEndpoints); err != nil {
+		log.Error(err, "could not write service config file")
+		return additionalReconciliationNeeded
+	}
 
 	log.Info("service created")
 	return noChange
@@ -190,48 +183,47 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context) error {
 	return nil
 }
 
-func getServiceConfigTempDir() (string, error) {
-	const pattern = "usvc-apiserver-servicecontroller-serviceconfig"
+func (r *ServiceReconciler) getServiceConfigFilePath(serviceName string) string {
+	return filepath.Join(r.ProxyConfigDir, fmt.Sprintf("%s.yaml", serviceName))
+}
 
-	dir := filepath.Join(os.TempDir(), pattern)
+func (r *ServiceReconciler) ensureServiceConfigFile(serviceName string, endpoints *apiv1.EndpointList) error {
+	svcConfigFilePath := r.getServiceConfigFilePath(serviceName)
 
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-		return os.MkdirTemp("", pattern)
+	if err := ensureDir(filepath.Dir(svcConfigFilePath)); err != nil {
+		return err
+	}
+
+	return writeObjectYamlToFile(svcConfigFilePath, struct{ foo string }{foo: "bar"})
+}
+
+func (r *ServiceReconciler) deleteServiceConfigFile(name string) error {
+	configFilePath := r.getServiceConfigFilePath(name)
+
+	// Remove the config file
+	if err := os.Remove(configFilePath); errors.Is(err, fs.ErrNotExist) {
+		// No problem, we want it to not exist
+		return nil
 	} else if err != nil {
-		return "", err
-	}
-
-	return dir, nil
-}
-
-func getServiceConfigFile(name string) (*os.File, error) {
-	if dir, err := getServiceConfigTempDir(); err != nil {
-		return nil, err
-	} else {
-		return os.CreateTemp(dir, fmt.Sprintf("%s.yaml", name))
-	}
-}
-
-func deleteServiceConfigFile(name string) error {
-	dir, err := getServiceConfigTempDir()
-	if err != nil {
 		return err
 	}
 
-	if err := os.Remove(filepath.Join(dir, fmt.Sprintf("%s.yaml", name))); err != nil {
-		return err
-	}
-
-	if isConfigDirEmpty, err := isEmpty(dir); err != nil {
+	// If the directory is now empty, remove it
+	if isConfigDirEmpty, err := isEmptyDir(r.ProxyConfigDir); err != nil {
 		return err
 	} else if isConfigDirEmpty {
-		return os.Remove(dir)
+		if err := os.Remove(r.ProxyConfigDir); errors.Is(err, fs.ErrNotExist) {
+			// No problem, we want it to not exist
+			return nil
+		} else if err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func isEmpty(dir string) (bool, error) {
+func isEmptyDir(dir string) (bool, error) {
 	f, err := os.Open(dir)
 	if err != nil {
 		return false, err
@@ -244,4 +236,21 @@ func isEmpty(dir string) (bool, error) {
 	} else {
 		return false, err
 	}
+}
+
+func ensureDir(dir string) error {
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return os.MkdirAll(dir, 0755)
+	}
+
+	return nil
+}
+
+func writeObjectYamlToFile(fileName string, data interface{}) error {
+	yamlContent, err := yaml.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(fileName, yamlContent, 0644)
 }

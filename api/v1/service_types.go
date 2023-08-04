@@ -21,15 +21,12 @@ import (
 // ServiceSpec defines the desired state of a Service
 // +k8s:openapi-gen=true
 type ServiceSpec struct {
-	// Name of the service
-	Name string `json:"name"`
 }
 
 // ServiceStatus describes the status of a Service
 // +k8s:openapi-gen=true
 type ServiceStatus struct {
-	// A human-readable message that provides additional information about Service state.
-	Message string `json:"message,omitempty"`
+	ProxyConfigFile string `json:"proxyConfigFile,omitempty"`
 }
 
 // Service represents a single service implemented by one or more endpoints

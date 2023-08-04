@@ -35,19 +35,11 @@ spec:
             type: object
           spec:
             description: ServiceSpec defines the desired state of a Service
-            properties:
-              name:
-                description: Name of the service
-                type: string
-            required:
-            - name
             type: object
           status:
             description: ServiceStatus describes the status of a Service
             properties:
-              message:
-                description: A human-readable message that provides additional information
-                  about Service state.
+              proxyConfigFile:
                 type: string
             type: object
         type: object

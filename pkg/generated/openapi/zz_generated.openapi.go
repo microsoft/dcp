@@ -1243,17 +1243,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCall
 			SchemaProps: spec.SchemaProps{
 				Description: "ServiceSpec defines the desired state of a Service",
 				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"name": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Name of the service",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-				Required: []string{"name"},
 			},
 		},
 	}
@@ -1266,11 +1255,10 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 				Description: "ServiceStatus describes the status of a Service",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"message": {
+					"proxyConfigFile": {
 						SchemaProps: spec.SchemaProps{
-							Description: "A human-readable message that provides additional information about Service state.",
-							Type:        []string{"string"},
-							Format:      "",
+							Type:   []string{"string"},
+							Format: "",
 						},
 					},
 				},
