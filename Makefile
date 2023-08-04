@@ -15,6 +15,7 @@ ifeq ($(OS),Windows_NT)
 	rm_f := Remove-Item -Force -Path
 	home_dir := $(USERPROFILE)
 	install := Copy-Item
+	exe_suffix := .exe
 else
     # -o pipefail will treat a pipeline as failed if one of the elements fail.
     SHELL := /usr/bin/env bash -o pipefail
@@ -26,17 +27,18 @@ else
 	rm_f := rm -f
 	home_dir := $(HOME)
 	install := install -p
+	exe_suffix :=
 endif
 
 # Honor GOOS settings from the environment to determine appropriate suffix.
 # This will allow us to honor the naming scheme of the target OS rather than
 # always matching the behavior of the current host OS.
 ifeq ($(GOOS),windows)
-	exe_suffix := .exe
+	bin_exe_suffix := .exe
 else ifeq ($(GOOS).$(OS),.Windows_NT)
-	exe_suffix := .exe
+	bin_exe_suffix := .exe
 else
-	exe_suffix :=
+	bin_exe_suffix :=
 endif
 
 ## Environment variables affecting build and installation
@@ -46,10 +48,10 @@ endif
 OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
 EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
-DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(exe_suffix)
-DCPD_BINARY ?= ${OUTPUT_BIN}/ext/dcpd$(exe_suffix)
-DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(exe_suffix)
-AZD_RENDERER_BINARY ?= $(OUTPUT_BIN)/ext/azdRenderer$(exe_suffix)
+DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
+DCPD_BINARY ?= ${OUTPUT_BIN}/ext/dcpd$(bin_exe_suffix)
+DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
+AZD_RENDERER_BINARY ?= $(OUTPUT_BIN)/ext/azdRenderer$(bin_exe_suffix)
 
 # Locations and definitions for tool binaries
 TOOL_BIN ?= $(repo_dir)/.toolbin
@@ -158,7 +160,7 @@ $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 ##@ Development
 
 release: BUILD_ARGS ?= -ldflags "-s -w"
-release: generate compile ## Runs codegen and builds all binaries with flags to reduce binary size
+release: compile ## Builds all binaries with flags to reduce binary size
 
 build: generate compile ## Runs codegen and builds all binaries (DCP CLI, DCP API server, and controller host)
 compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
@@ -205,14 +207,14 @@ install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to thei
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
-	$(rm_f) $(EXTENSIONS_DIR)/dcpd$(exe_suffix)
-	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(exe_suffix)
-	$(rm_f) $(DCP_DIR)/dcp$(exe_suffix)
+	$(rm_f) $(EXTENSIONS_DIR)/dcpd$(bin_exe_suffix)
+	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
+	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
 
 ifneq ($(detected_OS),Windows)
 .PHONY: link-dcp
 link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sudo -E" to run this target (sudo -E make link-dcp). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
-	ln -s -v $(DCP_DIR)/dcp$(exe_suffix) /usr/local/bin/dcp$(exe_suffix)
+	ln -s -v $(DCP_DIR)/dcp$(bin_exe_suffix) /usr/local/bin/dcp$(bin_exe_suffix)
 endif
 
 ##@ Test targets
