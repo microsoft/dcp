@@ -26,11 +26,11 @@ type ServiceSpec struct {
 // ServiceStatus describes the status of a Service
 // +k8s:openapi-gen=true
 type ServiceStatus struct {
+	// The path of the proxy config file for this service containing both routing config and service definition
 	ProxyConfigFile string `json:"proxyConfigFile,omitempty"`
 }
 
-// Service represents a single service implemented by one or more endpoints
-// Its lifetime is dependent on the lifetime of the Executables or Containers that it is attached to.
+// Service represents a single service implemented by zero or more endpoints
 // +kubebuilder:object:root=true
 // +k8s:openapi-gen=true
 // +kubebuilder:resource:scope=Cluster

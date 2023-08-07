@@ -39,15 +39,23 @@ spec:
               service:
                 description: Name of the service the endpoint implements
                 type: string
+              serviceNamespace:
+                description: Namespace of the service the endpoint implements
+                type: string
             required:
             - service
+            - serviceNamespace
             type: object
           status:
             description: EndpointStatus describes the status of a Endpoint
             properties:
-              url:
-                description: The URL of the endpoint implementing the service
+              hostname:
+                description: The hostname of the endpoint
                 type: string
+              port:
+                description: The port of the endpoint
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

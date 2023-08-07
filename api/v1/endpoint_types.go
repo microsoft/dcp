@@ -18,18 +18,43 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
 
+type Protocol string
+
+const (
+	// Regular HTTP
+	ProtocolHttp Protocol = "http"
+
+	// HTTP with TLS
+	ProtocolHttps Protocol = "https"
+
+	// TCP. The protocol will not show up in the proxy config file.
+	ProtocolTCP Protocol = "tcp"
+
+	// UDP. The protocol will not show up in the proxy config file.
+	ProtocolUDP Protocol = "udp"
+)
+
 // EndpointSpec defines the desired state of a Endpoint
 // +k8s:openapi-gen=true
 type EndpointSpec struct {
+	// Namespace of the service the endpoint implements
+	ServiceNamespace string `json:"serviceNamespace"`
+
 	// Name of the service the endpoint implements
-	Service string `json:"service"`
+	ServiceName string `json:"serviceName"`
 }
 
 // EndpointStatus describes the status of a Endpoint
 // +k8s:openapi-gen=true
 type EndpointStatus struct {
-	// The URL of the endpoint implementing the service
-	Url string `json:"url,omitempty"`
+	// The protocol of the endpoint
+	Protocol Protocol `json:"protocol,omitempty"`
+
+	// The host (hostname or IP address) of the endpoint
+	Host string `json:"host,omitempty"`
+
+	// The port of the endpoint
+	Port int32 `json:"port,omitempty"`
 }
 
 // Endpoint represents a network endpoint that implements a service

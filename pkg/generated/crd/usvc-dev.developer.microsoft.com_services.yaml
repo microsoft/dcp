@@ -17,9 +17,8 @@ spec:
   - name: v1
     schema:
       openAPIV3Schema:
-        description: Service represents a single service implemented by one or more
-          endpoints Its lifetime is dependent on the lifetime of the Executables or
-          Containers that it is attached to.
+        description: Service represents a single service implemented by zero or more
+          endpoints
         properties:
           apiVersion:
             description: 'APIVersion defines the versioned schema of this representation
@@ -40,6 +39,8 @@ spec:
             description: ServiceStatus describes the status of a Service
             properties:
               proxyConfigFile:
+                description: The path of the proxy config file for this service containing
+                  both routing config and service definition
                 type: string
             type: object
         type: object
