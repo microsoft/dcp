@@ -620,10 +620,35 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref common.ReferenceCal
 							Format:      "",
 						},
 					},
+					"owner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The owner of the endpoint",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired address for the endpoint to run on",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired port for the endpoint to run on",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
 				},
-				Required: []string{"serviceNamespace", "serviceName"},
+				Required: []string{"serviceNamespace", "serviceName", "owner", "address", "port"},
 			},
 		},
+		Dependencies: []string{
+			"k8s.io/api/core/v1.ObjectReference"},
 	}
 }
 
@@ -633,22 +658,6 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref common.ReferenceC
 			SchemaProps: spec.SchemaProps{
 				Description: "EndpointStatus describes the status of a Endpoint",
 				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"effectiveAddress": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The actual address the endpoint is listening on",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"effectivePort": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The actual port the endpoint is listening on",
-							Type:        []string{"integer"},
-							Format:      "int32",
-						},
-					},
-				},
 			},
 		},
 	}
