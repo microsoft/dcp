@@ -21,13 +21,27 @@ import (
 // ServiceSpec defines the desired state of a Service
 // +k8s:openapi-gen=true
 type ServiceSpec struct {
+	// The desired address for the service to run on
+	Address string `json:"address,omitempty"`
+
+	// The desired port for the service to run on
+	Port int32 `json:"port,omitempty"`
 }
 
 // ServiceStatus describes the status of a Service
 // +k8s:openapi-gen=true
 type ServiceStatus struct {
+	// The PID of the proxy process
+	ProxyProcessPid int32 `json:"proxyProcessPid,omitempty"`
+
 	// The path of the proxy config file for this service containing both routing config and service definition
 	ProxyConfigFile string `json:"proxyConfigFile,omitempty"`
+
+	// The actual address the service is running on
+	EffectiveAddress string `json:"effectiveAddress,omitempty"`
+
+	// The actual port the service is running on
+	EffectivePort int32 `json:"effectivePort,omitempty"`
 }
 
 // Service represents a single service implemented by zero or more endpoints

@@ -49,9 +49,13 @@ spec:
           status:
             description: EndpointStatus describes the status of a Endpoint
             properties:
-              address:
-                description: The address of the endpoint
+              effectiveAddress:
+                description: The actual address the endpoint is listening on
                 type: string
+              effectivePort:
+                description: The actual port the endpoint is listening on
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

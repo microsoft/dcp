@@ -31,8 +31,11 @@ type EndpointSpec struct {
 // EndpointStatus describes the status of a Endpoint
 // +k8s:openapi-gen=true
 type EndpointStatus struct {
-	// The address of the endpoint
-	Address string `json:"address,omitempty"`
+	// The actual address the endpoint is listening on
+	EffectiveAddress string `json:"effectiveAddress,omitempty"`
+
+	// The actual port the endpoint is listening on
+	EffectivePort int32 `json:"effectivePort,omitempty"`
 }
 
 // Endpoint represents a network endpoint that implements a service

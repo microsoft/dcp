@@ -634,11 +634,18 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref common.ReferenceC
 				Description: "EndpointStatus describes the status of a Endpoint",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"address": {
+					"effectiveAddress": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The address of the endpoint",
+							Description: "The actual address the endpoint is listening on",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"effectivePort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The actual port the endpoint is listening on",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 				},
@@ -1251,6 +1258,22 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCall
 			SchemaProps: spec.SchemaProps{
 				Description: "ServiceSpec defines the desired state of a Service",
 				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired address for the service to run on",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired port for the service to run on",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
 			},
 		},
 	}
@@ -1263,11 +1286,32 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 				Description: "ServiceStatus describes the status of a Service",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"proxyProcessPid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The PID of the proxy process",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
 					"proxyConfigFile": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The path of the proxy config file for this service containing both routing config and service definition",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"effectiveAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The actual address the service is running on",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effectivePort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The actual port the service is running on",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 				},
