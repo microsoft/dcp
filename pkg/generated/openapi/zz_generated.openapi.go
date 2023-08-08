@@ -25,6 +25,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":            schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":        schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":        schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                   schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":               schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":               schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus":             schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                     schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                 schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":             schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
@@ -35,6 +39,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":             schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":           schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":         schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Service":                    schema_microsoft_usvc_apiserver_api_v1_Service(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus":              schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.VolumeMount":                schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref),
 		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                         schema_pkg_apis_meta_v1_APIGroup(ref),
 		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                     schema_pkg_apis_meta_v1_APIGroupList(ref),
@@ -488,6 +496,168 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref common.Refer
 					},
 				},
 				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Endpoint represents a network endpoint that implements a service Its lifetime is dependent on the lifetime of the Executable or Container that it is attached to.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec", "github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EndpointList contains a list of Endpoint instances",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.Endpoint"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.Endpoint", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EndpointSpec defines the desired state of a Endpoint",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"serviceNamespace": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Namespace of the service the endpoint implements",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serviceName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the service the endpoint implements",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"owner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The owner of the endpoint",
+							Default:     map[string]interface{}{},
+							Ref:         ref("k8s.io/api/core/v1.ObjectReference"),
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired address for the endpoint to run on",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired port for the endpoint to run on",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"serviceNamespace", "serviceName", "owner", "address", "port"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/api/core/v1.ObjectReference"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EndpointStatus describes the status of a Endpoint",
+				Type:        []string{"object"},
 			},
 		},
 	}
@@ -992,6 +1162,170 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref common.Refere
 		},
 		Dependencies: []string{
 			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_Service(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Service represents a single service implemented by zero or more endpoints",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec", "github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceList contains a list of Service instances",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.Service"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.Service", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceSpec defines the desired state of a Service",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired address for the service to run on",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"port": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The desired port for the service to run on",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ServiceStatus describes the status of a Service",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"proxyProcessPid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The PID of the proxy process",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"proxyConfigFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of the proxy config file for this service containing both routing config and service definition",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effectiveAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The actual address the service is running on",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effectivePort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The actual port the service is running on",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
