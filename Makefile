@@ -108,6 +108,7 @@ define run-openapi-gen
 $(OPENAPI_GEN) \
 	--input-dirs github.com/microsoft/usvc-apiserver/api/v1 \
 	--input-dirs "k8s.io/apimachinery/pkg/apis/meta/v1,k8s.io/apimachinery/pkg/runtime,k8s.io/apimachinery/pkg/version" \
+	--input-dirs "k8s.io/api/core/v1" \
 	--output-package pkg/generated/openapi \
 	-O zz_generated.openapi \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
