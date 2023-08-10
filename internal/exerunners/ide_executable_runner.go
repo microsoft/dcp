@@ -18,7 +18,6 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -170,10 +169,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 	var runID controllers.RunID = controllers.RunID(resp.Header.Get("Location"))
 	if runID == "" {
-		// HACK tis is a workaround for a bug in the IDE where it does not return the run ID in the Location header
-		randStr, _ := randdata.MakeRandomString(8)
-		runID = controllers.RunID(randStr)
-		// return "", nil, fmt.Errorf(runSessionCouldNotBeStarted + "the returned run ID was empty")
+		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted + "the returned run ID was empty")
 	}
 
 	r.log.Info("IDE run session started", "RunID", runID)
