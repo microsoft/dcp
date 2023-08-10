@@ -43,6 +43,10 @@ type EndpointSpec struct {
 type EndpointStatus struct {
 }
 
+func (cs EndpointStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
+	cs.DeepCopyInto(&dest.(*Endpoint).Status)
+}
+
 // Endpoint represents a network endpoint that implements a service
 // Its lifetime is dependent on the lifetime of the Executable or Container that it is attached to.
 // +kubebuilder:object:root=true
@@ -56,7 +60,7 @@ type Endpoint struct {
 	Status EndpointStatus `json:"status,omitempty"`
 }
 
-func (cv *Endpoint) GetGroupVersionResource() schema.GroupVersionResource {
+func (e *Endpoint) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
 		Version:  GroupVersion.Version,
@@ -64,38 +68,42 @@ func (cv *Endpoint) GetGroupVersionResource() schema.GroupVersionResource {
 	}
 }
 
-func (cv *Endpoint) GetObjectMeta() *metav1.ObjectMeta {
-	return &cv.ObjectMeta
+func (e *Endpoint) GetObjectMeta() *metav1.ObjectMeta {
+	return &e.ObjectMeta
 }
 
-func (cv *Endpoint) New() runtime.Object {
+func (e *Endpoint) GetStatus() apiserver_resource.StatusSubResource {
+	return e.Status
+}
+
+func (e *Endpoint) New() runtime.Object {
 	return &Endpoint{}
 }
 
-func (cv *Endpoint) NewList() runtime.Object {
+func (e *Endpoint) NewList() runtime.Object {
 	return &EndpointList{}
 }
 
-func (cv *Endpoint) IsStorageVersion() bool {
+func (e *Endpoint) IsStorageVersion() bool {
 	return true
 }
 
-func (cv *Endpoint) NamespaceScoped() bool {
+func (e *Endpoint) NamespaceScoped() bool {
 	return false
 }
 
-func (cv *Endpoint) ShortNames() []string {
+func (e *Endpoint) ShortNames() []string {
 	return []string{"end"}
 }
 
-func (cv *Endpoint) NamespacedName() types.NamespacedName {
+func (e *Endpoint) NamespacedName() types.NamespacedName {
 	return types.NamespacedName{
-		Name:      cv.Name,
-		Namespace: cv.Namespace,
+		Name:      e.Name,
+		Namespace: e.Namespace,
 	}
 }
 
-func (cv *Endpoint) Validate(ctx context.Context) field.ErrorList {
+func (e *Endpoint) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation
 	return nil
 }
@@ -109,18 +117,18 @@ type EndpointList struct {
 	Items           []Endpoint `json:"items"`
 }
 
-func (cvl *EndpointList) GetListMeta() *metav1.ListMeta {
-	return &cvl.ListMeta
+func (el *EndpointList) GetListMeta() *metav1.ListMeta {
+	return &el.ListMeta
 }
 
-func (cvl *EndpointList) ItemCount() uint32 {
-	return uint32(len(cvl.Items))
+func (el *EndpointList) ItemCount() uint32 {
+	return uint32(len(el.Items))
 }
 
-func (cvl *EndpointList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cvl.Items))
-	for i := range cvl.Items {
-		retval[i] = &cvl.Items[i]
+func (el *EndpointList) GetItems() []ctrl_client.Object {
+	retval := make([]ctrl_client.Object, len(el.Items))
+	for i := range el.Items {
+		retval[i] = &el.Items[i]
 	}
 	return retval
 }
@@ -133,5 +141,7 @@ func init() {
 var _ apiserver_resource.Object = (*Endpoint)(nil)
 var _ apiserver_resource.ObjectList = (*EndpointList)(nil)
 var _ commonapi.ListWithObjectItems = (*EndpointList)(nil)
+var _ apiserver_resource.ObjectWithStatusSubResource = (*Endpoint)(nil)
+var _ apiserver_resource.StatusSubResource = (*EndpointStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Endpoint)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Endpoint)(nil)
