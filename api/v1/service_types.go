@@ -44,6 +44,10 @@ type ServiceStatus struct {
 	EffectivePort int32 `json:"effectivePort,omitempty"`
 }
 
+func (cs ServiceStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
+	cs.DeepCopyInto(&dest.(*Service).Status)
+}
+
 // Service represents a single service implemented by zero or more endpoints
 // +kubebuilder:object:root=true
 // +k8s:openapi-gen=true
@@ -56,7 +60,7 @@ type Service struct {
 	Status ServiceStatus `json:"status,omitempty"`
 }
 
-func (cv *Service) GetGroupVersionResource() schema.GroupVersionResource {
+func (svc *Service) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
 		Version:  GroupVersion.Version,
@@ -64,38 +68,42 @@ func (cv *Service) GetGroupVersionResource() schema.GroupVersionResource {
 	}
 }
 
-func (cv *Service) GetObjectMeta() *metav1.ObjectMeta {
-	return &cv.ObjectMeta
+func (svc *Service) GetObjectMeta() *metav1.ObjectMeta {
+	return &svc.ObjectMeta
 }
 
-func (cv *Service) New() runtime.Object {
+func (svc *Service) GetStatus() apiserver_resource.StatusSubResource {
+	return svc.Status
+}
+
+func (svc *Service) New() runtime.Object {
 	return &Service{}
 }
 
-func (cv *Service) NewList() runtime.Object {
+func (svc *Service) NewList() runtime.Object {
 	return &ServiceList{}
 }
 
-func (cv *Service) IsStorageVersion() bool {
+func (svc *Service) IsStorageVersion() bool {
 	return true
 }
 
-func (cv *Service) NamespaceScoped() bool {
+func (svc *Service) NamespaceScoped() bool {
 	return false
 }
 
-func (cv *Service) ShortNames() []string {
+func (svc *Service) ShortNames() []string {
 	return []string{"svc"}
 }
 
-func (cv *Service) NamespacedName() types.NamespacedName {
+func (svc *Service) NamespacedName() types.NamespacedName {
 	return types.NamespacedName{
-		Name:      cv.Name,
-		Namespace: cv.Namespace,
+		Name:      svc.Name,
+		Namespace: svc.Namespace,
 	}
 }
 
-func (cv *Service) Validate(ctx context.Context) field.ErrorList {
+func (svc *Service) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation
 	return nil
 }
@@ -109,18 +117,18 @@ type ServiceList struct {
 	Items           []Service `json:"items"`
 }
 
-func (cvl *ServiceList) GetListMeta() *metav1.ListMeta {
-	return &cvl.ListMeta
+func (svcl *ServiceList) GetListMeta() *metav1.ListMeta {
+	return &svcl.ListMeta
 }
 
-func (cvl *ServiceList) ItemCount() uint32 {
-	return uint32(len(cvl.Items))
+func (svcl *ServiceList) ItemCount() uint32 {
+	return uint32(len(svcl.Items))
 }
 
-func (cvl *ServiceList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cvl.Items))
-	for i := range cvl.Items {
-		retval[i] = &cvl.Items[i]
+func (svcl *ServiceList) GetItems() []ctrl_client.Object {
+	retval := make([]ctrl_client.Object, len(svcl.Items))
+	for i := range svcl.Items {
+		retval[i] = &svcl.Items[i]
 	}
 	return retval
 }
@@ -133,5 +141,7 @@ func init() {
 var _ apiserver_resource.Object = (*Service)(nil)
 var _ apiserver_resource.ObjectList = (*ServiceList)(nil)
 var _ commonapi.ListWithObjectItems = (*ServiceList)(nil)
+var _ apiserver_resource.ObjectWithStatusSubResource = (*Service)(nil)
+var _ apiserver_resource.StatusSubResource = (*ServiceStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Service)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Service)(nil)
