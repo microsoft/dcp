@@ -1497,6 +1497,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCall
 							Format:      "int32",
 						},
 					},
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The protocol, TCP or UDP",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
@@ -1510,6 +1517,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 				Description: "ServiceStatus describes the status of a Service",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The current state of the service",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"proxyProcessPid": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The PID of the proxy process",
