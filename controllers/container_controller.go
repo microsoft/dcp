@@ -102,7 +102,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	select {
 	case _, isOpen := <-ctx.Done():
 		if !isOpen {
-			log.Info("Request context expired, nothing to do...")
+			log.V(1).Info("Request context expired, nothing to do...")
 			return ctrl.Result{}, nil
 		}
 	default: // not done, proceed
@@ -113,7 +113,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if err != nil {
 		if errors.IsNotFound(err) {
-			log.Info("the Container object was deleted")
+			log.V(1).Info("the Container object was deleted")
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Container object")
@@ -137,7 +137,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if change == noChange {
-		log.Info("no changes detected for Container object, continue monitoring...")
+		log.V(1).Info("no changes detected for Container object, continue monitoring...")
 		return ctrl.Result{}, nil
 	}
 
@@ -150,7 +150,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			log.Error(err, "Container object update failed")
 			return ctrl.Result{}, err
 		} else {
-			log.Info("Container object update succeeded")
+			log.V(1).Info("Container object update succeeded")
 		}
 	}
 
@@ -161,12 +161,12 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			log.Error(err, "Container status update failed")
 			return ctrl.Result{}, err
 		} else {
-			log.Info("Container status update succeeded")
+			log.V(1).Info("Container status update succeeded")
 		}
 	}
 
 	if (change & additionalReconciliationNeeded) != 0 {
-		log.Info("scheduling additional reconciliation for Container...")
+		log.V(1).Info("scheduling additional reconciliation for Container...")
 		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
 	} else {
 		return ctrl.Result{}, nil

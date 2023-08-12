@@ -46,7 +46,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	select {
 	case _, isOpen := <-ctx.Done():
 		if !isOpen {
-			log.Info("Request context expired, nothing to do...")
+			log.V(1).Info("Request context expired, nothing to do...")
 			return ctrl.Result{}, nil
 		}
 	default: // not done, proceed
@@ -57,7 +57,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
-			log.Info("the ContainerVolume object was deleted")
+			log.V(1).Info("the ContainerVolume object was deleted")
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the ContainerVolume object")
@@ -88,7 +88,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			log.Error(err, "ContainerVolume object update failed")
 			return ctrl.Result{}, err
 		} else {
-			log.Info("ContainerVolume object update succeeded")
+			log.V(1).Info("ContainerVolume object update succeeded")
 		}
 	}
 

@@ -88,7 +88,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	select {
 	case _, isOpen := <-ctx.Done():
 		if !isOpen {
-			log.Info("Request context expired, nothing to do...")
+			log.V(1).Info("Request context expired, nothing to do...")
 			return ctrl.Result{}, nil
 		}
 	default: // not done, proceed
@@ -100,7 +100,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if errors.IsNotFound(err) {
 			// Ensure the cache of Executable to run ID is cleared
 			r.runs.DeleteByFirstKey(req.NamespacedName)
-			log.Info("Executable not found, nothing to do...")
+			log.V(1).Info("Executable not found, nothing to do...")
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Executable", "exe", exe)
@@ -127,7 +127,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if change == noChange {
-		log.Info("no changes detected for Executable, continue monitoring...")
+		log.V(1).Info("no changes detected for Executable, continue monitoring...")
 		return ctrl.Result{}, nil
 	}
 
@@ -139,7 +139,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			log.Error(err, "Executable update failed")
 			return ctrl.Result{}, err
 		}
-		log.Info("Executable update succeeded")
+		log.V(1).Info("Executable update succeeded")
 	}
 
 	if (change & statusChanged) != 0 {
@@ -148,15 +148,15 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			log.Error(err, "Executable status update failed")
 			return ctrl.Result{}, err
 		}
-		log.Info("Executable status update succeeded")
+		log.V(1).Info("Executable status update succeeded")
 	}
 
 	if exe.Done() {
-		log.Info("Executable reached done state")
+		log.V(1).Info("Executable reached done state")
 	}
 
 	if (change & additionalReconciliationNeeded) != 0 {
-		log.Info("scheduling additional reconciliation for Executable...")
+		log.V(1).Info("scheduling additional reconciliation for Executable...")
 		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
 	} else {
 		return ctrl.Result{}, nil
@@ -177,10 +177,10 @@ func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode int32, err e
 
 	var effectiveExitCode int32
 	if err != nil {
-		r.Log.Info("Executable run could not be tracked", "RunID", runID, "Error", err.Error())
+		r.Log.V(1).Info("Executable run could not be tracked", "RunID", runID, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.Info("Executable run ended", "RunID", runID, "exitCode", exitCode)
+		r.Log.V(1).Info("Executable run ended", "RunID", runID, "exitCode", exitCode)
 		effectiveExitCode = exitCode
 	}
 
@@ -205,18 +205,18 @@ func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Exe
 	var err error
 
 	if !exe.Status.StartupTimestamp.IsZero() {
-		log.Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
+		log.V(1).Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
 		return noChange
 	}
 
 	if exe.Done() {
-		log.Info("Executable reached done state, nothing to do...")
+		log.V(1).Info("Executable reached done state, nothing to do...")
 		return noChange
 	}
 
 	if _, rps, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
 		// We are already tracking a run for this Executable, ensure the status matches the current state.
-		log.Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
+		log.V(1).Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
 		rps.CopyTo(exe)
 		return statusChanged
 	}
@@ -272,9 +272,9 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 
 	err := runner.StopRun(ctx, runID, log)
 	if err != nil {
-		log.Info("could not stop the Executable", "RunID", runID, "Error", err.Error())
+		log.V(1).Info("could not stop the Executable", "RunID", runID, "Error", err.Error())
 	} else {
-		log.Info("Executable stopped", "RunID", runID)
+		log.V(1).Info("Executable stopped", "RunID", runID)
 	}
 }
 

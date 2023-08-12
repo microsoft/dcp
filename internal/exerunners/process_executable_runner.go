@@ -28,7 +28,8 @@ func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 
 func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runCompletionHandler controllers.RunCompletionHandler, log logr.Logger) (controllers.RunID, func(), error) {
 	cmd := makeCommand(ctx, exe, log)
-	log.Info("starting process...",
+	log.Info("starting process...", "executable", cmd.Path)
+	log.V(1).Info("process settings",
 		"executable", cmd.Path,
 		"args", cmd.Args[1:],
 		"env", cmd.Env,
@@ -63,7 +64,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		exe.Status.FinishTimestamp = metav1.Now()
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 	} else {
-		log.Info("process started", "PID", pid)
+		log.Info("process started", "executable", cmd.Path, "PID", pid)
 		exe.Status.ExecutionID = pidToExecutionID(pid)
 		exe.Status.State = apiv1.ExecutableStateRunning
 		exe.Status.StartupTimestamp = metav1.Now()

@@ -203,7 +203,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	select {
 	case _, isOpen := <-ctx.Done():
 		if !isOpen {
-			log.Info("Request context expired, nothing to do...")
+			log.V(1).Info("Request context expired, nothing to do...")
 			return ctrl.Result{}, nil
 		}
 	default: // not done, proceed
@@ -212,7 +212,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	replicaSet := apiv1.ExecutableReplicaSet{}
 	if err := r.Get(ctx, req.NamespacedName, &replicaSet); err != nil {
 		if errors.IsNotFound(err) {
-			log.Info("ExecutableReplicaSet not found, nothing to do...")
+			log.V(1).Info("ExecutableReplicaSet not found, nothing to do...")
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the ExecutableReplicaSet")
@@ -250,7 +250,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	}
 
 	if change == noChange {
-		log.Info("no changes detected for Executable, continue monitoring...")
+		log.V(1).Info("no changes detected for Executable, continue monitoring...")
 		return ctrl.Result{}, nil
 	}
 
@@ -262,7 +262,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			log.Error(err, "Executable update failed")
 			return ctrl.Result{}, err
 		}
-		log.Info("Executable update succeeded")
+		log.V(1).Info("Executable update succeeded")
 	}
 
 	if (change & statusChanged) != 0 {
@@ -271,11 +271,11 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			log.Error(err, "Executable status update failed")
 			return ctrl.Result{}, err
 		}
-		log.Info("Executable status update succeeded")
+		log.V(1).Info("Executable status update succeeded")
 	}
 
 	if (change & additionalReconciliationNeeded) != 0 {
-		log.Info("scheduling additional reconciliation for ExecutableReplicaSet...")
+		log.V(1).Info("scheduling additional reconciliation for ExecutableReplicaSet...")
 		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
 	}
 
