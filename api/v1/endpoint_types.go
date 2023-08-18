@@ -50,6 +50,7 @@ func (cs EndpointStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResou
 // Endpoint represents a network endpoint that implements a service
 // Its lifetime is dependent on the lifetime of the Executable or Container that it is attached to.
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // +k8s:openapi-gen=true
 // +kubebuilder:resource:scope=Cluster
 type Endpoint struct {

@@ -39,7 +39,8 @@ spec:
                 description: The desired address for the service to run on
                 type: string
               addressAllocationMode:
-                description: The mode for address allocation
+                description: The mode for address allocation. If Address is set, this
+                  will be ignored.
                 type: string
               port:
                 description: The desired port for the service to run on
@@ -75,3 +76,5 @@ spec:
         type: object
     served: true
     storage: true
+    subresources:
+      status: {}

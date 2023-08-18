@@ -53,7 +53,7 @@ type ServiceSpec struct {
 	// The protocol, TCP or UDP
 	Protocol PortProtocol `json:"protocol,omitempty"`
 
-	// The mode for address allocation
+	// The mode for address allocation. If Address is set, this will be ignored.
 	AddressAllocationMode AddressAllocationMode `json:"addressAllocationMode,omitempty"`
 }
 
@@ -83,6 +83,7 @@ func (cs ServiceStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResour
 
 // Service represents a single service implemented by zero or more endpoints
 // +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // +k8s:openapi-gen=true
 // +kubebuilder:resource:scope=Cluster
 type Service struct {
