@@ -163,6 +163,34 @@ func All[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
 	return LenIf(ss, selector) == len(ss)
 }
 
+func Any[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
+	sf := func(i int, s T) bool {
+		switch tsf := (any)(selector).(type) {
+		case func(int, T) bool:
+			return tsf(i, s)
+		case func(T) bool:
+			return tsf(s)
+		case func(int, *T) bool:
+			return tsf(i, &s)
+		case func(*T) bool:
+			return tsf(&s)
+		default:
+			panic(fmt.Sprintf("accumulateIf cannot understand selector function type %T", selector))
+		}
+	}
+
+	if len(ss) == 0 {
+		return false
+	}
+
+	for i, s := range ss {
+		if sf(i, s) {
+			return true
+		}
+	}
+	return false
+}
+
 type accumulatorFunc[T any, R any] interface {
 	~func(R, T) R | ~func(R, *T) R
 }

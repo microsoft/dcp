@@ -251,6 +251,45 @@ func TestLenIf(t *testing.T) {
 	require.Equal(t, 0, result)
 }
 
+func TestAny(t *testing.T) {
+	// Any with empty data set should return false
+	var data []string
+	result := Any(data, func(s string) bool { return true })
+	require.False(t, result)
+
+	data = []string{"alpha1", "alpha2", "bravo1", "bravo2"}
+
+	// Selector includes index
+	result = Any(data, func(i int, s string) bool {
+		return strings.HasPrefix(s, "alpha")
+	})
+	require.True(t, result)
+
+	// Selector does not include index
+	result = Any(data, func(s string) bool {
+		return strings.HasPrefix(s, "alpha")
+	})
+	require.True(t, result)
+
+	// Selector includes index and operates on pointers
+	result = Any(data, func(i int, s *string) bool {
+		return strings.HasPrefix(*s, "alpha")
+	})
+	require.True(t, result)
+
+	// Selector does not include index and operates on pointers
+	result = Any(data, func(s *string) bool {
+		return strings.HasPrefix(*s, "alpha")
+	})
+	require.True(t, result)
+
+	// Any should be false if selector does not select anything
+	result = Any(data, func(s string) bool {
+		return false
+	})
+	require.False(t, result)
+}
+
 func TestNonEmpty(t *testing.T) {
 	// NonEmpty with slices of strings
 	require.Empty(t, NonEmpty[string]([]string{}))

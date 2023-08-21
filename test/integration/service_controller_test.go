@@ -52,12 +52,12 @@ func TestProxyStartedAndStopped(t *testing.T) {
 	})
 
 	selector := func(pe ctrl_testutil.ProcessExecution) bool {
-		hasAddressCanary := slices.LenIf(pe.Cmd.Args, func(arg string) bool {
+		hasAddressCanary := slices.Any(pe.Cmd.Args, func(arg string) bool {
 			return strings.Contains(arg, proxyAddress)
-		}) > 0
-		hasPortCanary := slices.LenIf(pe.Cmd.Args, func(arg string) bool {
+		})
+		hasPortCanary := slices.Any(pe.Cmd.Args, func(arg string) bool {
 			return strings.Contains(arg, fmt.Sprintf("%d", proxyPort))
-		}) > 0
+		})
 
 		return hasAddressCanary && hasPortCanary
 	}
