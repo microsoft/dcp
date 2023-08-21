@@ -222,7 +222,7 @@ link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sud
 endif
 
 .PHONY: install-proxy
-install-proxy:
+install-proxy: ## Installs the Traefik proxy used (necessary for running workloads with Service objects)
 ifeq ($(detected_OS),Windows)
 	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(detected_OS)_amd64.zip --output $(TOOL_BIN)\traefik.zip
 	Expand-Archive -Force -Path $(TOOL_BIN)\traefik.zip -DestinationPath $(TOOL_BIN)
