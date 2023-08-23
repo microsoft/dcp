@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -121,7 +120,6 @@ func TestServiceBecomesReady(t *testing.T) {
 		Spec: apiv1.EndpointSpec{
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
-			Owner:            corev1.ObjectReference{},
 			Address:          "127.0.0.1",
 			Port:             1234,
 		},
