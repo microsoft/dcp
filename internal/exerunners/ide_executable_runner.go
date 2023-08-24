@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,16 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+var lineSeparator []byte
+
+func init() {
+	if runtime.GOOS == "windows" {
+		lineSeparator = []byte("\r\n")
+	} else {
+		lineSeparator = []byte("\n")
+	}
+}
 
 type runState struct {
 	runID             controllers.RunID
@@ -420,10 +431,11 @@ func (r *IdeExecutableRunner) handleSessionLogs(nsl ideSessionLogNotification) {
 
 	runState := r.ensureRunState(runID)
 	var err error
+	msg := withNewLine([]byte(nsl.LogMessage))
 	if nsl.IsStdErr {
-		_, err = runState.stdErr.Write([]byte(nsl.LogMessage))
+		_, err = runState.stdErr.Write(msg)
 	} else {
-		_, err = runState.stdOut.Write([]byte(nsl.LogMessage))
+		_, err = runState.stdOut.Write(msg)
 	}
 
 	if err != nil {
@@ -474,6 +486,21 @@ func getLastUrlPathSegment(rawURL string) (string, error) {
 		return "", fmt.Errorf("URL '%s' has no path segments", rawURL)
 	}
 	return pathSegments[len(pathSegments)-1], nil
+}
+
+func withNewLine(msg []byte) []byte {
+	if endsWith(msg, lineSeparator) {
+		return msg
+	}
+	return append(msg, lineSeparator...)
+}
+
+func endsWith(a, b []byte) bool {
+	i := bytes.LastIndex(a, b)
+	if i == -1 {
+		return false
+	}
+	return i == len(a)-len(b)
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
