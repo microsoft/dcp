@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ import (
 
 type runState struct {
 	runID             controllers.RunID
+	sessionURL        string // The URL of the run session resource in the IDE
 	completionHandler controllers.RunCompletionHandler
 	handlerWG         *sync.WaitGroup
 	finished          bool
@@ -186,11 +188,16 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%s %s", resp.Status, respBody)
 	}
 
-	var runID controllers.RunID = controllers.RunID(resp.Header.Get("Location"))
-	if runID == "" {
+	sessionURL := resp.Header.Get("Location")
+	if sessionURL == "" {
 		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted + "the returned run ID was empty")
 	}
+	rid, err := getLastUrlPathSegment(sessionURL)
+	if err != nil {
+		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"could not parse the Location header which should contain the run session ID: %w", err)
+	}
 
+	runID := controllers.RunID(rid)
 	r.log.Info("IDE run session started", "RunID", runID)
 	exe.Status.ExecutionID = string(runID)
 	exe.Status.StartupTimestamp = metav1.Now()
@@ -202,6 +209,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	defer r.lock.Unlock()
 
 	rs := r.ensureRunState(runID)
+	rs.sessionURL = sessionURL
 	defer rs.IncreaseCompletionCallReadiness()
 	err = rs.SetOutputWriters(stdOutFile, stdErrFile)
 	if err != nil {
@@ -453,6 +461,19 @@ func (r *IdeExecutableRunner) closeNotifySocket() {
 		r.notifySocket = nil
 	}
 	r.lock.Unlock()
+}
+
+func getLastUrlPathSegment(rawURL string) (string, error) {
+	url, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	pathSegments := strings.Split(url.Path, "/")
+	if len(pathSegments) == 0 {
+		return "", fmt.Errorf("URL '%s' has no path segments", rawURL)
+	}
+	return pathSegments[len(pathSegments)-1], nil
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
