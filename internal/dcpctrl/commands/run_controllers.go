@@ -159,6 +159,15 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			return err
 		}
 
+		endpointCtrl := controllers.NewEndpointReconciler(
+			mgr.GetClient(),
+			log.WithName("EndpointReconciler"),
+		)
+		if err = endpointCtrl.SetupWithManager(mgr); err != nil {
+			log.Error(err, "unable to set up Endpoint controller")
+			return err
+		}
+
 		log.Info("starting controller manager")
 		err = mgr.Start(cmd.Context())
 		if err != nil {

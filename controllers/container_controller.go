@@ -124,7 +124,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	var change objectChange
-	patch := ctrl_client.MergeFrom(container.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
 		log.Info("Container object is being deleted...")

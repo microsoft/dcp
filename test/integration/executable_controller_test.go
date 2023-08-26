@@ -85,7 +85,7 @@ func TestExecutableIsStarted(t *testing.T) {
 }
 
 // Ensure exit code of processes/run sessions are captured correctly
-func TestExitCodeCaptured(t *testing.T) {
+func TestExecutableExitCodeCaptured(t *testing.T) {
 	type testcase struct {
 		description       string
 		exe               *apiv1.Executable
