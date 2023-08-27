@@ -137,18 +137,19 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = ensureFinalizer(&container, containerFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
-			change |= r.manageContainer(ctx, &container, log)
+			change = r.manageContainer(ctx, &container, log)
 		}
-	}
-
-	if change == noChange {
-		log.V(1).Info("no changes detected for Container object, continue monitoring...")
-		return ctrl.Result{}, nil
 	}
 
 	var update *apiv1.Container
 
-	if (change & statusChanged) != 0 {
+	// Apply one update per reconciliation function invocation,
+	// to avoid observing "partially updated" objects during subsequent reconciliations.
+	switch {
+	case change == noChange:
+		log.V(1).Info("no changes detected for Container object, continue monitoring...")
+		return ctrl.Result{}, nil
+	case (change & statusChanged) != 0:
 		update = container.DeepCopy()
 		err = r.Status().Patch(ctx, update, patch)
 		if err != nil {
@@ -157,9 +158,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		} else {
 			log.V(1).Info("Container status update succeeded")
 		}
-	}
-
-	if (change & (metadataChanged | specChanged)) != 0 {
+	case (change & (metadataChanged | specChanged)) != 0:
 		update = container.DeepCopy()
 		err = r.Patch(ctx, update, patch)
 		if err != nil {
