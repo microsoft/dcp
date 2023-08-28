@@ -18,33 +18,51 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 const (
-	workloadOwnerKey = ".metadata.owner"
+	workloadOwnerKey          = ".metadata.owner"
+	serviceProducerAnnotation = "service-producer"
 )
 
 var (
 	endpointFinalizer string = fmt.Sprintf("%s/endpoint-reconciler", apiv1.GroupVersion.Group)
 )
 
-type EndpointReconcilerForKind[T any, PT PObjectStruct[T], DT DeepCopyableObject[T, PT]] struct {
+type ContainerOrExecutable interface {
+	apiv1.Container | apiv1.Executable
+}
+
+type EndpointReconcilerForKind[T ContainerOrExecutable, PT PObjectStruct[T], DT DeepCopyableObject[T, PT]] struct {
 	innerReconciler *EndpointReconciler
 }
 
 func (erk *EndpointReconcilerForKind[T, PT, DT]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	return ReconcileEndpointsForObject[T, PT, DT](erk.innerReconciler, ctx, req)
+	return reconcileEndpointsForObject[T, PT, DT](erk.innerReconciler, ctx, req)
+}
+
+type ServiceWorkloadEndpointKey struct {
+	NamespacedNameWithKind
+	ServiceName string
 }
 
 type EndpointReconciler struct {
 	ctrl_client.Client
 	Log logr.Logger
+
+	// Local cache of freshly created workload endpoints.
+	// This is used to avoid re-creating the same endpoint multiple times.
+	// Because there can only be one Endpoint per workload/service combination,
+	// we only need to know whenther that combination exists or not.
+	workloadEndpoints syncmap.Map[ServiceWorkloadEndpointKey, bool]
 }
 
 func NewEndpointReconciler(client ctrl_client.Client, log logr.Logger) *EndpointReconciler {
 	r := EndpointReconciler{
-		Client: client,
-		Log:    log,
+		Client:            client,
+		Log:               log,
+		workloadEndpoints: syncmap.Map[ServiceWorkloadEndpointKey, bool]{},
 	}
 	return &r
 }
@@ -66,7 +84,6 @@ func (r *EndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	err := ctrl.NewControllerManagedBy(mgr).
 		Named("ContainerEndpointReconciler").
 		Watches(&apiv1.Container{}, handler.EnqueueRequestsFromMapFunc(requestReconcile)).
-		WithEventFilter(&CreateDeletePredicate{}).
 		Complete(&reconcilerForContainers)
 
 	if err != nil {
@@ -76,11 +93,16 @@ func (r *EndpointReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	reconcilerForExecutables := EndpointReconcilerForKind[apiv1.Executable, *apiv1.Executable, *apiv1.Executable]{
 		innerReconciler: r,
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	err = ctrl.NewControllerManagedBy(mgr).
 		Named("ExecutableEndpointReconciler").
 		Watches(&apiv1.Executable{}, handler.EnqueueRequestsFromMapFunc(requestReconcile)).
-		WithEventFilter(&CreateDeletePredicate{}).
 		Complete(&reconcilerForExecutables)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func requestReconcile(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
@@ -94,7 +116,11 @@ func requestReconcile(ctx context.Context, obj ctrl_client.Object) []reconcile.R
 	}
 }
 
-func ReconcileEndpointsForObject[T any, PT PObjectStruct[T], DT DeepCopyableObject[T, PT]](r *EndpointReconciler, ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func reconcileEndpointsForObject[T ContainerOrExecutable, PT PObjectStruct[T], DT DeepCopyableObject[T, PT]](
+	r *EndpointReconciler,
+	ctx context.Context,
+	req ctrl.Request,
+) (ctrl.Result, error) {
 	workload := *new(T)
 	workloadPtr := DT(&workload)
 	kind := workloadPtr.GetObjectKind().GroupVersionKind().Kind
@@ -124,19 +150,24 @@ func ReconcileEndpointsForObject[T any, PT PObjectStruct[T], DT DeepCopyableObje
 	patch := ctrl_client.MergeFromWithOptions(workloadPtr.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if workloadPtr.GetDeletionTimestamp() != nil && !workloadPtr.GetDeletionTimestamp().IsZero() {
-		r.removeEndpointForWorkload(ctx, workloadPtr, log)
+		r.removeEndpointsForWorkload(ctx, workloadPtr, log)
 		change = deleteFinalizer(workloadPtr, endpointFinalizer)
 	} else {
 		change = ensureFinalizer(workloadPtr, endpointFinalizer)
 		if change == noChange {
-			change = r.ensureEndpointForWorkload(ctx, workloadPtr, log)
+			var childEndpoints apiv1.EndpointList
+			if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(req.Namespace), ctrl_client.MatchingFields{workloadOwnerKey: string(workloadPtr.GetUID())}); err != nil {
+				log.Error(err, "failed to list child Endpoint objects")
+				return ctrl.Result{}, err
+			}
+			ensureEndpointForWorkload(r, ctx, workloadPtr, childEndpoints, log)
 		}
 	}
 
 	var update PT
 
 	switch {
-	case change&statusChanged != 0:
+	case (change & statusChanged) != 0:
 		update = workloadPtr.DeepCopy()
 		err := r.Status().Patch(ctx, update, patch)
 		if err != nil {
@@ -145,7 +176,7 @@ func ReconcileEndpointsForObject[T any, PT PObjectStruct[T], DT DeepCopyableObje
 		} else {
 			log.V(1).Info("workload status update succeeded")
 		}
-	case change&metadataChanged != 0:
+	case (change & metadataChanged) != 0:
 		update = workloadPtr.DeepCopy()
 		err := r.Patch(ctx, update, patch)
 		if err != nil {
@@ -161,90 +192,199 @@ func ReconcileEndpointsForObject[T any, PT PObjectStruct[T], DT DeepCopyableObje
 	} else {
 		return ctrl.Result{}, nil
 	}
+
 }
 
-func (r *EndpointReconciler) ensureEndpointForWorkload(ctx context.Context, owner ctrl_client.Object, log logr.Logger) objectChange {
-	var serviceProducer ServiceProducer
+func ensureEndpointForWorkload(
+	r *EndpointReconciler,
+	ctx context.Context,
+	owner ctrl_client.Object,
+	childEndpoints apiv1.EndpointList,
+	log logr.Logger,
+) {
+	var serviceProducers []ServiceProducer
 	var err error
-
 	annotations := owner.GetAnnotations()
 
-	if serviceProducerAnnotation, ok := annotations["service-producer"]; ok {
-		if serviceProducer, err = parseServiceProducerAnnotation(serviceProducerAnnotation); err != nil {
-			log.Error(err, "could not parse service-producer annotation")
-			return noChange
-		} else {
-			log.V(1).Info("found service-producer annotation", "serviceProducer", serviceProducer)
-		}
-	} else {
+	spa, found := annotations[serviceProducerAnnotation]
+	if !found {
 		log.V(1).Info("no service-producer annotation found on Container/Executable object")
-		return noChange
+		return
 	}
 
-	endpointName, err := MakeUniqueName(owner.GetName())
+	serviceProducers, err = parseServiceProducerAnnotation(spa)
+	if err != nil {
+		log.Error(err, serviceProducerIsInvalid)
+		return
+	}
+
+	for _, serviceProducer := range serviceProducers {
+		// Check if we have already created an Endpoint for this workload.
+		sweKey := ServiceWorkloadEndpointKey{
+			NamespacedNameWithKind: NamespacedNameWithKind{
+				NamespacedName: types.NamespacedName{
+					Namespace: owner.GetNamespace(),
+					Name:      owner.GetName(),
+				},
+				Kind: owner.GetObjectKind().GroupVersionKind().Kind,
+			},
+			ServiceName: serviceProducer.ServiceName,
+		}
+		hasEndpoints := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
+			return e.Spec.ServiceName == serviceProducer.ServiceName
+		})
+		if hasEndpoints {
+			log.V(1).Info("Endpoint already exists for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+
+			// Client has caught up and has the info about the service endpoint workload, we can clear the local cache.
+			r.workloadEndpoints.Delete(sweKey)
+
+			continue
+		}
+		_, found := r.workloadEndpoints.Load(sweKey)
+		if found {
+			log.V(1).Info("Endpoint was just created for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+			continue
+		}
+
+		var endpoint *apiv1.Endpoint
+		switch sweKey.Kind {
+		case "Container":
+			endpoint, err = r.createEndpointForContainer(ctx, (owner).(*apiv1.Container), serviceProducer, log)
+		case "Executable":
+			endpoint, err = r.createEndpointForExecutable(ctx, (owner).(*apiv1.Executable), serviceProducer, log)
+		default:
+			// Should never happen.
+			panic(fmt.Errorf("don't know how to create endpont for kind: '%s'", sweKey.Kind))
+		}
+
+		if err != nil {
+			log.Error(err, "could not create Endpoint object")
+			continue
+		}
+
+		// CONSIDER: this is not necessary if we just Watch(Executable), but if we ever decide to to
+		// For(Executable).Owns(Endpoint) and For(Container).Owns(Endpoint), then setting the controller reference
+		// will trigger our reconcile loop if any of the Endpoints change.
+		/*
+			if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
+				log.Error(err, "failed to set owner for endpoint")
+				return metadataChanged
+			}
+		*/
+
+		if err := r.Create(ctx, endpoint); err != nil {
+			log.Error(err, "could not persist Endpoint object")
+		}
+
+		r.workloadEndpoints.Store(sweKey, true)
+	}
+}
+
+func (r *EndpointReconciler) createEndpointForContainer(
+	ctx context.Context,
+	ctr *apiv1.Container,
+	serviceProducer ServiceProducer,
+	log logr.Logger,
+) (*apiv1.Endpoint, error) {
+	endpointName, err := MakeUniqueName(ctr.GetName())
 	if err != nil {
 		log.Error(err, "could not generate unique name for Endpoint object")
-		return noChange
+		return nil, err
 	}
 
-	namespace := owner.GetNamespace()
-	var address string
 	if serviceProducer.Address != "" {
-		address = serviceProducer.Address
-	} else {
+		log.Error(fmt.Errorf("address cannot be specified for Container objects"), serviceProducerIsInvalid)
+		return nil, err
+	}
+
+	// TODO: validate port according to descirption in ServiceProducer struct below
+
+	// Otherwise, create a new Endpoint object.
+	endpoint := &apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      endpointName,
+			Namespace: ctr.Namespace,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: ctr.Namespace,
+			ServiceName:      serviceProducer.ServiceName,
+			Address:          "", // TODO: find address to use
+			Port:             0,  // TODO: find port to use
+		},
+	}
+
+	return endpoint, nil
+}
+
+func (r *EndpointReconciler) createEndpointForExecutable(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	serviceProducer ServiceProducer,
+	log logr.Logger,
+) (*apiv1.Endpoint, error) {
+	endpointName, err := MakeUniqueName(exe.GetName())
+	if err != nil {
+		log.Error(err, "could not generate unique name for Endpoint object")
+		return nil, err
+	}
+
+	address := serviceProducer.Address
+	if address == "" {
 		address = "localhost"
 	}
 
 	// Otherwise, create a new Endpoint object.
 	endpoint := &apiv1.Endpoint{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        endpointName,
-			Namespace:   namespace,
-			Labels:      make(map[string]string),
-			Annotations: make(map[string]string),
+			Name:      endpointName,
+			Namespace: exe.Namespace,
 		},
 		Spec: apiv1.EndpointSpec{
-			ServiceNamespace: namespace,
+			ServiceNamespace: exe.Namespace,
 			ServiceName:      serviceProducer.ServiceName,
 			Address:          address,
 			Port:             serviceProducer.Port,
 		},
 	}
 
-	// Set the Executable/Container as the owner of the Endpoint so that deletion of the owner will
-	// delete the Endpoint
-	if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
-		log.Error(err, "failed to set owner for endpoint")
-		return noChange
-	}
-
-	if err := r.Create(ctx, endpoint); err != nil {
-		log.Error(err, "could not create Endpoint object")
-		return noChange
-	}
-
-	return noChange
+	return endpoint, nil
 }
 
-func (r *EndpointReconciler) removeEndpointForWorkload(ctx context.Context, owner ctrl_client.Object, log logr.Logger) objectChange {
+func (r *EndpointReconciler) removeEndpointsForWorkload(ctx context.Context, owner ctrl_client.Object, log logr.Logger) objectChange {
 	err := r.DeleteAllOf(ctx, &apiv1.Endpoint{}, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())})
 
 	if err != nil {
 		log.Error(err, "could not delete Endpoint object")
 	}
 
+	// TODO: remove corresponding entries from r.workloadEndpoints, if any
+
 	return noChange
 }
 
-func parseServiceProducerAnnotation(annotation string) (ServiceProducer, error) {
-	var serviceProducer ServiceProducer
-	err := json.Unmarshal([]byte(annotation), &serviceProducer)
+func parseServiceProducerAnnotation(annotation string) ([]ServiceProducer, error) {
+	retval := make([]ServiceProducer, 0)
+	err := json.Unmarshal([]byte(annotation), &retval)
 
-	return serviceProducer, err
+	return retval, err
 }
 
+const serviceProducerIsInvalid = "service-producer annotation is invalid"
+
 type ServiceProducer struct {
+	// Name of the service that the workload implements.
 	ServiceName string `json:"serviceName"`
-	Address     string `json:"address,omitempty"`
-	Port        int32  `json:"port"`
+
+	// Address used by the workload to serve the service.
+	// In the current implementation it only applies to Executables and defaults to localhost if not present.
+	// (Containers use the address specified by their Spec).
+	Address string `json:"address,omitempty"`
+
+	// Port used by the workload to serve the service. Mandatory.
+	// For Containers it must match one of the Container ports.
+	// We first match on HostPort, and if one is found, we use that port.
+	// If no HostPort is found, we match on ContainerPort for ports that do not specify a HostPort
+	// (the port is auto-allocated by Docker). If such port is found, we proxy to the auto-allocated host port.
+	Port int32 `json:"port"`
 }

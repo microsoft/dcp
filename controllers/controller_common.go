@@ -10,6 +10,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -86,4 +87,9 @@ type DeepCopyableObject[T any, PT PObjectStruct[T]] interface {
 	// So we need to settle for this kind of gymnastics and say that DeepCopy() returns PObjectStruct[T], and not DeepCopyableObbject[T]
 	// This is not really what we want, but sufficient for the code we need in controllers.
 	DeepCopy() PT
+}
+
+type NamespacedNameWithKind struct {
+	types.NamespacedName
+	Kind string
 }
