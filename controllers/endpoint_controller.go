@@ -263,15 +263,10 @@ func ensureEndpointForWorkload(
 			continue
 		}
 
-		// CONSIDER: this is not necessary if we just Watch(Executable), but if we ever decide to to
-		// For(Executable).Owns(Endpoint) and For(Container).Owns(Endpoint), then setting the controller reference
-		// will trigger our reconcile loop if any of the Endpoints change.
-		/*
-			if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
-				log.Error(err, "failed to set owner for endpoint")
-				return metadataChanged
-			}
-		*/
+		if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
+			log.Error(err, "failed to set owner for endpoint")
+			return metadataChanged
+		}
 
 		if err := r.Create(ctx, endpoint); err != nil {
 			log.Error(err, "could not persist Endpoint object")
