@@ -20,7 +20,7 @@ import (
 
 func TestProxyStartedAndStopped(t *testing.T) {
 	proxyAddress := "127.1.2.3"
-	proxyPort := uint16(1234)
+	proxyPort := int32(1234)
 
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -81,7 +81,7 @@ func TestProxyStartedAndStopped(t *testing.T) {
 
 func TestServiceBecomesReady(t *testing.T) {
 	proxyAddress := "127.5.6.7"
-	proxyPort := uint16(5678)
+	proxyPort := int32(5678)
 
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

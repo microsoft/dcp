@@ -17,7 +17,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
-func ensureKubeconfigFile(configPath string, port uint16) (string, error) {
+func ensureKubeconfigFile(configPath string, port int32) (string, error) {
 	info, err := os.Stat(configPath)
 	if err != nil && errors.Is(err, iofs.ErrNotExist) {
 		if err := createKubeconfigFile(configPath, port); err != nil {
@@ -37,7 +37,7 @@ func ensureKubeconfigFile(configPath string, port uint16) (string, error) {
 // If the --kubeconfig parameter is passed, the returned value will be the parameter value.
 // If the --kubeconfig parameter is missing, the default location (~/.dcp/kubeconfig) will be checked,
 // and if the kubeconfig file is not there, it will be created.
-func EnsureKubeconfigFile(fs *pflag.FlagSet, port uint16) (string, error) {
+func EnsureKubeconfigFile(fs *pflag.FlagSet, port int32) (string, error) {
 	f := EnsureKubeconfigFlag(fs)
 	if f != nil {
 		path := strings.TrimSpace(f.Value.String())
@@ -58,7 +58,7 @@ func EnsureKubeconfigFile(fs *pflag.FlagSet, port uint16) (string, error) {
 	return ensureKubeconfigFile(defaultPath, port)
 }
 
-func createKubeconfigFile(path string, port uint16) error {
+func createKubeconfigFile(path string, port int32) error {
 	if port == 0 {
 		if newPort, err := networking.GetFreePort(apiv1.TCP, "localhost"); err != nil {
 			return err

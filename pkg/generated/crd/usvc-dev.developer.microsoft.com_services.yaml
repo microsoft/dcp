@@ -44,6 +44,9 @@ spec:
                 type: string
               port:
                 description: The desired port for the service to run on
+                format: int32
+                maximum: 65535
+                minimum: 0
                 type: integer
               protocol:
                 description: The protocol, TCP or UDP
@@ -57,6 +60,9 @@ spec:
                 type: string
               effectivePort:
                 description: The actual port the service is running on
+                format: int32
+                maximum: 65535
+                minimum: 0
                 type: integer
               proxyConfigFile:
                 description: The path of the proxy config file for this service containing
