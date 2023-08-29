@@ -32,11 +32,12 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	}
 
 	kubeconfig.EnsureKubeconfigFlag(startApiSrvCmd.Flags())
+	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	startApiSrvCmd.Flags().Int32VarP(&monitorPid, "monitor", "m", process.UnknownPID, "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
 	startApiSrvCmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
-	startApiSrvCmd.Flags().BoolVarP(&detach, "detach", "", false, "If present, instructs DCP to fork itself as a detached process.")
+	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
 
 	return startApiSrvCmd, nil
 }
@@ -57,9 +58,6 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)
 
 			forked := exec.Command(os.Args[0], args...)
-			forked.Stdin = os.Stdin
-			forked.Stdout = os.Stdout
-			forked.Stderr = os.Stderr
 			process.ForkFromParent(forked)
 
 			if err := forked.Start(); err != nil {
@@ -69,13 +67,12 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 				log.V(1).Info("Forked process started", "pid", forked.Process.Pid)
 			}
 
-			err := forked.Wait()
-			log.V(1).Info("Forked process exited", "err", err)
-			if forked.ProcessState != nil {
-				os.Exit(forked.ProcessState.ExitCode())
-			} else {
+			if err := forked.Process.Release(); err != nil {
+				log.Error(err, "release failed for process", "pid", forked.Process.Pid)
 				return err
 			}
+
+			return nil
 		}
 
 		var err error

@@ -9,7 +9,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 )
 
-func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
+func GetFreePort(protocol apiv1.PortProtocol, address string) (uint16, error) {
 	if address == "" {
 		address = "localhost"
 	}
@@ -23,7 +23,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 		if listener, err := net.ListenUDP("udp", udpaddr); err != nil {
 			return 0, err
 		} else {
-			port := int32(listener.LocalAddr().(*net.UDPAddr).Port)
+			port := uint16(listener.LocalAddr().(*net.UDPAddr).Port)
 			listener.Close()
 			return port, nil
 		}
@@ -36,7 +36,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 		if listener, err := net.ListenTCP("tcp", tcpaddr); err != nil {
 			return 0, err
 		} else {
-			port := int32(listener.Addr().(*net.TCPAddr).Port)
+			port := uint16(listener.Addr().(*net.TCPAddr).Port)
 			listener.Close()
 			return port, nil
 		}

@@ -16,7 +16,7 @@ func DecoupleFromParent(cmd *exec.Cmd) {
 // Use separate process group so this process exit will not affect the children.
 // This is the same as DecoupleFromParent on Unix systems.
 func ForkFromParent(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: 0}
 }
 
 func FindProcess(pid int32) (*os.Process, error) {

@@ -48,7 +48,7 @@ type ServiceSpec struct {
 	Address string `json:"address,omitempty"`
 
 	// The desired port for the service to run on
-	Port int32 `json:"port,omitempty"`
+	Port uint16 `json:"port,omitempty"`
 
 	// The protocol, TCP or UDP
 	Protocol PortProtocol `json:"protocol,omitempty"`
@@ -74,7 +74,7 @@ type ServiceStatus struct {
 	EffectiveAddress string `json:"effectiveAddress,omitempty"`
 
 	// The actual port the service is running on
-	EffectivePort int32 `json:"effectivePort,omitempty"`
+	EffectivePort uint16 `json:"effectivePort,omitempty"`
 }
 
 func (cs ServiceStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

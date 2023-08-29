@@ -41,9 +41,9 @@ This command currently supports only Azure CLI-enabled applications of certain t
 	}
 
 	kubeconfig.EnsureKubeconfigFlag(upCmd.Flags())
+	kubeconfig.EnsureKubeconfigPortFlag(upCmd.Flags())
 
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
-
 	upCmd.Flags().StringVarP(&upFlags.renderer, "app-type", "", "", "Specifies the type of application to run, if the type cannot be inferred unambiguously.")
 
 	return upCmd, nil
