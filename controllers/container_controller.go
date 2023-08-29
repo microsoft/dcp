@@ -133,13 +133,11 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Removing the finalizer will unblock the deletion of the Container object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
-		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
-			ensureEndpointsForWorkload(r, ctx, &container, log)
 		}
 	}
 

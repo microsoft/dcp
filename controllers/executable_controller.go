@@ -116,14 +116,12 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.stopExecutable(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer)
 		r.deleteOutputFiles(&exe, log)
-		removeEndpointsForWorkload(r, ctx, &exe, log)
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.updateRunState(&exe, log)
 			change |= r.runExecutable(ctx, &exe, log)
-			ensureEndpointsForWorkload(r, ctx, &exe, log)
 		}
 	}
 
