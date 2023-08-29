@@ -69,10 +69,10 @@ const (
 // +k8s:openapi-gen=true
 type ContainerPort struct {
 	// Optional: If specified, this must be a valid port number, 0 < x < 65536.
-	HostPort int32 `json:"hostPort,omitempty"`
+	HostPort uint16 `json:"hostPort,omitempty"`
 
 	// Required: This must be a valid port number, 0 < x < 65536.
-	ContainerPort int32 `json:"containerPort"`
+	ContainerPort uint16 `json:"containerPort"`
 
 	// The port to be used, defaults to TCP
 	Protocol PortProtocol `json:"protocol,omitempty"`

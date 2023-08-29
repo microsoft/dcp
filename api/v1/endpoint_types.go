@@ -31,7 +31,7 @@ type EndpointSpec struct {
 	Address string `json:"address"`
 
 	// The desired port for the endpoint to run on
-	Port int32 `json:"port"`
+	Port uint16 `json:"port"`
 }
 
 // EndpointStatus describes the status of a Endpoint
