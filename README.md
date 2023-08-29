@@ -78,6 +78,45 @@ A couple of debugging configurations are provided in `.vscode/launch.json`:
 
 You can use these configurations as a starting point to create your own configurations for specific scenarios. Check out [VS Code Go debugging wiki](https://github.com/golang/vscode-go/wiki/debugging) for more information.
 
+
+## Running tests
+
+### Run all tests
+`make test` will install all dependencies and run all the tests.
+
+### Running subsets of tests from command line
+You can also run individual tests from command line, including integration tests. To do so you just need to ensure that the K8s binaries are downloaded and set the `KUBEBUILDER_ASSETS` environment variable. To see what the variable value should be (and install K8s test binaries as a side effect) do
+
+```shell
+make show-test-vars
+```
+After that set the `KUBEBUILDER_ASSETS` environment variable, for example
+
+```shell
+$env:KUBEBUILDER_ASSETS = '(value shown by make show-test-vars)' # Windows
+export KUBEBUILDER_ASSETS='(value shown by make show-test-vars)' # Non-Windows
+```
+Now you can run `go test` commands to run tests, for example, to run just Endpoint controller tests in verbose mode with race detection:
+
+```shell
+ go test -race -run TestEndpoint -v ./test/integration/...
+```
+
+### Debugging tests
+You can also run individual tests via VS Code "run test" and "debug test" gestures. A few caveats:
+
+1. Run `make test` at least once from command line before debugging tests. This will ensure that test K8s binaries are downloaded and installed properly into `.toolbin` directory.
+1. Integration test timeouts are increased to 60 minutes (refer to `.vscode/settings.json` to change that). This helps with test debugging.
+1. If the test is killed while running under the debugger, it will leave orphaned `kube-apiserver` and `etcd` processes. You can check if such processes exist by running following commands: 
+
+    | Task | Command (macOS) | Command (Linux) | Command (Windows) |
+    | --- | --- | --- | --- |
+    | Check for orphaned `kube-apiserver` and `etcd` processes. | `pgrep -lf kube-apiserver` <br/> `pgrep -lf etcd` | `pgrep -af kube-apiserver` <br/> `pgrep -af etcd` | `pslist kube-apiserver` <br/> `pslist etcd` |
+    | Kill orphaned `kube-apiserver` and `etcd` processes. | `pkill -lf kube-apiserver` <br/> `pkill -lf etcd` | `pkill -af kube-apiserver` <br/> `pkill -af etcd` | `pskill kube-apiserver` <br/> `pskill etcd` |
+
+    `pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
+
+
 ## Troubleshooting tips
 
 | Issue | Tip |

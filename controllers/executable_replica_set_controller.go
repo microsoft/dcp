@@ -220,13 +220,8 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		}
 	}
 
-	var childExecutables apiv1.ExecutableList
-	if err := r.List(ctx, &childExecutables, ctrl_client.InNamespace(req.Namespace), ctrl_client.MatchingFields{exeOwnerKey: req.Name}); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	var change objectChange
-	patch := ctrl_client.MergeFrom(replicaSet.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(replicaSet.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() {
 		// Deletion has ben requested, so ensure that we start scaling down to zero replicas.
@@ -248,6 +243,13 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
+			var childExecutables apiv1.ExecutableList
+			err := r.List(ctx, &childExecutables, ctrl_client.InNamespace(req.Namespace), ctrl_client.MatchingFields{exeOwnerKey: req.Name})
+			if err != nil {
+				log.Error(err, "failed to list child Executable objects")
+				return ctrl.Result{}, err
+			}
+
 			change |= r.updateReplicas(ctx, &replicaSet, childExecutables, log)
 		}
 	}

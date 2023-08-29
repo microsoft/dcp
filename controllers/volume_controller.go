@@ -68,7 +68,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	var change objectChange
-	patch := ctrl_client.MergeFrom(vol.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(vol.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if vol.DeletionTimestamp != nil && !vol.DeletionTimestamp.IsZero() {
 		log.Info("ContainerVolume object is being deleted")

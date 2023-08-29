@@ -109,17 +109,13 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	var change objectChange
-	patch := ctrl_client.MergeFrom(exe.DeepCopy())
+	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
 		log.Info("Executable is being deleted...")
 		r.stopExecutable(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer)
-		change |= r.deleteOutputFiles(&exe, log)
-
-		// Removing the finalizer will unblock the deletion of the Executable object.
-		// Status update will fail, because the object will no longer be there, so suppress it.
-		change &= ^statusChanged
+		r.deleteOutputFiles(&exe, log)
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
@@ -129,23 +125,22 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	if change == noChange {
-		log.V(1).Info("no changes detected for Executable, continue monitoring...")
-		return ctrl.Result{}, nil
-	}
-
 	var update *apiv1.Executable
 
-	if (change & statusChanged) != 0 {
+	// Apply one update per reconciliation function invocation,
+	// to avoid observing "partially updated" objects during subsequent reconciliations.
+	switch {
+	case change == noChange:
+		log.V(1).Info("no changes detected for Executable, continue monitoring...")
+		return ctrl.Result{}, nil
+	case (change & statusChanged) != 0:
 		update = exe.DeepCopy()
 		if err := r.Status().Patch(ctx, update, patch); err != nil {
 			log.Error(err, "Executable status update failed")
 			return ctrl.Result{}, err
 		}
 		log.V(1).Info("Executable status update succeeded")
-	}
-
-	if (change & (metadataChanged | specChanged)) != 0 {
+	case (change & (metadataChanged | specChanged)) != 0:
 		update = exe.DeepCopy()
 		if err := r.Patch(ctx, update, patch); err != nil {
 			log.Error(err, "Executable update failed")
@@ -299,26 +294,20 @@ func (r *ExecutableReconciler) updateRunState(exe *apiv1.Executable, log logr.Lo
 	return change
 }
 
-func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) objectChange {
-	retval := noChange
+func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
+	// Do not bother updating the Executable object--this method is called when the object is being deleted.
 
 	if exe.Status.StdOutFile != "" {
 		if err := os.Remove(exe.Status.StdOutFile); err != nil {
 			log.Error(err, "could not remove process's standard output file", "path", exe.Status.StdOutFile)
 		}
-		exe.Status.StdOutFile = ""
-		retval = statusChanged
 	}
 
 	if exe.Status.StdErrFile != "" {
 		if err := os.Remove(exe.Status.StdErrFile); err != nil {
 			log.Error(err, "could not remove process's standard error file", "path", exe.Status.StdErrFile)
 		}
-		exe.Status.StdErrFile = ""
-		retval = statusChanged
 	}
-
-	return retval
 }
 
 func (r *ExecutableReconciler) scheduleExecutableReconciliation(target types.NamespacedName, finishedRunID RunID) error {

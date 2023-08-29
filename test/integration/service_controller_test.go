@@ -18,7 +18,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
-func TestProxyStartedAndStopped(t *testing.T) {
+func TestServiceProxyStartedAndStopped(t *testing.T) {
 	proxyAddress := "127.1.2.3"
 	proxyPort := int32(1234)
 
@@ -139,7 +139,7 @@ func TestServiceBecomesReady(t *testing.T) {
 	t.Log("Service is in state Ready.")
 }
 
-func TestRandomPort(t *testing.T) {
+func TestServiceRandomPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -167,7 +167,7 @@ func TestRandomPort(t *testing.T) {
 	t.Log("Service has random port.")
 }
 
-func TestIPv6Address(t *testing.T) {
+func TestServiceIPv6Address(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()

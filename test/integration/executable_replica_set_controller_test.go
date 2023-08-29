@@ -365,7 +365,7 @@ func updateExecutableReplicaSet(ctx context.Context, key ctrl_client.ObjectKey, 
 			continue
 		}
 
-		patch := ctrl_client.MergeFrom(exers.DeepCopy())
+		patch := ctrl_client.MergeFromWithOptions(exers.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 		if err := applyChanges(&exers); err != nil {
 			lastError = err
 			time.Sleep(time.Second)

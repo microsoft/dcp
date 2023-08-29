@@ -194,12 +194,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	return flushFn, nil
 }
 
-type PObjectStruct[T any] interface {
-	*T
-	ctrl_client.Object
-}
-
-func waitObjectAssumesState[T any, PT PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName, isInState func(*T) (bool, error)) *T {
+func waitObjectAssumesState[T any, PT controllers.PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName, isInState func(*T) (bool, error)) *T {
 	var updatedObject *T = new(T)
 
 	hasExpectedState := func(ctx context.Context) (bool, error) {
@@ -221,7 +216,7 @@ func waitObjectAssumesState[T any, PT PObjectStruct[T]](t *testing.T, ctx contex
 	}
 }
 
-func waitObjectDeleted[T any, PT PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName) {
+func waitObjectDeleted[T any, PT controllers.PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName) {
 	objectNotFound := func(ctx context.Context) (bool, error) {
 		var obj T = *new(T)
 		err := client.Get(ctx, name, PT(&obj))
