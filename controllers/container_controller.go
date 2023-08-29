@@ -21,6 +21,8 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 const (
@@ -62,6 +64,12 @@ type ContainerReconciler struct {
 
 	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
 	lifetimeCtx context.Context
+
+	// Local cache of freshly created workload endpoints.
+	// This is used to avoid re-creating the same endpoint multiple times.
+	// Because there can only be one Endpoint per workload+service combination,
+	// we only need to know whether that combination exists or not.
+	workloadEndpoints syncmap.Map[ServiceWorkloadEndpointKey, bool]
 }
 
 func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.ContainerOrchestrator) *ContainerReconciler {
@@ -76,6 +84,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		debouncer:              newReconcilerDebouncer[string](reconciliationDebounceDelay),
 		lock:                   &sync.Mutex{},
 		lifetimeCtx:            lifetimeCtx,
+		workloadEndpoints:      syncmap.Map[ServiceWorkloadEndpointKey, bool]{},
 	}
 
 	r.Log = log.WithValues("Controller", containerFinalizer)
@@ -90,8 +99,19 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Source: r.notifyContainerChanged,
 	}
 
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, workloadOwnerKey, func(rawObj ctrl_client.Object) []string {
+		endpoint := rawObj.(*apiv1.Endpoint)
+		return slices.Map[metav1.OwnerReference, string](endpoint.OwnerReferences, func(ref metav1.OwnerReference) string {
+			return string(ref.UID)
+		})
+	}); err != nil {
+		r.Log.Error(err, "failed to create owner index for Endpoint")
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Container{}).
+		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
 		Complete(r)
 }
@@ -133,11 +153,13 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Removing the finalizer will unblock the deletion of the Container object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
+		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
+			ensureEndpointsForWorkload(r, ctx, &container, log)
 		}
 	}
 
@@ -428,4 +450,43 @@ func (r *ContainerReconciler) cancelContainerWatch() {
 func (r *ContainerReconciler) onShutdown() {
 	<-r.lifetimeCtx.Done()
 	r.cancelContainerWatch()
+}
+
+func (r *ContainerReconciler) getWorkloadEndpointCache() *syncmap.Map[ServiceWorkloadEndpointKey, bool] {
+	return &r.workloadEndpoints
+}
+
+func createEndpointForContainer(
+	ctr *apiv1.Container,
+	serviceProducer ServiceProducer,
+	log logr.Logger,
+) (*apiv1.Endpoint, error) {
+	endpointName, err := MakeUniqueName(ctr.GetName())
+	if err != nil {
+		log.Error(err, "could not generate unique name for Endpoint object")
+		return nil, err
+	}
+
+	if serviceProducer.Address != "" {
+		log.Error(fmt.Errorf("address cannot be specified for Container objects"), serviceProducerIsInvalid)
+		return nil, err
+	}
+
+	// TODO: validate port according to descirption in ServiceProducer struct below
+
+	// Otherwise, create a new Endpoint object.
+	endpoint := &apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      endpointName,
+			Namespace: ctr.Namespace,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: ctr.Namespace,
+			ServiceName:      serviceProducer.ServiceName,
+			Address:          "", // TODO: find address to use, from either container spec or inspection
+			Port:             0,  // TODO: find port to use, from either container spec or inspection
+		},
+	}
+
+	return endpoint, nil
 }

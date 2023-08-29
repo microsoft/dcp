@@ -136,14 +136,14 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.stopExecutable(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer)
 		r.deleteOutputFiles(&exe, log)
-		r.removeEndpointsForExecutable(ctx, &exe, log)
+		removeEndpointsForWorkload(r, ctx, &exe, log)
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.updateRunState(&exe, log)
 			change |= r.runExecutable(ctx, &exe, log)
-			r.ensureEndpointsForExecutable(ctx, &exe, log)
+			ensureEndpointsForWorkload(r, ctx, &exe, log)
 		}
 	}
 
@@ -358,88 +358,40 @@ func (r *ExecutableReconciler) scheduleExecutableReconciliation(target types.Nam
 	}
 }
 
-func (r *ExecutableReconciler) ensureEndpointsForExecutable(ctx context.Context, owner *apiv1.Executable, log logr.Logger) {
-	var serviceProducers []ServiceProducer
-	var err error
-	annotations := owner.GetAnnotations()
-
-	spa, found := annotations[serviceProducerAnnotation]
-	if !found {
-		log.V(1).Info("no service-producer annotation found on Container/Executable object")
-		return
-	}
-
-	serviceProducers, err = parseServiceProducerAnnotation(spa)
-	if err != nil {
-		log.Error(err, serviceProducerIsInvalid)
-		return
-	}
-
-	var childEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.Namespace), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "failed to list child Endpoint objects")
-	}
-
-	for _, serviceProducer := range serviceProducers {
-		// Check if we have already created an Endpoint for this workload.
-		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
-			ServiceName:            serviceProducer.ServiceName,
-		}
-		hasEndpoint := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
-			return e.Spec.ServiceName == serviceProducer.ServiceName
-		})
-
-		if hasEndpoint {
-			log.V(1).Info("Endpoint already exists for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
-
-			// Client has caught up and has the info about the service endpoint workload, we can clear the local cache.
-			r.workloadEndpoints.Delete(sweKey)
-
-			continue
-		}
-		_, found := r.workloadEndpoints.Load(sweKey)
-		if found {
-			log.V(1).Info("Endpoint was just created for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
-			continue
-		}
-
-		var endpoint *apiv1.Endpoint
-		endpoint, err = createEndpointForExecutable(owner, serviceProducer, log)
-
-		if err != nil {
-			log.Error(err, "could not create Endpoint object")
-			continue
-		}
-
-		if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
-			log.Error(err, "failed to set owner for endpoint")
-		}
-
-		if err := r.Create(ctx, endpoint); err != nil {
-			log.Error(err, "could not persist Endpoint object")
-		}
-
-		r.workloadEndpoints.Store(sweKey, true)
-	}
+func (r *ExecutableReconciler) getWorkloadEndpointCache() *syncmap.Map[ServiceWorkloadEndpointKey, bool] {
+	return &r.workloadEndpoints
 }
 
-func (r *ExecutableReconciler) removeEndpointsForExecutable(ctx context.Context, owner *apiv1.Executable, log logr.Logger) {
-	var childEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.Namespace), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "failed to list child Endpoint objects")
+func createEndpointForExecutable(
+	exe *apiv1.Executable,
+	serviceProducer ServiceProducer,
+	log logr.Logger,
+) (*apiv1.Endpoint, error) {
+	endpointName, err := MakeUniqueName(exe.GetName())
+	if err != nil {
+		log.Error(err, "could not generate unique name for Endpoint object")
+		return nil, err
 	}
 
-	for _, endpoint := range childEndpoints.Items {
-		if err := r.Delete(ctx, &endpoint); err != nil {
-			log.Error(err, "could not delete Endpoint object")
-		}
-
-		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
-			ServiceName:            endpoint.Spec.ServiceName,
-		}
-
-		r.workloadEndpoints.Delete(sweKey)
+	// TODO: logic to find an address and port for the executable
+	address := serviceProducer.Address
+	if address == "" {
+		address = "localhost"
 	}
+
+	// Otherwise, create a new Endpoint object.
+	endpoint := &apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      endpointName,
+			Namespace: exe.Namespace,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: exe.Namespace,
+			ServiceName:      serviceProducer.ServiceName,
+			Address:          address,
+			Port:             serviceProducer.Port,
+		},
+	}
+
+	return endpoint, nil
 }

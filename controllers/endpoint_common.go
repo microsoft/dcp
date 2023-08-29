@@ -3,13 +3,17 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/go-logr/logr"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 const (
@@ -24,75 +28,100 @@ type ServiceWorkloadEndpointKey struct {
 
 type ContainerReconcilerOrExecutableReconciler interface {
 	ctrl_client.Client
+	getWorkloadEndpointCache() *syncmap.Map[ServiceWorkloadEndpointKey, bool]
 }
 
-// func createEndpointForContainer(
-// 	ctr *apiv1.Container,
-// 	serviceProducer ServiceProducer,
-// 	log logr.Logger,
-// ) (*apiv1.Endpoint, error) {
-// 	endpointName, err := MakeUniqueName(ctr.GetName())
-// 	if err != nil {
-// 		log.Error(err, "could not generate unique name for Endpoint object")
-// 		return nil, err
-// 	}
+func ensureEndpointsForWorkload(r ContainerReconcilerOrExecutableReconciler, ctx context.Context, owner ctrl_client.Object, log logr.Logger) {
+	var serviceProducers []ServiceProducer
+	var err error
+	annotations := owner.GetAnnotations()
 
-// 	if serviceProducer.Address != "" {
-// 		log.Error(fmt.Errorf("address cannot be specified for Container objects"), serviceProducerIsInvalid)
-// 		return nil, err
-// 	}
+	spa, found := annotations[serviceProducerAnnotation]
+	if !found {
+		log.V(1).Info("no service-producer annotation found on Container/Executable object")
+		return
+	}
 
-// 	// TODO: validate port according to descirption in ServiceProducer struct below
-
-// 	// Otherwise, create a new Endpoint object.
-// 	endpoint := &apiv1.Endpoint{
-// 		ObjectMeta: metav1.ObjectMeta{
-// 			Name:      endpointName,
-// 			Namespace: ctr.Namespace,
-// 		},
-// 		Spec: apiv1.EndpointSpec{
-// 			ServiceNamespace: ctr.Namespace,
-// 			ServiceName:      serviceProducer.ServiceName,
-// 			Address:          "", // TODO: find address to use, from either container spec or inspection
-// 			Port:             0,  // TODO: find port to use, from either container spec or inspection
-// 		},
-// 	}
-
-// 	return endpoint, nil
-// }
-
-func createEndpointForExecutable(
-	exe *apiv1.Executable,
-	serviceProducer ServiceProducer,
-	log logr.Logger,
-) (*apiv1.Endpoint, error) {
-	endpointName, err := MakeUniqueName(exe.GetName())
+	serviceProducers, err = parseServiceProducerAnnotation(spa)
 	if err != nil {
-		log.Error(err, "could not generate unique name for Endpoint object")
-		return nil, err
+		log.Error(err, serviceProducerIsInvalid)
+		return
 	}
 
-	// TODO: logic to find an address and port for the executable
-	address := serviceProducer.Address
-	if address == "" {
-		address = "localhost"
+	var childEndpoints apiv1.EndpointList
+	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+		log.Error(err, "failed to list child Endpoint objects")
 	}
 
-	// Otherwise, create a new Endpoint object.
-	endpoint := &apiv1.Endpoint{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      endpointName,
-			Namespace: exe.Namespace,
-		},
-		Spec: apiv1.EndpointSpec{
-			ServiceNamespace: exe.Namespace,
-			ServiceName:      serviceProducer.ServiceName,
-			Address:          address,
-			Port:             serviceProducer.Port,
-		},
+	for _, serviceProducer := range serviceProducers {
+		// Check if we have already created an Endpoint for this workload.
+		sweKey := ServiceWorkloadEndpointKey{
+			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
+			ServiceName:            serviceProducer.ServiceName,
+		}
+		hasEndpoint := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
+			return e.Spec.ServiceName == serviceProducer.ServiceName
+		})
+
+		if hasEndpoint {
+			log.V(1).Info("Endpoint already exists for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+
+			// Client has caught up and has the info about the service endpoint workload, we can clear the local cache.
+			r.getWorkloadEndpointCache().Delete(sweKey)
+
+			continue
+		}
+		_, found := r.getWorkloadEndpointCache().Load(sweKey)
+		if found {
+			log.V(1).Info("Endpoint was just created for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+			continue
+		}
+
+		var endpoint *apiv1.Endpoint
+		switch sweKey.Kind {
+		case "Container":
+			endpoint, err = createEndpointForContainer(owner.(*apiv1.Container), serviceProducer, log)
+		case "Executable":
+			endpoint, err = createEndpointForExecutable(owner.(*apiv1.Executable), serviceProducer, log)
+		default:
+			panic(fmt.Errorf("don't know how to create endpont for kind: '%s'", sweKey.Kind))
+		}
+
+		if err != nil {
+			log.Error(err, "could not create Endpoint object")
+			continue
+		}
+
+		if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
+			log.Error(err, "failed to set owner for endpoint")
+		}
+
+		if err := r.Create(ctx, endpoint); err != nil {
+			log.Error(err, "could not persist Endpoint object")
+		}
+
+		r.getWorkloadEndpointCache().Store(sweKey, true)
+	}
+}
+
+func removeEndpointsForWorkload(r ContainerReconcilerOrExecutableReconciler, ctx context.Context, owner ctrl_client.Object, log logr.Logger) {
+	var childEndpoints apiv1.EndpointList
+	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+		log.Error(err, "failed to list child Endpoint objects")
 	}
 
-	return endpoint, nil
+	for _, endpoint := range childEndpoints.Items {
+		if err := r.Delete(ctx, &endpoint); err != nil {
+			log.Error(err, "could not delete Endpoint object")
+		}
+
+		sweKey := ServiceWorkloadEndpointKey{
+			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
+			ServiceName:            endpoint.Spec.ServiceName,
+		}
+
+		r.getWorkloadEndpointCache().Delete(sweKey)
+	}
 }
 
 func parseServiceProducerAnnotation(annotation string) ([]ServiceProducer, error) {
