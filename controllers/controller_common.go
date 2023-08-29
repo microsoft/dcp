@@ -10,6 +10,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -69,4 +70,20 @@ func MakeUniqueName(prefix string) (string, error) {
 	}
 
 	return fmt.Sprintf("%s-%s", prefix, strings.ToLower(randomNameEncoder.EncodeToString(postfixBytes))), nil
+}
+
+type PObjectStruct[T any] interface {
+	*T
+	ctrl_client.Object
+}
+
+type DeepCopyableObject[T any, PT PObjectStruct[T]] interface {
+	*T
+	ctrl_client.Object
+
+	// We need to express that "pointer to T has a DeepCopy method that returns a pointer to T"
+	// Unfortunately it is not possible in Go to refer in the generic type definition to the type that is being defined
+	// So we need to settle for this kind of gymnastics and say that DeepCopy() returns PObjectStruct[T], and not DeepCopyableObbject[T]
+	// This is not really what we want, but sufficient for the code we need in controllers.
+	DeepCopy() PT
 }
