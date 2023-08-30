@@ -1,7 +1,9 @@
 package logger
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,8 +17,9 @@ import (
 )
 
 const (
-	DCP_LOG_FOLDER         = "DCP_LOG_FOLDER"
-	DCP_LOG_LEVEL          = "DCP_LOG_LEVEL"
+	DCP_LOG_FOLDER         = "DCP_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
+	DCP_LOG_LEVEL          = "DCP_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
+	DCP_LOG_SOCKET         = "DCP_LOG_SOCKET" // Unix socket to write console logs to instead of stderr
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
 	stdOutMaxLevel         = zapcore.InfoLevel
@@ -103,8 +106,24 @@ func New(name string) Logger {
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
 
 	consoleAtomicLevel := zap.NewAtomicLevel()
+
+	// Default to writing logs to stderr
+	consoleLog := zapcore.Lock(os.Stderr)
+
+	// If a log socket is set, try to use that instead of stderr
+	dcpLogSocket, found := os.LookupEnv(DCP_LOG_SOCKET)
+	if found {
+		dialer := &net.Dialer{
+			Timeout: 2 * time.Second,
+		}
+
+		if conn, err := dialer.DialContext(context.Background(), "unix", dcpLogSocket); err == nil {
+			// If we're able to connect to the socket, use that for console formatted log output
+			consoleLog = zapcore.AddSync(conn)
+		}
+	}
 	// Add a stderr console logger for log output (with a minimum level set by verbosity)
-	cores = append(cores, zapcore.NewCore(consoleEncoder, zapcore.Lock(os.Stderr), consoleAtomicLevel))
+	cores = append(cores, zapcore.NewCore(consoleEncoder, consoleLog, consoleAtomicLevel))
 
 	// Determine if a debug log is enabled
 	if logCore, err := getLogCore(name, zap.NewProductionEncoderConfig()); err != nil {

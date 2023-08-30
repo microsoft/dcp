@@ -42,6 +42,7 @@ func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 	}
 
 	kubeconfig.EnsureKubeconfigFlag(runControllersCmd.Flags())
+	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
 
 	return runControllersCmd
 }

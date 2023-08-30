@@ -111,7 +111,7 @@ func computeServerOptions(builder *serverbuilder.Server, log logr.Logger) (*star
 	havePort := isValidPort(options.ServingOptions.BindPort)
 	haveToken := options.ServingOptions.BearerToken != ""
 	if !havePort || !haveToken {
-		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFile(fs)
+		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(fs)
 		if err != nil {
 			log.Error(err, msgApiServerStartupFailed)
 			return nil, err

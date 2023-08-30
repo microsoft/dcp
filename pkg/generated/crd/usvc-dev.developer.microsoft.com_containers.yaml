@@ -69,6 +69,8 @@ spec:
                       description: 'Required: This must be a valid port number, 0
                         < x < 65536.'
                       format: int32
+                      maximum: 65535
+                      minimum: 0
                       type: integer
                     hostIP:
                       description: 'Optional: What host IP to bind the external port
@@ -78,6 +80,8 @@ spec:
                       description: 'Optional: If specified, this must be a valid port
                         number, 0 < x < 65536.'
                       format: int32
+                      maximum: 65535
+                      minimum: 0
                       type: integer
                     protocol:
                       description: The port to be used, defaults to TCP

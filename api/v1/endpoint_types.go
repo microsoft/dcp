@@ -31,6 +31,8 @@ type EndpointSpec struct {
 	Address string `json:"address"`
 
 	// The desired port for the endpoint to run on
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
 }
 

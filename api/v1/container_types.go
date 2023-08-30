@@ -69,9 +69,13 @@ const (
 // +k8s:openapi-gen=true
 type ContainerPort struct {
 	// Optional: If specified, this must be a valid port number, 0 < x < 65536.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	HostPort int32 `json:"hostPort,omitempty"`
 
 	// Required: This must be a valid port number, 0 < x < 65536.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	ContainerPort int32 `json:"containerPort"`
 
 	// The port to be used, defaults to TCP

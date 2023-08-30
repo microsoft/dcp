@@ -48,6 +48,8 @@ type ServiceSpec struct {
 	Address string `json:"address,omitempty"`
 
 	// The desired port for the service to run on
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 
 	// The protocol, TCP or UDP
@@ -74,6 +76,8 @@ type ServiceStatus struct {
 	EffectiveAddress string `json:"effectiveAddress,omitempty"`
 
 	// The actual port the service is running on
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	EffectivePort int32 `json:"effectivePort,omitempty"`
 }
 

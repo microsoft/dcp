@@ -42,6 +42,8 @@ spec:
               port:
                 description: The desired port for the endpoint to run on
                 format: int32
+                maximum: 65535
+                minimum: 0
                 type: integer
               serviceName:
                 description: Name of the service the endpoint implements

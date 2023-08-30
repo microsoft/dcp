@@ -36,6 +36,7 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	rootCmd.AddCommand(NewGetCapabilitiesCommand())
 
 	kubeconfig.EnsureKubeconfigFlag(rootCmd.Flags())
+	kubeconfig.EnsureKubeconfigPortFlag(rootCmd.Flags())
 
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 

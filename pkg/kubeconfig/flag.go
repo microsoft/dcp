@@ -8,6 +8,14 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
+const (
+	PortFlagName = "port"
+)
+
+var (
+	port int32
+)
+
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
 // see https://github.com/kubernetes-sigs/controller-runtime/blob/master/pkg/client/config/config.go for details.
 // Instead of registering the flag ourselves, we will call controller-runtime RegisterFlags() function, then look it up and return.
@@ -31,18 +39,26 @@ func EnsureKubeconfigFlag(fs *pflag.FlagSet) *pflag.Flag {
 	}
 }
 
+func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if p := fs.Lookup(PortFlagName); p != nil {
+		return p
+	} else {
+		fs.Int32Var(&port, PortFlagName, 0, "Use a specific port when scaffolding the Kubeconfig file. If not specified, a random port will be used.")
+		return fs.Lookup(PortFlagName)
+	}
+}
+
 func EnsureKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
 		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
-	kubeconfigPath := f.Value.String()
-	if kubeconfigPath != "" {
-		return kubeconfigPath, nil // already set
+	if port < 0 || port > 65535 {
+		return "", fmt.Errorf("invalid port number: %d", port)
 	}
 
-	kubeconfigPath, err := EnsureKubeconfigFile(flags)
+	kubeconfigPath, err := EnsureKubeconfigFile(flags, port)
 	if err != nil {
 		return "", fmt.Errorf("unable to ensure existence of a Kubeconfig file: %w", err)
 	}
