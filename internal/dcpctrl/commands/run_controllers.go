@@ -110,6 +110,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		// Executables can still be run, just not via IDE.
 
 		exCtrl := controllers.NewExecutableReconciler(
+			cmd.Context(),
 			mgr.GetClient(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,

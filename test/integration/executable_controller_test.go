@@ -220,7 +220,7 @@ func TestExecutableDeletion(t *testing.T) {
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
 					killedProcesses := processExecutor.FindAll(exe.Spec.ExecutablePath, func(pe ctrl_testutil.ProcessExecution) bool {
-						return !pe.EndedAt.IsZero() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
+						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
 				}
@@ -248,7 +248,7 @@ func TestExecutableDeletion(t *testing.T) {
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				runEnded := func(_ context.Context) (bool, error) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
-						return !run.EndedAt.IsZero() && run.ExitCode == ctrl_testutil.KilledProcessExitCode
+						return run.Finished() && run.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -296,7 +296,7 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (string, error) {
 
 	processStarted := func(_ context.Context) (bool, error) {
 		runningProcessesWithPath := processExecutor.FindAll(cmdPath, func(pe ctrl_testutil.ProcessExecution) bool {
-			return pe.EndedAt.IsZero()
+			return pe.Running()
 		})
 
 		if len(runningProcessesWithPath) != 1 {
@@ -320,7 +320,7 @@ func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (string, er
 
 	ideRunSessionStarted := func(_ context.Context) (bool, error) {
 		activeSessionsWithPath := ideRunner.FindAll(cmdPath, func(run ctrl_testutil.TestIdeRun) bool {
-			return run.EndedAt.IsZero()
+			return run.Running()
 		})
 
 		if len(activeSessionsWithPath) != 1 {

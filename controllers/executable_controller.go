@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/go-logr/logr"
+	"github.com/smallnest/chanx"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +35,7 @@ type ExecutableReconciler struct {
 	runs *maps.SynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
-	notifyRunChanged chan ctrl_event.GenericEvent
+	notifyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 
 	// Debouncer used to schedule reconciliations. Extra data carried is the finished run ID.
 	debouncer *reconcilerDebouncer[RunID]
@@ -44,12 +45,12 @@ var (
 	executableFinalizer string = fmt.Sprintf("%s/executable-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewExecutableReconciler(client ctrl_client.Client, log logr.Logger, executableRunners map[apiv1.ExecutionType]ExecutableRunner) *ExecutableReconciler {
+func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, executableRunners map[apiv1.ExecutionType]ExecutableRunner) *ExecutableReconciler {
 	r := ExecutableReconciler{
 		Client:            client,
 		ExecutableRunners: executableRunners,
 		runs:              maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus](),
-		notifyRunChanged:  make(chan ctrl_event.GenericEvent),
+		notifyRunChanged:  chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		debouncer:         newReconcilerDebouncer[RunID](reconciliationDebounceDelay),
 	}
 
@@ -60,7 +61,7 @@ func NewExecutableReconciler(client ctrl_client.Client, log logr.Logger, executa
 
 func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	src := ctrl_source.Channel{
-		Source: r.notifyRunChanged,
+		Source: r.notifyRunChanged.Out,
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -321,17 +322,14 @@ func (r *ExecutableReconciler) scheduleExecutableReconciliation(target types.Nam
 	}
 
 	select {
-	case r.notifyRunChanged <- event:
+	case r.notifyRunChanged.In <- event:
 		return nil // Reconciliation scheduled successfully
 
 	default:
-		// We could not schedule the reconciliation. This should never really happen, given the generous buffer (size 1k by default)
-		// that controller-runtime allocates for reconciliation requests. If this happens though, returning from OnProcessExited()
-		// handler is most important.
-		// CONSIDER if these errors turn out to show up in practice, we might want to use
-		// an expanding-buffer channel (instead of unbuffered channel) for notifyProcessChanged.
+		// We could not schedule the reconciliation. This should never really happen, given that we are usin an unbounded channel.
+		// If this happens though, returning from OnProcessExited() handler is most important.
 		err := fmt.Errorf("could not schedule reconciliation for Executable whose run has finished")
-		r.Log.Error(err, "Executable", target.Name, "FinishedRunID", finishedRunID)
+		r.Log.Error(err, "the state of the Executable may not reflect the real world", "Executable", target.Name, "FinishedRunID", finishedRunID)
 		return err
 	}
 }

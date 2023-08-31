@@ -76,7 +76,7 @@ type ContainerOrchestrator interface {
 
 	// Subscribes to events about container state changes
 	// When the subscription is cancelled, the channel will be closed
-	WatchContainers(ctx context.Context, sink chan<- EventMessage) (EventSubscription, error)
+	WatchContainers(sink chan<- EventMessage) (EventSubscription, error)
 }
 
 // Types of events reported for containers

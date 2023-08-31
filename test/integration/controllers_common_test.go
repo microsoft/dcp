@@ -26,7 +26,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -139,6 +138,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	ideRunner = ctrl_testutil.NewTestIdeRunner()
 
 	execR := controllers.NewExecutableReconciler(
+		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ExecutableReconciler"),
 		map[apiv1.ExecutionType]controllers.ExecutableRunner{
@@ -237,39 +237,7 @@ func waitObjectDeleted[T any, PT controllers.PObjectStruct[T]](t *testing.T, ctx
 }
 
 func waitForDockerCommand(t *testing.T, ctx context.Context, command []string, lastArg string) (ctrl_testutil.ProcessExecution, error) {
-	var dockerCmd ctrl_testutil.ProcessExecution
-
-	haveExpectedCommand := func(_ context.Context) (bool, error) {
-		commands := processExecutor.FindAll("docker", func(pe ctrl_testutil.ProcessExecution) bool {
-			// Note: argument[0] is the executable name ("docker")
-			// The actual Docker command starts at argument[1]
-			args := pe.Cmd.Args
-			running := pe.EndedAt.IsZero()
-			enoughArgs := len(args) > len(command)+1
-			commandMatch := slices.StartsWith(args[1:], command)
-			var lastArgMatch bool
-			if lastArg != "" {
-				lastArgMatch = args[len(args)-1] == lastArg
-			} else {
-				lastArgMatch = true
-			}
-
-			return running && enoughArgs && commandMatch && lastArgMatch
-		})
-
-		if len(commands) == 1 {
-			dockerCmd = commands[0]
-			return true, nil
-		} else {
-			return false, nil
-		}
-	}
-
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, haveExpectedCommand)
-	if err != nil {
-		t.Errorf("Expected '%v' command (arg: '%s') was not issued: %v", command, lastArg, err)
-		return ctrl_testutil.ProcessExecution{}, err
-	}
-
-	return dockerCmd, nil
+	command = append([]string{"docker"}, command...)
+	pe, err := ctrl_testutil.WaitForCommand(processExecutor, ctx, command, lastArg, (*ctrl_testutil.ProcessExecution).Running)
+	return pe, err
 }
