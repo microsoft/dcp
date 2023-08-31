@@ -217,6 +217,6 @@ func ensureProxyProcess(ctx context.Context, selector func(pe ctrl_testutil.Proc
 
 func ensureProxyProcessStopped(ctx context.Context, selector func(pe ctrl_testutil.ProcessExecution) bool) error {
 	return ensureProxyProcess(ctx, func(pe ctrl_testutil.ProcessExecution) bool {
-		return selector(pe) && !pe.EndedAt.IsZero() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
+		return selector(pe) && pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 	})
 }

@@ -24,6 +24,13 @@ type TestIdeRun struct {
 	ExitCode           int32
 }
 
+func (r *TestIdeRun) Running() bool {
+	return r.EndedAt.IsZero()
+}
+func (r *TestIdeRun) Finished() bool {
+	return !r.EndedAt.IsZero()
+}
+
 type TestIdeRunner struct {
 	nextRunID int32
 	Runs      []TestIdeRun

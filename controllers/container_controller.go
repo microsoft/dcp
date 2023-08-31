@@ -339,7 +339,7 @@ func (r *ContainerReconciler) ensureContainerWatch(log logr.Logger) {
 	r.containerEvtWorkerStop = make(chan struct{})
 	go r.containerEventWorker(r.containerEvtWorkerStop)
 
-	sub, err := r.orchestrator.WatchContainers(r.lifetimeCtx, r.containerEvtCh.In)
+	sub, err := r.orchestrator.WatchContainers(r.containerEvtCh.In)
 	if err != nil {
 		log.Error(err, "could not subscribe to containter events")
 		close(r.containerEvtWorkerStop)

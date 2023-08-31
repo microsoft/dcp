@@ -168,7 +168,7 @@ func TestReportsContainerEvents(t *testing.T) {
 	sub, evtC := subscribe(t, ctx, dco)
 
 	// The first subscription should trigger "docker events" execution
-	dockerExec := waitForDockerExecution(t, ctx, pe, nil)
+	dockerExec := waitForDockerEventsExecution(t, ctx, pe, nil)
 
 	// Simulate container start event
 	w := dockerExec.Cmd.Stdout
@@ -197,20 +197,16 @@ func TestReportsContainerEvents(t *testing.T) {
 
 	err = sub.Cancel()
 	require.NoError(t, err)
-	require.Condition(t, func() bool {
-		_, open := <-evtC
-		return !open
-	}, "The events channel should be closed when subscription is cancelled")
+	requireChanClosed(t, evtC, "The events channel should be closed when subscription is cancelled")
 
 	// This is the only subscription--the "docker events" command should be terminated.
-	waitForDockerExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
-		return !exec.EndedAt.IsZero() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
+	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
+		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
 	})
 }
 
 // Stops reporting events when subscription is cancelled (but other subscriptions continue)
-
-func TestDoesNotReportOtherEvents(t *testing.T) {
+func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 	t.Parallel()
 
 	pe := ctrl_testutil.NewTestProcessExecutor()
@@ -221,7 +217,7 @@ func TestDoesNotReportOtherEvents(t *testing.T) {
 	sub, evtC := subscribe(t, ctx, dco)
 	sub2, evtC2 := subscribe(t, ctx, dco)
 
-	dockerExec := waitForDockerExecution(t, ctx, pe, nil)
+	dockerExec := waitForDockerEventsExecution(t, ctx, pe, nil)
 	w := dockerExec.Cmd.Stdout
 
 	// Write a container event
@@ -239,10 +235,7 @@ func TestDoesNotReportOtherEvents(t *testing.T) {
 	// Cancel first subscription, but keep the second
 	err = sub.Cancel()
 	require.NoError(t, err)
-	require.Condition(t, func() bool {
-		_, open := <-evtC
-		return !open
-	}, "The events channel should be closed when subscription is cancelled")
+	requireChanClosed(t, evtC, "The events channel should be closed when first subscription is cancelled")
 
 	// Write another event
 	evtText = []byte(`{"status":"destroy","id":"e14fec","from":"nginx","Type":"container","Action":"destroy","Actor":{"ID":"e14fec","Attributes":{"image":"nginx","maintainer":"NGINX Docker Maintainers <docker-maint@nginx.com>","name":"epic_jepsen"}},"scope":"local","time":1674517605,"timeNano":1674517605994948172}` + "\n")
@@ -256,43 +249,61 @@ func TestDoesNotReportOtherEvents(t *testing.T) {
 
 	err = sub2.Cancel()
 	require.NoError(t, err)
-	require.Condition(t, func() bool {
-		_, open := <-evtC2
-		return !open
-	}, "The events channel should be closed when the second subscription is cancelled")
+	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
 
 	/// The "docker events" command should be terminated after the last subscription is cancelled
-	waitForDockerExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
-		return !exec.EndedAt.IsZero() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
+	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
+		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
 	})
-
 }
 
-func waitForDockerExecution(t *testing.T, ctx context.Context, pe *ctrl_testutil.TestProcessExecutor, cond func(exec *ctrl_testutil.ProcessExecution) bool) ctrl_testutil.ProcessExecution {
-	actionCtx, cancel := context.WithTimeout(ctx, actionTimeout)
+// Starts the event watcher when the first subscription is created, and stops it when the last subscription is cancelled.
+// This cycle can be repeated more than once.
+func TestStartsAndStopsEventWatcher(t *testing.T) {
+	t.Parallel()
+
+	pe := ctrl_testutil.NewTestProcessExecutor()
+	dco := NewDockerCliOrchestrator(testr.New(t), pe)
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 
-	var retval ctrl_testutil.ProcessExecution
+	sub, evtC := subscribe(t, ctx, dco)
 
-	haveDockerExecution := func(_ context.Context) (bool, error) {
-		dockerExecutions := pe.FindAll("docker", nil)
-		if len(dockerExecutions) != 1 {
-			return false, nil
-		}
-		retval = dockerExecutions[0]
-		if cond == nil {
-			return true, nil
-		} else {
-			return cond(&retval), nil
-		}
-	}
+	// A suubscription should trigger "docker events" execution
+	waitForDockerEventsExecution(t, ctx, pe, nil)
 
-	err := wait.PollUntilContextCancel(actionCtx, actionPoll, pollImmediately, haveDockerExecution)
-	if err != nil {
-		t.Fatalf("Failed to observe Docker expected command execution: %s", err.Error())
-	}
+	err := sub.Cancel()
+	require.NoError(t, err)
+	requireChanClosed(t, evtC, "The events channel should be closed when the subscription is cancelled")
+	// The "docker events" command should be terminated.
+	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
+		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
+	})
 
-	return retval
+	pe.ClearHistory()
+
+	sub, evtC = subscribe(t, ctx, dco)
+	waitForDockerEventsExecution(t, ctx, pe, nil)
+	sub2, evtC2 := subscribe(t, ctx, dco)
+
+	err = sub.Cancel()
+	require.NoError(t, err)
+	requireChanClosed(t, evtC, "The events channel should be closed when the first subscription is cancelled")
+
+	err = sub2.Cancel()
+	require.NoError(t, err)
+	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
+
+	// The "docker events" command should be terminated again.
+	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
+		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
+	})
+}
+
+func waitForDockerEventsExecution(t *testing.T, ctx context.Context, executor *ctrl_testutil.TestProcessExecutor, cond func(exec *ctrl_testutil.ProcessExecution) bool) ctrl_testutil.ProcessExecution {
+	pe, err := ctrl_testutil.WaitForCommand(executor, ctx, []string{"docker", "events"}, "", cond)
+	require.NoError(t, err)
+	return pe
 }
 
 func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessage, error) {
@@ -320,7 +331,14 @@ func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessag
 func subscribe(t *testing.T, ctx context.Context, dco *DockerCliOrchestrator) (ct.EventSubscription, <-chan ct.EventMessage) {
 	const initialEventChannelCapacity = 5
 	evtC := chanx.NewUnboundedChan[ct.EventMessage](ctx, initialEventChannelCapacity)
-	sub, err := dco.WatchContainers(ctx, evtC.In)
+	sub, err := dco.WatchContainers(evtC.In)
 	require.NoError(t, err)
 	return sub, evtC.Out
+}
+
+func requireChanClosed[ElementT any](t *testing.T, c <-chan ElementT, errMsg string) {
+	require.Condition(t, func() bool {
+		_, open := <-c
+		return !open
+	}, errMsg)
 }

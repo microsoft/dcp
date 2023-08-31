@@ -26,6 +26,13 @@ type ProcessExecution struct {
 	ExitCode           int32
 }
 
+func (pe *ProcessExecution) Running() bool {
+	return pe.EndedAt.IsZero()
+}
+func (pe *ProcessExecution) Finished() bool {
+	return !pe.EndedAt.IsZero()
+}
+
 type TestProcessExecutor struct {
 	nextPID    int32
 	Executions []ProcessExecution
@@ -119,6 +126,15 @@ func (e *TestProcessExecutor) FindAll(cmdPath string, cond func(pe ProcessExecut
 	}
 
 	return retval
+}
+
+// Clears all execution history
+func (e *TestProcessExecutor) ClearHistory() {
+	e.m.Lock()
+	defer e.m.Unlock()
+
+	e.Executions = make([]ProcessExecution, 0)
+	// The PID counter is not reset so that the clients continue to receive unique PIDs.
 }
 
 func (e *TestProcessExecutor) findByPid(pid int32) int {
