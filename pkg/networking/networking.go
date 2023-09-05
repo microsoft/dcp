@@ -9,6 +9,8 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 )
 
+// Gets a free TCP or UDP port for a given address (defaults to localhost).
+// Even if this method is called twice in a row, it should not return the same port.
 func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 	if address == "" {
 		address = "localhost"

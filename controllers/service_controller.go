@@ -218,8 +218,19 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		}
 	}
 
+	binDir, err := dcppaths.GetDcpBinDir()
+	if err != nil {
+		return err
+	}
+
+	var proxyExecutable string
+	if runtime.GOOS == "windows" {
+		proxyExecutable = filepath.Join(binDir, "traefik.exe")
+	} else {
+		proxyExecutable = filepath.Join(binDir, "traefik")
+	}
+
 	proxyPort := svc.Spec.Port
-	var err error
 	if proxyPort == 0 {
 		// There is a chance that by the time the proxy starts, the port will no longer be free,
 		// but this is relatively low. If that happens, the proxy will immediately shut down.
@@ -237,20 +248,8 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		proxyPortString = fmt.Sprintf("%d", proxyPort)
 	}
 
-	binDir, err := dcppaths.GetDcpBinDir()
-	if err != nil {
-		return err
-	}
-
-	var proxyExecutable string
-	if runtime.GOOS == "windows" {
-		proxyExecutable = "traefik.exe"
-	} else {
-		proxyExecutable = "traefik"
-	}
-
 	cmd := exec.CommandContext(ctx,
-		filepath.Join(binDir, proxyExecutable),
+		proxyExecutable,
 		fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
 		"--providers.file.watch=true",
 		"--log.level=INFO",
