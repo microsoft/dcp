@@ -14,6 +14,8 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -125,6 +127,228 @@ func TestContainerStartupFailure(t *testing.T) {
 		messageOK := strings.Contains(c.Status.Message, errMsg)
 		return statusUpdated && messageOK, nil
 	})
+}
+
+// If ports are part of the spec, they are published to the host
+func TestContainerStartWithPorts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	// Case 1: just ContainerPort
+	testName := "container-start-with-ports-case1"
+	imageName := testName + "-image"
+	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: 2345},
+				{ContainerPort: 3456},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	t.Logf("Ensure that the container is started with the expected ports published...")
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1::2345"}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1::3456"}) == -1 {
+			return false
+		}
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime := time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	// Case 2: ContainerPort and HostPort
+	testName = "container-start-with-ports-case2"
+	imageName = testName + "-image"
+	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr = apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: 2345, HostPort: 8885},
+				{ContainerPort: 3456, HostPort: 8886},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	t.Logf("Ensure that the container is started with the expected ports published...")
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1:8885:2345"}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1:8886:3456"}) == -1 {
+			return false
+		}
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime = time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	// Case 3: ContainerPort and HostIP
+	testName = "container-start-with-ports-case3"
+	imageName = testName + "-image"
+	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr = apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: 2345, HostIP: "127.0.2.3"},
+				{ContainerPort: 3456, HostIP: "127.0.2.4"},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	t.Logf("Ensure that the container is started with the expected ports published...")
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.2.3::2345"}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.2.4::3456"}) == -1 {
+			return false
+		}
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime = time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	// Case 4: ContainerPort, HostIP, and Portocol
+	testName = "container-start-with-ports-case4"
+	imageName = testName + "-image"
+	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr = apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: 2345, HostIP: "127.0.3.4", Protocol: "tcp"},
+				{ContainerPort: 3456, HostIP: "127.0.4.4", Protocol: "udp"},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	t.Logf("Ensure that the container is started with the expected ports published...")
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.3.4::2345/tcp"}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.4.4::3456/udp"}) == -1 {
+			return false
+		}
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime = time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	// Case 5: ContainerPort, HostIP, HostPort, and Protocol
+	testName = "container-start-with-ports-case5"
+	imageName = testName + "-image"
+	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr = apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: 2345, HostPort: 12202, HostIP: "127.0.3.4", Protocol: "tcp"},
+				{ContainerPort: 3456, HostPort: 12205, HostIP: "127.0.4.4", Protocol: "udp"},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	t.Logf("Ensure that the container is started with the expected ports published...")
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.3.4:12202:2345/tcp"}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.4.4:12205:3456/udp"}) == -1 {
+			return false
+		}
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime = time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
 }
 
 func TestContainerDeletion(t *testing.T) {

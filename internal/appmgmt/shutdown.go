@@ -21,10 +21,10 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		return err
 	}
 
-	// Delete Executables and Containers first, then ContainerVolumes, if any.
+	// The order here matters. Services go first, then Executables, then Containers, then ContainerVolumes.
 	// Do not use client.DeleteAllOf() because it does not seem to give the controllers an opportunity to handle the deletion
 	// (probably a bug in controller-runtime or Tilt API server). E.g. https://github.com/kubernetes-sigs/controller-runtime/issues/1842
-	kinds := []commonapi.ListWithObjectItems{&apiv1.ExecutableReplicaSetList{}, &apiv1.ExecutableList{}, &apiv1.ContainerList{}, &apiv1.ContainerVolumeList{}}
+	kinds := []commonapi.ListWithObjectItems{&apiv1.ServiceList{}, &apiv1.ExecutableReplicaSetList{}, &apiv1.ExecutableList{}, &apiv1.ContainerList{}, &apiv1.ContainerVolumeList{}}
 	shutdownErrors := []error{}
 
 	for _, objList := range kinds {

@@ -132,31 +132,8 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	var update *apiv1.Service
-
-	if (change & statusChanged) != 0 {
-		update = svc.DeepCopy()
-		if err := r.Status().Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Service status update failed")
-			return ctrl.Result{}, err
-		}
-		log.Info("Service status update succeeded")
-	}
-
-	if (change & (metadataChanged | specChanged)) != 0 {
-		update = svc.DeepCopy()
-		if err := r.Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Service update failed")
-			return ctrl.Result{}, err
-		}
-		log.Info("Service update succeeded")
-	}
-
-	if (change & additionalReconciliationNeeded) != 0 {
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
-	} else {
-		return ctrl.Result{}, nil
-	}
+	result, err := saveChanges(r.Client, ctx, &svc, patch, change, log)
+	return result, err
 }
 
 func (r *ServiceReconciler) deleteService(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {

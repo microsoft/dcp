@@ -254,35 +254,6 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		}
 	}
 
-	if change == noChange {
-		log.V(1).Info("no changes detected for Executable, continue monitoring...")
-		return ctrl.Result{}, nil
-	}
-
-	var update *apiv1.ExecutableReplicaSet
-
-	if (change & statusChanged) != 0 {
-		update = replicaSet.DeepCopy()
-		if err := r.Status().Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Executable status update failed")
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Executable status update succeeded")
-	}
-
-	if (change & (metadataChanged | specChanged)) != 0 {
-		update = replicaSet.DeepCopy()
-		if err := r.Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Executable update failed")
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Executable update succeeded")
-	}
-
-	if (change & additionalReconciliationNeeded) != 0 {
-		log.V(1).Info("scheduling additional reconciliation for ExecutableReplicaSet...")
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
-	}
-
-	return ctrl.Result{}, nil
+	result, err := saveChanges(r, ctx, &replicaSet, patch, change, log)
+	return result, err
 }

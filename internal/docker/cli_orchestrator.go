@@ -124,13 +124,25 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 	}
 
 	for _, port := range options.Ports {
-		portVal := fmt.Sprintf("%d:%d", port.HostPort, port.ContainerPort)
+		portVal := fmt.Sprintf("%d", port.ContainerPort)
+
+		if port.HostPort != 0 {
+			portVal = fmt.Sprintf("%d:%s", port.HostPort, portVal)
+		} else {
+			portVal = fmt.Sprintf(":%s", portVal)
+		}
+
 		if port.HostIP != "" {
 			portVal = fmt.Sprintf("%s:%s", port.HostIP, portVal)
+		} else {
+			// Bind to 127.0.0.1 for extra security, not to 0.0.0.0 (all interfaces, making it accessible from the outside)
+			portVal = fmt.Sprintf("127.0.0.1:%s", portVal)
 		}
+
 		if port.Protocol != "" {
 			portVal = fmt.Sprintf("%s/%s", portVal, port.Protocol)
 		}
+
 		args = append(args, "-p", portVal)
 	}
 

@@ -129,40 +129,11 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	var update *apiv1.Executable
-
-	// Apply one update per reconciliation function invocation,
-	// to avoid observing "partially updated" objects during subsequent reconciliations.
-	switch {
-	case change == noChange:
-		log.V(1).Info("no changes detected for Executable, continue monitoring...")
-		return ctrl.Result{}, nil
-	case (change & statusChanged) != 0:
-		update = exe.DeepCopy()
-		if err := r.Status().Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Executable status update failed")
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Executable status update succeeded")
-	case (change & (metadataChanged | specChanged)) != 0:
-		update = exe.DeepCopy()
-		if err := r.Patch(ctx, update, patch); err != nil {
-			log.Error(err, "Executable update failed")
-			return ctrl.Result{}, err
-		}
-		log.V(1).Info("Executable update succeeded")
-	}
-
+	result, err := saveChanges(r, ctx, &exe, patch, change, log)
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
 	}
-
-	if (change & additionalReconciliationNeeded) != 0 {
-		log.V(1).Info("scheduling additional reconciliation for Executable...")
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
-	} else {
-		return ctrl.Result{}, nil
-	}
+	return result, err
 }
 
 // Handle notification about completed Executable run. This function runs outside of the reconcilation loop,

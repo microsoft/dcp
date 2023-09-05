@@ -84,21 +84,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change |= r.ensureVolume(ctx, vol.Spec.Name, log)
 	}
 
-	if (change & (metadataChanged | specChanged)) != 0 {
-		err = r.Patch(ctx, &vol, patch)
-		if err != nil {
-			log.Error(err, "ContainerVolume object update failed")
-			return ctrl.Result{}, err
-		} else {
-			log.V(1).Info("ContainerVolume object update succeeded")
-		}
-	}
-
-	if (change & additionalReconciliationNeeded) != 0 {
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
-	} else {
-		return ctrl.Result{}, nil
-	}
+	result, err := saveChanges(r.Client, ctx, &vol, patch, change, log)
+	return result, err
 }
 
 func (r *VolumeReconciler) deleteVolume(ctx context.Context, volumeName string, log logr.Logger) error {

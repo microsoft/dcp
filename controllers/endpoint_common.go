@@ -56,7 +56,7 @@ func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 
 	serviceProducers, err = parseServiceProducerAnnotation(spa)
 	if err != nil {
-		log.Error(err, serviceProducerIsInvalid)
+		log.Error(err, serviceProducerIsInvalid, "AnnotationText", spa)
 		return
 	}
 
@@ -139,7 +139,7 @@ func parseServiceProducerAnnotation(annotation string) ([]ServiceProducer, error
 		// TODO: temporarily, require every service-producer annotation to have a port
 		return sp.Port == 0
 	}) {
-		return nil, fmt.Errorf(serviceProducerIsInvalid)
+		return nil, fmt.Errorf("%s (annotation '%s' could not be parsed properly)", serviceProducerIsInvalid, annotation)
 	}
 
 	return retval, nil

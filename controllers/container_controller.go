@@ -147,40 +147,8 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	var update *apiv1.Container
-
-	// Apply one update per reconciliation function invocation,
-	// to avoid observing "partially updated" objects during subsequent reconciliations.
-	switch {
-	case change == noChange:
-		log.V(1).Info("no changes detected for Container object, continue monitoring...")
-		return ctrl.Result{}, nil
-	case (change & statusChanged) != 0:
-		update = container.DeepCopy()
-		err = r.Status().Patch(ctx, update, patch)
-		if err != nil {
-			log.Error(err, "Container status update failed")
-			return ctrl.Result{}, err
-		} else {
-			log.V(1).Info("Container status update succeeded")
-		}
-	case (change & (metadataChanged | specChanged)) != 0:
-		update = container.DeepCopy()
-		err = r.Patch(ctx, update, patch)
-		if err != nil {
-			log.Error(err, "Container object update failed")
-			return ctrl.Result{}, err
-		} else {
-			log.V(1).Info("Container object update succeeded")
-		}
-	}
-
-	if (change & additionalReconciliationNeeded) != 0 {
-		log.V(1).Info("scheduling additional reconciliation for Container...")
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
-	} else {
-		return ctrl.Result{}, nil
-	}
+	result, err := saveChanges(r, ctx, &container, patch, change, log)
+	return result, err
 }
 
 func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) {

@@ -3,14 +3,18 @@
 package controllers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -73,20 +77,21 @@ func MakeUniqueName(prefix string) (string, error) {
 	return fmt.Sprintf("%s-%s", prefix, strings.ToLower(randomNameEncoder.EncodeToString(postfixBytes))), nil
 }
 
-type PObjectStruct[T any] interface {
+type ObjectStruct interface {
+}
+
+type DeepCopyable[T ObjectStruct] interface {
+	DeepCopy() *T
+}
+
+type PObjectStruct[T ObjectStruct] interface {
 	*T
 	ctrl_client.Object
 }
 
-type DeepCopyableObject[T any, PT PObjectStruct[T]] interface {
-	*T
-	ctrl_client.Object
-
-	// We need to express that "pointer to T has a DeepCopy method that returns a pointer to T"
-	// Unfortunately it is not possible in Go to refer in the generic type definition to the type that is being defined
-	// So we need to settle for this kind of gymnastics and say that DeepCopy() returns PObjectStruct[T], and not DeepCopyableObbject[T]
-	// This is not really what we want, but sufficient for the code we need in controllers.
-	DeepCopy() PT
+type PCopyableObjectStruct[T ObjectStruct] interface {
+	DeepCopyable[T]
+	PObjectStruct[T]
 }
 
 type NamespacedNameWithKind struct {
@@ -101,5 +106,58 @@ func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
 			Name:      obj.GetName(),
 		},
 		Kind: obj.GetObjectKind().GroupVersionKind().Kind,
+	}
+}
+
+func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
+	client ctrl_client.Client,
+	ctx context.Context,
+	obj PCT,
+	patch ctrl_client.Patch,
+	change objectChange,
+	log logr.Logger,
+) (ctrl.Result, error) {
+
+	var update PCT
+	var err error
+	kind := obj.GetObjectKind().GroupVersionKind().Kind
+
+	// Apply one update per reconciliation function invocation,
+	// to avoid observing "partially updated" objects during subsequent reconciliations.
+	switch {
+	case change == noChange:
+		log.V(1).Info(fmt.Sprintf("no changes detected for %s object, continue monitoring...", kind))
+		return ctrl.Result{}, nil
+
+	case (change & statusChanged) != 0:
+		update = obj.DeepCopy()
+		err = client.Status().Patch(ctx, update, patch)
+		if err != nil {
+			if !errors.IsConflict(err) {
+				log.Error(err, fmt.Sprintf("%s status update failed", kind))
+			}
+			return ctrl.Result{}, err
+		} else {
+			log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
+		}
+
+	case (change & (metadataChanged | specChanged)) != 0:
+		update = obj.DeepCopy()
+		err = client.Patch(ctx, update, patch)
+		if err != nil {
+			if !errors.IsConflict(err) {
+				log.Error(err, fmt.Sprintf("%s object update failed", kind))
+			}
+			return ctrl.Result{}, err
+		} else {
+			log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
+		}
+	}
+
+	if (change & additionalReconciliationNeeded) != 0 {
+		log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
+		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
+	} else {
+		return ctrl.Result{}, nil
 	}
 }
