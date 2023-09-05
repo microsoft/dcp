@@ -5,6 +5,8 @@
 *.so
 *.dylib
 bin/
+obj/
+package/
 __debug_*
 
 # Test binary, built with `go test -c`
