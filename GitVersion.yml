@@ -25,11 +25,12 @@ branches:
     pre-release-weight: 0
   release-candidate:
     regex: ^release[/-]
+    mode: ContinuousDeployment
     tag: rc
     increment: None
     prevent-increment-of-merged-branch-version: true
     track-merge-target: false
-    source-branches: [ 'main', 'production', 'release' ]
+    source-branches: [ 'main', 'production', 'release-candidate', 'feature' ]
     tracks-release-branches: false
     is-release-branch: true
     is-mainline: false
@@ -52,7 +53,7 @@ branches:
     prevent-increment-of-merged-branch-version: false
     tag-number-pattern: '[/-](?<number>\d+)[-/]'
     track-merge-target: false
-    source-branches: [ 'main', 'production', 'release', 'feature' ]
+    source-branches: [ 'main', 'production', 'release-candidate', 'feature' ]
     tracks-release-branches: false
     is-release-branch: false
     is-mainline: false
