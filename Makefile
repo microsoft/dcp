@@ -60,6 +60,12 @@ else
 	build_arch := $(GOARCH)
 endif
 
+ifeq ($(build_os),windows)
+	traefik_zip_suffix := .zip
+else
+	traefik_zip_suffix := .tar.gz
+endif
+
 ## Environment variables affecting build and installation
 # Note these have to be defined before they are used in targets
 
@@ -81,6 +87,7 @@ OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 ENVTEST ?= $(TOOL_BIN)/setup-envtest$(exe_suffix)
 TRAEFIK ?= $(TOOL_BIN)/traefik$(exe_suffix)
+GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.54.2
@@ -88,6 +95,7 @@ CONTROLLER_TOOLS_VERSION ?= v0.12.0
 CODE_GENERATOR_VERSION ?= v0.27.3
 ENVTEST_K8S_VERSION = 1.27.1
 TRAEFIK_VERSION = v2.10.4
+GO_LICENSES_VERSION = v1.6.0
 
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse HEAD)
@@ -124,7 +132,7 @@ help: ## Display this help.
 ##@ Code generation
 
 .PHONY: generate
-generate: generate-object-methods generate-openapi generate-crd ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
+generate: generate-object-methods generate-openapi generate-crd generate-licenses ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
@@ -160,6 +168,26 @@ generate-crd: $(crd_files) ## Generates CRD documents for resources defined in t
 $(crd_files) : $(GO_SOURCES) controller-gen
 	$(CONTROLLER_GEN) crd paths="./api/v1/..." output:crd:artifacts:config=pkg/generated/crd
 
+.PHONY: generate-licenses
+generate-licenses: generate-dependency-notices generate-proxy-notice
+
+.PHONY: generate-dependency-notices
+generate-dependency-notices: go-licenses
+	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpd ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver > NOTICE
+
+.PHONY: generate-proxy-notice
+generate-proxy-notice: download-proxy
+	echo "" >> NOTICE
+	echo "---------------------------------------------------------" >> NOTICE
+	echo "" >> NOTICE
+	echo "github.com/traefik/traefik $(TRAEFIK_VERSION) - MIT" >> NOTICE
+	echo "https://github.com/traefik/traefik/blob/master/LICENSE.md" >> NOTICE
+	echo "" >> NOTICE
+	cat $(OUTPUT_BIN)/ext/bin/LICENSE.md >> NOTICE
+	echo "" >> NOTICE
+	echo "---------------------------------------------------------" >> NOTICE
+	echo "" >> NOTICE
+
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)
 $(CONTROLLER_GEN): | $(TOOL_BIN)
@@ -176,6 +204,15 @@ ifeq ($(detected_OS),windows)
 	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
 	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
+endif
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES)
+$(GO_LICENSES): | $(TOOL_BIN)
+ifeq ($(detected_OS),windows)
+	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install github.com/google/go-licenses@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
+else
+	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) go install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
 endif
 
 # delay-tool is used for process package testing
@@ -246,27 +283,31 @@ link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sud
 endif
 
 .PHONY: download-proxy
+download-proxy: traefik_zip := traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch)$(traefik_zip_suffix)
 download-proxy: $(TOOL_BIN) ${OUTPUT_BIN}
-ifeq ($(build_os),windows)
-	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).zip --output $(TOOL_BIN)/traefik.zip
+ifeq ($(detected_OS),windows)
+	if (-not (Test-Path "$(TOOL_BIN)/$(traefik_zip)")) { curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/$(traefik_zip) --output $(TOOL_BIN)/$(traefik_zip) }
 else
-	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).tar.gz --output $(TOOL_BIN)/traefik.tar.gz
-	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C ${OUTPUT_BIN}/ext/bin/
+	[[ -s "$(TOOL_BIN)/$(traefik_zip)" ]] || curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/$(traefik_zip) --output $(TOOL_BIN)/$(traefik_zip)
 endif
+
 ifeq ($(detected_OS).$(build_os),windows.windows)
-	Expand-Archive -Force -Path $(TOOL_BIN)/traefik.zip -DestinationPath ${OUTPUT_BIN}/ext/bin/
+	Expand-Archive -Force -Path $(TOOL_BIN)/$(traefik_zip) -DestinationPath ${OUTPUT_BIN}/ext/bin/
 else ifeq (.$(build_os),.windows)
-	unzip -o $(TOOL_BIN)/traefik.zip -d ${OUTPUT_BIN}/ext/bin/
+	unzip -o $(TOOL_BIN)/$(traefik_zip) -d ${OUTPUT_BIN}/ext/bin/
+else
+	tar -xzf $(TOOL_BIN)/$(traefik_zip) -C ${OUTPUT_BIN}/ext/bin/
 endif
 
 .PHONY: install-proxy
-install-proxy: $(TOOL_BIN) $(BIN_DIR) ## Installs the Traefik proxy used (necessary for running workloads with Service objects)
+install-proxy: traefik_zip := traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch)$(traefik_zip_suffix)
+install-proxy: $(TOOL_BIN) $(BIN_DIR) download-proxy ## Installs the Traefik proxy used (necessary for running workloads with Service objects)
 ifeq ($(detected_OS).$(build_os),windows.windows)
-	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).zip --output $(TOOL_BIN)\traefik.zip
-	Expand-Archive -Force -Path $(TOOL_BIN)\traefik.zip -DestinationPath $(TOOL_BIN)
+	Expand-Archive -Force -Path $(TOOL_BIN)/$(traefik_zip) -DestinationPath $(TOOL_BIN)
+else ifeq (.$(build_os),.windows)
+	unzip -o $(TOOL_BIN)/$(traefik_zip) -d $(TOOL_BIN)
 else
-	curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch).tar.gz --output $(TOOL_BIN)/traefik.tar.gz
-	tar -xzf $(TOOL_BIN)/traefik.tar.gz -C $(TOOL_BIN)
+	tar -xzf $(TOOL_BIN)/$(traefik_zip) -C $(TOOL_BIN)
 endif
 	$(install) $(TOOL_BIN)/traefik$(bin_exe_suffix) $(BIN_DIR)
 	$(install) $(TOOL_BIN)/LICENSE.md $(BIN_DIR)
