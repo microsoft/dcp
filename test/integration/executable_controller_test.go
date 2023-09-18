@@ -2,6 +2,8 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/controllers"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -109,12 +112,12 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 				},
 			},
 			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) string {
-				pidStr, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+				pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
 				if err != nil {
 					t.Fatalf("Process could not be started: %v", err)
 					return "" // make compiler happy
 				} else {
-					return pidStr
+					return strconv.Itoa(int(pid))
 				}
 			},
 			simulateRunEnding: func(t *testing.T, runID string) {
@@ -294,8 +297,152 @@ func TestExecutableDeletion(t *testing.T) {
 	}
 }
 
-func ensureProcessRunning(ctx context.Context, cmdPath string) (string, error) {
-	pidStr := ""
+// Verify ports are injected into Executable environment variables via portForServing template function.
+// Service ports are specified via service-producer annotation.
+func TestExecutableServingPortInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-serving-port-injected",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.22.33.44",
+			Port:     7732,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-executable-serving-port-injected",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7733}]`, svc.ObjectMeta.Name)},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-executable-serving-port-injected",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SVC_PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create the Executable")
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process could not be started")
+
+	t.Logf("Ensure the Executable process got the service port injected...")
+	pe, found := processExecutor.FindByPid(pid)
+	require.True(t, found, "Could not find the process with PID %d", pid)
+	require.True(t, slices.Contains(pe.Cmd.Env, "SVC_PORT=7733"), "Port was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+
+	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected port...")
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable effective environment does not contain expected port information. The effective environemtn is %v", effectiveEnv)
+}
+
+// Verify ports are injected into Executable environment variables via portForServing template function.
+// Service ports are automatically allocated.
+func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-serving-port-allocated-injected",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.22.33.45",
+			Port:     7740,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-serving-port-allocated-injected",
+			Namespace: metav1.NamespaceNone,
+			// No address and no port information
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-executable-serving-port-allocated-injected",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SVC_PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create an Executable")
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process could not be started")
+
+	t.Logf("Ensure the Executable process got the service port injected...")
+	pe, found := processExecutor.FindByPid(pid)
+	require.True(t, found, "Could not find the process with PID %d", pid)
+
+	// Validate the injected port
+	matches := testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`SVC_PORT=(\d+)`))
+	require.Len(t, matches, 1, "Port was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+	port, err := strconv.ParseInt(matches[0][1], 10, 32)
+	require.NoError(t, err, "The injected port '%s' is not a valid integer", matches[0][1])
+	require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
+	require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
+
+	t.Logf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
+	executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+		forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+		controllerOwner := metav1.GetControllerOf(e)
+		hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+		return forCorrectService && hasOwner, nil
+	})
+	require.Equal(t, int32(port), executableEndpoint.Spec.Port, "The port injected into the Executable process environment variables (%d) does not match the port of the Endpoint (%d)", port, executableEndpoint.Spec.Port)
+
+	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected port...")
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected port information. The effective environemtn is %v", effectiveEnv)
+}
+
+func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {
+	pid := process.UnknownPID
 
 	processStarted := func(_ context.Context) (bool, error) {
 		runningProcessesWithPath := processExecutor.FindAll(cmdPath, func(pe ctrl_testutil.ProcessExecution) bool {
@@ -306,15 +453,15 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (string, error) {
 			return false, nil
 		}
 
-		pidStr = strconv.FormatInt(int64(runningProcessesWithPath[0].PID), 10)
+		pid = runningProcessesWithPath[0].PID
 		return true, nil
 	}
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, processStarted)
 	if err != nil {
-		return "", err
+		return process.UnknownPID, err
 	} else {
-		return pidStr, nil
+		return pid, nil
 	}
 }
 

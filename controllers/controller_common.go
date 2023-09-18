@@ -13,6 +13,7 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -96,7 +97,7 @@ type PCopyableObjectStruct[T ObjectStruct] interface {
 
 type NamespacedNameWithKind struct {
 	types.NamespacedName
-	Kind string
+	Kind schema.GroupVersionKind
 }
 
 func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
@@ -105,7 +106,7 @@ func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
 			Namespace: obj.GetNamespace(),
 			Name:      obj.GetName(),
 		},
-		Kind: obj.GetObjectKind().GroupVersionKind().Kind,
+		Kind: obj.GetObjectKind().GroupVersionKind(),
 	}
 }
 

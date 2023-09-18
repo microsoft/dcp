@@ -6,9 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -43,20 +45,9 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 	})
 }
 
-func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl_client.Object, log logr.Logger) {
-	var serviceProducers []ServiceProducer
-	var err error
-	annotations := owner.GetAnnotations()
-
-	spa, found := annotations[serviceProducerAnnotation]
-	if !found {
-		log.V(1).Info("no service-producer annotation found on Container/Executable object")
-		return
-	}
-
-	serviceProducers, err = parseServiceProducerAnnotation(spa)
-	if err != nil {
-		log.Error(err, serviceProducerIsInvalid, "AnnotationText", spa)
+func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl_client.Object, reservedServicePorts map[types.NamespacedName]int32, log logr.Logger) {
+	serviceProducers, err := getServiceProducersForObject(owner, log)
+	if err != nil || len(serviceProducers) == 0 {
 		return
 	}
 
@@ -72,7 +63,7 @@ func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 			ServiceName:            serviceProducer.ServiceName,
 		}
 		hasEndpoint := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
-			return e.Spec.ServiceName == serviceProducer.ServiceName
+			return e.Spec.ServiceName == serviceProducer.ServiceName && e.Spec.ServiceNamespace == serviceProducer.ServiceNamespace
 		})
 
 		if hasEndpoint {
@@ -89,6 +80,11 @@ func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 			continue
 		}
 
+		if reservedServicePorts != nil {
+			if port, found := reservedServicePorts[serviceProducer.ServiceNamespacedName()]; found {
+				serviceProducer.Port = port
+			}
+		}
 		var endpoint *apiv1.Endpoint
 		endpoint, err = r.createEndpoint(ctx, owner, serviceProducer, log)
 
@@ -131,17 +127,26 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 	}
 }
 
-func parseServiceProducerAnnotation(annotation string) ([]ServiceProducer, error) {
+func getServiceProducersForObject(owner ctrl_client.Object, log logr.Logger) ([]ServiceProducer, error) {
+	annotations := owner.GetAnnotations()
+
+	spa, found := annotations[serviceProducerAnnotation]
+	if !found {
+		return nil, nil
+	}
+
 	retval := make([]ServiceProducer, 0)
-	err := json.Unmarshal([]byte(annotation), &retval)
+	err := json.Unmarshal([]byte(spa), &retval)
 
 	if err != nil {
+		log.Error(err, fmt.Sprintf("%s: the annotation could not be parsed", serviceProducerIsInvalid), "AnnotationText", spa)
 		return nil, err
-	} else if slices.Any(retval, func(sp ServiceProducer) bool {
-		// TODO: temporarily, require every service-producer annotation to have a port
-		return sp.Port == 0
-	}) {
-		return nil, fmt.Errorf("%s (annotation '%s' could not be parsed properly)", serviceProducerIsInvalid, annotation)
+	}
+
+	for i := range retval {
+		sp := retval[i]
+		sp.InferServiceNamespace(owner)
+		retval[i] = sp
 	}
 
 	return retval, nil
@@ -153,15 +158,52 @@ type ServiceProducer struct {
 	// Name of the service that the workload implements.
 	ServiceName string `json:"serviceName"`
 
+	// Namespace of the service that the workload implements.
+	// It is optional and defaults to the namespace of the workload.
+	ServiceNamespace string `json:"serviceNamespace,omitempty"`
+
 	// Address used by the workload to serve the service.
 	// In the current implementation it only applies to Executables and defaults to localhost if not present.
 	// (Containers use the address specified by their Spec).
 	Address string `json:"address,omitempty"`
 
-	// Port used by the workload to serve the service. Mandatory.
-	// For Containers it must match one of the Container ports.
+	// Port used by the workload to serve the service.
+	//
+	// For Containers it is mandatory and must match one of the Container ports.
 	// We first match on HostPort, and if one is found, we use that port.
 	// If no HostPort is found, we match on ContainerPort for ports that do not specify a HostPort
 	// (the port is auto-allocated by Docker). If such port is found, we proxy to the auto-allocated host port.
+	//
+	// For Executables it is required UNLESS the Executable also expect the port to be injected into it
+	// via environment variable and {{- portForServing "<service-name>" -}} template function.
 	Port int32 `json:"port,omitempty"`
+}
+
+func (sp *ServiceProducer) InferServiceNamespace(owner ctrl_client.Object) {
+	if sp.ServiceNamespace != "" {
+		return
+	}
+
+	nn := asNamespacedName(sp.ServiceName, owner.GetNamespace())
+	sp.ServiceNamespace = nn.Namespace
+	sp.ServiceName = nn.Name
+}
+
+func (sp *ServiceProducer) ServiceNamespacedName() types.NamespacedName {
+	return types.NamespacedName{
+		Namespace: sp.ServiceNamespace,
+		Name:      sp.ServiceName,
+	}
+}
+
+func asNamespacedName(maybeNamespacedName, defaultNamespace string) types.NamespacedName {
+	if !strings.Contains(maybeNamespacedName, string(types.Separator)) {
+		return types.NamespacedName{Namespace: defaultNamespace, Name: maybeNamespacedName}
+	}
+
+	parts := strings.SplitN(maybeNamespacedName, string(types.Separator), 2)
+	return types.NamespacedName{
+		Namespace: parts[0],
+		Name:      parts[1],
+	}
 }

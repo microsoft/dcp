@@ -36,7 +36,7 @@ jobs:
       if: matrix.os == 'windows-latest'
 
     - name: Build
-      run: make build
+      run: make build-ci
 
     - name: Verify generated files up-to-date
       uses: actions/github-script@v6
@@ -44,7 +44,7 @@ jobs:
         script: |
           const result = await exec.getExecOutput('git status -s');
           if (result.exitCode != 0 || result.stdout.trim() != '') {
-            core.setFailed('Generated files not up-to-date. Please run make generate and commit the latest versions.')
+            core.setFailed('Generated files not up-to-date. Please run make generate-ci and commit the latest versions.')
           }
       if: matrix.os != 'windows-latest'
 

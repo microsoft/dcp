@@ -31,9 +31,9 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
-	"github.com/microsoft/usvc-apiserver/pkg/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -146,11 +146,9 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.Info("Service object is being deleted")
+
 		_ = r.deleteService(ctx, &svc, log) // Best effort. Errors will be logged by deleteService().
 		change = deleteFinalizer(&svc, serviceFinalizer)
-		// Removing the finalizer will unblock the deletion of the ExecutableReplicaSet object.
-		// Status update will fail, because the object will no longer be there, so suppress it.
-		change &= ^statusChanged
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer)
 		// If we added a finalizer, we'll do the additional reconciliation next call
@@ -179,18 +177,14 @@ func (r *ServiceReconciler) deleteService(ctx context.Context, svc *apiv1.Servic
 }
 
 func (r *ServiceReconciler) ensureServiceProxyStarted(ctx context.Context, svc *apiv1.Service, log logr.Logger) objectChange {
-	serviceNamespace := svc.ObjectMeta.Namespace
-	serviceName := svc.ObjectMeta.Name
 	oldPid := svc.Status.ProxyProcessPid
 	oldState := svc.Status.State
+	change := noChange
 
-	var serviceEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &serviceEndpoints, ctrl_client.MatchingFields{".metadata.serviceNamespace": serviceNamespace}, ctrl_client.MatchingFields{".metadata.serviceName": serviceName}); err != nil {
-		log.Error(err, "could not get associated endpoints")
+	serviceEndpoints, err := r.getServiceEndpoints(ctx, svc, log)
+	if err != nil {
 		return additionalReconciliationNeeded
 	}
-
-	change := noChange
 
 	if len(serviceEndpoints.Items) == 0 {
 		svc.Status.State = apiv1.ServiceStateNotReady
@@ -217,14 +211,24 @@ func (r *ServiceReconciler) ensureServiceProxyStarted(ctx context.Context, svc *
 	}
 
 	if svc.Status.ProxyProcessPid != oldPid {
-		log.Info(fmt.Sprintf("proxy process has been started for service %s", serviceName))
+		log.Info(fmt.Sprintf("proxy process has been started for service %s", svc.NamespacedName()))
 	}
 
 	if svc.Status.State != oldState {
-		log.Info(fmt.Sprintf("service %s is now in state %s", serviceName, svc.Status.State))
+		log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
 	}
 
 	return change
+}
+
+func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.Service, log logr.Logger) (apiv1.EndpointList, error) {
+	var serviceEndpoints apiv1.EndpointList
+	if err := r.List(ctx, &serviceEndpoints, ctrl_client.MatchingFields{".metadata.serviceNamespace": svc.ObjectMeta.Namespace}, ctrl_client.MatchingFields{".metadata.serviceName": svc.ObjectMeta.Name}); err != nil {
+		log.Error(err, "could not get associated endpoints")
+		return apiv1.EndpointList{}, fmt.Errorf("could not get associated endpoints: %w", err)
+	} else {
+		return serviceEndpoints, nil
+	}
 }
 
 func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service) error {

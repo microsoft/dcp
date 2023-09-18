@@ -133,6 +133,17 @@ func (e *TestProcessExecutor) FindAll(cmdPath string, cond func(pe ProcessExecut
 	return retval
 }
 
+func (e *TestProcessExecutor) FindByPid(pid process.Pid_t) (ProcessExecution, bool) {
+	e.m.RLock()
+	defer e.m.RUnlock()
+
+	i := e.findByPid(pid)
+	if i == NotFound {
+		return ProcessExecution{}, false
+	}
+	return e.Executions[i], true
+}
+
 // Clears all execution history
 func (e *TestProcessExecutor) ClearHistory() {
 	e.m.Lock()

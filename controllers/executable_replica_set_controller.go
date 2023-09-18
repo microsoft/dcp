@@ -25,7 +25,7 @@ type ExecutableReplicaSetReconciler struct {
 }
 
 const (
-	exeOwnerKey = ".metadata.controller" // client index key for child Executables
+	exeOwnerKey = ".metadata.controllerOwner" // client index key for child Executables
 )
 
 var (

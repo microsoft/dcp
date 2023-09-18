@@ -84,6 +84,27 @@ spec:
           status:
             description: ExecutableStatus describes the status of an Executable.
             properties:
+              effectiveEnv:
+                description: Effective values of environment variables, after all
+                  substitutions are applied.
+                items:
+                  description: EnvVar represents an environment variable present in
+                    a Container or Executable.
+                  properties:
+                    name:
+                      description: Name of the environment variable
+                      type: string
+                    value:
+                      description: Value of the environment variable. Defaults to
+                        "" (empty string).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               executionID:
                 description: The execution ID is the identifier for the actual-state
                   counterpart of the Executable. For ExecutionType == Process it is

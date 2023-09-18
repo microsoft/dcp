@@ -123,4 +123,5 @@ You can also run individual tests via VS Code "run test" and "debug test" gestur
 | --- | ------- |
 | `make lint` times out (or ends with an error that says "Killed") | We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again. |
 | Make it easier to use `kubectl` with DCP | Define a shell alias:Linux/macOS: <br/> &nbsp; &nbsp; `alias kk='kubectl --kubeconfig ~/.dcp/kubeconfig'` <br/> Windows: <br/> &nbsp; &nbsp; `function dcpKubectl() { & kubectl --kubeconfig "$env:USERPROFILE\.dcp\kubeconfig" $args }` <br/> &nbsp; &nbsp; `Set-Alias kk dcpKubectl` |
+| After `make generate-openapi` the generated file is empty (almost all contents has been removed). | Looks like the generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues. <br/><br/>We have seen an issue where the generator would latch to a specific version of `go` compiler and and fail when the compiler is updated. Deleting `.toolbin/openapi-gen` binary usually helps in this case. |
 

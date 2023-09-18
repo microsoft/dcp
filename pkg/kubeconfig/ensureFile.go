@@ -13,7 +13,7 @@ import (
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/networking"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 

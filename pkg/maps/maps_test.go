@@ -147,3 +147,41 @@ func TestSelect(t *testing.T) {
 	})
 	require.Equal(t, expected, result)
 }
+
+func TestApply(t *testing.T) {
+	// Applying empty map on top of empty map should result in an empty map
+	var m1 = make(map[int]string)
+	var m2 = make(map[int]string)
+
+	result := Apply(m1, m2)
+	require.Empty(t, result)
+
+	// Apply empty map shold result in no change
+	m1 = map[int]string{
+		1: "alpha1",
+		2: "bravo2",
+		3: "charlie3",
+		4: "delta4",
+	}
+	result = Apply(m1, m2)
+	require.Equal(t, m1, result)
+
+	// Applying something on top of empty map should result in the something
+	result = Apply(m2, m1)
+	require.Equal(t, m1, result)
+
+	// Replace some values and add some more
+	m2 = map[int]string{
+		0: "zulu0",
+		2: "oterbravo",
+	}
+	expected := map[int]string{
+		0: "zulu0",
+		1: "alpha1",
+		2: "oterbravo",
+		3: "charlie3",
+		4: "delta4",
+	}
+	result = Apply(m1, m2)
+	require.Equal(t, expected, result)
+}

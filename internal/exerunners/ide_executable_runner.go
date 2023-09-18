@@ -20,7 +20,6 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -282,21 +281,9 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 		return nil, fmt.Errorf("missing required annotation '%s'", csharpProjectPathAnnotation)
 	}
 
-	// Start with orchestrator process environemnt, then override with Executable environment.
-	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
-		parts := strings.SplitN(envStr, "=", 2)
-		return parts[0], parts[1]
-	})
-	for _, envVar := range exe.Spec.Env {
-		envMap[envVar.Name] = envVar.Value
-	}
-	effectiveEnv := maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key, value string) apiv1.EnvVar {
-		return apiv1.EnvVar{Name: key, Value: value}
-	})
-
 	isr := ideRunSessionRequest{
 		ProjectPath: projectPath,
-		Env:         effectiveEnv,
+		Env:         exe.Status.EffectiveEnv,
 		Args:        exe.Spec.Args,
 	}
 	isrBody, err := json.Marshal(isr)
@@ -500,11 +487,11 @@ func endsWith(a, b []byte) bool {
 	if len(a) < len(b) {
 		return false
 	}
-	
+
 	// If any of the last len(b) characters of a don't match b, a doesn't end with b.
 	start := len(a) - len(b)
 	for i := range b {
-		if a[start + i] != b[i] {
+		if a[start+i] != b[i] {
 			return false
 		}
 	}

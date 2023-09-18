@@ -132,7 +132,10 @@ help: ## Display this help.
 ##@ Code generation
 
 .PHONY: generate
-generate: generate-object-methods generate-openapi generate-crd generate-licenses ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
+generate: generate-object-methods generate-openapi generate-crd ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
+
+.PHONY: generate-ci ## Generate all codegen artifacts and licenses/notice files.
+generate-ci: generate generate-licenses
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
@@ -227,6 +230,9 @@ release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
 release: compile ## Builds all binaries with flags to reduce binary size
 
 build: generate compile ## Runs codegen and builds all binaries (DCP CLI, DCP API server, and controller host)
+
+build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds all binaries (DCP CLI, DCP API server, and controller host) with flags to reduce binary size
+
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
 compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
 
@@ -284,7 +290,7 @@ endif
 
 .PHONY: download-proxy
 download-proxy: traefik_zip := traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch)$(traefik_zip_suffix)
-download-proxy: $(TOOL_BIN) ${OUTPUT_BIN}
+download-proxy: | $(TOOL_BIN) ${OUTPUT_BIN}/ext/bin/
 ifeq ($(detected_OS),windows)
 	if (-not (Test-Path "$(TOOL_BIN)/$(traefik_zip)")) { curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/$(traefik_zip) --output $(TOOL_BIN)/$(traefik_zip) }
 else
@@ -354,6 +360,8 @@ show-test-vars: envtest ## Shows the values of variables used in test targets
 
 ${OUTPUT_BIN}:
 	$(mkdir) ${OUTPUT_BIN}
+
+${OUTPUT_BIN}/ext/bin/: | ${OUTPUT_BIN}
 	$(mkdir) ${OUTPUT_BIN}/ext/
 	$(mkdir) ${OUTPUT_BIN}/ext/bin/
 

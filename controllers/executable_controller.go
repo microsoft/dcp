@@ -6,8 +6,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+	"text/template"
 
 	"github.com/go-logr/logr"
+	"github.com/joho/godotenv"
 	"github.com/smallnest/chanx"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -20,6 +23,7 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 )
 
@@ -74,8 +78,6 @@ func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 /*
 The main reconciler function of the Executable controller.
 
-TODO: describe the work at a high level.
-
 Notes:
 Updating the Executable path/working directory/arguments/environment will not effect an Executable run once it started.
 Status will be updated based on the status of the corresponding run and the run will be terminated if
@@ -121,11 +123,19 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		removeEndpointsForWorkload(r, ctx, &exe, log)
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer)
+
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.updateRunState(&exe, log)
-			change |= r.runExecutable(ctx, &exe, log)
-			ensureEndpointsForWorkload(r, ctx, &exe, log)
+			changeFromRun, reservedServicePorts := r.runExecutable(ctx, &exe, log)
+			change |= changeFromRun
+
+			switch exe.Status.State {
+			case apiv1.ExecutableStateRunning:
+				ensureEndpointsForWorkload(r, ctx, &exe, reservedServicePorts, log)
+			default:
+				removeEndpointsForWorkload(r, ctx, &exe, log)
+			}
 		}
 	}
 
@@ -174,24 +184,24 @@ func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode int32, err e
 
 // Performs actual Executable startup and updates status with the appropriate data.
 // If startup is successful, starts tracking the run.
-func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
+func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (objectChange, map[types.NamespacedName]int32) {
 	var err error
 
 	if !exe.Status.StartupTimestamp.IsZero() {
 		log.V(1).Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
-		return noChange
+		return noChange, nil
 	}
 
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state, nothing to do...")
-		return noChange
+		return noChange, nil
 	}
 
 	if _, rps, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
 		// We are already tracking a run for this Executable, ensure the status matches the current state.
 		log.V(1).Info("Executable already started...", "ExecutionID", exe.Status.ExecutionID)
 		rps.CopyTo(exe)
-		return statusChanged
+		return statusChanged, nil
 	}
 
 	executionType := exe.Spec.ExecutionType
@@ -203,7 +213,15 @@ func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Exe
 		log.Error(fmt.Errorf("no runner found for execution type '%s'", executionType), "the Executable cannot be run and will be marked as finished")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
-		return statusChanged
+		return statusChanged, nil
+	}
+
+	reservedServicePorts, err := r.computeEffectiveEnvironment(ctx, exe, log)
+	if err != nil {
+		log.Error(err, "could not compute effective environment for the Executable")
+		exe.Status.State = apiv1.ExecutableStateFailedToStart
+		exe.Status.FinishTimestamp = metav1.Now()
+		return statusChanged, nil
 	}
 
 	runID, startWaitForRunCompletion, err := runner.StartRun(ctx, exe, r, log)
@@ -212,14 +230,14 @@ func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Exe
 		r.runs.Store(exe.NamespacedName(), runID, exe.Status)
 
 		startWaitForRunCompletion()
-		return statusChanged
+		return statusChanged, reservedServicePorts
 	} else {
 		if exe.Status.State != apiv1.ExecutableStateFailedToStart {
 			// The executor did not mark the Executable as failed to start, so we should retry.
-			return additionalReconciliationNeeded
+			return additionalReconciliationNeeded, nil
 		} else {
 			// The Executable failed to start and reached the final state.
-			return statusChanged
+			return statusChanged, nil
 		}
 	}
 }
@@ -320,10 +338,8 @@ func (r *ExecutableReconciler) createEndpoint(
 		return nil, err
 	}
 
-	// TODO: logic to find an address and port for the executable
-	// TODO: until then, raise an error if port is not specified
 	if serviceProducer.Port == 0 {
-		return nil, fmt.Errorf(serviceProducerIsInvalid)
+		return nil, fmt.Errorf("%s: missing information about the port to expose the service", serviceProducerIsInvalid)
 	}
 
 	address := serviceProducer.Address
@@ -346,4 +362,99 @@ func (r *ExecutableReconciler) createEndpoint(
 	}
 
 	return endpoint, nil
+}
+
+// Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
+// The returned map contains newly reserved ports for services that the Executable implements without specifying
+// the desired port to use (via service-producer annotation).
+func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (map[types.NamespacedName]int32, error) {
+	// Start with ambient environment.
+	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
+		parts := strings.SplitN(envStr, "=", 2)
+		return parts[0], parts[1]
+	})
+
+	// Add environment variables from .env files.
+	if len(exe.Spec.EnvFiles) > 0 {
+		if additionalEnv, err := godotenv.Read(exe.Spec.EnvFiles...); err != nil {
+			log.Error(err, "Environment settings from .env file(s) were not applied.", "EnvFiles", exe.Spec.EnvFiles)
+		} else {
+			envMap = maps.Apply(envMap, additionalEnv)
+		}
+	}
+
+	// Add environment variables from the Spec.
+	for _, envVar := range exe.Spec.Env {
+		envMap[envVar.Name] = envVar.Value
+	}
+
+	// Apply variable substitutions.
+	servicesProduced, err := getServiceProducersForObject(exe, log)
+	if err != nil {
+		return nil, err
+	}
+	reservedServicePorts := make(map[types.NamespacedName]int32)
+
+	tmpl := template.New("envar").Funcs(template.FuncMap{
+		"portForServing": func(serviceNamespacedName string) (int32, error) {
+			var serviceName = asNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
+
+			for _, sp := range servicesProduced {
+				if serviceName != sp.ServiceNamespacedName() {
+					continue
+				}
+				if sp.Port != 0 {
+					// The service producer annotation specifies the desired port, so we do not have to reserve anything,
+					// and we do not need to report it via reservedServicePorts.
+					return sp.Port, nil
+				}
+
+				// Need to take a peek at the Service to find out what protocol it is using.
+				var svc apiv1.Service
+				if err := r.Get(ctx, serviceName, &svc); err != nil {
+					// CONSIDER in future we could be smarter and delay the startup of the Executable until
+					// the service appears in the system, leaing the Executable in "pending" state.
+					// This would necessitate watching over Services (specifically, Service creation).
+					return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
+				}
+
+				port, err := networking.GetFreePort(svc.Spec.Protocol, sp.Address)
+				if err != nil {
+					return 0, fmt.Errorf("could not allocate a port for service '%s' with desired address '%s': %w", serviceName, sp.Address, err)
+				}
+				reservedServicePorts[serviceName] = port
+				return port, nil
+			}
+
+			return 0, fmt.Errorf("service '%s' referenced by an environment variable is not produced by the Executable", serviceName)
+		},
+	})
+
+	for key, value := range envMap {
+		variableTmpl, err := tmpl.Parse(value)
+		if err != nil {
+			// This does not necessarily indicate a problem--the value might be a completely intentional string
+			// that happens to be un-parseable as a text template.
+			log.Info("substitution is not possible for environment variable", "VariableName", key, "VariableValue", value)
+			continue // We are going to use the value as-is.
+		}
+
+		var sb strings.Builder
+		if err := variableTmpl.Execute(&sb, nil); err != nil {
+			// We could not apply the template, so we are going to use the variable value as-is.
+			// This will likely cause the value of the environment variable to be something that is not useful,
+			// but it will be easier for the user to diagnose the problem if we start the Executable anyway.
+			// TODO: the error from applying the template should be reported to the user via an event
+			// (compare with https://github.com/microsoft/usvc/issues/20)
+			log.Error(err, "could not perform substitution for environment variable", "VariableName", key, "VariableValue", value)
+		} else {
+			envMap[key] = sb.String()
+		}
+	}
+
+	exe.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key string, value string) apiv1.EnvVar {
+		return apiv1.EnvVar{Name: key, Value: value}
+	})
+
+	return reservedServicePorts, nil
 }

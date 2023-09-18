@@ -134,16 +134,20 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Info("Container object is being deleted...")
 		r.deleteContainer(ctx, &container, log)
 		change = deleteFinalizer(&container, containerFinalizer)
-		// Removing the finalizer will unblock the deletion of the Container object.
-		// Status update will fail, because the object will no longer be there, so suppress it.
-		change &= ^statusChanged
 		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
+
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
-			ensureEndpointsForWorkload(r, ctx, &container, log)
+
+			switch container.Status.State {
+			case apiv1.ContainerStateRunning:
+				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
+			default:
+				removeEndpointsForWorkload(r, ctx, &container, log)
+			}
 		}
 	}
 
@@ -420,7 +424,8 @@ func (r *ContainerReconciler) createEndpoint(
 	}
 
 	if serviceProducer.Address != "" {
-		log.Error(fmt.Errorf("address cannot be specified for Container objects"), serviceProducerIsInvalid)
+		err = fmt.Errorf("address cannot be specified for Container objects")
+		log.Error(err, serviceProducerIsInvalid)
 		return nil, err
 	}
 
@@ -458,7 +463,7 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 	log logr.Logger,
 ) (string, int32, error) {
 	matchedPorts := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
-		return p.ContainerPort == serviceProducerPort
+		return p.ContainerPort == serviceProducerPort || p.HostPort == serviceProducerPort
 	})
 
 	if len(matchedPorts) > 0 {

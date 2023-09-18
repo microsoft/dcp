@@ -46,8 +46,15 @@ spec:
                 description: Template describing the configuration of child Executable
                   objects created by the ExecutableReplicaSet
                 properties:
-                  metadata:
-                    description: Metadata for child Executables
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations to apply to child Executable objects
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels to apply to child Executable objects
                     type: object
                   spec:
                     description: Spec for child Executables
@@ -98,6 +105,8 @@ spec:
                     required:
                     - executablePath
                     type: object
+                required:
+                - spec
                 type: object
             required:
             - replicas

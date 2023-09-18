@@ -63,11 +63,14 @@ const (
 
 // +k8s:openapi-gen=true
 type ExecutableTemplate struct {
-	// Metadata for child Executables
-	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// Labels to apply to child Executable objects
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations to apply to child Executable objects
+	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// Spec for child Executables
-	Spec ExecutableSpec `json:"spec,omitempty"`
+	Spec ExecutableSpec `json:"spec"`
 }
 
 // ExecutableSpec defines the desired state of an Executable
@@ -124,6 +127,11 @@ type ExecutableStatus struct {
 
 	// The path of a temporary file that contains captured standard error data from the Executable process.
 	StdErrFile string `json:"stdErrFile,omitempty"`
+
+	// Effective values of environment variables, after all substitutions are applied.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 }
 
 func (es ExecutableStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

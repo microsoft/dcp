@@ -2,6 +2,7 @@ package maps
 
 import (
 	"fmt"
+	stdlib_maps "maps"
 )
 
 type MapFunc[K comparable, V any, T any] interface {
@@ -132,4 +133,16 @@ func Values[K comparable, V any](m map[K]V) []V {
 		i++
 	}
 	return res
+}
+
+func Apply[K comparable, V any](m1 map[K]V, m2 map[K]V) map[K]V {
+	if len(m1) == 0 {
+		return m2
+	}
+
+	retval := stdlib_maps.Clone(m1)
+	for k, v := range m2 {
+		retval[k] = v
+	}
+	return retval
 }

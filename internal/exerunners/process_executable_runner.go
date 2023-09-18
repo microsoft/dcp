@@ -8,11 +8,9 @@ import (
 	"strconv"
 
 	"github.com/go-logr/logr"
-	"github.com/joho/godotenv"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,20 +79,11 @@ func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *e
 	cmd := exec.CommandContext(ctx, exe.Spec.ExecutablePath)
 	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Spec.Args...)
 
-	env := slices.Map[apiv1.EnvVar, string](exe.Spec.Env, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
+	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
-	if len(exe.Spec.EnvFiles) > 0 {
-		if additionalEnv, err := godotenv.Read(exe.Spec.EnvFiles...); err != nil {
-			log.Error(err, "Environment settings from .env file(s) were not applied.", "EnvFiles", exe.Spec.EnvFiles)
-		} else {
-			env = append(env, maps.MapToSlice[string, string, string](additionalEnv, func(key, val string) string { return fmt.Sprintf("%s=%s", key, val) })...)
-		}
-	}
-
-	cmd.Env = append(os.Environ(), env...) // Include parent process environment
 	cmd.Dir = exe.Spec.WorkingDirectory
-	return cmd
 
+	return cmd
 }
 
 func pidToRunID(pid process.Pid_t) controllers.RunID {

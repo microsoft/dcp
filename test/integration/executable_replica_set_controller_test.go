@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"testing"
 	"time"
@@ -323,6 +324,96 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureStatusUpdated)
 	require.NoError(t, err, "ExecutableReplicaSet did not update its status to reflect the running replicas")
+}
+
+func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "exers-injects-ports-into-replicas"
+	const replicas = 3
+
+	// In the current implementation the service must exist before the Executable is created
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.0.0.1",
+			Port:     13762,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create a Service")
+
+	exers := apiv1.ExecutableReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableReplicaSetSpec{
+			Replicas: replicas,
+			Template: apiv1.ExecutableTemplate{
+				Annotations: map[string]string{
+					"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, testName),
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/exers-injects-ports-into-replicas",
+					Env: []apiv1.EnvVar{
+						{
+							Name:  "SVC_PORT",
+							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, testName),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating ExecutableReplicaSet '%s'...", exers.ObjectMeta.Name)
+	err = client.Create(ctx, &exers)
+	require.NoError(t, err, "Could not create the ExecutableReplicaSet")
+
+	t.Logf("Ensure ExecutableReplicaSet '%s' has expected number of replicas...", exers.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedErs *apiv1.ExecutableReplicaSet) (bool, error) {
+		exes, err := getOwnedExes(ctx, updatedErs)
+		if err != nil {
+			return false, err
+		}
+		return len(exes) == replicas, nil
+	})
+
+	t.Logf("Ensure ExecutableReplicaSet '%s' has injected ports into replicas...", exers.ObjectMeta.Name)
+	ownedExes, err := getOwnedExes(ctx, &exers)
+	require.NoError(t, err, "Failed to retrieve owned Executable replicas")
+
+	portMap := make(map[int64]bool, replicas)
+
+	for _, exe := range ownedExes {
+		updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(updatedExe *apiv1.Executable) (bool, error) {
+			return updatedExe.Status.State == apiv1.ExecutableStateRunning, nil
+		})
+
+		effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			return fmt.Sprintf("%s=%s", v.Name, v.Value)
+		})
+
+		matches := testutil.FindAllMatching(effectiveEnv, regexp.MustCompile(`SVC_PORT=(\d+)`))
+		require.Len(t, matches, 1, "Port was not injected into the Executable '%s',process environment variables. The process environment variables are: %v", updatedExe.ObjectMeta.Name, effectiveEnv)
+		port, err := strconv.ParseInt(matches[0][1], 10, 32)
+		require.NoError(t, err, "The port '%s' injected into Executable '%s' is not a valid integer", matches[0][1], exe.ObjectMeta.Name)
+		require.Greater(t, int32(port), int32(0), "The port '%d' injected into Executable '%s' is not a valid port number", port, exe.ObjectMeta.Name)
+		require.Less(t, int32(port), int32(65536), "The port '%d' injected into Executable '%s' is not a valid port number", port, exe.ObjectMeta.Name)
+
+		_, alreadySeen := portMap[port]
+		require.False(t, alreadySeen, "The port '%d' injected into Executable '%s' is not unique", port, exe.ObjectMeta.Name)
+		portMap[port] = true
+	}
 }
 
 func ensureExpectedReplicaCount(t *testing.T, exers *apiv1.ExecutableReplicaSet, n int) func(ctx context.Context) (bool, error) {
