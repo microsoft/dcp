@@ -248,7 +248,9 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 	proxyAddress := svc.Spec.Address
 	if proxyAddress == "" {
-		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne || svc.Spec.AddressAllocationMode == "" {
+		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
+			proxyAddress = "localhost"
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
 			proxyAddress = "127.0.0.1"
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
 			proxyAddress = fmt.Sprintf("127.%d.%d.%d", rand.Intn(254)+1, rand.Intn(254)+1, rand.Intn(254)+1)

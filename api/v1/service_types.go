@@ -31,10 +31,13 @@ const (
 type AddressAllocationMode string
 
 const (
+	// Bind to localhost (default)
+	AddressAllocationModeLocalhost AddressAllocationMode = "Localhost"
+
 	// Bind only to 127.0.0.1
 	AddressAllocationModeIPv4ZeroOne AddressAllocationMode = "IPv4ZeroOne"
 
-	// Bind to any 127.*.*.* loopback address
+	// Bind to a random 127.*.*.* loopback address
 	AddressAllocationModeIPv4Loopback AddressAllocationMode = "IPv4Loopback"
 
 	// Bind only to ::1

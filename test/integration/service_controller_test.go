@@ -172,7 +172,7 @@ func TestServiceRandomPort(t *testing.T) {
 
 	t.Log("Check if Service has random port...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
-		addressCorrect := s.Status.EffectiveAddress == "127.0.0.1" // The default address for default AddressAllocationMode
+		addressCorrect := s.Status.EffectiveAddress == "localhost" // The default address for default AddressAllocationMode
 		portCorrect := s.Status.EffectivePort > 0
 		return addressCorrect && portCorrect, nil
 	})
