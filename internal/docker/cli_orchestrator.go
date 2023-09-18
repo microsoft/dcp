@@ -160,8 +160,17 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 		args = append(args, fmt.Sprintf("--restart=%s", options.RestartPolicy))
 	}
 
+	if options.Command != "" {
+		args = append(args, "--entrypoint", options.Command)
+	}
+
 	args = append(args, "--detach")
 	args = append(args, options.Image)
+
+	if (options.Args != nil) && (len(options.Args) > 0) {
+		args = append(args, options.Args...)
+	}
+
 	cmd := makeDockerCommand(ctx, args...)
 
 	// The run container command can take a long time to finish if the image is not available locally.
@@ -435,7 +444,7 @@ func expectStrings(b *bytes.Buffer, expected []string) error {
 
 func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T, error) {
 	if b == nil {
-		return nil, fmt.Errorf("Docker command timed out without returning any data")
+		return nil, fmt.Errorf("the Docker command timed out without returning any data")
 	}
 
 	retval := []T{}
@@ -461,7 +470,7 @@ func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T,
 
 func asId(b *bytes.Buffer) (string, error) {
 	if b == nil {
-		return "", fmt.Errorf("Docker command timed out without returning object identifier")
+		return "", fmt.Errorf("the Docker command timed out without returning object identifier")
 	}
 
 	chunks := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(b.Bytes(), LF), bytes.TrimSpace))
@@ -473,7 +482,7 @@ func asId(b *bytes.Buffer) (string, error) {
 
 func unmarshalVolume(data []byte, vol *containers.InspectedVolume) error {
 	if data == nil {
-		return fmt.Errorf("Docker command timed out without returning volume data")
+		return fmt.Errorf("the Docker command timed out without returning volume data")
 	}
 
 	return json.Unmarshal(data, vol)
@@ -481,7 +490,7 @@ func unmarshalVolume(data []byte, vol *containers.InspectedVolume) error {
 
 func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	if data == nil {
-		return fmt.Errorf("Docker command timed out without returning container data")
+		return fmt.Errorf("the Docker command timed out without returning container data")
 	}
 
 	var dci dockerInspectedContainer

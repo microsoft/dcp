@@ -105,6 +105,12 @@ type ContainerSpec struct {
 
 	// Container restart policy
 	RestartPolicy ContainerRestartPolicy `json:"restartPolicy,omitempty"`
+
+	// Command to run in the container
+	Command string `json:"command,omitempty"`
+
+	// Arguments to pass to the command
+	Args []string `json:"args,omitempty"`
 }
 
 type ContainerState string

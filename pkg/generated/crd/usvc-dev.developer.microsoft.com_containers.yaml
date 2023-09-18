@@ -35,6 +35,14 @@ spec:
           spec:
             description: ContainerSpec defines the desired state of a Container
             properties:
+              args:
+                description: Arguments to pass to the command
+                items:
+                  type: string
+                type: array
+              command:
+                description: Command to run in the container
+                type: string
               env:
                 description: Environment settings
                 items:
