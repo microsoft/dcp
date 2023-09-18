@@ -19,6 +19,16 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+        - os: ubuntu-latest
+          buildCommand: make build-ci
+          testCommand: make test-ci
+        - os: macos-latest
+          buildCommand: make build-ci
+          testCommand: make test-ci
+        - os: windows-latest
+          buildCommand: make compile
+          testCommand: make test
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
@@ -31,12 +41,8 @@ jobs:
         go-version-file: 'go.mod'
         architecture: 'x64'
 
-    - name: Install required tools (Windows)
-      run: choco install make gawk curl golangci-lint -y
-      if: matrix.os == 'windows-latest'
-
     - name: Build
-      run: make build-ci
+      run: ${{ matrix.buildCommand }}
 
     - name: Verify generated files up-to-date
       uses: actions/github-script@v6
@@ -50,7 +56,7 @@ jobs:
 
     - name: Run tests
       id: test
-      run: make test-ci
+      run: ${{ matrix.testCommand }}
       env:
         TEST_CONTEXT_TIMEOUT: 3 # Increase test timeout to three minutes
         DCP_LOG_LEVEL: debug
