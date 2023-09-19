@@ -134,8 +134,8 @@ help: ## Display this help.
 .PHONY: generate
 generate: generate-object-methods generate-openapi generate-crd ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
 
-.PHONY: generate-ci ## Generate all codegen artifacts and licenses/notice files.
-generate-ci: generate generate-licenses
+.PHONY: generate-ci 
+generate-ci: generate generate-licenses ## Generate all codegen artifacts and licenses/notice files.
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
@@ -172,7 +172,7 @@ $(crd_files) : $(GO_SOURCES) controller-gen
 	$(CONTROLLER_GEN) crd paths="./api/v1/..." output:crd:artifacts:config=pkg/generated/crd
 
 .PHONY: generate-licenses
-generate-licenses: generate-dependency-notices generate-proxy-notice
+generate-licenses: generate-dependency-notices generate-proxy-notice ## Generates license/notice files for all dependencies
 
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
