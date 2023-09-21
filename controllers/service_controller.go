@@ -297,11 +297,11 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 	cmd := exec.CommandContext(ctx,
 		proxyExecutable,
+		fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
 		fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
 		"--providers.file.watch=true",
 		"--log.level=INFO",
 		"--log.format=common",
-		fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
 	)
 
 	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {

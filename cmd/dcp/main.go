@@ -15,10 +15,11 @@ const (
 )
 
 func main() {
-	logger := logger.New("dcp")
-	defer logger.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
+	log := logger.New("dcp")
+	defer log.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
+	defer logger.CleanupSessionFolderIfNeeded()
 
-	root, err := commands.NewRootCmd(logger)
+	root, err := commands.NewRootCmd(log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(errSetup)

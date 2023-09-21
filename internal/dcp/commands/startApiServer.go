@@ -57,6 +57,8 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 
 			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)
 
+			logger.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
+
 			forked := exec.Command(os.Args[0], args...)
 			process.ForkFromParent(forked)
 

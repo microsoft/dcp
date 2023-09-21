@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	DCP_LOG_FOLDER         = "DCP_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
-	DCP_LOG_LEVEL          = "DCP_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
-	DCP_LOG_SOCKET         = "DCP_LOG_SOCKET" // Unix socket to write console logs to instead of stderr
+	DCP_LOG_FOLDER         = "DCP_LOG_FOLDER"     // Folder to write debug logs to (defaults to a temp folder)
+	DCP_LOG_LEVEL          = "DCP_LOG_LEVEL"      // Log level to include in debug logs (defaults to none)
+	DCP_LOG_SOCKET         = "DCP_LOG_SOCKET"     // Unix socket to write console logs to instead of stderr
+	DCP_SESSION_FOLDER     = "DCP_SESSION_FOLDER" // Folder to delete when finished with a session
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
 	stdOutMaxLevel         = zapcore.InfoLevel
@@ -204,5 +205,24 @@ func GetVerbosityArg(fs *pflag.FlagSet) string {
 		return fmt.Sprintf("-v=%s", levelFlagValue.String())
 	} else {
 		return ""
+	}
+}
+
+var shouldCleanupSessionFolder bool = true
+
+func PreserveSessionFolder() {
+	shouldCleanupSessionFolder = false
+}
+
+func CleanupSessionFolderIfNeeded() {
+	if !shouldCleanupSessionFolder {
+		return
+	}
+
+	dcpSessionDir, found := os.LookupEnv(DCP_SESSION_FOLDER)
+	if found {
+		if err := os.RemoveAll(dcpSessionDir); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to remove session directory: %v\n", err)
+		}
 	}
 }
