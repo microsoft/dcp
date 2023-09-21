@@ -296,14 +296,30 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		proxyPortString = fmt.Sprintf("%d", proxyPort)
 	}
 
-	cmd := exec.CommandContext(ctx,
-		proxyExecutable,
-		fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
-		fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
-		"--providers.file.watch=true",
-		"--log.level=INFO",
-		"--log.format=common",
-	)
+	var cmd *exec.Cmd
+
+	if proxyAddress == "localhost" {
+		// Bind to both 127.0.0.1 and [::1] explicitly
+		cmd = exec.CommandContext(ctx,
+			proxyExecutable,
+			fmt.Sprintf("--entryPoints.web.address=%s:%s", "127.0.0.1", proxyPortString),
+			fmt.Sprintf("--entryPoints.webipv6.address=%s:%s", "[::1]", proxyPortString),
+			fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
+			"--providers.file.watch=true",
+			"--log.level=INFO",
+			"--log.format=common",
+		)
+	} else {
+		// Bind to just the proxy address
+		cmd = exec.CommandContext(ctx,
+			proxyExecutable,
+			fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
+			fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
+			"--providers.file.watch=true",
+			"--log.level=INFO",
+			"--log.format=common",
+		)
+	}
 
 	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {
 		return err

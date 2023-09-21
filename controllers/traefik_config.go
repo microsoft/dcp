@@ -17,7 +17,7 @@ func NewTcpProxyConfig(svc *apiv1.Service, endpoints *apiv1.EndpointList) tcpPro
 		Tcp: tcpConfig{
 			Routers: map[string]tcpRouterConfig{
 				serviceName: {
-					EntryPoints: []string{"web"},
+					EntryPoints: []string{"web", "webipv6"},
 					Service:     serviceName,
 					Rule:        "HostSNI(`*`)",
 				},
@@ -45,7 +45,7 @@ func NewUdpProxyConfig(svc *apiv1.Service, endpoints *apiv1.EndpointList) udpPro
 		Udp: udpConfig{
 			Routers: map[string]udpRouterConfig{
 				serviceName: {
-					EntryPoints: []string{"web"},
+					EntryPoints: []string{"web", "webipv6"},
 					Service:     serviceName,
 				},
 			},
