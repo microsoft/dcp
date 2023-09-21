@@ -134,7 +134,7 @@ help: ## Display this help.
 .PHONY: generate
 generate: generate-object-methods generate-openapi generate-crd ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
 
-.PHONY: generate-ci 
+.PHONY: generate-ci
 generate-ci: generate generate-licenses ## Generate all codegen artifacts and licenses/notice files.
 
 .PHONY: generate-object-methods
@@ -195,27 +195,27 @@ generate-proxy-notice: download-proxy
 controller-gen: $(CONTROLLER_GEN)
 $(CONTROLLER_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(CONTROLLER_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(CONTROLLER_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(CONTROLLER_GEN) ]] || GOBIN=$(TOOL_BIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+	[[ -s $(CONTROLLER_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 endif
 
 .PHONY: openapi-gen
 openapi-gen: $(OPENAPI_GEN)
 $(OPENAPI_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
+	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
 endif
 
 .PHONY: go-licenses
 go-licenses: $(GO_LICENSES)
 $(GO_LICENSES): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install github.com/google/go-licenses@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install github.com/google/go-licenses@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) go install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
+	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
 endif
 
 # delay-tool is used for process package testing
@@ -381,9 +381,9 @@ $(DCP_DIR):
 envtest: $(ENVTEST)
 $(ENVTEST): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(ENVTEST)")) { $$env:GOBIN = "$(TOOL_BIN)"; go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest; $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(ENVTEST)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest; $$env:GOBIN = $$null; }
 else
-	[[ -s $(ENVTEST) ]] || GOBIN=$(TOOL_BIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+	[[ -s $(ENVTEST) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 endif
 
 .PHONY: golangci-lint
