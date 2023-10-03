@@ -108,7 +108,7 @@ func createKubeconfigFile(path string, port int32) error {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 
-	if err := io.WriteFile(path, contents, osutil.PermissionFileOwnerOnly); err != nil {
+	if err := io.WriteFile(path, contents, osutil.PermissionOnlyOwnerReadWrite); err != nil {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 

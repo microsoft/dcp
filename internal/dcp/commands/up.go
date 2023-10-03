@@ -13,6 +13,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -70,6 +71,11 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 
 		commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
 		defer cancelCommandCtx()
+
+		err = perftrace.CaptureStartupProfileIfRequested(commandCtx, log)
+		if err != nil {
+			log.Error(err, "failed to capture startup profile")
+		}
 
 		allExtensions, err := bootstrap.GetExtensions(commandCtx)
 		if err != nil {

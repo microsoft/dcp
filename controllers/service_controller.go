@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
+	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +35,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	ourio "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -296,30 +298,41 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		proxyPortString = fmt.Sprintf("%d", proxyPort)
 	}
 
-	var cmd *exec.Cmd
-
+	args := []string{}
 	if proxyAddress == "localhost" {
 		// Bind to both 127.0.0.1 and [::1] explicitly
-		cmd = exec.CommandContext(ctx,
-			proxyExecutable,
+		args = append(args,
 			fmt.Sprintf("--entryPoints.web.address=%s:%s", "127.0.0.1", proxyPortString),
 			fmt.Sprintf("--entryPoints.webipv6.address=%s:%s", "[::1]", proxyPortString),
-			fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
-			"--providers.file.watch=true",
-			"--log.level=INFO",
-			"--log.format=common",
 		)
 	} else {
 		// Bind to just the proxy address
-		cmd = exec.CommandContext(ctx,
-			proxyExecutable,
+		args = append(args,
 			fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
-			fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
-			"--providers.file.watch=true",
-			"--log.level=INFO",
-			"--log.format=common",
 		)
 	}
+
+	args = append(args,
+		fmt.Sprintf("--providers.file.filename=%s", svc.Status.ProxyConfigFile),
+		"--providers.file.watch=true",
+	)
+
+	// Enable Traefik's DEBUG level logging if DCP itself is doing DEBUG logging
+	if logLevel, err := logger.GetDebugLogLevel(); err == nil && logLevel <= zapcore.DebugLevel {
+		if logFolder, err := logger.EnsureDetailedLogsFolder(); err == nil {
+			logFilePath := filepath.Join(logFolder, fmt.Sprintf("%s.log", svc.ObjectMeta.Name))
+			args = append(args,
+				fmt.Sprintf("--log.filePath=%s", logFilePath),
+				"--log.level=DEBUG",
+				"--log.format=common",
+			)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx,
+		proxyExecutable,
+		args...,
+	)
 
 	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {
 		return err
@@ -468,7 +481,7 @@ func isEmptyDir(dir string) (bool, error) {
 
 func ensureDir(dir string) error {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-		return os.MkdirAll(dir, osutil.PermissionFileOwnerAll)
+		return os.MkdirAll(dir, osutil.PermissionOnlyOwnerReadWriteSetCurrent)
 	}
 
 	return nil
@@ -480,5 +493,5 @@ func writeObjectYamlToFile(fileName string, data interface{}) error {
 		return err
 	}
 
-	return ourio.WriteFile(fileName, yamlContent, osutil.PermissionFile)
+	return ourio.WriteFile(fileName, yamlContent, osutil.PermissionOwnerReadWriteOthersRead)
 }

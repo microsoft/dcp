@@ -36,7 +36,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		"env", cmd.Env,
 		"cwd", cmd.Dir)
 
-	stdOutFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
+	stdOutFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard output data")
 	} else {
@@ -44,7 +44,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		exe.Status.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.Status.ExecutionID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
+	stdErrFile, err := io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing process standard error data")
 	} else {

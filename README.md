@@ -107,7 +107,7 @@ You can also run individual tests via VS Code "run test" and "debug test" gestur
 
 1. Run `make test` at least once from command line before debugging tests. This will ensure that test K8s binaries are downloaded and installed properly into `.toolbin` directory.
 1. Integration test timeouts are increased to 60 minutes (refer to `.vscode/settings.json` to change that). This helps with test debugging.
-1. If the test is killed while running under the debugger, it will leave orphaned `kube-apiserver` and `etcd` processes. You can check if such processes exist by running following commands: 
+1. If the test is killed while running under the debugger, it will leave orphaned `kube-apiserver` and `etcd` processes. You can check if such processes exist by running following commands:
 
     | Task | Command (macOS) | Command (Linux) | Command (Windows) |
     | --- | --- | --- | --- |
@@ -124,4 +124,4 @@ You can also run individual tests via VS Code "run test" and "debug test" gestur
 | `make lint` times out (or ends with an error that says "Killed") | We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again. |
 | Make it easier to use `kubectl` with DCP | Define a shell alias:Linux/macOS: <br/> &nbsp; &nbsp; `alias kk='kubectl --kubeconfig ~/.dcp/kubeconfig'` <br/> Windows: <br/> &nbsp; &nbsp; `function dcpKubectl() { & kubectl --kubeconfig "$env:USERPROFILE\.dcp\kubeconfig" $args }` <br/> &nbsp; &nbsp; `Set-Alias kk dcpKubectl` |
 | After `make generate-openapi` the generated file is empty (almost all contents has been removed). | Looks like the generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues. <br/><br/>We have seen an issue where the generator would latch to a specific version of `go` compiler and and fail when the compiler is updated. Deleting `.toolbin/openapi-gen` binary usually helps in this case. |
-
+| Test a local build of `dcp` with `aspire` | Create a `<file>.csproj.user` file next to the `.csproj` file you want to use with a local build of dcp (for example `samples/DevHost/DevHost.csproj.user` in the `dotnet/aspire` repo). Set the contents of the .user.csproj file to:<br/>`<Project>`<br/>&nbsp;&nbsp;&nbsp;&nbsp;`<PropertyGroup>`<br/>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`<DcpDir>[PATH TO YOUR LOCAL BUILD]</DcpDir>`<br/>&nbsp;&nbsp;&nbsp;&nbsp;`</PropertyGroup>`<br/>`</Project>`<br/><br/>This will override the location used for the DCP binaries while avoiding the risk of checking in your local override. Just remember to comment out the `<DcpDir></DcpDir>` line if you want to go back to using the DCP version Aspire targets. |

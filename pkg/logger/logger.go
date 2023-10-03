@@ -2,7 +2,9 @@ package logger
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,13 +21,13 @@ import (
 )
 
 const (
-	DCP_LOG_FOLDER         = "DCP_LOG_FOLDER"     // Folder to write debug logs to (defaults to a temp folder)
-	DCP_LOG_LEVEL          = "DCP_LOG_LEVEL"      // Log level to include in debug logs (defaults to none)
-	DCP_LOG_SOCKET         = "DCP_LOG_SOCKET"     // Unix socket to write console logs to instead of stderr
-	DCP_SESSION_FOLDER     = "DCP_SESSION_FOLDER" // Folder to delete when finished with a session
-	verbosityFlagName      = "verbosity"
-	verbosityFlagShortName = "v"
-	stdOutMaxLevel         = zapcore.InfoLevel
+	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
+	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
+	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
+	DCP_SESSION_FOLDER         = "DCP_SESSION_FOLDER"         // Folder to delete when finished with a session
+	verbosityFlagName          = "verbosity"
+	verbosityFlagShortName     = "v"
+	stdOutMaxLevel             = zapcore.InfoLevel
 )
 
 var (
@@ -37,62 +39,6 @@ type Logger struct {
 	name        string
 	atomicLevel zap.AtomicLevel
 	flush       func()
-}
-
-type debugLogNotEnabledError struct {
-	err string
-}
-
-func newDebugLogNotEnabledError(err string) *debugLogNotEnabledError {
-	return &debugLogNotEnabledError{
-		err: err,
-	}
-}
-
-func (e *debugLogNotEnabledError) Error() string {
-	return e.err
-}
-
-func isDebugLogNotEnabledError(err error) bool {
-	_, ok := err.(*debugLogNotEnabledError)
-	return ok
-}
-
-func getLogCore(name string, encoderConfig zapcore.EncoderConfig) (zapcore.Core, error) {
-	// Determine if the debug log is enabled
-	dcpLogLevel, found := os.LookupEnv(DCP_LOG_LEVEL)
-	if !found {
-		return nil, newDebugLogNotEnabledError("debug log not enabled")
-	}
-
-	// Parse the debug log level to a zapcore level
-	logLevel, err := StringToLevel(dcpLogLevel, zapcore.ErrorLevel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse log level: %v", dcpLogLevel)
-	}
-
-	// Determine the folder to write debug logs to
-	logFolder, found := os.LookupEnv(DCP_LOG_FOLDER)
-	if !found {
-		logFolder = defaultLogPath
-	}
-
-	// Attempt to create the relevant folder
-	if err := os.MkdirAll(logFolder, os.FileMode(osutil.PermissionFileOwnerAll)); err != nil {
-		return nil, fmt.Errorf("failed to create log folder: %v", err)
-	}
-
-	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
-	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionFileOwnerOnly)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create log file: %v", err)
-	}
-
-	// Format debug log to be machine readible
-	logEncoder := zapcore.NewJSONEncoder(encoderConfig)
-
-	// Return a new log core for the debug log
-	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
 }
 
 // New logger implementation to handle logging to stdout/debug log
@@ -129,9 +75,9 @@ func New(name string) Logger {
 	cores = append(cores, zapcore.NewCore(consoleEncoder, consoleLog, consoleAtomicLevel))
 
 	// Determine if a debug log is enabled
-	if logCore, err := getLogCore(name, zap.NewProductionEncoderConfig()); err != nil {
+	if logCore, err := getDiagnosticsLogCore(name, zap.NewProductionEncoderConfig()); err != nil {
 		// Ignore the error if debug log isn't enabled
-		if !isDebugLogNotEnabledError(err) {
+		if !errors.Is(err, errDebugLogNotEnabled) {
 			// If there was an error setting up the debug log, write it to stderr
 			fmt.Fprintf(os.Stderr, "failed to set up debug log: %v\n", err)
 		}
@@ -184,30 +130,28 @@ func (l *Logger) AddLevelFlag(fs *pflag.FlagSet) {
 	fs.VarP(&levelVal, verbosityFlagName, verbosityFlagShortName, "Logging verbosity level (e.g. -v=debug). Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity. Levels more than 6 are rarely used in practice.")
 }
 
-func GetLevelFlagValue(fs *pflag.FlagSet) (*LevelFlagValue, bool) {
-	if fs == nil {
-		return nil, false
+func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (zapcore.Core, error) {
+	logLevel, err := GetDebugLogLevel()
+	if err != nil {
+		return nil, err
 	}
 
-	levelFlag := fs.Lookup(verbosityFlagName)
-	if levelFlag == nil {
-		return nil, false
+	logFolder, err := EnsureDetailedLogsFolder()
+	if err != nil {
+		return nil, err
 	}
 
-	levelVal, ok := levelFlag.Value.(*LevelFlagValue)
-	if !ok {
-		return nil, false
+	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
+	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}
 
-	return levelVal, true
-}
+	// Format debug log to be machine readible
+	logEncoder := zapcore.NewJSONEncoder(encoderConfig)
 
-func GetVerbosityArg(fs *pflag.FlagSet) string {
-	if levelFlagValue, found := GetLevelFlagValue(fs); found && levelFlagValue.String() != "" {
-		return fmt.Sprintf("-v=%s", levelFlagValue.String())
-	} else {
-		return ""
-	}
+	// Return a new log core for the debug log
+	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
 }
 
 var shouldCleanupSessionFolder bool = true
@@ -227,4 +171,44 @@ func CleanupSessionFolderIfNeeded() {
 			fmt.Fprintf(os.Stderr, "failed to remove session directory: %v\n", err)
 		}
 	}
+}
+
+// Returns the folder to write detailed logs and perf traces to.
+func EnsureDetailedLogsFolder() (string, error) {
+	logFolder, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_FOLDER)
+	if !found {
+		logFolder = defaultLogPath
+	}
+
+	info, err := os.Stat(logFolder)
+	if errors.Is(err, fs.ErrNotExist) {
+		err = os.MkdirAll(logFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent)
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to create log folder: %v", err)
+	}
+
+	if !info.IsDir() {
+		return "", fmt.Errorf("'%s' is not a directory and cannot be used as log folder", logFolder)
+	}
+
+	return logFolder, nil
+}
+
+var errDebugLogNotEnabled = errors.New("debug log not enabled")
+
+func GetDebugLogLevel() (zapcore.Level, error) {
+	// Determine if the debug log is enabled
+	dcpLogLevel, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_LEVEL)
+	if !found {
+		return zapcore.InvalidLevel, errDebugLogNotEnabled
+	}
+
+	// Parse the debug log level to a zapcore level
+	logLevel, err := StringToLevel(dcpLogLevel, zapcore.ErrorLevel)
+	if err != nil {
+		return zapcore.InvalidLevel, fmt.Errorf("failed to parse log level: %v", dcpLogLevel)
+	}
+
+	return logLevel, nil
 }

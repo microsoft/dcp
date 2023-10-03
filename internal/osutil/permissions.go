@@ -3,7 +3,8 @@ package osutil
 import "os"
 
 const (
-	PermissionFile          os.FileMode = 0644
-	PermissionFileOwnerOnly os.FileMode = 0600
-	PermissionFileOwnerAll  os.FileMode = 0700
+	PermissionOwnerReadWriteOthersRead     os.FileMode = 0644
+	PermissionOnlyOwnerReadWrite           os.FileMode = 0600
+	PermissionOnlyOwnerReadWriteSetCurrent os.FileMode = 0700 // For directories
+	PermissionOnlyOwnerReadWriteExecute    os.FileMode = 0700 // For files
 )

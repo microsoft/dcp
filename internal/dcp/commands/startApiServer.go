@@ -13,6 +13,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -80,7 +81,11 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 			return nil
 		}
 
-		var err error
+		err := perftrace.CaptureStartupProfileIfRequested(ctx, log)
+		if err != nil {
+			log.Error(err, "failed to capture startup profile")
+		}
+
 		if rootDir == "" {
 			rootDir, err = os.Getwd()
 			if err != nil {

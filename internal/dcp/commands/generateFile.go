@@ -92,7 +92,7 @@ func generateFile(log logger.Logger) func(cmd *cobra.Command, args []string) err
 
 		var output *os.File
 		if outputFileName := generateFileFlags.output; outputFileName != "" {
-			output, err = openOrCreateOutputFile(outputFileName, osutil.PermissionFileOwnerOnly)
+			output, err = openOrCreateOutputFile(outputFileName, osutil.PermissionOnlyOwnerReadWrite)
 			if err != nil {
 				return err
 			} else {
@@ -130,7 +130,7 @@ func openInputFile(fileName string) (*os.File, error) {
 		return nil, fmt.Errorf("the value of --input parameter points to a directory--file was expected")
 	}
 
-	input, err := os.OpenFile(fileName, os.O_RDONLY, osutil.PermissionFile)
+	input, err := os.OpenFile(fileName, os.O_RDONLY, osutil.PermissionOwnerReadWriteOthersRead)
 	if err != nil {
 		return nil, fmt.Errorf("template file could not be opened: %w", err)
 	}
