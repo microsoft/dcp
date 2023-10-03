@@ -17,12 +17,12 @@ const (
 )
 
 func main() {
-	logger := logger.New("dcpd")
-	defer logger.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
+	log := logger.New("dcpd")
+	defer log.BeforeExit(func(value interface{}) { os.Exit(errPanic) })
 
 	ctx := kubeapiserver.SetupSignalContext()
 
-	root, err := commands.NewRootCmd(logger)
+	root, err := commands.NewRootCmd(log)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(errSetup)

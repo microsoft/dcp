@@ -41,30 +41,6 @@ type Logger struct {
 	flush       func()
 }
 
-func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (zapcore.Core, error) {
-	logLevel, err := GetDebugLogLevel()
-	if err != nil {
-		return nil, err
-	}
-
-	logFolder, err := EnsureDetailedLogsFolder()
-	if err != nil {
-		return nil, err
-	}
-
-	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
-	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create log file: %v", err)
-	}
-
-	// Format debug log to be machine readible
-	logEncoder := zapcore.NewJSONEncoder(encoderConfig)
-
-	// Return a new log core for the debug log
-	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
-}
-
 // New logger implementation to handle logging to stdout/debug log
 func New(name string) Logger {
 	cores := []zapcore.Core{}
@@ -154,30 +130,28 @@ func (l *Logger) AddLevelFlag(fs *pflag.FlagSet) {
 	fs.VarP(&levelVal, verbosityFlagName, verbosityFlagShortName, "Logging verbosity level (e.g. -v=debug). Can be one of 'debug', 'info', or 'error', or any positive integer corresponding to increasing levels of debug verbosity. Levels more than 6 are rarely used in practice.")
 }
 
-func GetLevelFlagValue(fs *pflag.FlagSet) (*LevelFlagValue, bool) {
-	if fs == nil {
-		return nil, false
+func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (zapcore.Core, error) {
+	logLevel, err := GetDebugLogLevel()
+	if err != nil {
+		return nil, err
 	}
 
-	levelFlag := fs.Lookup(verbosityFlagName)
-	if levelFlag == nil {
-		return nil, false
+	logFolder, err := EnsureDetailedLogsFolder()
+	if err != nil {
+		return nil, err
 	}
 
-	levelVal, ok := levelFlag.Value.(*LevelFlagValue)
-	if !ok {
-		return nil, false
+	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
+	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}
 
-	return levelVal, true
-}
+	// Format debug log to be machine readible
+	logEncoder := zapcore.NewJSONEncoder(encoderConfig)
 
-func GetVerbosityArg(fs *pflag.FlagSet) string {
-	if levelFlagValue, found := GetLevelFlagValue(fs); found && levelFlagValue.String() != "" {
-		return fmt.Sprintf("-v=%s", levelFlagValue.String())
-	} else {
-		return ""
-	}
+	// Return a new log core for the debug log
+	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
 }
 
 var shouldCleanupSessionFolder bool = true

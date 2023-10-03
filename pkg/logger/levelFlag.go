@@ -68,3 +68,29 @@ func (_ *LevelFlagValue) Type() string {
 }
 
 var _ pflag.Value = &LevelFlagValue{}
+
+func GetLevelFlagValue(fs *pflag.FlagSet) (*LevelFlagValue, bool) {
+	if fs == nil {
+		return nil, false
+	}
+
+	levelFlag := fs.Lookup(verbosityFlagName)
+	if levelFlag == nil {
+		return nil, false
+	}
+
+	levelVal, ok := levelFlag.Value.(*LevelFlagValue)
+	if !ok {
+		return nil, false
+	}
+
+	return levelVal, true
+}
+
+func GetVerbosityArg(fs *pflag.FlagSet) string {
+	if levelFlagValue, found := GetLevelFlagValue(fs); found && levelFlagValue.String() != "" {
+		return fmt.Sprintf("-v=%s", levelFlagValue.String())
+	} else {
+		return ""
+	}
+}

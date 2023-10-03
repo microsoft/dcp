@@ -10,6 +10,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -53,11 +54,18 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	return rootCmd, nil
 }
 
-func runApiServer(logger logger.Logger) func(cmd *cobra.Command, _ []string) error {
+func runApiServer(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		ctx := cmds.Monitor(cmd.Context(), logger.WithName("monitor"))
-		apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), logger)
-		err := apiServer.Run(ctx)
+		err := perftrace.CaptureStartupProfileIfRequested(cmd.Context(), log.Logger)
+		if err != nil {
+			log.Error(err, "failed to capture startup profile")
+		}
+
+		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
+
+		apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), log)
+
+		err = apiServer.Run(ctx)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return nil
 		} else {

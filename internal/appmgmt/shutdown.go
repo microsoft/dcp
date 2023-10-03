@@ -6,40 +6,46 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
-
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
 )
 
-func ShutdownApp(ctx context.Context, logger logr.Logger) error {
+func ShutdownApp(ctx context.Context, log logr.Logger) error {
 	shutdownCtx, shutdownCtxCancel := context.WithCancel(ctx)
 	defer shutdownCtxCancel()
 
 	if len(apiv1.CleanupResources) <= 0 {
-		logger.Info("No resources to delete")
+		log.Info("No resources to delete")
 		return nil
+	}
+
+	err := perftrace.CaptureShutdownProfileIfRequested(shutdownCtx, log)
+	if err != nil {
+		log.Error(err, "failed to capture shutdown profile")
 	}
 
 	dcpclient, err := dcpclient.New(shutdownCtx, 5*time.Second)
 	if err != nil {
-		logger.Error(err, "could not get dcpclient")
+		log.Error(err, "could not get dcpclient")
 		return err
 	}
 
 	clusterConfig, err := config.GetConfig()
 	if err != nil {
-		logger.Error(err, "could not get config")
+		log.Error(err, "could not get config")
 		return err
 	}
 
 	dynamicClient, err := dynamic.NewForConfig(clusterConfig)
 	if err != nil {
-		logger.Error(err, "could not get client")
+		log.Error(err, "could not get client")
 		return err
 	}
 
@@ -52,7 +58,7 @@ func ShutdownApp(ctx context.Context, logger logr.Logger) error {
 	for _, resource := range apiv1.CleanupResources {
 		// If the context is cancelled, stop the informers
 		if ctx.Err() != nil {
-			logger.Info("Context cancelled, stopping shutdown")
+			log.Info("Context cancelled, stopping shutdown")
 			return ctx.Err()
 		}
 
@@ -65,14 +71,14 @@ func ShutdownApp(ctx context.Context, logger logr.Logger) error {
 		}
 
 		resourceBatches[batchIndex] = append(resourceBatches[batchIndex], resource)
-		logger.Info("Adding resource to current batch", "resource", resource.Object.GetGroupVersionResource(), "length", len(resourceBatches[batchIndex]))
+		log.Info("Adding resource to current batch", "resource", resource.Object.GetGroupVersionResource(), "length", len(resourceBatches[batchIndex]))
 	}
 
-	logger.Info("Resource batches generated", "batches", len(resourceBatches))
+	log.Info("Resource batches generated", "batches", len(resourceBatches))
 
 	for _, resourceBatch := range resourceBatches {
-		logger.Info("Cleaning up resource batch", "weight", resourceBatch[0].Weight, "length", len(resourceBatch))
-		if err := cleanupResourceBatch(shutdownCtx, dcpclient, factory, resourceBatch, logger); err != nil {
+		log.Info("Cleaning up resource batch", "weight", resourceBatch[0].Weight, "length", len(resourceBatch))
+		if err := cleanupResourceBatch(shutdownCtx, dcpclient, factory, resourceBatch, log); err != nil {
 			return err
 		}
 	}
@@ -85,7 +91,7 @@ func cleanupResourceBatch(
 	dcpclient client.Client,
 	factory dynamicinformer.DynamicSharedInformerFactory,
 	batch []*apiv1.WeightedResource,
-	logger logr.Logger,
+	log logr.Logger,
 ) error {
 	cleanupCtx, cleanupCtxCancel := context.WithCancel(ctx)
 	defer cleanupCtxCancel()
@@ -97,20 +103,20 @@ func cleanupResourceBatch(
 		gvr := resource.Object.GetGroupVersionResource()
 		informer := factory.ForResource(gvr)
 
-		logger.Info("Shutting down resource", "resource", gvr)
+		log.Info("Shutting down resource", "resource", gvr)
 		if _, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				clientObj := obj.(client.Object)
 				initialResourceCounts.Add(1)
 				totalResources := totalResourceCounts.Add(1)
-				logger.Info("Deleting resource", "resource", gvr, "total", totalResources)
+				log.Info("Deleting resource", "resource", gvr, "total", totalResources)
 				if err := dcpclient.Delete(ctx, clientObj); err != nil {
-					logger.Error(err, "could not delete resource", "resource", clientObj)
+					log.Error(err, "could not delete resource", "resource", clientObj)
 				}
 			},
 			DeleteFunc: func(obj interface{}) {
 				totalResources := totalResourceCounts.Add(-1)
-				logger.Info("Resource removed", "resource", gvr, "total", totalResources)
+				log.Info("Resource removed", "resource", gvr, "total", totalResources)
 
 				if totalResources <= 0 {
 					cleanupCtxCancel()
@@ -125,7 +131,7 @@ func cleanupResourceBatch(
 	_ = factory.WaitForCacheSync(ctx.Done())
 
 	count := initialResourceCounts.Load()
-	logger.Info("Waiting for resource batch to be deleted", "initialCount", count)
+	log.Info("Waiting for resource batch to be deleted", "initialCount", count)
 	if count <= 0 {
 		cleanupCtxCancel()
 	}
