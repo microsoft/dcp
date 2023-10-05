@@ -182,14 +182,13 @@ func EnsureDetailedLogsFolder() (string, error) {
 
 	info, err := os.Stat(logFolder)
 	if errors.Is(err, fs.ErrNotExist) {
-		err = os.MkdirAll(logFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent)
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to create log folder: %v", err)
-	}
-
-	if !info.IsDir() {
-		return "", fmt.Errorf("'%s' is not a directory and cannot be used as log folder", logFolder)
+		if err = os.MkdirAll(logFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
+			return "", fmt.Errorf("failed to create the diagnostic log folder '%s': %w", logFolder, err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("failed to verify the existence of the diagnostic log folder '%s': %w", logFolder, err)
+	} else if !info.IsDir() {
+		return "", fmt.Errorf("'%s' is not a directory and cannot be used as a log folder", logFolder)
 	}
 
 	return logFolder, nil

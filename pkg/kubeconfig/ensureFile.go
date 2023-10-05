@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	iofs "io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,8 +62,28 @@ func EnsureKubeconfigFile(fs *pflag.FlagSet, port int32) (string, error) {
 }
 
 func createKubeconfigFile(path string, port int32) error {
+	// The "localhost" hostname resolves to all loopback addresses on the machine. For dual-stack machines (very common)
+	// it will contain both IPv4 and IPv6 addresses. However, different programming languages and libraries may
+	// "choose" different addresses to try first (e.g. some might prefer IPv4 vs IPv6).
+	// The result can be long connection delays. To avoid that we will use specific IP address.
+	ips, err := net.LookupIP("localhost")
+	if err != nil {
+		return fmt.Errorf("kubeconfig file creation failed: could not obtain IP address(es) for localhost: %w", err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("kubeconfig file creation failed: could not obtain IP address(es) for localhost")
+	}
+
+	ip := ips[0]
+	var address string
+	if len(ip) == net.IPv6len {
+		address = fmt.Sprintf("[%s]", ip.String())
+	} else {
+		address = ip.String()
+	}
+
 	if port == 0 {
-		if newPort, err := networking.GetFreePort(apiv1.TCP, "localhost"); err != nil {
+		if newPort, err := networking.GetFreePort(apiv1.TCP, address); err != nil {
 			return err
 		} else {
 			port = newPort
@@ -70,7 +91,7 @@ func createKubeconfigFile(path string, port int32) error {
 	}
 
 	cluster := clientcmd_api.Cluster{
-		Server:                fmt.Sprintf("https://localhost:%d", port),
+		Server:                fmt.Sprintf("https://%s:%d", address, port),
 		InsecureSkipTLSVerify: true,
 	}
 

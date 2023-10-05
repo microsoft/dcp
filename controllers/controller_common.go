@@ -31,6 +31,7 @@ const (
 	additionalReconciliationNeeded objectChange = 0x8
 
 	additionalReconciliationDelay = 2 * time.Second
+	conflictRequeueDelay          = 100 * time.Millisecond
 	reconciliationDebounceDelay   = 500 * time.Millisecond
 )
 
@@ -134,10 +135,14 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		update = obj.DeepCopy()
 		err = client.Status().Patch(ctx, update, patch)
 		if err != nil {
-			if !errors.IsConflict(err) {
+			if errors.IsConflict(err) {
+				// Error is expected optimistic concurrency check error, simply requeue
+				log.V(1).Info(fmt.Sprintf("%s status update failed due to conflict", kind))
+				return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
+			} else {
 				log.Error(err, fmt.Sprintf("%s status update failed", kind))
+				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, err
 		} else {
 			log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
 		}
@@ -146,10 +151,14 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		update = obj.DeepCopy()
 		err = client.Patch(ctx, update, patch)
 		if err != nil {
-			if !errors.IsConflict(err) {
+			if errors.IsConflict(err) {
+				// Error is expected optimistic concurrency check error, simply requeue
+				log.V(1).Info(fmt.Sprintf("%s object update failed due to conflict", kind))
+				return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
+			} else {
 				log.Error(err, fmt.Sprintf("%s object update failed", kind))
+				return ctrl.Result{}, err
 			}
-			return ctrl.Result{}, err
 		} else {
 			log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
 		}

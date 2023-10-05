@@ -81,7 +81,7 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		return err
 	}
 
-	log.Info("API server started")
+	log.Info("API server started", "Address", options.ServingOptions.BindAddress.String(), "Port", options.ServingOptions.BindPort)
 
 	<-stoppedCh
 	log.Info("API server shut down")
@@ -107,23 +107,25 @@ func computeServerOptions(builder *serverbuilder.Server, log logr.Logger) (*star
 		return nil, err
 	}
 
+	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(fs)
+	if err != nil {
+		log.Error(err, msgApiServerStartupFailed)
+		return nil, err
+	}
+
+	address, port, token, err := kubeconfig.GetKubeConfigData(kubeconfigPath)
+	if err != nil {
+		err = fmt.Errorf("could not obtain address, port and security token information from Kubeconfig file: %w", err)
+		log.Error(err, msgApiServerStartupFailed)
+		return nil, err
+	}
+
+	options.ServingOptions.BindAddress = address
+
 	// If --secure-port and/or --token were not specified, figure them out from Kubeconfig file
 	havePort := isValidPort(options.ServingOptions.BindPort)
 	haveToken := options.ServingOptions.BearerToken != ""
 	if !havePort || !haveToken {
-		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(fs)
-		if err != nil {
-			log.Error(err, msgApiServerStartupFailed)
-			return nil, err
-		}
-
-		port, token, err := kubeconfig.GetKubeConfigData(kubeconfigPath)
-		if err != nil {
-			err = fmt.Errorf("could not obtain port and security token information from Kubeconfig file: %w", err)
-			log.Error(err, msgApiServerStartupFailed)
-			return nil, err
-		}
-
 		if !havePort {
 			options.ServingOptions.BindPort = port
 		}

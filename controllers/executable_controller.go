@@ -440,7 +440,7 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 		}
 
 		var sb strings.Builder
-		if err := variableTmpl.Execute(&sb, nil); err != nil {
+		if err := variableTmpl.Execute(&sb, exe); err != nil {
 			// We could not apply the template, so we are going to use the variable value as-is.
 			// This will likely cause the value of the environment variable to be something that is not useful,
 			// but it will be easier for the user to diagnose the problem if we start the Executable anyway.

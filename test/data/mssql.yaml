@@ -6,8 +6,10 @@ apiVersion: usvc-dev.developer.microsoft.com/v1
 kind: Container
 metadata:
   name: db
+  annotations:
+    service-producer: "[{\"serviceName\": \"mydbsvc\", \"port\": 1433}]"
 spec:
-  image: mcr.microsoft.com/mssql/server:2022-latest 
+  image: mcr.microsoft.com/mssql/server:2022-latest
   volumeMounts:
     - type: volume
       source: sql-data

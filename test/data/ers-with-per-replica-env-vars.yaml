@@ -1,0 +1,14 @@
+apiVersion: usvc-dev.developer.microsoft.com/v1
+kind: ExecutableReplicaSet
+metadata:
+  name: my-executables
+spec:
+  replicas: 2
+  template:
+    spec:
+      executablePath: node
+      args:
+      - -v
+      env:
+        - name: HELLOWORLD
+          value: "{{- .Name -}}"

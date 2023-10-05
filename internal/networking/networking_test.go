@@ -3,6 +3,8 @@
 package networking
 
 import (
+	"fmt"
+	"net"
 	"testing"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -15,6 +17,23 @@ func TestGetFreePortTCP(t *testing.T) {
 
 func TestGetFreePortUDP(t *testing.T) {
 	testPortsNotEqual(t, apiv1.UDP)
+}
+
+func TestCanGetFreePortForAllLocalIPs(t *testing.T) {
+	ips, err := net.LookupIP("localhost")
+	require.NoError(t, err, "Could not get IP addresses for localhost")
+
+	for _, ip := range ips {
+		var address string
+		if len(ip) == net.IPv6len {
+			address = fmt.Sprintf("[%s]", ip.String())
+		} else {
+			address = ip.String()
+		}
+
+		_, err := GetFreePort(apiv1.TCP, address)
+		require.NoError(t, err, "Could not get free port for address %s", address)
+	}
 }
 
 func testPortsNotEqual(t *testing.T, protocol apiv1.PortProtocol) {

@@ -1,0 +1,12 @@
+apiVersion: usvc-dev.developer.microsoft.com/v1
+kind: Service
+metadata:
+  name: mydbsvc
+spec:
+  protocol: TCP
+  # address: "127.1.2.3"
+  # port: 80
+  addressAllocationMode: Localhost # Localhost IPv4ZeroOne IPv4Loopback IPv6ZeroOne
+# status:
+#   proxyConfigFile: ""
+#   proxyProcessPid: 0

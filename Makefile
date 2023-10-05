@@ -77,7 +77,6 @@ BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPD_BINARY ?= ${OUTPUT_BIN}/ext/dcpd$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
-AZD_RENDERER_BINARY ?= $(OUTPUT_BIN)/ext/azdRenderer$(bin_exe_suffix)
 
 # Locations and definitions for tool binaries
 TOOL_BIN ?= $(repo_dir)/.toolbin
@@ -250,11 +249,6 @@ $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 build-dcpctrl: $(DCPCTRL_BINARY) ## Builds DCP standard controller host (dcpctrl)
 $(DCPCTRL_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 	go build -o $(DCPCTRL_BINARY) $(BUILD_ARGS) ./cmd/dcpctrl
-
-.PHONY: build-azdRenderer
-build-azdRenderer: $(AZD_RENDERER_BINARY) ## Builds DCP Azure Developer CLI workload renderer (experimental)
-$(AZD_RENDERER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	go build -o $(AZD_RENDERER_BINARY) $(BUILD_ARGS) ./cmd/azdRenderer
 
 .PHONY: clean
 clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.

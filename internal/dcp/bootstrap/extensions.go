@@ -41,6 +41,20 @@ const (
 
 var (
 	processExecutor = process.NewOSExecutor()
+
+	// File basename -> extension
+	WellKnownExtensions = map[string]DcpExtension{
+		"dcpctrl": {
+			Name:         "DCP controller host",
+			Id:           "dcpctrl",
+			Capabilities: []extensions.ExtensionCapability{extensions.ControllerCapability},
+		},
+		"dcpd": {
+			Name:         "DCP API server",
+			Id:           "dcpd",
+			Capabilities: []extensions.ExtensionCapability{extensions.ApiServerCapability},
+		},
+	}
 )
 
 func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
@@ -97,6 +111,20 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 }
 
 func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, error) {
+	if expandedPath, err := filepath.EvalSymlinks(path); err == nil {
+		// We will just do the get-capabilites call (slow path) if EvalSymlinks() fails.
+		exeName := filepath.Base(expandedPath)
+		ext := filepath.Ext(exeName)
+		if ext != "" && len(ext) < len(exeName) {
+			exeName = exeName[:len(exeName)-len(ext)]
+		}
+
+		if ext, found := WellKnownExtensions[exeName]; found {
+			ext.Path = expandedPath
+			return ext, nil
+		}
+	}
+
 	// Give an extension up to 10 seconds to respond to a capabilities request
 	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelTimeoutCtx()
