@@ -9,9 +9,9 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 ## Release Process
 
 1. Ensure you have the latest branch history by running `git fetch`
-1. Create a new release branch from `origin/main` named `release/<version>` where `<version>` is the intended version of the release.
-   * If `<version>` is different than the current version reflected by builds from `main` (for example, main builds are at `0.1.27-alpha.10`, but the release is intended to be `0.2.0`) then the release branch should also be tagged as `v0.2.0-rc.1` at the same time it is first pushed to GitHub. This will ensure that the release branch builds will have the correct version number.
-1. Checkout the `release/<version>` branch and run `git merge -s ours production` to ensure the release branch tracks merge history with the `production` branch correctly.
+1. Create a new release branch from `origin/main` named `release/<version>` where `<version>` is the intended version of the release (`git checkout -b release/<version> origin/main`).
+1. Checkout the `release/<version>` branch and run `git merge -s ours origin/production` to ensure the release branch tracks merge history with the `production` branch correctly.
+   * If `<version>` is different than the current version reflected by builds from `main` (for example, main builds are at `0.1.27-alpha.10`, but the release is intended to be `0.2.0`) then the new release branch should also be tagged as `v0.2.0-rc.1` at the same time it is first pushed to GitHub. This will ensure that the release branch builds will have the correct version number.
 1. Push the new release branch (and tag if applicable) to GitHub.
 1. Any further changes during the release process should be made as PRs against the `release` branch.
 1. Open a PR to merge the `release` branch into `production`. Once any appropriate validation or bug fixes for the release are complete, the PR should be merged.
