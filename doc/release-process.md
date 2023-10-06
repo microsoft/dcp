@@ -9,18 +9,21 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 ## Release Process
 
 1. Ensure you have the latest branch history by running `git fetch`
-1. Create a new release branch from `origin/main` named `release/<version>` where `<version>` is the intended version of the release.
-   * If `<version>` is different than the current version reflected by builds from `main` (for example, main builds are at `0.1.27-alpha.10`, but the release is intended to be `0.2.0`) then the release branch should also be tagged as `v0.2.0-rc.1` at the same time it is first pushed to GitHub. This will ensure that the release branch builds will have the correct version number.
-1. Checkout the `release/<version>` branch and run `git merge -s ours production` to ensure the release branch tracks merge history with the `production` branch correctly.
+1. Create a new release branch from `origin/main` named `release/<version>` where `<version>` is the intended version of the release (`git checkout -b release/<version> origin/main`).
+   * If `<version>` is different than the current version reflected by builds from `main` (for example, main builds are at `0.1.27-alpha.10`, but the release is intended to be `0.2.0`) then the new release branch should also be tagged as `v0.2.0-rc.1` at the same time it is first pushed to GitHub. This will ensure that the release branch builds will have the correct version number.
 1. Push the new release branch (and tag if applicable) to GitHub.
 1. Any further changes during the release process should be made as PRs against the `release` branch.
-1. Open a PR to merge the `release` branch into `production`. Once any appropriate validation or bug fixes for the release are complete, the PR should be merged.
+1. Open two PRs to merge the new `release` branch into `production` and `main`. Title the PRs `Merge release/<version> into production` and `Merge release/<version> into main` to make it easy to tell them apart.
+1. Once we're ready to complete the release, DO use the `Merge pull request` strategy to complete the PRs. Do NOT use `Squash and merge` as this will confuse the merge process for subsequent release branch PRs.
+   * If a `release` branch PR is accidentally `squash` merged, we have to run `git merge -s ours origin/production` when initially creating the next new release branch to prevent incorrect merge behavior.
 1. After the PR is merged, pull the updated `production` locally and tag it with the appropriate version number (eg. `v0.1.27`, `v0.2.0`, etc.) and push the tag to GitHub (`git push --tags`).
-1. Create a PR to merge the same `release` branch into `main` and complete without any additional changes to the release branch.
 
-### Potential Process Changes
+### Updating the DCP build in Aspire
 
-* We may want to consider creating both PRs from the `release` branch into `production` and `main` at the same time, but it will be important to ensure that the `main` PR isn't completed until after the `production` PR is completed and tagged.
+1. Once the [official build](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=19235&_a=summary) for the updated `production` branch has completed, open a PR in https://github.com/dotnet/aspire to bump the `<_DcpVersion>` MSBuild property in [eng/Versions.props](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) to the new version number. After this is merged, the next build started by the CI pipeline should include the updated DCP version.
+   * Eventually this PR process can be automated, but we'll need to coordinate that with the Aspire team.
+   * If the new build is not showing up in the dotnet feed for some reason, you can check the [Build Promotion Pipeline](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=12603&_a=summary) which is dotnet infrastructure that handles the actual publishing of builds to feeds. A run should have been started by our build's deploy stage.
+
 
 ## Release Artifacts
 
