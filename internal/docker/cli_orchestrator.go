@@ -228,7 +228,7 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	args := []string{"container", "rm"}
+	args := []string{"container", "rm", "-v"}
 	if force {
 		args = append(args, "--force")
 	}
