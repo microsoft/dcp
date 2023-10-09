@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
 // ExecutableReconciler reconciles a Executable object
@@ -146,10 +147,10 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return result, err
 }
 
-// Handle notification about completed Executable run. This function runs outside of the reconcilation loop,
-// so we just memorize the process exit code (if available) in the run status map,
+// Handle notification about changed or completed Executable run. This function runs outside of the reconcilation loop,
+// so we just memorize the PID and process exit code (if available) in the run status map,
 // and not attempt to modify any Kubernetes data.
-func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode int32, err error) {
+func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode int32, err error) {
 	name, ps, found := r.runs.FindBySecondKey(runID)
 
 	// It's possible we receive a notification about a run we are not tracking, but that means we
@@ -163,13 +164,19 @@ func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode int32, err e
 		r.Log.V(1).Info("Executable run could not be tracked", "RunID", runID, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.V(1).Info("Executable run ended", "RunID", runID, "exitCode", exitCode)
+		r.Log.V(1).Info("Executable run changed", "RunID", runID, "PID", pid, "exitCode", exitCode)
 		effectiveExitCode = exitCode
 	}
 
-	// Memorize exit code
+	// Memorize PID and (if applicable) exit code
+	ps.PID = int64(pid)
 	ps.ExitCode = effectiveExitCode
-	ps.State = apiv1.ExecutableStateFinished
+
+	if ps.ExitCode != apiv1.UnknownExitCode {
+		ps.State = apiv1.ExecutableStateFinished
+	} else if ps.PID != int64(process.UnknownPID) {
+		ps.State = apiv1.ExecutableStateRunning
+	}
 
 	r.runs.Store(name, runID, ps)
 
@@ -274,12 +281,17 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 func (r *ExecutableReconciler) updateRunState(exe *apiv1.Executable, log logr.Logger) objectChange {
 	var change objectChange = noChange
 
-	if exe.Status.State == apiv1.ExecutableStateRunning {
-		runID := RunID(exe.Status.ExecutionID)
-		if _, ps, found := r.runs.FindBySecondKey(runID); found && ps.State != apiv1.ExecutableStateRunning {
-			log.Info("Executable run finished", "RunID", runID, "ExitCode", ps.ExitCode)
-			exe.UpdateRunningStatus(ps.ExitCode, ps.State)
-			r.runs.DeleteBySecondKey(runID)
+	runID := RunID(exe.Status.ExecutionID)
+	if _, ps, found := r.runs.FindBySecondKey(runID); found {
+		if ps.State != exe.Status.State || ps.PID != exe.Status.PID {
+			log.Info("Executable run changed", "RunID", runID, "PID", ps.PID, "State", ps.State, "ExitCode", ps.ExitCode)
+			exe.UpdateRunningStatus(ps.PID, ps.ExitCode, ps.State)
+
+			if ps.State != apiv1.ExecutableStateRunning {
+				// The executable is no longer running, so we stop tracking it.
+				r.runs.DeleteBySecondKey(runID)
+			}
+
 			change = statusChanged
 		}
 	}

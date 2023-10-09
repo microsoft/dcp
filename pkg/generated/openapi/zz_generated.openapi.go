@@ -1098,6 +1098,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 							Format:      "",
 						},
 					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The PID of the process associated with the Executable For either ExecutionType == Process or ExecutionType == IDE, this is the PID of the process that runs the Executable.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
 					"state": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The current state of the process/IDE session started for this executable",

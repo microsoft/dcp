@@ -8,6 +8,7 @@ import (
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
 type RunID string
@@ -20,7 +21,7 @@ type ExecutableRunner interface {
 	StartRun(
 		ctx context.Context,
 		exe *apiv1.Executable,
-		runCompletionHandler RunCompletionHandler,
+		runChangeHandler RunChangeHandler,
 		log logr.Logger,
 	) (runID RunID, startWaitForRunCompletion func(), err error)
 
@@ -28,11 +29,11 @@ type ExecutableRunner interface {
 	StopRun(ctx context.Context, runID RunID, log logr.Logger) error
 }
 
-type RunCompletionHandler interface {
-	// Called when the Executable run ends.
-	// If err is nil, the process exit code was properly captured and the exitCode value is valid.
-	// if err is not nil, there was a problem with the run and the exitCode value is not valid.
-	OnRunCompleted(runID RunID, exitCode int32, err error)
+type RunChangeHandler interface {
+	// Called when the Executable run changes.
+	// If err is nil, the PID and (optionally) process exit code were properly captured and the exitCode value is valid.
+	// if err is not nil, there was a problem with the run and the PID and exitCode value are not valid.
+	OnRunChanged(runID RunID, pid process.Pid_t, exitCode int32, err error)
 }
 
 // Make it easy to supply a function as a run completion handler.

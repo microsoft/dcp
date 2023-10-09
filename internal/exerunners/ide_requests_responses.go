@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
 type notificationType string
@@ -21,8 +22,8 @@ type ideSessionNotificationBase struct {
 
 type ideRunSessionChangeNotification struct {
 	ideSessionNotificationBase
-	PID      uint32 `json:"pid,omitempty"`
-	ExitCode *int32 `json:"exit_code,omitempty"`
+	PID      process.Pid_t `json:"pid,omitempty"`
+	ExitCode *int32        `json:"exit_code,omitempty"`
 }
 
 type ideSessionLogNotification struct {
