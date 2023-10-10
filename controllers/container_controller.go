@@ -142,10 +142,10 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
 
-			switch container.Status.State {
-			case apiv1.ContainerStateRunning:
+			switch {
+			case container.Status.State == apiv1.ContainerStateRunning:
 				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
-			default:
+			case container.Status.State != apiv1.ContainerStatePending:
 				removeEndpointsForWorkload(r, ctx, &container, log)
 			}
 		}
