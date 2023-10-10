@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -20,7 +21,8 @@ type TestIdeRun struct {
 	StartWaitingCalled bool
 	StartedAt          time.Time
 	EndedAt            time.Time
-	CompletionHandler  controllers.RunCompletionHandler
+	ChangeHandler      controllers.RunChangeHandler
+	PID                process.Pid_t
 	ExitCode           int32
 }
 
@@ -44,16 +46,16 @@ func NewTestIdeRunner() *TestIdeRunner {
 	}
 }
 
-func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runCompletionHandler controllers.RunCompletionHandler, _ logr.Logger) (controllers.RunID, func(), error) {
+func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, _ logr.Logger) (controllers.RunID, func(), error) {
 	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 	r.m.Lock()
 	defer r.m.Unlock()
 
 	run := TestIdeRun{
-		ID:                runID,
-		Exe:               exe,
-		StartedAt:         time.Now(),
-		CompletionHandler: runCompletionHandler,
+		ID:            runID,
+		Exe:           exe,
+		StartedAt:     time.Now(),
+		ChangeHandler: runChangeHandler,
 	}
 
 	r.Runs = append(r.Runs, run)
@@ -78,6 +80,10 @@ func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ lo
 	return r.doStopRun(runID, KilledProcessExitCode)
 }
 
+func (r *TestIdeRunner) SimulateRunStart(runID controllers.RunID, pid process.Pid_t) error {
+	return r.doChangeRun(runID, pid)
+}
+
 func (r *TestIdeRunner) SimulateRunEnd(runID controllers.RunID, exitCode int32) error {
 	return r.doStopRun(runID, exitCode)
 }
@@ -96,13 +102,33 @@ func (r *TestIdeRunner) FindAll(exePath string, cond func(run TestIdeRun) bool) 
 	return retval
 }
 
+func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) error {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	i := r.find(runID)
+	if i == NotFound {
+		return fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
+	}
+
+	run := r.Runs[i]
+	run.PID = pid
+	r.Runs[i] = run
+
+	if run.ChangeHandler != nil {
+		go run.ChangeHandler.OnRunChanged(runID, pid, process.UnknownExitCode, nil)
+	}
+
+	return nil
+}
+
 func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error {
 	r.m.Lock()
 	defer r.m.Unlock()
 
 	i := r.find(runID)
 	if i == NotFound {
-		return fmt.Errorf("Run '%s' was not found, cannot be stopped", runID)
+		return fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
 	}
 
 	run := r.Runs[i]
@@ -110,8 +136,8 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	run.ExitCode = exitCode
 	r.Runs[i] = run
 
-	if run.CompletionHandler != nil {
-		go run.CompletionHandler.OnRunCompleted(runID, exitCode, nil)
+	if run.ChangeHandler != nil {
+		go run.ChangeHandler.OnRunChanged(runID, run.PID, exitCode, nil)
 	}
 
 	return nil

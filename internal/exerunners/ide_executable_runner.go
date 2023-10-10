@@ -22,6 +22,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -37,42 +38,42 @@ func init() {
 }
 
 type runState struct {
-	runID             controllers.RunID
-	sessionURL        string // The URL of the run session resource in the IDE
-	completionHandler controllers.RunCompletionHandler
-	handlerWG         *sync.WaitGroup
-	finished          bool
-	exitCode          int32
-	stdOut            *usvc_io.BufferedWrappingWriter
-	stdErr            *usvc_io.BufferedWrappingWriter
+	runID         controllers.RunID
+	sessionURL    string // The URL of the run session resource in the IDE
+	changeHandler controllers.RunChangeHandler
+	handlerWG     *sync.WaitGroup
+	pid           process.Pid_t
+	finished      bool
+	exitCode      int32
+	stdOut        *usvc_io.BufferedWrappingWriter
+	stdErr        *usvc_io.BufferedWrappingWriter
 }
 
 func NewRunState() *runState {
 	rs := &runState{
-		runID:             "",
-		completionHandler: nil,
-		handlerWG:         &sync.WaitGroup{},
-		finished:          false,
-		exitCode:          apiv1.UnknownExitCode,
-		stdOut:            usvc_io.NewBufferedWrappingWriter(),
-		stdErr:            usvc_io.NewBufferedWrappingWriter(),
+		runID:         "",
+		changeHandler: nil,
+		handlerWG:     &sync.WaitGroup{},
+		finished:      false,
+		exitCode:      apiv1.UnknownExitCode,
+		stdOut:        usvc_io.NewBufferedWrappingWriter(),
+		stdErr:        usvc_io.NewBufferedWrappingWriter(),
 	}
 
-	// Three things need to happen before the completion handler is called:
+	// Two things need to happen before the completion handler is called:
 	// 1. The StartRun() method of the IDE runner must get a chance to set the completion handler.
-	// 2. The run session notification must be received from the IDE (with the exit code).
-	// 3. The IDE runner consumer must call startWaitForRunCompletion() for the run.
-	rs.handlerWG.Add(3)
+	// 2. The IDE runner consumer must call startWaitForRunCompletion() for the run.
+	rs.handlerWG.Add(2)
 
 	return rs
 }
 
-func (rs *runState) NotifyRunCompletedAsync() {
+func (rs *runState) NotifyRunChangedAsync() {
 	go func() {
 		rs.handlerWG.Wait()
 
-		if rs.completionHandler != nil {
-			rs.completionHandler.OnRunCompleted(rs.runID, rs.exitCode, nil)
+		if rs.changeHandler != nil {
+			rs.changeHandler.OnRunChanged(rs.runID, rs.pid, rs.exitCode, nil)
 		}
 	}()
 }
@@ -148,7 +149,7 @@ func NewIdeExecutableRunner(log logr.Logger) (*IdeExecutableRunner, error) {
 	}, nil
 }
 
-func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runCompletionHandler controllers.RunCompletionHandler, log logr.Logger) (controllers.RunID, func(), error) {
+func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) (controllers.RunID, func(), error) {
 	const runSessionCouldNotBeStarted = "run session could not be started: "
 
 	// Marking the Executable as "failed to start" will end its lifecycle.
@@ -229,8 +230,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
 	}
 
-	if runCompletionHandler != nil {
-		rs.completionHandler = runCompletionHandler
+	if runChangeHandler != nil {
+		rs.changeHandler = runChangeHandler
 		startWaitForRunCompletion = func() {
 			rs.IncreaseCompletionCallReadiness()
 		}
@@ -242,7 +243,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		}
 	}
 
-	exe.Status.State = apiv1.ExecutableStateRunning
+	// The state will be set to running when the controller receives the process start notification from the IDE
 	return runID, startWaitForRunCompletion, nil
 }
 
@@ -366,18 +367,15 @@ func (r *IdeExecutableRunner) processNotifications() {
 			}
 
 			switch basicNotification.NotificationType {
-			case notificationTypeProcessRestarted:
-				// We currently do not track process restarts, so we can ignore this notification
-
-			case notificationTypeSessionTerminated:
-				var nst ideRunSessionChangeNotification
-				err = json.Unmarshal(msg, &nst)
+			case notificationTypeProcessRestarted, notificationTypeSessionTerminated:
+				var nsc ideRunSessionChangeNotification
+				err = json.Unmarshal(msg, &nsc)
 				if err != nil {
 					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
 					r.closeNotifySocket()
 					return
 				} else {
-					r.handleSessionTermination(nst)
+					r.handleSessionChange(nsc)
 				}
 
 			case notificationTypeServiceLogs:
@@ -398,7 +396,7 @@ func (r *IdeExecutableRunner) processNotifications() {
 	}
 }
 
-func (r *IdeExecutableRunner) handleSessionTermination(scn ideRunSessionChangeNotification) {
+func (r *IdeExecutableRunner) handleSessionChange(scn ideRunSessionChangeNotification) {
 	runID := controllers.RunID(scn.SessionID)
 	exitCode := int32(apiv1.UnknownExitCode)
 	if scn.ExitCode != nil {
@@ -408,12 +406,19 @@ func (r *IdeExecutableRunner) handleSessionTermination(scn ideRunSessionChangeNo
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	runState := r.fetchRunStateForDeletion(runID)
-	runState.finished = true
+	var runState *runState
+	if exitCode != apiv1.UnknownExitCode {
+		runState = r.fetchRunStateForDeletion(runID)
+		runState.finished = true
+		runState.CloseOutputWriters()
+	} else {
+		runState = r.ensureRunState(runID)
+	}
+
+	runState.runID = runID
+	runState.pid = scn.PID
 	runState.exitCode = exitCode
-	runState.CloseOutputWriters()
-	runState.IncreaseCompletionCallReadiness()
-	runState.NotifyRunCompletedAsync()
+	runState.NotifyRunChangedAsync()
 }
 
 func (r *IdeExecutableRunner) handleSessionLogs(nsl ideSessionLogNotification) {

@@ -27,7 +27,7 @@ func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 	return &ProcessExecutableRunner{pe: pe}
 }
 
-func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runCompletionHandler controllers.RunCompletionHandler, log logr.Logger) (controllers.RunID, func(), error) {
+func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) (controllers.RunID, func(), error) {
 	cmd := makeCommand(ctx, exe, log)
 	log.Info("starting process...", "executable", cmd.Path)
 	log.V(1).Info("process settings",
@@ -53,9 +53,9 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	}
 
 	var processExitHandler process.ProcessExitHandler = nil
-	if runCompletionHandler != nil {
+	if runChangeHandler != nil {
 		processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
-			runCompletionHandler.OnRunCompleted(pidToRunID(pid), exitCode, err)
+			runChangeHandler.OnRunChanged(pidToRunID(pid), pid, exitCode, err)
 		})
 	}
 
@@ -67,6 +67,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	} else {
 		log.Info("process started", "executable", cmd.Path, "PID", pid)
 		exe.Status.ExecutionID = pidToExecutionID(pid)
+		exe.Status.PID = int64(pid)
 		exe.Status.State = apiv1.ExecutableStateRunning
 		exe.Status.StartupTimestamp = metav1.Now()
 	}

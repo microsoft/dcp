@@ -123,6 +123,12 @@ spec:
                 description: The time when the process/IDE session finished execution
                 format: date-time
                 type: string
+              pid:
+                description: The PID of the process associated with the Executable
+                  For either ExecutionType == Process or ExecutionType == IDE, this
+                  is the PID of the process that runs the Executable.
+                format: int64
+                type: integer
               startupTimestamp:
                 description: Start (attempt) timestamp.
                 format: date-time

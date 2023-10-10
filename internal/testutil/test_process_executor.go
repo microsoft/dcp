@@ -169,7 +169,7 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, exitCode int32)
 
 	i := e.findByPid(pid)
 	if i == NotFound {
-		return fmt.Errorf("No process with PID %d found", pid)
+		return fmt.Errorf("no process with PID %d found", pid)
 	}
 	pe := e.Executions[i]
 	pe.ExitCode = exitCode

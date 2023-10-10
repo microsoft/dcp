@@ -109,6 +109,10 @@ type ExecutableStatus struct {
 	// For ExecutionType == IDE it is the IDE session ID.
 	ExecutionID string `json:"executionID"`
 
+	// The PID of the process associated with the Executable
+	// For either ExecutionType == Process or ExecutionType == IDE, this is the PID of the process that runs the Executable.
+	PID int64 `json:"pid,omitempty"`
+
 	// The current state of the process/IDE session started for this executable
 	State ExecutableState `json:"state"`
 
@@ -204,7 +208,8 @@ func (e *Executable) Done() bool {
 	return !e.Status.FinishTimestamp.IsZero()
 }
 
-func (exe *Executable) UpdateRunningStatus(exitCode int32, state ExecutableState) {
+func (exe *Executable) UpdateRunningStatus(pid int64, exitCode int32, state ExecutableState) {
+	exe.Status.PID = pid
 	exe.Status.ExitCode = exitCode
 	exe.Status.State = state
 	if state == ExecutableStateFinished || state == ExecutableStateTerminated || state == ExecutableStateFailedToStart {

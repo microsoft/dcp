@@ -3,6 +3,7 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"regexp"
 	"strconv"
 	"testing"
@@ -142,12 +143,17 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 			},
 			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) string {
 				runID, err := ensureIdeRunSessionStarted(ctx, exe.Spec.ExecutablePath)
+
 				if err != nil {
 					t.Fatalf("IDE run session could not be started: %v", err)
 					return "" // make compiler happy
-				} else {
-					return runID
 				}
+
+				randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
+				err = ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid)
+				require.NoError(t, err)
+
+				return runID
 			},
 			simulateRunEnding: func(t *testing.T, runID string) {
 				err := ideRunner.SimulateRunEnd(controllers.RunID(runID), expectedEC)
