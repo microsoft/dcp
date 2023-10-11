@@ -4,6 +4,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -13,7 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/smallnest/chanx"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -102,7 +103,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Retrieve the Executable object
 	exe := apiv1.Executable{}
 	if err := r.Get(ctx, req.NamespacedName, &exe); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			// Ensure the cache of Executable to run ID is cleared
 			r.runs.DeleteByFirstKey(req.NamespacedName)
 			log.V(1).Info("Executable not found, nothing to do...")
@@ -224,7 +225,10 @@ func (r *ExecutableReconciler) runExecutable(ctx context.Context, exe *apiv1.Exe
 	}
 
 	reservedServicePorts, err := r.computeEffectiveEnvironment(ctx, exe, log)
-	if err != nil {
+	if errors.Is(err, errServiceNotAssignedPort) {
+		log.Info("could not compute effective environment for the Executable because one of the services it uses does not have a port assigned yet")
+		return additionalReconciliationNeeded, nil
+	} else if err != nil {
 		log.Error(err, "could not compute effective environment for the Executable")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
@@ -376,6 +380,8 @@ func (r *ExecutableReconciler) createEndpoint(
 	return endpoint, nil
 }
 
+var errServiceNotAssignedPort = fmt.Errorf("service does not have a port assigned yet")
+
 // Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
 // The returned map contains newly reserved ports for services that the Executable implements without specifying
 // the desired port to use (via service-producer annotation).
@@ -425,7 +431,7 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 				var svc apiv1.Service
 				if err := r.Get(ctx, serviceName, &svc); err != nil {
 					// CONSIDER in future we could be smarter and delay the startup of the Executable until
-					// the service appears in the system, leaing the Executable in "pending" state.
+					// the service appears in the system, leaving the Executable in "pending" state.
 					// This would necessitate watching over Services (specifically, Service creation).
 					return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
 				}
@@ -440,6 +446,22 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 
 			return 0, fmt.Errorf("service '%s' referenced by an environment variable is not produced by the Executable", serviceName)
 		},
+		"portFor": func(serviceNamespacedName string) (int32, error) {
+			var serviceName = asNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
+
+			// Need to take a peek at the Service to find out what port it is assigned.
+			var svc apiv1.Service
+			if err := r.Get(ctx, serviceName, &svc); err != nil {
+				// CONSIDER in future we could be smarter and delay the startup of the Executable until
+				// the service appears in the system, leaving the Executable in "pending" state.
+				// This would necessitate watching over Services (specifically, Service creation).
+				return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
+			} else if svc.Status.EffectivePort == 0 {
+				return 0, errServiceNotAssignedPort
+			}
+
+			return svc.Status.EffectivePort, nil
+		},
 	})
 
 	for key, value := range envMap {
@@ -452,7 +474,10 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 		}
 
 		var sb strings.Builder
-		if err := variableTmpl.Execute(&sb, exe); err != nil {
+		err = variableTmpl.Execute(&sb, exe)
+		if errors.Is(err, errServiceNotAssignedPort) {
+			return nil, err
+		} else if err != nil {
 			// We could not apply the template, so we are going to use the variable value as-is.
 			// This will likely cause the value of the environment variable to be something that is not useful,
 			// but it will be easier for the user to diagnose the problem if we start the Executable anyway.

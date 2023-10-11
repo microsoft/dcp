@@ -363,7 +363,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
-	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable effective environment does not contain expected port information. The effective environemtn is %v", effectiveEnv)
+	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable effective environment does not contain expected port information. The effective environment is %v", effectiveEnv)
 }
 
 // Verify ports are injected into Executable environment variables via portForServing template function.
@@ -445,6 +445,67 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected port information. The effective environemtn is %v", effectiveEnv)
+}
+
+// Verify ports are injected into Executable environment variables via portFor template function.
+func TestClientExecutablePortForInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	var expectedPort int32 = 7740
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-client-service-port-for-injected",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.22.33.45",
+			Port:     expectedPort,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-client-executable-port-for-injected",
+			Namespace: metav1.NamespaceNone,
+			// No address and no port information
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-client-executable-port-for-injected",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "UPSTREAM_SVC_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create an Executable")
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process could not be started", pid)
+
+	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected port...")
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	expectedEnvVar := fmt.Sprintf("UPSTREAM_SVC_PORT=%d", expectedPort)
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected port information. The effective environment is %v", effectiveEnv)
 }
 
 func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
