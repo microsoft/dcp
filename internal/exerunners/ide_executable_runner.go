@@ -243,7 +243,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		}
 	}
 
-	// The state will be set to running when the controller receives the process start notification from the IDE
+	exe.Status.State = apiv1.ExecutableStateRunning
 	return runID, startWaitForRunCompletion, nil
 }
 
