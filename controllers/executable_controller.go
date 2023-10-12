@@ -186,11 +186,9 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 	r.runs.Store(name, runID, ps)
 
 	// Schedule reconciliation for corresponding executable
-	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, func(rti reconcileTriggerInput[RunID]) error {
-		return r.scheduleExecutableReconciliation(rti.target, rti.input)
-	})
+	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
 	if scheduleErr != nil {
-		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object")
+		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "RunID", runID, "Executable", name.String())
 	}
 }
 
@@ -327,27 +325,17 @@ func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr
 	}
 }
 
-func (r *ExecutableReconciler) scheduleExecutableReconciliation(target types.NamespacedName, finishedRunID RunID) error {
+func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTriggerInput[RunID]) error {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Executable{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      target.Name,
-				Namespace: target.Namespace,
+				Name:      rti.target.Name,
+				Namespace: rti.target.Namespace,
 			},
 		},
 	}
-
-	select {
-	case r.notifyRunChanged.In <- event:
-		return nil // Reconciliation scheduled successfully
-
-	default:
-		// We could not schedule the reconciliation. This should never really happen, given that we are usin an unbounded channel.
-		// If this happens though, returning from OnProcessExited() handler is most important.
-		err := fmt.Errorf("could not schedule reconciliation for Executable whose run has finished")
-		r.Log.Error(err, "the state of the Executable may not reflect the real world", "Executable", target.Name, "FinishedRunID", finishedRunID)
-		return err
-	}
+	r.notifyRunChanged.In <- event
+	return nil
 }
 
 func (r *ExecutableReconciler) createEndpoint(

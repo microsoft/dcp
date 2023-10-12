@@ -29,7 +29,7 @@ import (
 
 const (
 	containerEventChanInitialCapacity = 20
-	maxParallelContainerStarts        = 6
+	MaxParallelContainerStarts        = 6
 )
 
 var (
@@ -54,7 +54,7 @@ type ContainerReconciler struct {
 	orchestrator ct.ContainerOrchestrator
 
 	// Channel uset to trigger reconciliation when underlying containers change
-	notifyContainerChanged chan ctrl_event.GenericEvent
+	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 
 	// A map that stores information about running containers,
 	// searchable by container ID (first key), or Container object name (second key).
@@ -86,9 +86,9 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 	r := ContainerReconciler{
 		Client:                 client,
 		orchestrator:           orchestrator,
-		notifyContainerChanged: make(chan ctrl_event.GenericEvent),
+		notifyContainerChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		runningContainers:      maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, runningContainerData](),
-		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, maxParallelContainerStarts),
+		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, MaxParallelContainerStarts),
 		containerEvtSub:        nil,
 		containerEvtCh:         chanx.NewUnboundedChan[ct.EventMessage](lifetimeCtx, containerEventChanInitialCapacity),
 		containerEvtWorkerStop: nil,
@@ -106,7 +106,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 
 func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	src := ctrl_source.Channel{
-		Source: r.notifyContainerChanged,
+		Source: r.notifyContainerChanged.Out,
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -301,7 +301,7 @@ func (r *ContainerReconciler) startContainer(ctx context.Context, container *api
 
 		err := r.debouncer.ReconciliationNeeded(container.NamespacedName(), containerID, r.scheduleContainerReconciliation)
 		if err != nil {
-			r.Log.Error(err, "could not schedule reconcilation for Container object")
+			r.Log.Error(err, "could not schedule reconcilation for Container object", "ContainerID", containerID)
 		}
 	})
 
@@ -422,16 +422,8 @@ func (r *ContainerReconciler) scheduleContainerReconciliation(rti reconcileTrigg
 			},
 		},
 	}
-
-	select {
-	case r.notifyContainerChanged <- event:
-		return nil // Reconciliation scheduled successfully
-
-	default:
-		err := fmt.Errorf("could not schedule reconciliation for Container whose state has changed")
-		r.Log.Error(err, "", "Container", rti.target.Name, "ContainerID", rti.input)
-		return err
-	}
+	r.notifyContainerChanged.In <- event
+	return nil
 }
 
 func (r *ContainerReconciler) cancelContainerWatch() {

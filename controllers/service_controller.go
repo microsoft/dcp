@@ -375,7 +375,7 @@ func (r *ServiceReconciler) OnProcessExited(pid process.Pid_t, exitCode int32, e
 		return r.scheduleServiceReconciliation(rti.target, rti.input)
 	})
 	if scheduleErr != nil {
-		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object")
+		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "PID", pid, "Executable", namespacedName.String())
 	}
 }
 
@@ -397,7 +397,7 @@ func (r *ServiceReconciler) scheduleServiceReconciliation(target types.Namespace
 		// We could not schedule the reconciliation. This should never really happen, given that we are using an unbounded channel.
 		// If this happens though, returning from OnProcessExited() handler is most important.
 		err := fmt.Errorf("could not schedule reconciliation for Service whose proxy process has finished")
-		r.Log.Error(err, "the state of the Service may not reflect the real world", "Service", target.Name, "FinishedPID", finishedPid)
+		r.Log.Error(err, "the state of the Service may not reflect the real world", "Service", target.String(), "FinishedPID", finishedPid)
 		return err
 	}
 }

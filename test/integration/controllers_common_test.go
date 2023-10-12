@@ -137,7 +137,6 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 
 	processExecutor = ctrl_testutil.NewTestProcessExecutor()
 	dockerOrchestrator := docker.NewDockerCliOrchestrator(ctrl.Log.WithName("DockerCliOrchestrator"), processExecutor)
-	containerOrchestrator := ctrl_testutil.NewTestContainerOrchestrator(dockerOrchestrator)
 
 	exeRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 	ideRunner = ctrl_testutil.NewTestIdeRunner()
@@ -167,7 +166,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerReconciler"),
-		containerOrchestrator,
+		dockerOrchestrator,
 	)
 	if err = containerR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
@@ -176,7 +175,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	volumeR := controllers.NewVolumeReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("VolumeReconciler"),
-		containerOrchestrator,
+		dockerOrchestrator,
 	)
 	if err = volumeR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
