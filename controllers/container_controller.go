@@ -276,6 +276,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 func (r *ContainerReconciler) startContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
 
 	container.Status.ExitCode = apiv1.UnknownExitCode
+	log.Info("scheduling container start", "image", container.Spec.Image)
 
 	err := r.startupQueue.Enqueue(func(_ context.Context) {
 		log.Info("starting container", "image", container.Spec.Image)
