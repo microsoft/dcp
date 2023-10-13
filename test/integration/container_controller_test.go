@@ -380,12 +380,14 @@ func TestContainerDeletion(t *testing.T) {
 	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
 	require.NoError(t, err, "Container was not started as expected")
 
+	ensureContaienrDeletionResponse(t, containerID)
+
 	t.Log("Deleting Container object...")
 	err = client.Delete(ctx, &ctr)
 	require.NoError(t, err, "Container object could not be deleted")
 
 	t.Log("Check if corresponding container was deleted...")
-	err = ensureContainerDeleted(t, ctx, containerID)
+	_, err = waitForFinishedDockerCommand(t, ctx, []string{"container", "rm"}, containerID)
 	require.NoError(t, err, "Container was not deleted as expected")
 
 	t.Log("Ensure that Container object really disappeared from the API server...")
@@ -490,21 +492,22 @@ func simulateContainerExit(t *testing.T, ctx context.Context, image string, cont
 	return nil
 }
 
-func ensureContainerDeleted(t *testing.T, ctx context.Context, containerID string) error {
-	removeCmd, err := waitForDockerCommand(t, ctx, []string{"container", "rm"}, containerID)
-	if err != nil {
-		return err
+func ensureContaienrDeletionResponse(t *testing.T, containerID string) {
+	autoExec := ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{"docker", "container", "rm"},
+			LastArg: containerID,
+			Cond:    (*ctrl_testutil.ProcessExecution).Running,
+		},
+		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+			_, err := pe.Cmd.Stdout.Write([]byte(containerID + "\n"))
+			if err != nil {
+				t.Errorf("Could not simulate container removal: %v", err)
+			}
+			return 0
+		},
 	}
-
-	// Reply with container ID to confirm container removal
-	_, err = removeCmd.Cmd.Stdout.Write([]byte(containerID + "\n"))
-	if err != nil {
-		t.Errorf("Could not confirm container removal: %v", err)
-		return err
-	}
-	processExecutor.SimulateProcessExit(t, removeCmd.PID, 0)
-
-	return nil
+	processExecutor.InstallAutoExecution(autoExec)
 }
 
 func ensureContainerInspectResponse(t *testing.T, image string, containerID string, created time.Time, status ct.ContainerStatus) {

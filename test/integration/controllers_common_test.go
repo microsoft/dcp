@@ -250,3 +250,9 @@ func waitForDockerCommand(t *testing.T, ctx context.Context, command []string, l
 	pe, err := ctrl_testutil.WaitForCommand(processExecutor, ctx, command, lastArg, (*ctrl_testutil.ProcessExecution).Running)
 	return pe, err
 }
+
+func waitForFinishedDockerCommand(t *testing.T, ctx context.Context, command []string, lastArg string) (ctrl_testutil.ProcessExecution, error) {
+	command = append([]string{"docker"}, command...)
+	pe, err := ctrl_testutil.WaitForCommand(processExecutor, ctx, command, lastArg, (*ctrl_testutil.ProcessExecution).Finished)
+	return pe, err
+}
