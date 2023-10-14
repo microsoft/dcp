@@ -33,6 +33,20 @@ func (m *DualKeyMap[K1, K2, V]) Store(k1 K1, k2 K2, val V) {
 	m.secondMap[k2] = secondKeyEntry[K1, V]{k1, val}
 }
 
+// Update is like Store(), except it fails if the entry is not already present (for both keys).
+func (m *DualKeyMap[K1, K2, V]) Update(k1 K1, k2 K2, val V) bool {
+	_, found := m.firstMap[k1]
+	if !found {
+		return false
+	}
+	_, found = m.secondMap[k2]
+	if !found {
+		return false
+	}
+	m.Store(k1, k2, val)
+	return true
+}
+
 func (m *DualKeyMap[K1, K2, V]) FindByFirstKey(k1 K1) (K2, V, bool) {
 	entry, found := m.firstMap[k1]
 	if found {
@@ -85,6 +99,12 @@ func (m *SynchronizedDualKeyMap[K1, K2, V]) Store(k1 K1, k2 K2, val V) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	m.inner.Store(k1, k2, val)
+}
+
+func (m *SynchronizedDualKeyMap[K1, K2, V]) Update(k1 K1, k2 K2, val V) bool {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	return m.inner.Update(k1, k2, val)
 }
 
 func (m *SynchronizedDualKeyMap[K1, K2, V]) FindByFirstKey(k1 K1) (K2, V, bool) {
