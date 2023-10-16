@@ -184,6 +184,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
 	if !found {
 		containerID = container.Status.ContainerID
+		log.V(1).Info("running container data missing, using container ID from Container object status", "ContainerID", containerID)
 	}
 
 	// Since the container is being removed, we want to remove it from runningContainers map now
@@ -193,9 +194,11 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	if containerID == "" {
 		// This can happen if the container was never started -- nothing to do
+		log.V(1).Info("running container ID is not available; proceeding with Container object deletion...")
 		return
 	}
 
+	log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
 	_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
 	if err != nil {
 		log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)

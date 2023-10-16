@@ -2,7 +2,6 @@ package resiliency
 
 import (
 	"context"
-	"sync"
 
 	"github.com/smallnest/chanx"
 )
@@ -14,8 +13,6 @@ type WorkQueue struct {
 	incoming    *chanx.UnboundedChan[WorkQueueItem]
 	limiter     chan struct{}
 	lifetimeCtx context.Context
-	lock        *sync.Mutex
-	processing  bool
 }
 
 func NewWorkQueue(lifetimeCtx context.Context, maxConcurrency uint8) *WorkQueue {
@@ -23,16 +20,16 @@ func NewWorkQueue(lifetimeCtx context.Context, maxConcurrency uint8) *WorkQueue 
 		panic("maxConcurrency must be greater than zero")
 	}
 
-	return &WorkQueue{
+	wq := WorkQueue{
 		// The maxConcurrency parameter used here indicates the initial size of the incoming work channel;
 		// the channel itself is unbonunded.
 		incoming: chanx.NewUnboundedChan[WorkQueueItem](lifetimeCtx, int(maxConcurrency)),
 
 		limiter:     make(chan struct{}, maxConcurrency),
 		lifetimeCtx: lifetimeCtx,
-		lock:        &sync.Mutex{},
-		processing:  false,
 	}
+	go wq.doWork()
+	return &wq
 }
 
 func (wq *WorkQueue) Enqueue(work WorkQueueItem) error {
@@ -41,24 +38,10 @@ func (wq *WorkQueue) Enqueue(work WorkQueueItem) error {
 	}
 
 	wq.incoming.In <- work
-	wq.lock.Lock()
-	defer wq.lock.Unlock()
-
-	if !wq.processing {
-		wq.processing = true
-		go wq.doWork()
-	}
-
 	return nil
 }
 
 func (wq *WorkQueue) doWork() {
-	resetProcessingFlag := func() {
-		wq.lock.Lock()
-		wq.processing = false
-		wq.lock.Unlock()
-	}
-
 	for {
 		select {
 
@@ -73,19 +56,11 @@ func (wq *WorkQueue) doWork() {
 
 			// We want to stop the worker goroutine if the lifetime context is done (cancel the wait on writing to limiter).
 			case <-wq.lifetimeCtx.Done():
-				resetProcessingFlag()
 				return
 			}
 
 		case <-wq.lifetimeCtx.Done():
-			resetProcessingFlag()
 			return
-
-		default:
-			// No work to do, stop the worker goroutine.
-			resetProcessingFlag()
-			return
-
 		}
 
 	}
