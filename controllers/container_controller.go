@@ -146,19 +146,15 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
+	deletionRequested := container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()
+	if deletionRequested && container.Status.State != apiv1.ContainerStateStarting {
+		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
+		// we need the container startup to finish, before attemptin to delete everything.
+		// Otherwise we will be left with a dangling container that no one owns.
 		log.Info("Container object is being deleted...")
-
-		if container.Status.State == apiv1.ContainerStateStarting {
-			// We already issued a container start request, so we need that to finish before we delete the Container object
-			// (and the corresponding container).
-			log.Info("Waiting for container creation to end before deleting Container object...")
-			change = additionalReconciliationNeeded
-		} else {
-			r.deleteContainer(ctx, &container, log)
-			change = deleteFinalizer(&container, containerFinalizer)
-			removeEndpointsForWorkload(r, ctx, &container, log)
-		}
+		r.deleteContainer(ctx, &container, log)
+		change = deleteFinalizer(&container, containerFinalizer)
+		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
 
