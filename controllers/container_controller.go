@@ -148,9 +148,17 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
 		log.Info("Container object is being deleted...")
-		r.deleteContainer(ctx, &container, log)
-		change = deleteFinalizer(&container, containerFinalizer)
-		removeEndpointsForWorkload(r, ctx, &container, log)
+
+		if container.Status.State == apiv1.ContainerStateStarting {
+			// We already issued a container start request, so we need that to finish before we delete the Container object
+			// (and the corresponding container).
+			log.Info("Waiting for container creation to end before deleting Container object...")
+			change = additionalReconciliationNeeded
+		} else {
+			r.deleteContainer(ctx, &container, log)
+			change = deleteFinalizer(&container, containerFinalizer)
+			removeEndpointsForWorkload(r, ctx, &container, log)
+		}
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer)
 
@@ -158,10 +166,12 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
 
-			switch {
-			case container.Status.State == apiv1.ContainerStateRunning:
+			switch container.Status.State {
+			case apiv1.ContainerStateRunning:
 				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
-			case container.Status.State != apiv1.ContainerStatePending:
+			case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
+				break // do nothing
+			default:
 				removeEndpointsForWorkload(r, ctx, &container, log)
 			}
 		}
