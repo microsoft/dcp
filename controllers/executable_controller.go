@@ -327,13 +327,13 @@ func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr
 	// Do not bother updating the Executable object--this method is called when the object is being deleted.
 
 	if exe.Status.StdOutFile != "" {
-		if err := os.Remove(exe.Status.StdOutFile); err != nil {
+		if err := os.Remove(exe.Status.StdOutFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Error(err, "could not remove process's standard output file", "path", exe.Status.StdOutFile)
 		}
 	}
 
 	if exe.Status.StdErrFile != "" {
-		if err := os.Remove(exe.Status.StdErrFile); err != nil {
+		if err := os.Remove(exe.Status.StdErrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Error(err, "could not remove process's standard error file", "path", exe.Status.StdErrFile)
 		}
 	}
