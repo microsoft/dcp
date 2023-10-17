@@ -389,13 +389,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 							Format:      "int32",
 						},
 					},
-					"owningController": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The ID of the controller that started the container",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"message": {
 						SchemaProps: spec.SchemaProps{
 							Description: "A human-readable message that provides additional information about Container state.",

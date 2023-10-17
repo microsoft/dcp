@@ -137,7 +137,6 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 
 	processExecutor = ctrl_testutil.NewTestProcessExecutor()
 	dockerOrchestrator := docker.NewDockerCliOrchestrator(ctrl.Log.WithName("DockerCliOrchestrator"), processExecutor)
-	containerOrchestrator := ctrl_testutil.NewTestContainerOrchestrator(dockerOrchestrator)
 
 	exeRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 	ideRunner = ctrl_testutil.NewTestIdeRunner()
@@ -167,7 +166,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerReconciler"),
-		containerOrchestrator,
+		dockerOrchestrator,
 	)
 	if err = containerR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
@@ -176,7 +175,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	volumeR := controllers.NewVolumeReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("VolumeReconciler"),
-		containerOrchestrator,
+		dockerOrchestrator,
 	)
 	if err = volumeR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
@@ -250,4 +249,30 @@ func waitForDockerCommand(t *testing.T, ctx context.Context, command []string, l
 	command = append([]string{"docker"}, command...)
 	pe, err := ctrl_testutil.WaitForCommand(processExecutor, ctx, command, lastArg, (*ctrl_testutil.ProcessExecution).Running)
 	return pe, err
+}
+
+func waitForDockerContainerRemoved(t *testing.T, ctx context.Context, containerID string) error {
+
+	haveExpectedCommand := func(_ context.Context) (bool, error) {
+		commands := processExecutor.FindAll(
+			[]string{"docker", "container", "rm"},
+			containerID,
+			(*ctrl_testutil.ProcessExecution).Finished,
+		)
+
+		if len(commands) > 0 {
+			// It is OK (and kind of hard to avoid for edge cases) for the controller to issue a rm command
+			// for the same container more than once.
+			return true, nil
+		} else {
+			return false, nil
+		}
+	}
+
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, haveExpectedCommand)
+	if err != nil {
+		return fmt.Errorf("expected docker rm command (container ID: '%s') was not issued: %v", containerID, err)
+	}
+
+	return nil
 }

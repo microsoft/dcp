@@ -38,29 +38,6 @@ If you are using SSH to authenticate to GitHub, you want the following in your `
  For more information see [Go configuration for SSH Git authentication](https://go.dev/doc/faq#git_https).
 
 
-## Running `dcpd`
-
-To start DCP API server run
-
-```shell
-make build
-make install
-~/.dcp/ext/dcpd -v=debug
-```
-
-To connect to the API server using `kubectl` and similar Kubernetes tools use the kubeconfig file in the root of this repository. For example (the command lists available API resources):
-
-```shell
-kubectl --kubeconfig ~/.dcp/kubeconfig
-```
-
-To shut down the DCP API server just press Ctrl+c in the terminal.
-
-
-## Debugging `dcpd`
-
-A debugging configuration named `dcpd launch` is provided to run dcpd under the debugger. You can F5 it in vs code normally, nothing extra is required other than VS Code Go extension. You might want to change the current working directory though, so that relative paths to executables are resolved properly.
-
 ## Making DCP available from $PATH
 
 ### macOS, Linux, WSL
@@ -68,15 +45,6 @@ To make `dcp` CLI available from command line on non-Windows system, run `sudo -
 
 ### Windows
 On Windows open the Environment Variables applet and add `$USERPROFILE\.dcp` to PATH.
-
-## Debugging DCP CLI
-
-A couple of debugging configurations are provided in `.vscode/launch.json`:
-
-- `dcp start-apiserver` will run the API server and controllers
-- `dcp up todo-csharp-sql-swa-func` will do `dcp up` on the ToDo CSharp SQL Azure sample application.
-
-You can use these configurations as a starting point to create your own configurations for specific scenarios. Check out [VS Code Go debugging wiki](https://github.com/golang/vscode-go/wiki/debugging) for more information.
 
 
 ## Running tests
@@ -117,11 +85,90 @@ You can also run individual tests via VS Code "run test" and "debug test" gestur
     `pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
 
 
-## Troubleshooting tips
+## Troubleshooting and debugging tips
 
-| Issue | Tip |
-| --- | ------- |
-| `make lint` times out (or ends with an error that says "Killed") | We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again. |
-| Make it easier to use `kubectl` with DCP | Define a shell alias:Linux/macOS: <br/> &nbsp; &nbsp; `alias kk='kubectl --kubeconfig ~/.dcp/kubeconfig'` <br/> Windows: <br/> &nbsp; &nbsp; `function dcpKubectl() { & kubectl --kubeconfig "$env:USERPROFILE\.dcp\kubeconfig" $args }` <br/> &nbsp; &nbsp; `Set-Alias kk dcpKubectl` |
-| After `make generate-openapi` the generated file is empty (almost all contents has been removed). | Looks like the generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues. <br/><br/>We have seen an issue where the generator would latch to a specific version of `go` compiler and and fail when the compiler is updated. Deleting `.toolbin/openapi-gen` binary usually helps in this case. |
-| Test a local build of `dcp` with `aspire` | Create a `<file>.csproj.user` file next to the `.csproj` file you want to use with a local build of dcp (for example `samples/DevHost/DevHost.csproj.user` in the `dotnet/aspire` repo). Set the contents of the .user.csproj file to:<br/>`<Project>`<br/>&nbsp;&nbsp;&nbsp;&nbsp;`<PropertyGroup>`<br/>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`<DcpDir>[PATH TO YOUR LOCAL BUILD]</DcpDir>`<br/>&nbsp;&nbsp;&nbsp;&nbsp;`</PropertyGroup>`<br/>`</Project>`<br/><br/>This will override the location used for the DCP binaries while avoiding the risk of checking in your local override. Just remember to comment out the `<DcpDir></DcpDir>` line if you want to go back to using the DCP version Aspire targets. |
+### `make lint` times out (or ends with an error that says "Killed") 
+We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again.
+
+### Make it easier to use `kubectl` with DCP 
+Define a shell alias.
+
+Linux/macOS:
+
+```shell
+alias kk='kubectl --kubeconfig ~/.dcp/kubeconfig
+```
+
+Windows:
+
+```powershell
+function dcpKubectl() { & kubectl --kubeconfig "$env:USERPROFILE\.dcp\kubeconfig" $args }
+Set-Alias kk dcpKubectl
+``` 
+
+For working with DCP in the context of Aspire tooling (which creates a separate `kubeconfig` file for every application run) the following PowerShell function/alias might be useful:
+
+```powershell
+function monitoredDcpKubectl()
+{
+    $procName = $args[0]
+    $args = $args | Select-Object -Skip 1
+    $process = Get-Process | Where-Object { $_.Name -ceq $procName }
+    $procId = $process.Id
+    & kubectl --kubeconfig "$env:TEMP\aspire\session\$procId\kubeconfig" $args
+}
+Set-Alias kkm -Value monitoredDcpKubectl
+```
+
+You invoke it with the name of the Aspire app host project (the one that is set as startup project), for example `kkm AppHost api-resources`.
+
+> For debugging Aspire tests (part of `CloudApplicationTests` suite) the name of the relevant process that started DCP is `testhost`.
+ 
+### After `make generate-openapi` the generated file is empty (almost all contents has been removed).
+Looks like the OpenAPI code generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues. 
+
+We have seen an issue where the generator would latch to a specific version of `go` compiler and and fail when the compiler is updated. Deleting `.toolbin/openapi-gen` binary usually helps in this case.
+
+
+### I need to test a local build of `dcp` with Aspire tooling
+
+Create a `<file>.csproj.user` file next to the `.csproj` file you want to use with a local build of dcp (for example `samples/eShopLite/AppHost/AppHost.csproj.user` in the `dotnet/aspire` repo). Set the contents of the .user.csproj file to:
+
+```xml
+<Project>
+    <PropertyGroup>
+      <DcpDir>[folder where dcp.exe lives]</DcpDir>
+    </PropertyGroup>
+</Project>
+
+```
+
+This will override the location used for the DCP binaries while avoiding the risk of checking in your local override. Just remember to comment out the `<DcpDir></DcpDir>` line if you want to go back to using the DCP version Aspire targets.
+
+### Need to get detailed logs from DCP run
+
+Set the `DCP_DIAGNOSTICS_LOG_LEVEL` environment variable to `debug`. The logs will be put to `${TEMP}/dcp/logs`, although you can change the destination by setting `DCP_DIAGNOSTICS_LOG_FOLDER` environment variable.
+
+### I need to debug DCP
+
+There are several VS Code debug configurations available for this repository. They are very straightforward; take a look at `launch.json` and choose one that fits your needs best, or create a custom one for your scenario. 
+
+If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging wiki](https://github.com/golang/vscode-go/wiki/debugging) and [documentation for the underlying delve Go debugger](https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md) might be helpful.
+
+### I need to debug DCP in the context of Aspire (Visual Studio-based) run
+
+The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
+
+1. Open the solution with your application in Visual Studio and make sure the solution also includes `Aspire.Hosting` project.
+1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace.
+1. Open `usvc-apiserver` repository in Visual Studio Code. 
+1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet. 
+1. Switch to Visual Studio Code, select `attach to controller process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary. 
+1. Switch back to Visual Studio and continue (F5). The workload definition will be created by the `ApplicationExecutor` and sent to DCP for execution.
+
+The same steps can also be used to debug `ApplicationExecutor` (in Visual Studio) if you suspect that the workload that DCP receives is set up incorrectly.
+
+
+### Taking performance traces
+
+See [performance investigations page](performance-investigations.md).

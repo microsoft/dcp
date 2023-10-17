@@ -10,7 +10,7 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 )
 
 // New() returns new client for the DCP API server.

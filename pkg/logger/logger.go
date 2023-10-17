@@ -167,7 +167,7 @@ func CleanupSessionFolderIfNeeded() {
 
 	dcpSessionDir, found := os.LookupEnv(DCP_SESSION_FOLDER)
 	if found {
-		if err := os.RemoveAll(dcpSessionDir); err != nil {
+		if err := os.RemoveAll(dcpSessionDir); err != nil && !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(os.Stderr, "failed to remove session directory: %v\n", err)
 		}
 	}

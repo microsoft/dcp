@@ -45,13 +45,13 @@ func TestServiceProxyStartedAndStopped(t *testing.T) {
 
 	t.Logf("Check if Service '%s' status was updated...", svc.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
-		proxyPidPresent := s.Status.ProxyProcessPid != 0
+		proxyPidPresent := s.Status.ProxyProcessPid != apiv1.UnknownPID
 		addressCorrect := s.Status.EffectiveAddress == svc.Spec.Address
 		portCorrect := s.Status.EffectivePort == svc.Spec.Port
 		return proxyPidPresent && addressCorrect && portCorrect, nil
 	})
 
-	selector := func(pe ctrl_testutil.ProcessExecution) bool {
+	selector := func(pe *ctrl_testutil.ProcessExecution) bool {
 		hasAddressCanary := slices.Any(pe.Cmd.Args, func(arg string) bool {
 			return strings.Contains(arg, proxyAddress)
 		})
@@ -69,7 +69,7 @@ func TestServiceProxyStartedAndStopped(t *testing.T) {
 	t.Log("Killing proxy process to ensure it is restarted upon crash...")
 	processExecutor.SimulateProcessExit(t, proxyProcess.PID, 1)
 
-	selector2 := func(pe ctrl_testutil.ProcessExecution) bool {
+	selector2 := func(pe *ctrl_testutil.ProcessExecution) bool {
 		return selector(pe) && pe.PID != proxyProcess.PID
 	}
 
@@ -292,11 +292,11 @@ func TestServiceIPv6Address(t *testing.T) {
 	t.Log("Service has IPv6 address.")
 }
 
-func ensureProxyProcess(ctx context.Context, selector func(pe ctrl_testutil.ProcessExecution) bool) (*ctrl_testutil.ProcessExecution, error) {
+func ensureProxyProcess(ctx context.Context, selector func(pe *ctrl_testutil.ProcessExecution) bool) (*ctrl_testutil.ProcessExecution, error) {
 	var processExecution *ctrl_testutil.ProcessExecution
 
 	processStarted := func(_ context.Context) (bool, error) {
-		processesWithPath := processExecutor.FindAll("traefik", selector)
+		processesWithPath := processExecutor.FindAll([]string{"traefik"}, "", selector)
 
 		if len(processesWithPath) != 1 {
 			return false, nil
@@ -314,8 +314,8 @@ func ensureProxyProcess(ctx context.Context, selector func(pe ctrl_testutil.Proc
 	}
 }
 
-func ensureProxyProcessStopped(ctx context.Context, selector func(pe ctrl_testutil.ProcessExecution) bool) error {
-	_, err := ensureProxyProcess(ctx, func(pe ctrl_testutil.ProcessExecution) bool {
+func ensureProxyProcessStopped(ctx context.Context, selector func(pe *ctrl_testutil.ProcessExecution) bool) error {
+	_, err := ensureProxyProcess(ctx, func(pe *ctrl_testutil.ProcessExecution) bool {
 		return selector(pe) && pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 	})
 

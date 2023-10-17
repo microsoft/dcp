@@ -111,20 +111,23 @@ func MapConcurrent[T any, R any, MF MapFunc[T, R]](ss []T, mapping MF, concurren
 	if concurrency == 0 {
 		for i, s := range ss {
 			go func(i int, s T) {
+				defer wg.Done()
 				r := f(i, s)
 				res.Store(i, r)
-				wg.Done()
 			}(i, s)
 		}
 	} else {
 		sem := make(chan struct{}, concurrency)
 		for i, s := range ss {
 			sem <- struct{}{} // Will block if attempting to start more goroutines than concurrency level (semaphore semantics).
+
 			go func(i int, s T) {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
 				r := f(i, s)
 				res.Store(i, r)
-				<-sem
-				wg.Done()
 			}(i, s)
 		}
 	}

@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
-
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 const (
@@ -38,27 +36,7 @@ func WaitForCommand(
 	var retval ProcessExecution
 
 	haveExpectedCommand := func(_ context.Context) (bool, error) {
-		commands := executor.FindAll(command[0], func(pe ProcessExecution) bool {
-			args := pe.Cmd.Args
-
-			if len(args) < len(command) {
-				return false // Not enough arguments
-			}
-
-			if len(command) > 1 && !slices.StartsWith(args[1:], command[1:]) {
-				return false // First N arguments don't match
-			}
-
-			if lastArg != "" && args[len(args)-1] != lastArg {
-				return false // Last argument doesn't match
-			}
-
-			if cond != nil && !cond(&pe) {
-				return false // Condition doesn't match
-			}
-
-			return true
-		})
+		commands := executor.FindAll(command, lastArg, cond)
 
 		if len(commands) == 1 {
 			retval = commands[0]

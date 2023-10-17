@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,8 +20,9 @@ import (
 
 type VolumeReconciler struct {
 	ctrl_client.Client
-	Log          logr.Logger
-	orchestrator ct.VolumeOrchestrator
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	orchestrator        ct.VolumeOrchestrator
 }
 
 var (
@@ -43,7 +45,7 @@ func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("VolumeName", req.NamespacedName)
+	log := r.Log.WithValues("VolumeName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	select {
 	case _, isOpen := <-ctx.Done():

@@ -149,9 +149,6 @@ spec:
                 description: A human-readable message that provides additional information
                   about Container state.
                 type: string
-              owningController:
-                description: The ID of the controller that started the container
-                type: string
               startupTimestamp:
                 description: Timestamp of the Container start attempt
                 format: date-time

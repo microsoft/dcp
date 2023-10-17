@@ -33,7 +33,7 @@ type RunChangeHandler interface {
 	// Called when the Executable run changes.
 	// If err is nil, the PID and (optionally) process exit code were properly captured and the exitCode value is valid.
 	// if err is not nil, there was a problem with the run and the PID and exitCode value are not valid.
-	OnRunChanged(runID RunID, pid process.Pid_t, exitCode int32, err error)
+	OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error)
 }
 
 // Make it easy to supply a function as a run completion handler.

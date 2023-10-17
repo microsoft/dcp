@@ -190,7 +190,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					return false, err
 				}
 
-				if updatedExe.Status.ExecutionID == runID && updatedExe.Status.State == apiv1.ExecutableStateFinished && updatedExe.Status.ExitCode == int32(expectedEC) {
+				if updatedExe.Status.ExecutionID == runID && updatedExe.Status.State == apiv1.ExecutableStateFinished && updatedExe.Status.ExitCode != apiv1.UnknownExitCode && *updatedExe.Status.ExitCode == int32(expectedEC) {
 					return true, nil
 				}
 
@@ -231,7 +231,7 @@ func TestExecutableDeletion(t *testing.T) {
 			},
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
-					killedProcesses := processExecutor.FindAll(exe.Spec.ExecutablePath, func(pe ctrl_testutil.ProcessExecution) bool {
+					killedProcesses := processExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
@@ -453,7 +453,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	var expectedPort int32 = 7740
+	var expectedPort int32 = 7750
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -475,8 +475,6 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-client-executable-port-for-injected",
 			Namespace: metav1.NamespaceNone,
-			// No address and no port information
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "path/to/test-client-executable-port-for-injected",
@@ -572,7 +570,7 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, e
 	pid := process.UnknownPID
 
 	processStarted := func(_ context.Context) (bool, error) {
-		runningProcessesWithPath := processExecutor.FindAll(cmdPath, func(pe ctrl_testutil.ProcessExecution) bool {
+		runningProcessesWithPath := processExecutor.FindAll([]string{cmdPath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 			return pe.Running()
 		})
 

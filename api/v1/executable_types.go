@@ -43,13 +43,11 @@ const (
 	ExecutableStateUnknown ExecutableState = "Unknown"
 )
 
-const (
-	// A valid exit code of a process is a non-negative number. We use UnknownExitCode to indicate that we have not obtained the exit code yet.
-	UnknownExitCode int32 = -1
+// A valid exit code of a process is a non-negative number. We use UnknownExitCode to indicate that we have not obtained the exit code yet.
+var UnknownExitCode *int32 = nil
 
-	// Unknown PID code is used when replica is not started (or fails to start)
-	UnknownPID int64 = -1
-)
+// Unknown PID code is used when replica is not started (or fails to start)
+var UnknownPID *int64 = nil
 
 type ExecutionType string
 
@@ -111,7 +109,8 @@ type ExecutableStatus struct {
 
 	// The PID of the process associated with the Executable
 	// For either ExecutionType == Process or ExecutionType == IDE, this is the PID of the process that runs the Executable.
-	PID int64 `json:"pid,omitempty"`
+	// +optional
+	PID *int64 `json:"pid,omitempty"`
 
 	// The current state of the process/IDE session started for this executable
 	State ExecutableState `json:"state"`
@@ -124,7 +123,8 @@ type ExecutableStatus struct {
 
 	// Exit code of the process associated with the Executable.
 	// The value is equal to UnknownExitCode if the Executable was not started, is still running, or the exit code is not available.
-	ExitCode int32 `json:"exitCode,omitempty"`
+	// +optional
+	ExitCode *int32 `json:"exitCode,omitempty"`
 
 	// The path of a temporary file that contains captured standard output data from the Executable process.
 	StdOutFile string `json:"stdOutFile,omitempty"`
@@ -208,7 +208,7 @@ func (e *Executable) Done() bool {
 	return !e.Status.FinishTimestamp.IsZero()
 }
 
-func (exe *Executable) UpdateRunningStatus(pid int64, exitCode int32, state ExecutableState) {
+func (exe *Executable) UpdateRunningStatus(pid *int64, exitCode *int32, state ExecutableState) {
 	exe.Status.PID = pid
 	exe.Status.ExitCode = exitCode
 	exe.Status.State = state

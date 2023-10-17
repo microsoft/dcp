@@ -5,6 +5,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -21,8 +22,9 @@ import (
 // ExecutableReplicaSetReconciler reconciles an ExecutableReplicaSet object
 type ExecutableReplicaSetReconciler struct {
 	ctrl_client.Client
-	Log        logr.Logger
-	lastScaled syncmap.Map[types.NamespacedName, time.Time]
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	lastScaled          syncmap.Map[types.NamespacedName, time.Time]
 
 	// Debouncer used to schedule reconciliations.
 	debouncer *reconcilerDebouncer[any]
@@ -203,7 +205,7 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 // Changes to Executables "owned" by a given ExecutableReplicaSet will also trigger our reconciler loop,
 // allowing us to respond to changes to both the ExecutableReplicaSet as well as its child Executables.
 func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	log := r.Log.WithValues("ExecutableReplicaSet", req.NamespacedName)
+	log := r.Log.WithValues("ExecutableReplicaSet", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -22,30 +23,50 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 const (
 	containerEventChanInitialCapacity = 20
+	MaxParallelContainerStarts        = 6
 )
 
 var (
 	containerFinalizer string = fmt.Sprintf("%s/container-reconciler", apiv1.GroupVersion.Group)
 )
 
+// Data that we keep, in memory, about running containers.
+type runningContainerData struct {
+	// This is the container startup error if container start fails.
+	startupError error
+
+	// If the container starts successfully, this is the container ID from the container orchestrator.
+	newContainerID string
+
+	// The time the start attempt finished (successfully or not).
+	startAttemptFinishedAt metav1.Time
+}
+
 type ContainerReconciler struct {
 	ctrl_client.Client
-	Log          logr.Logger
-	orchestrator ct.ContainerOrchestrator
+	Log                 logr.Logger
+	reconciliationSeqNo uint32
+	orchestrator        ct.ContainerOrchestrator
 
 	// Channel uset to trigger reconciliation when underlying containers change
-	notifyContainerChanged chan ctrl_event.GenericEvent
+	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 
 	// A map that stores information about running containers,
 	// searchable by container ID (first key), or Container object name (second key).
-	// Currently we only store startup error, if any.
-	runningContainers *maps.SynchronizedDualKeyMap[string, types.NamespacedName, error]
+	// Usually both keys are valid, but when the container is starting, we do not have the real container ID yet,
+	// so we use a temporary random string that is replaced by real container ID once we know the container outcome.
+	runningContainers *maps.SynchronizedDualKeyMap[string, types.NamespacedName, runningContainerData]
+
+	// A WorkerQueue used for starting containers, which is a long-running operation that we do in parallel,
+	// with limited concurrency.
+	startupQueue *resiliency.WorkQueue
 
 	// Container events subscription
 	containerEvtSub ct.EventSubscription
@@ -59,10 +80,6 @@ type ContainerReconciler struct {
 	// Lock to protect the reconciler data that requires synchronized access
 	lock *sync.Mutex
 
-	// A reasonably-unique string identifying the reconciler instance.
-	// Used to indicate the controller that "owns" a running container.
-	reconcilerId string
-
 	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
 	lifetimeCtx context.Context
 }
@@ -71,8 +88,9 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 	r := ContainerReconciler{
 		Client:                 client,
 		orchestrator:           orchestrator,
-		notifyContainerChanged: make(chan ctrl_event.GenericEvent),
-		runningContainers:      maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, error](),
+		notifyContainerChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		runningContainers:      maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, runningContainerData](),
+		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, MaxParallelContainerStarts),
 		containerEvtSub:        nil,
 		containerEvtCh:         chanx.NewUnboundedChan[ct.EventMessage](lifetimeCtx, containerEventChanInitialCapacity),
 		containerEvtWorkerStop: nil,
@@ -90,7 +108,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 
 func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	src := ctrl_source.Channel{
-		Source: r.notifyContainerChanged,
+		Source: r.notifyContainerChanged.Out,
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -101,7 +119,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ContainerName", req.NamespacedName)
+	log := r.Log.WithValues("ContainerName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
@@ -130,7 +148,11 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
+	deletionRequested := container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()
+	if deletionRequested && container.Status.State != apiv1.ContainerStateStarting {
+		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
+		// we need the container startup to finish, before attemptin to delete everything.
+		// Otherwise we will be left with a dangling container that no one owns.
 		log.Info("Container object is being deleted...")
 		r.deleteContainer(ctx, &container, log)
 		change = deleteFinalizer(&container, containerFinalizer)
@@ -142,10 +164,12 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if change == noChange {
 			change = r.manageContainer(ctx, &container, log)
 
-			switch {
-			case container.Status.State == apiv1.ContainerStateRunning:
+			switch container.Status.State {
+			case apiv1.ContainerStateRunning:
 				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
-			case container.Status.State != apiv1.ContainerStatePending:
+			case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
+				break // do nothing
+			default:
 				removeEndpointsForWorkload(r, ctx, &container, log)
 			}
 		}
@@ -156,15 +180,11 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) {
-	if container.Status.OwningController != "" && container.Status.OwningController != r.reconcilerId {
-		// Someone else is managing this Container
-		return
-	}
-
 	// r.runningContainers should have the latest data
 	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
 	if !found {
 		containerID = container.Status.ContainerID
+		log.V(1).Info("running container data missing, using container ID from Container object status", "ContainerID", containerID)
 	}
 
 	// Since the container is being removed, we want to remove it from runningContainers map now
@@ -174,9 +194,11 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	if containerID == "" {
 		// This can happen if the container was never started -- nothing to do
+		log.V(1).Info("running container ID is not available; proceeding with Container object deletion...")
 		return
 	}
 
+	log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
 	_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
 	if err != nil {
 		log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)
@@ -184,93 +206,125 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
-	if container.Status.OwningController != "" && container.Status.OwningController != r.reconcilerId {
-		// We are not managing this Container
-		return noChange
-	}
+	containerID, rcd, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
 
-	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	switch {
 
-	if container.Status.State == "" || container.Status.State == apiv1.ContainerStatePending {
+	case container.Status.State == "" || container.Status.State == apiv1.ContainerStatePending:
+
 		// Check if we haven't already started this (sometimes we might get stale data from the object cache).
 		if found {
 			// Just wait a bit for the cache to catch up and reconcile again
 			return additionalReconciliationNeeded
+		} else {
+			// This is brand new Container and we need to start it.
+			r.ensureContainerWatch(log)
+
+			return r.startContainer(ctx, container, log)
 		}
 
-		// Nope, we need to attempt to start the container.
-		r.ensureContainerWatch(log)
-		return r.startContainer(ctx, container, log)
-	}
+	case container.Status.State == apiv1.ContainerStateStarting:
 
-	done := container.Status.State == apiv1.ContainerStateUnknown ||
-		container.Status.State == apiv1.ContainerStateFailedToStart ||
-		container.Status.State == apiv1.ContainerStateExited ||
-		container.Status.State == apiv1.ContainerStateRemoved
-	if done {
+		if !found {
+			// We are still waiting for the container to start.
+			// Whatever triggered reconciliation, it was not a container event and does not matter.
+			return noChange
+		}
+
+		if rcd.startupError == nil {
+			log.Info("container has started successfully", "ContainerID", rcd.newContainerID)
+			container.Status.ContainerID = rcd.newContainerID
+			container.Status.State = apiv1.ContainerStateRunning
+			container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
+		} else {
+			log.Error(rcd.startupError, "could not start the container")
+			container.Status.ContainerID = ""
+			container.Status.State = apiv1.ContainerStateFailedToStart
+			container.Status.Message = fmt.Sprintf("Container could not be started: %s", rcd.startupError.Error())
+			container.Status.FinishTimestamp = rcd.startAttemptFinishedAt
+		}
+
+		return statusChanged
+
+	case container.Status.State == apiv1.ContainerStateUnknown || container.Status.State == apiv1.ContainerStateFailedToStart ||
+		container.Status.State == apiv1.ContainerStateExited || container.Status.State == apiv1.ContainerStateRemoved:
+
 		// Now that the status indicates that the container is done,
 		// we no longer need to track it in the runningContainers map.
 		r.runningContainers.DeleteBySecondKey(container.NamespacedName())
-
 		return noChange
-	}
 
-	if !found {
-		// This should never really happen--we should be tracking this container via our runningContainers map.
-		// Not much we can do at this point, let's mark it as finished-unknown state
-		log.Error(fmt.Errorf("missing running container data"), "", "ContainerID", container.Status.ContainerID)
+	case !found:
+
+		// This should never really happen--we should be tracking this container via our runningContainers map
+		// if it was in Running or Paused state. Not much we can do at this point, let's mark it as finished-unknown state
+		log.Error(fmt.Errorf("missing running container data"), "", "ContainerID", container.Status.ContainerID, "ContainerState", container.Status.State)
 		container.Status.State = apiv1.ContainerStateUnknown
 		container.Status.FinishTimestamp = metav1.Now()
 		return statusChanged
+
+	default:
+
+		// The fact that something triggered reconciliation means we need to take a closer look at this container.
+		log.V(1).Info("inspecting running container...", "ContainerID", containerID)
+		res, err := r.orchestrator.InspectContainers(ctx, []string{containerID})
+		if err != nil || len(res) == 0 {
+			// The container was probably removed
+			log.Info("running container was not found, marking Container object as finished", "ContainerID", containerID)
+			container.Status.State = apiv1.ContainerStateRemoved
+			container.Status.FinishTimestamp = metav1.Now()
+			r.runningContainers.DeleteBySecondKey(container.NamespacedName())
+			return statusChanged
+		} else {
+			inspected := res[0]
+			return r.updateContainerStatus(container, &inspected)
+		}
+
 	}
 
-	log.V(1).Info("inspecting running container...", "ContainerID", containerID)
-	res, err := r.orchestrator.InspectContainers(ctx, []string{containerID})
-	if err != nil || len(res) == 0 {
-		// The container was probably removed
-		log.Info("running container was not found, marking Container object as finished", "ContainerID", containerID)
-		container.Status.State = apiv1.ContainerStateRemoved
-		container.Status.FinishTimestamp = metav1.Now()
-		r.runningContainers.DeleteBySecondKey(container.NamespacedName())
-		return statusChanged
-	} else {
-		inspected := res[0]
-		return r.updateContainerStatus(container, &inspected)
-	}
 }
 
 func (r *ContainerReconciler) startContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
-	var err error
 
-	log.Info("starting container",
-		"image", container.Spec.Image,
-	)
+	container.Status.ExitCode = apiv1.UnknownExitCode
+	log.Info("scheduling container start", "image", container.Spec.Image)
 
-	var cs apiv1.ContainerStatus
-	cs.OwningController = r.reconcilerId
+	err := r.startupQueue.Enqueue(func(_ context.Context) {
+		log.Info("starting container", "image", container.Spec.Image)
+		opts := ct.RunContainerOptions{ContainerSpec: container.Spec}
 
-	cs.ExitCode = apiv1.UnknownExitCode
+		var rcd runningContainerData
+		containerID, startupErr := r.orchestrator.RunContainer(ctx, opts)
 
-	opts := ct.RunContainerOptions{
-		ContainerSpec: container.Spec,
-	}
+		rcd.startAttemptFinishedAt = metav1.Now()
+		if startupErr != nil {
+			log.Error(startupErr, "could not start the container")
+			rcd.startupError = startupErr
 
-	cs.StartupTimestamp = metav1.Now()
+			// For the sake of storing the runningContainerData in the runningContainers map we need
+			// to have a unique container ID, so we generate a fake one here.
+			// Since the container startup failed, it won't be used for any real work.
+			containerID = fmt.Sprintf("failed-to-start-%s", container.NamespacedName().String())
+		} else {
+			log.Info("container started", "ContainerID", containerID)
+			rcd.newContainerID = containerID
+		}
+		r.runningContainers.Store(containerID, container.NamespacedName(), rcd)
 
-	containerID, err := r.orchestrator.RunContainer(ctx, opts)
+		err := r.debouncer.ReconciliationNeeded(container.NamespacedName(), containerID, r.scheduleContainerReconciliation)
+		if err != nil {
+			r.Log.Error(err, "could not schedule reconcilation for Container object", "ContainerID", containerID)
+		}
+	})
+
 	if err != nil {
-		log.Error(err, "could not start the container")
-		cs.ContainerID = ""
-		cs.State = apiv1.ContainerStateFailedToStart
-		cs.Message = fmt.Sprintf("Container could not be started: %s", err.Error())
+		log.Error(err, "could not enqueue container start operation")
+		container.Status.State = apiv1.ContainerStateFailedToStart
+		container.Status.Message = fmt.Sprintf("Container could not be started: could not enqueue start operation: %s", err.Error())
+		container.Status.FinishTimestamp = metav1.Now()
 	} else {
-		log.Info("container started", "ContainerID", containerID)
-		cs.ContainerID = containerID
-		cs.State = apiv1.ContainerStateRunning
+		container.Status.State = apiv1.ContainerStateStarting
 	}
-
-	container.Status = cs
-	r.runningContainers.Store(containerID, container.NamespacedName(), err)
 
 	return statusChanged
 }
@@ -286,7 +340,10 @@ func (r *ContainerReconciler) updateContainerStatus(container *apiv1.Container, 
 		status.State = apiv1.ContainerStatePaused
 	case ct.ContainerStatusExited, ct.ContainerStatusDead:
 		status.State = apiv1.ContainerStateExited
-		status.ExitCode = inspected.ExitCode
+		if status.ExitCode == apiv1.UnknownExitCode {
+			status.ExitCode = new(int32)
+		}
+		*status.ExitCode = inspected.ExitCode
 		if !inspected.FinishedAt.IsZero() {
 			status.FinishTimestamp = metav1.NewTime(inspected.FinishedAt)
 		} else {
@@ -380,16 +437,8 @@ func (r *ContainerReconciler) scheduleContainerReconciliation(rti reconcileTrigg
 			},
 		},
 	}
-
-	select {
-	case r.notifyContainerChanged <- event:
-		return nil // Reconciliation scheduled successfully
-
-	default:
-		err := fmt.Errorf("could not schedule reconciliation for Container whose state has changed")
-		r.Log.Error(err, "Container", rti.target.Name, "ContainerID", rti.input)
-		return err
-	}
+	r.notifyContainerChanged.In <- event
+	return nil
 }
 
 func (r *ContainerReconciler) cancelContainerWatch() {
