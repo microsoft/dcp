@@ -380,7 +380,7 @@ func TestContainerDeletion(t *testing.T) {
 	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
 	require.NoError(t, err, "Container was not started as expected")
 
-	ensureContaienrDeletionResponse(t, containerID)
+	ensureContainerDeletionResponse(t, containerID)
 
 	t.Log("Deleting Container object...")
 	err = client.Delete(ctx, &ctr)
@@ -492,7 +492,7 @@ func simulateContainerExit(t *testing.T, ctx context.Context, image string, cont
 	return nil
 }
 
-func ensureContaienrDeletionResponse(t *testing.T, containerID string) {
+func ensureContainerDeletionResponse(t *testing.T, containerID string) {
 	autoExec := ctrl_testutil.AutoExecution{
 		Condition: ctrl_testutil.ProcessSearchCriteria{
 			Command: []string{"docker", "container", "rm"},

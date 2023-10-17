@@ -94,7 +94,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	})
 	t.Log("Found Endpoint with correct spec")
 
-	ensureContaienrDeletionResponse(t, containerID)
+	ensureContainerDeletionResponse(t, containerID)
 
 	t.Log("Deleting Container...")
 	err = client.Delete(ctx, &container)
