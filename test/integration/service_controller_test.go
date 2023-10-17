@@ -45,7 +45,7 @@ func TestServiceProxyStartedAndStopped(t *testing.T) {
 
 	t.Logf("Check if Service '%s' status was updated...", svc.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
-		proxyPidPresent := s.Status.ProxyProcessPid != 0
+		proxyPidPresent := s.Status.ProxyProcessPid != apiv1.UnknownPID
 		addressCorrect := s.Status.EffectiveAddress == svc.Spec.Address
 		portCorrect := s.Status.EffectivePort == svc.Spec.Port
 		return proxyPidPresent && addressCorrect && portCorrect, nil

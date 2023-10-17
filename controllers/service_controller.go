@@ -240,8 +240,8 @@ func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.
 }
 
 func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service) error {
-	if svc.Status.ProxyProcessPid != 0 && svc.Status.ProxyProcessPid != apiv1.UnknownPID {
-		proxyProcessId, err := process.Int64ToPidT(svc.Status.ProxyProcessPid)
+	if svc.Status.ProxyProcessPid != apiv1.UnknownPID {
+		proxyProcessId, err := process.Int64ToPidT(*svc.Status.ProxyProcessPid)
 		if err != nil {
 			return err
 		}
@@ -342,7 +342,10 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {
 		return err
 	} else {
-		svc.Status.ProxyProcessPid = int64(pid)
+		if svc.Status.ProxyProcessPid == apiv1.UnknownPID {
+			svc.Status.ProxyProcessPid = new(int64)
+		}
+		*svc.Status.ProxyProcessPid = int64(pid)
 
 		namespacedName := types.NamespacedName{
 			Namespace: svc.ObjectMeta.Namespace,
@@ -409,15 +412,15 @@ func (r *ServiceReconciler) scheduleServiceReconciliation(target types.Namespace
 }
 
 func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Service) error {
-	if svc.Status.ProxyProcessPid == 0 || svc.Status.ProxyProcessPid == apiv1.UnknownPID {
+	if svc.Status.ProxyProcessPid == apiv1.UnknownPID {
 		return nil
 	}
 
-	proxyProcesId, err := process.Int64ToPidT(svc.Status.ProxyProcessPid)
+	proxyProcessId, err := process.Int64ToPidT(*svc.Status.ProxyProcessPid)
 	if err != nil {
 		return err
 	}
-	if err := r.ProcessExecutor.StopProcess(proxyProcesId); err != nil {
+	if err := r.ProcessExecutor.StopProcess(proxyProcessId); err != nil {
 		return err
 	}
 

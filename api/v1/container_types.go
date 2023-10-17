@@ -160,7 +160,8 @@ type ContainerStatus struct {
 	// Exit code of the Container.
 	// Default is -1, meaning the exit code is not known, or the container is still running.
 	// +kubebuilder:default:=-1
-	ExitCode int32 `json:"exitCode,omitempty"`
+	// +optional
+	ExitCode *int32 `json:"exitCode,omitempty"`
 
 	// A human-readable message that provides additional information about Container state.
 	Message string `json:"message,omitempty"`

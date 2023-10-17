@@ -190,7 +190,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					return false, err
 				}
 
-				if updatedExe.Status.ExecutionID == runID && updatedExe.Status.State == apiv1.ExecutableStateFinished && updatedExe.Status.ExitCode == int32(expectedEC) {
+				if updatedExe.Status.ExecutionID == runID && updatedExe.Status.State == apiv1.ExecutableStateFinished && updatedExe.Status.ExitCode != apiv1.UnknownExitCode && *updatedExe.Status.ExitCode == int32(expectedEC) {
 					return true, nil
 				}
 

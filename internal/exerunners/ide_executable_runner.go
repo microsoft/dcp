@@ -44,7 +44,7 @@ type runState struct {
 	handlerWG     *sync.WaitGroup
 	pid           process.Pid_t
 	finished      bool
-	exitCode      int32
+	exitCode      *int32
 	stdOut        *usvc_io.BufferedWrappingWriter
 	stdErr        *usvc_io.BufferedWrappingWriter
 }
@@ -398,9 +398,10 @@ func (r *IdeExecutableRunner) processNotifications() {
 
 func (r *IdeExecutableRunner) handleSessionChange(scn ideRunSessionChangeNotification) {
 	runID := controllers.RunID(scn.SessionID)
-	exitCode := int32(apiv1.UnknownExitCode)
+	exitCode := apiv1.UnknownExitCode
 	if scn.ExitCode != nil {
-		exitCode = *scn.ExitCode
+		exitCode = new(int32)
+		*exitCode = *scn.ExitCode
 	}
 
 	r.lock.Lock()

@@ -118,7 +118,7 @@ func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) 
 	if run.ChangeHandler != nil {
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnRunChanged(runID, pid, process.UnknownExitCode, nil)
+			run.ChangeHandler.OnRunChanged(runID, pid, apiv1.UnknownExitCode, nil)
 			close(done)
 		}()
 		<-done
@@ -144,7 +144,9 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	if run.ChangeHandler != nil {
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnRunChanged(runID, run.PID, exitCode, nil)
+			ec := new(int32)
+			*ec = exitCode
+			run.ChangeHandler.OnRunChanged(runID, run.PID, ec, nil)
 			close(done)
 		}()
 		<-done

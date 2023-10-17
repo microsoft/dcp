@@ -161,7 +161,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // Handle notification about changed or completed Executable run. This function runs outside of the reconcilation loop,
 // so we just memorize the PID and process exit code (if available) in the run status map,
 // and not attempt to modify any Kubernetes data.
-func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode int32, err error) {
+func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error) {
 	name, ps, found := r.runs.FindBySecondKey(runID)
 
 	// It's possible we receive a notification about a run we are not tracking, but that means we
@@ -170,7 +170,7 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 		return
 	}
 
-	var effectiveExitCode int32
+	var effectiveExitCode *int32
 	if err != nil {
 		r.Log.V(1).Info("Executable run could not be tracked", "RunID", runID, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
@@ -180,12 +180,15 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 	}
 
 	// Memorize PID and (if applicable) exit code
-	ps.PID = int64(pid)
+	if ps.PID == apiv1.UnknownPID {
+		ps.PID = new(int64)
+	}
+	*ps.PID = int64(pid)
 	ps.ExitCode = effectiveExitCode
 
 	if ps.ExitCode != apiv1.UnknownExitCode {
 		ps.State = apiv1.ExecutableStateFinished
-	} else if ps.PID != int64(process.UnknownPID) {
+	} else if ps.PID != apiv1.UnknownPID {
 		ps.State = apiv1.ExecutableStateRunning
 	}
 
@@ -306,7 +309,7 @@ func (r *ExecutableReconciler) updateRunState(exe *apiv1.Executable, log logr.Lo
 
 	runID := RunID(exe.Status.ExecutionID)
 	if _, ps, found := r.runs.FindBySecondKey(runID); found {
-		if ps.State != exe.Status.State || ps.PID != exe.Status.PID {
+		if ps.State != exe.Status.State || arePointerValuesEqual(ps.PID, exe.Status.PID) {
 			log.Info("Executable run changed", "RunID", runID, "PID", ps.PID, "State", ps.State, "ExitCode", ps.ExitCode)
 			exe.UpdateRunningStatus(ps.PID, ps.ExitCode, ps.State)
 			change = statusChanged
@@ -506,4 +509,15 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 	})
 
 	return reservedServicePorts, nil
+}
+
+func arePointerValuesEqual[T comparable](ptr1, ptr2 *T) bool {
+	switch {
+	case ptr1 == nil && ptr2 == nil:
+		return true
+	case ptr1 == nil || ptr2 == nil:
+		return false
+	default:
+		return *ptr1 == *ptr2
+	}
 }

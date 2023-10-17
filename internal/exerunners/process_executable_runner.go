@@ -55,7 +55,9 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	var processExitHandler process.ProcessExitHandler = nil
 	if runChangeHandler != nil {
 		processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
-			runChangeHandler.OnRunChanged(pidToRunID(pid), pid, exitCode, err)
+			ec := new(int32)
+			*ec = exitCode
+			runChangeHandler.OnRunChanged(pidToRunID(pid), pid, ec, err)
 		})
 	}
 
@@ -67,7 +69,10 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	} else {
 		log.Info("process started", "executable", cmd.Path, "PID", pid)
 		exe.Status.ExecutionID = pidToExecutionID(pid)
-		exe.Status.PID = int64(pid)
+		if exe.Status.PID == apiv1.UnknownPID {
+			exe.Status.PID = new(int64)
+		}
+		*exe.Status.PID = int64(pid)
 		exe.Status.State = apiv1.ExecutableStateRunning
 		exe.Status.StartupTimestamp = metav1.Now()
 	}

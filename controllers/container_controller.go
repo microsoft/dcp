@@ -340,7 +340,10 @@ func (r *ContainerReconciler) updateContainerStatus(container *apiv1.Container, 
 		status.State = apiv1.ContainerStatePaused
 	case ct.ContainerStatusExited, ct.ContainerStatusDead:
 		status.State = apiv1.ContainerStateExited
-		status.ExitCode = inspected.ExitCode
+		if status.ExitCode == apiv1.UnknownExitCode {
+			status.ExitCode = new(int32)
+		}
+		*status.ExitCode = inspected.ExitCode
 		if !inspected.FinishedAt.IsZero() {
 			status.FinishTimestamp = metav1.NewTime(inspected.FinishedAt)
 		} else {
