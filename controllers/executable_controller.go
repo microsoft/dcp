@@ -313,7 +313,7 @@ func (r *ExecutableReconciler) updateRunState(exe *apiv1.Executable, log logr.Lo
 
 	runID := RunID(exe.Status.ExecutionID)
 	if _, ps, found := r.runs.FindBySecondKey(runID); found {
-		if ps.State != exe.Status.State || arePointerValuesEqual(ps.PID, exe.Status.PID) {
+		if ps.State != exe.Status.State || !arePointerValuesEqual(ps.PID, exe.Status.PID) {
 			log.Info("Executable run changed", "RunID", runID, "PID", ps.PID, "State", ps.State, "ExitCode", ps.ExitCode)
 			exe.UpdateRunningStatus(ps.PID, ps.ExitCode, ps.State)
 			change = statusChanged
