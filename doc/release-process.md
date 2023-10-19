@@ -20,9 +20,21 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 
 ### Updating the DCP build in Aspire
 
-1. Once the [official build](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=19235&_a=summary) for the updated `production` branch has completed, open a PR in https://github.com/dotnet/aspire to bump the `<_DcpVersion>` MSBuild property in [eng/Versions.props](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) to the new version number. After this is merged, the next build started by the CI pipeline should include the updated DCP version.
-   * Eventually this PR process can be automated, but we'll need to coordinate that with the Aspire team.
-   * If the new build is not showing up in the dotnet feed for some reason, you can check the [Build Promotion Pipeline](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=12603&_a=summary) which is dotnet infrastructure that handles the actual publishing of builds to feeds. A run should have been started by our build's deploy stage.
+Once the production branch is updated and tagged, the Aspire repository should be updated automatically. To verify this happened:
+
+1.  Ensure that [official build](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=19235&_a=summary) for the updated `production` branch has completed.
+1.  Watch for a bot commit titled "Update dependencies from https://github.com/microsoft/usvc-apiserver", which updates 
+ [eng/Versions.props](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) and [eng/Version.Details.xml](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) files.
+    * If the new build is not showing up in the dotnet feed for some reason, you can check the [Build Promotion Pipeline](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=12603&_a=summary) which is dotnet infrastructure that handles the actual publishing of builds to feeds. A run should have been started by our build's deploy stage.
+1.  The final check is to verify the correct version of DCP is coming with the workload. Assuming you already have the Aspire workload installed, all you need to do is to refresh the workload:
+    ```shell
+    dotnet workload update --skip-sign-check --interactive
+    ```
+
+    and then run `dcp.exe version` from the Aspire hosting orchestration pack. Verify that the version reported is the version that was published.
+    
+    * The path to DCP binary should be something similar to `\Program Files\dotnet\packs\Aspire.Hosting.Orchestration.win-x64\8.0.0-preview.2.23517.10\tools`
+    * You might have different versions of this pack, so make sure you do the verification using the latest one.
 
 
 ## Release Artifacts
