@@ -19,12 +19,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+// Data we keep in memory about ExecutableReplicaSet objects.
+type executableReplicaSetData struct {
+	lastScaled     time.Time
+	actualReplicas int32
+}
+
 // ExecutableReplicaSetReconciler reconciles an ExecutableReplicaSet object
 type ExecutableReplicaSetReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	lastScaled          syncmap.Map[types.NamespacedName, time.Time]
+	runningReplicaSets  syncmap.Map[types.NamespacedName, executableReplicaSetData]
 
 	// Debouncer used to schedule reconciliations.
 	debouncer *reconcilerDebouncer[any]
@@ -41,9 +47,9 @@ var (
 
 func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logger) *ExecutableReplicaSetReconciler {
 	r := ExecutableReplicaSetReconciler{
-		Client:     client,
-		debouncer:  newReconcilerDebouncer[any](reconciliationDebounceDelay),
-		lastScaled: syncmap.Map[types.NamespacedName, time.Time]{},
+		Client:             client,
+		debouncer:          newReconcilerDebouncer[any](reconciliationDebounceDelay),
+		runningReplicaSets: syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
 	}
 
 	r.Log = log.WithValues("Controller", executableReplicaSetFinalizer)
@@ -125,8 +131,18 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 	change := noChange
 
 	numReplicas := int32(len(replicas.Items))
+	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
+	if !found {
+		rsData = executableReplicaSetData{
+			lastScaled:     time.Now(),
+			actualReplicas: numReplicas,
+		}
+		r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
+	}
+
 	if replicaSet.Status.ObservedReplicas != numReplicas {
-		r.lastScaled.Store(replicaSet.NamespacedName(), time.Now())
+		rsData.lastScaled = time.Now()
+		r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
 		replicaSet.Status.ObservedReplicas = numReplicas
 		change = statusChanged
 	}
@@ -173,6 +189,8 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 				change |= additionalReconciliationNeeded
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
+				rsData.actualReplicas--
+				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
 				log.Info("deleted Executable", "exe", exe)
 				change |= statusChanged
 			}
@@ -190,6 +208,8 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 				change |= additionalReconciliationNeeded
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
+				rsData.actualReplicas++
+				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
 				log.Info("created Executable", "exe", exe)
 				change |= statusChanged
 			}
@@ -240,13 +260,17 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		}
 	}
 
-	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() && replicaSet.Status.ObservedReplicas < 1 {
+	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
+	var onSuccessfulSave func() = nil
+
+	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() && found && rsData.actualReplicas == 0 {
 		// Deletion has been requested and the running replicas have been drained.
 		log.Info("ExecutableReplicaSet is being deleted...")
 		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer)
 		// Removing the finalizer will unblock the deletion of the ExecutableReplicaSet object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
+		onSuccessfulSave = func() { r.runningReplicaSets.Delete(replicaSet.NamespacedName()) }
 	} else {
 		// We haven't been deleted or still have existing replicas, update our running replicas.
 		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer)
@@ -259,17 +283,18 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 				return ctrl.Result{}, err
 			}
 
-			if childExecutables.ItemCount() != uint32(replicaSet.Spec.Replicas) {
-				if lastUpdate, found := r.lastScaled.Load(replicaSet.NamespacedName()); found && lastUpdate.Add(scaleRateLimit).After(time.Now()) {
-					log.Info("replica count changed, but scaling is rate limited", "lastUpdate", lastUpdate)
-					return ctrl.Result{RequeueAfter: scaleRateLimit}, nil
-				}
+			if childExecutables.ItemCount() != uint32(replicaSet.Spec.Replicas) && found && rsData.lastScaled.Add(scaleRateLimit).After(time.Now()) {
+				log.Info("replica count changed, but scaling is rate limited", "lastScaled", rsData.lastScaled)
+				return ctrl.Result{RequeueAfter: scaleRateLimit}, nil
 			}
 
-			change |= r.updateReplicas(ctx, &replicaSet, childExecutables, log)
+			change = r.updateReplicas(ctx, &replicaSet, childExecutables, log)
 		}
 	}
 
 	result, err := saveChanges(r, ctx, &replicaSet, patch, change, log)
+	if err == nil && onSuccessfulSave != nil {
+		onSuccessfulSave()
+	}
 	return result, err
 }
