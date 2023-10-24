@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -21,10 +22,16 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+const (
+	MaxParallelIdeExecutableStarts = 6
 )
 
 var lineSeparator []byte
@@ -113,13 +120,15 @@ func (rs *runState) CloseOutputWriters() {
 type IdeExecutableRunner struct {
 	notifySocket *websocket.Conn
 	lock         *sync.Mutex
+	startupQueue *resiliency.WorkQueue // Queue for starting IDE run sessions
+	startingRuns syncmap.Map[types.NamespacedName, bool]
 	activeRuns   syncmap.Map[controllers.RunID, *runState]
 	log          logr.Logger
 	portStr      string // The local port on which the IDE is listening for run session requests
 	tokenStr     string // The security token to use when connecting to the IDE
 }
 
-func NewIdeExecutableRunner(log logr.Logger) (*IdeExecutableRunner, error) {
+func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeExecutableRunner, error) {
 	const runnerNotAvailable = "Executables cannot be started via IDE: "
 	const missingRequiredEnvVar = "missing required environment variable '%s'"
 
@@ -141,110 +150,168 @@ func NewIdeExecutableRunner(log logr.Logger) (*IdeExecutableRunner, error) {
 	tokenStr = strings.TrimSpace(tokenStr)
 
 	return &IdeExecutableRunner{
-		lock:       &sync.Mutex{},
-		activeRuns: syncmap.Map[controllers.RunID, *runState]{},
-		log:        log,
-		portStr:    portStr,
-		tokenStr:   tokenStr,
+		lock:         &sync.Mutex{},
+		startupQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxParallelIdeExecutableStarts),
+		startingRuns: syncmap.Map[types.NamespacedName, bool]{},
+		activeRuns:   syncmap.Map[controllers.RunID, *runState]{},
+		log:          log,
+		portStr:      portStr,
+		tokenStr:     tokenStr,
 	}, nil
 }
 
-func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) (controllers.RunID, func(), error) {
+func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
 	const runSessionCouldNotBeStarted = "run session could not be started: "
-
-	// Marking the Executable as "failed to start" will end its lifecycle.
-	// We do this when we encounter an error that is unlikely to be resolved by retrying.
-	markAsFailedToStart := func(exe *apiv1.Executable) {
-		exe.Status.FinishTimestamp = metav1.Now()
-		exe.Status.State = apiv1.ExecutableStateFailedToStart
-	}
 
 	err := r.ensureNotificationSocket()
 	if err != nil {
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
+		return fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
 	}
 
-	req, err := r.prepareRunRequest(exe)
-	if err != nil {
-		markAsFailedToStart(exe)
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
-	}
-
-	// Set up temp files for capturing stdout and stderr. These files (if successfully created)
-	// will be cleaned up by the Executable controller when the Executable is deleted.
-
-	stdOutFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing standard output data")
-		stdOutFile = nil
-	} else {
-		exe.Status.StdOutFile = stdOutFile.Name()
-	}
-
-	stdErrFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing standard error data")
-		stdErrFile = nil
-	} else {
-		exe.Status.StdErrFile = stdErrFile.Name()
-	}
-
-	client := http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		markAsFailedToStart(exe)             // The IDE refused to run this Executable
-		respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"%s %s", resp.Status, respBody)
-	}
-
-	sessionURL := resp.Header.Get("Location")
-	if sessionURL == "" {
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted + "the returned run ID was empty")
-	}
-	rid, err := getLastUrlPathSegment(sessionURL)
-	if err != nil {
-		return "", nil, fmt.Errorf(runSessionCouldNotBeStarted+"could not parse the Location header which should contain the run session ID: %w", err)
-	}
-
-	runID := controllers.RunID(rid)
-	r.log.Info("IDE run session started", "RunID", runID)
-	exe.Status.ExecutionID = string(runID)
-	exe.Status.StartupTimestamp = metav1.Now()
-
-	startWaitForRunCompletion := func() {}
-
-	// Take the lock so we can manipulate the run state safely.
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	rs := r.ensureRunState(runID)
-	rs.sessionURL = sessionURL
-	defer rs.IncreaseCompletionCallReadiness()
-	err = rs.SetOutputWriters(stdOutFile, stdErrFile)
+	// If we've already started running, simply return
+	if _, found := r.startingRuns.Load(exe.NamespacedName()); found {
+		return nil
+	}
+
+	exeStatus := exe.Status.DeepCopy()
+	namespacedName := exe.NamespacedName()
+
+	err = r.startupQueue.Enqueue(func(_ context.Context) {
+		// Marking the Executable as "failed to start" will end its lifecycle.
+		// We do this when we encounter an error that is unlikely to be resolved by retrying.
+		markAsFailedToStart := func(exe *apiv1.Executable) {
+			exeStatus.FinishTimestamp = metav1.Now()
+			exeStatus.State = apiv1.ExecutableStateFailedToStart
+			r.lock.Lock()
+			defer r.lock.Unlock()
+
+			r.startingRuns.Store(exe.NamespacedName(), true)
+			runChangeHandler.OnStarted(namespacedName, controllers.UnknownRunID, *exeStatus, func() {})
+		}
+
+		markForRetry := func(exe *apiv1.Executable) {
+			r.lock.Lock()
+			defer r.lock.Unlock()
+
+			r.startingRuns.Delete(exe.NamespacedName())
+			runChangeHandler.OnStarted(namespacedName, controllers.UnknownRunID, *exeStatus, func() {})
+		}
+
+		req, err := r.prepareRunRequest(exe)
+		if err != nil {
+			log.Error(err, "run session could not be started")
+			markAsFailedToStart(exe)
+			return
+		}
+
+		// Set up temp files for capturing stdout and stderr. These files (if successfully created)
+		// will be cleaned up by the Executable controller when the Executable is deleted.
+
+		stdOutFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		if err != nil {
+			log.Error(err, "failed to create temporary file for capturing standard output data")
+			stdOutFile = nil
+		} else {
+			exe.Status.StdOutFile = stdOutFile.Name()
+		}
+
+		stdErrFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		if err != nil {
+			log.Error(err, "failed to create temporary file for capturing standard error data")
+			stdErrFile = nil
+		} else {
+			exe.Status.StdErrFile = stdErrFile.Name()
+		}
+
+		if rawRequest, err := httputil.DumpRequest(req, true); err == nil {
+			r.log.V(1).Info("Sending IDE run session request", "Request", string(rawRequest))
+		} else {
+			r.log.V(1).Info("Sending IDE run session request", "URL", req.URL)
+		}
+
+		client := http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			r.log.Error(err, "run session could not be started")
+			markForRetry(exe)
+			return
+		}
+		defer resp.Body.Close()
+
+		if rawResponse, err := httputil.DumpResponse(resp, true); err == nil {
+			r.log.V(1).Info("Completed IDE run session request", "Response", string(rawResponse))
+		} else {
+			r.log.V(1).Info("Completed IDE run session request", "URL", req.URL)
+		}
+
+		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
+			log.Error(err, "run session could not be started", "Status", resp.Status, "Body", respBody)
+			markAsFailedToStart(exe) // The IDE refused to run this Executable
+			return
+		}
+
+		sessionURL := resp.Header.Get("Location")
+		if sessionURL == "" {
+			markForRetry(exe)
+			return
+		}
+		rid, err := getLastUrlPathSegment(sessionURL)
+		if err != nil {
+			markForRetry(exe)
+		}
+
+		runID := controllers.RunID(rid)
+		r.log.Info("IDE run session started", "RunID", runID)
+		exeStatus.ExecutionID = string(runID)
+		exeStatus.StartupTimestamp = metav1.Now()
+
+		startWaitForRunCompletion := func() {}
+
+		// Take the lock so we can manipulate the run state safely.
+		r.lock.Lock()
+		defer r.lock.Unlock()
+
+		rs := r.ensureRunState(runID)
+		rs.sessionURL = sessionURL
+		defer rs.IncreaseCompletionCallReadiness()
+		err = rs.SetOutputWriters(stdOutFile, stdErrFile)
+		if err != nil {
+			log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
+		}
+
+		if runChangeHandler != nil {
+			rs.changeHandler = runChangeHandler
+			startWaitForRunCompletion = func() {
+				rs.IncreaseCompletionCallReadiness()
+			}
+			if rs.finished {
+				r.activeRuns.Delete(runID)
+				exeStatus.State = apiv1.ExecutableStateFinished
+				exeStatus.FinishTimestamp = metav1.Now()
+				runChangeHandler.OnStarted(namespacedName, runID, *exeStatus, startWaitForRunCompletion)
+				return
+			}
+		}
+
+		exeStatus.State = apiv1.ExecutableStateRunning
+		runChangeHandler.OnStarted(namespacedName, runID, *exeStatus, startWaitForRunCompletion)
+		r.startingRuns.Delete(namespacedName)
+	})
+
 	if err != nil {
-		log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
+		log.Error(err, "could not enqueue ide executable start operation")
+		exe.Status.State = apiv1.ExecutableStateFailedToStart
+		exe.Status.FinishTimestamp = metav1.Now()
+	} else {
+		exe.Status.State = apiv1.ExecutableStateStarting
+		r.startingRuns.Store(namespacedName, true)
 	}
 
-	if runChangeHandler != nil {
-		rs.changeHandler = runChangeHandler
-		startWaitForRunCompletion = func() {
-			rs.IncreaseCompletionCallReadiness()
-		}
-		if rs.finished {
-			r.activeRuns.Delete(runID)
-			exe.Status.State = apiv1.ExecutableStateFinished
-			exe.Status.FinishTimestamp = metav1.Now()
-			return runID, startWaitForRunCompletion, nil
-		}
-	}
-
-	exe.Status.State = apiv1.ExecutableStateRunning
-	return runID, startWaitForRunCompletion, nil
+	return nil
 }
 
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -415,6 +482,8 @@ func (r *IdeExecutableRunner) handleSessionChange(scn ideRunSessionChangeNotific
 	} else {
 		runState = r.ensureRunState(runID)
 	}
+
+	r.log.V(1).Info("IDE run session changed", "RunID", runID, "PID", scn.PID, "ExitCode", exitCode)
 
 	runState.runID = runID
 	runState.pid = scn.PID

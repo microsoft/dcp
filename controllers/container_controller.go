@@ -166,7 +166,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 			switch container.Status.State {
 			case apiv1.ContainerStateRunning:
-				ensureEndpointsForWorkload(r, ctx, &container, nil, log)
+				ensureEndpointsForWorkload(ctx, r, &container, nil, log)
 			case apiv1.ContainerStatePending, apiv1.ContainerStateStarting:
 				break // do nothing
 			default:
@@ -245,14 +245,6 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 		}
 
 		return statusChanged
-
-	case container.Status.State == apiv1.ContainerStateUnknown || container.Status.State == apiv1.ContainerStateFailedToStart ||
-		container.Status.State == apiv1.ContainerStateExited || container.Status.State == apiv1.ContainerStateRemoved:
-
-		// Now that the status indicates that the container is done,
-		// we no longer need to track it in the runningContainers map.
-		r.runningContainers.DeleteBySecondKey(container.NamespacedName())
-		return noChange
 
 	case !found:
 
@@ -349,7 +341,6 @@ func (r *ContainerReconciler) updateContainerStatus(container *apiv1.Container, 
 		} else {
 			status.FinishTimestamp = metav1.Now()
 		}
-		r.runningContainers.DeleteBySecondKey(container.NamespacedName())
 	}
 
 	if oldState != status.State {

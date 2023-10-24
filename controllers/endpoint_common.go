@@ -45,7 +45,7 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 	})
 }
 
-func ensureEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl_client.Object, reservedServicePorts map[types.NamespacedName]int32, log logr.Logger) {
+func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl_client.Object, reservedServicePorts map[types.NamespacedName]int32, log logr.Logger) {
 	serviceProducers, err := getServiceProducersForObject(owner, log)
 	if err != nil || len(serviceProducers) == 0 {
 		return

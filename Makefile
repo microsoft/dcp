@@ -12,6 +12,7 @@ ifeq ($(OS),Windows_NT)
 	.SHELLFLAGS := -Command
 	repo_dir := $(shell Get-Location | Select-Object -ExpandProperty Path)
 	mkdir := New-Item -ItemType Directory -Force -Path
+	copy := Copy-Item -Force -Path
 	rm_rf := Remove-Item -Recurse -Force -Path
 	rm_f := Remove-Item -Force -Path
 	home_dir := $(USERPROFILE)
@@ -26,6 +27,7 @@ else
 	detected_arch := $(shell uname -m)
 	repo_dir := $(shell pwd)
 	mkdir := mkdir -p -m 0755
+	copy := cp -f
 	rm_rf := rm -rf
 	rm_f := rm -f
 	home_dir := $(HOME)
@@ -66,6 +68,16 @@ else
 	traefik_zip_suffix := .tar.gz
 endif
 
+ifeq ($(build_arch),amd64)
+	GOVERSIONINFO_ARCH_FLAGS := -64
+else ifeq ($(build_arch),arm64)
+	GOVERSIONINFO_ARCH_FLAGS := -arm -64
+else ifeq ($(build_arch),arm)
+	GOVERSIONINFO_ARCH_FLAGS := -arm
+else
+	GOVERSIONINFO_ARCH_FLAGS :=
+endif
+
 ## Environment variables affecting build and installation
 # Note these have to be defined before they are used in targets
 
@@ -83,6 +95,7 @@ TOOL_BIN ?= $(repo_dir)/.toolbin
 GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
 CONTROLLER_GEN ?= $(TOOL_BIN)/controller-gen$(exe_suffix)
 OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
+GOVERSIONINFO_GEN ?= $(TOOL_BIN)/goversioninfo$(exe_suffix)
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 ENVTEST ?= $(TOOL_BIN)/setup-envtest$(exe_suffix)
 TRAEFIK ?= $(TOOL_BIN)/traefik$(exe_suffix)
@@ -92,11 +105,16 @@ GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 GOLANGCI_LINT_VERSION ?= v1.54.2
 CONTROLLER_TOOLS_VERSION ?= v0.13.0
 CODE_GENERATOR_VERSION ?= v0.28.2
+GOVERSIONINFO_VERSION ?= v1.4.0
 ENVTEST_K8S_VERSION = 1.28.0
 TRAEFIK_VERSION = v2.10.4
 GO_LICENSES_VERSION = v1.6.0
 
+# DCP Version information
 VERSION ?= dev
+VERSION_MAJOR ?= 0
+VERSION_MINOR ?= 0
+VERSION_PATCH ?= 0
 COMMIT ?= $(shell git rev-parse HEAD)
 
 version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.ProductVersion=$(VERSION)' -X 'github.com/microsoft/usvc-apiserver/internal/version.CommitHash=$(COMMIT)' -X 'github.com/microsoft/usvc-apiserver/internal/version.BuildTimestamp=$(BUILD_TIMESTAMP)'
@@ -131,7 +149,7 @@ help: ## Display this help.
 ##@ Code generation
 
 .PHONY: generate
-generate: generate-object-methods generate-openapi generate-crd ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
+generate: generate-object-methods generate-openapi generate-crd generate-goversioninfo ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
 
 .PHONY: generate-ci
 generate-ci: generate generate-licenses ## Generate all codegen artifacts and licenses/notice files.
@@ -170,6 +188,12 @@ generate-crd: $(crd_files) ## Generates CRD documents for resources defined in t
 $(crd_files) : $(GO_SOURCES) controller-gen
 	$(CONTROLLER_GEN) crd paths="./api/v1/..." output:crd:artifacts:config=pkg/generated/crd
 
+.PHONY: generate-goversioninfo
+generate-goversioninfo: goversioninfo-gen
+	$(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
+	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpd/resource.syso
+	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
+
 .PHONY: generate-licenses
 generate-licenses: generate-dependency-notices generate-proxy-notice ## Generates license/notice files for all dependencies
 
@@ -206,6 +230,15 @@ ifeq ($(detected_OS),windows)
 	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
 	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
+endif
+
+.PHONY: goversioninfo-gen
+goversioninfo-gen: $(GOVERSIONINFO_GEN)
+$(GOVERSIONINFO_GEN): | $(TOOL_BIN)
+ifeq ($(detected_OS),windows)
+	if (-not (Test-Path "$(GOVERSIONINFO_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION); $$env:GOBIN = $$null; }
+else
+	[[ -s $(GOVERSIONINFO_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION)
 endif
 
 .PHONY: go-licenses

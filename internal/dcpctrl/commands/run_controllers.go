@@ -117,7 +117,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 		exeRunners[apiv1.ExecutionTypeProcess] = processRunner
-		ideRunner, err := exerunners.NewIdeExecutableRunner(log.WithName("IdeExecutableRunner"))
+		ideRunner, err := exerunners.NewIdeExecutableRunner(ctx, log.WithName("IdeExecutableRunner"))
 		if err == nil {
 			exeRunners[apiv1.ExecutionTypeIDE] = ideRunner
 		}

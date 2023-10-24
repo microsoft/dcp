@@ -1,5 +1,7 @@
 package main
 
+//go:generate goversioninfo
+
 import (
 	"fmt"
 	"os"

@@ -6,12 +6,17 @@ import (
 	"context"
 
 	"github.com/go-logr/logr"
+	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
 type RunID string
+
+const (
+	UnknownRunID RunID = ""
+)
 
 // ExecutableRunner is an entity that knows how to "run" an executable.
 // Examples include ordinary (OS) process runner and IDE runner (which runs the executable inside IDE like VS or VS Code).
@@ -23,7 +28,7 @@ type ExecutableRunner interface {
 		exe *apiv1.Executable,
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
-	) (runID RunID, startWaitForRunCompletion func(), err error)
+	) error
 
 	// Stops the run with a given ID.
 	StopRun(ctx context.Context, runID RunID, log logr.Logger) error
@@ -34,6 +39,9 @@ type RunChangeHandler interface {
 	// If err is nil, the PID and (optionally) process exit code were properly captured and the exitCode value is valid.
 	// if err is not nil, there was a problem with the run and the PID and exitCode value are not valid.
 	OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error)
+
+	// Called when a run has started and wants to register its RunID with the handler.
+	OnStarted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func())
 }
 
 // Make it easy to supply a function as a run completion handler.

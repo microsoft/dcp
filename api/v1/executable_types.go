@@ -23,6 +23,10 @@ import (
 type ExecutableState string
 
 const (
+	// The Executable has been scheduled to launch, but we will need to re-evaluate its state in a subsequent
+	// reconciliation loop.
+	ExecutableStateStarting ExecutableState = "Starting"
+
 	// The Executable was successfully started and was running last time we checked.
 	ExecutableStateRunning ExecutableState = "Running"
 
@@ -201,6 +205,10 @@ func (e *Executable) NamespacedName() types.NamespacedName {
 func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
 	return nil
+}
+
+func (e *Executable) Starting() bool {
+	return e.Status.StartupTimestamp.IsZero() && e.Status.FinishTimestamp.IsZero()
 }
 
 func (e *Executable) Done() bool {

@@ -132,18 +132,15 @@ We have seen an issue where the generator would latch to a specific version of `
 
 ### I need to test a local build of `dcp` with Aspire tooling
 
-Create a `<file>.csproj.user` file next to the `.csproj` file you want to use with a local build of dcp (for example `samples/eShopLite/AppHost/AppHost.csproj.user` in the `dotnet/aspire` repo). Set the contents of the .user.csproj file to:
+Add the following snippet to your AppHost project:
 
 ```xml
-<Project>
     <PropertyGroup>
       <DcpDir>[folder where dcp.exe lives]</DcpDir>
     </PropertyGroup>
-</Project>
-
 ```
 
-This will override the location used for the DCP binaries while avoiding the risk of checking in your local override. Just remember to comment out the `<DcpDir></DcpDir>` line if you want to go back to using the DCP version Aspire targets.
+Just be careful about not checking in this change and remember to comment out the `<DcpDir></DcpDir>` line if you want to go back to using the DCP version Aspire targets.
 
 ### Need to get detailed logs from DCP run
 

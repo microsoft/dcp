@@ -21,5 +21,8 @@ __debug_*
 # Tool binaries
 .toolbin/
 
+# Generated Go version info file
+*.syso
+
 # Misc. extra exclusions
 .DS_Store

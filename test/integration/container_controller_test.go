@@ -452,6 +452,55 @@ func TestContainerParallelStart(t *testing.T) {
 	}
 }
 
+func TestContainerRestart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	// If a container shuts down and then restarts, it should be tracked as running
+	const testName = "container-restart"
+	const imageName = testName + "-image"
+	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Check if corresponding container has started...")
+	creationTime := time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container was not started as expected")
+
+	err = simulateContainerExit(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Could not simulate container exit")
+
+	t.Log("Ensure container state is 'stopped'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		statusUpdated := c.Status.State == apiv1.ContainerStateExited
+		return statusUpdated, nil
+	})
+
+	// Restart the container
+	err = simulateContainerStart(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Could not simulate container start")
+
+	t.Log("Ensure container state is 'running'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		statusUpdated := c.Status.State == apiv1.ContainerStateRunning
+		return statusUpdated, nil
+	})
+}
+
 func ensureContainerRunning(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
 	// Ensure appropriate "docker run" command has been executed
 	dockerRunCmd, err := waitForDockerCommand(t, ctx, []string{"run"}, image)
@@ -474,16 +523,24 @@ func ensureContainerRunning(t *testing.T, ctx context.Context, image string, con
 }
 
 func simulateContainerExit(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
+	return simulateContainerEvent(t, ctx, image, containerID, created, ct.EventActionDie, ct.ContainerStatusExited)
+}
+
+func simulateContainerStart(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
+	return simulateContainerEvent(t, ctx, image, containerID, created, ct.EventActionStart, ct.ContainerStatusRunning)
+}
+
+func simulateContainerEvent(t *testing.T, ctx context.Context, image string, containerID string, created time.Time, event ct.EventAction, status ct.ContainerStatus) error {
 	eventsCmd, err := waitForDockerCommand(t, ctx, []string{"events"}, "")
 	if err != nil {
 		return err
 	}
 
 	// The controller will want to inspect the exited container
-	ensureContainerInspectResponse(t, image, containerID, created, ct.ContainerStatusExited)
+	ensureContainerInspectResponse(t, image, containerID, created, status)
 
-	// Emit container Die event
-	_, err = eventsCmd.Cmd.Stdout.Write([]byte(getContainerEventJson(containerID, ct.EventActionDie) + "\n"))
+	// Emit container event
+	_, err = eventsCmd.Cmd.Stdout.Write([]byte(getContainerEventJson(containerID, event) + "\n"))
 	if err != nil {
 		t.Errorf("Could not emit container Die event: %v", err)
 		return err

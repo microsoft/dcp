@@ -101,6 +101,11 @@ type NamespacedNameWithKind struct {
 	Kind schema.GroupVersionKind
 }
 
+type NamespacedNameWithKindAndUid struct {
+	NamespacedNameWithKind
+	Uid types.UID
+}
+
 func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
 	return NamespacedNameWithKind{
 		NamespacedName: types.NamespacedName{

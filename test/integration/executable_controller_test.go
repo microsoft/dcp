@@ -149,10 +149,6 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					return "" // make compiler happy
 				}
 
-				randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
-				err = ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid)
-				require.NoError(t, err)
-
 				return runID
 			},
 			simulateRunEnding: func(t *testing.T, runID string) {
@@ -289,7 +285,7 @@ func TestExecutableDeletion(t *testing.T) {
 			tc.verifyExeRunning(ctx, t, tc.exe)
 
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
-				return !currentExe.Status.StartupTimestamp.IsZero(), nil
+				return currentExe.Status.State != "", nil
 			})
 
 			t.Log("Deleting Executable object...")
@@ -609,7 +605,12 @@ func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (string, er
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ideRunSessionStarted)
 	if err != nil {
 		return "", err
-	} else {
-		return runID, nil
 	}
+
+	randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
+	if err := ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid); err != nil {
+		return "", err
+	}
+
+	return runID, nil
 }
