@@ -527,7 +527,16 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 	})
 
 	for key, value := range envMap {
-		variableTmpl, err := tmpl.Parse(value)
+		// We need to clonet the template because if the value is empty, parsing is an no-op
+		// and we will end up with data from previous template run.
+		commonTmpl, err := tmpl.Clone()
+		if err != nil {
+			// This should really never happen, but the Clone() API returns an error, so we need to handle it.
+			log.Error(err, "could not clone template for environment variable", "VariableName", key, "VariableValue", value)
+			continue // We are going to use the value as-is.
+		}
+
+		variableTmpl, err := commonTmpl.Parse(value)
 		if err != nil {
 			// This does not necessarily indicate a problem--the value might be a completely intentional string
 			// that happens to be un-parseable as a text template.
