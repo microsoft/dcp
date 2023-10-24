@@ -146,7 +146,6 @@ spec:
                   output data from the Executable process.
                 type: string
             required:
-            - executionID
             - state
             type: object
         type: object

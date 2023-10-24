@@ -109,6 +109,7 @@ type ExecutableStatus struct {
 	// For ExecutionType == Process it is the process ID. Process IDs will be eventually reused by OS,
 	// but a combination of process ID and startup timestamp is unique for each Executable instance.
 	// For ExecutionType == IDE it is the IDE session ID.
+	// +optional
 	ExecutionID string `json:"executionID"`
 
 	// The PID of the process associated with the Executable

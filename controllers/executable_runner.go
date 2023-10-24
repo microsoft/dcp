@@ -41,7 +41,7 @@ type RunChangeHandler interface {
 	OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error)
 
 	// Called when a run has started and wants to register its RunID with the handler.
-	OnStarted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func())
+	OnStartingCompleted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func())
 }
 
 // Make it easy to supply a function as a run completion handler.

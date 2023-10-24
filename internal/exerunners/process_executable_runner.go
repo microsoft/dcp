@@ -76,7 +76,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		exe.Status.State = apiv1.ExecutableStateRunning
 		exe.Status.StartupTimestamp = metav1.Now()
 
-		runChangeHandler.OnStarted(exe.NamespacedName(), pidToRunID(pid), exe.Status, startWaitForProcessExit)
+		runChangeHandler.OnStartingCompleted(exe.NamespacedName(), pidToRunID(pid), exe.Status, startWaitForProcessExit)
 	}
 
 	return err
