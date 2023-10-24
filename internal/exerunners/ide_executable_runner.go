@@ -215,7 +215,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			log.Error(err, "failed to create temporary file for capturing standard output data")
 			stdOutFile = nil
 		} else {
-			exe.Status.StdOutFile = stdOutFile.Name()
+			exeStatus.StdOutFile = stdOutFile.Name()
 		}
 
 		stdErrFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
@@ -223,7 +223,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			log.Error(err, "failed to create temporary file for capturing standard error data")
 			stdErrFile = nil
 		} else {
-			exe.Status.StdErrFile = stdErrFile.Name()
+			exeStatus.StdErrFile = stdErrFile.Name()
 		}
 
 		if rawRequest, err := httputil.DumpRequest(req, true); err == nil {
