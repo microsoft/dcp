@@ -1164,7 +1164,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 						},
 					},
 				},
-				Required: []string{"executionID", "state"},
+				Required: []string{"state"},
 			},
 		},
 		Dependencies: []string{

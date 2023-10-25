@@ -39,6 +39,9 @@ type ExecutableReconciler struct {
 	reconciliationSeqNo uint32
 	ExecutableRunners   map[apiv1.ExecutionType]ExecutableRunner
 
+	// A map that stores information about starting Executables
+	starting syncmap.Map[types.NamespacedName, apiv1.ExecutableStatus]
+
 	// A map that stores information about running Executables,
 	// searchable by Executable name (first key), or run ID (second key).
 	runs *maps.SynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus]
@@ -62,6 +65,7 @@ func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Cli
 	r := ExecutableReconciler{
 		Client:               client,
 		ExecutableRunners:    executableRunners,
+		starting:             syncmap.Map[types.NamespacedName, apiv1.ExecutableStatus]{},
 		runs:                 maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus](),
 		reservedServicePorts: syncmap.Map[types.NamespacedName, map[types.NamespacedName]int32]{},
 		notifyRunChanged:     chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
@@ -214,14 +218,25 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 }
 
 // Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stabe state such as running or finished.
-func (r *ExecutableReconciler) OnStarted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func()) {
+func (r *ExecutableReconciler) OnStartingCompleted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func()) {
 	if runID != UnknownRunID {
 		r.Log.V(1).Info("Executable completed startup", "Executable", name.String(), "RunID", runID, "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
 		r.runs.Store(name, runID, exeStatus)
 
 		startWaitForRunCompletion()
 	} else {
-		r.Log.V(1).Info("Executable started with invalid RunID", "Executable", name.String(), "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
+		// If we couldn't successfully reach a running state, update the starting cache so that it can be
+		// reported during the next reconciliation loop
+		r.Log.V(1).Info("Executable failed to reach valid running state", "Executable", name.String())
+		exeStatus.State = apiv1.ExecutableStateFailedToStart
+		exeStatus.FinishTimestamp = metav1.Now()
+		r.starting.Store(name, exeStatus)
+
+		// Schedule reconciliation for corresponding Executable
+		scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
+		if scheduleErr != nil {
+			r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State)
+		}
 	}
 }
 
@@ -250,8 +265,17 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return statusChanged
 	}
 
-	if exe.Status.State == apiv1.ExecutableStateStarting {
-		log.V(1).Info("Executable already starting, wait for OnStarted notification...")
+	if rps, found := r.starting.Load(exe.NamespacedName()); found {
+		// We've already called StartRun once for this executable and it's in the process of
+		// starting. Check to see if it's transitioned to a failure state and if so, update
+		// the current status.
+		log.V(1).Info("Executable already starting...")
+
+		if rps.State != apiv1.ExecutableStateStarting {
+			rps.CopyTo(exe)
+			return statusChanged
+		}
+
 		return noChange
 	}
 
@@ -285,7 +309,8 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 
 	log.V(1).Info("starting Executable...")
 
-	if err := runner.StartRun(ctx, exe, r, log); err != nil {
+	err := runner.StartRun(ctx, exe, r, log)
+	if err != nil {
 		log.Error(err, "failed to start Executable")
 		if exe.Status.State != apiv1.ExecutableStateFailedToStart {
 			// The executor did not mark the Executable as failed to start, so we should retry.
@@ -303,6 +328,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	} else if exe.Status.State == apiv1.ExecutableStateStarting {
 		log.V(1).Info("registering Endpoints for later creation", "services", maps.Keys(reservedServicePorts), "ports", maps.Values(reservedServicePorts))
 		r.reservedServicePorts.Store(exe.NamespacedName(), reservedServicePorts)
+		r.starting.Store(exe.NamespacedName(), *exe.Status.DeepCopy())
 	}
 
 	return statusChanged
@@ -320,6 +346,7 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 	// we are not interested in its exit code (it will indicate a failure,
 	// but it is a failure induced by the Executable user), so we stop tracking the run now.
 	r.runs.DeleteBySecondKey(runID)
+	r.starting.Delete(exe.NamespacedName())
 	r.reservedServicePorts.Delete(exe.NamespacedName())
 
 	runner, found := r.ExecutableRunners[exe.Spec.ExecutionType]
@@ -527,7 +554,16 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 	})
 
 	for key, value := range envMap {
-		variableTmpl, err := tmpl.Parse(value)
+		// We need to clonet the template because if the value is empty, parsing is an no-op
+		// and we will end up with data from previous template run.
+		commonTmpl, err := tmpl.Clone()
+		if err != nil {
+			// This should really never happen, but the Clone() API returns an error, so we need to handle it.
+			log.Error(err, "could not clone template for environment variable", "VariableName", key, "VariableValue", value)
+			continue // We are going to use the value as-is.
+		}
+
+		variableTmpl, err := commonTmpl.Parse(value)
 		if err != nil {
 			// This does not necessarily indicate a problem--the value might be a completely intentional string
 			// that happens to be un-parseable as a text template.

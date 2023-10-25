@@ -12,7 +12,9 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type TestIdeRun struct {
@@ -37,26 +39,29 @@ func (r *TestIdeRun) Finished() bool {
 
 type TestIdeRunner struct {
 	nextRunID int32
-	Runs      []TestIdeRun
+	Runs      syncmap.Map[types.NamespacedName, *TestIdeRun]
 	m         *sync.RWMutex
 }
 
 func NewTestIdeRunner() *TestIdeRunner {
 	return &TestIdeRunner{
-		Runs: make([]TestIdeRun, 0),
+		Runs: syncmap.Map[types.NamespacedName, *TestIdeRun]{},
 		m:    &sync.RWMutex{},
 	}
 }
 
 func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, _ logr.Logger) error {
-	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 	r.m.Lock()
 	defer r.m.Unlock()
+
+	namespacedName := exe.NamespacedName()
+
+	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 
 	exe.Status.State = apiv1.ExecutableStateStarting
 	exe.Status.ExecutionID = string(runID)
 
-	run := TestIdeRun{
+	run := &TestIdeRun{
 		ID:        runID,
 		Exe:       exe,
 		Status:    exe.Status.DeepCopy(),
@@ -64,17 +69,16 @@ func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runCh
 		StartWaitingCallback: func() {
 			r.m.Lock()
 			defer r.m.Unlock()
-			i := r.find(runID)
-			run := r.Runs[i]
-			run.StartWaitingCalled = true
-			r.Runs[i] = run
 
-			run.ChangeHandler.OnRunChanged(runID, run.PID, apiv1.UnknownExitCode, nil)
+			if run, found := r.Runs.Load(namespacedName); found {
+				run.StartWaitingCalled = true
+				run.ChangeHandler.OnRunChanged(runID, run.PID, apiv1.UnknownExitCode, nil)
+			}
 		},
 		ChangeHandler: runChangeHandler,
 	}
 
-	r.Runs = append(r.Runs, run)
+	r.Runs.Store(namespacedName, run)
 
 	return nil
 }
@@ -96,11 +100,13 @@ func (r *TestIdeRunner) FindAll(exePath string, cond func(run TestIdeRun) bool) 
 	defer r.m.RUnlock()
 	retval := make([]TestIdeRun, 0)
 
-	for _, run := range r.Runs {
-		if run.Exe.Spec.ExecutablePath == exePath && (cond == nil || cond(run)) {
-			retval = append(retval, run)
+	r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
+		if run.Exe.Spec.ExecutablePath == exePath && (cond == nil || cond(*run)) {
+			retval = append(retval, *run)
 		}
-	}
+
+		return true
+	})
 
 	return retval
 }
@@ -110,18 +116,26 @@ func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) 
 		r.m.Lock()
 		defer r.m.Unlock()
 
-		i := r.find(runID)
-		if i == NotFound {
-			return TestIdeRun{}, fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
+		var foundRun *TestIdeRun
+		r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
+			if run.ID == runID {
+				run.PID = pid
+				run.Status.State = apiv1.ExecutableStateRunning
+				run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
+
+				foundRun = run
+
+				return false
+			}
+
+			return true
+		})
+
+		if foundRun == nil {
+			return TestIdeRun{}, fmt.Errorf("run '%s' was not found, cannot be started", runID)
 		}
 
-		run := r.Runs[i]
-		run.PID = pid
-		run.Status.State = apiv1.ExecutableStateRunning
-		run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
-		r.Runs[i] = run
-
-		return run, nil
+		return *foundRun, nil
 	}()
 
 	if err != nil {
@@ -131,7 +145,7 @@ func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) 
 	if run.ChangeHandler != nil {
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnStarted(run.Exe.NamespacedName(), runID, *run.Status, run.StartWaitingCallback)
+			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), runID, *run.Status, run.StartWaitingCallback)
 
 			close(done)
 		}()
@@ -145,17 +159,27 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	r.m.Lock()
 	defer r.m.Unlock()
 
-	i := r.find(runID)
-	if i == NotFound {
+	var foundRun *TestIdeRun
+	r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
+		if run.ID == runID {
+			run.EndedAt = time.Now()
+			run.ExitCode = exitCode
+
+			foundRun = run
+
+			return false
+		}
+
+		return true
+	})
+
+	if foundRun == nil {
 		return fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
 	}
 
-	run := r.Runs[i]
-	run.EndedAt = time.Now()
-	run.ExitCode = exitCode
-	r.Runs[i] = run
+	run := *foundRun
 
-	if run.ChangeHandler != nil {
+	if foundRun.ChangeHandler != nil {
 		done := make(chan struct{})
 		go func() {
 			ec := new(int32)
@@ -167,16 +191,6 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	}
 
 	return nil
-}
-
-func (r *TestIdeRunner) find(runID controllers.RunID) int {
-	for i, run := range r.Runs {
-		if run.ID == runID {
-			return i
-		}
-	}
-
-	return NotFound
 }
 
 var _ controllers.ExecutableRunner = (*TestIdeRunner)(nil)
