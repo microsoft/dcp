@@ -237,7 +237,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			container.Status.State = apiv1.ContainerStateRunning
 			container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
 		} else {
-			log.Error(rcd.startupError, "could not start the container")
+			log.Error(rcd.startupError, "container has failed to start")
 			container.Status.ContainerID = ""
 			container.Status.State = apiv1.ContainerStateFailedToStart
 			container.Status.Message = fmt.Sprintf("Container could not be started: %s", rcd.startupError.Error())
@@ -249,13 +249,13 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 	case !found:
 
 		// This should never really happen--we should be tracking this container via our runningContainers map
-		// if it was in Running or Paused state. Not much we can do at this point, let's mark it as finished-unknown state
+		// from the startup attempt till it is deleted. Not much we can do at this point, let's mark it as finished-unknown state
 		log.Error(fmt.Errorf("missing running container data"), "", "ContainerID", container.Status.ContainerID, "ContainerState", container.Status.State)
 		container.Status.State = apiv1.ContainerStateUnknown
 		container.Status.FinishTimestamp = metav1.Now()
 		return statusChanged
 
-	default:
+	case container.Status.State != apiv1.ContainerStateFailedToStart:
 
 		// The fact that something triggered reconciliation means we need to take a closer look at this container.
 		log.V(1).Info("inspecting running container...", "ContainerID", containerID)
@@ -265,15 +265,17 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			log.Info("running container was not found, marking Container object as finished", "ContainerID", containerID)
 			container.Status.State = apiv1.ContainerStateRemoved
 			container.Status.FinishTimestamp = metav1.Now()
-			r.runningContainers.DeleteBySecondKey(container.NamespacedName())
 			return statusChanged
 		} else {
 			inspected := res[0]
 			return r.updateContainerStatus(container, &inspected)
 		}
 
-	}
+	default:
+		// Container failed to  start and is marked as such, so nothing more to do.
+		return noChange
 
+	}
 }
 
 func (r *ContainerReconciler) startContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
