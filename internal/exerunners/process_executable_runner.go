@@ -2,6 +2,7 @@ package exerunners
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,15 +17,32 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+type processRunState struct {
+	stdOutFile *os.File
+	stdErrFile *os.File
+}
+
+func newProcessRunState(stdOutFile *os.File, stdErrFile *os.File) *processRunState {
+	return &processRunState{
+		stdOutFile: stdOutFile,
+		stdErrFile: stdErrFile,
+	}
+}
+
 type ProcessExecutableRunner struct {
-	pe process.Executor
+	pe               process.Executor
+	runningProcesses syncmap.Map[controllers.RunID, *processRunState]
 }
 
 func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
-	return &ProcessExecutableRunner{pe: pe}
+	return &ProcessExecutableRunner{
+		pe:               pe,
+		runningProcesses: syncmap.Map[controllers.RunID, *processRunState]{},
+	}
 }
 
 func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
@@ -62,6 +80,8 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	}
 
 	pid, startWaitForProcessExit, err := r.pe.StartProcess(ctx, cmd, processExitHandler)
+
+	r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 	if err != nil {
 		log.Error(err, "failed to start a process")
 		exe.Status.FinishTimestamp = metav1.Now()
@@ -83,7 +103,23 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 }
 
 func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.RunID, _ logr.Logger) error {
-	return r.pe.StopProcess(runIdToPID(runID))
+	err := r.pe.StopProcess(runIdToPID(runID))
+
+	if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
+		var stdOutErr error
+		if runState.stdOutFile != nil {
+			stdOutErr = runState.stdOutFile.Close()
+		}
+
+		var stdErrErr error
+		if runState.stdErrFile != nil {
+			stdErrErr = runState.stdErrFile.Close()
+		}
+
+		err = errors.Join(err, stdOutErr, stdErrErr)
+	}
+
+	return err
 }
 
 func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *exec.Cmd {

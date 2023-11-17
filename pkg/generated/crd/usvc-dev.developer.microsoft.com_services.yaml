@@ -74,6 +74,14 @@ spec:
                 maximum: 4294967295
                 minimum: 0
                 type: integer
+              proxylessEndpointName:
+                description: When in Proxyless mode, the name of the Endpoint that
+                  was chosen to use as the service's effective address and port
+                type: string
+              proxylessEndpointNamespace:
+                description: When in Proxyless mode, the namespace of the Endpoint
+                  that was chosen to use as the service's effective address and port
+                type: string
               state:
                 default: NotReady
                 description: The current state of the service

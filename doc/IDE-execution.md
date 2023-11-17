@@ -4,7 +4,7 @@ By default, `Executable` objects that are part of DCP workload are run as ordina
 
 With IDE execution DCP delegates the task of running the program represented by `Executable` object to an external entity. The entity can be an IDE such as Visual Studio or Visual Studio Code, or a CLI tool like `dotnet watch`, but in the rest of this document we will refer to it as **IDE**. 
 
-When IDE exection is enabled for an `Executable` object, DCP will go through normal executaion preparation steps (such as computing the values of environment variables for the `Executable`), but instead of creating an OS process, DCP will issue a request to the IDE to run the `Executable` program, passing all relevant information in the request. DCP then relies on the IDE to start the program, creating an **run session**. The IDE is expected to inform DCP about changes to the session (e.g. program finished execution) and DCP reflects these changes in the workload model. 
+When IDE execution is enabled for an `Executable` object, DCP will go through normal execution preparation steps (such as computing the values of environment variables for the `Executable`), but instead of creating an OS process, DCP will issue a request to the IDE to run the `Executable` program, passing all relevant information in the request. DCP then relies on the IDE to start the program, creating a **run session**. The IDE is expected to inform DCP about changes to the session (e.g. program finished execution) and DCP reflects these changes in the workload model. 
 
 ## Enabling IDE execution
 
@@ -104,7 +104,7 @@ If successful, the connection should be upgraded to a web sockets connection, wh
 
 ## Run session change notifications
 
-The run session change notification are delivered from IDE to DCP via the web socket connection. The format of notification is JSON Lines (one JSON object per line of text).
+The run session change notifications are delivered from IDE to DCP via the web socket connection. The format of notification is JSON Lines (one JSON object per line of text).
 
 All run sessions share the same notification stream. Notifications are delivered in near-real-time as sessions change--there is no memory/reply of notifications for sessions that occurred in the past. DCP subscribes to run session change notifications before it makes the first request to create a run session; this ensures that it will receive all change notifications for all sessions it creates.
 

@@ -42,6 +42,9 @@ const (
 
 	// Bind only to ::1
 	AddressAllocationModeIPv6ZeroOne AddressAllocationMode = "IPv6ZeroOne"
+
+	// Don't use a proxy--the service will have the same address and port as the first endpoint
+	AddressAllocationModeProxyless AddressAllocationMode = "Proxyless"
 )
 
 // ServiceSpec defines the desired state of a Service
@@ -76,6 +79,7 @@ type ServiceStatus struct {
 	ProxyProcessPid *int64 `json:"proxyProcessPid,omitempty"`
 
 	// The path of the proxy config file for this service containing both routing config and service definition
+	// +optional
 	ProxyConfigFile string `json:"proxyConfigFile,omitempty"`
 
 	// The actual address the service is running on
@@ -85,6 +89,14 @@ type ServiceStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=65535
 	EffectivePort int32 `json:"effectivePort,omitempty"`
+
+	// When in Proxyless mode, the namespace of the Endpoint that was chosen to use as the service's effective address and port
+	// +optional
+	ProxylessEndpointNamespace string `json:"proxylessEndpointNamespace,omitempty"`
+
+	// When in Proxyless mode, the name of the Endpoint that was chosen to use as the service's effective address and port
+	// +optional
+	ProxylessEndpointName string `json:"proxylessEndpointName,omitempty"`
 }
 
 func (cs ServiceStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

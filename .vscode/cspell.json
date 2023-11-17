@@ -1,4 +1,12 @@
 {
-    "version": "0.2",
-    "enabled": false
+    "languageSettings": [
+       {
+            "languageId": "markdown",
+            "enabled": true
+       },
+       {
+            "languageId": "go",
+            "enabled": false
+       }
+    ]
 }

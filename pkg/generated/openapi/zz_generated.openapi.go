@@ -1405,6 +1405,20 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 							Format:      "int32",
 						},
 					},
+					"proxylessEndpointNamespace": {
+						SchemaProps: spec.SchemaProps{
+							Description: "When in Proxyless mode, the namespace of the Endpoint that was chosen to use as the service's effective address and port",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"proxylessEndpointName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "When in Proxyless mode, the name of the Endpoint that was chosen to use as the service's effective address and port",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},

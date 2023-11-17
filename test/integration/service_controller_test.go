@@ -292,6 +292,198 @@ func TestServiceIPv6Address(t *testing.T) {
 	t.Log("Service has IPv6 address.")
 }
 
+func TestServiceProxyless(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svcName := "test-service-proxyless"
+	containerID := svcName + "-" + testutil.GetRandLetters(t, 6)
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol:              apiv1.TCP,
+			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+		},
+	}
+
+	container := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        svcName + "-container",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName)},
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: svcName + "-image",
+			Ports: []apiv1.ContainerPort{
+				{
+					ContainerPort: 80,
+					HostPort:      56791,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create a Service %s", svc.ObjectMeta.Name)
+
+	t.Logf("Creating Container '%s' that is producing the Service '%s'...", container.ObjectMeta.Name, svcName)
+	err = client.Create(ctx, &container)
+	require.NoError(t, err, "Could not create the Container %s", container.ObjectMeta.Name)
+
+	t.Logf("Check if corresponding container %s has started...", container.ObjectMeta.Name)
+	creationTime := time.Now().UTC()
+	err = ensureContainerRunning(t, ctx, container.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container %s was not started as expected", container.ObjectMeta.Name)
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := s.Status.EffectiveAddress == "127.0.0.1" // The default address for Proxyless containers
+		portCorrect := s.Status.EffectivePort == 56791
+		return addressCorrect && portCorrect, nil
+	})
+}
+
+func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svcName := "test-service-proxyless-multiple-endpoints"
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol:              apiv1.TCP,
+			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+		},
+	}
+
+	endpoint1 := apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName + "-endpoint1",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: svc.ObjectMeta.Namespace,
+			ServiceName:      svc.ObjectMeta.Name,
+			Address:          "localhost",
+			Port:             56792,
+		},
+	}
+
+	endpoint2 := apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName + "-endpoint2",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: svc.ObjectMeta.Namespace,
+			ServiceName:      svc.ObjectMeta.Name,
+			Address:          "localhost",
+			Port:             56793,
+		},
+	}
+
+	endpoint3 := apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName + "-endpoint3",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: svc.ObjectMeta.Namespace,
+			ServiceName:      svc.ObjectMeta.Name,
+			Address:          "localhost",
+			Port:             56794,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create a Service %s", svc.ObjectMeta.Name)
+
+	// Ensure Service is not ready
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		return s.Status.State == apiv1.ServiceStateNotReady, nil
+	})
+
+	// Create endpoint1
+	t.Logf("Creating Endpoint '%s'", endpoint1.ObjectMeta.Name)
+	err = client.Create(ctx, &endpoint1)
+	require.NoError(t, err, "Could not create an Endpoint %s", endpoint1.ObjectMeta.Name)
+
+	// Ensure Service switches to endpoint1
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := s.Status.EffectiveAddress == endpoint1.Spec.Address
+		portCorrect := s.Status.EffectivePort == endpoint1.Spec.Port
+		endpointNamespaceCorrect := s.Status.ProxylessEndpointNamespace == endpoint1.ObjectMeta.Namespace
+		endpointNameCorrect := s.Status.ProxylessEndpointName == endpoint1.ObjectMeta.Name
+		return addressCorrect && portCorrect && endpointNamespaceCorrect && endpointNameCorrect, nil
+	})
+
+	// Create endpoint2
+	t.Logf("Creating Endpoint '%s'", endpoint2.ObjectMeta.Name)
+	err = client.Create(ctx, &endpoint2)
+	require.NoError(t, err, "Could not create an Endpoint %s", endpoint2.ObjectMeta.Name)
+
+	// Wait a second
+	time.Sleep(1 * time.Second)
+
+	// Ensure Service has stayed on endpoint1
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := s.Status.EffectiveAddress == endpoint1.Spec.Address
+		portCorrect := s.Status.EffectivePort == endpoint1.Spec.Port
+		endpointNamespaceCorrect := s.Status.ProxylessEndpointNamespace == endpoint1.ObjectMeta.Namespace
+		endpointNameCorrect := s.Status.ProxylessEndpointName == endpoint1.ObjectMeta.Name
+		return addressCorrect && portCorrect && endpointNamespaceCorrect && endpointNameCorrect, nil
+	})
+
+	// Delete endpoint1
+	t.Logf("Deleting Endpoint '%s'", endpoint1.ObjectMeta.Name)
+	err = client.Delete(ctx, &endpoint1)
+	require.NoError(t, err, "Could not delete an Endpoint %s", endpoint1.ObjectMeta.Name)
+
+	// Ensure Service switches to endpoint2
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := s.Status.EffectiveAddress == endpoint2.Spec.Address
+		portCorrect := s.Status.EffectivePort == endpoint2.Spec.Port
+		endpointNamespaceCorrect := s.Status.ProxylessEndpointNamespace == endpoint2.ObjectMeta.Namespace
+		endpointNameCorrect := s.Status.ProxylessEndpointName == endpoint2.ObjectMeta.Name
+		return addressCorrect && portCorrect && endpointNamespaceCorrect && endpointNameCorrect, nil
+	})
+
+	// Delete endpoint2
+	t.Logf("Deleting Endpoint '%s'", endpoint2.ObjectMeta.Name)
+	err = client.Delete(ctx, &endpoint2)
+	require.NoError(t, err, "Could not delete an Endpoint %s", endpoint2.ObjectMeta.Name)
+
+	// Ensure Service is no longer ready
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		return s.Status.State == apiv1.ServiceStateNotReady, nil
+	})
+
+	// Create endpoint3
+	t.Logf("Creating Endpoint '%s'", endpoint3.ObjectMeta.Name)
+	err = client.Create(ctx, &endpoint3)
+	require.NoError(t, err, "Could not create an Endpoint %s", endpoint3.ObjectMeta.Name)
+
+	// Ensure Service switches to endpoint3
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := s.Status.EffectiveAddress == endpoint3.Spec.Address
+		portCorrect := s.Status.EffectivePort == endpoint3.Spec.Port
+		endpointNamespaceCorrect := s.Status.ProxylessEndpointNamespace == endpoint3.ObjectMeta.Namespace
+		endpointNameCorrect := s.Status.ProxylessEndpointName == endpoint3.ObjectMeta.Name
+		return addressCorrect && portCorrect && endpointNamespaceCorrect && endpointNameCorrect, nil
+	})
+}
+
 func ensureProxyProcess(ctx context.Context, selector func(pe *ctrl_testutil.ProcessExecution) bool) (*ctrl_testutil.ProcessExecution, error) {
 	var processExecution *ctrl_testutil.ProcessExecution
 
