@@ -109,15 +109,37 @@ Set-Alias kk dcpKubectl
 For working with DCP in the context of Aspire tooling (which creates a separate `kubeconfig` file for every application run) the following PowerShell function/alias might be useful:
 
 ```powershell
-function monitoredDcpKubectl()
-{
-    $procName = $args[0]
-    $args = $args | Select-Object -Skip 1
-    $process = Get-Process | Where-Object { $_.Name -ceq $procName }
-    $procId = $process.Id
-    & kubectl --kubeconfig "$env:TEMP\aspire\session\$procId\kubeconfig" $args
+function dcpdKubectl() {
+    $DcpPid = $null
+    if ($args.Length -gt 1 -and $args[0] -eq "-DcpPid") {
+        $DcpPid = $args[1]
+        $args = $args | Select-Object -Skip 2
+    }
+
+    if ($null -ne $DcpPid) {
+        $dcpProcess = Get-Process -Id $DcpPid
+        if ($? -eq $false) {
+            throw "No DCP process with PID $DcpPid found"
+        }
+
+        $kubeconfig = $dcpProcess | Select-Object -ExpandProperty CommandLine | ForEach-Object { $_.Split() } | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
+    } else {
+        $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcpd" })
+        if ($dcpProcesses.Count -eq 0) {
+            throw "No DCP processes found"
+        } elseif ($dcpProcesses.Count -gt 1) {
+            Write-Error "Multiple DCP processes found, use -DcpPid parameter to specify which one to use (pass DCP process ID)"
+            $dcpProcesses | Select-Object Id, CommandLine | Format-List
+            return
+        } else {
+            $kubeconfig = $dcpProcesses[0].CommandLine.Split() | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
+        }
+    }
+
+    & kubectl --kubeconfig "$kubeconfig" $args
 }
-Set-Alias kkm -Value monitoredDcpKubectl
+
+Set-Alias kk -Value dcpdKubectl
 ```
 
 You invoke it with the name of the Aspire app host project (the one that is set as startup project), for example `kkm AppHost api-resources`.
