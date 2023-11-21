@@ -135,11 +135,10 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		return nil, fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
 
-	processExecutor = ctrl_testutil.NewTestProcessExecutor()
+	processExecutor = ctrl_testutil.NewTestProcessExecutor(ctx)
 	dockerOrchestrator := docker.NewDockerCliOrchestrator(ctrl.Log.WithName("DockerCliOrchestrator"), processExecutor)
-
 	exeRunner := exerunners.NewProcessExecutableRunner(processExecutor)
-	ideRunner = ctrl_testutil.NewTestIdeRunner()
+	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
 
 	execR := controllers.NewExecutableReconciler(
 		ctx,

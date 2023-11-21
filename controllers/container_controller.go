@@ -155,10 +155,10 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Otherwise we will be left with a dangling container that no one owns.
 		log.Info("Container object is being deleted...")
 		r.deleteContainer(ctx, &container, log)
-		change = deleteFinalizer(&container, containerFinalizer)
+		change = deleteFinalizer(&container, containerFinalizer, log)
 		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
-		change = ensureFinalizer(&container, containerFinalizer)
+		change = ensureFinalizer(&container, containerFinalizer, log)
 
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
@@ -180,23 +180,20 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) {
-	// r.runningContainers should have the latest data
+	// This method is called only when we never attempted to start the container,
+	// or if the container has already finished starting and we know the outcome.
+
 	containerID, _, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
 	if !found {
-		containerID = container.Status.ContainerID
-		log.V(1).Info("running container data missing, using container ID from Container object status", "ContainerID", containerID)
+		// We either never started the container, or we already attempted to remove the container
+		// and the current reconciliation call is just the cache catching up.
+		// Either way there is nothing to do.
+		log.V(1).Info("running container data is not available; proceeding with Container object deletion...")
+		return
 	}
 
 	// Since the container is being removed, we want to remove it from runningContainers map now
-	if found {
-		r.runningContainers.DeleteBySecondKey(container.NamespacedName())
-	}
-
-	if containerID == "" {
-		// This can happen if the container was never started -- nothing to do
-		log.V(1).Info("running container ID is not available; proceeding with Container object deletion...")
-		return
-	}
+	r.runningContainers.DeleteBySecondKey(container.NamespacedName())
 
 	log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
 	_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)

@@ -21,6 +21,7 @@ type ProcessExecution struct {
 	PID                process.Pid_t
 	Cmd                *exec.Cmd
 	StartWaitingCalled bool
+	startWaitingChan   chan struct{}
 	StartedAt          time.Time
 	EndedAt            time.Time
 	ExitHandler        process.ProcessExitHandler
@@ -118,6 +119,7 @@ type TestProcessExecutor struct {
 	Executions     []ProcessExecution
 	AutoExecutions []AutoExecution
 	m              *sync.RWMutex
+	lifetimeCtx    context.Context
 }
 
 const (
@@ -125,9 +127,10 @@ const (
 	KilledProcessExitCode = 137 // 128 + SIGKILL (9)
 )
 
-func NewTestProcessExecutor() *TestProcessExecutor {
+func NewTestProcessExecutor(lifetimeCtx context.Context) *TestProcessExecutor {
 	return &TestProcessExecutor{
-		m: &sync.RWMutex{},
+		m:           &sync.RWMutex{},
+		lifetimeCtx: lifetimeCtx,
 	}
 }
 
@@ -142,10 +145,11 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 	defer e.m.Unlock()
 
 	pe := ProcessExecution{
-		Cmd:         cmd,
-		PID:         pid,
-		StartedAt:   time.Now(),
-		ExitHandler: handler,
+		Cmd:                cmd,
+		PID:                pid,
+		StartedAt:          time.Now(),
+		ExitHandler:        handler,
+		StartWaitingCalled: false,
 	}
 
 	// For testing purposes make sure that stdout and stderr are always captured.
@@ -155,6 +159,9 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 	if cmd.Stderr == nil {
 		cmd.Stderr = new(bytes.Buffer)
 	}
+	if handler != nil {
+		pe.startWaitingChan = make(chan struct{})
+	}
 
 	e.Executions = append(e.Executions, pe)
 
@@ -163,7 +170,12 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		defer e.m.Unlock()
 		i := e.findByPid(pid)
 		pe := e.Executions[i]
-		pe.StartWaitingCalled = true
+		if !pe.StartWaitingCalled {
+			pe.StartWaitingCalled = true
+			if pe.startWaitingChan != nil {
+				close(pe.startWaitingChan)
+			}
+		}
 		e.Executions[i] = pe
 	}
 
@@ -294,7 +306,14 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, exitCode int32)
 	pe.EndedAt = time.Now()
 	e.Executions[i] = pe
 	if pe.ExitHandler != nil {
-		go pe.ExitHandler.OnProcessExited(pid, exitCode, nil)
+		go func() {
+			select {
+			case <-e.lifetimeCtx.Done():
+				return
+			case <-pe.startWaitingChan:
+				pe.ExitHandler.OnProcessExited(pid, exitCode, nil)
+			}
+		}()
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	stdlib_maps "maps"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -28,7 +29,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 // ExecutableReconciler reconciles a Executable object
@@ -39,16 +39,9 @@ type ExecutableReconciler struct {
 	reconciliationSeqNo uint32
 	ExecutableRunners   map[apiv1.ExecutionType]ExecutableRunner
 
-	// A map that stores information about starting Executables
-	starting syncmap.Map[types.NamespacedName, apiv1.ExecutableStatus]
-
 	// A map that stores information about running Executables,
 	// searchable by Executable name (first key), or run ID (second key).
-	runs *maps.SynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus]
-
-	// A map that stores information about reserved service ports for Executables,
-	// searchabe by Executable name.
-	reservedServicePorts syncmap.Map[types.NamespacedName, map[types.NamespacedName]int32]
+	runs *maps.SynchronizedDualKeyMap[types.NamespacedName, RunID, *runInfo]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -63,13 +56,11 @@ var (
 
 func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, executableRunners map[apiv1.ExecutionType]ExecutableRunner) *ExecutableReconciler {
 	r := ExecutableReconciler{
-		Client:               client,
-		ExecutableRunners:    executableRunners,
-		starting:             syncmap.Map[types.NamespacedName, apiv1.ExecutableStatus]{},
-		runs:                 maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, apiv1.ExecutableStatus](),
-		reservedServicePorts: syncmap.Map[types.NamespacedName, map[types.NamespacedName]int32]{},
-		notifyRunChanged:     chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
-		debouncer:            newReconcilerDebouncer[RunID](reconciliationDebounceDelay),
+		Client:            client,
+		ExecutableRunners: executableRunners,
+		runs:              maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, *runInfo](),
+		notifyRunChanged:  chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		debouncer:         newReconcilerDebouncer[RunID](reconciliationDebounceDelay),
 	}
 
 	r.Log = log.WithValues("Controller", executableFinalizer)
@@ -132,15 +123,17 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var onSuccessfulSave func() = nil
 	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
+	r.runs.RunDeferredOps(req.NamespacedName)
+
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() && !exe.Starting() {
 		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
 		log.Info("Executable is being deleted...")
 		r.stopExecutable(ctx, &exe, log)
-		change = deleteFinalizer(&exe, executableFinalizer)
+		change = deleteFinalizer(&exe, executableFinalizer, log)
 		r.deleteOutputFiles(&exe, log)
 		removeEndpointsForWorkload(r, ctx, &exe, log)
 	} else {
-		change = ensureFinalizer(&exe, executableFinalizer)
+		change = ensureFinalizer(&exe, executableFinalizer, log)
 
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
@@ -170,7 +163,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 // so we just memorize the PID and process exit code (if available) in the run status map,
 // and not attempt to modify any Kubernetes data.
 func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exitCode *int32, err error) {
-	name, exeStatus, found := r.runs.FindBySecondKey(runID)
+	name, currentRunInfo, found := r.runs.FindBySecondKey(runID)
 
 	// It's possible we receive a notification about a run we are not tracking, but that means we
 	// no longer care about its status, so we can just ignore it.
@@ -180,72 +173,85 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 
 	// The status object contains pointers and we are going to be modifying values pointed by them,
 	// so we need to make a copy to avoid data races with other controller methods.
-	ps := exeStatus.DeepCopy()
+	newRunInfo := currentRunInfo.DeepCopy()
 
 	var effectiveExitCode *int32
 	if err != nil {
-		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State, "Error", err.Error())
+		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.V(1).Info("queue Executable run changed", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State, "NewPID", pid, "NewExitCode", exitCode)
+		r.Log.V(1).Info("queue Executable run changed", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "NewPID", pid, "NewExitCode", exitCode)
 		effectiveExitCode = exitCode
 	}
 
 	// Memorize PID and (if applicable) exit code
-	if ps.PID == apiv1.UnknownPID {
-		ps.PID = new(int64)
+	if newRunInfo.pid == apiv1.UnknownPID {
+		newRunInfo.pid = new(int64)
 	}
-	*ps.PID = int64(pid)
-	ps.ExitCode = effectiveExitCode
+	*newRunInfo.pid = int64(pid)
+	newRunInfo.exitCode = effectiveExitCode
 
-	if ps.ExitCode != apiv1.UnknownExitCode {
-		ps.State = apiv1.ExecutableStateFinished
-	} else if ps.PID != apiv1.UnknownPID {
-		ps.State = apiv1.ExecutableStateRunning
+	if newRunInfo.exitCode != apiv1.UnknownExitCode {
+		newRunInfo.exeState = apiv1.ExecutableStateFinished
+	} else if newRunInfo.pid != apiv1.UnknownPID {
+		newRunInfo.exeState = apiv1.ExecutableStateRunning
 	}
 
-	updated := r.runs.Update(name, runID, *ps)
-	if !updated {
-		// The Executable is being deleted, so we do not care about this run anymore.
-		return
-	}
+	r.runs.QueueDeferredOp(name, func(runs *maps.DualKeyMap[types.NamespacedName, RunID, *runInfo]) {
+		// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
+		_ = runs.Update(name, runID, newRunInfo)
+	})
 
 	// Schedule reconciliation for corresponding executable
 	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
 	if scheduleErr != nil {
-		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State)
+		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "ExecutableState", currentRunInfo.exeState)
 	}
 }
 
 // Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stabe state such as running or finished.
 func (r *ExecutableReconciler) OnStartingCompleted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func()) {
-	if runID != UnknownRunID {
-		r.Log.V(1).Info("Executable completed startup", "Executable", name.String(), "RunID", runID, "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
-		r.runs.Store(name, runID, exeStatus)
+	startupSucceeded := runID != UnknownRunID
 
-		startWaitForRunCompletion()
+	if startupSucceeded {
+		r.Log.V(1).Info("Executable completed startup", "Executable", name.String(), "RunID", runID, "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
 	} else {
 		// If we couldn't successfully reach a running state, update the starting cache so that it can be
 		// reported during the next reconciliation loop
 		r.Log.V(1).Info("Executable failed to reach valid running state", "Executable", name.String())
 		exeStatus.State = apiv1.ExecutableStateFailedToStart
 		exeStatus.FinishTimestamp = metav1.Now()
-		r.starting.Store(name, exeStatus)
+	}
 
-		// Schedule reconciliation for corresponding Executable
-		scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
-		if scheduleErr != nil {
-			r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State)
+	// OnStartingCompleted might be invoked asynchronously. To avoid race conditions,
+	//  we always queue updates to the runs map and run them as part of reconciliation function.
+	r.runs.QueueDeferredOp(name, func(runs *maps.DualKeyMap[types.NamespacedName, RunID, *runInfo]) {
+		if startupSucceeded {
+			startingRunID, ri, found := runs.FindByFirstKey(name)
+			if !found {
+				// Should never happen
+				r.Log.Error(fmt.Errorf("could not find starting run data after Executable start attempt"), "Executable", name.String(), "RunID", runID, "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
+			} else {
+				ri.UpdateFrom(exeStatus)
+				_ = runs.UpdateChangingSecondKey(name, startingRunID, runID, ri)
+			}
+
+			startWaitForRunCompletion()
+		} else {
+			runs.DeleteByFirstKey(name)
 		}
+	})
+
+	// Schedule reconciliation for corresponding Executable
+	scheduleErr := r.debouncer.ReconciliationNeeded(name, runID, r.scheduleExecutableReconciliation)
+	if scheduleErr != nil {
+		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "Executable", name.String(), "RunID", runID, "LastState", exeStatus.State)
 	}
 }
 
 // Performs actual Executable startup, as necessary, and updates status with the appropriate data.
 // If startup is successful, starts tracking the run.
-// Returns:
-// - an indication whether Executable object was changed,
-// - information about any ports allocated for serving services (if not pre-defined by clients via service-producer annotation)
-// - an indication whether the Executable was actually started (and thus Endpoints need to be allocated)
+// Returns an indication whether Executable object was changed.
 func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
 	if !exe.Status.StartupTimestamp.IsZero() {
 		log.V(1).Info("Executable already started...")
@@ -257,26 +263,15 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return noChange
 	}
 
-	if _, rps, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
-		// We are already tracking a run for this Executable, ensure the status matches the current state.
-		log.V(1).Info("Executable already started...")
-
-		rps.CopyTo(exe)
-		return statusChanged
-	}
-
-	if rps, found := r.starting.Load(exe.NamespacedName()); found {
-		// We've already called StartRun once for this executable and it's in the process of
-		// starting. Check to see if it's transitioned to a failure state and if so, update
-		// the current status.
-		log.V(1).Info("Executable already starting...")
-
-		if rps.State != apiv1.ExecutableStateStarting {
-			rps.CopyTo(exe)
-			return statusChanged
+	if _, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
+		if runInfo.exeState == apiv1.ExecutableStateStarting {
+			// We are in the process of starting the run, so we should wait for it to complete.
+			log.V(1).Info("tracking Executable start...")
+			return noChange
 		}
 
-		return noChange
+		// Ensure the status matches the current state.
+		return runInfo.ApplyTo(exe)
 	}
 
 	executionType := exe.Spec.ExecutionType
@@ -291,27 +286,28 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return statusChanged
 	}
 
-	reservedServicePorts, found := r.reservedServicePorts.Load(exe.NamespacedName())
-	if !found {
-		newReservedServicePorts, err := r.computeEffectiveEnvironment(ctx, exe, log)
-		if errors.Is(err, errServiceNotAssignedPort) {
-			log.Info("could not compute effective environment for the Executable because one of the services it uses does not have a port assigned yet")
-			return additionalReconciliationNeeded
-		} else if err != nil {
-			log.Error(err, "could not compute effective environment for the Executable")
-			exe.Status.State = apiv1.ExecutableStateFailedToStart
-			exe.Status.FinishTimestamp = metav1.Now()
-			return statusChanged
-		}
-
-		reservedServicePorts = newReservedServicePorts
+	newReservedServicePorts, err := r.computeEffectiveEnvironment(ctx, exe, log)
+	if errors.Is(err, errServiceNotAssignedPort) {
+		log.Info("could not compute effective environment for the Executable because one of the services it uses does not have a port assigned yet")
+		return additionalReconciliationNeeded
+	} else if err != nil {
+		log.Error(err, "could not compute effective environment for the Executable")
+		exe.Status.State = apiv1.ExecutableStateFailedToStart
+		exe.Status.FinishTimestamp = metav1.Now()
+		return statusChanged
 	}
 
 	log.V(1).Info("starting Executable...")
+	run := NewRunInfo()
+	run.reservedPorts = newReservedServicePorts
+	r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run)
 
-	err := runner.StartRun(ctx, exe, r, log)
+	err = runner.StartRun(ctx, exe, r, log)
 	if err != nil {
 		log.Error(err, "failed to start Executable")
+
+		r.runs.DeleteByFirstKey(exe.NamespacedName())
+
 		if exe.Status.State != apiv1.ExecutableStateFailedToStart {
 			// The executor did not mark the Executable as failed to start, so we should retry.
 			return additionalReconciliationNeeded
@@ -322,13 +318,14 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	}
 
 	if exe.Status.State == apiv1.ExecutableStateRunning {
-		log.V(1).Info("creating Endpoints...", "services", maps.Keys(reservedServicePorts), "ports", maps.Values(reservedServicePorts))
-		ensureEndpointsForWorkload(ctx, r, exe, reservedServicePorts, r.Log)
-		r.reservedServicePorts.Delete(exe.NamespacedName())
-	} else if exe.Status.State == apiv1.ExecutableStateStarting {
-		log.V(1).Info("registering Endpoints for later creation", "services", maps.Keys(reservedServicePorts), "ports", maps.Values(reservedServicePorts))
-		r.reservedServicePorts.Store(exe.NamespacedName(), reservedServicePorts)
-		r.starting.Store(exe.NamespacedName(), *exe.Status.DeepCopy())
+		// This was a synchronous startup, OnStartupCompleted() has been called already and queued the update of the runs map.
+
+		ensureEndpointsForWorkload(ctx, r, exe, run.reservedPorts, r.Log)
+	}
+
+	if exe.Status.State == apiv1.ExecutableStateStarting {
+		run.UpdateFrom(exe.Status)
+		r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run)
 	}
 
 	return statusChanged
@@ -342,15 +339,23 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 		return // Nothing to do--the Executable is not running
 	}
 
+	_, _, found := r.runs.FindBySecondKey(runID)
+	if !found {
+		// Either we never attempted to start the Executable, or we already attempted to stop the process,
+		// and the current reconciliation loop is just catching up to some other changes.
+		// Either way there is nothing to do.
+		log.V(1).Info("run data is not available; proceeding with Executable object deletion...")
+		return
+	}
+
 	// We are about to terminate the run. Since the run is not allowed to complete normally,
 	// we are not interested in its exit code (it will indicate a failure,
 	// but it is a failure induced by the Executable user), so we stop tracking the run now.
 	r.runs.DeleteBySecondKey(runID)
-	r.starting.Delete(exe.NamespacedName())
-	r.reservedServicePorts.Delete(exe.NamespacedName())
 
 	runner, found := r.ExecutableRunners[exe.Spec.ExecutionType]
 	if !found {
+		// Should never happen
 		log.Error(fmt.Errorf("no runner found for execution type '%s'", exe.Spec.ExecutionType), "the Executable cannot be stopped")
 		return
 	}
@@ -368,34 +373,50 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 // Returns whether the Executable object was changed, and a function that should be called
 // when changes to the Executable object are successfully saved.
 func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (objectChange, func()) {
-	var change objectChange = noChange
 	var onSuccessfulSave func() = nil
 
-	if runID, ps, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
-		if ps.State != exe.Status.State || !arePointerValuesEqual(ps.PID, exe.Status.PID) {
-			log.Info("Executable run changed", "RunID", runID, "PID", exe.Status.PID, "NewPID", ps.PID, "State", exe.Status.State, "NewState", ps.State, "ExitCode", exe.Status.ExitCode, "NewExitCode", ps.ExitCode)
-			exe.UpdateRunningStatus(ps.PID, ps.ExitCode, ps.State)
-			change = statusChanged
+	runID, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
+	if !found {
+		// We haven't started the run yet, or Executable is being deleted and the run was terminated.
+		// Either way, nothing to do.
+		return noChange, onSuccessfulSave
+	}
 
-			if ps.State == apiv1.ExecutableStateRunning {
-				if reservedServicePorts, found := r.reservedServicePorts.Load(exe.NamespacedName()); found {
-					log.V(1).Info("creating Endpoints...", "services", maps.Keys(reservedServicePorts), "ports", maps.Values(reservedServicePorts))
-					ensureEndpointsForWorkload(ctx, r, exe, reservedServicePorts, log)
-					r.reservedServicePorts.Delete(exe.NamespacedName())
-				} else {
-					log.V(1).Info("no Endpoints to create")
-				}
-			}
+	if runInfo.exeState == exe.Status.State && arePointerValuesEqual(runInfo.pid, exe.Status.PID) {
+		// The run state has not changed.
+		return noChange, onSuccessfulSave
+	}
 
-			if ps.State != apiv1.ExecutableStateStarting && ps.State != apiv1.ExecutableStateRunning {
-				onSuccessfulSave = func() {
-					// The executable is no longer running, so we can delete associated data,
-					// but only if the Executable object is successfully saved.
-					// Otherwise we will need this data when we re-try to update run state upon next reconciliation.
-					r.runs.DeleteByFirstKey(exe.NamespacedName())
-					r.reservedServicePorts.Delete(exe.NamespacedName())
-				}
-			}
+	log.Info("Executable run changed",
+		"RunID", runID,
+		"PID", exe.Status.PID,
+		"NewPID", runInfo.pid,
+		"State", exe.Status.State,
+		"NewState", runInfo.exeState,
+		"ExitCode", exe.Status.ExitCode,
+		"NewExitCode", runInfo.exitCode,
+	)
+
+	change := runInfo.ApplyTo(exe)
+
+	reachedFinalState := runInfo.exeState == apiv1.ExecutableStateFinished ||
+		runInfo.exeState == apiv1.ExecutableStateTerminated ||
+		runInfo.exeState == apiv1.ExecutableStateFailedToStart
+	if reachedFinalState {
+		exe.Status.FinishTimestamp = metav1.Now()
+		change |= statusChanged
+	}
+
+	if runInfo.exeState == apiv1.ExecutableStateRunning {
+		ensureEndpointsForWorkload(ctx, r, exe, runInfo.reservedPorts, log)
+	}
+
+	if runInfo.exeState != apiv1.ExecutableStateStarting && runInfo.exeState != apiv1.ExecutableStateRunning {
+		onSuccessfulSave = func() {
+			// The executable is no longer running, so we can delete associated data,
+			// but only if the Executable object is successfully saved.
+			// Otherwise we will need this data when we re-try to update run state upon next reconciliation.
+			r.runs.DeleteByFirstKey(exe.NamespacedName())
 		}
 	}
 
@@ -591,6 +612,13 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 		return apiv1.EnvVar{Name: key, Value: value}
 	})
 
+	if len(reservedServicePorts) > 0 {
+		log.V(1).Info("reserving service ports...",
+			"services", maps.Keys(reservedServicePorts),
+			"ports", maps.Values(reservedServicePorts),
+		)
+	}
+
 	return reservedServicePorts, nil
 }
 
@@ -603,4 +631,123 @@ func arePointerValuesEqual[T comparable](ptr1, ptr2 *T) bool {
 	default:
 		return *ptr1 == *ptr2
 	}
+}
+
+// Stores information about Executable run
+type runInfo struct {
+	// State of the run (starting, running, finished, etc.)
+	exeState apiv1.ExecutableState
+
+	// Process ID of the process that runs the Executable
+	pid *int64
+
+	// Exit code of the Executable process
+	exitCode *int32
+
+	// Timestamp when the run was started
+	startupTimestamp metav1.Time
+
+	// Timestamp when the run was finished
+	finishTimestamp metav1.Time
+
+	// The map of ports reserved for services that the Executable implements
+	reservedPorts map[types.NamespacedName]int32
+}
+
+func NewRunInfo() *runInfo {
+	return &runInfo{
+		exeState:         "",
+		pid:              apiv1.UnknownPID,
+		exitCode:         apiv1.UnknownExitCode,
+		startupTimestamp: metav1.Time{},
+		finishTimestamp:  metav1.Time{},
+	}
+}
+
+func (ri *runInfo) UpdateFrom(status apiv1.ExecutableStatus) {
+	ri.exeState = status.State
+	if status.PID != apiv1.UnknownPID {
+		ri.pid = new(int64)
+		*ri.pid = *status.PID
+	}
+	if status.ExitCode != apiv1.UnknownExitCode {
+		ri.exitCode = new(int32)
+		*ri.exitCode = *status.ExitCode
+	}
+	if !status.StartupTimestamp.IsZero() {
+		ri.startupTimestamp = status.StartupTimestamp
+	}
+	if !status.FinishTimestamp.IsZero() {
+		ri.finishTimestamp = status.FinishTimestamp
+	}
+}
+
+func (ri *runInfo) DeepCopy() *runInfo {
+	retval := runInfo{
+		exeState: ri.exeState,
+	}
+	if ri.pid != apiv1.UnknownPID {
+		retval.pid = new(int64)
+		*retval.pid = *ri.pid
+	}
+	if ri.exitCode != apiv1.UnknownExitCode {
+		retval.exitCode = new(int32)
+		*retval.exitCode = *ri.exitCode
+	}
+	if len(ri.reservedPorts) > 0 {
+		retval.reservedPorts = stdlib_maps.Clone(ri.reservedPorts)
+	}
+	retval.startupTimestamp = ri.startupTimestamp
+	retval.finishTimestamp = ri.finishTimestamp
+	return &retval
+}
+
+func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
+	status := exe.Status
+	status.State = ri.exeState
+	changed := noChange
+
+	if ri.pid != apiv1.UnknownPID {
+		if status.PID == apiv1.UnknownPID {
+			status.PID = new(int64)
+		}
+		if *status.PID != *ri.pid {
+			*status.PID = *ri.pid
+			changed = statusChanged
+		}
+	}
+
+	if ri.exitCode != apiv1.UnknownExitCode {
+		if status.ExitCode == apiv1.UnknownExitCode {
+			status.ExitCode = new(int32)
+		}
+		if *status.ExitCode != *ri.exitCode {
+			*status.ExitCode = *ri.exitCode
+			changed = statusChanged
+		}
+	}
+
+	if !ri.startupTimestamp.IsZero() {
+		if status.StartupTimestamp != ri.startupTimestamp {
+			status.StartupTimestamp = ri.startupTimestamp
+			changed = statusChanged
+		}
+	}
+
+	if !ri.finishTimestamp.IsZero() {
+		if status.FinishTimestamp != ri.finishTimestamp {
+			status.FinishTimestamp = ri.finishTimestamp
+			changed = statusChanged
+		}
+	}
+
+	if changed != noChange {
+		exe.Status = status
+	}
+
+	return changed
+}
+
+func getStartingRunID(exeName types.NamespacedName) RunID {
+	return RunID("__starting-" + exeName.String())
 }

@@ -89,12 +89,12 @@ func NewRunState() *runState {
 }
 
 func (rs *runState) NotifyRunChangedAsync() {
+	if rs.changeHandler == nil {
+		return
+	}
 	go func() {
 		rs.handlerWG.Wait()
-
-		if rs.changeHandler != nil {
-			rs.changeHandler.OnRunChanged(rs.runID, rs.pid, rs.exitCode, nil)
-		}
+		rs.changeHandler.OnRunChanged(rs.runID, rs.pid, rs.exitCode, nil)
 	}()
 }
 

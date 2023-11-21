@@ -152,13 +152,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
+	r.proxyProcessStatus.RunDeferredOps(req.NamespacedName)
+
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.Info("Service object is being deleted")
 
 		_ = r.deleteService(ctx, &svc, log) // Best effort. Errors will be logged by deleteService().
-		change = deleteFinalizer(&svc, serviceFinalizer)
+		change = deleteFinalizer(&svc, serviceFinalizer, log)
 	} else {
-		change = ensureFinalizer(&svc, serviceFinalizer)
+		change = ensureFinalizer(&svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)
@@ -446,12 +448,15 @@ func (r *ServiceReconciler) OnProcessExited(pid process.Pid_t, exitCode int32, e
 		return // Not a process we care about
 	}
 
-	updated := r.proxyProcessStatus.Update(namespacedName, pid, ProxyProcessStatusExited)
-	if !updated {
-		return // The Service object has been deleted, so we do not care about the proxy process anymore.
-	}
-
 	r.Log.Info(fmt.Sprintf("proxy process for service %s exited with code %d", namespacedName, exitCode))
+
+	r.proxyProcessStatus.QueueDeferredOp(
+		namespacedName,
+		func(proxyProcessStatus *maps.DualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]) {
+			// Service object may have been deleted by the time we get here, so we don't care if Update() fails.
+			_ = proxyProcessStatus.Update(namespacedName, pid, ProxyProcessStatusExited)
+		},
+	)
 
 	// Schedule reconciliation for the service
 	scheduleErr := r.debouncer.ReconciliationNeeded(namespacedName, pid, func(rti reconcileTriggerInput[process.Pid_t]) error {

@@ -281,19 +281,19 @@ func TestExecutableDeletion(t *testing.T) {
 				t.Fatalf("Could not create Executable: %v", err)
 			}
 
-			t.Log("Waiting for Executable run to start...")
+			t.Logf("Waiting for Executable '%s' run to start...", tc.exe.ObjectMeta.Name)
 			tc.verifyExeRunning(ctx, t, tc.exe)
 
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return currentExe.Status.State != "", nil
 			})
 
-			t.Log("Deleting Executable object...")
+			t.Logf("Deleting Executable '%s' object...", tc.exe.ObjectMeta.Name)
 			if err := client.Delete(ctx, updatedExe); err != nil {
 				t.Fatalf("Unable to delete Executable: %v", err)
 			}
 
-			t.Log("Waiting for process to be killed...")
+			t.Logf("Waiting for process associated with Executable '%s' to be killed...", tc.exe.ObjectMeta.Name)
 			tc.verifyRunEnded(ctx, t, tc.exe)
 		})
 	}

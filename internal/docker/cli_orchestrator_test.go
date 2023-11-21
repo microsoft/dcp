@@ -160,10 +160,10 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 func TestReportsContainerEvents(t *testing.T) {
 	t.Parallel()
 
-	pe := ctrl_testutil.NewTestProcessExecutor()
-	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
+	pe := ctrl_testutil.NewTestProcessExecutor(ctx)
+	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
 
@@ -209,10 +209,10 @@ func TestReportsContainerEvents(t *testing.T) {
 func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 	t.Parallel()
 
-	pe := ctrl_testutil.NewTestProcessExecutor()
-	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
+	pe := ctrl_testutil.NewTestProcessExecutor(ctx)
+	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
 	sub2, evtC2 := subscribe(t, ctx, dco)
@@ -262,10 +262,10 @@ func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 func TestStartsAndStopsEventWatcher(t *testing.T) {
 	t.Parallel()
 
-	pe := ctrl_testutil.NewTestProcessExecutor()
-	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
+	pe := ctrl_testutil.NewTestProcessExecutor(ctx)
+	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
 

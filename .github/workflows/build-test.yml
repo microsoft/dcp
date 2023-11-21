@@ -58,7 +58,7 @@ jobs:
       id: test
       run: ${{ matrix.testCommand }}
       env:
-        TEST_CONTEXT_TIMEOUT: 3 # Increase test timeout to three minutes
+        TEST_CONTEXT_TIMEOUT: 180 # Increase test timeout to three minutes
         DCP_DIAGNOSTICS_LOG_LEVEL: debug
         DCP_DIAGNOSTICS_LOG_FOLDER: ${{ github.workspace }}/test-logs/${{ matrix.os }}
 

@@ -35,7 +35,7 @@ const (
 	reconciliationDebounceDelay   = 500 * time.Millisecond
 )
 
-func ensureFinalizer(obj metav1.Object, finalizer string) objectChange {
+func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	if slices.Contains(finalizers, finalizer) {
 		return noChange
@@ -43,10 +43,11 @@ func ensureFinalizer(obj metav1.Object, finalizer string) objectChange {
 
 	finalizers = append(finalizers, finalizer)
 	obj.SetFinalizers(finalizers)
+	log.V(1).Info("added finalizer", "Finalizer", finalizer)
 	return metadataChanged
 }
 
-func deleteFinalizer(obj metav1.Object, finalizer string) objectChange {
+func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	i := slices.Index(finalizers, finalizer)
 	if i == -1 {
@@ -55,6 +56,7 @@ func deleteFinalizer(obj metav1.Object, finalizer string) objectChange {
 
 	finalizers = append(finalizers[:i], finalizers[i+1:]...)
 	obj.SetFinalizers(finalizers)
+	log.V(1).Info("removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
 }
 

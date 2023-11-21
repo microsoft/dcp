@@ -217,15 +217,6 @@ func (e *Executable) Done() bool {
 	return !e.Status.FinishTimestamp.IsZero()
 }
 
-func (exe *Executable) UpdateRunningStatus(pid *int64, exitCode *int32, state ExecutableState) {
-	exe.Status.PID = pid
-	exe.Status.ExitCode = exitCode
-	exe.Status.State = state
-	if state == ExecutableStateFinished || state == ExecutableStateTerminated || state == ExecutableStateFailedToStart {
-		exe.Status.FinishTimestamp = metav1.Now()
-	}
-}
-
 // ExecutableList contains a list of Executable instances
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true

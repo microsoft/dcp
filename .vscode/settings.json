@@ -1,6 +1,6 @@
 {
     // Enables much longer timeout when running/debugging tests from VS Code
     "go.testEnvVars": {
-        "TEST_CONTEXT_TIMEOUT":  "60" // 60 minutes
+        "TEST_CONTEXT_TIMEOUT":  "3600" // 60 minutes in seconds
     }
 }
