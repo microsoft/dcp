@@ -3,10 +3,13 @@ package commands
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -14,6 +17,7 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	ctrl_manager "sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
@@ -25,6 +29,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 var (
@@ -124,53 +129,58 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		// If the IDE runner cannot be created, the details have been logged by the IDE Runner factory function.
 		// Executables can still be run, just not via IDE.
 
-		exCtrl := controllers.NewExecutableReconciler(
+		exCtrlInner := controllers.NewExecutableReconciler(
 			ctx,
 			mgr.GetClient(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
 		)
+		exCtrl := newReconcilerWithTelemetry(exCtrlInner)
 		if err = exCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Executable controller")
 			return err
 		}
 
-		exReplicaSetCtrl := controllers.NewExecutableReplicaSetReconciler(
+		exReplicaSetCtrlInner := controllers.NewExecutableReplicaSetReconciler(
 			mgr.GetClient(),
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
+		exReplicaSetCtrl := newReconcilerWithTelemetry(exReplicaSetCtrlInner)
 		if err = exReplicaSetCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up ExecutableReplicaSet controller")
 			return err
 		}
 
-		containerCtrl := controllers.NewContainerReconciler(
+		containerCtrlInner := controllers.NewContainerReconciler(
 			ctx,
 			mgr.GetClient(),
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
 		)
+		containerCtrl := newReconcilerWithTelemetry(containerCtrlInner)
 		if err = containerCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Container controller")
 			return err
 		}
 
-		volumeCtrl := controllers.NewVolumeReconciler(
+		volumeCtrlInner := controllers.NewVolumeReconciler(
 			mgr.GetClient(),
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
 		)
+		volumeCtrl := newReconcilerWithTelemetry(volumeCtrlInner)
 		if err = volumeCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up ContainerVolume controller")
 			return err
 		}
 
-		serviceCtrl := controllers.NewServiceReconciler(
+		serviceCtrlInner := controllers.NewServiceReconciler(
 			ctx,
 			mgr.GetClient(),
 			log.WithName("ServiceReconciler"),
 			processExecutor,
 		)
+		serviceCtrl := newReconcilerWithTelemetry(serviceCtrlInner)
 		if err = serviceCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Service controller")
 			return err
@@ -191,4 +201,31 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		log.Info("controller manager shutting down...")
 		return nil
 	}
+}
+
+type reconcilerWithSetupWithManager interface {
+	reconcile.Reconciler
+	SetupWithManager(ctrl_manager.Manager) error
+}
+
+type reconcilerWithTelemetry struct {
+	inner  reconcilerWithSetupWithManager
+	tracer trace.Tracer
+}
+
+func newReconcilerWithTelemetry(inner reconcilerWithSetupWithManager) reconcilerWithTelemetry {
+	controllerName := reflect.TypeOf(inner).String()
+	tracer := otel.GetTracerProvider().Tracer(controllerName)
+	return reconcilerWithTelemetry{
+		inner:  inner,
+		tracer: tracer,
+	}
+}
+
+func (r reconcilerWithTelemetry) Reconcile(parentCtx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	return telemetry.CallWithTelemetryAndErrorHandling(r.tracer, "Reconcile", parentCtx, func(ctx context.Context) (reconcile.Result, error) { return r.inner.Reconcile(ctx, req) })
+}
+
+func (r reconcilerWithTelemetry) SetupWithManager(mgr ctrl_manager.Manager) error {
+	return r.inner.SetupWithManager(mgr)
 }
