@@ -79,10 +79,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			// deleteVolume() logged the error already
 			change = additionalReconciliationNeeded
 		} else {
-			change = deleteFinalizer(&vol, volumeFinalizer, log)
+			change = deleteFinalizer(ctx, &vol, volumeFinalizer, log)
 		}
 	} else {
-		change = ensureFinalizer(&vol, volumeFinalizer, log)
+		change = ensureFinalizer(ctx, &vol, volumeFinalizer, log)
 		change |= r.ensureVolume(ctx, vol.Spec.Name, log)
 	}
 

@@ -129,11 +129,11 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
 		log.Info("Executable is being deleted...")
 		r.stopExecutable(ctx, &exe, log)
-		change = deleteFinalizer(&exe, executableFinalizer, log)
+		change = deleteFinalizer(ctx, &exe, executableFinalizer, log)
 		r.deleteOutputFiles(&exe, log)
 		removeEndpointsForWorkload(r, ctx, &exe, log)
 	} else {
-		change = ensureFinalizer(&exe, executableFinalizer, log)
+		change = ensureFinalizer(ctx, &exe, executableFinalizer, log)
 
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {

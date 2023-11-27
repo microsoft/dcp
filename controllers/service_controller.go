@@ -158,9 +158,9 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("Service object is being deleted")
 
 		_ = r.deleteService(ctx, &svc, log) // Best effort. Errors will be logged by deleteService().
-		change = deleteFinalizer(&svc, serviceFinalizer, log)
+		change = deleteFinalizer(ctx, &svc, serviceFinalizer, log)
 	} else {
-		change = ensureFinalizer(&svc, serviceFinalizer, log)
+		change = ensureFinalizer(ctx, &svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)

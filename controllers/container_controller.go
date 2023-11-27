@@ -155,10 +155,10 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Otherwise we will be left with a dangling container that no one owns.
 		log.Info("Container object is being deleted...")
 		r.deleteContainer(ctx, &container, log)
-		change = deleteFinalizer(&container, containerFinalizer, log)
+		change = deleteFinalizer(ctx, &container, containerFinalizer, log)
 		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
-		change = ensureFinalizer(&container, containerFinalizer, log)
+		change = ensureFinalizer(ctx, &container, containerFinalizer, log)
 
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
