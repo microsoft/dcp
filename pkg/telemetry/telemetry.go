@@ -32,7 +32,7 @@ func NewTelemetrySystem() TelemetrySystem {
 }
 
 func (ts TelemetrySystem) Shutdown(ctx context.Context) {
-	ts.exporter.Shutdown(ctx)
+	_ = ts.exporter.Shutdown(ctx) // TODO: Best effort?
 }
 
 func CallWithTelemetry[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
