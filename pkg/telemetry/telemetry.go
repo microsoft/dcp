@@ -74,6 +74,16 @@ func SetAttribute(ctx context.Context, key string, value interface{}) {
 		span.SetAttributes(attribute.Float64(key, v))
 	case string:
 		span.SetAttributes(attribute.String(key, v))
+	case []int:
+		span.SetAttributes(attribute.IntSlice(key, v))
+	case []int64:
+		span.SetAttributes(attribute.Int64Slice(key, v))
+	case []bool:
+		span.SetAttributes(attribute.BoolSlice(key, v))
+	case []float64:
+		span.SetAttributes(attribute.Float64Slice(key, v))
+	case []string:
+		span.SetAttributes(attribute.StringSlice(key, v))
 	default:
 		// This should never happen
 		panic(fmt.Sprintf("unknown telemetry type for key %s", key))
