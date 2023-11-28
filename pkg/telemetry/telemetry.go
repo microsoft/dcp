@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -75,7 +76,7 @@ func SetAttribute(ctx context.Context, key string, value interface{}) {
 		span.SetAttributes(attribute.String(key, v))
 	default:
 		// This should never happen
-		panic("unknown telemetry type")
+		panic(fmt.Sprintf("unknown telemetry type for key %s", key))
 	}
 }
 

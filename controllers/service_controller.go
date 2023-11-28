@@ -212,7 +212,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		svc.Status.State = apiv1.ServiceStateReady
 	}
 
-	telemetry.SetAttribute(ctx, "allocationMode", svc.Spec.AddressAllocationMode)
+	telemetry.SetAttribute(ctx, "allocationMode", string(svc.Spec.AddressAllocationMode))
 	telemetry.SetAttribute(ctx, "endpoints", len(serviceEndpoints.Items))
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless {
