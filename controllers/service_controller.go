@@ -41,6 +41,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/telemetry"
 )
 
 type ProxyProcessStatus int32
@@ -210,6 +211,9 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 	} else {
 		svc.Status.State = apiv1.ServiceStateReady
 	}
+
+	telemetry.SetAttribute(ctx, "allocationMode", svc.Spec.AddressAllocationMode)
+	telemetry.SetAttribute(ctx, "endpoints", len(serviceEndpoints.Items))
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless {
 		// If using Proxyless allocation mode
@@ -436,6 +440,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		startWaitForProcessExit()
 
 		r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, namespacedName))
+		telemetry.AddEvent(ctx, "ProxyStarted")
 	}
 
 	return proxyAddress, proxyPort, nil
@@ -502,6 +507,8 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Se
 	if err := r.ProcessExecutor.StopProcess(proxyProcessId); err != nil {
 		return err
 	}
+
+	telemetry.AddEvent(ctx, "ProxyStopped")
 
 	return nil
 }
