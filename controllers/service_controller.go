@@ -367,6 +367,8 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	}
 
 	args := []string{}
+	var newArg string
+
 	if proxyAddress == "localhost" {
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
 		ips, err := net.LookupIP(proxyAddress)
@@ -379,21 +381,23 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 		for _, ip := range ips {
 			if ip4 := ip.To4(); len(ip4) == net.IPv4len {
-				args = append(args, "--entryPoints.web.address=%s:%s", ip4.String(), proxyPortString)
+				newArg = fmt.Sprintf("--entryPoints.web.address=%s:%s", ip4.String(), proxyPortString)
 			} else if ip6 := ip.To16(); len(ip6) == net.IPv6len {
-				args = append(args, "--entryPoints.webipv6.address=%s:%s", fmt.Sprintf("[%s]", ip6.String()), proxyPortString)
+				newArg = fmt.Sprintf("--entryPoints.webipv6.address=[%s]:%s", ip6.String(), proxyPortString)
 			} else {
 				// Fallback to just the IP address as a raw string
-				args = append(args, "--entryPoints.web.address=%s:%s", ip.String(), proxyPortString)
+				newArg = fmt.Sprintf("--entryPoints.web.address=%s:%s", ip.String(), proxyPortString)
 			}
+			args = append(args, newArg)
 		}
 	} else {
 		// Bind to just the proxy address
 		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
-			args = append(args, "--entryPoints.webipv6.address=%s:%s", proxyAddress, proxyPortString)
+			newArg = fmt.Sprintf("--entryPoints.webipv6.address=%s:%s", proxyAddress, proxyPortString)
 		} else {
-			args = append(args, "--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString)
+			newArg = fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString)
 		}
+		args = append(args, newArg)
 	}
 
 	args = append(args,
