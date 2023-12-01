@@ -2,7 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -13,38 +15,50 @@ import (
 )
 
 type TelemetrySystem struct {
-	TracerProvider trace.TracerProvider
-	MeterProvider  sdkmetric.MeterProvider
+	TracerProvider *sdktrace.TracerProvider
+	MeterProvider  *sdkmetric.MeterProvider
 	spanExporter   sdktrace.SpanExporter
 	metricExporter sdkmetric.Exporter
 }
 
 func NewTelemetrySystem() TelemetrySystem {
-	tp := trace.NewNoopTracerProvider()
 	spanExp, err := newTelemetryExporter()
-
 	if err != nil {
 		panic(err)
 	}
 
-	mp := sdkmetric.NewNoopMeterProvider()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(spanExp),
+	)
+
 	metricExp, err := newMetricExporter()
 	if err != nil {
 		panic(err)
 	}
 
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(
+			sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(1*time.Minute)),
+		),
+	)
+
 	otel.SetTracerProvider(tp)
 
 	return TelemetrySystem{
 		TracerProvider: tp,
+		MeterProvider:  mp,
 		spanExporter:   spanExp,
 		metricExporter: metricExp,
 	}
 }
 
-func (ts TelemetrySystem) Shutdown(ctx context.Context) {
-	_ = ts.spanExporter.Shutdown(ctx)   // TODO: Best effort?
-	_ = ts.metricExporter.Shutdown(ctx) // TODO: Best effort?
+func (ts TelemetrySystem) Shutdown(ctx context.Context) error {
+	return errors.Join(
+		ts.TracerProvider.Shutdown(ctx),
+		ts.MeterProvider.Shutdown(ctx),
+		ts.spanExporter.Shutdown(ctx),
+		ts.metricExporter.Shutdown(ctx),
+	)
 }
 
 func CallWithTelemetry[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
