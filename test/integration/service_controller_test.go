@@ -235,6 +235,137 @@ func TestServiceDelayedCreation(t *testing.T) {
 	})
 }
 
+// Tests that port injections via environment variables works even if the Service does not have the port allocated initially.
+// Eventually we want service consumers to be able to start up even if the Service does not exist at all
+// (https://github.com/microsoft/usvc/issues/111), but for now this is as far as we go.
+func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-service-consumable-after-late-port-allocation"
+	const svcAddress = "127.0.0.1"
+	const endpointPort = 49902
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-service",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol:              apiv1.TCP,
+			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s", svc.ObjectMeta.Name)
+
+	t.Logf("Verify Service '%s' is in NotReady state...", svc.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		notReady := s.Status.State == apiv1.ServiceStateNotReady
+		noEffectivePort := s.Status.EffectivePort == 0
+		return notReady && noEffectivePort, nil
+	})
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-exe",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + testName + "-exe",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s", exe.ObjectMeta.Name)
+
+	const imageName = testName + "-image"
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-ctr",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	// Wait a bit to give Executable and Container controllers a chance to attempt starting their objects.
+	// Both attempts will fail because the service does not have a port allocated yet.
+	time.Sleep(1 * time.Second)
+
+	end := apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-endpoint",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: svc.ObjectMeta.Namespace,
+			ServiceName:      svc.ObjectMeta.Name,
+			Address:          svcAddress,
+			Port:             endpointPort,
+		},
+	}
+
+	t.Logf("Creating Endpoint '%s'", end.ObjectMeta.Name)
+	err = client.Create(ctx, &end)
+	require.NoError(t, err, "Could not create Endpoint '%s", end.ObjectMeta.Name)
+
+	t.Logf("Ensure Service '%s' assumed Ready state...", svc.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		correctState := s.Status.State == apiv1.ServiceStateReady
+		portCorrect := s.Status.EffectivePort == endpointPort
+		return correctState && portCorrect, nil
+	})
+
+	t.Logf("Complete the Container '%s' startup sequence...", ctr.ObjectMeta.Name)
+	creationTime := time.Now().UTC()
+	containerID := testName + "-ctr-" + testutil.GetRandLetters(t, 6)
+	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running and has the Service port injected...", exe.ObjectMeta.Name)
+	expectedEnvVar := fmt.Sprintf("PORT=%d", endpointPort)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		effectiveEnv := slices.Map[apiv1.EnvVar, string](currentExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			return fmt.Sprintf("%s=%s", v.Name, v.Value)
+		})
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		hasEnvVar := slices.Contains(effectiveEnv, expectedEnvVar)
+		return running && hasEnvVar, nil
+	})
+
+	t.Logf("Ensure Container '%s' is running and has the Service port injected...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		effectiveEnv := slices.Map[apiv1.EnvVar, string](currentCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			return fmt.Sprintf("%s=%s", v.Name, v.Value)
+		})
+		running := currentCtr.Status.State == apiv1.ContainerStateRunning
+		hasEnvVar := slices.Contains(effectiveEnv, expectedEnvVar)
+		return running && hasEnvVar, nil
+	})
+}
+
 func TestServiceRandomPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

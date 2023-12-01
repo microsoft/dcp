@@ -171,8 +171,8 @@ type ServiceProducer struct {
 	//
 	// For Containers it is mandatory and must match one of the Container ports.
 	// We first match on HostPort, and if one is found, we use that port.
-	// If no HostPort is found, we match on ContainerPort for ports that do not specify a HostPort
-	// (the port is auto-allocated by Docker). If such port is found, we proxy to the auto-allocated host port.
+	// If no HostPort is found, we match on ContainerPort.
+	// If such port is found, we proxy to the corresponding host port.
 	//
 	// For Executables it is required UNLESS the Executable also expect the port to be injected into it
 	// via environment variable and {{- portForServing "<service-name>" -}} template function.

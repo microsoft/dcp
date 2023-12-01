@@ -501,9 +501,136 @@ func TestContainerRestart(t *testing.T) {
 	})
 }
 
+func TestContainerMultipleServingPortsInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const IPAddr = "127.22.132.13"
+	const testName = "test-container-multiple-serving-ports-injected"
+	services := map[string]apiv1.Service{
+		"svc-a": {
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testName + "-svc-a",
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol: apiv1.TCP,
+				Address:  IPAddr,
+				Port:     11760,
+			},
+		},
+		"svc-b": {
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testName + "-svc-b",
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol: apiv1.TCP,
+				Address:  IPAddr,
+				Port:     11761,
+			},
+		},
+	}
+
+	for _, svc := range services {
+		t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+		err := client.Create(ctx, &svc)
+		require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+	}
+
+	const svcAHostPort = 11770
+	const svcBContainerPort = 11771
+	var spAnn strings.Builder
+	spAnn.WriteString("[")
+
+	// Injected via env var, matched by host port
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","address":"%s","port":%d}`, services["svc-a"].ObjectMeta.Name, IPAddr, svcAHostPort))
+	spAnn.WriteString(",")
+
+	// Injected via startup parameter, matched by container port
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","address":"%s","port":%d}`, services["svc-b"].ObjectMeta.Name, IPAddr, svcBContainerPort))
+
+	spAnn.WriteString("]")
+
+	const svcAContainerPort = 2345
+	const imageName = testName + "-image"
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testName,
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": spAnn.String()},
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Ports: []apiv1.ContainerPort{
+				{HostPort: svcAHostPort, ContainerPort: svcAContainerPort, HostIP: IPAddr, Protocol: "tcp"},
+				{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
+			},
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SVC_A_PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-a"].ObjectMeta.Name),
+				},
+			},
+			Args: []string{
+				fmt.Sprintf(`--svc-b-port={{- portForServing "%s" -}}`, services["svc-b"].ObjectMeta.Name),
+			},
+		},
+	}
+
+	t.Logf("Creating Container '%s'...", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	t.Logf("Ensure that Container '%s' is started with the expected ports, env vars, and startup args...", ctr.ObjectMeta.Name)
+	expectedArg := fmt.Sprintf("--svc-b-port=%d", svcBContainerPort)
+	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAContainerPort)
+
+	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, expectedArg, func(pe *ctrl_testutil.ProcessExecution) bool {
+		if !pe.Running() {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", fmt.Sprintf("%s:%d:%d/tcp", IPAddr, svcAHostPort, svcAContainerPort)}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", fmt.Sprintf("%s::%d/tcp", IPAddr, svcBContainerPort)}) == -1 {
+			return false
+		}
+		if slices.SeqIndex(pe.Cmd.Args, []string{"-e", expectedEnvVar}) == -1 {
+			return false
+		}
+		// The expected argument is checked via "lastArg" parameter of the WaitForCommand() function above
+		return true
+	})
+	require.NoError(t, err, "Could not find the expected 'docker run' command")
+
+	t.Log("Complete the container startup sequence...")
+	creationTime := time.Now().UTC()
+	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
+	err = ensureContainerRunningWithArg(t, ctx, ctr.Spec.Image, expectedArg, containerID, creationTime)
+	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+
+	t.Logf("Ensure the Status.EffectiveEnv for Container '%s' contains the injected ports...", ctr.ObjectMeta.Name)
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected port information for service A. The effective environemtn is %v", ctr.ObjectMeta.Name, effectiveEnv)
+
+	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected port...", ctr.ObjectMeta.Name)
+	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected port for service B. The startup parameters are %v", ctr.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
+}
+
 func ensureContainerRunning(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
+	return ensureContainerRunningWithArg(t, ctx, image, image, containerID, created)
+}
+
+func ensureContainerRunningWithArg(t *testing.T, ctx context.Context, image string, lastArg string, containerID string, created time.Time) error {
 	// Ensure appropriate "docker run" command has been executed
-	dockerRunCmd, err := waitForDockerCommand(t, ctx, []string{"run"}, image)
+	dockerRunCmd, err := waitForDockerCommand(t, ctx, []string{"run"}, lastArg)
 	if err != nil {
 		return err
 	}

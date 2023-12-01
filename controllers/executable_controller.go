@@ -288,8 +288,8 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-	if errors.Is(err, errServiceNotAssignedPort) {
-		log.Info("could not compute effective environment for the Executable because one of the services it uses does not have a port assigned yet")
+	if isServiceNotAssignedPort(err) {
+		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
 		log.Error(err, "could not compute effective environment for the Executable")
@@ -299,8 +299,8 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	}
 
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-	if errors.Is(err, errServiceNotAssignedPort) {
-		log.Info("could not compute effective invocation arguments for the Executable because one of the services it uses does not have a port assigned yet")
+	if isServiceNotAssignedPort(err) {
+		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
 		log.Error(err, "could not compute effective invocation arguments for the Executable")
@@ -508,8 +508,6 @@ func (r *ExecutableReconciler) createEndpoint(
 
 	return endpoint, nil
 }
-
-var errServiceNotAssignedPort = fmt.Errorf("service does not have a port assigned yet")
 
 // Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
 func (r *ExecutableReconciler) computeEffectiveEnvironment(

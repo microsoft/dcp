@@ -640,7 +640,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	for _, svc := range services {
 		t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
 		err := client.Create(ctx, &svc)
-		require.NoError(t, err, "Could not create the Service")
+		require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
 	}
 
 	const svcAExpectedPort = 11750
