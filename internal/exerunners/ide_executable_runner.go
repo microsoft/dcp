@@ -350,7 +350,7 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 	isr := ideRunSessionRequest{
 		ProjectPath: projectPath,
 		Env:         exe.Status.EffectiveEnv,
-		Args:        exe.Spec.Args,
+		Args:        exe.Status.EffectiveArgs,
 	}
 	isrBody, err := json.Marshal(isr)
 	if err != nil {

@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"text/template"
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
@@ -26,7 +25,6 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -286,9 +284,12 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return statusChanged
 	}
 
-	newReservedServicePorts, err := r.computeEffectiveEnvironment(ctx, exe, log)
-	if errors.Is(err, errServiceNotAssignedPort) {
-		log.Info("could not compute effective environment for the Executable because one of the services it uses does not have a port assigned yet")
+	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
+	reservedServicePorts := make(map[types.NamespacedName]int32)
+
+	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
+	if isServiceNotAssignedPort(err) {
+		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
 		log.Error(err, "could not compute effective environment for the Executable")
@@ -297,9 +298,27 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return statusChanged
 	}
 
+	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
+	if isServiceNotAssignedPort(err) {
+		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
+		return additionalReconciliationNeeded
+	} else if err != nil {
+		log.Error(err, "could not compute effective invocation arguments for the Executable")
+		exe.Status.State = apiv1.ExecutableStateFailedToStart
+		exe.Status.FinishTimestamp = metav1.Now()
+		return statusChanged
+	}
+
+	if len(reservedServicePorts) > 0 {
+		log.V(1).Info("reserving service ports...",
+			"services", maps.Keys(reservedServicePorts),
+			"ports", maps.Values(reservedServicePorts),
+		)
+	}
+
 	log.V(1).Info("starting Executable...")
 	run := NewRunInfo()
-	run.reservedPorts = newReservedServicePorts
+	run.reservedPorts = reservedServicePorts
 	r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run)
 
 	err = runner.StartRun(ctx, exe, r, log)
@@ -490,12 +509,13 @@ func (r *ExecutableReconciler) createEndpoint(
 	return endpoint, nil
 }
 
-var errServiceNotAssignedPort = fmt.Errorf("service does not have a port assigned yet")
-
 // Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
-// The returned map contains newly reserved ports for services that the Executable implements without specifying
-// the desired port to use (via service-producer annotation).
-func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (map[types.NamespacedName]int32, error) {
+func (r *ExecutableReconciler) computeEffectiveEnvironment(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	reservedServicePorts map[types.NamespacedName]int32,
+	log logr.Logger,
+) error {
 	// Start with ambient environment.
 	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
 		parts := strings.SplitN(envStr, "=", 2)
@@ -517,109 +537,51 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(ctx context.Context, 
 	}
 
 	// Apply variable substitutions.
-	servicesProduced, err := getServiceProducersForObject(exe, log)
+
+	tmpl, err := newSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	reservedServicePorts := make(map[types.NamespacedName]int32)
-
-	tmpl := template.New("envar").Funcs(template.FuncMap{
-		"portForServing": func(serviceNamespacedName string) (int32, error) {
-			var serviceName = asNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
-
-			for _, sp := range servicesProduced {
-				if serviceName != sp.ServiceNamespacedName() {
-					continue
-				}
-				if sp.Port != 0 {
-					// The service producer annotation specifies the desired port, so we do not have to reserve anything,
-					// and we do not need to report it via reservedServicePorts.
-					return sp.Port, nil
-				}
-
-				// Need to take a peek at the Service to find out what protocol it is using.
-				var svc apiv1.Service
-				if err := r.Get(ctx, serviceName, &svc); err != nil {
-					// CONSIDER in future we could be smarter and delay the startup of the Executable until
-					// the service appears in the system, leaving the Executable in "pending" state.
-					// This would necessitate watching over Services (specifically, Service creation).
-					return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
-				}
-
-				port, err := networking.GetFreePort(svc.Spec.Protocol, sp.Address)
-				if err != nil {
-					return 0, fmt.Errorf("could not allocate a port for service '%s' with desired address '%s': %w", serviceName, sp.Address, err)
-				}
-				reservedServicePorts[serviceName] = port
-				return port, nil
-			}
-
-			return 0, fmt.Errorf("service '%s' referenced by an environment variable is not produced by the Executable", serviceName)
-		},
-		"portFor": func(serviceNamespacedName string) (int32, error) {
-			var serviceName = asNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
-
-			// Need to take a peek at the Service to find out what port it is assigned.
-			var svc apiv1.Service
-			if err := r.Get(ctx, serviceName, &svc); err != nil {
-				// CONSIDER in future we could be smarter and delay the startup of the Executable until
-				// the service appears in the system, leaving the Executable in "pending" state.
-				// This would necessitate watching over Services (specifically, Service creation).
-				return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
-			} else if svc.Status.EffectivePort == 0 {
-				return 0, errServiceNotAssignedPort
-			}
-
-			return svc.Status.EffectivePort, nil
-		},
-	})
 
 	for key, value := range envMap {
-		// We need to clonet the template because if the value is empty, parsing is an no-op
-		// and we will end up with data from previous template run.
-		commonTmpl, err := tmpl.Clone()
+		substitutionCtx := fmt.Sprintf("environment variable %s", key)
+		effectiveValue, err := executeTemplate(tmpl, exe, value, substitutionCtx, log)
 		if err != nil {
-			// This should really never happen, but the Clone() API returns an error, so we need to handle it.
-			log.Error(err, "could not clone template for environment variable", "VariableName", key, "VariableValue", value)
-			continue // We are going to use the value as-is.
+			return err
 		}
-
-		variableTmpl, err := commonTmpl.Parse(value)
-		if err != nil {
-			// This does not necessarily indicate a problem--the value might be a completely intentional string
-			// that happens to be un-parseable as a text template.
-			log.Info("substitution is not possible for environment variable", "VariableName", key, "VariableValue", value)
-			continue // We are going to use the value as-is.
-		}
-
-		var sb strings.Builder
-		err = variableTmpl.Execute(&sb, exe)
-		if errors.Is(err, errServiceNotAssignedPort) {
-			return nil, err
-		} else if err != nil {
-			// We could not apply the template, so we are going to use the variable value as-is.
-			// This will likely cause the value of the environment variable to be something that is not useful,
-			// but it will be easier for the user to diagnose the problem if we start the Executable anyway.
-			// TODO: the error from applying the template should be reported to the user via an event
-			// (compare with https://github.com/microsoft/usvc/issues/20)
-			log.Error(err, "could not perform substitution for environment variable", "VariableName", key, "VariableValue", value)
-		} else {
-			envMap[key] = sb.String()
-		}
+		envMap[key] = effectiveValue
 	}
 
 	exe.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key string, value string) apiv1.EnvVar {
 		return apiv1.EnvVar{Name: key, Value: value}
 	})
 
-	if len(reservedServicePorts) > 0 {
-		log.V(1).Info("reserving service ports...",
-			"services", maps.Keys(reservedServicePorts),
-			"ports", maps.Values(reservedServicePorts),
-		)
+	return nil
+}
+
+func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	reservedServicePorts map[types.NamespacedName]int32,
+	log logr.Logger,
+) error {
+	tmpl, err := newSpecValueTemplate(ctx, r, exe, reservedServicePorts, log)
+	if err != nil {
+		return err
 	}
 
-	return reservedServicePorts, nil
+	effectiveArgs := make([]string, len(exe.Spec.Args))
+	for i, arg := range exe.Spec.Args {
+		substitutionCtx := fmt.Sprintf("argument %s", arg)
+		effectiveArg, err := executeTemplate(tmpl, exe, arg, substitutionCtx, log)
+		if err != nil {
+			return err
+		}
+		effectiveArgs[i] = effectiveArg
+	}
+
+	exe.Status.EffectiveArgs = effectiveArgs
+	return nil
 }
 
 func arePointerValuesEqual[T comparable](ptr1, ptr2 *T) bool {

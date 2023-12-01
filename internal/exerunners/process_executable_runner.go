@@ -124,7 +124,7 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 
 func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, exe.Spec.ExecutablePath)
-	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Spec.Args...)
+	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
 	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
