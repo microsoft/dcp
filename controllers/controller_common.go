@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -18,6 +20,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -35,11 +38,13 @@ const (
 	reconciliationDebounceDelay   = 500 * time.Millisecond
 )
 
-func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
+func ensureFinalizer(ctx context.Context, obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	if slices.Contains(finalizers, finalizer) {
 		return noChange
 	}
+
+	telemetry.AddEvent(ctx, "FinalizerAdded", trace.WithAttributes(attribute.String("Finalizer", finalizer)))
 
 	finalizers = append(finalizers, finalizer)
 	obj.SetFinalizers(finalizers)
@@ -47,12 +52,14 @@ func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	return metadataChanged
 }
 
-func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
+func deleteFinalizer(ctx context.Context, obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	i := slices.Index(finalizers, finalizer)
 	if i == -1 {
 		return noChange
 	}
+
+	telemetry.AddEvent(ctx, "FinalizerRemoved", trace.WithAttributes(attribute.String("Finalizer", finalizer)))
 
 	finalizers = append(finalizers[:i], finalizers[i+1:]...)
 	obj.SetFinalizers(finalizers)

@@ -266,14 +266,14 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() && found && rsData.actualReplicas == 0 {
 		// Deletion has been requested and the running replicas have been drained.
 		log.Info("ExecutableReplicaSet is being deleted...")
-		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
+		change = deleteFinalizer(ctx, &replicaSet, executableReplicaSetFinalizer, log)
 		// Removing the finalizer will unblock the deletion of the ExecutableReplicaSet object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
 		onSuccessfulSave = func() { r.runningReplicaSets.Delete(replicaSet.NamespacedName()) }
 	} else {
 		// We haven't been deleted or still have existing replicas, update our running replicas.
-		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
+		change = ensureFinalizer(ctx, &replicaSet, executableReplicaSetFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			var childExecutables apiv1.ExecutableList

@@ -118,3 +118,8 @@ func SetAttribute[T TelemetryAttribute](ctx context.Context, key string, value T
 		fmt.Printf("unknown telemetry type for key %s", key)
 	}
 }
+
+func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
+	span := trace.SpanFromContext(ctx)
+	span.AddEvent(name, options...)
+}

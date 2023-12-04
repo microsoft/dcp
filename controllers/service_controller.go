@@ -18,6 +18,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -159,9 +161,9 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("Service object is being deleted")
 
 		_ = r.deleteService(ctx, &svc, log) // Best effort. Errors will be logged by deleteService().
-		change = deleteFinalizer(&svc, serviceFinalizer, log)
+		change = deleteFinalizer(ctx, &svc, serviceFinalizer, log)
 	} else {
-		change = ensureFinalizer(&svc, serviceFinalizer, log)
+		change = ensureFinalizer(ctx, &svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)
@@ -440,6 +442,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		startWaitForProcessExit()
 
 		r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, namespacedName))
+		telemetry.AddEvent(ctx, "ProxyStarted", trace.WithAttributes(attribute.Int64("PID", int64(pid))))
 	}
 
 	return proxyAddress, proxyPort, nil
@@ -506,6 +509,8 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Se
 	if err := r.ProcessExecutor.StopProcess(proxyProcessId); err != nil {
 		return err
 	}
+
+	telemetry.AddEvent(ctx, "ProxyStopped", trace.WithAttributes(attribute.Int64("PID", int64(proxyProcessId))))
 
 	return nil
 }

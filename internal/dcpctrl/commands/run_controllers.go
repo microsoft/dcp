@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -135,7 +134,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
 		)
-		exCtrl := newReconcilerWithTelemetry(exCtrlInner)
+		exCtrl := newReconcilerWithTelemetry("ExecutableReconciler", exCtrlInner)
 		if err = exCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Executable controller")
 			return err
@@ -145,7 +144,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			mgr.GetClient(),
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
-		exReplicaSetCtrl := newReconcilerWithTelemetry(exReplicaSetCtrlInner)
+		exReplicaSetCtrl := newReconcilerWithTelemetry("ExecutableReplicaSetReconciler", exReplicaSetCtrlInner)
 		if err = exReplicaSetCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up ExecutableReplicaSet controller")
 			return err
@@ -157,7 +156,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
 		)
-		containerCtrl := newReconcilerWithTelemetry(containerCtrlInner)
+		containerCtrl := newReconcilerWithTelemetry("ContainerReconciler", containerCtrlInner)
 		if err = containerCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Container controller")
 			return err
@@ -168,7 +167,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
 		)
-		volumeCtrl := newReconcilerWithTelemetry(volumeCtrlInner)
+		volumeCtrl := newReconcilerWithTelemetry("VolumeReconciler", volumeCtrlInner)
 		if err = volumeCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up ContainerVolume controller")
 			return err
@@ -180,7 +179,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			log.WithName("ServiceReconciler"),
 			processExecutor,
 		)
-		serviceCtrl := newReconcilerWithTelemetry(serviceCtrlInner)
+		serviceCtrl := newReconcilerWithTelemetry("ServiceReconciler", serviceCtrlInner)
 		if err = serviceCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Service controller")
 			return err
@@ -213,8 +212,7 @@ type reconcilerWithTelemetry struct {
 	tracer trace.Tracer
 }
 
-func newReconcilerWithTelemetry(inner reconcilerWithSetupWithManager) reconcilerWithTelemetry {
-	controllerName := reflect.TypeOf(inner).String()
+func newReconcilerWithTelemetry(controllerName string, inner reconcilerWithSetupWithManager) reconcilerWithTelemetry {
 	tracer := otel.GetTracerProvider().Tracer(controllerName)
 	return reconcilerWithTelemetry{
 		inner:  inner,
@@ -223,7 +221,11 @@ func newReconcilerWithTelemetry(inner reconcilerWithSetupWithManager) reconciler
 }
 
 func (r reconcilerWithTelemetry) Reconcile(parentCtx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	return telemetry.CallWithTelemetry(r.tracer, "Reconcile", parentCtx, func(ctx context.Context) (reconcile.Result, error) { return r.inner.Reconcile(ctx, req) })
+	return telemetry.CallWithTelemetry(r.tracer, "Reconcile", parentCtx, func(ctx context.Context) (reconcile.Result, error) {
+		telemetry.SetAttribute(ctx, "ObjectNamespace", req.Namespace) // TODO hash this?
+		telemetry.SetAttribute(ctx, "ObjectName", req.Name)           // TODO hash this?
+		return r.inner.Reconcile(ctx, req)
+	})
 }
 
 func (r reconcilerWithTelemetry) SetupWithManager(mgr ctrl_manager.Manager) error {
