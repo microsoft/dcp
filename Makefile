@@ -268,6 +268,9 @@ build-ci: generate-ci release ## Runs codegen, including license/notice files, t
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
 compile: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) (skips codegen)
 
+compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
+compile-debug: build-dcpd build-dcpctrl build-dcp ## Builds all binaries (DCP CLI, DCP API server, and controller host) with debug symbols (good for debugging; skips codegen)
+
 .PHONY: build-dcpd
 build-dcpd: $(DCPD_BINARY) ## Builds DCP API server binary (dcpd)
 $(DCPD_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)

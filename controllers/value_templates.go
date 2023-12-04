@@ -10,7 +10,6 @@ import (
 	"text/template"
 
 	"github.com/go-logr/logr"
-	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -30,12 +29,6 @@ func (e errServiceNotAssignedPort) Error() string {
 func isServiceNotAssignedPort(err error) bool {
 	var e errServiceNotAssignedPort
 	return errors.As(err, &e)
-}
-
-type dcpModelObject interface {
-	apiserver_resource.Object
-	ctrl_client.Object
-	NamespacedName() types.NamespacedName
 }
 
 // Creates a template for evaluating a value of a spec field.

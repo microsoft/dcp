@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
@@ -25,6 +26,7 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -183,11 +185,13 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 	}
 
 	// Memorize PID and (if applicable) exit code
-	if newRunInfo.pid == apiv1.UnknownPID {
-		newRunInfo.pid = new(int64)
-	}
-	*newRunInfo.pid = int64(pid)
 	newRunInfo.exitCode = effectiveExitCode
+	if pid > 0 {
+		if newRunInfo.pid == apiv1.UnknownPID {
+			newRunInfo.pid = new(int64)
+		}
+		*newRunInfo.pid = int64(pid)
+	}
 
 	if newRunInfo.exitCode != apiv1.UnknownExitCode {
 		newRunInfo.exeState = apiv1.ExecutableStateFinished
@@ -401,7 +405,8 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 		return noChange, onSuccessfulSave
 	}
 
-	if runInfo.exeState == exe.Status.State && arePointerValuesEqual(runInfo.pid, exe.Status.PID) {
+	change := runInfo.ApplyTo(exe)
+	if change == noChange {
 		// The run state has not changed.
 		return noChange, onSuccessfulSave
 	}
@@ -415,8 +420,6 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 		"ExitCode", exe.Status.ExitCode,
 		"NewExitCode", runInfo.exitCode,
 	)
-
-	change := runInfo.ApplyTo(exe)
 
 	reachedFinalState := runInfo.exeState == apiv1.ExecutableStateFinished ||
 		runInfo.exeState == apiv1.ExecutableStateTerminated ||
@@ -584,17 +587,6 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	return nil
 }
 
-func arePointerValuesEqual[T comparable](ptr1, ptr2 *T) bool {
-	switch {
-	case ptr1 == nil && ptr2 == nil:
-		return true
-	case ptr1 == nil || ptr2 == nil:
-		return false
-	default:
-		return *ptr1 == *ptr2
-	}
-}
-
 // Stores information about Executable run
 type runInfo struct {
 	// State of the run (starting, running, finished, etc.)
@@ -602,6 +594,9 @@ type runInfo struct {
 
 	// Process ID of the process that runs the Executable
 	pid *int64
+
+	// Execution ID for the Executable (see ExecutableStatus for details)
+	executionID string
 
 	// Exit code of the Executable process
 	exitCode *int32
@@ -611,6 +606,10 @@ type runInfo struct {
 
 	// Timestamp when the run was finished
 	finishTimestamp metav1.Time
+
+	// Paths to captured standard output and standard error files
+	stdOutFile string
+	stdErrFile string
 
 	// The map of ports reserved for services that the Executable implements
 	reservedPorts map[types.NamespacedName]int32
@@ -632,6 +631,9 @@ func (ri *runInfo) UpdateFrom(status apiv1.ExecutableStatus) {
 		ri.pid = new(int64)
 		*ri.pid = *status.PID
 	}
+	if status.ExecutionID != "" {
+		ri.executionID = status.ExecutionID
+	}
 	if status.ExitCode != apiv1.UnknownExitCode {
 		ri.exitCode = new(int32)
 		*ri.exitCode = *status.ExitCode
@@ -641,6 +643,12 @@ func (ri *runInfo) UpdateFrom(status apiv1.ExecutableStatus) {
 	}
 	if !status.FinishTimestamp.IsZero() {
 		ri.finishTimestamp = status.FinishTimestamp
+	}
+	if status.StdOutFile != "" {
+		ri.stdOutFile = status.StdOutFile
+	}
+	if status.StdErrFile != "" {
+		ri.stdErrFile = status.StdErrFile
 	}
 }
 
@@ -652,6 +660,7 @@ func (ri *runInfo) DeepCopy() *runInfo {
 		retval.pid = new(int64)
 		*retval.pid = *ri.pid
 	}
+	retval.executionID = ri.executionID
 	if ri.exitCode != apiv1.UnknownExitCode {
 		retval.exitCode = new(int32)
 		*retval.exitCode = *ri.exitCode
@@ -661,13 +670,19 @@ func (ri *runInfo) DeepCopy() *runInfo {
 	}
 	retval.startupTimestamp = ri.startupTimestamp
 	retval.finishTimestamp = ri.finishTimestamp
+	retval.stdOutFile = ri.stdOutFile
+	retval.stdErrFile = ri.stdErrFile
 	return &retval
 }
 
 func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 	status := exe.Status
-	status.State = ri.exeState
 	changed := noChange
+
+	if ri.exeState != "" && status.State != ri.exeState {
+		status.State = ri.exeState
+		changed = statusChanged
+	}
 
 	if ri.pid != apiv1.UnknownPID {
 		if status.PID == apiv1.UnknownPID {
@@ -677,6 +692,11 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 			*status.PID = *ri.pid
 			changed = statusChanged
 		}
+	}
+
+	if ri.executionID != "" && status.ExecutionID != ri.executionID {
+		status.ExecutionID = ri.executionID
+		changed = statusChanged
 	}
 
 	if ri.exitCode != apiv1.UnknownExitCode {
@@ -689,18 +709,26 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 		}
 	}
 
-	if !ri.startupTimestamp.IsZero() {
-		if status.StartupTimestamp != ri.startupTimestamp {
-			status.StartupTimestamp = ri.startupTimestamp
-			changed = statusChanged
-		}
+	// We only overwrite timestamps if the Executable status has them as zero values
+	// to avoid round-tripping errors.
+	if !ri.startupTimestamp.IsZero() && status.StartupTimestamp.IsZero() {
+		status.StartupTimestamp = ri.startupTimestamp
+		changed = statusChanged
 	}
 
-	if !ri.finishTimestamp.IsZero() {
-		if status.FinishTimestamp != ri.finishTimestamp {
-			status.FinishTimestamp = ri.finishTimestamp
-			changed = statusChanged
-		}
+	if !ri.finishTimestamp.IsZero() && status.FinishTimestamp.IsZero() {
+		status.FinishTimestamp = ri.finishTimestamp
+		changed = statusChanged
+	}
+
+	if ri.stdOutFile != "" && status.StdOutFile != ri.stdOutFile {
+		status.StdOutFile = ri.stdOutFile
+		changed = statusChanged
+	}
+
+	if ri.stdErrFile != "" && status.StdErrFile != ri.stdErrFile {
+		status.StdErrFile = ri.stdErrFile
+		changed = statusChanged
 	}
 
 	if changed != noChange {
@@ -709,6 +737,22 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 
 	return changed
 }
+
+func (ri *runInfo) String() string {
+	return fmt.Sprintf(
+		"RunInfo{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s}",
+		ri.exeState,
+		logger.IntPtrValToString(ri.pid),
+		ri.executionID,
+		logger.IntPtrValToString(ri.exitCode),
+		ri.startupTimestamp.Format(time.StampMilli),
+		ri.finishTimestamp.Format(time.StampMilli),
+		ri.stdOutFile,
+		ri.stdErrFile,
+	)
+}
+
+var _ fmt.Stringer = (*runInfo)(nil)
 
 func getStartingRunID(exeName types.NamespacedName) RunID {
 	return RunID("__starting-" + exeName.String())

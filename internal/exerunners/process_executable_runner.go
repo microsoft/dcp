@@ -81,12 +81,12 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 
 	pid, startWaitForProcessExit, err := r.pe.StartProcess(ctx, cmd, processExitHandler)
 
-	r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 	if err != nil {
 		log.Error(err, "failed to start a process")
 		exe.Status.FinishTimestamp = metav1.Now()
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 	} else {
+		r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 		log.Info("process started", "executable", cmd.Path, "PID", pid)
 		exe.Status.ExecutionID = pidToExecutionID(pid)
 		if exe.Status.PID == apiv1.UnknownPID {

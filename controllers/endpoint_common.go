@@ -45,7 +45,7 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 	})
 }
 
-func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl_client.Object, reservedServicePorts map[types.NamespacedName]int32, log logr.Logger) {
+func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpModelObject, reservedServicePorts map[types.NamespacedName]int32, log logr.Logger) {
 	serviceProducers, err := getServiceProducersForObject(owner, log)
 	if err != nil || len(serviceProducers) == 0 {
 		return
@@ -53,7 +53,7 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl
 
 	var childEndpoints apiv1.EndpointList
 	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "failed to list child Endpoint objects")
+		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
 	for _, serviceProducer := range serviceProducers {
@@ -67,7 +67,10 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl
 		})
 
 		if hasEndpoint {
-			log.V(1).Info("Endpoint already exists for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+			log.V(1).Info("Endpoint already exists for this workload and service combination",
+				"ServiceName", serviceProducer.ServiceName,
+				"Workload", owner.NamespacedName().String(),
+			)
 
 			// Client has caught up and has the info about the service endpoint workload, we can clear the local cache.
 			workloadEndpointCache.Delete(sweKey)
@@ -76,7 +79,10 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl
 		}
 		_, found := workloadEndpointCache.Load(sweKey)
 		if found {
-			log.V(1).Info("Endpoint was just created for this workload and service combination", "ServiceName", serviceProducer.ServiceName)
+			log.V(1).Info("Endpoint was just created for this workload and service combination",
+				"ServiceName", serviceProducer.ServiceName,
+				"Workload", owner.NamespacedName().String(),
+			)
 			continue
 		}
 
@@ -89,16 +95,25 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl
 		endpoint, err = r.createEndpoint(ctx, owner, serviceProducer, log)
 
 		if err != nil {
-			log.Error(err, "could not create Endpoint object")
+			log.Error(err, "could not create Endpoint object",
+				"ServiceName", serviceProducer.ServiceName,
+				"Workload", owner.NamespacedName().String(),
+			)
 			continue
 		}
 
 		if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
-			log.Error(err, "failed to set owner for endpoint")
+			log.Error(err, "failed to set owner for endpoint",
+				"ServiceName", serviceProducer.ServiceName,
+				"Workload", owner.NamespacedName().String(),
+			)
 		}
 
 		if err := r.Create(ctx, endpoint); err != nil {
-			log.Error(err, "could not persist Endpoint object")
+			log.Error(err, "could not persist Endpoint object",
+				"ServiceName", serviceProducer.ServiceName,
+				"Workload", owner.NamespacedName().String(),
+			)
 		}
 
 		log.V(1).Info("New Endpoint created", "Endpoint", endpoint, "ServiceName", serviceProducer.ServiceName)
@@ -107,15 +122,18 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner ctrl
 	}
 }
 
-func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl_client.Object, log logr.Logger) {
+func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner dcpModelObject, log logr.Logger) {
 	var childEndpoints apiv1.EndpointList
 	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "failed to list child Endpoint objects")
+		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
 	for _, endpoint := range childEndpoints.Items {
 		if err := r.Delete(ctx, &endpoint); err != nil {
-			log.Error(err, "could not delete Endpoint object")
+			log.Error(err, "could not delete Endpoint object",
+				"Endpoint", endpoint.NamespacedName().String(),
+				"Workload", owner.NamespacedName().String(),
+			)
 		}
 
 		sweKey := ServiceWorkloadEndpointKey{
@@ -127,7 +145,7 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner ctrl
 	}
 }
 
-func getServiceProducersForObject(owner ctrl_client.Object, log logr.Logger) ([]ServiceProducer, error) {
+func getServiceProducersForObject(owner dcpModelObject, log logr.Logger) ([]ServiceProducer, error) {
 	annotations := owner.GetAnnotations()
 
 	spa, found := annotations[serviceProducerAnnotation]
@@ -139,7 +157,10 @@ func getServiceProducersForObject(owner ctrl_client.Object, log logr.Logger) ([]
 	err := json.Unmarshal([]byte(spa), &retval)
 
 	if err != nil {
-		log.Error(err, fmt.Sprintf("%s: the annotation could not be parsed", serviceProducerIsInvalid), "AnnotationText", spa)
+		log.Error(err, fmt.Sprintf("%s: the annotation could not be parsed", serviceProducerIsInvalid),
+			"AnnotationText", spa,
+			"Workload", owner.NamespacedName().String(),
+		)
 		return nil, err
 	}
 

@@ -30,10 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-const (
-	MaxParallelIdeExecutableStarts = 6
-)
-
 var lineSeparator []byte
 
 func init() {
@@ -88,13 +84,22 @@ func NewRunState() *runState {
 	return rs
 }
 
-func (rs *runState) NotifyRunChangedAsync() {
-	if rs.changeHandler == nil {
-		return
-	}
+func (rs *runState) NotifyRunChangedAsync(locker sync.Locker) {
 	go func() {
 		rs.handlerWG.Wait()
-		rs.changeHandler.OnRunChanged(rs.runID, rs.pid, rs.exitCode, nil)
+
+		// Make sure the run state is not changed while we are gathering data for the change handler.
+		locker.Lock()
+		runID := rs.runID
+		pid := rs.pid
+		exitCode := apiv1.UnknownExitCode
+		if rs.exitCode != apiv1.UnknownExitCode {
+			exitCode := new(int32)
+			*exitCode = *rs.exitCode
+		}
+		locker.Unlock()
+
+		rs.changeHandler.OnRunChanged(runID, pid, exitCode, nil)
 	}()
 }
 
@@ -163,7 +168,7 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 
 	return &IdeExecutableRunner{
 		lock:         &sync.Mutex{},
-		startupQueue: resiliency.NewWorkQueue(lifetimeCtx, MaxParallelIdeExecutableStarts),
+		startupQueue: resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
 		activeRuns:   syncmap.Map[controllers.RunID, *runState]{},
 		log:          log,
 		portStr:      portStr,
@@ -298,7 +303,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	})
 
 	if err != nil {
-		log.Error(err, "could not enqueue ide executable start operation")
+		log.Error(err, "could not enqueue ide executable start operation; workload is shutting down")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
 	} else {
@@ -483,7 +488,11 @@ func (r *IdeExecutableRunner) handleSessionChange(scn ideRunSessionChangeNotific
 	runState.runID = runID
 	runState.pid = scn.PID
 	runState.exitCode = exitCode
-	runState.NotifyRunChangedAsync()
+
+	// Note: the order in which NotifyRunChangedAsync() are executed does not really matter, because that method
+	// always uses the latest data stored in the run state, and the consistency of the data is guaranteed by the lock.
+	// So we can safely "fire and forget" it here.
+	runState.NotifyRunChangedAsync(r.lock)
 }
 
 func (r *IdeExecutableRunner) handleSessionLogs(nsl ideSessionLogNotification) {
@@ -518,7 +527,7 @@ func (r *IdeExecutableRunner) fetchRunStateForDeletion(runID controllers.RunID) 
 		// If the project has issues, we might receive a very early notification about run session termination,
 		// where that notification is the first piece of information we receive about the run session.
 		// If that is the case we need to create a run state for the run session so that we can store the exit code and run status.
-		// This means this run state will never be removed from activeRuns, but this should happen rearly and it does consume very little memory.
+		// This means this run state will never be removed from activeRuns, but this should happen rarely and it does consume very little memory.
 		// If this proves to be an issue, consider adding a TTL to the run state and scavenge on a timer.
 		runState = NewRunState()
 		r.activeRuns.Store(runID, runState)

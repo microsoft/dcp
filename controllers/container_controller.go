@@ -369,9 +369,9 @@ func (r *ContainerReconciler) startContainer(ctx context.Context, container *api
 
 	err := r.startupQueue.Enqueue(doStartContainer)
 	if err != nil {
-		log.Error(err, "could not enqueue container start operation")
+		log.Error(err, "container was not started because the workload is shutting down")
 		container.Status.State = apiv1.ContainerStateFailedToStart
-		container.Status.Message = fmt.Sprintf("Container could not be started: could not enqueue start operation: %s", err.Error())
+		container.Status.Message = fmt.Sprintf("Container could not be started: workload is shutting down: %s", err.Error())
 		container.Status.FinishTimestamp = metav1.Now()
 		return err
 	} else {

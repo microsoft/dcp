@@ -1,6 +1,8 @@
 package maps
 
 import (
+	"fmt"
+	"io"
 	"sync"
 )
 
@@ -110,6 +112,24 @@ func (m *DualKeyMap[K1, K2, V]) DeleteBySecondKey(k2 K2) {
 		delete(m.firstMap, entry.k1)
 		delete(m.secondMap, k2)
 	}
+}
+
+func (m *DualKeyMap[K1, K2, V]) DebugDump(w io.Writer) {
+	fmt.Fprintf(w, "{\n")
+
+	for k1, entry := range m.firstMap {
+		k2 := entry.k2
+		val := entry.val
+
+		fmt.Fprint(w, " (")
+		fmt.Fprintf(w, "%v", k1)
+		fmt.Fprint(w, ", ")
+		fmt.Fprintf(w, "%v", k2)
+		fmt.Fprint(w, "): ")
+		fmt.Fprintf(w, "%v,\n", val)
+	}
+
+	fmt.Fprint(w, "}")
 }
 
 type DeferredMapOperation[K1 comparable, K2 comparable, V any] func(*DualKeyMap[K1, K2, V])
@@ -223,4 +243,11 @@ func (m *SynchronizedDualKeyMap[K1, K2, V]) RunDeferredOps(k1 K1) {
 
 	// We have run these ops, so clear the queue.
 	m.deferredOps.DeleteByFirstKey(k1)
+}
+
+func (m *SynchronizedDualKeyMap[K1, K2, V]) DebugDump(w io.Writer) {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+
+	m.inner.DebugDump(w)
 }

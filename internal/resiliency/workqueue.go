@@ -2,9 +2,13 @@ package resiliency
 
 import (
 	"context"
+	"math"
+	"runtime"
 
 	"github.com/smallnest/chanx"
 )
+
+const DefaultConcurrency uint8 = 0
 
 type WorkQueueItem = func(ctx context.Context)
 
@@ -16,8 +20,8 @@ type WorkQueue struct {
 }
 
 func NewWorkQueue(lifetimeCtx context.Context, maxConcurrency uint8) *WorkQueue {
-	if maxConcurrency == 0 {
-		panic("maxConcurrency must be greater than zero")
+	if maxConcurrency == DefaultConcurrency {
+		maxConcurrency = getDefaultConcurrency()
 	}
 
 	wq := WorkQueue{
@@ -63,5 +67,14 @@ func (wq *WorkQueue) doWork() {
 			return
 		}
 
+	}
+}
+
+func getDefaultConcurrency() uint8 {
+	numCPU := runtime.NumCPU()
+	if numCPU > math.MaxUint8 {
+		return math.MaxUint8
+	} else {
+		return uint8(numCPU)
 	}
 }

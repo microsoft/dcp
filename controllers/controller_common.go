@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -177,4 +178,10 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 	} else {
 		return ctrl.Result{}, nil
 	}
+}
+
+type dcpModelObject interface {
+	apiserver_resource.Object
+	ctrl_client.Object
+	NamespacedName() types.NamespacedName
 }

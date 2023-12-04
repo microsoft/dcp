@@ -545,11 +545,11 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	spAnn.WriteString("[")
 
 	// Injected via env var, matched by host port
-	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","address":"%s","port":%d}`, services["svc-a"].ObjectMeta.Name, IPAddr, svcAHostPort))
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s", "port":%d}`, services["svc-a"].ObjectMeta.Name, svcAHostPort))
 	spAnn.WriteString(",")
 
 	// Injected via startup parameter, matched by container port
-	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","address":"%s","port":%d}`, services["svc-b"].ObjectMeta.Name, IPAddr, svcBContainerPort))
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","port":%d}`, services["svc-b"].ObjectMeta.Name, svcBContainerPort))
 
 	spAnn.WriteString("]")
 
