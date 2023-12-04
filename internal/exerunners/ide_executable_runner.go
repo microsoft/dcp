@@ -84,6 +84,9 @@ func NewRunState() *runState {
 	return rs
 }
 
+// Note: the order in which NotifyRunChangedAsync() are executed does not really matter, because that method
+// always uses the latest data stored in the run state, and the consistency of the data is guaranteed by the lock.
+// So we can safely "fire and forget" this method.
 func (rs *runState) NotifyRunChangedAsync(locker sync.Locker) {
 	go func() {
 		rs.handlerWG.Wait()
@@ -357,6 +360,10 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 		Env:         exe.Status.EffectiveEnv,
 		Args:        exe.Status.EffectiveArgs,
 	}
+	if launchProfile, found := exe.Annotations[csharpLaunchProfileAnnotation]; found {
+		isr.LaunchProfile = launchProfile
+	}
+
 	isrBody, err := json.Marshal(isr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
@@ -434,15 +441,26 @@ func (r *IdeExecutableRunner) processNotifications() {
 			}
 
 			switch basicNotification.NotificationType {
-			case notificationTypeProcessRestarted, notificationTypeSessionTerminated:
-				var nsc ideRunSessionChangeNotification
-				err = json.Unmarshal(msg, &nsc)
+			case notificationTypeProcessRestarted:
+				var pcn ideRunSessionProcessChangedNotification
+				err = json.Unmarshal(msg, &pcn)
 				if err != nil {
 					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
 					r.closeNotifySocket()
 					return
 				} else {
-					r.handleSessionChange(nsc)
+					r.handleSessionChange(pcn)
+				}
+
+			case notificationTypeSessionTerminated:
+				var stn ideRunSessionTerminatedNotification
+				err = json.Unmarshal(msg, &stn)
+				if err != nil {
+					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
+					r.closeNotifySocket()
+					return
+				} else {
+					r.handleSessionTerminated(stn)
 				}
 
 			case notificationTypeServiceLogs:
@@ -463,13 +481,28 @@ func (r *IdeExecutableRunner) processNotifications() {
 	}
 }
 
-func (r *IdeExecutableRunner) handleSessionChange(scn ideRunSessionChangeNotification) {
-	runID := controllers.RunID(scn.SessionID)
+func (r *IdeExecutableRunner) handleSessionChange(pcn ideRunSessionProcessChangedNotification) {
+	runID := controllers.RunID(pcn.SessionID)
+	r.log.V(1).Info("IDE run session changed", "RunID", runID, "PID", pcn.PID)
+
+	r.lock.Lock()
+	defer r.lock.Unlock()
+
+	runState := r.ensureRunState(runID)
+	runState.runID = runID
+	runState.pid = pcn.PID
+
+	runState.NotifyRunChangedAsync(r.lock)
+}
+
+func (r *IdeExecutableRunner) handleSessionTerminated(stn ideRunSessionTerminatedNotification) {
+	runID := controllers.RunID(stn.SessionID)
 	exitCode := apiv1.UnknownExitCode
-	if scn.ExitCode != nil {
+	if stn.ExitCode != nil {
 		exitCode = new(int32)
-		*exitCode = *scn.ExitCode
+		*exitCode = *stn.ExitCode
 	}
+	r.log.V(1).Info("IDE run session terminated", "RunID", runID, "PID", stn.PID, "ExitCode", exitCode)
 
 	r.lock.Lock()
 	defer r.lock.Unlock()
@@ -483,15 +516,9 @@ func (r *IdeExecutableRunner) handleSessionChange(scn ideRunSessionChangeNotific
 		runState = r.ensureRunState(runID)
 	}
 
-	r.log.V(1).Info("IDE run session changed", "RunID", runID, "PID", scn.PID, "ExitCode", exitCode)
-
 	runState.runID = runID
-	runState.pid = scn.PID
+	runState.pid = stn.PID
 	runState.exitCode = exitCode
-
-	// Note: the order in which NotifyRunChangedAsync() are executed does not really matter, because that method
-	// always uses the latest data stored in the run state, and the consistency of the data is guaranteed by the lock.
-	// So we can safely "fire and forget" it here.
 	runState.NotifyRunChangedAsync(r.lock)
 }
 
