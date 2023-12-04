@@ -84,6 +84,13 @@ spec:
           status:
             description: ExecutableStatus describes the status of an Executable.
             properties:
+              effectiveArgs:
+                description: Effective values of launch arguments to be passed to
+                  the Executable, after all substitutions are applied.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               effectiveEnv:
                 description: Effective values of environment variables, after all
                   substitutions are applied.

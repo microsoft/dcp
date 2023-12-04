@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"math/rand"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,13 +152,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
+	r.proxyProcessStatus.RunDeferredOps(req.NamespacedName)
+
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.Info("Service object is being deleted")
 
 		_ = r.deleteService(ctx, &svc, log) // Best effort. Errors will be logged by deleteService().
-		change = deleteFinalizer(&svc, serviceFinalizer)
+		change = deleteFinalizer(&svc, serviceFinalizer, log)
 	} else {
-		change = ensureFinalizer(&svc, serviceFinalizer)
+		change = ensureFinalizer(&svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)
@@ -364,17 +367,37 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	}
 
 	args := []string{}
+	var newArg string
+
 	if proxyAddress == "localhost" {
-		// Bind to both 127.0.0.1 and [::1] explicitly
-		args = append(args,
-			fmt.Sprintf("--entryPoints.web.address=%s:%s", "127.0.0.1", proxyPortString),
-			fmt.Sprintf("--entryPoints.webipv6.address=%s:%s", "[::1]", proxyPortString),
-		)
+		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
+		ips, err := net.LookupIP(proxyAddress)
+		if err != nil {
+			return "", 0, fmt.Errorf("could not obtain IP address(es) for %s: %w", proxyAddress, err)
+		}
+		if len(ips) == 0 {
+			return "", 0, fmt.Errorf("could not obtain IP address(es) for %s", proxyAddress)
+		}
+
+		for _, ip := range ips {
+			if ip4 := ip.To4(); len(ip4) == net.IPv4len {
+				newArg = fmt.Sprintf("--entryPoints.web.address=%s:%s", ip4.String(), proxyPortString)
+			} else if ip6 := ip.To16(); len(ip6) == net.IPv6len {
+				newArg = fmt.Sprintf("--entryPoints.webipv6.address=[%s]:%s", ip6.String(), proxyPortString)
+			} else {
+				// Fallback to just the IP address as a raw string
+				newArg = fmt.Sprintf("--entryPoints.web.address=%s:%s", ip.String(), proxyPortString)
+			}
+			args = append(args, newArg)
+		}
 	} else {
 		// Bind to just the proxy address
-		args = append(args,
-			fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString),
-		)
+		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
+			newArg = fmt.Sprintf("--entryPoints.webipv6.address=%s:%s", proxyAddress, proxyPortString)
+		} else {
+			newArg = fmt.Sprintf("--entryPoints.web.address=%s:%s", proxyAddress, proxyPortString)
+		}
+		args = append(args, newArg)
 	}
 
 	args = append(args,
@@ -429,12 +452,15 @@ func (r *ServiceReconciler) OnProcessExited(pid process.Pid_t, exitCode int32, e
 		return // Not a process we care about
 	}
 
-	updated := r.proxyProcessStatus.Update(namespacedName, pid, ProxyProcessStatusExited)
-	if !updated {
-		return // The Service object has been deleted, so we do not care about the proxy process anymore.
-	}
-
 	r.Log.Info(fmt.Sprintf("proxy process for service %s exited with code %d", namespacedName, exitCode))
+
+	r.proxyProcessStatus.QueueDeferredOp(
+		namespacedName,
+		func(proxyProcessStatus *maps.DualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]) {
+			// Service object may have been deleted by the time we get here, so we don't care if Update() fails.
+			_ = proxyProcessStatus.Update(namespacedName, pid, ProxyProcessStatusExited)
+		},
+	)
 
 	// Schedule reconciliation for the service
 	scheduleErr := r.debouncer.ReconciliationNeeded(namespacedName, pid, func(rti reconcileTriggerInput[process.Pid_t]) error {

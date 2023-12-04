@@ -16,7 +16,7 @@ func GetTestContext(t *testing.T, testTimeout time.Duration) (context.Context, c
 		if err != nil {
 			panic(fmt.Sprintf("Context timeout value '%s' is invalid: %s", timeoutStr, err.Error()))
 		}
-		return context.WithTimeout(context.Background(), time.Duration(timeout)*time.Minute)
+		return context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	}
 
 	deadline, haveDeadline := t.Deadline()

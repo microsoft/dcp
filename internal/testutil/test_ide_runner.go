@@ -22,6 +22,7 @@ type TestIdeRun struct {
 	Exe                  *apiv1.Executable
 	Status               *apiv1.ExecutableStatus
 	StartWaitingCalled   bool
+	startWaitingChan     chan struct{}
 	StartedAt            time.Time
 	EndedAt              time.Time
 	ChangeHandler        controllers.RunChangeHandler
@@ -38,15 +39,17 @@ func (r *TestIdeRun) Finished() bool {
 }
 
 type TestIdeRunner struct {
-	nextRunID int32
-	Runs      syncmap.Map[types.NamespacedName, *TestIdeRun]
-	m         *sync.RWMutex
+	nextRunID   int32
+	Runs        syncmap.Map[types.NamespacedName, *TestIdeRun]
+	m           *sync.RWMutex
+	lifetimeCtx context.Context
 }
 
-func NewTestIdeRunner() *TestIdeRunner {
+func NewTestIdeRunner(lifetimeCtx context.Context) *TestIdeRunner {
 	return &TestIdeRunner{
-		Runs: syncmap.Map[types.NamespacedName, *TestIdeRun]{},
-		m:    &sync.RWMutex{},
+		Runs:        syncmap.Map[types.NamespacedName, *TestIdeRun]{},
+		m:           &sync.RWMutex{},
+		lifetimeCtx: lifetimeCtx,
 	}
 }
 
@@ -71,11 +74,19 @@ func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runCh
 			defer r.m.Unlock()
 
 			if run, found := r.Runs.Load(namespacedName); found {
-				run.StartWaitingCalled = true
-				run.ChangeHandler.OnRunChanged(runID, run.PID, apiv1.UnknownExitCode, nil)
+				if !run.StartWaitingCalled {
+					run.StartWaitingCalled = true
+					if run.startWaitingChan != nil {
+						close(run.startWaitingChan)
+					}
+				}
 			}
 		},
 		ChangeHandler: runChangeHandler,
+	}
+
+	if runChangeHandler != nil {
+		run.startWaitingChan = make(chan struct{})
 	}
 
 	r.Runs.Store(namespacedName, run)
@@ -143,6 +154,7 @@ func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) 
 	}
 
 	if run.ChangeHandler != nil {
+		// Make sure OnStartingCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
 			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), runID, *run.Status, run.StartWaitingCallback)
@@ -157,7 +169,6 @@ func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) 
 
 func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error {
 	r.m.Lock()
-	defer r.m.Unlock()
 
 	var foundRun *TestIdeRun
 	r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
@@ -174,17 +185,29 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	})
 
 	if foundRun == nil {
+		r.m.Unlock()
 		return fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
 	}
 
 	run := *foundRun
 
-	if foundRun.ChangeHandler != nil {
-		done := make(chan struct{})
+	// The controller may not have called startWaitForRunCompletion() yet,
+	// and that method needs the lock because it is changing run data.
+	// startWaitForRunCompletion() also closes the run.startWaitingChan channel.
+	// If we do not unlock here, the wait on run.startWaitingChan may deadlock.
+	r.m.Unlock()
+
+	if run.ChangeHandler != nil {
+		done := make(chan struct{}) // Make sure OnRunChanged is called before we return and let the test proceed.
 		go func() {
 			ec := new(int32)
 			*ec = exitCode
-			run.ChangeHandler.OnRunChanged(runID, run.PID, ec, nil)
+			select {
+			case <-r.lifetimeCtx.Done():
+				return
+			case <-run.startWaitingChan:
+				run.ChangeHandler.OnRunChanged(runID, run.PID, ec, nil)
+			}
 			close(done)
 		}()
 		<-done

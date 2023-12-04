@@ -165,6 +165,15 @@ type ContainerStatus struct {
 
 	// A human-readable message that provides additional information about Container state.
 	Message string `json:"message,omitempty"`
+
+	// Effective values of environment variables, after all substitutions are applied.
+	// +listType=map
+	// +listMapKey=name
+	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
+
+	// Effective values of launch arguments to be passed to the Container, after all substitutions are applied.
+	// +listType=atomic
+	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 }
 
 func (cs ContainerStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

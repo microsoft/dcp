@@ -141,6 +141,10 @@ type ExecutableStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
+
+	// Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.
+	// +listType=atomic
+	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 }
 
 func (es ExecutableStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
@@ -215,15 +219,6 @@ func (e *Executable) Starting() bool {
 func (e *Executable) Done() bool {
 	// When the Executable has a FinishTimestamp set, it is considered done no matter what other data says.
 	return !e.Status.FinishTimestamp.IsZero()
-}
-
-func (exe *Executable) UpdateRunningStatus(pid *int64, exitCode *int32, state ExecutableState) {
-	exe.Status.PID = pid
-	exe.Status.ExitCode = exitCode
-	exe.Status.State = state
-	if state == ExecutableStateFinished || state == ExecutableStateTerminated || state == ExecutableStateFailedToStart {
-		exe.Status.FinishTimestamp = metav1.Now()
-	}
 }
 
 // ExecutableList contains a list of Executable instances

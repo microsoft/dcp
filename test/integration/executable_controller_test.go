@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math/rand"
 	"regexp"
+	std_slices "slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,6 +19,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -281,19 +284,19 @@ func TestExecutableDeletion(t *testing.T) {
 				t.Fatalf("Could not create Executable: %v", err)
 			}
 
-			t.Log("Waiting for Executable run to start...")
+			t.Logf("Waiting for Executable '%s' run to start...", tc.exe.ObjectMeta.Name)
 			tc.verifyExeRunning(ctx, t, tc.exe)
 
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(tc.exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return currentExe.Status.State != "", nil
 			})
 
-			t.Log("Deleting Executable object...")
+			t.Logf("Deleting Executable '%s' object...", tc.exe.ObjectMeta.Name)
 			if err := client.Delete(ctx, updatedExe); err != nil {
 				t.Fatalf("Unable to delete Executable: %v", err)
 			}
 
-			t.Log("Waiting for process to be killed...")
+			t.Logf("Waiting for process associated with Executable '%s' to be killed...", tc.exe.ObjectMeta.Name)
 			tc.verifyRunEnded(ctx, t, tc.exe)
 		})
 	}
@@ -308,7 +311,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-executable-serving-port-injected",
+			Name:      "test-executable-serving-port-injected-env-var-svc",
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
@@ -324,12 +327,12 @@ func TestExecutableServingPortInjected(t *testing.T) {
 
 	exe := apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "test-executable-serving-port-injected",
+			Name:        "test-executable-serving-port-injected-env-var",
 			Namespace:   metav1.NamespaceNone,
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7733}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-serving-port-injected",
+			ExecutablePath: "path/to/test-executable-serving-port-injected-env-var",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "SVC_PORT",
@@ -347,19 +350,19 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
 	require.NoError(t, err, "Process could not be started")
 
-	t.Logf("Ensure the Executable process got the service port injected...")
+	t.Logf("Ensure the Executable '%s' process got the service port injected...", exe.ObjectMeta.Name)
 	pe, found := processExecutor.FindByPid(pid)
-	require.True(t, found, "Could not find the process with PID %d", pid)
-	require.True(t, slices.Contains(pe.Cmd.Env, "SVC_PORT=7733"), "Port was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+	require.True(t, found, "Could not find Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
+	require.True(t, slices.Contains(pe.Cmd.Env, "SVC_PORT=7733"), "Port was not injected into the Executable '%s' process environment variables. The process environment variables are: %v", exe.ObjectMeta.Name, pe.Cmd.Env)
 
-	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected port...")
+	t.Logf("Ensure the Status.EffectiveEnv for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
 	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
-	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable effective environment does not contain expected port information. The effective environment is %v", effectiveEnv)
+	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
 }
 
 // Verify ports are injected into Executable environment variables via portForServing template function.
@@ -371,7 +374,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-executable-serving-port-allocated-injected",
+			Name:      "test-executable-serving-port-allocated-injected-env-var-svc",
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
@@ -387,13 +390,13 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 
 	exe := apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-executable-serving-port-allocated-injected",
+			Name:      "test-executable-serving-port-allocated-injected-env-var",
 			Namespace: metav1.NamespaceNone,
 			// No address and no port information
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-serving-port-allocated-injected",
+			ExecutablePath: "path/to/test-executable-serving-port-allocated-injected-env-var",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "SVC_PORT",
@@ -411,13 +414,13 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
 	require.NoError(t, err, "Process could not be started")
 
-	t.Logf("Ensure the Executable process got the service port injected...")
+	t.Logf("Ensure the process for Executable '%s' is running...", exe.ObjectMeta.Name)
 	pe, found := processExecutor.FindByPid(pid)
-	require.True(t, found, "Could not find the process with PID %d", pid)
+	require.True(t, found, "Could not find the Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
 
 	// Validate the injected port
 	matches := testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`SVC_PORT=(\d+)`))
-	require.Len(t, matches, 1, "Port was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+	require.Len(t, matches, 1, "Port was not injected into the Executable '%s' process environment variables. The process environment variables are: %v", exe.ObjectMeta.Name, pe.Cmd.Env)
 	port, err := strconv.ParseInt(matches[0][1], 10, 32)
 	require.NoError(t, err, "The injected port '%s' is not a valid integer", matches[0][1])
 	require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
@@ -430,9 +433,9 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 		hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
 		return forCorrectService && hasOwner, nil
 	})
-	require.Equal(t, int32(port), executableEndpoint.Spec.Port, "The port injected into the Executable process environment variables (%d) does not match the port of the Endpoint (%d)", port, executableEndpoint.Spec.Port)
+	require.Equal(t, int32(port), executableEndpoint.Spec.Port, "The port injected into the Executable '%s' process environment variables (%d) does not match the port of the Endpoint (%d)", exe.ObjectMeta.Name, port, executableEndpoint.Spec.Port)
 
-	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected port...")
+	t.Logf("Ensure the Status.EffectiveEnv for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
@@ -440,7 +443,357 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
-	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected port information. The effective environemtn is %v", effectiveEnv)
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected port information. The effective environemtn is %v", exe.ObjectMeta.Name, effectiveEnv)
+}
+
+// Verify ports are injected into Executable using startup parameters and portForServing template function.
+// Specific port to use is indicated via service-producer annotation.
+func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-serving-port-injected-startup-param-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.22.33.66",
+			Port:     7745,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-executable-serving-port-injected-startup-param",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7746}]`, svc.ObjectMeta.Name)},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-executable-serving-port-injected-startup-param",
+			Args: []string{
+				"--port",
+				fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
+
+	// Note: arguments for the process follow C/Unix convention, that is, args[0] is the path to the program.
+
+	t.Logf("Ensure the Executable '%s' process got the service port injected...", exe.ObjectMeta.Name)
+	pe, found := processExecutor.FindByPid(pid)
+	require.True(t, found, "Could not find Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
+	require.Equal(t, "7746", pe.Cmd.Args[2], "Port was not injected into the Executable '%s' process startup parameters. The process startup parameters are: %v", exe.ObjectMeta.Name, pe.Cmd.Args)
+
+	t.Logf("Ensure the Status.EffectiveArgs for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveArgs) == 2, nil
+	})
+	require.Equal(t, updatedExe.Status.EffectiveArgs[1], "7746", "The Executable '%s' startup parameters do not include expected port. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+}
+
+// Verify ports are injected into Executable using startup parameters and portForServing template function.
+// Service port is automatically allocated.
+func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-serving-port-allocated-injected-startup-params-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.22.31.31",
+			Port:     7492,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-serving-port-allocated-injected-startup-param",
+			Namespace: metav1.NamespaceNone,
+			// No address and no port information
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-executable-serving-port-allocated-injected-startup-param",
+			Args: []string{
+				"--port",
+				fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+	err = client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure the process for Executable '%s' got the service port injected...", exe.ObjectMeta.Name)
+	pe, found := processExecutor.FindByPid(pid)
+	require.True(t, found, "Could not find the Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
+
+	// Validate the injected port
+	// Note: arguments for the process follow C/Unix convention, that is, args[0] is the path to the program.
+	require.Len(t, pe.Cmd.Args, 3, "Expected 3 startup parameters for the Executable '%s' process. The process startup parameters are: %v", exe.ObjectMeta.Name, pe.Cmd.Args)
+	portStr := pe.Cmd.Args[2]
+	port, err := strconv.ParseInt(portStr, 10, 32)
+	require.NoError(t, err, "The injected port '%s' is not a valid integer", portStr)
+	require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
+	require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
+
+	t.Logf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
+	executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+		forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+		controllerOwner := metav1.GetControllerOf(e)
+		hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+		return forCorrectService && hasOwner, nil
+	})
+	require.Equal(t, int32(port), executableEndpoint.Spec.Port, "The port injected into the Executable '%s' (%d) does not match the port of the Endpoint (%d)", exe.ObjectMeta.Name, port, executableEndpoint.Spec.Port)
+
+	t.Logf("Ensure the Status.EffectiveArgs for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveArgs) == 2, nil
+	})
+	require.Equal(t, updatedExe.Status.EffectiveArgs[1], portStr, "The Executable '%s' startup parameters do not include expected port. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+}
+
+// Verify ports are injected into Executable using a combination of startup parameters and environment variables.
+// Some ports are pre-determined by service-producer annotation, others are auto-allocated.
+func TestExecutableMultipleServingPortsInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const IPAddr = "127.22.132.10"
+	services := map[string]apiv1.Service{
+		"svc-a": {
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-executable-multiple-serving-ports-injected-svc-a",
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol: apiv1.TCP,
+				Address:  IPAddr,
+				Port:     11740,
+			},
+		},
+		"svc-b": {
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-executable-multiple-serving-ports-injected-svc-b",
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol: apiv1.TCP,
+				Address:  IPAddr,
+				Port:     11741,
+			},
+		},
+		"svc-c": {
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-executable-multiple-serving-ports-injected-svc-c",
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol: apiv1.TCP,
+				Address:  IPAddr,
+				Port:     11742,
+			},
+		},
+		"svc-d": {
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-executable-multiple-serving-ports-injected-svc-d",
+				Namespace: metav1.NamespaceNone,
+			},
+			Spec: apiv1.ServiceSpec{
+				Protocol: apiv1.TCP,
+				Address:  IPAddr,
+				Port:     11743,
+			},
+		},
+	}
+
+	for _, svc := range services {
+		t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+		err := client.Create(ctx, &svc)
+		require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+	}
+
+	const svcAExpectedPort = 11750
+	const svcBExpectedPort = 11751
+	var spAnn strings.Builder
+	spAnn.WriteString("[")
+
+	// Use specific port, inject via env var
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","address":"%s","port":%d}`, services["svc-a"].ObjectMeta.Name, IPAddr, svcAExpectedPort))
+	spAnn.WriteString(",")
+
+	// Use specific port, inject via startup parameter
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s","address":"%s","port":%d}`, services["svc-b"].ObjectMeta.Name, IPAddr, svcBExpectedPort))
+	spAnn.WriteString(",")
+
+	// Use auto-allocated port, inject via env var
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s"}`, services["svc-c"].ObjectMeta.Name))
+	spAnn.WriteString(",")
+
+	// Use auto-allocated port, inject via startup parameter
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s"}`, services["svc-d"].ObjectMeta.Name))
+
+	spAnn.WriteString("]")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "test-executable-multiple-serving-ports-injected",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": spAnn.String()},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-executable-multiple-serving-ports-injected",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SVC_A_PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-a"].ObjectMeta.Name),
+				},
+				{
+					Name:  "SVC_C_PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-c"].ObjectMeta.Name),
+				},
+			},
+			Args: []string{
+				fmt.Sprintf(`--svc-b-port={{- portForServing "%s" -}}`, services["svc-b"].ObjectMeta.Name),
+				fmt.Sprintf(`--svc-d-port={{- portForServing "%s" -}}`, services["svc-d"].ObjectMeta.Name),
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure the process for Executable '%s' is running...", exe.ObjectMeta.Name)
+	pe, found := processExecutor.FindByPid(pid)
+	require.True(t, found, "Could not find the Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
+
+	// VALIDATION PART 1: validate ports injected via environment variables
+
+	t.Logf("Ensure the Status.EffectiveEnv for Executable '%s' contains the injected ports...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAExpectedPort)
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected port information for service A. The effective environemtn is %v", exe.ObjectMeta.Name, effectiveEnv)
+	svcCEnvVarRegex := regexp.MustCompile(`SVC_C_PORT=(\d+)`)
+	require.True(
+		t,
+		slices.Any(effectiveEnv, func(s string) bool {
+			return svcCEnvVarRegex.MatchString(s)
+		}),
+		"The Executable '%s' effective environment does not contain expected port information for service C. The effective environemtn is %v",
+		exe.ObjectMeta.Name,
+		effectiveEnv,
+	)
+
+	validateAndParsePortStr := func(portStr string) int32 {
+		port, err := strconv.ParseInt(portStr, 10, 32)
+		require.NoError(t, err, "The injected port '%s' is not a valid integer", portStr)
+		require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
+		require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
+		return int32(port)
+	}
+
+	matches := testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`SVC_[AC]_PORT=(\d+)`))
+	require.Len(t, matches, 2, "Expected ports not injected into the Executable '%s' process environment variables. The process environment variables are: %v", exe.ObjectMeta.Name, pe.Cmd.Env)
+	var svcAPortStr, svcCPortStr string
+	if strings.HasPrefix(matches[0][0], "SVC_A_PORT") {
+		svcAPortStr = matches[0][1]
+		svcCPortStr = matches[1][1]
+	} else {
+		svcAPortStr = matches[1][1]
+		svcCPortStr = matches[0][1]
+	}
+
+	svcAPort := validateAndParsePortStr(svcAPortStr)
+	require.Equal(t, int32(svcAExpectedPort), svcAPort)
+	svcCPort := validateAndParsePortStr(svcCPortStr) // Service C port is auto-allocated, so as long as it parses OK, we are good.
+
+	// VALIDATION PART 2: validate ports injected via startup parameters
+
+	svcBPortExpectedArg := fmt.Sprintf("--svc-b-port=%d", svcBExpectedPort)
+	require.Equal(
+		t,
+		svcBPortExpectedArg,
+		pe.Cmd.Args[1],
+		"Port for service B was not injected into the Executable '%s' process startup parameters. The process startup parameters are: %v",
+		exe.ObjectMeta.Name,
+		pe.Cmd.Args,
+	)
+
+	svcDPortArgRegex := regexp.MustCompile(`--svc-d-port=(\d+)`)
+	matches = testutil.FindAllMatching(pe.Cmd.Args, svcDPortArgRegex)
+	require.Len(t, matches, 1, "Port for service D was not injected into the Executable '%s' process startup parameters. The process startup parameters are: %v", exe.ObjectMeta.Name, pe.Cmd.Args)
+	svcDPortStr := matches[0][1]
+	svcDPort := validateAndParsePortStr(svcDPortStr)
+
+	t.Logf("Ensure the Status.EffectiveArgs for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
+	require.Equal(t, updatedExe.Status.EffectiveArgs[0], svcBPortExpectedArg, "The Executable '%s' startup parameters do not include expected port for service B. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+	require.Equal(t, fmt.Sprintf("--svc-d-port=%d", svcDPort), updatedExe.Status.EffectiveArgs[1], "The Executable '%s' startup parameters do not include expected port for service D. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+
+	// VALIDATION PART 3: validate endpoints
+
+	t.Logf("Ensure that all expected Endpoints for Executable '%s' are created...", exe.ObjectMeta.Name)
+	endpoints := slices.MapConcurrent[apiv1.Service, *apiv1.Endpoint](maps.Values(services), func(svc apiv1.Service) *apiv1.Endpoint {
+		executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+			forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+			controllerOwner := metav1.GetControllerOf(e)
+			hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+			return forCorrectService && hasOwner, nil
+		})
+		return executableEndpoint
+	}, slices.MaxConcurrency)
+	std_slices.SortFunc(endpoints, func(e1, e2 *apiv1.Endpoint) int {
+		if e1.Spec.ServiceName < e2.Spec.ServiceName {
+			return -1
+		} else if e1.Spec.ServiceName > e2.Spec.ServiceName {
+			return 1
+		} else {
+			return 0
+		}
+	})
+
+	expectedPorts := []int32{svcAPort, svcBExpectedPort, svcCPort, svcDPort}
+	actualPorts := slices.Map[*apiv1.Endpoint, int32](endpoints, func(e *apiv1.Endpoint) int32 { return e.Spec.Port })
+	require.ElementsMatch(t, expectedPorts, actualPorts, "Some ports used by Endpoints of Executable '%s' are not matching what was injected into the Executable", exe.ObjectMeta.Name)
 }
 
 // Verify ports are injected into Executable environment variables via portFor template function.

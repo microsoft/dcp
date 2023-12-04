@@ -135,6 +135,34 @@ spec:
                 description: ID of the Container (if an attempt to start the Container
                   was made)
                 type: string
+              effectiveArgs:
+                description: Effective values of launch arguments to be passed to
+                  the Container, after all substitutions are applied.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
+              effectiveEnv:
+                description: Effective values of environment variables, after all
+                  substitutions are applied.
+                items:
+                  description: EnvVar represents an environment variable present in
+                    a Container or Executable.
+                  properties:
+                    name:
+                      description: Name of the environment variable
+                      type: string
+                    value:
+                      description: Value of the environment variable. Defaults to
+                        "" (empty string).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               exitCode:
                 default: -1
                 description: Exit code of the Container. Default is -1, meaning the

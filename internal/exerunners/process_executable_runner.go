@@ -81,12 +81,12 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 
 	pid, startWaitForProcessExit, err := r.pe.StartProcess(ctx, cmd, processExitHandler)
 
-	r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 	if err != nil {
 		log.Error(err, "failed to start a process")
 		exe.Status.FinishTimestamp = metav1.Now()
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 	} else {
+		r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 		log.Info("process started", "executable", cmd.Path, "PID", pid)
 		exe.Status.ExecutionID = pidToExecutionID(pid)
 		if exe.Status.PID == apiv1.UnknownPID {
@@ -124,7 +124,7 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 
 func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, exe.Spec.ExecutablePath)
-	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Spec.Args...)
+	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
 	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 

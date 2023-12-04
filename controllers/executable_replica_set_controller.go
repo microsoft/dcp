@@ -130,20 +130,18 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, replicas apiv1.ExecutableList, log logr.Logger) objectChange {
 	change := noChange
 
-	numReplicas := int32(len(replicas.Items))
+	observedReplicas := int32(len(replicas.Items))
 	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
 	if !found {
 		rsData = executableReplicaSetData{
 			lastScaled:     time.Now(),
-			actualReplicas: numReplicas,
+			actualReplicas: observedReplicas,
 		}
 		r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
 	}
 
-	if replicaSet.Status.ObservedReplicas != numReplicas {
-		rsData.lastScaled = time.Now()
-		r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
-		replicaSet.Status.ObservedReplicas = numReplicas
+	if replicaSet.Status.ObservedReplicas != observedReplicas {
+		replicaSet.Status.ObservedReplicas = observedReplicas
 		change = statusChanged
 	}
 
@@ -156,7 +154,7 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 			runningReplicas = append(runningReplicas, &replicas.Items[i])
 		case apiv1.ExecutableStateFailedToStart:
 			failedReplicas = append(failedReplicas, &replicas.Items[i])
-		default:
+		case apiv1.ExecutableStateFinished, apiv1.ExecutableStateTerminated:
 			finishedReplicas = append(finishedReplicas, &replicas.Items[i])
 		}
 	}
@@ -181,15 +179,16 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 
 	currentScaleTime := metav1.Now()
 
-	if numReplicas > replicaSet.Spec.Replicas {
+	if observedReplicas > replicaSet.Spec.Replicas {
 		// Scale down the replica set if there are too many
-		for _, exe := range replicas.Items[0 : numReplicas-replicaSet.Spec.Replicas] {
+		for _, exe := range replicas.Items[0 : observedReplicas-replicaSet.Spec.Replicas] {
 			if err := r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
 				log.Error(err, "unable to delete Executable", "exe", exe)
 				change |= additionalReconciliationNeeded
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
 				rsData.actualReplicas--
+				rsData.lastScaled = currentScaleTime.Time
 				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
 				log.Info("deleted Executable", "exe", exe)
 				change |= statusChanged
@@ -197,9 +196,9 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 		}
 	}
 
-	if numReplicas < replicaSet.Spec.Replicas {
+	if observedReplicas < replicaSet.Spec.Replicas {
 		// Scale up the replica set if there aren't enough
-		for i := 0; i < int(replicaSet.Spec.Replicas-numReplicas); i++ {
+		for i := 0; i < int(replicaSet.Spec.Replicas-observedReplicas); i++ {
 			if exe, err := r.createExecutable(replicaSet, log); err != nil {
 				log.Error(err, "unable to create Executable")
 				change |= additionalReconciliationNeeded
@@ -209,6 +208,7 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
 				rsData.actualReplicas++
+				rsData.lastScaled = currentScaleTime.Time
 				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
 				log.Info("created Executable", "exe", exe)
 				change |= statusChanged
@@ -266,14 +266,14 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() && found && rsData.actualReplicas == 0 {
 		// Deletion has been requested and the running replicas have been drained.
 		log.Info("ExecutableReplicaSet is being deleted...")
-		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer)
+		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
 		// Removing the finalizer will unblock the deletion of the ExecutableReplicaSet object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
 		change &= ^statusChanged
 		onSuccessfulSave = func() { r.runningReplicaSets.Delete(replicaSet.NamespacedName()) }
 	} else {
 		// We haven't been deleted or still have existing replicas, update our running replicas.
-		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer)
+		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			var childExecutables apiv1.ExecutableList

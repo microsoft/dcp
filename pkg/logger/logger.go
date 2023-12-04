@@ -142,7 +142,7 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	}
 
 	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
-	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d.log", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}

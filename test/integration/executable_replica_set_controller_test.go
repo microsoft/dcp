@@ -335,9 +335,11 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 	const replicas = 3
 
 	// In the current implementation the service must exist before the Executable is created
-	svc := apiv1.Service{
+
+	svcAName := testName + "-svc-a"
+	svcA := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      testName,
+			Name:      svcAName,
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
@@ -347,9 +349,26 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 		},
 	}
 
-	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
-	err := client.Create(ctx, &svc)
-	require.NoError(t, err, "Could not create a Service")
+	t.Logf("Creating Service '%s'", svcAName)
+	err := client.Create(ctx, &svcA)
+	require.NoError(t, err, "Could not create Service '%s'", svcAName)
+
+	svcBName := testName + "-svc-b"
+	svcB := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcBName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "127.0.0.1",
+			Port:     13763,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svcBName)
+	err = client.Create(ctx, &svcB)
+	require.NoError(t, err, "Could not create Service '%s'", svcBName)
 
 	exers := apiv1.ExecutableReplicaSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -360,15 +379,18 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			Replicas: replicas,
 			Template: apiv1.ExecutableTemplate{
 				Annotations: map[string]string{
-					"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, testName),
+					"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}, {"serviceName":"%s"}]`, svcAName, svcBName),
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "path/to/exers-injects-ports-into-replicas",
 					Env: []apiv1.EnvVar{
 						{
 							Name:  "SVC_PORT",
-							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, testName),
+							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svcAName),
 						},
+					},
+					Args: []string{
+						fmt.Sprintf(`--svc-b-port={{- portForServing "%s" -}}`, svcBName),
 					},
 				},
 			},
@@ -377,7 +399,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 
 	t.Logf("Creating ExecutableReplicaSet '%s'...", exers.ObjectMeta.Name)
 	err = client.Create(ctx, &exers)
-	require.NoError(t, err, "Could not create the ExecutableReplicaSet")
+	require.NoError(t, err, "Could not create the ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
 
 	t.Logf("Ensure ExecutableReplicaSet '%s' has expected number of replicas...", exers.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedErs *apiv1.ExecutableReplicaSet) (bool, error) {
@@ -392,7 +414,15 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 	ownedExes, err := getOwnedExes(ctx, &exers)
 	require.NoError(t, err, "Failed to retrieve owned Executable replicas")
 
-	portMap := make(map[int64]bool, replicas)
+	portMap := make(map[int32]bool, replicas)
+	validateAndParsePortStr := func(portStr string) int32 {
+		port, err := strconv.ParseInt(portStr, 10, 32)
+		require.NoError(t, err, "The injected port '%s' is not a valid integer", portStr)
+		require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
+		require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
+		return int32(port)
+	}
+	svcBPortRegex := regexp.MustCompile(`--svc-b-port=(\d+)`)
 
 	for _, exe := range ownedExes {
 		updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(updatedExe *apiv1.Executable) (bool, error) {
@@ -405,14 +435,16 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 
 		matches := testutil.FindAllMatching(effectiveEnv, regexp.MustCompile(`SVC_PORT=(\d+)`))
 		require.Len(t, matches, 1, "Port was not injected into the Executable '%s',process environment variables. The process environment variables are: %v", updatedExe.ObjectMeta.Name, effectiveEnv)
-		port, err := strconv.ParseInt(matches[0][1], 10, 32)
-		require.NoError(t, err, "The port '%s' injected into Executable '%s' is not a valid integer", matches[0][1], exe.ObjectMeta.Name)
-		require.Greater(t, int32(port), int32(0), "The port '%d' injected into Executable '%s' is not a valid port number", port, exe.ObjectMeta.Name)
-		require.Less(t, int32(port), int32(65536), "The port '%d' injected into Executable '%s' is not a valid port number", port, exe.ObjectMeta.Name)
+		port := validateAndParsePortStr(matches[0][1])
 
 		_, alreadySeen := portMap[port]
 		require.False(t, alreadySeen, "The port '%d' injected into Executable '%s' is not unique", port, exe.ObjectMeta.Name)
 		portMap[port] = true
+
+		matches = testutil.FindAllMatching(updatedExe.Status.EffectiveArgs, svcBPortRegex)
+		require.Len(t, matches, 1, "Port for service B was not injected into the Executable '%s' startup parameters. The startup parameters are: %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+		svcDPortStr := matches[0][1]
+		validateAndParsePortStr(svcDPortStr)
 	}
 }
 
