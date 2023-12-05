@@ -164,6 +164,16 @@ Add the following snippet to your AppHost project:
 
 Just be careful about not checking in this change and remember to comment out the `<DcpDir></DcpDir>` line if you want to go back to using the DCP version Aspire targets.
 
+Alternatively, you can create a file named `AppHost.csproj.user` next to the `AppHost.csproj` file, with the following content:
+
+```xml
+    <Project>
+        <PropertyGroup>
+            <DcpDir>[folder where dcp.exe lives]</DcpDir>
+        </PropertyGroup>
+    </Project>
+```
+
 ### Need to get detailed logs from DCP run
 
 Set the `DCP_DIAGNOSTICS_LOG_LEVEL` environment variable to `debug`. The logs will be put to `${TEMP}/dcp/logs`, although you can change the destination by setting `DCP_DIAGNOSTICS_LOG_FOLDER` environment variable.
