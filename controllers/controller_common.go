@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -183,6 +183,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 
 	if (change & additionalReconciliationNeeded) != 0 {
 		log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
+		telemetry.AddEvent(ctx, "AdditionalReconciliationNeeded")
 		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
 	} else {
 		return ctrl.Result{}, nil
