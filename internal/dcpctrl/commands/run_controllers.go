@@ -14,6 +14,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_manager "sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -204,7 +205,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 
 type reconcilerWithSetupWithManager interface {
 	reconcile.Reconciler
-	SetupWithManager(ctrl_manager.Manager) error
+	SetupWithManagerIncomplete(ctrl_manager.Manager) (*builder.Builder, error)
 }
 
 type reconcilerWithTelemetry struct {
@@ -229,5 +230,11 @@ func (r reconcilerWithTelemetry) Reconcile(parentCtx context.Context, req reconc
 }
 
 func (r reconcilerWithTelemetry) SetupWithManager(mgr ctrl_manager.Manager) error {
-	return r.inner.SetupWithManager(mgr)
+	builder, err := r.inner.SetupWithManagerIncomplete(mgr)
+
+	if err != nil {
+		return err
+	}
+
+	return builder.Complete(r)
 }

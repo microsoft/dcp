@@ -12,6 +12,7 @@ import (
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -39,10 +40,9 @@ func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrato
 	return &r
 }
 
-func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *VolumeReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&apiv1.ContainerVolume{}).
-		Complete(r)
+		For(&apiv1.ContainerVolume{}), nil
 }
 
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

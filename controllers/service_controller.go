@@ -83,13 +83,13 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 	return &r
 }
 
-func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ServiceReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceNamespace", func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceNamespace}
 	}); err != nil {
 		r.Log.Error(err, "failed to create serviceNamespace index for Endpoint")
-		return err
+		return nil, err
 	}
 
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceName", func(rawObj ctrl_client.Object) []string {
@@ -97,7 +97,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return []string{endpoint.Spec.ServiceName}
 	}); err != nil {
 		r.Log.Error(err, "failed to create serviceName index for Endpoint")
-		return err
+		return nil, err
 	}
 
 	src := ctrl_source.Channel{
@@ -107,8 +107,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(&src, &handler.EnqueueRequestForObject{}).
-		Complete(r)
+		WatchesRawSource(&src, &handler.EnqueueRequestForObject{}), nil
 }
 
 func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {

@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -58,7 +59,7 @@ func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logge
 	return &r
 }
 
-func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ExecutableReplicaSetReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
 	// Setup a client side index to allow quickly finding all Executables owned by an ExecutableReplicaSet.
 	// Behind the scenes this is using listers and informers to keep an index on an internal cache owned by
 	// the Manager up to date.
@@ -78,15 +79,14 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return []string{owner.Name}
 	}); err != nil {
 		r.Log.Error(err, "failed to create index for ExecutableReplicaSet")
-		return err
+		return nil, err
 	}
 
 	// Register for recoonciliation on changes to ExecutalbeReplicaSet objects as well
 	// as owned Executable objects (metadata.ownerReferences pointing to an ExecutableReplicaSet)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.ExecutableReplicaSet{}).
-		Owns(&apiv1.Executable{}).
-		Complete(r)
+		Owns(&apiv1.Executable{}), nil
 }
 
 // Create a new Executable replica for the given ExecutableReplicaSet

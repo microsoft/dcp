@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
@@ -69,7 +70,7 @@ func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Cli
 	return &r
 }
 
-func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ExecutableReconciler) SetupWithManagerIncomplete(mgr ctrl.Manager) (*builder.Builder, error) {
 	src := ctrl_source.Channel{
 		Source: r.notifyRunChanged.Out,
 	}
@@ -77,8 +78,7 @@ func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Executable{}).
 		Owns(&apiv1.Endpoint{}).
-		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
-		Complete(r)
+		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}), nil
 }
 
 /*
