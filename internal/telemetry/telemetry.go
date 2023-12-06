@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -22,35 +23,42 @@ type TelemetrySystem struct {
 	metricExporter sdkmetric.Exporter
 }
 
-func NewTelemetrySystem() TelemetrySystem {
-	spanExp, err := newTelemetryExporter()
-	if err != nil {
-		panic(err)
+var instance TelemetrySystem
+
+func GetTelemetrySystem() TelemetrySystem {
+	if instance.TracerProvider == nil {
+		spanExp, err := newTelemetryExporter()
+		if err != nil {
+			panic(err)
+		}
+
+		tp := sdktrace.NewTracerProvider(
+			sdktrace.WithBatcher(spanExp),
+			sdktrace.WithResource(resource.Default()),
+		)
+
+		metricExp, err := newMetricExporter()
+		if err != nil {
+			panic(err)
+		}
+
+		mp := sdkmetric.NewMeterProvider(
+			sdkmetric.WithReader(
+				sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(1*time.Minute)),
+			),
+		)
+
+		otel.SetTracerProvider(tp)
+
+		instance = TelemetrySystem{
+			TracerProvider: tp,
+			MeterProvider:  mp,
+			spanExporter:   spanExp,
+			metricExporter: metricExp,
+		}
 	}
 
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(spanExp),
-	)
-
-	metricExp, err := newMetricExporter()
-	if err != nil {
-		panic(err)
-	}
-
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(
-			sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(1*time.Minute)),
-		),
-	)
-
-	otel.SetTracerProvider(tp)
-
-	return TelemetrySystem{
-		TracerProvider: tp,
-		MeterProvider:  mp,
-		spanExporter:   spanExp,
-		metricExporter: metricExp,
-	}
+	return instance
 }
 
 func (ts TelemetrySystem) Shutdown(ctx context.Context) error {
