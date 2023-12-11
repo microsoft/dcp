@@ -184,6 +184,8 @@ There are several VS Code debug configurations available for this repository. Th
 
 If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging wiki](https://github.com/golang/vscode-go/wiki/debugging) and [documentation for the underlying delve Go debugger](https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md) might be helpful.
 
+> Note: you want to use `make compile-debug` for building DCP for debugging. By default DCP is built with optimizations on, which can result in strange behavior during debugging (somewhat unpredictable order of statements, local data "disappearing" in the middle of a function etc.)
+
 ### I need to debug DCP in the context of Aspire (Visual Studio-based) run
 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
