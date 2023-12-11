@@ -14,23 +14,30 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.uber.org/zap/zapcore"
 )
 
-func newTelemetryExporter() (sdktrace.SpanExporter, error) {
-	logFolder, err := logger.EnsureDetailedLogsFolder()
+func newTelemetryExporter(logName string) (sdktrace.SpanExporter, error) {
+	logLevel, err := logger.GetDebugLogLevel()
 
-	if err != nil {
-		return nil, err
+	if err == nil && logLevel == zapcore.DebugLevel {
+		logFolder, err := logger.EnsureDetailedLogsFolder()
+
+		if err != nil {
+			return nil, err
+		}
+
+		telemetryFileName := fmt.Sprintf("telemetry-%s-%d-%d.json", logName, time.Now().Unix(), os.Getpid())
+		telemetryFile, err := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+
+		if err != nil {
+			return nil, err
+		}
+
+		return stdouttrace.New(stdouttrace.WithPrettyPrint(), stdouttrace.WithWriter(telemetryFile))
+	} else {
+		return discardExporter{}, nil
 	}
-
-	telemetryFileName := fmt.Sprintf("telemetry-%d-%d.json", time.Now().Unix(), os.Getpid())
-	telemetryFile, err := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return stdouttrace.New(stdouttrace.WithPrettyPrint(), stdouttrace.WithWriter(telemetryFile))
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {

@@ -25,9 +25,9 @@ type TelemetrySystem struct {
 
 var instance TelemetrySystem
 
-func GetTelemetrySystem() TelemetrySystem {
+func InitTelemetrySystem(logName string) TelemetrySystem {
 	if instance.TracerProvider == nil {
-		spanExp, err := newTelemetryExporter()
+		spanExp, err := newTelemetryExporter(logName)
 		if err != nil {
 			panic(err)
 		}

@@ -9,7 +9,6 @@ import (
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -25,9 +24,6 @@ func main() {
 	defer logger.CleanupSessionFolderIfNeeded()
 
 	ctx := kubeapiserver.SetupSignalContext()
-
-	telemetrySystem := telemetry.GetTelemetrySystem()
-	defer func() { _ = telemetrySystem.Shutdown(ctx) }()
 
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
