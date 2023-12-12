@@ -28,7 +28,6 @@ func main() {
 
 	root := commands.NewRootCommand(log)
 	err := root.ExecuteContext(ctx)
-
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		_ = telemetrySystem.Shutdown(ctx)
