@@ -10,8 +10,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/zap/zapcore"
 )
@@ -40,7 +42,13 @@ func newTelemetryExporter(logName string) (sdktrace.SpanExporter, error) {
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {
-	return discardExporter{}, nil
+	logLevel, err := logger.GetDebugLogLevel()
+
+	if err == nil && logLevel == zapcore.DebugLevel {
+		return stdoutmetric.New()
+	} else {
+		return discardExporter{}, nil
+	}
 }
 
 type discardExporter struct{}
@@ -49,7 +57,7 @@ func (discardExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 	return nil
 }
 
-func (discardExporter) Export(context.Context, sdkmetric.ResourceMetrics) error {
+func (discardExporter) Export(context.Context, metricdata.ResourceMetrics) error {
 	return nil
 }
 

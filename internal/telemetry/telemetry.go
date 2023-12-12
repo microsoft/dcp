@@ -54,7 +54,6 @@ func GetTelemetrySystem() *TelemetrySystem {
 		)
 
 		otel.SetTracerProvider(tp)
-		otel.SetMeterProvider(mp)
 
 		instance = &TelemetrySystem{
 			TracerProvider: tp,
