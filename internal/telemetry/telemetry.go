@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package telemetry
 
 import (
@@ -39,7 +41,7 @@ func GetTelemetrySystem() *TelemetrySystem {
 		}
 
 		tp := sdktrace.NewTracerProvider(
-			sdktrace.WithBatcher(spanExp),
+			sdktrace.WithSpanProcessor(NewSuppressIfSuccessfulSpanProcessor(sdktrace.NewBatchSpanProcessor(spanExp))),
 			sdktrace.WithResource(resource.Default()),
 		)
 
@@ -85,6 +87,18 @@ func (ts TelemetrySystem) Shutdown(ctx context.Context) error {
 		ts.spanExporter.Shutdown(ctx),
 		ts.metricExporter.Shutdown(ctx),
 	)
+}
+
+func CallWithTelemetryOnErrorOnly[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
+	spanCtx, span := tracer.Start(parentCtx, spanName, trace.WithAttributes(attribute.Bool(suppressIfSuccessful, true)))
+	defer span.End()
+
+	result, err := fn(spanCtx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return result, err
 }
 
 func CallWithTelemetry[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
