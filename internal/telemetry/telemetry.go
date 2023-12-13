@@ -113,17 +113,17 @@ func CallWithTelemetry[TResult any](tracer trace.Tracer, spanName string, parent
 	return result, err
 }
 
-// func CallWithTelemetryNoResult(tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) error) error {
-// 	spanCtx, span := tracer.Start(parentCtx, spanName)
-// 	defer span.End()
+func CallWithTelemetryNoResult(tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) error) error {
+	spanCtx, span := tracer.Start(parentCtx, spanName)
+	defer span.End()
 
-// 	err := fn(spanCtx)
-// 	if err != nil {
-// 		span.RecordError(err)
-// 		span.SetStatus(codes.Error, err.Error())
-// 	}
-// 	return err
-// }
+	err := fn(spanCtx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
 
 type TelemetryAttribute interface {
 	int | int64 | bool | float64 | string | []int | []int64 | []bool | []float64 | []string
