@@ -159,11 +159,14 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 		_ = r.deleteService(ctx, &svc, log) // Best effort. Errors will be logged by deleteService().
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
+		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)
+		} else {
+			serviceCounters(ctx, &svc, 1) // Service was just created
 		}
 	}
 
@@ -311,6 +314,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		_, proxyProcessState, found := r.proxyProcessStatus.FindBySecondKey(proxyProcessId)
 		if found && proxyProcessState == ProxyProcessStatusExited {
 			// If the process exited, reset the proxy process PID to zero, and a proxy restart will be triggered
+			proxyRestartCounter.Add(ctx, 1)
 			svc.Status.ProxyProcessPid = apiv1.UnknownPID
 		} else if found && proxyProcessState == ProxyProcessStatusRunning {
 			// If the process has not exited, then there's nothing to do
