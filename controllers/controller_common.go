@@ -168,10 +168,12 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 				return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
 			} else {
 				log.Error(err, fmt.Sprintf("%s status update failed", kind))
+				saveFailedCounter.Add(ctx, 1)
 				return ctrl.Result{}, err
 			}
 		} else {
 			log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
+			statusSaveCounter.Add(ctx, 1)
 		}
 
 	case (change & (metadataChanged | specChanged)) != 0:
@@ -184,10 +186,12 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 				return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
 			} else {
 				log.Error(err, fmt.Sprintf("%s object update failed", kind))
+				saveFailedCounter.Add(ctx, 1)
 				return ctrl.Result{}, err
 			}
 		} else {
 			log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
+			metadataOrSpecSaveCounter.Add(ctx, 1)
 		}
 	}
 
