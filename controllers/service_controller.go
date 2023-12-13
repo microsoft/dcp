@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -36,6 +37,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	ourio "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -63,6 +65,8 @@ type ServiceReconciler struct {
 
 	// Debouncer used to schedule reconciliations. Extra data carried is the finished PID.
 	debouncer *reconcilerDebouncer[process.Pid_t]
+
+	tracer trace.Tracer
 }
 
 var (
@@ -78,6 +82,7 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		proxyProcessStatus:    maps.NewSynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus](),
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		debouncer:             newReconcilerDebouncer[process.Pid_t](reconciliationDebounceDelay),
+		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 	}
 	return &r
 }
@@ -138,6 +143,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	svc := apiv1.Service{}
+	telemetry.CallWithTelemetry
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.Info("the Service object does not exist yet or was deleted")
