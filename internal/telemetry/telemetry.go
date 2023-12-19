@@ -164,8 +164,11 @@ func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
 	span.AddEvent(name, options...)
 }
 
+var hash = sha256.New()
+
 func HashValue(value string) string {
-	hash := sha256.New()
+	hash.Reset()
+
 	hash.Write([]byte(value))
 	hashBytes := hash.Sum(nil)
 	return fmt.Sprintf("%x", hashBytes)
