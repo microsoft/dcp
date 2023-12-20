@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
@@ -174,7 +173,7 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.V(1).Info("queue Executable run changed", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "NewPID", pid, "NewExitCode", exitCode)
+		r.Log.V(1).Info("queue Executable run change", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "NewPID", pid, "NewExitCode", exitCode)
 		effectiveExitCode = exitCode
 	}
 
@@ -275,7 +274,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		}
 
 		// Ensure the status matches the current state.
-		return runInfo.ApplyTo(exe)
+		return runInfo.ApplyTo(exe, log)
 	}
 
 	executionType := exe.Spec.ExecutionType
@@ -429,18 +428,11 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 		}
 	}
 
-	change := runInfo.ApplyTo(exe)
+	change := runInfo.ApplyTo(exe, log)
 	if change == noChange {
 		// The run state has not changed.
 		return noChange, onSuccessfulSave
 	}
-
-	log.Info("Executable run changed",
-		"RunID", runID,
-		"PID", exe.Status.PID,
-		"State", exe.Status.State,
-		"ExitCode", exe.Status.ExitCode,
-	)
 
 	reachedFinalState := runInfo.exeState == apiv1.ExecutableStateFinished ||
 		runInfo.exeState == apiv1.ExecutableStateTerminated ||
@@ -696,8 +688,10 @@ func (ri *runInfo) DeepCopy() *runInfo {
 	return &retval
 }
 
-func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
+func (ri *runInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) objectChange {
 	status := exe.Status
+	originalStatusRI := NewRunInfo()
+	originalStatusRI.UpdateFrom(status)
 	changed := noChange
 
 	if ri.exeState != "" && status.State != ri.exeState {
@@ -754,6 +748,8 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 
 	if changed != noChange {
 		exe.Status = status
+
+		log.Info("Executable run changed", "PropertiesChanged", DiffString(originalStatusRI, ri))
 	}
 
 	return changed
@@ -761,16 +757,56 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 
 func (ri *runInfo) String() string {
 	return fmt.Sprintf(
-		"RunInfo{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s}",
+		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s}",
 		ri.exeState,
 		logger.IntPtrValToString(ri.pid),
-		ri.executionID,
+		logger.FriendlyString(ri.executionID),
 		logger.IntPtrValToString(ri.exitCode),
-		ri.startupTimestamp.Format(time.StampMilli),
-		ri.finishTimestamp.Format(time.StampMilli),
-		ri.stdOutFile,
-		ri.stdErrFile,
+		logger.FriendlyTimestamp(ri.startupTimestamp),
+		logger.FriendlyTimestamp(ri.finishTimestamp),
+		logger.FriendlyString(ri.stdOutFile),
+		logger.FriendlyString(ri.stdErrFile),
 	)
+}
+
+func DiffString(r1, r2 *runInfo) string {
+	sb := strings.Builder{}
+	sb.WriteString("{")
+
+	if r1.exeState != r2.exeState {
+		sb.WriteString(fmt.Sprintf("exeState=%s->%s, ", r1.exeState, r2.exeState))
+	}
+
+	if logger.IsPtrValDifferent(r1.pid, r2.pid) {
+		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.pid), logger.IntPtrValToString(r2.pid)))
+	}
+
+	if r1.executionID != r2.executionID {
+		sb.WriteString(fmt.Sprintf("executionID=%s->%s, ", logger.FriendlyString(r1.executionID), logger.FriendlyString(r2.executionID)))
+	}
+
+	if logger.IsPtrValDifferent(r1.exitCode, r2.exitCode) {
+		sb.WriteString(fmt.Sprintf("exitCode=%s->%s, ", logger.IntPtrValToString(r1.exitCode), logger.IntPtrValToString(r2.exitCode)))
+	}
+
+	if r1.startupTimestamp != r2.startupTimestamp {
+		sb.WriteString(fmt.Sprintf("startupTimestamp=%s->%s, ", logger.FriendlyTimestamp(r1.startupTimestamp), logger.FriendlyTimestamp(r2.startupTimestamp)))
+	}
+
+	if r1.finishTimestamp != r2.finishTimestamp {
+		sb.WriteString(fmt.Sprintf("finishTimestamp=%s->%s, ", logger.FriendlyTimestamp(r1.finishTimestamp), logger.FriendlyTimestamp(r2.finishTimestamp)))
+	}
+
+	if r1.stdOutFile != r2.stdOutFile {
+		sb.WriteString(fmt.Sprintf("stdOutFile=%s->%s, ", logger.FriendlyString(r1.stdOutFile), logger.FriendlyString(r2.stdOutFile)))
+	}
+
+	if r1.stdErrFile != r2.stdErrFile {
+		sb.WriteString(fmt.Sprintf("stdErrFile=%s->%s, ", logger.FriendlyString(r1.stdErrFile), logger.FriendlyString(r2.stdErrFile)))
+	}
+
+	sb.WriteString("}")
+	return sb.String()
 }
 
 var _ fmt.Stringer = (*runInfo)(nil)
