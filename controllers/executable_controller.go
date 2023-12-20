@@ -117,8 +117,6 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	log = log.WithValues("State", exe.Status.State).WithValues("ExecutionID", exe.Status.ExecutionID)
-
 	var change objectChange
 	var onSuccessfulSave func() = nil
 	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -148,12 +146,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	result, err := saveChanges(r, ctx, &exe, patch, change, log)
+	result, err := saveChanges(r, ctx, &exe, patch, change, onSuccessfulSave, log)
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
-	}
-	if err == nil && onSuccessfulSave != nil {
-		onSuccessfulSave()
 	}
 	return result, err
 }
@@ -366,7 +361,8 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
 	var runID RunID = RunID(exe.Status.ExecutionID)
 	if runID == "" || exe.Done() {
-		return // Nothing to do--the Executable is not running
+		log.V(1).Info("Executable is not running, nothing to stop...")
+		return
 	}
 
 	_, _, found := r.runs.FindBySecondKey(runID)
@@ -381,13 +377,14 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 	runner, found := r.ExecutableRunners[exe.Spec.ExecutionType]
 	if !found {
 		// Should never happen
-		log.Error(fmt.Errorf("no runner found for execution type '%s'", exe.Spec.ExecutionType), "the Executable cannot be stopped")
+		err := fmt.Errorf("no runner found for execution type '%s'", exe.Spec.ExecutionType)
+		log.Error(err, "the Executable cannot be stopped")
 		return
 	}
 
 	err := runner.StopRun(ctx, runID, log)
 	if err != nil {
-		log.V(1).Info("could not stop the Executable", "RunID", runID, "Error", err.Error())
+		log.Error(err, "could not stop the Executable", "RunID", runID)
 	} else {
 		log.V(1).Info("Executable stopped", "RunID", runID)
 	}
@@ -426,7 +423,9 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 	if exe.Spec.Stop {
 		// If we think the executable is still running, we should attempt to stop it.
 		if runInfo.exeState == apiv1.ExecutableStateRunning {
+			log.V(1).Info("attempting to stop the Executable...", "RunID", runID)
 			r.stopExecutable(ctx, exe, log)
+			// Don't set the Executable state to Finished yet because we might need to process the run completion notification.
 		}
 	}
 
@@ -439,11 +438,8 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 	log.Info("Executable run changed",
 		"RunID", runID,
 		"PID", exe.Status.PID,
-		"NewPID", runInfo.pid,
 		"State", exe.Status.State,
-		"NewState", runInfo.exeState,
 		"ExitCode", exe.Status.ExitCode,
-		"NewExitCode", runInfo.exitCode,
 	)
 
 	reachedFinalState := runInfo.exeState == apiv1.ExecutableStateFinished ||

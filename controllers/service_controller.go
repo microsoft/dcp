@@ -173,7 +173,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := saveChanges(r.Client, ctx, &svc, patch, change, log)
+	result, err := saveChanges(r.Client, ctx, &svc, patch, change, nil, log)
 	return result, err
 }
 
