@@ -199,7 +199,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	result, err := saveChanges(r, ctx, &container, patch, change, log)
+	result, err := saveChanges(r, ctx, &container, patch, change, nil, log)
 	return result, err
 }
 

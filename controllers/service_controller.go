@@ -52,13 +52,19 @@ const (
 	ProxyProcessStatusExited  ProxyProcessStatus = 1
 )
 
+type serviceProxyData struct {
+	Status  ProxyProcessStatus
+	Address string
+	Port    int32
+}
+
 type ServiceReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
 	ProcessExecutor     process.Executor
 	ProxyConfigDir      string
-	proxyProcessStatus  *maps.SynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]
+	proxyData           *maps.SynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, serviceProxyData]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -79,7 +85,7 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		Log:                   log,
 		ProcessExecutor:       processExecutor,
 		ProxyConfigDir:        filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
-		proxyProcessStatus:    maps.NewSynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus](),
+		proxyData:             maps.NewSynchronizedDualKeyMap[types.NamespacedName, process.Pid_t, serviceProxyData](),
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		debouncer:             newReconcilerDebouncer[process.Pid_t](reconciliationDebounceDelay),
 		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
@@ -146,7 +152,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.Info("the Service object does not exist yet or was deleted")
-			r.proxyProcessStatus.DeleteByFirstKey(req.NamespacedName)
+			r.proxyData.DeleteByFirstKey(req.NamespacedName)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Service object")
@@ -157,7 +163,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	r.proxyProcessStatus.RunDeferredOps(req.NamespacedName)
+	r.proxyData.RunDeferredOps(req.NamespacedName)
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.Info("Service object is being deleted")
@@ -175,19 +181,19 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := saveChanges(r.Client, ctx, &svc, patch, change, log)
+	result, err := saveChanges(r.Client, ctx, &svc, patch, change, nil, log)
 	return result, err
 }
 
 func (r *ServiceReconciler) deleteService(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {
-	r.proxyProcessStatus.DeleteByFirstKey(svc.NamespacedName())
+	r.proxyData.DeleteByFirstKey(svc.NamespacedName())
 
 	if err := r.stopProxyIfNeeded(ctx, svc); err != nil {
 		log.Error(err, "could not stop the proxy")
 		return err
 	}
 
-	err := r.deleteServiceConfigFile(svc.ObjectMeta.Name)
+	err := r.deleteServiceConfigFile(svc)
 	if err != nil {
 		log.Error(err, "could not delete the service config file")
 		return err
@@ -213,22 +219,19 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		return additionalReconciliationNeeded
 	}
 
-	if len(serviceEndpoints.Items) == 0 {
-		svc.Status.State = apiv1.ServiceStateNotReady
-	} else {
-		svc.Status.State = apiv1.ServiceStateReady
-	}
-
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless {
 		// If using Proxyless allocation mode
-		if svc.Status.State == apiv1.ServiceStateNotReady {
+		if len(serviceEndpoints.Items) == 0 {
 			// No Endpoints are available. Empty out the proxyless Endpoint namespace and name, and effective address and port.
+			svc.Status.State = apiv1.ServiceStateNotReady
 			svc.Status.ProxylessEndpointNamespace = ""
 			svc.Status.ProxylessEndpointName = ""
 			svc.Status.EffectiveAddress = ""
 			svc.Status.EffectivePort = 0
 		} else {
 			// At least one Endpoint exists.
+			svc.Status.State = apiv1.ServiceStateReady
+
 			// If an Endpoint was previously chosen, we need to ensure it is still valid, and if not choose another.
 			if svc.Status.ProxylessEndpointNamespace != "" && svc.Status.ProxylessEndpointName != "" {
 				// Ensure the previously chosen Endpoint still exists
@@ -254,6 +257,9 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		}
 	} else {
 		// Else using a regular allocation mode which will use a proxy
+
+		svc.Status.State = apiv1.ServiceStateNotReady
+
 		if proxyCfgFile, err := r.ensureServiceConfigFile(svc, &serviceEndpoints); err != nil {
 			log.Error(err, "could not write service config file")
 			return additionalReconciliationNeeded
@@ -265,18 +271,22 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 			}
 		}
 
-		proxyAddress, proxyPort, err := r.startProxyIfNeeded(ctx, svc)
+		err := r.startProxyIfNeeded(ctx, svc, log)
 		if err != nil {
 			log.Error(err, "could not start the proxy")
 			change |= additionalReconciliationNeeded
+		} else {
+			_, data, found := r.proxyData.FindByFirstKey(svc.NamespacedName())
+			if found && len(serviceEndpoints.Items) > 0 && data.Status == ProxyProcessStatusRunning {
+				svc.Status.State = apiv1.ServiceStateReady
+			}
 		}
-
-		svc.Status.EffectiveAddress = proxyAddress
-		svc.Status.EffectivePort = proxyPort
 	}
 
 	if svc.Status.ProxyProcessPid != oldPid {
-		log.Info(fmt.Sprintf("proxy process has been started for service %s", svc.NamespacedName()))
+		if svc.Status.ProxyProcessPid != apiv1.UnknownPID {
+			log.Info(fmt.Sprintf("proxy process has been started for service %s (PID %d)", svc.NamespacedName(), *svc.Status.ProxyProcessPid))
+		}
 		change |= statusChanged
 	}
 
@@ -291,7 +301,9 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 	}
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless && (svc.Status.ProxylessEndpointNamespace != oldEndpointNamespacedName.Namespace || svc.Status.ProxylessEndpointName != oldEndpointNamespacedName.Name) {
-		log.V(1).Info(fmt.Sprintf("service %s is now using endpoint %s/%s as its effective address and port", svc.NamespacedName(), svc.Status.ProxylessEndpointNamespace, svc.Status.ProxylessEndpointName))
+		if svc.Status.EffectiveAddress != "" || svc.Status.EffectivePort != 0 {
+			log.Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
+		}
 		change |= statusChanged
 	}
 
@@ -309,26 +321,32 @@ func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.
 }
 
 // startProxyIfNeeded starts a proxy process if needed for the given service.
-// It returns the proxy address, proxy port and an error if any.
-func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service) (string, int32, error) {
-	if svc.Status.ProxyProcessPid != apiv1.UnknownPID {
-		proxyProcessId, err := process.Int64ToPidT(*svc.Status.ProxyProcessPid)
-		if err != nil {
-			return "", 0, err
-		}
-		_, proxyProcessState, found := r.proxyProcessStatus.FindBySecondKey(proxyProcessId)
-		if found && proxyProcessState == ProxyProcessStatusExited {
-			// If the process exited, reset the proxy process PID to zero, and a proxy restart will be triggered
-			proxyRestartCounter.Add(ctx, 1)
-			svc.Status.ProxyProcessPid = apiv1.UnknownPID
-		} else if found && proxyProcessState == ProxyProcessStatusRunning {
-			// If the process has not exited, then there's nothing to do
-			return svc.Status.EffectiveAddress, svc.Status.EffectivePort, nil
-		} else if !found {
-			// If the process is not in the map, then it's a process we don't care about
-			return "", 0, nil
+// It returns the error if any.
+func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {
+	_, proxyData, found := r.proxyData.FindByFirstKey(svc.NamespacedName())
+
+	if found && proxyData.Status == ProxyProcessStatusRunning {
+		// Make sure the status reflects the real world
+		svc.Status.EffectivePort = proxyData.Port
+		svc.Status.EffectiveAddress = proxyData.Address
+		return nil
+	}
+
+	// Need to start a new proxy process but there might be some cleanup required
+	// from previous run.
+	if !found && svc.Status.ProxyProcessPid != apiv1.UnknownPID {
+		pidFromStatus, err := process.Int64ToPidT(*svc.Status.ProxyProcessPid)
+		if err == nil {
+			log.Info("attempting to stop the untracked proxy process referenced by service status", "PID", pidFromStatus)
+			_ = r.ProcessExecutor.StopProcess(pidFromStatus)
 		}
 	}
+
+	// Reset the overall status for the service
+	r.proxyData.DeleteByFirstKey(svc.NamespacedName())
+	svc.Status.ProxyProcessPid = apiv1.UnknownPID
+	svc.Status.EffectiveAddress = ""
+	svc.Status.EffectivePort = 0
 
 	proxyAddress := svc.Spec.Address
 	if proxyAddress == "" {
@@ -341,22 +359,11 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
 			proxyAddress = "[::1]"
 		} else {
-			return "", 0, fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
+			return fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
 		}
 	}
 
-	binDir, err := dcppaths.GetDcpBinDir()
-	if err != nil {
-		return "", 0, err
-	}
-
-	var proxyExecutable string
-	if runtime.GOOS == "windows" {
-		proxyExecutable = filepath.Join(binDir, "traefik.exe")
-	} else {
-		proxyExecutable = filepath.Join(binDir, "traefik")
-	}
-
+	var err error
 	proxyPort := svc.Spec.Port
 	if proxyPort == 0 {
 		// There is a chance that by the time the proxy starts, the port will no longer be free,
@@ -364,7 +371,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		// TODO: mitigate that by retrying with a different port
 		proxyPort, err = networking.GetFreePort(svc.Spec.Protocol, proxyAddress)
 		if err != nil {
-			return "", 0, err
+			return err
 		}
 	}
 
@@ -382,10 +389,10 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
 		ips, err := net.LookupIP(proxyAddress)
 		if err != nil {
-			return "", 0, fmt.Errorf("could not obtain IP address(es) for %s: %w", proxyAddress, err)
+			return fmt.Errorf("could not obtain IP address(es) for %s: %w", proxyAddress, err)
 		}
 		if len(ips) == 0 {
-			return "", 0, fmt.Errorf("could not obtain IP address(es) for %s", proxyAddress)
+			return fmt.Errorf("could not obtain IP address(es) for %s", proxyAddress)
 		}
 
 		for _, ip := range ips {
@@ -426,36 +433,47 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		}
 	}
 
+	binDir, err := dcppaths.GetDcpBinDir()
+	if err != nil {
+		return err
+	}
+	var proxyExecutable string
+	if runtime.GOOS == "windows" {
+		proxyExecutable = filepath.Join(binDir, "traefik.exe")
+	} else {
+		proxyExecutable = filepath.Join(binDir, "traefik")
+	}
+
 	cmd := exec.CommandContext(ctx,
 		proxyExecutable,
 		args...,
 	)
 
-	if pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r); err != nil {
-		return "", 0, err
-	} else {
-		if svc.Status.ProxyProcessPid == apiv1.UnknownPID {
-			svc.Status.ProxyProcessPid = new(int64)
-		}
-		*svc.Status.ProxyProcessPid = int64(pid)
-
-		namespacedName := types.NamespacedName{
-			Namespace: svc.ObjectMeta.Namespace,
-			Name:      svc.ObjectMeta.Name,
-		}
-
-		r.proxyProcessStatus.Store(namespacedName, pid, ProxyProcessStatusRunning)
-
-		startWaitForProcessExit()
-
-		r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, namespacedName))
+	pid, startWaitForProcessExit, err := r.ProcessExecutor.StartProcess(ctx, cmd, r)
+	if err != nil {
+		return err
 	}
 
-	return proxyAddress, proxyPort, nil
+	if svc.Status.ProxyProcessPid == apiv1.UnknownPID {
+		svc.Status.ProxyProcessPid = new(int64)
+	}
+	*svc.Status.ProxyProcessPid = int64(pid)
+
+	r.proxyData.Store(svc.NamespacedName(), pid, serviceProxyData{
+		Status:  ProxyProcessStatusRunning,
+		Address: proxyAddress,
+		Port:    proxyPort,
+	})
+	svc.Status.EffectiveAddress = proxyAddress
+	svc.Status.EffectivePort = proxyPort
+	startWaitForProcessExit()
+	r.Log.Info(fmt.Sprintf("proxy process with PID %d started for service %s", pid, svc.NamespacedName().String()))
+
+	return nil
 }
 
 func (r *ServiceReconciler) OnProcessExited(pid process.Pid_t, exitCode int32, err error) {
-	namespacedName, _, found := r.proxyProcessStatus.FindBySecondKey(pid)
+	namespacedName, _, found := r.proxyData.FindBySecondKey(pid)
 
 	if !found {
 		return // Not a process we care about
@@ -463,24 +481,26 @@ func (r *ServiceReconciler) OnProcessExited(pid process.Pid_t, exitCode int32, e
 
 	r.Log.Info(fmt.Sprintf("proxy process for service %s exited with code %d", namespacedName, exitCode))
 
-	r.proxyProcessStatus.QueueDeferredOp(
+	r.proxyData.QueueDeferredOp(
 		namespacedName,
-		func(proxyProcessStatus *maps.DualKeyMap[types.NamespacedName, process.Pid_t, ProxyProcessStatus]) {
-			// Service object may have been deleted by the time we get here, so we don't care if Update() fails.
-			_ = proxyProcessStatus.Update(namespacedName, pid, ProxyProcessStatusExited)
+		func(proxyData *maps.DualKeyMap[types.NamespacedName, process.Pid_t, serviceProxyData]) {
+			_, data, found := proxyData.FindByFirstKey(namespacedName)
+			if !found {
+				return // Service object may have been deleted already
+			}
+
+			data.Status = ProxyProcessStatusExited
+			_ = proxyData.Update(namespacedName, pid, data)
 		},
 	)
 
-	// Schedule reconciliation for the service
-	scheduleErr := r.debouncer.ReconciliationNeeded(namespacedName, pid, func(rti reconcileTriggerInput[process.Pid_t]) error {
-		return r.scheduleServiceReconciliation(rti.target, rti.input)
+	_ = r.debouncer.ReconciliationNeeded(namespacedName, pid, func(rti reconcileTriggerInput[process.Pid_t]) error {
+		r.scheduleServiceReconciliation(rti.target, rti.input)
+		return nil
 	})
-	if scheduleErr != nil {
-		r.Log.Error(scheduleErr, "could not schedule reconciliation for Executable object", "PID", pid, "Executable", namespacedName.String())
-	}
 }
 
-func (r *ServiceReconciler) scheduleServiceReconciliation(target types.NamespacedName, finishedPid process.Pid_t) error {
+func (r *ServiceReconciler) scheduleServiceReconciliation(target types.NamespacedName, finishedPid process.Pid_t) {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Service{
 			ObjectMeta: metav1.ObjectMeta{
@@ -490,17 +510,7 @@ func (r *ServiceReconciler) scheduleServiceReconciliation(target types.Namespace
 		},
 	}
 
-	select {
-	case r.notifyProxyRunChanged.In <- event:
-		return nil // Reconciliation scheduled successfully
-
-	default:
-		// We could not schedule the reconciliation. This should never really happen, given that we are using an unbounded channel.
-		// If this happens though, returning from OnProcessExited() handler is most important.
-		err := fmt.Errorf("could not schedule reconciliation for Service whose proxy process has finished")
-		r.Log.Error(err, "the state of the Service may not reflect the real world", "Service", target.String(), "FinishedPID", finishedPid)
-		return err
-	}
+	r.notifyProxyRunChanged.In <- event
 }
 
 func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Service) error {
@@ -519,13 +529,12 @@ func (r *ServiceReconciler) stopProxyIfNeeded(ctx context.Context, svc *apiv1.Se
 	return nil
 }
 
-func (r *ServiceReconciler) getServiceConfigFilePath(serviceName string) string {
-	return filepath.Join(r.ProxyConfigDir, fmt.Sprintf("%s.yaml", serviceName))
+func (r *ServiceReconciler) getServiceConfigFilePath(svc *apiv1.Service) string {
+	return filepath.Join(r.ProxyConfigDir, fmt.Sprintf("%s-%s.yaml", svc.ObjectMeta.Name, svc.ObjectMeta.UID))
 }
 
 func (r *ServiceReconciler) ensureServiceConfigFile(svc *apiv1.Service, endpoints *apiv1.EndpointList) (string, error) {
-	serviceName := svc.ObjectMeta.Name
-	svcConfigFilePath := r.getServiceConfigFilePath(serviceName)
+	svcConfigFilePath := r.getServiceConfigFilePath(svc)
 
 	if err := ensureDir(filepath.Dir(svcConfigFilePath)); err != nil {
 		return svcConfigFilePath, err
@@ -541,8 +550,8 @@ func (r *ServiceReconciler) ensureServiceConfigFile(svc *apiv1.Service, endpoint
 	return svcConfigFilePath, writeObjectYamlToFile(svcConfigFilePath, proxyConfig)
 }
 
-func (r *ServiceReconciler) deleteServiceConfigFile(name string) error {
-	configFilePath := r.getServiceConfigFilePath(name)
+func (r *ServiceReconciler) deleteServiceConfigFile(svc *apiv1.Service) error {
+	configFilePath := r.getServiceConfigFilePath(svc)
 
 	// Remove the config file
 	if err := os.Remove(configFilePath); errors.Is(err, fs.ErrNotExist) {

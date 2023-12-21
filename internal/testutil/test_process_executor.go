@@ -182,13 +182,13 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 	if len(e.AutoExecutions) > 0 {
 		for _, ae := range e.AutoExecutions {
 			if ae.Condition.Matches(&pe) {
-				go func() {
+				go func(ae AutoExecution) {
 					exitCode := ae.RunCommand(&pe)
 					err := e.stopProcessImpl(pid, exitCode)
 					if err != nil {
 						panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, err))
 					}
-				}()
+				}(ae)
 				break
 			}
 		}

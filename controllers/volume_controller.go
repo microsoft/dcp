@@ -86,7 +86,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change |= r.ensureVolume(ctx, vol.Spec.Name, log)
 	}
 
-	result, err := saveChanges(r.Client, ctx, &vol, patch, change, log)
+	result, err := saveChanges(r.Client, ctx, &vol, patch, change, nil, log)
 	return result, err
 }
 
