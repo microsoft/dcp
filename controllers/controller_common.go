@@ -183,6 +183,7 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 				}
 			} else {
 				log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
+				afterGoodSave()
 				statusSaveCounter.Add(ctx, 1)
 			}
 
