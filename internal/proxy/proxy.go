@@ -186,6 +186,9 @@ func (p *Proxy) Configure(newConfig ProxyConfig) error {
 	// but the call to Configure might come during shutdown, so we do not return an error in that case.
 	if state != proxyStateFinished {
 		p.endpointConfigLoadedChannel.In <- newConfig.Clone()
+		if p.mode == apiv1.UDP {
+			p.shutdownAllUDPStreams()
+		}
 		<-p.configurationApplied
 	}
 
@@ -416,13 +419,6 @@ func (p *Proxy) runUDP(udpListener net.PacketConn) {
 		} else {
 			q := p.getPacketQueue(addr, udpListener, config)
 			q.Enqueue(bytes.Clone(buffer[:bytesRead]))
-			/*
-				if err := p.handleUDPPacket(buffer[:bytesRead], addr, config); err != nil {
-					p.log.Info("Error handling UDP packet", err)
-				}
-
-				p.log.V(1).Info(fmt.Sprintf("Done handling UDP packet from %s", addr.String()))
-			*/
 		}
 	}
 }
@@ -450,13 +446,10 @@ func (p *Proxy) shutdownUDPStream(clientAddr net.Addr) {
 		return
 	}
 
-	if stream.ctx == nil {
-		// Stream is not running
-		return
+	if stream.ctx != nil {
+		stream.cancel()
+		// Endpoint streaming goroutine will close the stream listener.
 	}
-
-	stream.cancel()
-	// Endpoint streaming goroutine will close the stream listener.
 }
 
 func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn, config ProxyConfig) bool {
