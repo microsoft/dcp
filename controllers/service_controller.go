@@ -431,20 +431,38 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		return "", 0
 	}
 
+	var getProxyAddress func(*proxy.Proxy) string
+	var getProxyPort func(*proxy.Proxy) int32
+	var isEligibleProxy func(*proxy.Proxy) bool
+
 	if r.noProxyStartOption() {
 		// This happens only when the reconciler is running under test harness (integration tests).
 		// Since the proxy is not actually started, we are going to report the proxy listen address/port
 		// (from proxy initialization data) as the effective address/port.
-		return proxies[0].proxy.ListenAddress, proxies[0].proxy.ListenPort
+		getProxyAddress = func(p *proxy.Proxy) string { return p.ListenAddress }
+		getProxyPort = func(p *proxy.Proxy) int32 { return p.ListenPort }
+		isEligibleProxy = func(p *proxy.Proxy) bool { return true }
+	} else {
+		getProxyAddress = func(p *proxy.Proxy) string { return p.EffectiveAddress }
+		getProxyPort = func(p *proxy.Proxy) int32 { return p.EffectivePort }
+		isEligibleProxy = func(p *proxy.Proxy) bool { return p.State() == proxy.ProxyStateRunning }
 	}
 
 	// We might bind to multiple addresses if the address specified by the service spec is "localhost".
-	// It should not matter which proxy we pick here, so we just pick the first one.
 	// We do not want to use just "localhost", because then the port could be ambiguous.
+	// We give preference to IPv4 because it is the safer default
+	// (e.g. host.docker.internal resolves to IPv4 on dual-stack machines).
 
+	// We could be fancy and sort the proxies by the IP family of the address they are bound to,
+	// but that is more code than just scanning the slice twice.
 	for _, pd := range proxies {
-		if pd.proxy.State() == proxy.ProxyStateRunning {
-			return proxies[0].proxy.EffectiveAddress, proxies[0].proxy.EffectivePort
+		if isEligibleProxy(pd.proxy) && networking.IsIPv4(getProxyAddress(pd.proxy)) {
+			return getProxyAddress(pd.proxy), getProxyPort(pd.proxy)
+		}
+	}
+	for _, pd := range proxies {
+		if isEligibleProxy(pd.proxy) {
+			return getProxyAddress(pd.proxy), getProxyPort(pd.proxy)
 		}
 	}
 

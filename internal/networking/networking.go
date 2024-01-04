@@ -58,3 +58,11 @@ func IpToString(ip net.IP) string {
 	}
 	return address
 }
+
+func IsIPv4(address string) bool {
+	return net.ParseIP(address).To4() != nil
+}
+
+func IsIPv6(address string) bool {
+	return net.ParseIP(address).To16() != nil
+}
