@@ -43,6 +43,9 @@ spec:
               command:
                 description: Command to run in the container
                 type: string
+              containerName:
+                description: Optional container name
+                type: string
               env:
                 description: Environment settings
                 items:
@@ -69,6 +72,26 @@ spec:
               image:
                 description: Container image
                 type: string
+              networks:
+                description: ContaineNetworks resources the container should be attached
+                  to. If omitted or nil, the container will be attached to the default
+                  network and the controller will not manage network connections.
+                items:
+                  properties:
+                    aliases:
+                      description: Aliases of the container on the network
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: atomic
+                    name:
+                      description: Name of the network to connect to
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
               ports:
                 description: Exposed ports
                 items:
@@ -139,6 +162,10 @@ spec:
                 description: ID of the Container (if an attempt to start the Container
                   was made)
                 type: string
+              containerName:
+                description: Name of the Container (if an attempt to start the Container
+                  was made)
+                type: string
               effectiveArgs:
                 description: Effective values of launch arguments to be passed to
                   the Container, after all substitutions are applied.
@@ -181,6 +208,12 @@ spec:
                 description: A human-readable message that provides additional information
                   about Container state.
                 type: string
+              networks:
+                description: List of ContainerNetworks the Container is connected
+                  to
+                items:
+                  type: string
+                type: array
               startupTimestamp:
                 description: Timestamp of the Container start attempt
                 format: date-time

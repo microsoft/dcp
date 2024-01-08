@@ -46,12 +46,14 @@ The `service-producer` annotation format is an array of JSON objects. Each objec
 | Property | Description |
 | --- | --------- |
 | `serviceName` | Name of the `Service` that the instance implements. Mandatory. |
-| `address` | The address used by the instance to serve the `Service`. Only applies to `Executables`. `Containers` use the address specified, for each container port, via `Ports` property.  <br/> Optional, defaults to `localhost` if not present. |
+| `address` | The address used by the instance to serve the `Service`. <br/><br/> For containers this is the address that the workload should listen on INSIDE the container. This is NOT the address that the container will be available on the host network; that address is part of the `Container` spec, specifically it is the `HostIP` property of the `ContainerPort` definition(s). <br/><br/> Optional, defaults to `localhost` if not present. |
 | `port` | Port used by the instance to serve the service. <br/> <br/> For `Containers` it is mandatory and must match one of the `Container` ports. We first match on `Port.HostPort`, and if one is found, we use that port. If no matching `HostPort` is found, we match on `Port.ContainerPort`. If such port is found, we proxy to the corresponding host port (either specified explicitly, or auto-allocated by container orchestrator). <br/> <br/> For Executables the port is also required *unless* the Executable also expects the port to be injected into it via environment variable and template `portForServing` function (see below). |
 
-### `portForServing` environment variable function
+### `portForServing` template function
 
-The `portForServing` template function can be used to make DCP auto-allocate a port for an `Executable`. That port can then be injected into an `Executable` via an environment variable. Consider the following example, assuming a `Service` named "Catalog_HTTP" has already been created:
+The `portForServing` template function can be used to make DCP auto-allocate a port for an `Executable`. That port can then be injected into an `Executable` via an environment variable (`env` part of the Spec), or via a startup parameter (`args` part of the Spec). 
+
+Consider the following example, assuming a `Service` named "Catalog_HTTP" has already been created:
 
 ```yaml
 apiVersion: usvc-dev.developer.microsoft.com/v1
@@ -83,12 +85,18 @@ The use of `service-producer` annotation and `portForServing` template function 
 
 > Assuming multiple `Endpoints` exist, new `Endpoint` will be used for a request if a client uses a new connection. If the client keeps the connection open for several requests, new `Endpoints` may or may not be used depending on how close, time-wise, the requests are made, and on `Endpoint` connection keep-alive policy. 
 
-## `Service` consumption
+### `addressForServing` template function
+
+If a non-default address is used for producing a service (i.e. not `localhost`), the instance can be passed that address via `addressForServing`. The function verifies that the instance has appropriate `service-producer` annotation with the matching name and then extracts the `address` property out of it. This information, passed to the instance via environment variable or a startup parameter, can then be used inside instance code to bind to correct IP address for the service.
+
+## `Service` consumption (`portFor` and `addressFor` template functions)
 
 If a `Service` uses a well-known (static) port (via `Port` spec property), DCP will try to make the `Service` available for clients on that port. This may not work if the port is already taken by some other program running on the machine before DCP workload is started.
 
-A more robust option is for DCP to auto-allocate the port for a `Service` (by leaving the `Port` property of the `Service` object set to its default value, i.e. zero). Clients can learn the port for the `Service` using `portFor` template function. The use of that function is very similar to previously described `portForServing` function. For example, a client that needs to call the Catalog service, would set the `CATALOG_SVC_PORT` environment variable to `{{- portFor "Catalog_HTTP" -}}` and use the injected value to connect to the Catalog_HTTP service.
+A more robust option is for DCP to auto-allocate the port for a `Service` (by leaving the `Port` property of the `Service` object set to its default value, i.e. zero). Clients can learn the port for the `Service` using `portFor` template function. For example, an instance that needs to call the Catalog service, could get the `CATALOG_SVC_PORT` environment variable set to `{{- portFor "Catalog_HTTP" -}}` and use the injected value to connect to the Catalog_HTTP service.
 
-The injected port is the `EffectivePort` of the `Service`. This ensures, as mentioned previously, that the clients have a stable port to work with, regardless how many replicas of the program(s) implementing the `Service` are running at any given time.
+The injected port is the `EffectivePort` of the `Service`. This ensures that the clients have a stable port to work with, regardless how many replicas of the program(s) implementing the `Service` are running at any given time.
+
+If the `Service` is using a non-standard address (i.e. not `localhost`), clients can learn what the address is via `addressFor` template function. It is used in the same way as `portFor` template function, but returns the `Service` address instead.
 
  

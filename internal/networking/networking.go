@@ -44,3 +44,25 @@ func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 		}
 	}
 }
+
+func IpToString(ip net.IP) string {
+	var address string
+	// The order of checks is significant here
+	if ip4 := ip.To4(); len(ip4) == net.IPv4len {
+		address = ip4.String()
+	} else if ip6 := ip.To16(); len(ip6) == net.IPv6len {
+		address = fmt.Sprintf("[%s]", ip6.String())
+	} else {
+		// Not sure what kind address this is, but it is worth trying
+		address = ip.String()
+	}
+	return address
+}
+
+func IsIPv4(address string) bool {
+	return net.ParseIP(address).To4() != nil
+}
+
+func IsIPv6(address string) bool {
+	return net.ParseIP(address).To16() != nil
+}

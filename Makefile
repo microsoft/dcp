@@ -62,12 +62,6 @@ else
 	build_arch := $(GOARCH)
 endif
 
-ifeq ($(build_os),windows)
-	traefik_zip_suffix := .zip
-else
-	traefik_zip_suffix := .tar.gz
-endif
-
 ifeq ($(build_arch),amd64)
 	GOVERSIONINFO_ARCH_FLAGS := -64
 else ifeq ($(build_arch),arm64)
@@ -98,7 +92,6 @@ OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
 GOVERSIONINFO_GEN ?= $(TOOL_BIN)/goversioninfo$(exe_suffix)
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 ENVTEST ?= $(TOOL_BIN)/setup-envtest$(exe_suffix)
-TRAEFIK ?= $(TOOL_BIN)/traefik$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
@@ -107,7 +100,6 @@ CONTROLLER_TOOLS_VERSION ?= v0.13.0
 CODE_GENERATOR_VERSION ?= v0.28.2
 GOVERSIONINFO_VERSION ?= v1.4.0
 ENVTEST_K8S_VERSION = 1.28.0
-TRAEFIK_VERSION = v2.10.7
 GO_LICENSES_VERSION = v1.6.0
 
 # DCP Version information
@@ -195,24 +187,11 @@ generate-goversioninfo: goversioninfo-gen
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
 
 .PHONY: generate-licenses
-generate-licenses: generate-dependency-notices generate-proxy-notice ## Generates license/notice files for all dependencies
+generate-licenses: generate-dependency-notices ## Generates license/notice files for all dependencies
 
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
 	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpd ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver > NOTICE
-
-.PHONY: generate-proxy-notice
-generate-proxy-notice: download-proxy
-	echo "" >> NOTICE
-	echo "---------------------------------------------------------" >> NOTICE
-	echo "" >> NOTICE
-	echo "github.com/traefik/traefik $(TRAEFIK_VERSION) - MIT" >> NOTICE
-	echo "https://github.com/traefik/traefik/blob/master/LICENSE.md" >> NOTICE
-	echo "" >> NOTICE
-	cat $(OUTPUT_BIN)/ext/bin/LICENSE.md >> NOTICE
-	echo "" >> NOTICE
-	echo "---------------------------------------------------------" >> NOTICE
-	echo "" >> NOTICE
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)
@@ -307,7 +286,7 @@ install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to thei
 	$(install) $(DCP_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
-uninstall: uninstall-proxy ## Uninstalls all binaries from their destinations
+uninstall: ## Uninstalls all binaries from their destinations
 	$(rm_f) $(EXTENSIONS_DIR)/dcpd$(bin_exe_suffix)
 	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
@@ -317,44 +296,6 @@ ifneq ($(detected_OS),windows)
 link-dcp: ## Links the dcp binary to /usr/local/bin (macOS/Linux ONLY). Use 'sudo -E" to run this target (sudo -E make link-dcp). Typically it is a one-time operation (the symbolic link does not need to change when you modify the binary).
 	ln -s -v $(DCP_DIR)/dcp$(bin_exe_suffix) /usr/local/bin/dcp$(bin_exe_suffix)
 endif
-
-proxy-version:
-	@echo $(TRAEFIK_VERSION)
-
-.PHONY: download-proxy
-download-proxy: traefik_zip := traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch)$(traefik_zip_suffix)
-download-proxy: | $(TOOL_BIN) ${OUTPUT_BIN}/ext/bin/
-ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(TOOL_BIN)/$(traefik_zip)")) { curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/$(traefik_zip) --output $(TOOL_BIN)/$(traefik_zip) }
-else
-	[[ -s "$(TOOL_BIN)/$(traefik_zip)" ]] || curl -sSfL https://github.com/traefik/traefik/releases/download/$(TRAEFIK_VERSION)/$(traefik_zip) --output $(TOOL_BIN)/$(traefik_zip)
-endif
-
-ifeq ($(detected_OS).$(build_os),windows.windows)
-	Expand-Archive -Force -Path $(TOOL_BIN)/$(traefik_zip) -DestinationPath ${OUTPUT_BIN}/ext/bin/
-else ifeq (.$(build_os),.windows)
-	unzip -o $(TOOL_BIN)/$(traefik_zip) -d ${OUTPUT_BIN}/ext/bin/
-else
-	tar -xzf $(TOOL_BIN)/$(traefik_zip) -C ${OUTPUT_BIN}/ext/bin/
-endif
-
-.PHONY: install-proxy
-install-proxy: traefik_zip := traefik_$(TRAEFIK_VERSION)_$(build_os)_$(build_arch)$(traefik_zip_suffix)
-install-proxy: $(TOOL_BIN) $(BIN_DIR) download-proxy ## Installs the Traefik proxy used (necessary for running workloads with Service objects)
-ifeq ($(detected_OS).$(build_os),windows.windows)
-	Expand-Archive -Force -Path $(TOOL_BIN)/$(traefik_zip) -DestinationPath $(TOOL_BIN)
-else ifeq (.$(build_os),.windows)
-	unzip -o $(TOOL_BIN)/$(traefik_zip) -d $(TOOL_BIN)
-else
-	tar -xzf $(TOOL_BIN)/$(traefik_zip) -C $(TOOL_BIN)
-endif
-	$(install) $(TOOL_BIN)/traefik$(bin_exe_suffix) $(BIN_DIR)
-	$(install) $(TOOL_BIN)/LICENSE.md $(BIN_DIR)
-
-.PHONY: uninstall-proxy
-uninstall-proxy:
-	$(rm_f) $(BIN_DIR)/traefik$(bin_exe_suffix)
-	$(rm_f) $(BIN_DIR)/LICENSE.md
 
 ##@ Test targets
 

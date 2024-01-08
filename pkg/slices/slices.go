@@ -166,7 +166,7 @@ func All[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
 	return LenIf(ss, selector) == len(ss)
 }
 
-func Any[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
+func IndexFunc[T any, SF SelectFunc[T]](ss []T, selector SF) int {
 	sf := func(i int, s T) bool {
 		switch tsf := (any)(selector).(type) {
 		case func(int, T) bool:
@@ -183,15 +183,19 @@ func Any[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
 	}
 
 	if len(ss) == 0 {
-		return false
+		return -1
 	}
 
 	for i, s := range ss {
 		if sf(i, s) {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
+}
+
+func Any[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
+	return IndexFunc(ss, selector) != -1
 }
 
 type accumulatorFunc[T any, R any] interface {

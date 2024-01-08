@@ -165,6 +165,17 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			return err
 		}
 
+		networkCtrl := controllers.NewNetworkReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("NetworkReconciler"),
+			containerOrchestrator,
+		)
+		if err = networkCtrl.SetupWithManager(mgr); err != nil {
+			log.Error(err, "unable to setup a ContainerNetwork controller")
+			return err
+		}
+
 		serviceCtrl := controllers.NewServiceReconciler(
 			ctx,
 			mgr.GetClient(),

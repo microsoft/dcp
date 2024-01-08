@@ -20,8 +20,4 @@ foreach ($dep in $inderectDeps) {
     $manifest.registrations += $registration
 }
 
-$traefikVersion = make proxy-version
-
-$manifest.registrations += @{component = @{type = "go"; go = @{name = "github.com/traefik/traefik"; version = $traefikVersion}}}
-
 $manifest | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 -Path "cgmanifest.json"

@@ -26,9 +26,18 @@ func (e errServiceNotAssignedPort) Error() string {
 	return fmt.Sprintf("service '%s' does not have a port assigned yet", e.Service.String())
 }
 
-func isServiceNotAssignedPort(err error) bool {
-	var e errServiceNotAssignedPort
-	return errors.As(err, &e)
+type errServiceNotAssignedAddress struct {
+	Service types.NamespacedName
+}
+
+func (e errServiceNotAssignedAddress) Error() string {
+	return fmt.Sprintf("service '%s' does not have an address assigned yet", e.Service.String())
+}
+
+func isTransientTemplateError(err error) bool {
+	var ePort errServiceNotAssignedPort
+	var eAddress errServiceNotAssignedAddress
+	return errors.As(err, &ePort) || errors.As(err, &eAddress)
 }
 
 // Creates a template for evaluating a value of a spec field.
@@ -72,11 +81,36 @@ func newSpecValueTemplate(
 				// the service appears in the system, leaving the Executable in "pending" state.
 				// This would necessitate watching over Services (specifically, Service creation).
 				return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
-			} else if svc.Status.EffectivePort == 0 {
+			}
+
+			if svc.Status.EffectivePort == 0 {
 				return 0, errServiceNotAssignedPort{Service: serviceName}
 			}
 
 			return svc.Status.EffectivePort, nil
+		},
+
+		"addressForServing": func(serviceNamespacedName string) (string, error) {
+			return addressForServing(serviceNamespacedName, contextObj, servicesProduced)
+		},
+
+		"addressFor": func(serviceNamespacedName string) (string, error) {
+			var serviceName = asNamespacedName(serviceNamespacedName, contextObj.GetObjectMeta().Namespace)
+
+			// Need to take a peek at the Service to find out what address it is assigned.
+			var svc apiv1.Service
+			if err := client.Get(ctx, serviceName, &svc); err != nil {
+				// CONSIDER in future we could be smarter and delay the startup of the Executable until
+				// the service appears in the system, leaving the Executable in "pending" state.
+				// This would necessitate watching over Services (specifically, Service creation).
+				return "", fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
+			}
+
+			if svc.Status.EffectiveAddress == "" {
+				return "", errServiceNotAssignedPort{Service: serviceName}
+			}
+
+			return svc.Status.EffectiveAddress, nil
 		},
 	})
 
@@ -112,7 +146,7 @@ func executeTemplate(
 
 	var sb strings.Builder
 	err = inputTmpl.Execute(&sb, contextObj)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		// Fatal error that should prevent the contextObj from running.
 		return "", err
 	} else if err != nil {
@@ -160,7 +194,7 @@ func portForServingFromExecutable(
 			// the service appears in the system, leaving the Executable in "pending" state.
 			// This would necessitate watching over Services (specifically, Service creation).
 			return 0, fmt.Errorf(
-				"service '%s' referenced by object '%s' specification does not exist",
+				"service '%s' referenced by executable '%s' specification does not exist",
 				serviceName,
 				exe.NamespacedName().String(),
 			)
@@ -179,11 +213,7 @@ func portForServingFromExecutable(
 		return port, nil
 	}
 
-	return 0, fmt.Errorf(
-		"service '%s' referenced by object '%s' specification is not produced by this object",
-		serviceName,
-		exe.NamespacedName().String(),
-	)
+	return 0, serviceNotProducedErr(serviceName, exe)
 }
 
 func portForServingFromContainer(
@@ -232,16 +262,40 @@ func portForServingFromContainer(
 			return matchedPort.ContainerPort, nil
 		} else {
 			return 0, fmt.Errorf(
-				"service '%s' referenced by object '%s' specification does not have a matching port",
+				"service '%s' referenced by container '%s' specification does not have a matching port",
 				serviceName,
 				ctr.NamespacedName().String(),
 			)
 		}
 	}
 
-	return 0, fmt.Errorf(
-		"service '%s' referenced by object '%s' specification is not produced by this object",
+	return 0, serviceNotProducedErr(serviceName, ctr)
+}
+
+func addressForServing(serviceNamespacedName string, obj dcpModelObject, servicesProduced []ServiceProducer) (string, error) {
+	var serviceName = asNamespacedName(serviceNamespacedName, obj.GetObjectMeta().Namespace)
+
+	for _, sp := range servicesProduced {
+		if serviceName != sp.ServiceNamespacedName() {
+			continue
+		}
+
+		if sp.Address != "" {
+			return sp.Address, nil
+		} else {
+			return "localhost", nil
+		}
+	}
+
+	return "", serviceNotProducedErr(serviceName, obj)
+}
+
+func serviceNotProducedErr(serviceName types.NamespacedName, obj dcpModelObject) error {
+	return fmt.Errorf(
+		"service '%s' referenced by %s '%s' specification is not produced by this %s",
 		serviceName,
-		ctr.NamespacedName().String(),
+		obj.GetObjectKind().GroupVersionKind().Kind,
+		obj.NamespacedName().String(),
+		obj.GetObjectKind().GroupVersionKind().Kind,
 	)
 }

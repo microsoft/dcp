@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -13,12 +12,71 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/controllers"
-	ct "github.com/microsoft/usvc-apiserver/internal/containers"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
+
+func ensureContainerRunning(t *testing.T, ctx context.Context, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
+	updated := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(container), func(currentContainer *apiv1.Container) (bool, error) {
+		if currentContainer.Status.State == apiv1.ContainerStateFailedToStart {
+			return false, fmt.Errorf("container creation failed: %s", currentContainer.Status.Message)
+		}
+
+		return currentContainer.Status.State == apiv1.ContainerStateRunning, nil
+	})
+
+	inspectedContainers, err := orchestrator.InspectContainers(ctx, []string{updated.Status.ContainerID})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspectedContainers, 1, "expected to find a single container")
+
+	return updated, inspectedContainers[0]
+}
+
+func ensureContainerStarting(t *testing.T, ctx context.Context, container *apiv1.Container) *apiv1.Container {
+	updated := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(container), func(currentContainer *apiv1.Container) (bool, error) {
+		if currentContainer.Status.State == apiv1.ContainerStateFailedToStart {
+			return false, fmt.Errorf("container creation failed: %s", currentContainer.Status.Message)
+		}
+
+		return currentContainer.Status.State == apiv1.ContainerStateStarting, nil
+	})
+
+	return updated
+}
+
+func TestInvalidContainerName(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "invalid-container-name",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: "%%%INVALIDNAME%%%",
+			Image:         "invalid-container-name-image",
+		},
+	}
+
+	require.Len(t, ctr.Validate(ctx), 1, "Expected validation error for invalid container name")
+
+	ctr = apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "valid-container-name",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: "a-1.2_34",
+			Image:         "valid-container-name-image",
+		},
+	}
+
+	require.Len(t, ctr.Validate(ctx), 0, "Unexpected validation error for valid container name")
+}
 
 // Ensure a container instance is started when new Container object appears
 func TestContainerInstanceStarts(t *testing.T) {
@@ -28,7 +86,6 @@ func TestContainerInstanceStarts(t *testing.T) {
 
 	const testName = "container-instance-starts"
 	const imageName = testName + "-image"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -44,10 +101,7 @@ func TestContainerInstanceStarts(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	t.Log("Check if corresponding container has started...")
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
+	_, _ = ensureContainerRunning(t, ctx, &ctr)
 }
 
 func TestContainerMarkedDone(t *testing.T) {
@@ -57,7 +111,6 @@ func TestContainerMarkedDone(t *testing.T) {
 
 	const testName = "container-marked-done"
 	const imageName = testName + "-image"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -73,14 +126,10 @@ func TestContainerMarkedDone(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container")
 
-	t.Log("Check if corresponding container has started...")
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
+	updatedContainer, _ := ensureContainerRunning(t, ctx, &ctr)
 
-	t.Log("Simulating container exit...")
-	err = simulateContainerExit(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Could not simulate container exit")
+	err = orchestrator.SimulateContainerExit(ctx, updatedContainer.Status.ContainerID)
+	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure Container object status reflects the state of the running container...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
@@ -106,19 +155,13 @@ func TestContainerStartupFailure(t *testing.T) {
 		},
 	}
 
+	// Cause the orchestrator to fail to create the container
+	errMsg := fmt.Sprintf("Container '%s' could not be run because it is just a test :-)", testName)
+	orchestrator.FailMatchingContainers(ctx, testName, 1, errMsg)
+
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container")
-
-	// Technically, we are simulation the failure of the orchestrator to start the container...
-	t.Log("Simulating container startup failure...")
-	dockerRunCmd, err := waitForDockerCommand(t, ctx, []string{"run"}, imageName)
-	require.NoError(t, err)
-
-	errMsg := fmt.Sprintf("Container '%s' could not be run because it is just a test :-)", imageName)
-	_, err = dockerRunCmd.Cmd.Stderr.Write([]byte(errMsg))
-	require.NoError(t, err)
-	processExecutor.SimulateProcessExit(t, dockerRunCmd.PID, 1)
 
 	// The container should be marked as "failed to start", and the Message property of its status
 	// should contain the error from container orchestrator, i.e. Docker
@@ -130,6 +173,32 @@ func TestContainerStartupFailure(t *testing.T) {
 	})
 }
 
+func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports []apiv1.ContainerPort) {
+	for _, port := range ports {
+		protocol := port.Protocol
+		if protocol == "" {
+			protocol = "tcp"
+		}
+		mappings, found := inspected.Ports[fmt.Sprintf("%d/%s", port.ContainerPort, protocol)]
+		require.True(t, found, "container port %d/%s was not published", port.ContainerPort, port.Protocol)
+		require.Len(t, mappings, 1, "expected a single mapping for container port %d", port.ContainerPort)
+
+		hostPort := port.HostPort
+		if hostPort == 0 {
+			hostPort = port.ContainerPort
+		}
+		require.Equal(t, fmt.Sprintf("%d", hostPort), mappings[0].HostPort, "expected the host port to be %s", hostPort)
+
+		hostIP := port.HostIP
+		if hostIP == "" {
+			hostIP = "127.0.0.1"
+		}
+		require.Equal(t, hostIP, mappings[0].HostIp, "expected the host IP to be %s", hostIP)
+	}
+
+	require.Len(t, maps.Keys(inspected.Ports), len(ports), "did not find expected number of ports")
+}
+
 // If ports are part of the spec, they are published to the host
 func TestContainerStartWithPorts(t *testing.T) {
 	t.Parallel()
@@ -139,7 +208,6 @@ func TestContainerStartWithPorts(t *testing.T) {
 	// Case 1: just ContainerPort
 	testName := "container-start-with-ports-case1"
 	imageName := testName + "-image"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -159,30 +227,13 @@ func TestContainerStartWithPorts(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	t.Logf("Ensure that the container is started with the expected ports published...")
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1::2345"}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1::3456"}) == -1 {
-			return false
-		}
-		return true
-	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
 
-	t.Log("Complete the container startup sequence...")
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+	validatePorts(t, inspected, ctr.Spec.Ports)
 
 	// Case 2: ContainerPort and HostPort
 	testName = "container-start-with-ports-case2"
 	imageName = testName + "-image"
-	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr = apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -202,30 +253,13 @@ func TestContainerStartWithPorts(t *testing.T) {
 	err = client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	t.Logf("Ensure that the container is started with the expected ports published...")
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1:8885:2345"}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.0.1:8886:3456"}) == -1 {
-			return false
-		}
-		return true
-	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
+	_, inspected = ensureContainerRunning(t, ctx, &ctr)
 
-	t.Log("Complete the container startup sequence...")
-	creationTime = time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+	validatePorts(t, inspected, ctr.Spec.Ports)
 
 	// Case 3: ContainerPort and HostIP
 	testName = "container-start-with-ports-case3"
 	imageName = testName + "-image"
-	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr = apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -245,30 +279,13 @@ func TestContainerStartWithPorts(t *testing.T) {
 	err = client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	t.Logf("Ensure that the container is started with the expected ports published...")
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.2.3::2345"}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.2.4::3456"}) == -1 {
-			return false
-		}
-		return true
-	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
+	_, inspected = ensureContainerRunning(t, ctx, &ctr)
 
-	t.Log("Complete the container startup sequence...")
-	creationTime = time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+	validatePorts(t, inspected, ctr.Spec.Ports)
 
 	// Case 4: ContainerPort, HostIP, and Portocol
 	testName = "container-start-with-ports-case4"
 	imageName = testName + "-image"
-	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr = apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -288,30 +305,13 @@ func TestContainerStartWithPorts(t *testing.T) {
 	err = client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	t.Logf("Ensure that the container is started with the expected ports published...")
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.3.4::2345/tcp"}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.4.4::3456/udp"}) == -1 {
-			return false
-		}
-		return true
-	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
+	_, inspected = ensureContainerRunning(t, ctx, &ctr)
 
-	t.Log("Complete the container startup sequence...")
-	creationTime = time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+	validatePorts(t, inspected, ctr.Spec.Ports)
 
 	// Case 5: ContainerPort, HostIP, HostPort, and Protocol
 	testName = "container-start-with-ports-case5"
 	imageName = testName + "-image"
-	containerID = testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr = apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -331,25 +331,9 @@ func TestContainerStartWithPorts(t *testing.T) {
 	err = client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	t.Logf("Ensure that the container is started with the expected ports published...")
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, imageName, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.3.4:12202:2345/tcp"}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", "127.0.4.4:12205:3456/udp"}) == -1 {
-			return false
-		}
-		return true
-	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
+	_, inspected = ensureContainerRunning(t, ctx, &ctr)
 
-	t.Log("Complete the container startup sequence...")
-	creationTime = time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
+	validatePorts(t, inspected, ctr.Spec.Ports)
 }
 
 func TestContainerStop(t *testing.T) {
@@ -359,7 +343,6 @@ func TestContainerStop(t *testing.T) {
 
 	const testName = "container-stop-state"
 	const imageName = testName + "-image"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -375,36 +358,36 @@ func TestContainerStop(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container")
 
-	t.Logf("Check if corresponding container has started '%s'...", ctr.ObjectMeta.Name)
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
-
-	ensureContainerInspectResponse(t, imageName, containerID, creationTime, ct.ContainerStatusRunning)
-	ensureContainerStopResponse(t, containerID)
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
-	containerPatch := ctr.DeepCopy()
+	containerPatch := updatedCtr.DeepCopy()
 	containerPatch.Spec.Stop = true
 	err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(&ctr))
 	require.NoError(t, err, "Container object could not be patched")
 
-	t.Logf("Check if corresponding container was deleted '%s'...", ctr.ObjectMeta.Name)
-	err = waitForDockerContainerStopped(t, ctx, containerID)
-	require.NoError(t, err, "Container was not stopped as expected")
+	// The container should be marked as "failed to start", and the Message property of its status
+	// should contain the error from container orchestrator, i.e. Docker
+	t.Log("Ensure container state is 'failed to start'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
 
-	ensureContainerDeletionResponse(t, containerID)
+	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
 	err = client.Delete(ctx, &ctr)
 	require.NoError(t, err, "Container object could not be deleted")
 
-	t.Logf("Check if corresponding container was deleted '%s'...", ctr.ObjectMeta.Name)
-	err = waitForDockerContainerRemoved(t, ctx, containerID)
-	require.NoError(t, err, "Container was not deleted as expected")
-
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	inspected, err = orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.Error(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 0, "expected the container to be gone")
 }
 
 func TestContainerDeletion(t *testing.T) {
@@ -414,7 +397,6 @@ func TestContainerDeletion(t *testing.T) {
 
 	const testName = "container-deletion"
 	const imageName = testName + "-image"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -430,81 +412,18 @@ func TestContainerDeletion(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container")
 
-	t.Logf("Check if corresponding container has started '%s'...", ctr.ObjectMeta.Name)
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
-
-	ensureContainerDeletionResponse(t, containerID)
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
 	err = client.Delete(ctx, &ctr)
 	require.NoError(t, err, "Container object could not be deleted")
 
-	t.Logf("Check if corresponding container was deleted '%s'...", ctr.ObjectMeta.Name)
-	err = waitForDockerContainerRemoved(t, ctx, containerID)
-	require.NoError(t, err, "Container was not deleted as expected")
-
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
-}
 
-func TestContainerParallelStart(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	const containerCount = 4
-	require.LessOrEqual(t, containerCount, controllers.MaxParallelContainerStarts, "This test is not designed to verify parallel start throttling beyond maxParallelContainerStarts")
-
-	const containerNameFormat = "container-parallel-start-%d"
-	const containerImageFormat = containerNameFormat + "-image"
-	const containerIDFormat = containerNameFormat + "-%s"
-
-	for i := 0; i < containerCount; i++ {
-		ctr := apiv1.Container{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf(containerNameFormat, i),
-				Namespace: metav1.NamespaceNone,
-			},
-			Spec: apiv1.ContainerSpec{
-				Image: fmt.Sprintf(containerImageFormat, i),
-			},
-		}
-
-		t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
-		err := client.Create(ctx, &ctr)
-		require.NoError(t, err, "Could not create a Container '%s'", ctr.ObjectMeta.Name)
-	}
-
-	t.Log("Ensure that all containers are in the process of being started...")
-	for i := 0; i < containerCount; i++ {
-		// Do not use ensureContainerRunning() just yet, because that one completes the container startup sequence
-		// and will not allow us to verify that the containers are being started in parallel.
-		// Just check that the appropriate "docker run" command was issued here.
-		image := fmt.Sprintf(containerImageFormat, i)
-		_, err := waitForDockerCommand(t, ctx, []string{"run"}, image)
-		require.NoError(t, err, "Could not find the expected 'docker run' command for container '%s'", image)
-	}
-
-	t.Log("Complete the container startup sequences...")
-	for i := 0; i < containerCount; i++ {
-		err := ensureContainerRunning(t, ctx,
-			fmt.Sprintf(containerImageFormat, i),
-			fmt.Sprintf(containerIDFormat, i, testutil.GetRandLetters(t, 6)), time.Now().UTC(),
-		)
-		require.NoError(t, err, "Docker run command for Container '%s' was not issued as expected", fmt.Sprintf(containerNameFormat, i))
-	}
-
-	// We need to make sure the containers were actually started, and not just timed out on the start attempt.
-	for i := 0; i < containerCount; i++ {
-		containerName := fmt.Sprintf(containerNameFormat, i)
-		t.Logf("Ensure Container '%s' is running...", containerName)
-		containerKey := ctrl_client.ObjectKey{Name: containerName, Namespace: metav1.NamespaceNone}
-		waitObjectAssumesState(t, ctx, containerKey, func(c *apiv1.Container) (bool, error) {
-			return c.Status.State == apiv1.ContainerStateRunning, nil
-		})
-	}
+	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.Error(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 0, "expected the container to be gone")
 }
 
 func TestContainerRestart(t *testing.T) {
@@ -515,7 +434,6 @@ func TestContainerRestart(t *testing.T) {
 	// If a container shuts down and then restarts, it should be tracked as running
 	const testName = "container-restart"
 	const imageName = testName + "-image"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -529,15 +447,11 @@ func TestContainerRestart(t *testing.T) {
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
 	err := client.Create(ctx, &ctr)
-	require.NoError(t, err, "Could not create a Container")
+	require.NoError(t, err, "could not create a Container")
 
-	t.Log("Check if corresponding container has started...")
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
-
-	err = simulateContainerExit(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Could not simulate container exit")
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	err = orchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID)
+	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure container state is 'stopped'...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
@@ -545,15 +459,11 @@ func TestContainerRestart(t *testing.T) {
 		return statusUpdated, nil
 	})
 
-	// Restart the container
-	err = simulateContainerStart(t, ctx, ctr.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Could not simulate container start")
+	_, err = orchestrator.StartContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "could not simulate container start")
 
 	t.Log("Ensure container state is 'running'...")
-	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
-		statusUpdated := c.Status.State == apiv1.ContainerStateRunning
-		return statusUpdated, nil
-	})
+	_, _ = ensureContainerRunning(t, ctx, &ctr)
 }
 
 func TestContainerMultipleServingPortsInjected(t *testing.T) {
@@ -638,33 +548,19 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
 
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+
 	t.Logf("Ensure that Container '%s' is started with the expected ports, env vars, and startup args...", ctr.ObjectMeta.Name)
 	expectedArg := fmt.Sprintf("--svc-b-port=%d", svcBContainerPort)
+	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
+
 	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAContainerPort)
+	require.Equal(t, fmt.Sprintf("%d", svcAContainerPort), inspected.Env["SVC_A_PORT"], "expected the container to have the env var %s", expectedEnvVar)
 
-	_, err = ctrl_testutil.WaitForCommand(processExecutor, ctx, []string{"docker", "run"}, expectedArg, func(pe *ctrl_testutil.ProcessExecution) bool {
-		if !pe.Running() {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", fmt.Sprintf("%s:%d:%d/tcp", IPAddr, svcAHostPort, svcAContainerPort)}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-p", fmt.Sprintf("%s::%d/tcp", IPAddr, svcBContainerPort)}) == -1 {
-			return false
-		}
-		if slices.SeqIndex(pe.Cmd.Args, []string{"-e", expectedEnvVar}) == -1 {
-			return false
-		}
-		// The expected argument is checked via "lastArg" parameter of the WaitForCommand() function above
-		return true
+	validatePorts(t, inspected, []apiv1.ContainerPort{
+		{ContainerPort: svcAContainerPort, HostPort: svcAHostPort, HostIP: IPAddr, Protocol: "tcp"},
+		{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 	})
-	require.NoError(t, err, "Could not find the expected 'docker run' command")
-
-	t.Log("Complete the container startup sequence...")
-	creationTime := time.Now().UTC()
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
-	err = ensureContainerRunningWithArg(t, ctx, ctr.Spec.Image, expectedArg, containerID, creationTime)
-	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
 
 	t.Logf("Ensure the Status.EffectiveEnv for Container '%s' contains the injected ports...", ctr.ObjectMeta.Name)
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
@@ -679,143 +575,84 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected port for service B. The startup parameters are %v", ctr.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
 }
 
-func ensureContainerRunning(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
-	return ensureContainerRunningWithArg(t, ctx, image, image, containerID, created)
-}
+func TestContainerServingAddressInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
 
-func ensureContainerRunningWithArg(t *testing.T, ctx context.Context, image string, lastArg string, containerID string, created time.Time) error {
-	// Ensure appropriate "docker run" command has been executed
-	dockerRunCmd, err := waitForDockerCommand(t, ctx, []string{"run"}, lastArg)
-	if err != nil {
-		return err
-	}
+	const testName = "test-container-serving-address-injected"
+	const ServiceIPAddr = "127.63.29.2"
+	const ContainerIPAddr = "127.63.29.3"
 
-	// Make sure we are ready for the container to be inspected
-	ensureContainerInspectResponse(t, image, containerID, created, ct.ContainerStatusRunning)
-
-	// Reply to "docker run" command with a container ID
-	_, err = dockerRunCmd.Cmd.Stdout.Write([]byte(containerID + "\n"))
-	if err != nil {
-		t.Errorf("Could not provide container ID to the controller: %v", err)
-		return err
-	}
-	processExecutor.SimulateProcessExit(t, dockerRunCmd.PID, 0)
-
-	return nil
-}
-
-func simulateContainerExit(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
-	return simulateContainerEvent(t, ctx, image, containerID, created, ct.EventActionDie, ct.ContainerStatusExited)
-}
-
-func simulateContainerStart(t *testing.T, ctx context.Context, image string, containerID string, created time.Time) error {
-	return simulateContainerEvent(t, ctx, image, containerID, created, ct.EventActionStart, ct.ContainerStatusRunning)
-}
-
-func simulateContainerEvent(t *testing.T, ctx context.Context, image string, containerID string, created time.Time, event ct.EventAction, status ct.ContainerStatus) error {
-	eventsCmd, err := waitForDockerCommand(t, ctx, []string{"events"}, "")
-	if err != nil {
-		return err
-	}
-
-	// The controller will want to inspect the exited container
-	ensureContainerInspectResponse(t, image, containerID, created, status)
-
-	// Emit container event
-	_, err = eventsCmd.Cmd.Stdout.Write([]byte(getContainerEventJson(containerID, event) + "\n"))
-	if err != nil {
-		t.Errorf("Could not emit container Die event: %v", err)
-		return err
-	}
-
-	return nil
-}
-
-func ensureContainerStopResponse(t *testing.T, containerID string) {
-	autoExec := ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
-			Command: []string{"docker", "container", "stop"},
-			LastArg: containerID,
-			Cond:    (*ctrl_testutil.ProcessExecution).Running,
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-svc",
+			Namespace: metav1.NamespaceNone,
 		},
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
-			_, err := pe.Cmd.Stdout.Write([]byte(containerID + "\n"))
-			if err != nil {
-				t.Errorf("Could not simulate container stop: %v", err)
-			}
-			return 0
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  ServiceIPAddr,
+			Port:     26003,
 		},
 	}
-	processExecutor.InstallAutoExecution(autoExec)
-}
 
-func ensureContainerDeletionResponse(t *testing.T, containerID string) {
-	autoExec := ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
-			Command: []string{"docker", "container", "rm"},
-			LastArg: containerID,
-			Cond:    (*ctrl_testutil.ProcessExecution).Running,
-		},
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
-			_, err := pe.Cmd.Stdout.Write([]byte(containerID + "\n"))
-			if err != nil {
-				t.Errorf("Could not simulate container removal: %v", err)
-			}
-			return 0
-		},
-	}
-	processExecutor.InstallAutoExecution(autoExec)
-}
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
 
-func ensureContainerInspectResponse(t *testing.T, image string, containerID string, created time.Time, status ct.ContainerStatus) {
-	inspectRes := getInspectedContainerJson(containerID, image, created, status) + "\n"
-	autoExec := ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
-			Command: []string{"docker", "container", "inspect"},
-			LastArg: containerID,
-			Cond:    (*ctrl_testutil.ProcessExecution).Running,
+	const ContainerPort = 26004
+	var spAnn strings.Builder
+	spAnn.WriteString("[")
+	spAnn.WriteString(fmt.Sprintf(`{ "serviceName":"%s", "address": "%s", "port": %d }`, svc.ObjectMeta.Name, ContainerIPAddr, ContainerPort))
+	spAnn.WriteString("]")
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testName + "-server",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": spAnn.String()},
 		},
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
-			_, err := pe.Cmd.Stdout.Write([]byte(inspectRes))
-			if err != nil {
-				t.Errorf("Could not provide container inspection result: %v", err)
-			}
-			return 0
+		Spec: apiv1.ContainerSpec{
+			Image: testName + "-image",
+			Ports: []apiv1.ContainerPort{
+				{ContainerPort: ContainerPort},
+			},
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SERVICE_ADDRESS",
+					Value: fmt.Sprintf(`{{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+			Args: []string{
+				fmt.Sprintf(`--serving-address={{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
+			},
 		},
 	}
-	processExecutor.InstallAutoExecution(autoExec)
-}
 
-func getInspectedContainerJson(containerID string, image string, created time.Time, status ct.ContainerStatus) string {
-	// Note: you can use the following command to get inspected container data from Docker CLI
-	// filtered down to what container controller cares about
-	// docker inspect <container id> | jq --indent 4 '.[0] | {Id, Name, Created, Config: {Image: .Config.Image}, State: {StartedAt: .State.StartedAt, Status: .State.Status, ExitCode: .State.ExitCode}}'
+	t.Logf("Creating Container '%s'...", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
 
-	started := created.Add(100 * time.Millisecond)
-	retval := fmt.Sprintf(`{
-		"Id": "%s",
-		"Name": "/%s_name",
-		"Created": "%s",
-		"Config": {
-			"Image": "%s"
-		},
-		"State": {
-			"StartedAt": "%s",
-			"Status": "%s",
-			"ExitCode": 0
-		}
-	}`, containerID, containerID, created.Format(time.RFC3339), image, started.Format(time.RFC3339), status)
+	t.Logf("Ensure that Container '%s' is started with the expected ports, env vars, and startup args...", ctr.ObjectMeta.Name)
+	expectedArg := fmt.Sprintf("--serving-address=%s", ContainerIPAddr)
+	expectedEnvVar := fmt.Sprintf("SERVICE_ADDRESS=%s", ServiceIPAddr)
 
-	return strings.ReplaceAll(retval, "\n", " ") // Make it a single-line (JSON lines) record
-}
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
+	require.Equal(t, ServiceIPAddr, inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
+	validatePorts(t, inspected, []apiv1.ContainerPort{
+		{ContainerPort: ContainerPort, HostIP: "127.0.0.1"},
+	})
 
-func getContainerEventJson(containerID string, action ct.EventAction) string {
-	retval := fmt.Sprintf(`{
-		"Type": "%s",
-		"Action": "%s",
-		"Actor": {
-			"ID": "%s"
-		}
-	}`, ct.EventSourceContainer, action, containerID)
-	return strings.ReplaceAll(retval, "\n", " ")
+	t.Logf("Ensure the Status.EffectiveEnv for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected address information for service '%s'. The effective environemtn is %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, effectiveEnv)
+
+	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
+	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected address information for service '%s'. The startup parameters are %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
 }

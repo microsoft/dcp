@@ -122,9 +122,9 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	b.Reset()
 
 	// One record with whitespace around
-	b.WriteString(` 
-	{"CreatedAt":"2023-01-06T23:29:43Z","Driver":"local","Labels":{},"Mountpoint":"/var/lib/docker/volumes/foo/_data","Name":"foo","Options":{},"Scope":"local"}  
-	
+	b.WriteString(`
+	{"CreatedAt":"2023-01-06T23:29:43Z","Driver":"local","Labels":{},"Mountpoint":"/var/lib/docker/volumes/foo/_data","Name":"foo","Options":{},"Scope":"local"}
+
 	`)
 	vols, err = asObjects(&b, unmarshalVolume)
 	require.NoError(t, err)
@@ -132,9 +132,9 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	b.Reset()
 
 	// Two records, with some whitespace
-	b.WriteString(` 
-	{"CreatedAt":"2023-01-06T23:29:43Z","Driver":"local","Labels":{},"Mountpoint":"/var/lib/docker/volumes/foo/_data","Name":"foo","Options":{},"Scope":"local"}  
-	{"CreatedAt":"2022-12-22T17:45:33Z","Driver":"local","Labels":{"com.docker.compose.project":"db","com.docker.compose.version":"2.13.0","com.docker.compose.volume":"sql-data"},"Mountpoint":"/var/lib/docker/volumes/db_sql-data/_data","Name":"db_sql-data","Options":null,"Scope":"local"}  
+	b.WriteString(`
+	{"CreatedAt":"2023-01-06T23:29:43Z","Driver":"local","Labels":{},"Mountpoint":"/var/lib/docker/volumes/foo/_data","Name":"foo","Options":{},"Scope":"local"}
+	{"CreatedAt":"2022-12-22T17:45:33Z","Driver":"local","Labels":{"com.docker.compose.project":"db","com.docker.compose.version":"2.13.0","com.docker.compose.volume":"sql-data"},"Mountpoint":"/var/lib/docker/volumes/db_sql-data/_data","Name":"db_sql-data","Options":null,"Scope":"local"}
 
 	`)
 	vols, err = asObjects(&b, unmarshalVolume)
@@ -328,7 +328,7 @@ func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessag
 	}
 }
 
-func subscribe(t *testing.T, ctx context.Context, dco *DockerCliOrchestrator) (ct.EventSubscription, <-chan ct.EventMessage) {
+func subscribe(t *testing.T, ctx context.Context, dco *DockerCliOrchestrator) (*ct.EventSubscription, <-chan ct.EventMessage) {
 	const initialEventChannelCapacity = 5
 	evtC := chanx.NewUnboundedChan[ct.EventMessage](ctx, initialEventChannelCapacity)
 	sub, err := dco.WatchContainers(evtC.In)

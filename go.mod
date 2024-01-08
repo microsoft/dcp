@@ -23,7 +23,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v0.32.0
 	go.opentelemetry.io/otel/trace v1.10.0
 	go.uber.org/zap v1.26.0
-	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/apimachinery v0.28.1
 	k8s.io/apiserver v0.28.1
 	k8s.io/client-go v0.28.1
@@ -32,6 +31,7 @@ require (
 )
 
 require (
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	github.com/NYTimes/gziphandler v1.1.1 // indirect
 	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230305170008-8188dc5388df // indirect
 	github.com/asaskevich/govalidator v0.0.0-20190424111038-f61b66f89f4a // indirect

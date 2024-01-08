@@ -34,10 +34,7 @@ type EventMessage struct {
 
 	// Data about the object (container etc) associate with the even
 	Actor EventActor `json:"Actor,omitempty"`
-}
 
-type EventSubscription interface {
-	// Cancels the subscription.
-	// Implementation should be idempotent (calling multiple times is OK).
-	Cancel() error
+	// Key value attributes associated with the event
+	Attributes map[string]string `json:"Attributes,omitempty"`
 }
