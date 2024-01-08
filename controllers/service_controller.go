@@ -35,6 +35,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
+type ProxyHandlingOptionValue string
+
 const (
 	// Used by tests to disable starting the proxy (proxies are created, but not started)
 	ServiceReconcilerProxyHandling = ControllerContextOption("ServiceReconcilerProxyHandling")
