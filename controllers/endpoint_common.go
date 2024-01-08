@@ -183,9 +183,11 @@ type ServiceProducer struct {
 	// It is optional and defaults to the namespace of the workload.
 	ServiceNamespace string `json:"serviceNamespace,omitempty"`
 
-	// Address used by the workload to serve the service.
-	// In the current implementation it only applies to Executables and defaults to localhost if not present.
-	// (Containers use the address specified by their Spec).
+	// Address that should be used (listened on) by the workload to serve the service.
+	// It defaults to localhost if not present.
+	// For Containers this is the address that the workload should listen on INSIDE the container.
+	// This is NOT the address that the Container will be available on the host network;
+	// that address is part of the Container spec, specifically it is the HostIP property of the ContainerPort definition(s).
 	Address string `json:"address,omitempty"`
 
 	// Port used by the workload to serve the service.

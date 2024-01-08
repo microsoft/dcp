@@ -16,7 +16,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+type ExecutableReplicaSetState string
+
+const (
+	ExecutableReplicaSetStateActive   ExecutableReplicaSetState = "active"
+	ExecutableReplicaSetStateInactive ExecutableReplicaSetState = "inactive"
 )
 
 // Data we keep in memory about ExecutableReplicaSet objects.
@@ -35,6 +43,10 @@ type ExecutableReplicaSetReconciler struct {
 	// Debouncer used to schedule reconciliations.
 	debouncer *reconcilerDebouncer[any]
 }
+
+const (
+	ExecutableReplicaStateAnnotation = "executable-replica-set.usvc-dev.developer.microsoft.com/replica-state"
+)
 
 const (
 	exeOwnerKey    = ".metadata.controllerOwner" // client index key for child Executables
@@ -76,7 +88,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 
 		return []string{owner.Name}
 	}); err != nil {
-		r.Log.Error(err, "failed to create index for ExecutableReplicaSet")
+		r.Log.Error(err, "failed to create index for ExecutableReplicaSet", "indexField", exeOwnerKey)
 		return err
 	}
 
@@ -85,6 +97,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.ExecutableReplicaSet{}).
 		Owns(&apiv1.Executable{}).
+		WithOptions(controller.Options{CacheSyncTimeout: 30 * time.Second}).
 		Complete(r)
 }
 
@@ -110,6 +123,7 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 	for k, v := range replicaSet.Spec.Template.Annotations {
 		exe.Annotations[k] = v
 	}
+	exe.Annotations[ExecutableReplicaStateAnnotation] = string(ExecutableReplicaSetStateActive)
 
 	for k, v := range replicaSet.Spec.Template.Labels {
 		exe.Labels[k] = v
@@ -125,15 +139,13 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 	return exe, nil
 }
 
-// Ensure the ExecutableReplicaSet status matches the current state of the replicas and attempt to make the future state of the replicas match the desired state.
-// If a child Executable is deleted, it will trigger our reconciler and potentially result in a scale up action to restore the desired number of replicas.
-func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, replicas apiv1.ExecutableList, log logr.Logger) objectChange {
+// Ensure the ExecutableReplicaSet status matches the current state of the replicas.
+func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, replicas []*apiv1.Executable, log logr.Logger) objectChange {
 	change := noChange
 
-	observedReplicas := int32(len(replicas.Items))
-	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
-	if !found {
-		rsData = executableReplicaSetData{
+	observedReplicas := int32(len(replicas))
+	if _, found := r.runningReplicaSets.Load(replicaSet.NamespacedName()); !found {
+		rsData := executableReplicaSetData{
 			lastScaled:     time.Now(),
 			actualReplicas: observedReplicas,
 		}
@@ -145,58 +157,92 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 		change = statusChanged
 	}
 
-	runningReplicas := make([]*apiv1.Executable, 0)
-	failedReplicas := make([]*apiv1.Executable, 0)
-	finishedReplicas := make([]*apiv1.Executable, 0)
-	for i, exe := range replicas.Items {
+	var numRunningReplicas int32
+	var numFailedReplicas int32
+	var numFinishedReplicas int32
+	for _, exe := range replicas {
 		switch exe.Status.State {
 		case apiv1.ExecutableStateRunning:
-			runningReplicas = append(runningReplicas, &replicas.Items[i])
+			numRunningReplicas++
 		case apiv1.ExecutableStateFailedToStart:
-			failedReplicas = append(failedReplicas, &replicas.Items[i])
+			numFailedReplicas++
 		case apiv1.ExecutableStateFinished, apiv1.ExecutableStateTerminated:
-			finishedReplicas = append(finishedReplicas, &replicas.Items[i])
+			numFinishedReplicas++
 		}
 	}
 
-	numRunningReplicas := int32(len(runningReplicas))
 	if replicaSet.Status.RunningReplicas != numRunningReplicas {
 		replicaSet.Status.RunningReplicas = numRunningReplicas
 		change |= statusChanged
 	}
 
-	numFailedReplicas := int32(len(failedReplicas))
 	if replicaSet.Status.FailedReplicas != numFailedReplicas {
 		replicaSet.Status.FailedReplicas = numFailedReplicas
 		change |= statusChanged
 	}
 
-	numFinishedReplicas := int32(len(finishedReplicas))
 	if replicaSet.Status.FinishedReplicas != numFinishedReplicas {
 		replicaSet.Status.FinishedReplicas = numFinishedReplicas
 		change |= statusChanged
 	}
 
+	return change
+}
+
+// Attempt to make the number of replicas match the desired state. Will perform scale up or down as appropriate.
+func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, replicas []*apiv1.Executable, log logr.Logger) objectChange {
+	change := noChange
 	currentScaleTime := metav1.Now()
 
+	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
+	if !found {
+		log.Error(fmt.Errorf("unable to find running replica set"), "unable to scale replicas")
+		return noChange
+	}
+
+	observedReplicas := int32(len(replicas))
+
 	if observedReplicas > replicaSet.Spec.Replicas {
+		log.V(1).Info("scaling down replicas")
 		// Scale down the replica set if there are too many
-		for _, exe := range replicas.Items[0 : observedReplicas-replicaSet.Spec.Replicas] {
-			if err := r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
-				log.Error(err, "unable to delete Executable", "exe", exe)
-				change |= additionalReconciliationNeeded
+		for _, exe := range replicas[0 : observedReplicas-replicaSet.Spec.Replicas] {
+			if replicaSet.Spec.StopOnScaleDown {
+				// User requested to soft deleted scaled down replicas
+				exePatch := exe.DeepCopy()
+				annotations := exePatch.GetAnnotations()
+				annotations[ExecutableReplicaStateAnnotation] = string(ExecutableReplicaSetStateInactive)
+				exePatch.SetAnnotations(annotations)
+				exePatch.Spec.Stop = true
+				if err := r.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(exe, ctrl_client.MergeFromWithOptimisticLock{})); err != nil {
+					log.Error(err, "unable to soft delete Executable", "exe", exe)
+					change |= additionalReconciliationNeeded
+					continue
+				} else {
+					log.V(1).Info("soft deleted Executable", "exe", exe)
+				}
 			} else {
-				replicaSet.Status.LastScaleTime = currentScaleTime
-				rsData.actualReplicas--
-				rsData.lastScaled = currentScaleTime.Time
-				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
-				log.Info("deleted Executable", "exe", exe)
-				change |= statusChanged
+				// Default delete on scale down behavior
+				if err := r.Delete(ctx, exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
+					log.Error(err, "unable to delete Executable", "exe", exe)
+					change |= additionalReconciliationNeeded
+					continue
+				} else {
+					log.V(1).Info("deleted Executable", "exe", exe)
+				}
 			}
+
+			// If we successfully scaled down
+			replicaSet.Status.LastScaleTime = currentScaleTime
+			rsData.actualReplicas--
+			rsData.lastScaled = currentScaleTime.Time
+			r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
+
+			change |= statusChanged
 		}
 	}
 
 	if observedReplicas < replicaSet.Spec.Replicas {
+		log.V(1).Info("scaling up replicas")
 		// Scale up the replica set if there aren't enough
 		for i := 0; i < int(replicaSet.Spec.Replicas-observedReplicas); i++ {
 			if exe, err := r.createExecutable(replicaSet, log); err != nil {
@@ -219,23 +265,44 @@ func (r *ExecutableReplicaSetReconciler) updateReplicas(ctx context.Context, rep
 	return change
 }
 
+func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, log logr.Logger) {
+	// Delete any inactive child Executable objects
+	// List the active child Executable replicas
+	var childExecutables apiv1.ExecutableList
+	if err := r.List(
+		ctx,
+		&childExecutables,
+		ctrl_client.InNamespace(replicaSet.Namespace),
+		ctrl_client.MatchingFields{
+			exeOwnerKey: replicaSet.Name,
+		},
+	); err != nil {
+		log.Error(err, "failed to list inactive child Executable objects, continuing with deletion")
+	} else {
+		log.Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
+		for _, exe := range childExecutables.Items {
+			if err := r.Delete(ctx, &exe); err != nil {
+				log.Error(err, "failed to delete inactive child Executable object", "exe", exe)
+			}
+		}
+	}
+}
+
 // Reconcile implements reconcile.Reconciler.
 // The reconciler loop for ExecutableReplicaSet objects updates the status to reflect the current number
 // of running replicas as well as attempting to ensure the replica count reaches the desired state.
 // Changes to Executables "owned" by a given ExecutableReplicaSet will also trigger our reconciler loop,
 // allowing us to respond to changes to both the ExecutableReplicaSet as well as its child Executables.
 func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	reconciliationDelay := additionalReconciliationDelay
+
 	log := r.Log.WithValues("ExecutableReplicaSet", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
-	select {
-	case _, isOpen := <-ctx.Done():
-		if !isOpen {
-			log.V(1).Info("Request context expired, nothing to do...")
-			return ctrl.Result{}, nil
-		}
-	default: // not done, proceed
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
 	}
 
 	replicaSet := apiv1.ExecutableReplicaSet{}
@@ -248,6 +315,8 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			return ctrl.Result{}, err
 		}
 	}
+
+	log = log.WithValues("DesiredReplicas", replicaSet.Spec.Replicas)
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(replicaSet.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -264,6 +333,9 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	var onSuccessfulSave func() = nil
 
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() && found && rsData.actualReplicas == 0 {
+		// Delete any remaining child replicas to ensure successful deletion (cleanup of soft deleted replicas)
+		r.deleteReplicas(ctx, &replicaSet, log)
+
 		// Deletion has been requested and the running replicas have been drained.
 		log.Info("ExecutableReplicaSet is being deleted...")
 		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
@@ -276,23 +348,55 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		change = ensureFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
+			// List the active child Executable replicas
 			var childExecutables apiv1.ExecutableList
-			err := r.List(ctx, &childExecutables, ctrl_client.InNamespace(req.Namespace), ctrl_client.MatchingFields{exeOwnerKey: req.Name})
-			if err != nil {
+			if err := r.List(
+				ctx,
+				&childExecutables,
+				ctrl_client.InNamespace(req.Namespace),
+				ctrl_client.MatchingFields{
+					exeOwnerKey: req.Name,
+				},
+			); err != nil {
 				log.Error(err, "failed to list child Executable objects")
 				return ctrl.Result{}, err
 			}
 
-			if childExecutables.ItemCount() != uint32(replicaSet.Spec.Replicas) && found && rsData.lastScaled.Add(scaleRateLimit).After(time.Now()) {
-				log.Info("replica count changed, but scaling is rate limited", "lastScaled", rsData.lastScaled)
-				return ctrl.Result{RequeueAfter: scaleRateLimit}, nil
+			totalReplicas := int32(len(childExecutables.Items))
+			activeReplicas := []*apiv1.Executable{}
+			for i, exe := range childExecutables.Items {
+				if state, found := exe.Annotations[ExecutableReplicaStateAnnotation]; found && state == string(ExecutableReplicaSetStateActive) {
+					activeReplicas = append(activeReplicas, &childExecutables.Items[i])
+				}
 			}
 
-			change = r.updateReplicas(ctx, &replicaSet, childExecutables, log)
+			log = log.WithValues("TotalReplicas", totalReplicas).WithValues("ActiveReplicas", len(activeReplicas))
+
+			change = r.updateReplicaStatus(ctx, &replicaSet, activeReplicas, log)
+
+			log.V(1).Info("loaded child Executables", "RunningReplicas", replicaSet.Status.RunningReplicas, "FinishedReplicas", replicaSet.Status.FinishedReplicas, "FailedReplicas", replicaSet.Status.FailedReplicas)
+
+			if replicaSet.Spec.Replicas != 0 && len(activeReplicas) != int(replicaSet.Spec.Replicas) && found && rsData.lastScaled.Add(scaleRateLimit).After(time.Now()) {
+				log.Info("replica count changed, but scaling is rate limited", "LastScaled", rsData.lastScaled)
+				reconciliationDelay = scaleRateLimit
+				change |= additionalReconciliationNeeded
+			} else {
+				change |= r.scaleReplicas(ctx, &replicaSet, activeReplicas, log)
+			}
 		}
 	}
 
-	result, err := saveChanges(r, ctx, &replicaSet, patch, change, log)
+	result, err := saveChangesWithCustomReconciliationDelay(
+		r,
+		ctx,
+		&replicaSet,
+		patch,
+		change,
+		reconciliationDelay,
+		nil,
+		log,
+	)
+
 	if err == nil && onSuccessfulSave != nil {
 		onSuccessfulSave()
 	}

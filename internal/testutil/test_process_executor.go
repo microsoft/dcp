@@ -35,10 +35,12 @@ func (pe *ProcessExecution) Finished() bool {
 	return !pe.EndedAt.IsZero()
 }
 
+type ProcessSearchCriteriaCond func(pe *ProcessExecution) bool
+
 type ProcessSearchCriteria struct {
-	Command []string                        // The name/path of the executable and first N arguments, if any.
-	LastArg string                          // The last argument of the command that needs to match. Optional.
-	Cond    func(pe *ProcessExecution) bool // Special condition to match the command. Optional.
+	Command []string                  // The name/path of the executable and first N arguments, if any.
+	LastArg string                    // The last argument of the command that needs to match. Optional.
+	Cond    ProcessSearchCriteriaCond // Special condition to match the command. Optional.
 }
 
 func (sc *ProcessSearchCriteria) Equals(other *ProcessSearchCriteria) bool {
@@ -182,13 +184,13 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 	if len(e.AutoExecutions) > 0 {
 		for _, ae := range e.AutoExecutions {
 			if ae.Condition.Matches(&pe) {
-				go func() {
+				go func(ae AutoExecution) {
 					exitCode := ae.RunCommand(&pe)
 					err := e.stopProcessImpl(pid, exitCode)
 					if err != nil {
 						panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, err))
 					}
-				}()
+				}(ae)
 				break
 			}
 		}
@@ -217,7 +219,7 @@ func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_
 func (e *TestProcessExecutor) FindAll(
 	command []string,
 	lastArg string,
-	cond func(pe *ProcessExecution) bool,
+	cond ProcessSearchCriteriaCond,
 ) []ProcessExecution {
 	e.m.RLock()
 	defer e.m.RUnlock()

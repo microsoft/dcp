@@ -42,6 +42,11 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              stopOnScaleDown:
+                default: false
+                description: Should the replica be soft deleted on scale down instead
+                  of deleted?
+                type: boolean
               template:
                 description: Template describing the configuration of child Executable
                   objects created by the ExecutableReplicaSet
@@ -99,6 +104,10 @@ spec:
                         default: Process
                         description: The execution type for the Executable.
                         type: string
+                      stop:
+                        default: false
+                        description: Should the controller attempt to stop the Executable
+                        type: boolean
                       workingDirectory:
                         description: The working directory for the Executable
                         type: string

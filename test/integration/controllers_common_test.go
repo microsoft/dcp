@@ -23,7 +23,6 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/internal/docker"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -35,6 +34,7 @@ var (
 	processExecutor  *ctrl_testutil.TestProcessExecutor
 	ideRunner        *ctrl_testutil.TestIdeRunner
 	client           ctrl_client.Client
+	orchestrator     *ctrl_testutil.TestOrchestrator
 	apiServerCertDir string
 	etcdDataDir      string
 )
@@ -48,7 +48,9 @@ func TestMain(m *testing.M) {
 	log.SetLevel(zapcore.ErrorLevel)
 	ctrl.SetLogger(log.V(1))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(
+		context.WithValue(context.Background(), controllers.ServiceReconcilerProxyHandling, controllers.DoNotStartProxies),
+	)
 
 	flush, err := startTestEnvironment(ctx, log)
 	if err != nil {
@@ -87,6 +89,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	if err != nil {
 		return nil, fmt.Errorf("cloud not find the CRD directory: %w", err)
 	}
+
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
 			filepath.Join(append([]string{baseDir}, crdRelativePath...)...),
@@ -136,7 +139,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	}
 
 	processExecutor = ctrl_testutil.NewTestProcessExecutor(ctx)
-	dockerOrchestrator := docker.NewDockerCliOrchestrator(ctrl.Log.WithName("DockerCliOrchestrator"), processExecutor)
+	orchestrator = ctrl_testutil.NewTestOrchestrator(ctrl.Log.WithName("TestOrchestrator"))
 	exeRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
 
@@ -161,11 +164,21 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 		return nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
 	}
 
+	networkR := controllers.NewNetworkReconciler(
+		ctx,
+		mgr.GetClient(),
+		ctrl.Log.WithName("NetworkReconciler"),
+		orchestrator,
+	)
+	if err = networkR.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
+	}
+
 	containerR := controllers.NewContainerReconciler(
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerReconciler"),
-		dockerOrchestrator,
+		orchestrator,
 	)
 	if err = containerR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
@@ -174,7 +187,7 @@ func startTestEnvironment(ctx context.Context, log logger.Logger) (func(), error
 	volumeR := controllers.NewVolumeReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("VolumeReconciler"),
-		dockerOrchestrator,
+		orchestrator,
 	)
 	if err = volumeR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
@@ -207,9 +220,11 @@ func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectSt
 
 	hasExpectedState := func(ctx context.Context) (bool, error) {
 		err := client.Get(ctx, name, PT(updatedObject))
-		if err != nil {
+		if ctrl_client.IgnoreNotFound(err) != nil {
 			t.Fatalf("unable to fetch the object '%s' from API server: %v", name.Name, err)
 			return false, err
+		} else if err != nil {
+			return false, nil
 		}
 
 		return isInState(updatedObject)
@@ -242,36 +257,4 @@ func waitObjectDeleted[T controllers.ObjectStruct, PT controllers.PObjectStruct[
 	if err != nil {
 		t.Fatalf("Object '%s' was not deleted as expected: %v", name.Name, err)
 	}
-}
-
-func waitForDockerCommand(t *testing.T, ctx context.Context, command []string, lastArg string) (ctrl_testutil.ProcessExecution, error) {
-	command = append([]string{"docker"}, command...)
-	pe, err := ctrl_testutil.WaitForCommand(processExecutor, ctx, command, lastArg, (*ctrl_testutil.ProcessExecution).Running)
-	return pe, err
-}
-
-func waitForDockerContainerRemoved(t *testing.T, ctx context.Context, containerID string) error {
-
-	haveExpectedCommand := func(_ context.Context) (bool, error) {
-		commands := processExecutor.FindAll(
-			[]string{"docker", "container", "rm"},
-			containerID,
-			(*ctrl_testutil.ProcessExecution).Finished,
-		)
-
-		if len(commands) > 0 {
-			// It is OK (and kind of hard to avoid for edge cases) for the controller to issue a rm command
-			// for the same container more than once.
-			return true, nil
-		} else {
-			return false, nil
-		}
-	}
-
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, haveExpectedCommand)
-	if err != nil {
-		return fmt.Errorf("expected docker rm command (container ID: '%s') was not issued: %v", containerID, err)
-	}
-
-	return nil
 }

@@ -9,6 +9,7 @@ import (
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcpctrl/commands"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -23,10 +24,15 @@ func main() {
 
 	ctx := kubeapiserver.SetupSignalContext()
 
+	telemetrySystem := telemetry.GetTelemetrySystem()
+
 	root := commands.NewRootCommand(log)
 	err := root.ExecuteContext(ctx)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		_ = telemetrySystem.Shutdown(ctx)
 		os.Exit(errCommandError)
 	}
+
+	_ = telemetrySystem.Shutdown(ctx)
 }

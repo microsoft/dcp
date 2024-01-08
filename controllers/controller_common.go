@@ -125,12 +125,39 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 	obj PCT,
 	patch ctrl_client.Patch,
 	change objectChange,
+	onSuccessfulSave func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
+	return saveChangesWithCustomReconciliationDelay[T, PCT](
+		client,
+		ctx,
+		obj,
+		patch,
+		change,
+		additionalReconciliationDelay,
+		onSuccessfulSave,
+		log,
+	)
+}
 
+func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjectStruct[T]](
+	client ctrl_client.Client,
+	ctx context.Context,
+	obj PCT,
+	patch ctrl_client.Patch,
+	change objectChange,
+	customReconciliationDelay time.Duration,
+	onSuccessfulSave func(),
+	log logr.Logger,
+) (ctrl.Result, error) {
 	var update PCT
 	var err error
 	kind := obj.GetObjectKind().GroupVersionKind().Kind
+	afterGoodSave := func() {
+		if onSuccessfulSave != nil {
+			onSuccessfulSave()
+		}
+	}
 
 	// Apply one update per reconciliation function invocation,
 	// to avoid observing "partially updated" objects during subsequent reconciliations.
@@ -153,6 +180,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 			}
 		} else {
 			log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
+			afterGoodSave()
 		}
 
 	case (change & (metadataChanged | specChanged)) != 0:
@@ -169,12 +197,13 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 			}
 		} else {
 			log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
+			afterGoodSave()
 		}
 	}
 
 	if (change & additionalReconciliationNeeded) != 0 {
 		log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
-		return ctrl.Result{RequeueAfter: additionalReconciliationDelay}, nil
+		return ctrl.Result{RequeueAfter: customReconciliationDelay}, nil
 	} else {
 		return ctrl.Result{}, nil
 	}
@@ -185,3 +214,5 @@ type dcpModelObject interface {
 	ctrl_client.Object
 	NamespacedName() types.NamespacedName
 }
+
+type ControllerContextOption string

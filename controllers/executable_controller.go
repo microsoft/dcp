@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
@@ -94,13 +93,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
 	// Check to see if the request context has already expired
-	select {
-	case _, isOpen := <-ctx.Done():
-		if !isOpen {
-			log.V(1).Info("Request context expired, nothing to do...")
-			return ctrl.Result{}, nil
-		}
-	default: // not done, proceed
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
 	}
 
 	// Retrieve the Executable object
@@ -117,8 +112,6 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	log = log.WithValues("State", exe.Status.State).WithValues("ExecutionID", exe.Status.ExecutionID)
-
 	var change objectChange
 	var onSuccessfulSave func() = nil
 	patch := ctrl_client.MergeFromWithOptions(exe.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -128,10 +121,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() && !exe.Starting() {
 		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
 		log.Info("Executable is being deleted...")
-		r.stopExecutable(ctx, &exe, log)
+		r.releaseExecutableResources(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer, log)
-		r.deleteOutputFiles(&exe, log)
-		removeEndpointsForWorkload(r, ctx, &exe, log)
+
 	} else {
 		change = ensureFinalizer(&exe, executableFinalizer, log)
 
@@ -149,12 +141,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	result, err := saveChanges(r, ctx, &exe, patch, change, log)
+	result, err := saveChanges(r, ctx, &exe, patch, change, onSuccessfulSave, log)
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
-	}
-	if err == nil && onSuccessfulSave != nil {
-		onSuccessfulSave()
 	}
 	return result, err
 }
@@ -180,7 +169,7 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 		r.Log.V(1).Info("Executable run could not be tracked", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "Error", err.Error())
 		effectiveExitCode = apiv1.UnknownExitCode
 	} else {
-		r.Log.V(1).Info("queue Executable run changed", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "NewPID", pid, "NewExitCode", exitCode)
+		r.Log.V(1).Info("queue Executable run change", "Executable", name.String(), "RunID", runID, "LastState", currentRunInfo.exeState, "NewPID", pid, "NewExitCode", exitCode)
 		effectiveExitCode = exitCode
 	}
 
@@ -265,6 +254,14 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return noChange
 	}
 
+	if exe.Spec.Stop {
+		if exe.Status.FinishTimestamp.IsZero() {
+			log.V(1).Info("Executable launched with finished as desired state; marking it as finished...")
+			exe.Status.State = apiv1.ExecutableStateFailedToStart
+			exe.Status.FinishTimestamp = metav1.Now()
+		}
+	}
+
 	if _, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName()); found {
 		if runInfo.exeState == apiv1.ExecutableStateStarting {
 			// We are in the process of starting the run, so we should wait for it to complete.
@@ -273,7 +270,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		}
 
 		// Ensure the status matches the current state.
-		return runInfo.ApplyTo(exe)
+		return runInfo.ApplyTo(exe, log)
 	}
 
 	executionType := exe.Spec.ExecutionType
@@ -292,7 +289,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
@@ -303,7 +300,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	}
 
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
@@ -359,7 +356,8 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
 	var runID RunID = RunID(exe.Status.ExecutionID)
 	if runID == "" || exe.Done() {
-		return // Nothing to do--the Executable is not running
+		log.V(1).Info("Executable is not running, nothing to stop...")
+		return
 	}
 
 	_, _, found := r.runs.FindBySecondKey(runID)
@@ -367,28 +365,40 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 		// Either we never attempted to start the Executable, or we already attempted to stop the process,
 		// and the current reconciliation loop is just catching up to some other changes.
 		// Either way there is nothing to do.
-		log.V(1).Info("run data is not available; proceeding with Executable object deletion...")
+		log.V(1).Info("run data is not available, nothing to stop...")
 		return
 	}
-
-	// We are about to terminate the run. Since the run is not allowed to complete normally,
-	// we are not interested in its exit code (it will indicate a failure,
-	// but it is a failure induced by the Executable user), so we stop tracking the run now.
-	r.runs.DeleteBySecondKey(runID)
 
 	runner, found := r.ExecutableRunners[exe.Spec.ExecutionType]
 	if !found {
 		// Should never happen
-		log.Error(fmt.Errorf("no runner found for execution type '%s'", exe.Spec.ExecutionType), "the Executable cannot be stopped")
+		err := fmt.Errorf("no runner found for execution type '%s'", exe.Spec.ExecutionType)
+		log.Error(err, "the Executable cannot be stopped")
 		return
 	}
 
 	err := runner.StopRun(ctx, runID, log)
 	if err != nil {
-		log.V(1).Info("could not stop the Executable", "RunID", runID, "Error", err.Error())
+		log.Error(err, "could not stop the Executable", "RunID", runID)
 	} else {
 		log.V(1).Info("Executable stopped", "RunID", runID)
 	}
+}
+
+func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+	var runID RunID = RunID(exe.Status.ExecutionID)
+	if runID == "" || exe.Done() {
+		return // Nothing to do--the Executable is not running
+	}
+
+	r.stopExecutable(ctx, exe, log)
+
+	// We are about to terminate the run. Since the run is not allowed to complete normally,
+	// we are not interested in its exit code (it will indicate a failure,
+	// but it is a failure induced by the Executable user), so we stop tracking the run now.
+	r.runs.DeleteBySecondKey(runID)
+	removeEndpointsForWorkload(r, ctx, exe, log)
+	r.deleteOutputFiles(exe, log)
 }
 
 // Called by the main reconciler function, this function will update the Executable run state
@@ -405,21 +415,20 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 		return noChange, onSuccessfulSave
 	}
 
-	change := runInfo.ApplyTo(exe)
+	if exe.Spec.Stop {
+		// If we think the executable is still running, we should attempt to stop it.
+		if runInfo.exeState == apiv1.ExecutableStateRunning {
+			log.V(1).Info("attempting to stop the Executable...", "RunID", runID)
+			r.stopExecutable(ctx, exe, log)
+			// Don't set the Executable state to Finished yet because we might need to process the run completion notification.
+		}
+	}
+
+	change := runInfo.ApplyTo(exe, log)
 	if change == noChange {
 		// The run state has not changed.
 		return noChange, onSuccessfulSave
 	}
-
-	log.Info("Executable run changed",
-		"RunID", runID,
-		"PID", exe.Status.PID,
-		"NewPID", runInfo.pid,
-		"State", exe.Status.State,
-		"NewState", runInfo.exeState,
-		"ExitCode", exe.Status.ExitCode,
-		"NewExitCode", runInfo.exitCode,
-	)
 
 	reachedFinalState := runInfo.exeState == apiv1.ExecutableStateFinished ||
 		runInfo.exeState == apiv1.ExecutableStateTerminated ||
@@ -675,8 +684,10 @@ func (ri *runInfo) DeepCopy() *runInfo {
 	return &retval
 }
 
-func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
+func (ri *runInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) objectChange {
 	status := exe.Status
+	originalStatusRI := NewRunInfo()
+	originalStatusRI.UpdateFrom(status)
 	changed := noChange
 
 	if ri.exeState != "" && status.State != ri.exeState {
@@ -733,6 +744,8 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 
 	if changed != noChange {
 		exe.Status = status
+
+		log.Info("Executable run changed", "PropertiesChanged", DiffString(originalStatusRI, ri))
 	}
 
 	return changed
@@ -740,16 +753,56 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable) objectChange {
 
 func (ri *runInfo) String() string {
 	return fmt.Sprintf(
-		"RunInfo{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s}",
+		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s}",
 		ri.exeState,
 		logger.IntPtrValToString(ri.pid),
-		ri.executionID,
+		logger.FriendlyString(ri.executionID),
 		logger.IntPtrValToString(ri.exitCode),
-		ri.startupTimestamp.Format(time.StampMilli),
-		ri.finishTimestamp.Format(time.StampMilli),
-		ri.stdOutFile,
-		ri.stdErrFile,
+		logger.FriendlyTimestamp(ri.startupTimestamp),
+		logger.FriendlyTimestamp(ri.finishTimestamp),
+		logger.FriendlyString(ri.stdOutFile),
+		logger.FriendlyString(ri.stdErrFile),
 	)
+}
+
+func DiffString(r1, r2 *runInfo) string {
+	sb := strings.Builder{}
+	sb.WriteString("{")
+
+	if r1.exeState != r2.exeState {
+		sb.WriteString(fmt.Sprintf("exeState=%s->%s, ", r1.exeState, r2.exeState))
+	}
+
+	if logger.IsPtrValDifferent(r1.pid, r2.pid) {
+		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.pid), logger.IntPtrValToString(r2.pid)))
+	}
+
+	if r1.executionID != r2.executionID {
+		sb.WriteString(fmt.Sprintf("executionID=%s->%s, ", logger.FriendlyString(r1.executionID), logger.FriendlyString(r2.executionID)))
+	}
+
+	if logger.IsPtrValDifferent(r1.exitCode, r2.exitCode) {
+		sb.WriteString(fmt.Sprintf("exitCode=%s->%s, ", logger.IntPtrValToString(r1.exitCode), logger.IntPtrValToString(r2.exitCode)))
+	}
+
+	if r1.startupTimestamp != r2.startupTimestamp {
+		sb.WriteString(fmt.Sprintf("startupTimestamp=%s->%s, ", logger.FriendlyTimestamp(r1.startupTimestamp), logger.FriendlyTimestamp(r2.startupTimestamp)))
+	}
+
+	if r1.finishTimestamp != r2.finishTimestamp {
+		sb.WriteString(fmt.Sprintf("finishTimestamp=%s->%s, ", logger.FriendlyTimestamp(r1.finishTimestamp), logger.FriendlyTimestamp(r2.finishTimestamp)))
+	}
+
+	if r1.stdOutFile != r2.stdOutFile {
+		sb.WriteString(fmt.Sprintf("stdOutFile=%s->%s, ", logger.FriendlyString(r1.stdOutFile), logger.FriendlyString(r2.stdOutFile)))
+	}
+
+	if r1.stdErrFile != r2.stdErrFile {
+		sb.WriteString(fmt.Sprintf("stdErrFile=%s->%s, ", logger.FriendlyString(r1.stdErrFile), logger.FriendlyString(r2.stdErrFile)))
+	}
+
+	sb.WriteString("}")
+	return sb.String()
 }
 
 var _ fmt.Stringer = (*runInfo)(nil)

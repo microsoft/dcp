@@ -85,21 +85,25 @@ type ExecutableSpec struct {
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
 
 	// Launch arguments to be passed to the Executable
-	// +listType=atomic
+	// +listType:=atomic
 	Args []string `json:"args,omitempty"`
 
 	// Environment variables to be set for the Executable
-	// +listType=map
-	// +listMapKey=name
+	// +listType:=map
+	// +listMapKey:=name
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate Executable environment during startup.
-	// +listType=atomic
+	// +listType:=atomic
 	EnvFiles []string `json:"envFiles,omitempty"`
 
 	// The execution type for the Executable.
 	// +kubebuilder:default:=Process
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
+
+	// Should the controller attempt to stop the Executable
+	// +kubebuilder:default:=false
+	Stop bool `json:"stop,omitempty"`
 }
 
 // ExecutableStatus describes the status of an Executable.
@@ -138,12 +142,12 @@ type ExecutableStatus struct {
 	StdErrFile string `json:"stdErrFile,omitempty"`
 
 	// Effective values of environment variables, after all substitutions are applied.
-	// +listType=map
-	// +listMapKey=name
+	// +listType:=map
+	// +listMapKey:=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.
-	// +listType=atomic
+	// +listType:=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 }
 
@@ -209,7 +213,20 @@ func (e *Executable) NamespacedName() types.NamespacedName {
 
 func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
-	return nil
+	errorList := field.ErrorList{}
+
+	return errorList
+}
+
+func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	oldExe := obj.(*Executable)
+	if oldExe.Spec.Stop && e.Spec.Stop != oldExe.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	return errorList
 }
 
 func (e *Executable) Starting() bool {
@@ -259,3 +276,4 @@ var _ apiserver_resource.ObjectWithStatusSubResource = (*Executable)(nil)
 var _ apiserver_resource.StatusSubResource = (*ExecutableStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Executable)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Executable)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*Executable)(nil)

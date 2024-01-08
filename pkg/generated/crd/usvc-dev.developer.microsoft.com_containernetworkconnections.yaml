@@ -1,0 +1,60 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+  name: containernetworkconnections.usvc-dev.developer.microsoft.com
+spec:
+  group: usvc-dev.developer.microsoft.com
+  names:
+    kind: ContainerNetworkConnection
+    listKind: ContainerNetworkConnectionList
+    plural: containernetworkconnections
+    singular: containernetworkconnection
+  scope: Cluster
+  versions:
+  - name: v1
+    schema:
+      openAPIV3Schema:
+        description: ContainerNetworkConnection represents a Container that wishes
+          to be connected to a specific ContainerNetwork Its lifetime is dependent
+          on the lifetime of the Container that it is attached to.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ContainerNetworkConnectionSpec defines the desired state
+              of a ContainerNetworkConnection
+            properties:
+              aliases:
+                description: The optional list of custom aliases for the container
+                  on the ContainerNetwork
+                items:
+                  type: string
+                type: array
+              containerId:
+                description: The ID of the container (container orchestrator resource
+                  ID) to connect to the ContainerNetwork
+                type: string
+              containerNetworkName:
+                description: The name of the ContainerNetwork resource to connect
+                  to
+                type: string
+            required:
+            - containerId
+            - containerNetworkName
+            type: object
+        type: object
+    served: true
+    storage: true

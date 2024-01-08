@@ -21,9 +21,13 @@ import (
 // +k8s:openapi-gen=true
 type ExecutableReplicaSetSpec struct {
 	// Number of desired child Executable objects
-	// +kubebuilder:default=1
+	// +kubebuilder:default:=1
 	// +kubebuilder:validation:Minimum=0
 	Replicas int32 `json:"replicas"`
+
+	// Should the replica be soft deleted on scale down instead of deleted?
+	// +kubebuilder:default:=false
+	StopOnScaleDown bool `json:"stopOnScaleDown,omitempty"`
 
 	// Template describing the configuration of child Executable objects created by the ExecutableReplicaSet
 	// +kubebuilder:validation:Required

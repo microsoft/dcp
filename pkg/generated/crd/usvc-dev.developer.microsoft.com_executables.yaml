@@ -75,6 +75,10 @@ spec:
                 default: Process
                 description: The execution type for the Executable.
                 type: string
+              stop:
+                default: false
+                description: Should the controller attempt to stop the Executable
+                type: boolean
               workingDirectory:
                 description: The working directory for the Executable
                 type: string

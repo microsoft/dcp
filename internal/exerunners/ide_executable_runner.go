@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -218,7 +219,12 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		// Set up temp files for capturing stdout and stderr. These files (if successfully created)
 		// will be cleaned up by the Executable controller when the Executable is deleted.
 
-		stdOutFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		outputRootFolder := os.TempDir()
+		if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
+			outputRootFolder = dcpSessionDir
+		}
+
+		stdOutFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 		if err != nil {
 			log.Error(err, "failed to create temporary file for capturing standard output data")
 			stdOutFile = nil
@@ -226,7 +232,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			exeStatus.StdOutFile = stdOutFile.Name()
 		}
 
-		stdErrFile, err := usvc_io.OpenFile(filepath.Join(os.TempDir(), fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		stdErrFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 		if err != nil {
 			log.Error(err, "failed to create temporary file for capturing standard error data")
 			stdErrFile = nil

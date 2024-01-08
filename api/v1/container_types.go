@@ -2,6 +2,8 @@ package v1
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,6 +19,10 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
+
+// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
+var validContainerName = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
+var validContainerNameRegexp = regexp.MustCompile(validContainerName)
 
 type ContainerRestartPolicy string
 
@@ -91,6 +97,9 @@ type ContainerSpec struct {
 	// Container image
 	Image string `json:"image"`
 
+	// Optional container name
+	ContainerName string `json:"containerName,omitempty"`
+
 	// Consumed volume information
 	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 
@@ -111,6 +120,25 @@ type ContainerSpec struct {
 
 	// Arguments to pass to the command
 	Args []string `json:"args,omitempty"`
+
+	// Should the controller attempt to stop the container?
+	// +kubebuilder:default:=false
+	Stop bool `json:"stop,omitempty"`
+
+	// ContaineNetworks resources the container should be attached to. If omitted or nil, the container will
+	// be attached to the default network and the controller will not manage network connections.
+	// +listType:=atomic
+	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`
+}
+
+// +k8s:openapi-gen=true
+type ContainerNetworkConnectionConfig struct {
+	// Name of the network to connect to
+	Name string `json:"name"`
+
+	// Aliases of the container on the network
+	// +listType:=atomic
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 type ContainerState string
@@ -151,6 +179,9 @@ type ContainerStatus struct {
 	// ID of the Container (if an attempt to start the Container was made)
 	ContainerID string `json:"containerId,omitempty"`
 
+	// Name of the Container (if an attempt to start the Container was made)
+	ContainerName string `json:"containerName,omitempty"`
+
 	// Timestamp of the Container start attempt
 	StartupTimestamp metav1.Time `json:"startupTimestamp,omitempty"`
 
@@ -167,13 +198,16 @@ type ContainerStatus struct {
 	Message string `json:"message,omitempty"`
 
 	// Effective values of environment variables, after all substitutions are applied.
-	// +listType=map
-	// +listMapKey=name
+	// +listType:=map
+	// +listMapKey:=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Container, after all substitutions are applied.
-	// +listType=atomic
+	// +listType:=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
+
+	// List of ContainerNetworks the Container is connected to
+	Networks []string `json:"networks,omitempty"`
 }
 
 func (cs ContainerStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
@@ -237,8 +271,38 @@ func (e *Container) NamespacedName() types.NamespacedName {
 }
 
 func (e *Container) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation https://github.com/microsoft/usvc-apiserver/issues/2
-	return nil
+	errorList := field.ErrorList{}
+
+	// Validate the object name to ensure it is a valid container name
+	if e.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(e.Spec.ContainerName) {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), e.NamespacedName().Name, fmt.Sprintf("containerName property must match regex '%s'", validContainerName)))
+	}
+
+	return errorList
+}
+
+func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	oldContainer := obj.(*Container)
+
+	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	if oldContainer.Spec.Networks != nil && e.Spec.Networks == nil {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "Cannot set networks property to null if it was initialized with a list value."))
+	}
+
+	if oldContainer.Spec.Networks == nil && e.Spec.Networks != nil {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "Cannot set networks property to a list value if it was initialized as null."))
+	}
+
+	if oldContainer.Spec.ContainerName != e.Spec.ContainerName {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "containerName"), "Cannot change containerName property after creation."))
+	}
+
+	return errorList
 }
 
 // ContainerList contains a list of Executable instances
@@ -279,3 +343,4 @@ var _ apiserver_resource.ObjectWithStatusSubResource = (*Container)(nil)
 var _ apiserver_resource.StatusSubResource = (*ContainerStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Container)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Container)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*Container)(nil)

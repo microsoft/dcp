@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -49,6 +50,7 @@ func TestExecutableReplicaSetScales(t *testing.T) {
 		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
 	}
 
+	t.Logf("scaling up replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
 	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		require.Equal(t, int32(0), ers.Status.ObservedReplicas)
 		ers.Spec.Replicas = int32(scaleTo)
@@ -57,9 +59,10 @@ func TestExecutableReplicaSetScales(t *testing.T) {
 		t.Fatalf("could not update ExecutableReplicaSet to scale up: %v", err)
 	}
 
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
+	t.Logf("scaling down replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
 	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		ers.Spec.Replicas = 0
 		return nil
@@ -67,8 +70,60 @@ func TestExecutableReplicaSetScales(t *testing.T) {
 		t.Fatalf("could not update ExecutableReplicaSet to scale down: %v", err)
 	}
 
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0))
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not scale back to zero Executables")
+}
+
+func TestExecutableReplicaSetSoftDeleteScales(t *testing.T) {
+	const scaleTo = 3
+
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exers := apiv1.ExecutableReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "executable-replica-set-soft-delete-scales",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableReplicaSetSpec{
+			Replicas:        0,
+			StopOnScaleDown: true,
+			Template: apiv1.ExecutableTemplate{
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/executable-replica-set-soft-delete-scales",
+				},
+			},
+		},
+	}
+
+	t.Logf("creating ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
+	if err := client.Create(ctx, &exers); err != nil {
+		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
+	}
+
+	t.Logf("scaling up replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
+	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
+		require.Equal(t, int32(0), ers.Status.ObservedReplicas)
+		ers.Spec.Replicas = int32(scaleTo)
+		return nil
+	}); err != nil {
+		t.Fatalf("could not update ExecutableReplicaSet to scale up: %v", err)
+	}
+
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
+	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
+
+	t.Logf("scaling down replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
+	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
+		ers.Spec.Replicas = 0
+		return nil
+	}); err != nil {
+		t.Fatalf("could not update ExecutableReplicaSet to scale down: %v", err)
+	}
+
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0, scaleTo))
+	require.NoError(t, err, "ExecutableReplicaSet did not scale to the expected number of active and inactive Executables")
 }
 
 func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
@@ -98,7 +153,7 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
 	}
 
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executable replicas")
 
 	ownedExes, err := getOwnedExes(ctx, &exers)
@@ -161,7 +216,7 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
 	}
 
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
 	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
@@ -229,7 +284,7 @@ func TestExecutableReplicaSetDeleteRemovesExecutables(t *testing.T) {
 		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
 	}
 
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
 	ensureReplicaSetDeleted := func(ctx context.Context) (bool, error) {
@@ -244,7 +299,54 @@ func TestExecutableReplicaSetDeleteRemovesExecutables(t *testing.T) {
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureReplicaSetDeleted)
 	require.NoError(t, err, "ExecutableReplicaSet was not deleted")
 
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0))
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0, 0))
+	require.NoError(t, err, "ExecutableReplicaSet did not scale back to zero Executables")
+}
+
+func TestExecutableReplicaSetDeleteRemovesSoftDeleteExecutables(t *testing.T) {
+	const initialScaleTo = 2
+
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exers := apiv1.ExecutableReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "executable-replica-set-delete-with-soft-delete",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableReplicaSetSpec{
+			Replicas:        initialScaleTo,
+			StopOnScaleDown: true,
+			Template: apiv1.ExecutableTemplate{
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/executable-replica-set-delete-with-soft-delete",
+				},
+			},
+		},
+	}
+
+	t.Logf("creating ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
+	if err := client.Create(ctx, &exers); err != nil {
+		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
+	}
+
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo, 0))
+	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
+
+	ensureReplicaSetDeleted := func(ctx context.Context) (bool, error) {
+		if err := client.Delete(ctx, &exers); err != nil {
+			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", err)
+			return false, err
+		}
+
+		return true, nil
+	}
+
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureReplicaSetDeleted)
+	require.NoError(t, err, "ExecutableReplicaSet was not deleted")
+
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not scale back to zero Executables")
 }
 
@@ -275,7 +377,7 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
 	}
 
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executable replicas")
 
 	ownedExes, err := getOwnedExes(ctx, &exers)
@@ -297,17 +399,11 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 	ensureStatusUpdated := func(ctx context.Context) (bool, error) {
 		var updatedExers apiv1.ExecutableReplicaSet
 		if err := client.Get(ctx, ctrl_client.ObjectKeyFromObject(&exers), &updatedExers); err != nil {
-			t.Fatalf("Unable to fetch updated ExecutableReplicaSet: %v", err)
+			t.Fatalf("unable to fetch updated ExecutableReplicaSet: %v", err)
 			return false, err
 		}
 
-		newOwnedExes, err := getOwnedExes(ctx, &exers)
-		if err != nil {
-			t.Fatalf("Unable to fetch Executables: %v", err)
-			return false, err
-		}
-
-		if len(newOwnedExes) != scaleTo || updatedExers.Status.ObservedReplicas != scaleTo {
+		if updatedExers.Status.ObservedReplicas != scaleTo {
 			return false, nil
 		}
 
@@ -402,13 +498,8 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 	require.NoError(t, err, "Could not create the ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
 
 	t.Logf("Ensure ExecutableReplicaSet '%s' has expected number of replicas...", exers.ObjectMeta.Name)
-	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedErs *apiv1.ExecutableReplicaSet) (bool, error) {
-		exes, err := getOwnedExes(ctx, updatedErs)
-		if err != nil {
-			return false, err
-		}
-		return len(exes) == replicas, nil
-	})
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, replicas, 0))
+	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
 	t.Logf("Ensure ExecutableReplicaSet '%s' has injected ports into replicas...", exers.ObjectMeta.Name)
 	ownedExes, err := getOwnedExes(ctx, &exers)
@@ -448,7 +539,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 	}
 }
 
-func ensureExpectedReplicaCount(t *testing.T, exers *apiv1.ExecutableReplicaSet, n int) func(ctx context.Context) (bool, error) {
+func ensureExpectedReplicaCount(t *testing.T, exers *apiv1.ExecutableReplicaSet, expectedActive int, expectedInactive int) func(ctx context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		ownedExes, err := getOwnedExes(ctx, exers)
 		if err != nil {
@@ -456,7 +547,12 @@ func ensureExpectedReplicaCount(t *testing.T, exers *apiv1.ExecutableReplicaSet,
 			return false, err
 		}
 
-		if len(ownedExes) != n {
+		active := slices.LenIf[*apiv1.Executable](ownedExes, func(exe *apiv1.Executable) bool {
+			return exe.Annotations[controllers.ExecutableReplicaStateAnnotation] == string(controllers.ExecutableReplicaSetStateActive)
+		})
+		inactive := len(ownedExes) - active
+
+		if active != expectedActive || inactive != expectedInactive {
 			return false, nil
 		}
 

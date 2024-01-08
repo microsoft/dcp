@@ -53,6 +53,10 @@ func (wq *WorkQueue) doWork() {
 			select {
 			// Writing to limiter will block if attempting to start more goroutines than concurrency level (semaphore semantics).
 			case wq.limiter <- struct{}{}:
+				if wq.lifetimeCtx.Err() != nil {
+					return
+				}
+
 				go func() {
 					defer func() { <-wq.limiter }()
 					work(wq.lifetimeCtx)
