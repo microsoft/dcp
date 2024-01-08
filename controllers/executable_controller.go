@@ -93,13 +93,9 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
 	// Check to see if the request context has already expired
-	select {
-	case _, isOpen := <-ctx.Done():
-		if !isOpen {
-			log.V(1).Info("Request context expired, nothing to do...")
-			return ctrl.Result{}, nil
-		}
-	default: // not done, proceed
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
 	}
 
 	// Retrieve the Executable object
@@ -293,7 +289,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {
@@ -304,7 +300,7 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 	}
 
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-	if isServiceNotAssignedPort(err) {
+	if isTransientTemplateError(err) {
 		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
 		return additionalReconciliationNeeded
 	} else if err != nil {

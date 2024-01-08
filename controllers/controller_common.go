@@ -214,3 +214,5 @@ type dcpModelObject interface {
 	ctrl_client.Object
 	NamespacedName() types.NamespacedName
 }
+
+type ControllerContextOption string

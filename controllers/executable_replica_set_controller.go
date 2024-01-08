@@ -300,13 +300,9 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
-	select {
-	case _, isOpen := <-ctx.Done():
-		if !isOpen {
-			log.V(1).Info("Request context expired, nothing to do...")
-			return ctrl.Result{}, nil
-		}
-	default: // not done, proceed
+	if ctx.Err() != nil {
+		log.V(1).Info("Request context expired, nothing to do...")
+		return ctrl.Result{}, nil
 	}
 
 	replicaSet := apiv1.ExecutableReplicaSet{}

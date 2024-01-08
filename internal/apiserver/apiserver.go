@@ -67,6 +67,8 @@ func (s *ApiServer) Run(ctx context.Context) error {
 		WithResourceMemoryStorage(&stdtypes_apiv1.ExecutableReplicaSet{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.Container{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.ContainerVolume{}, dataFolderPath).
+		WithResourceMemoryStorage(&stdtypes_apiv1.ContainerNetwork{}, dataFolderPath).
+		WithResourceMemoryStorage(&stdtypes_apiv1.ContainerNetworkConnection{}, dataFolderPath).
 		WithResourceMemoryStorage(&stdtypes_apiv1.Service{}, dataFolderPath).
 		WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, stdtypes_openapi.GetOpenAPIDefinitions)
 

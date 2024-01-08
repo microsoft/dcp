@@ -17,85 +17,93 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		"github.com/microsoft/usvc-apiserver/api/v1.Container":                  schema_microsoft_usvc_apiserver_api_v1_Container(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":              schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort":              schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus":            schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":            schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":        schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":        schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                   schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":               schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":               schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus":             schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                     schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                 schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":             schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":       schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":   schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec":   schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus": schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":             schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":           schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":         schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Service":                    schema_microsoft_usvc_apiserver_api_v1_Service(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus":              schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.VolumeMount":                schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                         schema_pkg_apis_meta_v1_APIGroup(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                     schema_pkg_apis_meta_v1_APIGroupList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResource":                      schema_pkg_apis_meta_v1_APIResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList":                  schema_pkg_apis_meta_v1_APIResourceList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":                      schema_pkg_apis_meta_v1_APIVersions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ApplyOptions":                     schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Condition":                        schema_pkg_apis_meta_v1_Condition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.CreateOptions":                    schema_pkg_apis_meta_v1_CreateOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.DeleteOptions":                    schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Duration":                         schema_pkg_apis_meta_v1_Duration(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldsV1":                         schema_pkg_apis_meta_v1_FieldsV1(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GetOptions":                       schema_pkg_apis_meta_v1_GetOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupKind":                        schema_pkg_apis_meta_v1_GroupKind(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupResource":                    schema_pkg_apis_meta_v1_GroupResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersion":                     schema_pkg_apis_meta_v1_GroupVersion(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery":         schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionKind":                 schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionResource":             schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.InternalEvent":                    schema_pkg_apis_meta_v1_InternalEvent(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector":                    schema_pkg_apis_meta_v1_LabelSelector(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement":         schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.List":                             schema_pkg_apis_meta_v1_List(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta":                         schema_pkg_apis_meta_v1_ListMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions":                      schema_pkg_apis_meta_v1_ListOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry":               schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime":                        schema_pkg_apis_meta_v1_MicroTime(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta":                       schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference":                   schema_pkg_apis_meta_v1_OwnerReference(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata":            schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadataList":        schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Patch":                            schema_pkg_apis_meta_v1_Patch(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PatchOptions":                     schema_pkg_apis_meta_v1_PatchOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Preconditions":                    schema_pkg_apis_meta_v1_Preconditions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.RootPaths":                        schema_pkg_apis_meta_v1_RootPaths(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR":        schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":                           schema_pkg_apis_meta_v1_Status(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause":                      schema_pkg_apis_meta_v1_StatusCause(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusDetails":                    schema_pkg_apis_meta_v1_StatusDetails(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Table":                            schema_pkg_apis_meta_v1_Table(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition":            schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableOptions":                     schema_pkg_apis_meta_v1_TableOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRow":                         schema_pkg_apis_meta_v1_TableRow(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition":                schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Time":                             schema_pkg_apis_meta_v1_Time(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Timestamp":                        schema_pkg_apis_meta_v1_Timestamp(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TypeMeta":                         schema_pkg_apis_meta_v1_TypeMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.UpdateOptions":                    schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.WatchEvent":                       schema_pkg_apis_meta_v1_WatchEvent(ref),
-		"k8s.io/apimachinery/pkg/runtime.RawExtension":                          schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                              schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
-		"k8s.io/apimachinery/pkg/runtime.Unknown":                               schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
-		"k8s.io/apimachinery/pkg/version.Info":                                  schema_k8sio_apimachinery_pkg_version_Info(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig": schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionList":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkList":             schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec":             schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus":           schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort":                    schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec":                    schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus":                  schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":                  schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                         schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":                     schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":                     schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus":                   schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                           schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                       schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":             schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":         schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec":         schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus":       schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":                 schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":               schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Service":                          schema_microsoft_usvc_apiserver_api_v1_Service(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                      schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                      schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus":                    schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.VolumeMount":                      schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                               schema_pkg_apis_meta_v1_APIGroup(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                           schema_pkg_apis_meta_v1_APIGroupList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResource":                            schema_pkg_apis_meta_v1_APIResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList":                        schema_pkg_apis_meta_v1_APIResourceList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":                            schema_pkg_apis_meta_v1_APIVersions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ApplyOptions":                           schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Condition":                              schema_pkg_apis_meta_v1_Condition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.CreateOptions":                          schema_pkg_apis_meta_v1_CreateOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.DeleteOptions":                          schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Duration":                               schema_pkg_apis_meta_v1_Duration(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldsV1":                               schema_pkg_apis_meta_v1_FieldsV1(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GetOptions":                             schema_pkg_apis_meta_v1_GetOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupKind":                              schema_pkg_apis_meta_v1_GroupKind(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupResource":                          schema_pkg_apis_meta_v1_GroupResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersion":                           schema_pkg_apis_meta_v1_GroupVersion(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery":               schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionKind":                       schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionResource":                   schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.InternalEvent":                          schema_pkg_apis_meta_v1_InternalEvent(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector":                          schema_pkg_apis_meta_v1_LabelSelector(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement":               schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.List":                                   schema_pkg_apis_meta_v1_List(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta":                               schema_pkg_apis_meta_v1_ListMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions":                            schema_pkg_apis_meta_v1_ListOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry":                     schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime":                              schema_pkg_apis_meta_v1_MicroTime(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta":                             schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference":                         schema_pkg_apis_meta_v1_OwnerReference(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata":                  schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadataList":              schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Patch":                                  schema_pkg_apis_meta_v1_Patch(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PatchOptions":                           schema_pkg_apis_meta_v1_PatchOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Preconditions":                          schema_pkg_apis_meta_v1_Preconditions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.RootPaths":                              schema_pkg_apis_meta_v1_RootPaths(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR":              schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":                                 schema_pkg_apis_meta_v1_Status(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause":                            schema_pkg_apis_meta_v1_StatusCause(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusDetails":                          schema_pkg_apis_meta_v1_StatusDetails(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Table":                                  schema_pkg_apis_meta_v1_Table(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition":                  schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableOptions":                           schema_pkg_apis_meta_v1_TableOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRow":                               schema_pkg_apis_meta_v1_TableRow(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition":                      schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Time":                                   schema_pkg_apis_meta_v1_Time(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Timestamp":                              schema_pkg_apis_meta_v1_Timestamp(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TypeMeta":                               schema_pkg_apis_meta_v1_TypeMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.UpdateOptions":                          schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.WatchEvent":                             schema_pkg_apis_meta_v1_WatchEvent(ref),
+		"k8s.io/apimachinery/pkg/runtime.RawExtension":                                schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                                    schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
+		"k8s.io/apimachinery/pkg/runtime.Unknown":                                     schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
+		"k8s.io/apimachinery/pkg/version.Info":                                        schema_k8sio_apimachinery_pkg_version_Info(ref),
 	}
 }
 
@@ -195,6 +203,400 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref common.ReferenceCa
 	}
 }
 
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetwork represents a network that can be consumed by Container instances Its lifetime is independent from the lifetime of containers",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkConnection represents a Container that wishes to be connected to a specific ContainerNetwork Its lifetime is dependent on the lifetime of the Container that it is attached to.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the network to connect to",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"aliases": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Aliases of the container on the network",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkConnectionList contains a list of ContainerNetworkConnection instances",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkConnectionSpec defines the desired state of a ContainerNetworkConnection",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerNetworkName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The name of the ContainerNetwork resource to connect to",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ID of the container (container orchestrator resource ID) to connect to the ContainerNetwork",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"aliases": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The optional list of custom aliases for the container on the ContainerNetwork",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"containerNetworkName", "containerId"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkList contains a list of ContainerNetwork instances",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkSpec defines the desired state of a ContainerNetwork",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the network (if omitted, a name is generated based on the resource name)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ipv6": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Shouild IPv6 be enabled for the network?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkStatus defines the current state of a ContainerNetwork",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The current state of the network",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If the network is in a failed state, this is the reason",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ID of the network",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The name of the network",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The driver of the network",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ipv6": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Does the network support IPv6?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"subnets": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Subnets allocated to the network (if any)",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"gateways": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Gateways allocated to the network (if any)",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"containerIds": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The list of container IDs connected to the network",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 func schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -248,6 +650,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 						SchemaProps: spec.SchemaProps{
 							Description: "Container image",
 							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional container name",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -345,12 +754,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"networks": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContaineNetworks resources the container should be attached to. If omitted or nil, the container will be attached to the default network and the controller will not manage network connections.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"image"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
 	}
 }
 
@@ -371,6 +794,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 					"containerId": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ID of the Container (if an attempt to start the Container was made)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the Container (if an attempt to start the Container was made)",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -404,14 +834,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 						},
 					},
 					"effectiveEnv": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Effective values of environment variables, after all substitutions are applied.",
 							Type:        []string{"array"},
@@ -426,13 +848,23 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 						},
 					},
 					"effectiveArgs": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Effective values of launch arguments to be passed to the Container, after all substitutions are applied.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"networks": {
+						SchemaProps: spec.SchemaProps{
+							Description: "List of ContainerNetworks the Container is connected to",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -1055,11 +1487,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 						},
 					},
 					"args": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Launch arguments to be passed to the Executable",
 							Type:        []string{"array"},
@@ -1075,14 +1502,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 						},
 					},
 					"env": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Environment variables to be set for the Executable",
 							Type:        []string{"array"},
@@ -1097,11 +1516,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 						},
 					},
 					"envFiles": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Environment files to use to populate Executable environment during startup.",
 							Type:        []string{"array"},
@@ -1205,14 +1619,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 						},
 					},
 					"effectiveEnv": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Effective values of environment variables, after all substitutions are applied.",
 							Type:        []string{"array"},
@@ -1227,11 +1633,6 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 						},
 					},
 					"effectiveArgs": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
 						SchemaProps: spec.SchemaProps{
 							Description: "Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.",
 							Type:        []string{"array"},

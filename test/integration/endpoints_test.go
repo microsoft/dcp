@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -58,7 +57,6 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	defer cancel()
 
 	const testName = "endpoint-creation-deletion"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	container := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -81,10 +79,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	err := client.Create(ctx, &container)
 	require.NoError(t, err, "Could not create a Container")
 
-	t.Log("Check if corresponding container has started...")
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, container.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &container)
 
 	t.Log("Check if Endpoint created...")
 	waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
@@ -94,15 +89,16 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	})
 	t.Log("Found Endpoint with correct spec")
 
-	ensureContainerDeletionResponse(t, containerID)
-
 	t.Log("Deleting Container...")
 	err = client.Delete(ctx, &container)
 	require.NoError(t, err, "Could not delete Container")
 
-	t.Log("Check if corresponding container was deleted...")
-	err = waitForDockerContainerRemoved(t, ctx, containerID)
-	require.NoError(t, err, "Container was not deleted as expected")
+	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", container.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&container))
+
+	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.Error(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 0, "expected the container to be gone")
 
 	t.Log("Check if Endpoint deleted...")
 	waitObjectDeleted[apiv1.Endpoint](t, ctx, ctrl_client.ObjectKeyFromObject(&container))
@@ -160,7 +156,6 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	defer cancel()
 
 	const testName = "test-endpoint-deleted-if-container-stopped"
-	containerID := testName + "-" + testutil.GetRandLetters(t, 6)
 
 	container := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -185,10 +180,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	err := client.Create(ctx, &container)
 	require.NoError(t, err, "Could not create the Container")
 
-	t.Log("Check if corresponding container has started...")
-	creationTime := time.Now().UTC()
-	err = ensureContainerRunning(t, ctx, container.Spec.Image, containerID, creationTime)
-	require.NoError(t, err, "Container was not started as expected")
+	_, inspected := ensureContainerRunning(t, ctx, &container)
 
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
@@ -197,7 +189,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	t.Log("Found Endpoint with correct spec")
 
 	t.Log("Simulate Container stopping...")
-	err = simulateContainerExit(t, ctx, container.Spec.Image, containerID, creationTime)
+	err = orchestrator.SimulateContainerExit(ctx, inspected.Id)
 	require.NoError(t, err, "Could not simulate container exit")
 
 	t.Log("Ensure Container object status reflects the state of the running container...")

@@ -1026,6 +1026,103 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar2), "The Executable effective environment does not contain expected EXE_SPEC_EXECUTABLE_PATH. The effective environment is %v", effectiveEnv)
 }
 
+func TestExecutableServingAddressInjected(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-executable-serving-address-injected"
+
+	const IPAddr = "127.63.29.2"
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-svc",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  IPAddr,
+			Port:     26003,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create Service '%s'", svc.ObjectMeta.Name)
+
+	var spAnn strings.Builder
+	spAnn.WriteString("[")
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s", "address": "%s"}`, svc.ObjectMeta.Name, IPAddr))
+	spAnn.WriteString("]")
+
+	server := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testName + "-server",
+			Namespace:   metav1.NamespaceNone,
+			Annotations: map[string]string{"service-producer": spAnn.String()},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + testName + "-server",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "ADDRESS",
+					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", server.ObjectMeta.Name)
+	err = client.Create(ctx, &server)
+	require.NoError(t, err, "Could not create Executable '%s'", server.ObjectMeta.Name)
+
+	t.Logf("Ensure the Status.EffectiveEnv for Executable '%s' contains the injected address...", server.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&server), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+	effectiveEnv := slices.Map[apiv1.EnvVar, string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		return fmt.Sprintf("%s=%s", v.Name, v.Value)
+	})
+	expectedEnvVar := fmt.Sprintf("ADDRESS=%s", IPAddr)
+	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected address information. The effective environemtn is %v", server.ObjectMeta.Name, effectiveEnv)
+
+	consumer := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-consumer",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + testName + "-consumer",
+			Args: []string{
+				fmt.Sprintf(`--server-address={{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", consumer.ObjectMeta.Name)
+	err = client.Create(ctx, &consumer)
+	require.NoError(t, err, "Could not create Executable '%s'", consumer.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running...", consumer.ObjectMeta.Name)
+	pid, err := ensureProcessRunning(ctx, consumer.Spec.ExecutablePath)
+	require.NoError(t, err, "Process for Executable '%s' could not be started", consumer.ObjectMeta.Name)
+
+	t.Logf("Ensure the process for Executable '%s' is running...", consumer.ObjectMeta.Name)
+	pe, found := processExecutor.FindByPid(pid)
+	require.True(t, found, "Could not find the Executable '%s' process with PID %d", consumer.ObjectMeta.Name, pid)
+
+	serverAddressExpectedArg := fmt.Sprintf("--server-address=%s", IPAddr)
+	require.Equal(
+		t,
+		serverAddressExpectedArg,
+		pe.Cmd.Args[1],
+		"Address for service '%s' was not injected into the Executable '%s' process startup parameters. The process startup parameters are: %v",
+		svc.ObjectMeta.Name,
+		consumer.ObjectMeta.Name,
+		pe.Cmd.Args,
+	)
+}
+
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {
 	pid := process.UnknownPID
 

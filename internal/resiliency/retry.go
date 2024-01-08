@@ -30,3 +30,29 @@ func RetryGet[T any](ctx context.Context, factory func() (T, error)) (T, error) 
 		return retval, nil
 	}
 }
+
+func Retry(ctx context.Context, operation func() error) error {
+	var lastAttemptErr error
+
+	err := backoff.RetryNotify(
+		operation,
+		backoff.WithContext(backoff.NewExponentialBackOff(), ctx),
+		func(err error, d time.Duration) {
+			lastAttemptErr = err
+		},
+	)
+
+	switch {
+	case err != nil && errors.Is(err, context.DeadlineExceeded):
+		// Inform the caller about the timeout AND the last attempt error.
+		return errors.Join(lastAttemptErr, err)
+	case err != nil:
+		return err
+	default:
+		return nil
+	}
+}
+
+func Permanent(err error) error {
+	return backoff.Permanent(err)
+}

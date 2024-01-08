@@ -75,16 +75,7 @@ func createKubeconfigFile(path string, port int32) error {
 	}
 
 	ip := ips[0]
-	var address string
-	// The order of checks is significant here
-	if ip4 := ip.To4(); len(ip4) == net.IPv4len {
-		address = ip4.String()
-	} else if ip6 := ip.To16(); len(ip6) == net.IPv6len {
-		address = fmt.Sprintf("[%s]", ip6.String())
-	} else {
-		// Not sure what kind address this is, but it is worth trying
-		address = ip.String()
-	}
+	address := networking.IpToString(ip)
 
 	if port == 0 {
 		if newPort, err := networking.GetFreePort(apiv1.TCP, address); err != nil {
