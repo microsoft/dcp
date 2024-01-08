@@ -15,7 +15,6 @@ var (
 	proxiedServiceCounter   syncint64.UpDownCounter
 	tcpServiceCounter       syncint64.UpDownCounter
 	udpServiceCounter       syncint64.UpDownCounter
-	proxyRestartCounter     syncint64.Counter
 )
 
 func init() {
@@ -26,7 +25,6 @@ func init() {
 	proxiedServiceCounter = telemetry.NewInt64UpDownCounter(svcCtrlMeter, "proxiedServices", "Number of services that use a proxy")
 	tcpServiceCounter = telemetry.NewInt64UpDownCounter(svcCtrlMeter, "tcpServices", "Number of services that use TCP")
 	udpServiceCounter = telemetry.NewInt64UpDownCounter(svcCtrlMeter, "udpServices", "Number of services that use UDP")
-	proxyRestartCounter = telemetry.NewInt64Counter(svcCtrlMeter, "proxyRestarts", "Number of times the proxy has been restarted")
 }
 
 func serviceCounters(ctx context.Context, service *apiv1.Service, addend int64) {
