@@ -309,11 +309,15 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	if err := r.Get(ctx, req.NamespacedName, &replicaSet); err != nil {
 		if errors.IsNotFound(err) {
 			log.V(1).Info("ExecutableReplicaSet not found, nothing to do...")
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the ExecutableReplicaSet")
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	log = log.WithValues("DesiredReplicas", replicaSet.Spec.Replicas)

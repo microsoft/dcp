@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -142,7 +143,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 
 func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 	client ctrl_client.Client,
-	ctx context.Context,
+	parentCtx context.Context,
 	obj PCT,
 	patch ctrl_client.Patch,
 	change objectChange,
@@ -150,63 +151,69 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 	onSuccessfulSave func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
-	var update PCT
-	var err error
-	kind := obj.GetObjectKind().GroupVersionKind().Kind
-	afterGoodSave := func() {
-		if onSuccessfulSave != nil {
-			onSuccessfulSave()
-		}
-	}
-
-	// Apply one update per reconciliation function invocation,
-	// to avoid observing "partially updated" objects during subsequent reconciliations.
-	switch {
-	case change == noChange:
-		log.V(1).Info(fmt.Sprintf("no changes detected for %s object, continue monitoring...", kind))
-		return ctrl.Result{}, nil
-
-	case (change & statusChanged) != 0:
-		update = obj.DeepCopy()
-		err = client.Status().Patch(ctx, update, patch)
-		if err != nil {
-			if errors.IsConflict(err) {
-				// Error is expected optimistic concurrency check error, simply requeue
-				log.V(1).Info(fmt.Sprintf("%s status update failed due to conflict", kind))
-				return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
-			} else {
-				log.Error(err, fmt.Sprintf("%s status update failed", kind))
-				return ctrl.Result{}, err
+	return telemetry.CallWithTelemetryOnErrorOnly(telemetry.GetTracer("controller-common"), "saveChanges", parentCtx, func(ctx context.Context) (ctrl.Result, error) {
+		var update PCT
+		var err error
+		kind := obj.GetObjectKind().GroupVersionKind().Kind
+		afterGoodSave := func() {
+			if onSuccessfulSave != nil {
+				onSuccessfulSave()
 			}
-		} else {
-			log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
-			afterGoodSave()
 		}
 
-	case (change & (metadataChanged | specChanged)) != 0:
-		update = obj.DeepCopy()
-		err = client.Patch(ctx, update, patch)
-		if err != nil {
-			if errors.IsConflict(err) {
-				// Error is expected optimistic concurrency check error, simply requeue
-				log.V(1).Info(fmt.Sprintf("%s object update failed due to conflict", kind))
-				return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
+		// Apply one update per reconciliation function invocation,
+		// to avoid observing "partially updated" objects during subsequent reconciliations.
+		switch {
+		case change == noChange:
+			log.V(1).Info(fmt.Sprintf("no changes detected for %s object, continue monitoring...", kind))
+			return ctrl.Result{}, nil
+
+		case (change & statusChanged) != 0:
+			update = obj.DeepCopy()
+			err = client.Status().Patch(ctx, update, patch)
+			if err != nil {
+				if errors.IsConflict(err) {
+					// Error is expected optimistic concurrency check error, simply requeue
+					log.V(1).Info(fmt.Sprintf("%s status update failed due to conflict", kind))
+					return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
+				} else {
+					log.Error(err, fmt.Sprintf("%s status update failed", kind))
+					saveFailedCounter.Add(ctx, 1)
+					return ctrl.Result{}, err
+				}
 			} else {
-				log.Error(err, fmt.Sprintf("%s object update failed", kind))
-				return ctrl.Result{}, err
+				log.V(1).Info(fmt.Sprintf("%s status update succeeded", kind))
+				afterGoodSave()
+				statusSaveCounter.Add(ctx, 1)
 			}
-		} else {
-			log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
-			afterGoodSave()
-		}
-	}
 
-	if (change & additionalReconciliationNeeded) != 0 {
-		log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
-		return ctrl.Result{RequeueAfter: customReconciliationDelay}, nil
-	} else {
-		return ctrl.Result{}, nil
-	}
+		case (change & (metadataChanged | specChanged)) != 0:
+			update = obj.DeepCopy()
+			err = client.Patch(ctx, update, patch)
+			if err != nil {
+				if errors.IsConflict(err) {
+					// Error is expected optimistic concurrency check error, simply requeue
+					log.V(1).Info(fmt.Sprintf("%s object update failed due to conflict", kind))
+					return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
+				} else {
+					log.Error(err, fmt.Sprintf("%s object update failed", kind))
+					saveFailedCounter.Add(ctx, 1)
+					return ctrl.Result{}, err
+				}
+			} else {
+				log.V(1).Info(fmt.Sprintf("%s object update succeeded", kind))
+				afterGoodSave()
+				metadataOrSpecSaveCounter.Add(ctx, 1)
+			}
+		}
+
+		if (change & additionalReconciliationNeeded) != 0 {
+			log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
+			return ctrl.Result{RequeueAfter: customReconciliationDelay}, nil
+		} else {
+			return ctrl.Result{}, nil
+		}
+	})
 }
 
 type dcpModelObject interface {

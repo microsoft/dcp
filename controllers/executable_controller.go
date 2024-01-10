@@ -105,11 +105,15 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			// Ensure the cache of Executable to run ID is cleared
 			r.runs.DeleteByFirstKey(req.NamespacedName)
 			log.V(1).Info("Executable not found, nothing to do...")
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Executable", "exe", exe)
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	var change objectChange
