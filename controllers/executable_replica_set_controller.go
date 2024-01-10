@@ -113,13 +113,7 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 	}
 
 	// Replicas have a display name annotation that is the replica set name concatenated with a monotonically increasing counter.
-	var counter *atomic.Int32
-	var ok bool
-	if counter, ok = r.replicaCounters.Load(replicaSet.NamespacedName()); !ok {
-		counter = &atomic.Int32{}
-		r.replicaCounters.Store(replicaSet.NamespacedName(), counter)
-	}
-
+	counter, _ := r.replicaCounters.LoadOrStoreNew(replicaSet.NamespacedName(), func() *atomic.Int32 { return &atomic.Int32{} })
 	displayName := fmt.Sprintf("%s-%d", replicaSet.Name, counter.Add(1))
 
 	// We don't honor all metadata fields from the template for now, only Labels and Annotations
