@@ -62,6 +62,13 @@ func TestExecutableReplicaSetScales(t *testing.T) {
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
+	// Quickly check the displayName annotation to ensure it is set
+	ownedExes, err := getOwnedExes(ctx, &exers)
+	require.NoError(t, err, "Failed to retrieve owned Executable replicas")
+	for _, exe := range ownedExes {
+		require.NotEmpty(t, exe.Annotations[controllers.ExecutableDisplayNameAnnotation], "Executable '%s' does not have the expected display name annotation", exe.ObjectMeta.Name)
+	}
+
 	t.Logf("scaling down replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
 	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		ers.Spec.Replicas = 0
