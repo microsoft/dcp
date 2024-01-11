@@ -138,11 +138,15 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("the ContainerNetwork object was deleted")
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the ContainerNetwork object")
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	var change objectChange

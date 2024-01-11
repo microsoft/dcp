@@ -142,11 +142,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apimachinery_errors.IsNotFound(err) {
 			log.Info("the Service object does not exist yet or was deleted")
 			r.stopAllProxies(req.NamespacedName, log)
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Service object")
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	var change objectChange
