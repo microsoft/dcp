@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
+	"go.opentelemetry.io/otel/trace"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +29,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -61,6 +63,8 @@ type ServiceReconciler struct {
 	debouncer *reconcilerDebouncer[process.Pid_t]
 
 	lifetimeCtx context.Context
+
+	tracer trace.Tracer
 }
 
 var (
@@ -77,6 +81,7 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		debouncer:             newReconcilerDebouncer[process.Pid_t](reconciliationDebounceDelay),
 		lifetimeCtx:           lifetimeCtx,
+		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 	}
 	return &r
 }
@@ -155,11 +160,14 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("Service object is being deleted")
 		r.stopAllProxies(svc.NamespacedName(), log)
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
+		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)
+		} else {
+			serviceCounters(ctx, &svc, 1) // Service was just created
 		}
 	}
 
