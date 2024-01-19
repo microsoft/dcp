@@ -11,9 +11,9 @@ import (
 	"github.com/felixge/fgprof"
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 const (

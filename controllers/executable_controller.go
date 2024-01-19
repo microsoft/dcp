@@ -27,6 +27,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -221,19 +222,16 @@ func (r *ExecutableReconciler) OnStartingCompleted(name types.NamespacedName, ru
 	// OnStartingCompleted might be invoked asynchronously. To avoid race conditions,
 	//  we always queue updates to the runs map and run them as part of reconciliation function.
 	r.runs.QueueDeferredOp(name, func(runs *maps.DualKeyMap[types.NamespacedName, RunID, *runInfo]) {
-		if startupSucceeded {
-			startingRunID, ri, found := runs.FindByFirstKey(name)
-			if !found {
-				// Should never happen
-				r.Log.Error(fmt.Errorf("could not find starting run data after Executable start attempt"), "Executable", name.String(), "RunID", runID, "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
-			} else {
-				ri.UpdateFrom(exeStatus)
-				_ = runs.UpdateChangingSecondKey(name, startingRunID, runID, ri)
-			}
-
-			startWaitForRunCompletion()
+		startingRunID, ri, found := runs.FindByFirstKey(name)
+		if !found {
+			// Should never happen
+			r.Log.Error(fmt.Errorf("could not find starting run data after Executable start attempt"), "Executable", name.String(), "RunID", runID, "NewState", exeStatus.State, "NewExitCode", exeStatus.ExitCode)
 		} else {
-			runs.DeleteByFirstKey(name)
+			ri.UpdateFrom(exeStatus)
+			_ = runs.UpdateChangingSecondKey(name, startingRunID, runID, ri)
+			if startupSucceeded {
+				startWaitForRunCompletion()
+			}
 		}
 	})
 
@@ -533,23 +531,30 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 	log logr.Logger,
 ) error {
 	// Start with ambient environment.
-	envMap := maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
+	var envMap maps.StringKeyMap[string]
+	if osutil.IsWindows() {
+		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseInsensitive)
+	} else {
+		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
+	}
+
+	envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
 		parts := strings.SplitN(envStr, "=", 2)
 		return parts[0], parts[1]
-	})
+	}))
 
 	// Add environment variables from .env files.
 	if len(exe.Spec.EnvFiles) > 0 {
 		if additionalEnv, err := godotenv.Read(exe.Spec.EnvFiles...); err != nil {
 			log.Error(err, "Environment settings from .env file(s) were not applied.", "EnvFiles", exe.Spec.EnvFiles)
 		} else {
-			envMap = maps.Apply(envMap, additionalEnv)
+			envMap.Apply(additionalEnv)
 		}
 	}
 
 	// Add environment variables from the Spec.
 	for _, envVar := range exe.Spec.Env {
-		envMap[envVar.Name] = envVar.Value
+		envMap.Override(envVar.Name, envVar.Value)
 	}
 
 	// Apply variable substitutions.
@@ -559,16 +564,16 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		return err
 	}
 
-	for key, value := range envMap {
+	for key, value := range envMap.Data() {
 		substitutionCtx := fmt.Sprintf("environment variable %s", key)
 		effectiveValue, err := executeTemplate(tmpl, exe, value, substitutionCtx, log)
 		if err != nil {
 			return err
 		}
-		envMap[key] = effectiveValue
+		envMap.Set(key, effectiveValue)
 	}
 
-	exe.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](envMap, func(key string, value string) apiv1.EnvVar {
+	exe.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](envMap.Data(), func(key string, value string) apiv1.EnvVar {
 		return apiv1.EnvVar{Name: key, Value: value}
 	})
 

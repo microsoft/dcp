@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/controllers"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -411,6 +412,86 @@ func TestExecutableDeletion(t *testing.T) {
 			tc.verifyRunEnded(ctx, t, tc.exe)
 		})
 	}
+}
+
+// Ensure that Executable ends up in "failed to start" state with FinishTimestamp set if the run fails
+// Uses OS process runner
+func TestExecutableStartupFailureProcess(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "executable-startup-failure-process",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/executable-startup-failure-process",
+		},
+	}
+
+	t.Logf("Preparing run for Executable '%s'... (should fail)", exe.ObjectMeta.Name)
+	processExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+		Condition: ctrl_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		StartupError: fmt.Errorf("simulated startup failure for Executable '%s'", exe.ObjectMeta.Name),
+	})
+	defer processExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	if err := client.Create(ctx, exe); err != nil {
+		t.Fatalf("Could not create Executable: %v", err)
+	}
+
+	t.Logf("Waiting for Executable '%s' to end up in 'failed to start' state...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		stateFailedToStart := currentExe.Status.State == apiv1.ExecutableStateFailedToStart
+		finishTimestampSet := !currentExe.Status.FinishTimestamp.IsZero()
+		return stateFailedToStart && finishTimestampSet, nil
+	})
+}
+
+// Ensure that Executable ends up in "failed to start" state with FinishTimestamp set if the run fails
+// Uses IDE process runner
+func TestExecutableStartupFailureIDE(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "executable-startup-failure-ide",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/executable-startup-failure-ide",
+			ExecutionType:  apiv1.ExecutionTypeIDE,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	if err := client.Create(ctx, exe); err != nil {
+		t.Fatalf("Could not create Executable: %v", err)
+	}
+
+	t.Logf("Simulating run for Executable '%s'... (should fail)", exe.ObjectMeta.Name)
+	_, err := findIdeRun(ctx, exe.Spec.ExecutablePath) // Need to give the Executable controller time to create the run session
+	require.NoError(t, err, "IDE run session for Executable '%s' could not be found", exe.ObjectMeta.Name)
+	err = ideRunner.SimulateFailedRunStart(exe.NamespacedName(), fmt.Errorf("simulated startup failure for Executable '%s'", exe.ObjectMeta.Name))
+	require.NoError(t, err, "IDE run session for Executable '%s' could not be simulated to fail", exe.ObjectMeta.Name)
+
+	t.Logf("Waiting for Executable '%s' to end up in 'failed to start' state...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		stateFailedToStart := currentExe.Status.State == apiv1.ExecutableStateFailedToStart
+		finishTimestampSet := !currentExe.Status.FinishTimestamp.IsZero()
+		return stateFailedToStart && finishTimestampSet, nil
+	})
 }
 
 // Verify ports are injected into Executable environment variables via portForServing template function.
@@ -1026,6 +1107,58 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar2), "The Executable effective environment does not contain expected EXE_SPEC_EXECUTABLE_PATH. The effective environment is %v", effectiveEnv)
 }
 
+// Verify that envrioment variables are handled according to OS conventions:
+// in a case-insensitive manner on Windows, and in a case-sensitive manner everywhere else.
+func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-environment-variables-handling",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/test-executable-environment-variables-handling",
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "AlphaVar",
+					Value: `alpha var pascal case`,
+				},
+				{
+					Name:  "betaVar",
+					Value: `beta var camel case`,
+				},
+				{
+					Name:  "alphavar",
+					Value: `alpha var all lowercase`,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, &exe)
+	require.NoError(t, err, "Could not create an Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Status.EffectiveEnv for Executable '%s' contains expected env vars...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+
+	if osutil.IsWindows() {
+		// There should be just one "alpha var"
+		require.Equal(t, 1, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) bool {
+			return v.Name == "AlphaVar" || v.Name == "alphavar"
+		}))
+	} else {
+		require.Equal(t, 2, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) bool {
+			return v.Name == "AlphaVar" || v.Name == "alphavar"
+		}))
+	}
+}
+
 func TestExecutableServingAddressInjected(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -1148,6 +1281,20 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, e
 }
 
 func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (string, error) {
+	runID, err := findIdeRun(ctx, cmdPath)
+	if err != nil {
+		return "", err
+	}
+
+	randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
+	if err := ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid); err != nil {
+		return "", err
+	}
+
+	return runID, nil
+}
+
+func findIdeRun(ctx context.Context, cmdPath string) (string, error) {
 	runID := ""
 
 	ideRunSessionStarted := func(_ context.Context) (bool, error) {
@@ -1165,11 +1312,6 @@ func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (string, er
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ideRunSessionStarted)
 	if err != nil {
-		return "", err
-	}
-
-	randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
-	if err := ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid); err != nil {
 		return "", err
 	}
 
