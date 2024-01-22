@@ -477,7 +477,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref common.Refe
 				Description: "ContainerNetworkSpec defines the desired state of a ContainerNetwork",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"name": {
+					"networkName": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Name of the network (if omitted, a name is generated based on the resource name)",
 							Type:        []string{"string"},
@@ -487,6 +487,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref common.Refe
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Shouild IPv6 be enabled for the network?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"persistent": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should this network be created and persisted between DCP runs?",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -525,7 +532,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref common.Re
 							Format:      "",
 						},
 					},
-					"name": {
+					"networkName": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The name of the network",
 							Type:        []string{"string"},
@@ -766,6 +773,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 									},
 								},
 							},
+						},
+					},
+					"persistent": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should this container be created and persisted between DCP runs?",
+							Type:        []string{"boolean"},
+							Format:      "",
 						},
 					},
 				},

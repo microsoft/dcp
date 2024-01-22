@@ -656,3 +656,87 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected address information for service '%s'. The startup parameters are %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
 }
+
+func TestPersistentContainerDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-container-deletion"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = client.Delete(ctx, &ctr)
+	require.NoError(t, err, "container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+}
+
+func TestPersistentContainerAlreadyExists(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-container-already-exists"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+		},
+	}
+
+	id, err := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID does not match existing value")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = client.Delete(ctx, &ctr)
+	require.NoError(t, err, "container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+}

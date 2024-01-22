@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -724,6 +725,17 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.Status = dci.State.Status
 	ic.ExitCode = dci.State.ExitCode
 	ic.Ports = dci.NetworkSettings.Ports
+	ic.Env = make(map[string]string)
+	for _, envVar := range dci.Config.Env {
+		parts := strings.SplitN(envVar, "=", 2)
+		if len(parts) > 1 {
+			ic.Env[parts[0]] = parts[1]
+		} else if len(parts) == 1 {
+			ic.Env[parts[0]] = ""
+		}
+	}
+	ic.Args = append(ic.Args, dci.Config.Entrypoint...)
+	ic.Args = append(ic.Args, dci.Config.Cmd...)
 	for name, network := range dci.NetworkSettings.Networks {
 		ic.Networks = append(
 			ic.Networks,
@@ -784,7 +796,10 @@ type dockerInspectedContainer struct {
 }
 
 type dockerInspectedContainerConfig struct {
-	Image string `json:"Image,omitempty"`
+	Image      string   `json:"Image,omitempty"`
+	Env        []string `json:"Env,omitempty"`
+	Cmd        []string `json:"Cmd,omitempty"`
+	Entrypoint []string `json:"Entrypoint,omitempty"`
 }
 
 type dockerInspectedContainerState struct {

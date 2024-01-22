@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"runtime"
+
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 // Keep in sync with https://github.com/microsoft/usvc-apiserver/schemas/v1.0/capabilities.json
@@ -34,22 +35,10 @@ func WriteCapabiltiesDoc(w io.Writer, extName string, id string, caps []Extensio
 		return fmt.Errorf("unexpected error ocurred while creating JSON document describing capabilities of this program: %w", err)
 	}
 
-	_, err = w.Write(withNewline(output))
+	_, err = w.Write(osutil.WithNewline(output))
 	if err != nil {
 		return fmt.Errorf("unexpected error ocurred while writing JSON document describing capabilities of this program: %w", err)
 	}
 
 	return nil
-}
-
-func isWindows() bool {
-	return runtime.GOOS == "windows"
-}
-
-func withNewline(b []byte) []byte {
-	if isWindows() {
-		b = append(b, '\r')
-	}
-	b = append(b, '\n')
-	return b
 }

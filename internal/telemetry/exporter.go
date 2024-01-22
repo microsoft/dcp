@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"

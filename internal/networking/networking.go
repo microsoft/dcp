@@ -45,6 +45,38 @@ func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 	}
 }
 
+func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32) error {
+	if address == "" {
+		address = "localhost"
+	}
+
+	if protocol == apiv1.UDP {
+		udpaddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", address, port))
+		if err != nil {
+			return err
+		}
+
+		if listener, err := net.ListenUDP("udp", udpaddr); err != nil {
+			return err
+		} else {
+			listener.Close()
+			return nil
+		}
+	} else {
+		tcpaddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", address, port))
+		if err != nil {
+			return err
+		}
+
+		if listener, err := net.ListenTCP("tcp", tcpaddr); err != nil {
+			return err
+		} else {
+			listener.Close()
+			return nil
+		}
+	}
+}
+
 func IpToString(ip net.IP) string {
 	var address string
 	// The order of checks is significant here

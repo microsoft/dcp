@@ -57,7 +57,7 @@ func TestContainerConnectsToExistingNetwork(t *testing.T) {
 	_, inspectedContainer := ensureContainerRunning(t, ctx, &ctr)
 
 	found := slices.ContainsFunc(inspectedContainer.Networks, func(n containers.InspectedContainerNetwork) bool {
-		return n.Name == updatedNetwork.Status.Name
+		return n.Name == updatedNetwork.Status.NetworkName
 	})
 	require.True(t, found)
 }
@@ -106,7 +106,7 @@ func TestContainerConnectedNetworkChanges(t *testing.T) {
 	updatedCtr, inspectedContainer := ensureContainerRunning(t, ctx, &ctr)
 
 	found := slices.ContainsFunc(inspectedContainer.Networks, func(n containers.InspectedContainerNetwork) bool {
-		return n.Name == updatedNetwork.Status.Name
+		return n.Name == updatedNetwork.Status.NetworkName
 	})
 	require.True(t, found)
 
@@ -214,7 +214,7 @@ func TestContainerDoesNotStartUntilNetworkExists(t *testing.T) {
 	_, inspectedContainer := ensureContainerRunning(t, ctx, &ctr)
 
 	found := slices.ContainsFunc(inspectedContainer.Networks, func(n containers.InspectedContainerNetwork) bool {
-		return n.Name == updatedNetwork.Status.Name
+		return n.Name == updatedNetwork.Status.NetworkName
 	})
 	require.True(t, found)
 }

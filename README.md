@@ -190,8 +190,8 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
 
-1. Open the solution with your application in Visual Studio and make sure the solution also includes `Aspire.Hosting` project.
-1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace.
+1. Open the solution with your application in Visual Studio. 
+1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace (a "Function Breakpoint" that refers to the fully-qualified name of the method will work fine, you do not need to have `Aspire.Hosting` project in your solution).
 1. Open `usvc-apiserver` repository in Visual Studio Code. 
 1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet. 
 1. Switch to Visual Studio Code, select `attach to controller process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary. 

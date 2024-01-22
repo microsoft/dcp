@@ -99,7 +99,60 @@ func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ lo
 }
 
 func (r *TestIdeRunner) SimulateRunStart(runID controllers.RunID, pid process.Pid_t) error {
-	return r.doChangeRun(runID, pid)
+	run, found := r.findAndChangeRun(
+		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
+		func(run *TestIdeRun) {
+			run.PID = pid
+			run.Status.State = apiv1.ExecutableStateRunning
+			run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
+		},
+	)
+
+	if !found {
+		return fmt.Errorf("run '%s' was not found, cannot be started", runID)
+	}
+
+	if run.ChangeHandler != nil {
+		// Make sure OnStartingCompleted is called before we return and let the test proceed.
+		done := make(chan struct{})
+		go func() {
+			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), runID, *run.Status, run.StartWaitingCallback)
+
+			close(done)
+		}()
+		<-done
+	}
+
+	return nil
+}
+
+func (r *TestIdeRunner) SimulateFailedRunStart(exeName types.NamespacedName, startupError error) error {
+	run, found := r.findAndChangeRun(
+		func(objName types.NamespacedName, run *TestIdeRun) bool { return objName == exeName },
+		func(run *TestIdeRun) {
+			run.PID = process.UnknownPID
+			run.Status.State = apiv1.ExecutableStateFailedToStart
+			run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
+			run.Status.FinishTimestamp = metav1.Now()
+		},
+	)
+
+	if !found {
+		return fmt.Errorf("run for Executable '%s' was not found", exeName.String())
+	}
+
+	if run.ChangeHandler != nil {
+		// Make sure OnStartingCompleted is called before we return and let the test proceed.
+		done := make(chan struct{})
+		go func() {
+			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), controllers.UnknownRunID, *run.Status, run.StartWaitingCallback)
+
+			close(done)
+		}()
+		<-done
+	}
+
+	return nil
 }
 
 func (r *TestIdeRunner) SimulateRunEnd(runID controllers.RunID, exitCode int32) error {
@@ -122,80 +175,20 @@ func (r *TestIdeRunner) FindAll(exePath string, cond func(run TestIdeRun) bool) 
 	return retval
 }
 
-func (r *TestIdeRunner) doChangeRun(runID controllers.RunID, pid process.Pid_t) error {
-	run, err := func() (TestIdeRun, error) {
-		r.m.Lock()
-		defer r.m.Unlock()
-
-		var foundRun *TestIdeRun
-		r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
-			if run.ID == runID {
-				run.PID = pid
-				run.Status.State = apiv1.ExecutableStateRunning
-				run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
-
-				foundRun = run
-
-				return false
-			}
-
-			return true
-		})
-
-		if foundRun == nil {
-			return TestIdeRun{}, fmt.Errorf("run '%s' was not found, cannot be started", runID)
-		}
-
-		return *foundRun, nil
-	}()
-
-	if err != nil {
-		return err
-	}
-
-	if run.ChangeHandler != nil {
-		// Make sure OnStartingCompleted is called before we return and let the test proceed.
-		done := make(chan struct{})
-		go func() {
-			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), runID, *run.Status, run.StartWaitingCallback)
-
-			close(done)
-		}()
-		<-done
-	}
-
-	return nil
-}
-
 func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error {
-	r.m.Lock()
+	// Do not take a lock here. findAndChangeRun() will take a lock internally for the duration of its working.
 
-	var foundRun *TestIdeRun
-	r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
-		if run.ID == runID {
+	var run, found = r.findAndChangeRun(
+		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
+		func(run *TestIdeRun) {
 			run.EndedAt = time.Now()
 			run.ExitCode = exitCode
+		},
+	)
 
-			foundRun = run
-
-			return false
-		}
-
-		return true
-	})
-
-	if foundRun == nil {
-		r.m.Unlock()
+	if !found {
 		return fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
 	}
-
-	run := *foundRun
-
-	// The controller may not have called startWaitForRunCompletion() yet,
-	// and that method needs the lock because it is changing run data.
-	// startWaitForRunCompletion() also closes the run.startWaitingChan channel.
-	// If we do not unlock here, the wait on run.startWaitingChan may deadlock.
-	r.m.Unlock()
 
 	if run.ChangeHandler != nil {
 		done := make(chan struct{}) // Make sure OnRunChanged is called before we return and let the test proceed.
@@ -214,6 +207,28 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	}
 
 	return nil
+}
+
+func (r *TestIdeRunner) findAndChangeRun(matches func(types.NamespacedName, *TestIdeRun) bool, change func(*TestIdeRun)) (TestIdeRun, bool) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	var foundRun *TestIdeRun
+	r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
+		if matches(run.Exe.NamespacedName(), run) {
+			change(run)
+			foundRun = run
+			return false
+		}
+
+		return true
+	})
+
+	if foundRun == nil {
+		return TestIdeRun{}, false
+	} else {
+		return *foundRun, true
+	}
 }
 
 var _ controllers.ExecutableRunner = (*TestIdeRunner)(nil)

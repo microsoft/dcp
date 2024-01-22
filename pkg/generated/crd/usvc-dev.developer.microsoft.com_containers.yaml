@@ -92,6 +92,10 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-type: atomic
+              persistent:
+                description: Should this container be created and persisted between
+                  DCP runs?
+                type: boolean
               ports:
                 description: Exposed ports
                 items:

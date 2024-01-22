@@ -26,16 +26,21 @@ const (
 	ContainerNetworkStateFailedToStart ContainerNetworkState = "FailedToStart"
 	// Network was running at some point, but has been removed
 	ContainerNetworkStateRemoved ContainerNetworkState = "Removed"
+	// An existing network was not found
+	ContainerNetworkStateNotFound ContainerNetworkState = "NotFound"
 )
 
 // ContainerNetworkSpec defines the desired state of a ContainerNetwork
 // +k8s:openapi-gen=true
 type ContainerNetworkSpec struct {
 	// Name of the network (if omitted, a name is generated based on the resource name)
-	Name string `json:"name,omitempty"`
+	NetworkName string `json:"networkName,omitempty"`
 
 	// Shouild IPv6 be enabled for the network?
 	IPv6 bool `json:"ipv6,omitempty"`
+
+	// Should this network be created and persisted between DCP runs?
+	Persistent bool `json:"persistent,omitempty"`
 }
 
 // ContainerNetworkStatus defines the current state of a ContainerNetwork
@@ -51,7 +56,7 @@ type ContainerNetworkStatus struct {
 	ID string `json:"id,omitempty"`
 
 	// The name of the network
-	Name string `json:"name,omitempty"`
+	NetworkName string `json:"networkName,omitempty"`
 
 	// The driver of the network
 	Driver string `json:"driver,omitempty"`
@@ -87,7 +92,7 @@ type ContainerNetwork struct {
 	Status ContainerNetworkStatus `json:"status,omitempty"`
 }
 
-func (cv *ContainerNetwork) GetGroupVersionResource() schema.GroupVersionResource {
+func (cn *ContainerNetwork) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
 		Version:  GroupVersion.Version,
@@ -95,58 +100,66 @@ func (cv *ContainerNetwork) GetGroupVersionResource() schema.GroupVersionResourc
 	}
 }
 
-func (cv *ContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
-	return &cv.ObjectMeta
+func (cn *ContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
+	return &cn.ObjectMeta
 }
 
-func (cv *ContainerNetwork) GetStatus() apiserver_resource.StatusSubResource {
-	return cv.Status
+func (cn *ContainerNetwork) GetStatus() apiserver_resource.StatusSubResource {
+	return cn.Status
 }
 
-func (cv *ContainerNetwork) New() runtime.Object {
+func (cn *ContainerNetwork) New() runtime.Object {
 	return &ContainerNetwork{}
 }
 
-func (cv *ContainerNetwork) NewList() runtime.Object {
+func (cn *ContainerNetwork) NewList() runtime.Object {
 	return &ContainerNetworkList{}
 }
 
-func (cv *ContainerNetwork) IsStorageVersion() bool {
+func (cn *ContainerNetwork) IsStorageVersion() bool {
 	return true
 }
 
-func (cv *ContainerNetwork) NamespaceScoped() bool {
+func (cn *ContainerNetwork) NamespaceScoped() bool {
 	return false
 }
 
-func (cv *ContainerNetwork) ShortNames() []string {
+func (cn *ContainerNetwork) ShortNames() []string {
 	return []string{"ctrnet"}
 }
 
-func (cv *ContainerNetwork) NamespacedName() types.NamespacedName {
+func (cn *ContainerNetwork) NamespacedName() types.NamespacedName {
 	return types.NamespacedName{
-		Name:      cv.Name,
-		Namespace: cv.Namespace,
+		Name:      cn.Name,
+		Namespace: cn.Namespace,
 	}
 }
 
-func (cv *ContainerNetwork) Validate(ctx context.Context) field.ErrorList {
-	// TODO: implement validation
+func (cn *ContainerNetwork) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
+
+	if cn.Spec.Persistent && cn.Spec.NetworkName == "" {
+		errorList = append(errorList, field.Required(field.NewPath("spec", "networkName"), "networkName must be set to a value when persistent is true"))
+	}
 
 	return errorList
 }
 
-func (e *ContainerNetwork) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+func (cn *ContainerNetwork) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	oldNetwork := obj.(*ContainerNetwork)
-	if e.Spec.Name != oldNetwork.Spec.Name {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "name"), e.Spec.Name, "name is immutable"))
+	if oldNetwork.Spec.NetworkName != cn.Spec.NetworkName {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "name"), cn.Spec.NetworkName, "networkName is immutable"))
 	}
 
-	if e.Spec.IPv6 != oldNetwork.Spec.IPv6 {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "ipv6"), e.Spec.IPv6, "ipv6 is immutable"))
+	if oldNetwork.Spec.IPv6 != cn.Spec.IPv6 {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "ipv6"), cn.Spec.IPv6, "ipv6 is immutable"))
+	}
+
+	// Make sure Persistent isn't changed after the network is created
+	if oldNetwork.Spec.Persistent != cn.Spec.Persistent {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
 	}
 
 	return errorList

@@ -38,10 +38,14 @@ spec:
               ipv6:
                 description: Shouild IPv6 be enabled for the network?
                 type: boolean
-              name:
+              networkName:
                 description: Name of the network (if omitted, a name is generated
                   based on the resource name)
                 type: string
+              persistent:
+                description: Should this network be created and persisted between
+                  DCP runs?
+                type: boolean
             type: object
           status:
             description: ContainerNetworkStatus defines the current state of a ContainerNetwork
@@ -68,7 +72,7 @@ spec:
               message:
                 description: If the network is in a failed state, this is the reason
                 type: string
-              name:
+              networkName:
                 description: The name of the network
                 type: string
               state:

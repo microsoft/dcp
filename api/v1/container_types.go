@@ -129,6 +129,9 @@ type ContainerSpec struct {
 	// be attached to the default network and the controller will not manage network connections.
 	// +listType:=atomic
 	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`
+
+	// Should this container be created and persisted between DCP runs?
+	Persistent bool `json:"persistent,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -167,6 +170,9 @@ const (
 
 	// Unknown means for some reason container state is unavailable.
 	ContainerStateUnknown ContainerState = "Unknown"
+
+	// An existing container was not found
+	ContainerStateNotFound ContainerState = "NotFound"
 )
 
 // ContainerStatus describes the status of a Container
@@ -273,9 +279,22 @@ func (e *Container) NamespacedName() types.NamespacedName {
 func (e *Container) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
+	if e.Spec.Image == "" {
+		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
+	}
+
 	// Validate the object name to ensure it is a valid container name
 	if e.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(e.Spec.ContainerName) {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), e.NamespacedName().Name, fmt.Sprintf("containerName property must match regex '%s'", validContainerName)))
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), e.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
+	}
+
+	// Validate that stop isn't set to true when mode is set to Create or Existing
+	if e.Spec.Persistent && e.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to true if persistent is true"))
+	}
+
+	if e.Spec.Persistent && e.Spec.ContainerName == "" {
+		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
 	}
 
 	return errorList
@@ -286,20 +305,37 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 
 	oldContainer := obj.(*Container)
 
-	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	// The image property cannot be changed after the resource is first created
+	if oldContainer.Spec.Image != e.Spec.Image {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "image"), "image cannot be changed"))
+	}
+
+	// A container name cannot be changed after it's created
+	if oldContainer.Spec.ContainerName != e.Spec.ContainerName {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "containerName"), "containerName cannot be changed"))
 	}
 
 	if oldContainer.Spec.Networks != nil && e.Spec.Networks == nil {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "Cannot set networks property to null if it was initialized with a list value."))
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "networks cannot be set to null if it was initialized with a list value"))
 	}
 
 	if oldContainer.Spec.Networks == nil && e.Spec.Networks != nil {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "Cannot set networks property to a list value if it was initialized as null."))
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "networks cannot be set to a list value if it was initialized as null"))
 	}
 
-	if oldContainer.Spec.ContainerName != e.Spec.ContainerName {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "containerName"), "Cannot change containerName property after creation."))
+	// Make sure stop isn't set to false after having been set to true
+	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
+	}
+
+	// Make sure Persistent isn't changed after the container is created
+	if oldContainer.Spec.Persistent != e.Spec.Persistent {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
+	}
+
+	// Ensure that we forbid attempting to stop persistent resources
+	if e.Spec.Persistent && e.Spec.Stop {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "stop"), e.NamespacedName().Name, "stop cannot be set to true if persistent is true"))
 	}
 
 	return errorList

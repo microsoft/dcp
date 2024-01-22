@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -21,25 +20,15 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/internal/osutil"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
-
-var lineSeparator []byte
-
-func init() {
-	if runtime.GOOS == "windows" {
-		lineSeparator = []byte("\r\n")
-	} else {
-		lineSeparator = []byte("\n")
-	}
-}
 
 type startingState struct {
 	status  apiv1.ExecutableStatus
@@ -200,19 +189,31 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	exeStatus := exe.Status.DeepCopy()
 
 	err = r.startupQueue.Enqueue(func(_ context.Context) {
-		// Marking the Executable as "failed to start" will end its lifecycle.
-		// We do this when we encounter an error that is unlikely to be resolved by retrying.
-		markAsFailedToStart := func() {
+		var stdOutFile, stdErrFile *os.File
+
+		reportStartupFailure := func() {
 			r.lock.Lock()
 			defer r.lock.Unlock()
 
+			if stdOutFile != nil {
+				_ = stdOutFile.Close()
+				_ = os.Remove(exeStatus.StdOutFile)
+				exeStatus.StdOutFile = ""
+			}
+			if stdErrFile != nil {
+				_ = stdErrFile.Close()
+				_ = os.Remove(exeStatus.StdErrFile)
+				exeStatus.StdErrFile = ""
+			}
+
+			// Using UnknownRunID will cause the controller to assume that the Executable startup failed.
 			runChangeHandler.OnStartingCompleted(namespacedName, controllers.UnknownRunID, *exeStatus, func() {})
 		}
 
 		req, err := r.prepareRunRequest(exe)
 		if err != nil {
 			log.Error(err, "run session could not be started")
-			markAsFailedToStart()
+			reportStartupFailure()
 			return
 		}
 
@@ -224,7 +225,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			outputRootFolder = dcpSessionDir
 		}
 
-		stdOutFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		stdOutFile, err = usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_out_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 		if err != nil {
 			log.Error(err, "failed to create temporary file for capturing standard output data")
 			stdOutFile = nil
@@ -232,7 +233,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			exeStatus.StdOutFile = stdOutFile.Name()
 		}
 
-		stdErrFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+		stdErrFile, err = usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_err_%s", exe.Name, exe.UID)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 		if err != nil {
 			log.Error(err, "failed to create temporary file for capturing standard error data")
 			stdErrFile = nil
@@ -250,7 +251,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Error(err, "run session could not be started")
-			markAsFailedToStart()
+			reportStartupFailure()
 			return
 		}
 		defer resp.Body.Close()
@@ -264,18 +265,18 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
 			log.Error(err, "run session could not be started", "Status", resp.Status, "Body", respBody)
-			markAsFailedToStart() // The IDE refused to run this Executable
+			reportStartupFailure() // The IDE refused to run this Executable
 			return
 		}
 
 		sessionURL := resp.Header.Get("Location")
 		if sessionURL == "" {
-			markAsFailedToStart()
+			reportStartupFailure()
 			return
 		}
 		rid, err := getLastUrlPathSegment(sessionURL)
 		if err != nil {
-			markAsFailedToStart()
+			reportStartupFailure()
 		}
 
 		runID := controllers.RunID(rid)
@@ -533,7 +534,7 @@ func (r *IdeExecutableRunner) handleSessionLogs(nsl ideSessionLogNotification) {
 
 	runState := r.ensureRunState(runID)
 	var err error
-	msg := withNewLine([]byte(nsl.LogMessage))
+	msg := osutil.WithNewline([]byte(nsl.LogMessage))
 	if nsl.IsStdErr {
 		_, err = runState.stdErr.Write(msg)
 	} else {
@@ -588,30 +589,6 @@ func getLastUrlPathSegment(rawURL string) (string, error) {
 		return "", fmt.Errorf("URL '%s' has no path segments", rawURL)
 	}
 	return pathSegments[len(pathSegments)-1], nil
-}
-
-func withNewLine(msg []byte) []byte {
-	if endsWith(msg, lineSeparator) {
-		return msg
-	}
-	return append(msg, lineSeparator...)
-}
-
-func endsWith(a, b []byte) bool {
-	// If a is shorter than b, a doesn't end with b.
-	if len(a) < len(b) {
-		return false
-	}
-
-	// If any of the last len(b) characters of a don't match b, a doesn't end with b.
-	start := len(a) - len(b)
-	for i := range b {
-		if a[start+i] != b[i] {
-			return false
-		}
-	}
-
-	return true
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)

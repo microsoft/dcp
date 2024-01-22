@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
+	"go.opentelemetry.io/otel/trace"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,6 +29,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
+	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -61,6 +63,8 @@ type ServiceReconciler struct {
 	debouncer *reconcilerDebouncer[process.Pid_t]
 
 	lifetimeCtx context.Context
+
+	tracer trace.Tracer
 }
 
 var (
@@ -77,6 +81,7 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		debouncer:             newReconcilerDebouncer[process.Pid_t](reconciliationDebounceDelay),
 		lifetimeCtx:           lifetimeCtx,
+		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 	}
 	return &r
 }
@@ -137,11 +142,15 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apimachinery_errors.IsNotFound(err) {
 			log.Info("the Service object does not exist yet or was deleted")
 			r.stopAllProxies(req.NamespacedName, log)
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Service object")
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	var change objectChange
@@ -151,11 +160,14 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log.Info("Service object is being deleted")
 		r.stopAllProxies(svc.NamespacedName(), log)
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
+		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
 		change = ensureFinalizer(&svc, serviceFinalizer, log)
 		// If we added a finalizer, we'll do the additional reconciliation next call
 		if change == noChange {
 			change |= r.ensureServiceEffectiveAddressAndPort(ctx, &svc, log)
+		} else {
+			serviceCounters(ctx, &svc, 1) // Service was just created
 		}
 	}
 
@@ -306,10 +318,14 @@ func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.
 // startProxyIfNeeded starts a proxy process if needed for the given service.
 // It returns the error if any.
 func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {
-	serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
+	requestedServiceAddress, err := getRequestedServiceAddress(svc)
+	if err != nil {
+		return err
+	}
 
+	serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
 	if found {
-		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(serviceProxyData)
+		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(serviceProxyData, requestedServiceAddress)
 		return nil
 	}
 
@@ -318,22 +334,42 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	svc.Status.EffectiveAddress = ""
 	svc.Status.EffectivePort = 0
 
-	proxyAddress := svc.Spec.Address
-	if proxyAddress == "" {
-		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
-			proxyAddress = "localhost"
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
-			proxyAddress = "127.0.0.1"
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
-			proxyAddress = fmt.Sprintf("127.%d.%d.%d", rand.Intn(254)+1, rand.Intn(254)+1, rand.Intn(254)+1)
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
-			proxyAddress = "[::1]"
-		} else {
-			return fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
+	proxies, portAllocationErr := r.getProxyData(svc, requestedServiceAddress, log)
+
+	stopAllProxies := func() {
+		for _, proxyInstanceData := range proxies {
+			proxyInstanceData.stopProxy()
 		}
 	}
 
-	var err error
+	if portAllocationErr != nil {
+		stopAllProxies()
+		return fmt.Errorf("cound not create the proxy for the service: %w", portAllocationErr)
+	}
+
+	if !r.noProxyStartOption() {
+		for _, proxyInstanceData := range proxies {
+			err := proxyInstanceData.proxy.Start()
+			if err != nil {
+				stopAllProxies()
+				return fmt.Errorf("cound not start the proxy for the service: %w", err)
+			}
+		}
+	}
+
+	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
+	r.Log.Info("service proxy started",
+		"EffectiveAddress", svc.Status.EffectiveAddress,
+		"EffectivePort", svc.Status.EffectivePort,
+	)
+
+	r.proxyData.Store(svc.NamespacedName(), proxies)
+
+	return nil
+}
+
+// Allocates (but does not start) proxy instances for the given service.
+func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAddress string, log logr.Logger) ([]proxyInstanceData, error) {
 	proxies := []proxyInstanceData{}
 	var getProxyPort func(proxyAddress string) (int32, error)
 	if svc.Spec.Port == 0 {
@@ -350,74 +386,74 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	// which does not make sense in the context of the proxy.
 	proxyLog := r.Log.WithValues("ServiceName", svc.NamespacedName())
 
-	if proxyAddress == "localhost" {
+	var portAllocationErr error = nil
+
+	if requestedServiceAddress == "localhost" {
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
-		ips, err := net.LookupIP(proxyAddress)
-		if err != nil {
-			return fmt.Errorf("could not obtain IP address(es) for %s: %w", proxyAddress, err)
+
+		ips, err := net.LookupIP(requestedServiceAddress)
+		if err != nil || len(ips) == 0 {
+			return nil, fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
 		}
-		if len(ips) == 0 {
-			return fmt.Errorf("could not obtain IP address(es) for %s", proxyAddress)
-		}
+
+		// We will try to use the same port for all addresses if possible.
+		const invalidPort int32 = 0
+		var lastPort int32 = invalidPort
+		usingSamePort := true
 
 		for _, ip := range ips {
 			proxyInstanceAddress := networking.IpToString(ip)
-			proxyPort, portAllocationErr := getProxyPort(proxyInstanceAddress)
-			if portAllocationErr != nil {
-				err = errors.Join(err, portAllocationErr)
-			} else {
-				proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
-				proxies = append(proxies, proxyInstanceData{
-					proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
-					stopProxy: cancelFunc,
-				})
+
+			if lastPort == invalidPort {
+				lastPort, err = getProxyPort(proxyInstanceAddress)
+				if err != nil {
+					lastPort = invalidPort
+					portAllocationErr = errors.Join(portAllocationErr, err)
+					continue
+				}
 			}
+
+			var proxyPort int32
+
+			if usingSamePort {
+				proxyPort = lastPort
+				err = networking.CheckPortAvailable(svc.Spec.Protocol, proxyInstanceAddress, proxyPort)
+				if err != nil {
+					usingSamePort = false
+					log.Info("could not use the same port for all addresses associated with 'localhost', service will be reachable only using specific IP address", "AttemptedCommonPort", lastPort)
+				}
+			}
+
+			if !usingSamePort {
+				proxyPort, err = getProxyPort(proxyInstanceAddress)
+				if err != nil {
+					portAllocationErr = errors.Join(portAllocationErr, err)
+					continue
+				}
+			}
+
+			proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
+			proxies = append(proxies, proxyInstanceData{
+				proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
+				stopProxy: cancelFunc,
+			})
 		}
 	} else {
 		// Bind to just the proxy address
 
-		proxyPort, portAllocationErr := getProxyPort(proxyAddress)
-		if portAllocationErr != nil {
-			err = portAllocationErr
+		proxyPort, err := getProxyPort(requestedServiceAddress)
+		if err != nil {
+			portAllocationErr = err
 		} else {
 			proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
 			proxies = append(proxies, proxyInstanceData{
-				proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyAddress, proxyPort, proxyCtx, proxyLog),
+				proxy:     proxy.NewProxy(svc.Spec.Protocol, requestedServiceAddress, proxyPort, proxyCtx, proxyLog),
 				stopProxy: cancelFunc,
 			})
 		}
 	}
 
-	stopAllProxies := func() {
-		for _, proxyInstanceData := range proxies {
-			proxyInstanceData.stopProxy()
-		}
-	}
-
-	if err != nil {
-		stopAllProxies()
-		return fmt.Errorf("cound not create the proxy for the service: %w", err)
-	}
-
-	if !r.noProxyStartOption() {
-		for _, proxyInstanceData := range proxies {
-			err := proxyInstanceData.proxy.Start()
-			if err != nil {
-				stopAllProxies()
-				return fmt.Errorf("cound not start the proxy for the service: %w", err)
-			}
-		}
-	}
-
-	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies)
-	r.Log.Info("service proxy started",
-		"EffectiveAddress", svc.Status.EffectiveAddress,
-		"EffectivePort", svc.Status.EffectivePort,
-	)
-
-	r.proxyData.Store(svc.NamespacedName(), proxies)
-
-	return nil
+	return proxies, portAllocationErr
 }
 
 func (r *ServiceReconciler) noProxyStartOption() bool {
@@ -430,7 +466,7 @@ func (r *ServiceReconciler) noProxyStartOption() bool {
 	return false
 }
 
-func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceData) (string, int32) {
+func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceData, requestedServiceAddress string) (string, int32) {
 	if len(proxies) == 0 {
 		return "", 0
 	}
@@ -452,23 +488,60 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		isEligibleProxy = func(p *proxy.Proxy) bool { return p.State() == proxy.ProxyStateRunning }
 	}
 
+	eligibleProxies := slices.Select(proxies, func(pd proxyInstanceData) bool {
+		return isEligibleProxy(pd.proxy)
+	})
+	if len(eligibleProxies) == 0 {
+		return "", 0
+	}
+
 	// We might bind to multiple addresses if the address specified by the service spec is "localhost".
-	// We do not want to use just "localhost", because then the port could be ambiguous.
+	// But we can (and should) still report the effective address as "localhost"
+	// if the port used by all addresses is the same.
+	portsInUse := make(map[int32]bool)
+	for _, pd := range eligibleProxies {
+		portsInUse[getProxyPort(pd.proxy)] = true
+	}
+	if requestedServiceAddress == "localhost" && len(portsInUse) == 1 {
+		return "localhost", getProxyPort(eligibleProxies[0].proxy)
+	}
+
 	// We give preference to IPv4 because it is the safer default
 	// (e.g. host.docker.internal resolves to IPv4 on dual-stack machines).
+	eligibleIPv4Proxies := slices.Select(eligibleProxies, func(pd proxyInstanceData) bool {
+		return networking.IsIPv4(getProxyAddress(pd.proxy))
+	})
 
-	// We could be fancy and sort the proxies by the IP family of the address they are bound to,
-	// but that is more code than just scanning the slice twice.
-	for _, pd := range proxies {
-		if isEligibleProxy(pd.proxy) && networking.IsIPv4(getProxyAddress(pd.proxy)) {
-			return getProxyAddress(pd.proxy), getProxyPort(pd.proxy)
-		}
-	}
-	for _, pd := range proxies {
-		if isEligibleProxy(pd.proxy) {
-			return getProxyAddress(pd.proxy), getProxyPort(pd.proxy)
-		}
+	var sourceProxy *proxy.Proxy
+	if len(eligibleIPv4Proxies) > 0 {
+		sourceProxy = eligibleIPv4Proxies[0].proxy
+	} else {
+		sourceProxy = eligibleProxies[0].proxy
 	}
 
-	return "", 0
+	return getProxyAddress(sourceProxy), getProxyPort(sourceProxy)
+}
+
+func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
+	requestedServiceAddress := svc.Spec.Address
+
+	if requestedServiceAddress == "" {
+		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
+			requestedServiceAddress = "localhost"
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
+			requestedServiceAddress = "127.0.0.1"
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
+			ips, err := net.LookupIP("localhost")
+			if err != nil || len(ips) == 0 {
+				return "", fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
+			}
+			requestedServiceAddress = networking.IpToString(ips[rand.Intn(len(ips))])
+		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
+			requestedServiceAddress = "[::1]"
+		} else {
+			return "", fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
+		}
+	}
+
+	return requestedServiceAddress, nil
 }

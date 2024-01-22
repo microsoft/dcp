@@ -36,10 +36,11 @@ const (
 	NetworkResourceNameField        = ".metadata.networkResourceName"
 )
 
-type networkStatus struct {
-	state   apiv1.ContainerNetworkState
-	id      string
-	message string
+type runningNetworkStatus struct {
+	state       apiv1.ContainerNetworkState
+	id          string
+	message     string
+	connections map[string]bool
 }
 
 type NetworkReconciler struct {
@@ -48,7 +49,7 @@ type NetworkReconciler struct {
 	reconciliationSeqNo uint32
 	orchestrator        ct.NetworkOrchestrator
 
-	existingNetworks *maps.SynchronizedDualKeyMap[string, types.NamespacedName, networkStatus]
+	existingNetworks *maps.SynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus]
 
 	// Channel used to trigger reconciliation when underlying networks change
 	notifyNetworkChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -77,7 +78,7 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		Client:               client,
 		Log:                  log,
 		orchestrator:         orchestrator,
-		existingNetworks:     maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, networkStatus](),
+		existingNetworks:     maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus](),
 		notifyNetworkChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		networkEvtSub:        nil,
 		networkEvtCh:         nil,
@@ -138,11 +139,15 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("the ContainerNetwork object was deleted")
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the ContainerNetwork object")
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	var change objectChange
@@ -173,6 +178,10 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) error {
+	if network.Spec.Persistent {
+		return nil
+	}
+
 	networkId, networkStatus, found := r.existingNetworks.FindBySecondKey(network.NamespacedName())
 	if found && networkStatus.state == apiv1.ContainerNetworkStateRunning {
 		removed, err := r.orchestrator.RemoveNetworks(ctx, ct.RemoveNetworksOptions{Networks: []string{networkStatus.id}, Force: true})
@@ -195,7 +204,8 @@ func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.Co
 func (r *NetworkReconciler) manageNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) objectChange {
 	change := noChange
 
-	if networkID, networkStatus, found := r.existingNetworks.FindBySecondKey(network.NamespacedName()); found {
+	networkID, networkStatus, found := r.existingNetworks.FindBySecondKey(network.NamespacedName())
+	if found {
 		if network.Status.ID != networkID {
 			network.Status.ID = networkID
 			change |= statusChanged
@@ -213,7 +223,7 @@ func (r *NetworkReconciler) manageNetwork(ctx context.Context, network *apiv1.Co
 
 	if network.Status.State == apiv1.ContainerNetworkStateRunning {
 		change |= r.updateNetworkStatus(ctx, network, log)
-		change |= r.ensureConnections(ctx, network, log)
+		change |= r.ensureConnections(ctx, network, networkStatus, log)
 	}
 
 	return change
@@ -222,7 +232,25 @@ func (r *NetworkReconciler) manageNetwork(ctx context.Context, network *apiv1.Co
 func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) objectChange {
 	r.ensureNetworkWatch(network, log)
 
-	networkName := strings.TrimSpace(network.Spec.Name)
+	networkName := strings.TrimSpace(network.Spec.NetworkName)
+
+	if network.Spec.Persistent {
+		// We need to check for an existing network before we create one
+		networks, err := r.orchestrator.InspectNetworks(ctx, ct.InspectNetworksOptions{Networks: []string{networkName}})
+		if err == nil {
+			// We found an existing network
+			r.existingNetworks.Store(networks[0].Id, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: networks[0].Id})
+			network.Status.ID = networks[0].Id
+			network.Status.State = apiv1.ContainerNetworkStateRunning
+			network.Status.NetworkName = networks[0].Name
+			network.Status.Driver = networks[0].Driver
+			network.Status.IPv6 = networks[0].IPv6
+			network.Status.Subnets = networks[0].Subnets
+			network.Status.Gateways = networks[0].Gateways
+			return statusChanged
+		}
+	}
+
 	if networkName == "" {
 		uniqueNetworkName, err := MakeUniqueName(network.Name)
 		if err != nil {
@@ -239,15 +267,15 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	networkID, err := r.orchestrator.CreateNetwork(ctx, createOptions)
 	if err != nil {
 		log.Error(err, "could not create a network")
-		r.existingNetworks.Update(networkName, network.NamespacedName(), networkStatus{state: apiv1.ContainerNetworkStateFailedToStart, message: err.Error()})
+		r.existingNetworks.Store(networkName, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateFailedToStart, message: err.Error()})
 		network.Status.State = apiv1.ContainerNetworkStateFailedToStart
 		network.Status.Message = err.Error()
-		return statusChanged | additionalReconciliationNeeded
+		return statusChanged
 	}
 
 	log.Info("network created", "Network", networkName)
 
-	r.existingNetworks.Store(networkID, network.NamespacedName(), networkStatus{state: apiv1.ContainerNetworkStateRunning, id: networkID})
+	r.existingNetworks.Store(networkID, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: networkID})
 
 	change := statusChanged
 	network.Status.ID = networkID
@@ -259,7 +287,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		change |= additionalReconciliationNeeded
 	} else {
 		log.V(1).Info("retrieved network information")
-		network.Status.Name = networks[0].Name
+		network.Status.NetworkName = networks[0].Name
 		network.Status.Driver = networks[0].Driver
 		network.Status.IPv6 = networks[0].IPv6
 		network.Status.Subnets = networks[0].Subnets
@@ -269,7 +297,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	return change
 }
 
-func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) objectChange {
+func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv1.ContainerNetwork, networkStatus runningNetworkStatus, log logr.Logger) objectChange {
 	change := noChange
 
 	namespacedName := network.NamespacedName()
@@ -278,6 +306,15 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	if err := r.List(ctx, &networkConnections, ctrl_client.InNamespace(network.GetNamespace()), ctrl_client.MatchingFields{NetworkResourceNameField: namespacedName.Name}); err != nil {
 		log.Error(err, "failed to list child ContainerNetworkConnection objects", "Network", namespacedName.String())
 		return additionalReconciliationNeeded
+	}
+
+	// Initialize the connected network containers map if needed
+	if networkStatus.connections == nil {
+		networkStatus.connections = make(map[string]bool)
+
+		for _, containerID := range network.Status.ContainerIDs {
+			networkStatus.connections[containerID] = true
+		}
 	}
 
 	// Disconnect unexpected containers from the network
@@ -293,6 +330,11 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
+		if _, knownConnection := networkStatus.connections[containerID]; !knownConnection && network.Spec.Persistent {
+			// If this is a persistent network, we shouldn't disconnect any containers that we didn't explicitly connect
+			continue
+		}
+
 		if err := r.orchestrator.DisconnectNetwork(
 			ctx,
 			ct.DisconnectNetworkOptions{
@@ -300,16 +342,19 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 				Container: containerID,
 			},
 		); err != nil && !errors.Is(err, ct.ErrNotFound) {
-			log.Error(err, "could not disconnect a container from the network", "Container", containerID, "Network", network.Status.Name)
+			log.Error(err, "could not disconnect a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
 		} else {
-			log.Info("disconnected a container from the network", "Container", containerID, "Network", network.Status.Name)
+			delete(networkStatus.connections, containerID)
+			log.Info("disconnected a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
 		}
 	}
 
 	for i := range networkConnections.Items {
 		connection := networkConnections.Items[i]
 		containerID := connection.Spec.ContainerID
+
+		networkStatus.connections[containerID] = true
 
 		found := slices.Contains(network.Status.ContainerIDs, containerID)
 
@@ -326,12 +371,14 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 				Aliases:   connection.Spec.Aliases,
 			},
 		); err != nil {
-			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.Name)
+			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
 		} else {
-			log.Info("connected a container to the network", "Container", containerID, "Network", network.Status.Name)
+			log.Info("connected a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 		}
 	}
+
+	r.existingNetworks.Update(network.Status.ID, network.NamespacedName(), networkStatus)
 
 	return change
 }
@@ -340,7 +387,7 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 	networks, err := r.orchestrator.InspectNetworks(ctx, ct.InspectNetworksOptions{Networks: []string{network.Status.ID}})
 	if errors.Is(err, ct.ErrNotFound) {
 		network.Status.State = apiv1.ContainerNetworkStateRemoved
-		r.existingNetworks.Update(network.Status.ID, network.NamespacedName(), networkStatus{state: apiv1.ContainerNetworkStateRemoved})
+		r.existingNetworks.Update(network.Status.ID, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRemoved})
 
 		return statusChanged
 	} else if err != nil {
@@ -350,8 +397,8 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 
 	change := noChange
 
-	if network.Status.Name != networks[0].Name {
-		network.Status.Name = networks[0].Name
+	if network.Status.NetworkName != networks[0].Name {
+		network.Status.NetworkName = networks[0].Name
 		change |= statusChanged
 	}
 	if network.Status.Driver != networks[0].Driver {

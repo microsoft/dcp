@@ -114,6 +114,10 @@ type AutoExecution struct {
 	// The RunCommand function is called after the process is "running".
 	// It can write to command stdout and stderr. The return value is an exit code for the command.
 	RunCommand func(pe *ProcessExecution) int32
+
+	// If not nil, this is the error that will be returned by the Executor from StartProcess() call.
+	// RunCommand will not be called in this case.
+	StartupError error
 }
 
 type TestProcessExecutor struct {
@@ -184,14 +188,18 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 	if len(e.AutoExecutions) > 0 {
 		for _, ae := range e.AutoExecutions {
 			if ae.Condition.Matches(&pe) {
-				go func(ae AutoExecution) {
-					exitCode := ae.RunCommand(&pe)
-					err := e.stopProcessImpl(pid, exitCode)
-					if err != nil {
-						panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, err))
-					}
-				}(ae)
-				break
+				if ae.StartupError != nil {
+					return process.UnknownPID, func() {}, ae.StartupError
+				} else {
+					go func(ae AutoExecution) {
+						exitCode := ae.RunCommand(&pe)
+						err := e.stopProcessImpl(pid, exitCode)
+						if err != nil {
+							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, err))
+						}
+					}(ae)
+					break
+				}
 			}
 		}
 	}

@@ -180,7 +180,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ContainerName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues("Container", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 
@@ -195,11 +195,15 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.V(1).Info("the Container object was deleted")
+			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
 			log.Error(err, "failed to Get() the Container object")
+			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
+	} else {
+		getSucceededCounter.Add(ctx, 1)
 	}
 
 	var change objectChange
@@ -210,11 +214,11 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
 		// we need the container startup to finish, before attemptin to delete everything.
 		// Otherwise we will be left with a dangling container that no one owns.
-		log.Info("Container object is being deleted...")
+		log.Info("Container object is being deleted")
 		r.deleteContainer(ctx, &container, log)
-		r.removeContainerNetworkConnections(ctx, &container, log)
 		change = deleteFinalizer(&container, containerFinalizer, log)
 		r.releaseContainerWatch(&container, log)
+		r.removeContainerNetworkConnections(ctx, &container, log)
 		removeEndpointsForWorkload(r, ctx, &container, log)
 	} else {
 		change = ensureFinalizer(&container, containerFinalizer, log)
@@ -279,10 +283,14 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// Since the container is being removed, we want to remove it from runningContainers map now
 	r.runningContainers.DeleteBySecondKey(container.NamespacedName())
 
-	log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
-	_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
-	if err != nil {
-		log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)
+	if !container.Spec.Persistent {
+		log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
+		_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
+		if err != nil {
+			log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)
+		}
+	} else {
+		log.V(1).Info("Container is not using Managed mode, leaving underlying resources")
 	}
 }
 
@@ -333,7 +341,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			// This is brand new Container and we need to start it.
 			r.ensureContainerWatch(container, log)
 
-			_ = r.createContainer(ctx, container, log, noDelay) // The error, if any, will be handled by startContainer
+			_ = r.createContainer(ctx, container, log, noDelay) // The error, if any, will be handled by createContainer
 			return statusChanged
 		}
 
@@ -414,23 +422,22 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 
 		// The fact that something triggered reconciliation means we need to take a closer look at this container.
 		log.V(1).Info("inspecting running container...", "ContainerID", containerID)
-		res, err := r.orchestrator.InspectContainers(ctx, []string{containerID})
-		if err != nil || len(res) == 0 {
+		inspected, err := r.findContainer(ctx, containerID)
+		if err != nil {
 			// The container was probably removed
 			log.Info("running container was not found, marking Container object as finished", "ContainerID", containerID)
 			container.Status.State = apiv1.ContainerStateRemoved
 			container.Status.FinishTimestamp = metav1.Now()
 			return statusChanged
 		} else {
-			inspected := res[0]
-			changed := r.updateContainerStatus(container, &inspected)
+			changed := r.updateContainerStatus(container, inspected)
 			if container.Status.State == apiv1.ContainerStateRunning && container.Spec.Stop {
 				r.stopContainer(ctx, container, log)
 				container.Status.State = apiv1.ContainerStateExited
 				container.Status.FinishTimestamp = metav1.Now()
 				return statusChanged
 			} else if container.Spec.Networks != nil {
-				connected, err := r.ensureContainerNetworkConnections(ctx, container, &inspected, rcd, log)
+				connected, err := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
 				if err != nil {
 					changed |= additionalReconciliationNeeded
 				}
@@ -465,10 +472,67 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 	}
 }
 
+func (r *ContainerReconciler) findContainer(ctx context.Context, container string) (*ct.InspectedContainer, error) {
+	res, err := r.orchestrator.InspectContainers(ctx, []string{container})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(res) == 0 {
+		return nil, ct.ErrNotFound
+	}
+
+	return &res[0], nil
+}
+
 func (r *ContainerReconciler) createContainer(ctx context.Context, container *apiv1.Container, log logr.Logger, delay time.Duration) error {
 	container.Status.ExitCode = apiv1.UnknownExitCode
+
+	containerName := strings.TrimSpace(container.Spec.ContainerName)
+
+	// Determine whether we need to check for an existing container
+	if container.Spec.Persistent {
+		inspected, err := r.findContainer(ctx, containerName)
+		if err == nil {
+			// We found a container, update the status and return
+			rcd := newRunningContainerData(container)
+			rcd.newContainerID = inspected.Id
+			rcd.startAttemptFinishedAt = metav1.Now()
+
+			container.Status.ContainerID = inspected.Id
+			container.Status.State = apiv1.ContainerStateRunning
+			container.Status.ContainerName = strings.TrimLeft(inspected.Name, "/")
+
+			// Tracking actual container environment for status update
+			rcd.runSpec.Env = maps.MapToSlice[string, string, apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
+				return apiv1.EnvVar{Name: key, Value: value}
+			})
+			container.Status.EffectiveEnv = rcd.runSpec.Env
+
+			// Tracking actual container arguments for status update
+			rcd.runSpec.Args = inspected.Args
+			container.Status.EffectiveArgs = rcd.runSpec.Args
+
+			r.runningContainers.Store(inspected.Id, container.NamespacedName(), rcd)
+
+			log.Info("found existing Container", "ContainerName", container.Spec.ContainerName, "ContainerID", inspected.Id)
+
+			return nil
+		}
+	}
+
 	log.Info("scheduling container start", "image", container.Spec.Image)
 
+	if containerName == "" {
+		uniqueContainerName, err := MakeUniqueName(container.Name)
+		if err != nil {
+			return err
+		}
+
+		containerName = uniqueContainerName
+	}
+
+	// If we made it here, we need to attempt to start the container
 	doStartContainer := func(startupCtx context.Context) {
 		if delay > 0 {
 			time.Sleep(delay)
@@ -503,7 +567,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 			goto finishStartupAttempt
 		}
 
-		containerID, err = r.orchestrator.CreateContainer(ctx, ct.CreateContainerOptions{ContainerSpec: *rcd.runSpec, Name: container.Spec.ContainerName})
+		containerID, err = r.orchestrator.CreateContainer(ctx, ct.CreateContainerOptions{ContainerSpec: *rcd.runSpec, Name: containerName})
 		// There are errors that can still result in a valid container ID, so we need to store it if one was returned
 		rcd.newContainerID = containerID
 
@@ -514,12 +578,24 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		} else {
 			log.Info("container created", "ContainerID", containerID)
 
+			if inspected, err := r.findContainer(ctx, containerName); err != nil {
+				log.Error(err, "could not inspect the container")
+				rcd.startupError = err
+				rcd.startAttemptFinishedAt = metav1.Now()
+				goto finishStartupAttempt
+			} else {
+				rcd.runSpec.Env = maps.MapToSlice[string, string, apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
+					return apiv1.EnvVar{Name: key, Value: value}
+				})
+			}
+
 			if rcd.runSpec.Networks == nil {
 				_, err := r.orchestrator.StartContainers(ctx, []string{containerID})
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
 					rcd.startupError = err
 					rcd.startAttemptFinishedAt = metav1.Now()
+					goto finishStartupAttempt
 				} else {
 					log.Info("container started", "ContainerID", containerID)
 					rcd.startAttemptFinishedAt = metav1.Now()
@@ -584,9 +660,9 @@ func (r *ContainerReconciler) updateContainerStatus(container *apiv1.Container, 
 	if oldState != status.State {
 		container.Status = status
 		return statusChanged
-	} else {
-		return noChange
 	}
+
+	return noChange
 }
 
 func (r *ContainerReconciler) computeEffectiveEnvironment(
@@ -697,10 +773,10 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 	}
 
 	if inspected == nil {
-		if i, err := r.orchestrator.InspectContainers(ctx, []string{rcd.newContainerID}); err != nil {
+		if i, err := r.findContainer(ctx, rcd.newContainerID); err != nil {
 			return []*apiv1.ContainerNetwork{}, err
 		} else {
-			inspected = &i[0]
+			inspected = i
 		}
 	}
 
@@ -724,7 +800,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		existingNetworkConnection := inspected.Networks[i]
 		var containerNetwork *apiv1.ContainerNetwork
 		found := slices.Any(expectedNetworks, func(network *apiv1.ContainerNetwork) bool {
-			if network.Status.Name == existingNetworkConnection.Name {
+			if network.Status.NetworkName == existingNetworkConnection.Name {
 				containerNetwork = network
 				return true
 			}
@@ -1063,16 +1139,10 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 	// Need to inspect the container to find the port used by the service
 	// (auto-allocated by Docker).
 	log.V(1).Info("inspecting running container to get its port information...", "ContainerID", ctr.Status.ContainerID)
-	ci, err := r.orchestrator.InspectContainers(ctx, []string{ctr.Status.ContainerID})
+	inspected, err := r.findContainer(ctx, ctr.Status.ContainerID)
 	if err != nil {
 		return "", 0, err
 	}
-
-	if len(ci) == 0 {
-		return "", 0, fmt.Errorf("could not find container with ID %s", ctr.Status.ContainerID)
-	}
-
-	inspected := ci[0]
 
 	var matchedHostPort ct.InspectedContainerHostPortConfig
 	found = false
