@@ -59,9 +59,6 @@ type ServiceReconciler struct {
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 
-	// Debouncer used to schedule reconciliations. Extra data carried is the finished PID.
-	debouncer *reconcilerDebouncer[process.Pid_t]
-
 	lifetimeCtx context.Context
 
 	tracer trace.Tracer
@@ -79,7 +76,6 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		ProxyConfigDir:        filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
 		proxyData:             &syncmap.Map[types.NamespacedName, []proxyInstanceData]{},
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
-		debouncer:             newReconcilerDebouncer[process.Pid_t](reconciliationDebounceDelay),
 		lifetimeCtx:           lifetimeCtx,
 		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 	}
