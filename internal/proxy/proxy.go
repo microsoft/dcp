@@ -316,9 +316,7 @@ func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn
 	})
 
 	if err != nil {
-		p.log.Info("Error handling TCP connection", err)
-	} else {
-		p.log.V(1).Info(fmt.Sprintf("TCP connection from %s is alive", incoming.RemoteAddr().String()))
+		p.log.Error(err, "Error handling TCP connection")
 	}
 }
 
@@ -345,13 +343,20 @@ func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 		// Do not close incoming connection
 		return fmt.Errorf("%w: %w", errTcpDialFailed, err)
 	} else {
-		connectionCtx, connectionCtxCancel := context.WithCancel(p.lifetimeCtx)
-		_ = context.AfterFunc(connectionCtx, func() {
+		streamCtx, streamCtxCancel := context.WithCancel(p.lifetimeCtx)
+		copyingWg := &sync.WaitGroup{}
+		copyingWg.Add(2)
+
+		_ = context.AfterFunc(streamCtx, func() {
+			copyingWg.Wait() // Do not close either connection until both streams have finished copying.
+			p.log.V(1).Info(fmt.Sprintf("Closing connections associated with TCP stream from %s to %s", incoming.RemoteAddr().String(), outgoing.RemoteAddr().String()))
 			_ = incoming.Close()
 			_ = outgoing.Close()
 		})
-		go p.copyStream(connectionCtx, connectionCtxCancel, incoming, outgoing)
-		go p.copyStream(connectionCtx, connectionCtxCancel, outgoing, incoming)
+
+		p.log.V(1).Info("Started TCP stream", "Stream", getStreamDescription(incoming, outgoing))
+		go p.copyStream(streamCtx, streamCtxCancel, copyingWg, incoming, outgoing)
+		go p.copyStream(streamCtx, streamCtxCancel, copyingWg, outgoing, incoming)
 		return nil
 	}
 }
@@ -361,11 +366,24 @@ func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 // such as DNS name resolution or initial connection establishment. In all other cases we just shut down the communication stream
 // and let the client(s) retry.
 
-func (p *Proxy) copyStream(ctx context.Context, cancel context.CancelFunc, incoming, outgoing net.Conn) {
-	defer cancel()
+// Copies data from incoming to outgoing connection until there is no more data to copy,
+// or the passed context is cancelled. The passed context corresponds to the lifetime of the (bi-directional) stream,
+// so if either half of the stream is done/encounters an error, the other half will be stopped.
+// When copying is done, the passed WaitGroup is decremented.
+func (p *Proxy) copyStream(
+	streamCtx context.Context,
+	streamCtxCancel context.CancelFunc,
+	copyingWg *sync.WaitGroup,
+	incoming net.Conn,
+	outgoing net.Conn,
+) {
+	defer func() {
+		streamCtxCancel()
+		copyingWg.Done()
+	}()
 
 	for {
-		if ctx.Err() != nil {
+		if streamCtx.Err() != nil {
 			return
 		}
 
@@ -394,6 +412,7 @@ func (p *Proxy) copyStream(ctx context.Context, cancel context.CancelFunc, incom
 			}
 		} else if bytesWritten == 0 {
 			// Connection has closed normally
+			p.log.V(1).Info("TCP stream end-of-data encountered", "Stream", getStreamDescription(incoming, outgoing))
 			return
 		}
 	}
@@ -503,6 +522,7 @@ func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn,
 	stream.cancel = cancel
 	p.udpStreams.Store(stream.clientAddr.String(), stream)
 
+	// TODO: log the UDP stream shape: client addr -> proxy conn addr (proxy) stream listener addr -> endpoint addr
 	go p.streamClientPackets(stream, streamListener, endpointAddr)
 	go p.streamEndpointPackets(stream, streamListener, proxyConn)
 	return true
@@ -649,4 +669,14 @@ func chooseEndpoint(config *ProxyConfig) (*Endpoint, error) {
 	}
 
 	return &config.Endpoints[rand.Intn(len(config.Endpoints))], nil
+}
+
+func getStreamDescription(incoming, outgoing net.Conn) string {
+	return fmt.Sprintf(
+		"%s -> %s (proxy) %s -> %s",
+		incoming.RemoteAddr().String(),
+		incoming.LocalAddr().String(),
+		outgoing.LocalAddr().String(),
+		outgoing.RemoteAddr().String(),
+	)
 }

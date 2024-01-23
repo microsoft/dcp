@@ -59,9 +59,6 @@ type ServiceReconciler struct {
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 
-	// Debouncer used to schedule reconciliations. Extra data carried is the finished PID.
-	debouncer *reconcilerDebouncer[process.Pid_t]
-
 	lifetimeCtx context.Context
 
 	tracer trace.Tracer
@@ -79,7 +76,6 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		ProxyConfigDir:        filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
 		proxyData:             &syncmap.Map[types.NamespacedName, []proxyInstanceData]{},
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
-		debouncer:             newReconcilerDebouncer[process.Pid_t](reconciliationDebounceDelay),
 		lifetimeCtx:           lifetimeCtx,
 		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 	}
@@ -358,7 +354,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	}
 
 	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
-	r.Log.Info("service proxy started",
+	log.Info("service proxy started",
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
 	)
@@ -384,7 +380,8 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 
 	// We do not want to use the passed-in logger for the proxy because it has reconciliation-specific data
 	// which does not make sense in the context of the proxy.
-	proxyLog := r.Log.WithValues("ServiceName", svc.NamespacedName())
+	// The resulting log name will be "dcpctrl.ServiceReconciler.Proxy".
+	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName())
 
 	var portAllocationErr error = nil
 

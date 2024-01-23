@@ -43,8 +43,6 @@ type Logger struct {
 
 // New logger implementation to handle logging to stdout/debug log
 func New(name string) Logger {
-	cores := []zapcore.Core{}
-
 	// Format console output to be human readible
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
@@ -71,11 +69,13 @@ func New(name string) Logger {
 			consoleLog = zapcore.AddSync(conn)
 		}
 	}
+
+	cores := []zapcore.Core{}
 	// Add a stderr console logger for log output (with a minimum level set by verbosity)
 	cores = append(cores, zapcore.NewCore(consoleEncoder, consoleLog, consoleAtomicLevel))
 
 	// Determine if a debug log is enabled
-	if logCore, err := getDiagnosticsLogCore(name, zap.NewProductionEncoderConfig()); err != nil {
+	if logCore, err := getDiagnosticsLogCore(name, encoderConfig); err != nil {
 		// Ignore the error if debug log isn't enabled
 		if !errors.Is(err, errDebugLogNotEnabled) {
 			// If there was an error setting up the debug log, write it to stderr
