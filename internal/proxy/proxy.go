@@ -316,7 +316,7 @@ func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn
 	})
 
 	if err != nil {
-		p.log.Info("Error handling TCP connection", "Error", err.Error())
+		p.log.Error(err, "Error handling TCP connection")
 	}
 }
 
