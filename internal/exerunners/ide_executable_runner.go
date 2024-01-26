@@ -87,7 +87,7 @@ func (rs *runState) NotifyRunChangedAsync(locker sync.Locker) {
 		pid := rs.pid
 		exitCode := apiv1.UnknownExitCode
 		if rs.exitCode != apiv1.UnknownExitCode {
-			exitCode := new(int32)
+			exitCode = new(int32)
 			*exitCode = *rs.exitCode
 		}
 		locker.Unlock()
