@@ -240,12 +240,8 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 		err := r.startProxyIfNeeded(ctx, svc, log)
 		if err != nil {
-			if errors.Is(err, proxy.ErrTcpListenFailed) {
-				log.Error(err, "could not start the proxy (unrecoverable)")
-			} else {
-				log.Error(err, "could not start the proxy, will retry")
-				change |= additionalReconciliationNeeded
-			}
+			log.Error(err, "could not start the proxy")
+			return noChange
 		} else {
 			serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
 			if !found {
