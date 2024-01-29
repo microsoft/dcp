@@ -26,7 +26,7 @@ type TestOrchestrator struct {
 	randomNameLength       int
 	volumes                map[string]containerVolume
 	networks               map[string]containerNetwork
-	containers             map[string]container
+	containers             map[string]testContainer
 	containersToFail       map[string]containerExit
 	containerEventsWatcher *containers.EventWatcher
 	networkEventsWatcher   *containers.EventWatcher
@@ -60,7 +60,7 @@ func NewTestOrchestrator(log logr.Logger) *TestOrchestrator {
 				isDefault: true,
 			},
 		},
-		containers:       map[string]container{},
+		containers:       map[string]testContainer{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
 		log:              log,
@@ -140,7 +140,7 @@ type containerNetwork struct {
 	isDefault  bool
 }
 
-type container struct {
+type testContainer struct {
 	withId
 	image      string
 	createdAt  time.Time
@@ -374,7 +374,7 @@ func (to *TestOrchestrator) ConnectNetwork(ctx context.Context, options containe
 	return errors.Join(containers.ErrNotFound, fmt.Errorf("network not found"))
 }
 
-func (to *TestOrchestrator) doConnectNetwork(ctx context.Context, network containerNetwork, container container) error {
+func (to *TestOrchestrator) doConnectNetwork(ctx context.Context, network containerNetwork, container testContainer) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -460,27 +460,27 @@ func (to *TestOrchestrator) CreateContainer(ctx context.Context, options contain
 		return "", err
 	}
 
-	if err := to.doConnectNetwork(ctx, to.networks["bridge"], container); err != nil {
+	if err = to.doConnectNetwork(ctx, to.networks["bridge"], container); err != nil {
 		return container.id, err
 	}
 
 	return container.id, nil
 }
 
-func (to *TestOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (container, error) {
+func (to *TestOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (testContainer, error) {
 	if ctx.Err() != nil {
-		return container{}, ctx.Err()
+		return testContainer{}, ctx.Err()
 	}
 
 	if name != "" {
 		for _, existing := range to.containers {
 			if existing.name == name {
-				return container{}, containers.ErrAlreadyExists
+				return testContainer{}, containers.ErrAlreadyExists
 			}
 		}
 	} else {
 		if randomName, err := to.getRandomName(); err != nil {
-			return container{}, err
+			return testContainer{}, err
 		} else {
 			name = randomName
 		}
@@ -488,7 +488,7 @@ func (to *TestOrchestrator) doCreateContainer(ctx context.Context, name string, 
 
 	id := newId(name)
 
-	container := container{
+	container := testContainer{
 		withId:    id,
 		image:     options.Image,
 		createdAt: time.Now().UTC(),
@@ -542,7 +542,7 @@ func (to *TestOrchestrator) StartContainers(ctx context.Context, names []string)
 
 	var result []string
 
-	var containersToStart []container
+	var containersToStart []testContainer
 
 	for _, name := range names {
 		var found bool
@@ -570,7 +570,7 @@ func (to *TestOrchestrator) StartContainers(ctx context.Context, names []string)
 	return result, nil
 }
 
-func (to *TestOrchestrator) doStartContainer(ctx context.Context, container container) (string, error) {
+func (to *TestOrchestrator) doStartContainer(ctx context.Context, container testContainer) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -622,7 +622,7 @@ func (to *TestOrchestrator) RunContainer(ctx context.Context, options containers
 		return "", err
 	}
 
-	if _, err := to.doStartContainer(ctx, container); err != nil {
+	if _, err = to.doStartContainer(ctx, container); err != nil {
 		return container.id, err
 	}
 
@@ -637,7 +637,7 @@ func (to *TestOrchestrator) StopContainers(ctx context.Context, names []string, 
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	var containersToStop []container
+	var containersToStop []testContainer
 	for _, name := range names {
 		var found bool
 		for _, container := range to.containers {
@@ -666,7 +666,7 @@ func (to *TestOrchestrator) StopContainers(ctx context.Context, names []string, 
 	return results, nil
 }
 
-func (to *TestOrchestrator) doStopContainer(ctx context.Context, container container) (container, error) {
+func (to *TestOrchestrator) doStopContainer(ctx context.Context, container testContainer) (testContainer, error) {
 	if ctx.Err() != nil {
 		return container, ctx.Err()
 	}
@@ -699,7 +699,7 @@ func (to *TestOrchestrator) RemoveContainers(ctx context.Context, names []string
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	var containersToRemove []container
+	var containersToRemove []testContainer
 	for _, name := range names {
 		var found bool
 		for _, container := range to.containers {
@@ -738,7 +738,7 @@ func (to *TestOrchestrator) RemoveContainers(ctx context.Context, names []string
 	return results, nil
 }
 
-func (to *TestOrchestrator) doRemoveContainer(ctx context.Context, container container) (string, error) {
+func (to *TestOrchestrator) doRemoveContainer(ctx context.Context, container testContainer) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}

@@ -22,17 +22,17 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 	logLevel, err := logger.GetDebugLogLevel()
 
 	if err == nil && logLevel == zapcore.DebugLevel {
-		logFolder, err := logger.EnsureDetailedLogsFolder()
+		logFolder, logFolderErr := logger.EnsureDetailedLogsFolder()
 
-		if err != nil {
-			return nil, err
+		if logFolderErr != nil {
+			return nil, logFolderErr
 		}
 
 		telemetryFileName := fmt.Sprintf("telemetry-%s-%d-%d.json", logName, time.Now().Unix(), os.Getpid())
-		telemetryFile, err := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+		telemetryFile, logFileErr := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
 
-		if err != nil {
-			return nil, err
+		if logFileErr != nil {
+			return nil, logFileErr
 		}
 
 		return stdouttrace.New(stdouttrace.WithPrettyPrint(), stdouttrace.WithWriter(telemetryFile))

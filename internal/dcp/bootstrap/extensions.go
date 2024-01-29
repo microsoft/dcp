@@ -92,9 +92,9 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 				isExe = info.Mode().Perm()&UserExecute != 0
 			}
 			if isExe {
-				ext, err := getExtensionCapabilities(ctx, path)
-				if err != nil {
-					return err
+				ext, capabilityQueryErr := getExtensionCapabilities(ctx, path)
+				if capabilityQueryErr != nil {
+					return capabilityQueryErr
 				}
 
 				extensions = append(extensions, ext)

@@ -63,7 +63,7 @@ func TestCanGetFreePortForAllLocalIPs(t *testing.T) {
 
 			for _, ip := range ips {
 				address := IpToString(ip)
-				_, err := GetFreePort(tc.protocol, address)
+				_, err = GetFreePort(tc.protocol, address)
 				require.NoError(t, err, "Could not get free port for address %s", address)
 			}
 		})
@@ -80,8 +80,8 @@ func TestCheckPortAvailable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ips, err := net.LookupIP("localhost")
-			require.NoError(t, err, "Could not get IP addresses for localhost")
+			ips, ipLookupErr := net.LookupIP("localhost")
+			require.NoError(t, ipLookupErr, "Could not get IP addresses for localhost")
 
 			wg := sync.WaitGroup{}
 			wg.Add(len(ips))
@@ -99,13 +99,13 @@ func TestCheckPortAvailable(t *testing.T) {
 					// Occupy the port
 					var listener io.Closer
 					if tc.protocol == apiv1.UDP {
-						udpaddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", address, port))
-						require.NoError(t, err, "Could not resolve UDP address %s:%d", address, port)
+						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", address, port))
+						require.NoError(t, resolutionErr, "Could not resolve UDP address %s:%d", address, port)
 						listener, err = net.ListenUDP("udp", udpaddr)
 						require.NoError(t, err, "Could not listen on UDP address %s:%d", address, port)
 					} else {
-						tcpaddr, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", address, port))
-						require.NoError(t, err, "Could not resolve TCP address %s:%d", address, port)
+						tcpaddr, resolutionErr := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", address, port))
+						require.NoError(t, resolutionErr, "Could not resolve TCP address %s:%d", address, port)
 						listener, err = net.ListenTCP("tcp", tcpaddr)
 						require.NoError(t, err, "Could not listen on TCP address %s:%d", address, port)
 					}

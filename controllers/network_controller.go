@@ -156,7 +156,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted")
 
-		err := r.deleteNetwork(ctx, &network, log)
+		err = r.deleteNetwork(ctx, &network, log)
 		if err != nil {
 			// deleteNetwork() logged the error already
 			change = additionalReconciliationNeeded

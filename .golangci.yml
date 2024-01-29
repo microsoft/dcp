@@ -1,0 +1,7 @@
+linters-settings:
+  govet:
+    enable:
+      - shadow
+    settings:
+      shadow:
+        strict: true

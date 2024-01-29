@@ -338,10 +338,10 @@ func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 	dialContext, dialContextCancel := context.WithTimeout(p.lifetimeCtx, p.connectionTimeout)
 	defer dialContextCancel()
 
-	if outgoing, err := d.DialContext(dialContext, "tcp", fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)); err != nil {
+	if outgoing, dialErr := d.DialContext(dialContext, "tcp", fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)); dialErr != nil {
 		p.log.V(1).Info(fmt.Sprintf("Error establishing TCP connection to %s:%d, will try another endpoint", endpoint.Address, endpoint.Port))
 		// Do not close incoming connection
-		return fmt.Errorf("%w: %w", errTcpDialFailed, err)
+		return fmt.Errorf("%w: %w", errTcpDialFailed, dialErr)
 	} else {
 		streamCtx, streamCtxCancel := context.WithCancel(p.lifetimeCtx)
 		copyingWg := &sync.WaitGroup{}
@@ -629,11 +629,11 @@ func (p *Proxy) streamEndpointPackets(
 			return
 		}
 
-		bytesRead, _, err := streamListener.ReadFrom(buffer)
-		if errors.Is(err, os.ErrDeadlineExceeded) {
+		bytesRead, _, readErr := streamListener.ReadFrom(buffer)
+		if errors.Is(readErr, os.ErrDeadlineExceeded) {
 			continue
-		} else if err != nil {
-			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", err.Error(), "EndpointConnectionAddress", streamListener.LocalAddr().String())
+		} else if readErr != nil {
+			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", readErr.Error(), "EndpointConnectionAddress", streamListener.LocalAddr().String())
 			p.shutdownUDPStream(stream.clientAddr)
 			return
 		}
@@ -644,10 +644,10 @@ func (p *Proxy) streamEndpointPackets(
 			return
 		}
 
-		written, err := proxyConn.WriteTo(buffer[:bytesRead], stream.clientAddr)
-		if err != nil {
+		written, writeErr := proxyConn.WriteTo(buffer[:bytesRead], stream.clientAddr)
+		if writeErr != nil {
 			// Handle write deadline exceeded like any other (unexpected) error for UDP connections
-			p.log.V(1).Info("Error writing to UDP proxy connection", "Error", err.Error(), "ClientAddress", stream.clientAddr.String())
+			p.log.V(1).Info("Error writing to UDP proxy connection", "Error", writeErr.Error(), "ClientAddress", stream.clientAddr.String())
 			p.shutdownUDPStream(stream.clientAddr)
 			return
 		}

@@ -70,7 +70,7 @@ func TestExecutableReplicaSetScales(t *testing.T) {
 	}
 
 	t.Logf("scaling down replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
-	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
+	if err = updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		ers.Spec.Replicas = 0
 		return nil
 	}); err != nil {
@@ -122,7 +122,7 @@ func TestExecutableReplicaSetSoftDeleteScales(t *testing.T) {
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
 	t.Logf("scaling down replicas for ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
-	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
+	if err = updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		ers.Spec.Replicas = 0
 		return nil
 	}); err != nil {
@@ -168,15 +168,15 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 
 	oldUid := ownedExes[0].UID
 
-	if err := client.Delete(ctx, ownedExes[0], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+	if err = client.Delete(ctx, ownedExes[0], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
 		t.Fatalf("could not delete Executable: %v", err)
 	}
 
 	ensureReplicasRecreated := func(ctx context.Context) (bool, error) {
-		newOwnedExes, err := getOwnedExes(ctx, &exers)
-		if err != nil {
-			t.Fatalf("Unable to fetch Executables: %v", err)
-			return false, err
+		newOwnedExes, ownedExesQueryErr := getOwnedExes(ctx, &exers)
+		if ownedExesQueryErr != nil {
+			t.Fatalf("Unable to fetch Executables: %v", ownedExesQueryErr)
+			return false, ownedExesQueryErr
 		}
 
 		if len(newOwnedExes) != scaleTo {
@@ -226,7 +226,7 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
-	if err := updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
+	if err = updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		ers.Spec.Replicas = initialScaleTo + 1
 		ers.Spec.Template.Spec.ExecutablePath = "path/to/executable-replica-set-updated-template"
 		return nil
@@ -235,10 +235,10 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 	}
 
 	ensureTemplateChangeReflected := func(ctx context.Context) (bool, error) {
-		newOwnedExes, err := getOwnedExes(ctx, &exers)
-		if err != nil {
-			t.Fatalf("Unable to fetch Executables: %v", err)
-			return false, err
+		newOwnedExes, ownedExesQueryErr := getOwnedExes(ctx, &exers)
+		if ownedExesQueryErr != nil {
+			t.Fatalf("Unable to fetch Executables: %v", ownedExesQueryErr)
+			return false, ownedExesQueryErr
 		}
 
 		if len(newOwnedExes) != initialScaleTo+1 {
@@ -295,9 +295,9 @@ func TestExecutableReplicaSetDeleteRemovesExecutables(t *testing.T) {
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
 	ensureReplicaSetDeleted := func(ctx context.Context) (bool, error) {
-		if err := client.Delete(ctx, &exers); err != nil {
-			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", err)
-			return false, err
+		if deleteErr := client.Delete(ctx, &exers); err != nil {
+			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", deleteErr)
+			return false, deleteErr
 		}
 
 		return true, nil
@@ -342,9 +342,9 @@ func TestExecutableReplicaSetDeleteRemovesSoftDeleteExecutables(t *testing.T) {
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
 	ensureReplicaSetDeleted := func(ctx context.Context) (bool, error) {
-		if err := client.Delete(ctx, &exers); err != nil {
-			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", err)
-			return false, err
+		if deleteErr := client.Delete(ctx, &exers); deleteErr != nil {
+			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", deleteErr)
+			return false, deleteErr
 		}
 
 		return true, nil
@@ -399,15 +399,16 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 	require.NoError(t, err, "Failed to parse PID from Executable status")
 	pid, err := process.Int64ToPidT(pid64)
 	require.NoError(t, err)
-	if err := processExecutor.StopProcess(pid); err != nil {
+	if err = processExecutor.StopProcess(pid); err != nil {
 		t.Fatalf("could not kill process: %v", err)
 	}
 
 	ensureStatusUpdated := func(ctx context.Context) (bool, error) {
 		var updatedExers apiv1.ExecutableReplicaSet
-		if err := client.Get(ctx, ctrl_client.ObjectKeyFromObject(&exers), &updatedExers); err != nil {
-			t.Fatalf("unable to fetch updated ExecutableReplicaSet: %v", err)
-			return false, err
+		updaedExersQueryErr := client.Get(ctx, ctrl_client.ObjectKeyFromObject(&exers), &updatedExers)
+		if updaedExersQueryErr != nil {
+			t.Fatalf("unable to fetch updated ExecutableReplicaSet: %v", updaedExersQueryErr)
+			return false, updaedExersQueryErr
 		}
 
 		if updatedExers.Status.ObservedReplicas != scaleTo {
@@ -514,8 +515,8 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 
 	portMap := make(map[int32]bool, replicas)
 	validateAndParsePortStr := func(portStr string) int32 {
-		port, err := strconv.ParseInt(portStr, 10, 32)
-		require.NoError(t, err, "The injected port '%s' is not a valid integer", portStr)
+		port, portParsingErr := strconv.ParseInt(portStr, 10, 32)
+		require.NoError(t, portParsingErr, "The injected port '%s' is not a valid integer", portStr)
 		require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
 		require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
 		return int32(port)

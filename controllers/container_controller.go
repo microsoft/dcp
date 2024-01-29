@@ -307,7 +307,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(ctx context.Contex
 		return fmt.Errorf("container not connected to expected number of networks")
 	}
 
-	if _, err := r.orchestrator.StartContainers(ctx, []string{rcd.newContainerID}); err != nil {
+	if _, err = r.orchestrator.StartContainers(ctx, []string{rcd.newContainerID}); err != nil {
 		log.Error(err, "failed to start Container", "ContainerID", rcd.newContainerID)
 		// We failed to start the container, so record the error and schedule additional reconciliation
 		rcd.startupError = err
@@ -437,12 +437,12 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 				container.Status.FinishTimestamp = metav1.Now()
 				return statusChanged
 			} else if container.Spec.Networks != nil {
-				connected, err := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
-				if err != nil {
+				connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
+				if connectionErr != nil {
 					changed |= additionalReconciliationNeeded
 				}
 
-				found := true
+				found = true
 				for _, network := range container.Status.Networks {
 					if !slices.Any(connected, func(n *apiv1.ContainerNetwork) bool {
 						return n.Name == network
@@ -578,7 +578,8 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		} else {
 			log.Info("container created", "ContainerID", containerID)
 
-			if inspected, err := r.findContainer(ctx, containerName); err != nil {
+			var inspected *ct.InspectedContainer
+			if inspected, err = r.findContainer(ctx, containerName); err != nil {
 				log.Error(err, "could not inspect the container")
 				rcd.startupError = err
 				rcd.startAttemptFinishedAt = metav1.Now()
@@ -590,7 +591,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 			}
 
 			if rcd.runSpec.Networks == nil {
-				_, err := r.orchestrator.StartContainers(ctx, []string{containerID})
+				_, err = r.orchestrator.StartContainers(ctx, []string{containerID})
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
 					rcd.startupError = err
@@ -603,7 +604,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 			} else {
 				// Docker attaches containers to the "bridge" network by default, so we need to detach it here
 				// since we intend to only connect to the networks specified in the Container object.
-				err := r.orchestrator.DisconnectNetwork(ctx, ct.DisconnectNetworkOptions{Network: "bridge", Container: containerID, Force: true})
+				err = r.orchestrator.DisconnectNetwork(ctx, ct.DisconnectNetworkOptions{Network: "bridge", Container: containerID, Force: true})
 				if err != nil {
 					log.Error(err, "could not detach the 'bridge' network from the container", "ContainerID", containerID)
 					rcd.startupError = err
@@ -680,9 +681,9 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 
 	for i, envVar := range rcd.runSpec.Env {
 		substitutionCtx := fmt.Sprintf("environment variable %s", envVar.Name)
-		effectiveValue, err := executeTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveValue, templateErr := executeTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 
 		rcd.runSpec.Env[i] = apiv1.EnvVar{Name: envVar.Name, Value: effectiveValue}
@@ -704,9 +705,9 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 
 	for i, arg := range rcd.runSpec.Args {
 		substitutionCtx := fmt.Sprintf("argument %d", i)
-		effectiveValue, err := executeTemplate(tmpl, ctr, arg, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveValue, templateErr := executeTemplate(tmpl, ctr, arg, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 
 		rcd.runSpec.Args[i] = effectiveValue
@@ -887,14 +888,14 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			},
 		}
 
-		if err := ctrl.SetControllerReference(container, connection, r.Scheme()); err != nil {
+		if err = ctrl.SetControllerReference(container, connection, r.Scheme()); err != nil {
 			log.Error(err, "failed to set owner for network connection",
 				"Container", container.NamespacedName().String(),
 				"Network", namespacedNetworkName.String(),
 			)
 		}
 
-		if err := r.Create(ctx, connection); err != nil {
+		if err = r.Create(ctx, connection); err != nil {
 			log.Error(err, "could not persist ContainerNetworkConnection object",
 				"Container", container.NamespacedName().String(),
 				"Network", namespacedNetworkName.String(),

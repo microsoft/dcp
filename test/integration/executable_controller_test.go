@@ -917,8 +917,8 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	)
 
 	validateAndParsePortStr := func(portStr string) int32 {
-		port, err := strconv.ParseInt(portStr, 10, 32)
-		require.NoError(t, err, "The injected port '%s' is not a valid integer", portStr)
+		port, parsingErr := strconv.ParseInt(portStr, 10, 32)
+		require.NoError(t, parsingErr, "The injected port '%s' is not a valid integer", portStr)
 		require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
 		require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
 		return int32(port)
@@ -1287,7 +1287,7 @@ func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (string, er
 	}
 
 	randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
-	if err := ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid); err != nil {
+	if err = ideRunner.SimulateRunStart(controllers.RunID(runID), randomPid); err != nil {
 		return "", err
 	}
 

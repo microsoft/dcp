@@ -22,8 +22,8 @@ func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 			return 0, err
 		}
 
-		if listener, err := net.ListenUDP("udp", udpaddr); err != nil {
-			return 0, err
+		if listener, listenErr := net.ListenUDP("udp", udpaddr); listenErr != nil {
+			return 0, listenErr
 		} else {
 			port := int32(listener.LocalAddr().(*net.UDPAddr).Port)
 			listener.Close()
@@ -35,8 +35,8 @@ func GetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 			return 0, err
 		}
 
-		if listener, err := net.ListenTCP("tcp", tcpaddr); err != nil {
-			return 0, err
+		if listener, listenErr := net.ListenTCP("tcp", tcpaddr); listenErr != nil {
+			return 0, listenErr
 		} else {
 			port := int32(listener.Addr().(*net.TCPAddr).Port)
 			listener.Close()
@@ -56,8 +56,8 @@ func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32)
 			return err
 		}
 
-		if listener, err := net.ListenUDP("udp", udpaddr); err != nil {
-			return err
+		if listener, listenErr := net.ListenUDP("udp", udpaddr); listenErr != nil {
+			return listenErr
 		} else {
 			listener.Close()
 			return nil
@@ -68,8 +68,8 @@ func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32)
 			return err
 		}
 
-		if listener, err := net.ListenTCP("tcp", tcpaddr); err != nil {
-			return err
+		if listener, listenErr := net.ListenTCP("tcp", tcpaddr); listenErr != nil {
+			return listenErr
 		} else {
 			listener.Close()
 			return nil

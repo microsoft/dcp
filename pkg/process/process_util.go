@@ -26,19 +26,19 @@ func GetProcessTree(pid Pid_t) ([]Pid_t, error) {
 		tree = append(tree, current)
 
 		children := slices.Select(procs, func(p ps.Process) bool {
-			ppid, err := IntToPidT(p.PPid())
-			if err != nil {
-				panic(err)
+			ppid, ppidErr := IntToPidT(p.PPid())
+			if ppidErr != nil {
+				panic(ppidErr)
 			}
 			return ppid == current
 		})
 
 		next = append(next, slices.Map[ps.Process, Pid_t](children, func(p ps.Process) Pid_t {
-			pid, err := IntToPidT(p.Pid())
-			if err != nil {
-				panic(err)
+			processPID, pidConversionErr := IntToPidT(p.Pid())
+			if pidConversionErr != nil {
+				panic(pidConversionErr)
 			}
-			return pid
+			return processPID
 		})...)
 	}
 

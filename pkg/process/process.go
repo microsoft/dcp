@@ -60,9 +60,9 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 				for done := false; !done; {
 					select {
 					case <-timer.C:
-						pid, err := IntToPidT(p.process.Pid)
-						if err != nil {
-							panic(err)
+						pid, pidConversionErr := IntToPidT(p.process.Pid)
+						if pidConversionErr != nil {
+							panic(pidConversionErr)
 						}
 
 						_, pollErr := FindProcess(pid)

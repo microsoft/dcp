@@ -43,8 +43,8 @@ func Monitor(ctx context.Context, logger logr.Logger) context.Context {
 
 		go func() {
 			defer monitorCtxCancel()
-			if err := monitorProc.Wait(monitorCtx); err != nil {
-				logger.Error(err, "error waiting for process", "pid", monitorPid)
+			if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {
+				logger.Error(waitErr, "error waiting for process", "pid", monitorPid)
 			} else {
 				logger.Info("monitor process exited, shutting down", "pid", monitorPid)
 			}

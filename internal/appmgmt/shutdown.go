@@ -84,7 +84,7 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 
 	for _, resourceBatch := range resourceBatches {
 		log.Info("Cleaning up resource batch", "weight", resourceBatch[0].Weight, "length", len(resourceBatch))
-		if err := cleanupResourceBatch(informerCtx, dcpclient, factory, resourceBatch, log); err != nil {
+		if err = cleanupResourceBatch(informerCtx, dcpclient, factory, resourceBatch, log); err != nil {
 			return err
 		}
 	}

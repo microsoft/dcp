@@ -135,13 +135,13 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 
 			e.acquireLock()
 			defer e.releaseLock()
-			ws, found := e.procsWaiting[pid]
-			if !found {
+			endedWaitState, endedWaitStateFound := e.procsWaiting[pid]
+			if !endedWaitStateFound {
 				panic(fmt.Sprintf("process with pid %d was not found in the waiting list", pid))
 			}
-			ws.waitErr = err
-			ws.waitEnded = time.Now()
-			close(ws.waitEndedCh)
+			endedWaitState.waitErr = err
+			endedWaitState.waitEnded = time.Now()
+			close(endedWaitState.waitEndedCh)
 		}()
 	}
 

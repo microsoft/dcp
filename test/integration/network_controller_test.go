@@ -62,8 +62,8 @@ func TestRemoveNetworkInstance(t *testing.T) {
 	require.NoError(t, err, "could not delete a ContainerNetwork object")
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
-		inspectedNetworks, err := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
-		if !errors.Is(err, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
+		inspectedNetworks, networkInspectionErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+		if !errors.Is(networkInspectionErr, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
 			return false, nil
 		}
 
