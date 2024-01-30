@@ -76,7 +76,6 @@ var (
 func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.NetworkOrchestrator) *NetworkReconciler {
 	r := NetworkReconciler{
 		Client:               client,
-		Log:                  log,
 		orchestrator:         orchestrator,
 		existingNetworks:     maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus](),
 		notifyNetworkChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
@@ -87,9 +86,8 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		watchingResources:    syncmap.Map[types.UID, bool]{},
 		lock:                 &sync.Mutex{},
 		lifetimeCtx:          lifetimeCtx,
+		Log:                  log,
 	}
-
-	r.Log = log.WithValues("Controller", networkFinalizer)
 
 	go r.onShutdown()
 

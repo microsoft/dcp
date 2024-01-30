@@ -282,7 +282,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		}
 
 		runID := controllers.RunID(rid)
-		log.Info("IDE run session started", "RunID", runID)
+		log.V(1).Info("IDE run session started", "RunID", runID)
 		exeStatus.ExecutionID = string(runID)
 		exeStatus.StartupTimestamp = metav1.Now()
 
@@ -345,7 +345,7 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		r.log.Info("IDE run session stopped", "RunID", runID)
+		r.log.V(1).Info("IDE run session stopped", "RunID", runID)
 		return nil
 	}
 

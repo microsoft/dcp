@@ -65,9 +65,8 @@ func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logge
 		debouncer:          newReconcilerDebouncer[any](reconciliationDebounceDelay),
 		runningReplicaSets: syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
 		replicaCounters:    syncmap.Map[types.NamespacedName, *atomic.Int32]{},
+		Log:                log,
 	}
-
-	r.Log = log.WithValues("Controller", executableReplicaSetFinalizer)
 
 	return &r
 }
@@ -264,7 +263,7 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				rsData.actualReplicas++
 				rsData.lastScaled = currentScaleTime.Time
 				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
-				log.Info("created Executable", "exe", exe)
+				log.V(1).Info("created Executable", "exe", exe)
 				change |= statusChanged
 			}
 		}
@@ -287,7 +286,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 	); err != nil {
 		log.Error(err, "failed to list inactive child Executable objects, continuing with deletion")
 	} else {
-		log.Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
+		log.V(1).Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
 		for _, exe := range childExecutables.Items {
 			if err = r.Delete(ctx, &exe); err != nil {
 				log.Error(err, "failed to delete inactive child Executable object", "exe", exe)
@@ -336,7 +335,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 	if replicaSet.DeletionTimestamp != nil && !replicaSet.DeletionTimestamp.IsZero() {
 		// Deletion has ben requested, so ensure that we start scaling down to zero replicas.
 		if replicaSet.Spec.Replicas > 0 {
-			log.Info("Deletion requested for ExecutableReplicaSet, scaling replicas to 0")
+			log.V(1).Info("Deletion requested for ExecutableReplicaSet, scaling replicas to 0")
 			replicaSet.Spec.Replicas = 0
 		}
 	}
@@ -349,7 +348,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		r.deleteReplicas(ctx, &replicaSet, log)
 
 		// Deletion has been requested and the running replicas have been drained.
-		log.Info("ExecutableReplicaSet is being deleted...")
+		log.V(1).Info("ExecutableReplicaSet is being deleted...")
 		change = deleteFinalizer(&replicaSet, executableReplicaSetFinalizer, log)
 		// Removing the finalizer will unblock the deletion of the ExecutableReplicaSet object.
 		// Status update will fail, because the object will no longer be there, so suppress it.
