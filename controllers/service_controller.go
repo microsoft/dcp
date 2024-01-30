@@ -285,8 +285,8 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 	if svc.Status.State != oldState {
 		// If the log level is info, we'll only log when the service becomes ready
-		logLevel, err := logger.GetDebugLogLevel()
-		if err == nil && logLevel == zapcore.DebugLevel {
+		logLevel, loggerErr := logger.GetDebugLogLevel()
+		if loggerErr == nil && logLevel == zapcore.DebugLevel {
 			log.V(1).Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
 		} else if svc.Status.State == apiv1.ServiceStateReady {
 			log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
