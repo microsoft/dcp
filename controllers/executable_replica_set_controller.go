@@ -139,7 +139,7 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 
 	// Set the ExecutableReplica set as the owner of the Executable so that changes to the Executable will trigger
 	// our reconciler loop.
-	if err := ctrl.SetControllerReference(replicaSet, exe, r.Scheme()); err != nil {
+	if err = ctrl.SetControllerReference(replicaSet, exe, r.Scheme()); err != nil {
 		log.Error(err, "failed to create executable for ExecutableReplicaSet", "exe", exe)
 		return nil, err
 	}
@@ -253,11 +253,11 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 		log.V(1).Info("scaling up replicas")
 		// Scale up the replica set if there aren't enough
 		for i := 0; i < int(replicaSet.Spec.Replicas-observedReplicas); i++ {
-			if exe, err := r.createExecutable(replicaSet, log); err != nil {
-				log.Error(err, "unable to create Executable")
+			if exe, exeSetupErr := r.createExecutable(replicaSet, log); exeSetupErr != nil {
+				log.Error(exeSetupErr, "unable to create Executable")
 				change |= additionalReconciliationNeeded
-			} else if err := r.Create(ctx, exe); err != nil {
-				log.Error(err, "unable to create Executable", "exe", exe)
+			} else if exeCreationErr := r.Create(ctx, exe); exeCreationErr != nil {
+				log.Error(exeCreationErr, "unable to create Executable", "exe", exe)
 				change |= additionalReconciliationNeeded
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
@@ -289,7 +289,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 	} else {
 		log.Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
 		for _, exe := range childExecutables.Items {
-			if err := r.Delete(ctx, &exe); err != nil {
+			if err = r.Delete(ctx, &exe); err != nil {
 				log.Error(err, "failed to delete inactive child Executable object", "exe", exe)
 			}
 		}
@@ -377,7 +377,8 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 			totalReplicas := int32(len(childExecutables.Items))
 			activeReplicas := []*apiv1.Executable{}
 			for i, exe := range childExecutables.Items {
-				if state, found := exe.Annotations[ExecutableReplicaStateAnnotation]; found && state == string(ExecutableReplicaSetStateActive) {
+				state, annotationFound := exe.Annotations[ExecutableReplicaStateAnnotation]
+				if annotationFound && state == string(ExecutableReplicaSetStateActive) {
 					activeReplicas = append(activeReplicas, &childExecutables.Items[i])
 				}
 			}

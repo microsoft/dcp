@@ -176,9 +176,9 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		return fmt.Errorf(runSessionCouldNotBeStarted + "missing required runChangeHandler")
 	}
 
-	err := r.ensureNotificationSocket()
-	if err != nil {
-		return fmt.Errorf(runSessionCouldNotBeStarted+"%w", err)
+	notifySocketErr := r.ensureNotificationSocket()
+	if notifySocketErr != nil {
+		return fmt.Errorf(runSessionCouldNotBeStarted+"%w", notifySocketErr)
 	}
 
 	r.lock.Lock()
@@ -188,7 +188,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 	exeStatus := exe.Status.DeepCopy()
 
-	err = r.startupQueue.Enqueue(func(_ context.Context) {
+	workEnqueueErr := r.startupQueue.Enqueue(func(_ context.Context) {
 		var stdOutFile, stdErrFile *os.File
 
 		reportStartupFailure := func() {
@@ -241,14 +241,15 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			exeStatus.StdErrFile = stdErrFile.Name()
 		}
 
-		if rawRequest, err := httputil.DumpRequest(req, true); err == nil {
+		if rawRequest, dumpRequestErr := httputil.DumpRequest(req, true); dumpRequestErr == nil {
 			log.V(1).Info("Sending IDE run session request", "Request", string(rawRequest))
 		} else {
 			log.V(1).Info("Sending IDE run session request", "URL", req.URL)
 		}
 
 		client := http.Client{}
-		resp, err := client.Do(req)
+		var resp *http.Response
+		resp, err = client.Do(req)
 		if err != nil {
 			log.Error(err, "run session could not be started")
 			reportStartupFailure()
@@ -256,7 +257,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		}
 		defer resp.Body.Close()
 
-		if rawResponse, err := httputil.DumpResponse(resp, true); err == nil {
+		if rawResponse, dumpResponseErr := httputil.DumpResponse(resp, true); dumpResponseErr == nil {
 			log.V(1).Info("Completed IDE run session request", "Response", string(rawResponse))
 		} else {
 			log.V(1).Info("Completed IDE run session request", "URL", req.URL)
@@ -274,7 +275,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			reportStartupFailure()
 			return
 		}
-		rid, err := getLastUrlPathSegment(sessionURL)
+		var rid string
+		rid, err = getLastUrlPathSegment(sessionURL)
 		if err != nil {
 			reportStartupFailure()
 		}
@@ -312,8 +314,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		runChangeHandler.OnStartingCompleted(namespacedName, runID, *exeStatus, startWaitForRunCompletion)
 	})
 
-	if err != nil {
-		log.Error(err, "could not enqueue ide executable start operation; workload is shutting down")
+	if workEnqueueErr != nil {
+		log.Error(workEnqueueErr, "could not enqueue ide executable start operation; workload is shutting down")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
 	} else {

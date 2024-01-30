@@ -308,8 +308,8 @@ func TestServiceRandomPort(t *testing.T) {
 		if s.Status.EffectiveAddress == "" || s.Status.EffectivePort == 0 {
 			return false, nil
 		}
-		_, err := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", s.Status.EffectiveAddress, s.Status.EffectivePort))
-		return err == nil, nil
+		_, addressResolutionErr := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", s.Status.EffectiveAddress, s.Status.EffectivePort))
+		return addressResolutionErr == nil, nil
 	})
 	t.Log("Service has random port.")
 }

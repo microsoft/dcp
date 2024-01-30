@@ -213,9 +213,9 @@ func waitEndpointExists(t *testing.T, ctx context.Context, selector func(*apiv1.
 		}
 
 		for _, endpoint := range endpointList.Items {
-			if matches, err := selector(&endpoint); err != nil {
-				t.Fatal("unable to select Endpoint", err)
-				return false, err
+			if matches, matchErr := selector(&endpoint); matchErr != nil {
+				t.Fatal("unable to select Endpoint", matchErr)
+				return false, matchErr
 			} else if matches {
 				updatedObject = &endpoint
 				return true, nil

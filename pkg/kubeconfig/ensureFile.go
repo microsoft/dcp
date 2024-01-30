@@ -23,7 +23,7 @@ import (
 func doEnsureKubeconfigFile(configPath string, port int32) (string, error) {
 	info, err := os.Stat(configPath)
 	if err != nil && errors.Is(err, iofs.ErrNotExist) {
-		if err := createKubeconfigFile(configPath, port); err != nil {
+		if err = createKubeconfigFile(configPath, port); err != nil {
 			return "", err
 		}
 	} else if err != nil {
@@ -78,8 +78,8 @@ func createKubeconfigFile(path string, port int32) error {
 	address := networking.IpToString(ip)
 
 	if port == 0 {
-		if newPort, err := networking.GetFreePort(apiv1.TCP, address); err != nil {
-			return err
+		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, address); newPortErr != nil {
+			return newPortErr
 		} else {
 			port = newPort
 		}
@@ -124,7 +124,7 @@ func createKubeconfigFile(path string, port int32) error {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 
-	if err := io.WriteFile(path, contents, osutil.PermissionOnlyOwnerReadWrite); err != nil {
+	if err = io.WriteFile(path, contents, osutil.PermissionOnlyOwnerReadWrite); err != nil {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 

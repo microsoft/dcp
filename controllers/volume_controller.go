@@ -74,7 +74,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if vol.DeletionTimestamp != nil && !vol.DeletionTimestamp.IsZero() {
 		log.Info("ContainerVolume object is being deleted")
-		err := r.deleteVolume(ctx, vol.Spec.Name, log)
+		err = r.deleteVolume(ctx, vol.Spec.Name, log)
 		if err != nil {
 			// deleteVolume() logged the error already
 			change = additionalReconciliationNeeded
@@ -86,8 +86,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change |= r.ensureVolume(ctx, vol.Spec.Name, log)
 	}
 
-	result, err := saveChanges(r.Client, ctx, &vol, patch, change, nil, log)
-	return result, err
+	result, saveErr := saveChanges(r.Client, ctx, &vol, patch, change, nil, log)
+	return result, saveErr
 }
 
 func (r *VolumeReconciler) deleteVolume(ctx context.Context, volumeName string, log logr.Logger) error {

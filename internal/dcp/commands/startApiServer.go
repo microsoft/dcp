@@ -44,8 +44,8 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	return startApiSrvCmd, nil
 }
 
-func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) error {
-	return func(cmd *cobra.Command, args []string) error {
+func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
 		log := log.WithName("start-apiserver")
 
 		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
@@ -112,10 +112,10 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, args []string) erro
 				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 				defer cancelShutdownCtx()
 				log.Info("Stopping the application...")
-				err := appmgmt.ShutdownApp(shutdownCtx, log.WithName("shutdown").V(1))
-				if err != nil {
-					log.Error(err, "could not shut down the application gracefully")
-					return fmt.Errorf("could not shut down the application gracefully: %w", err)
+				shutdownErr := appmgmt.ShutdownApp(shutdownCtx, log.WithName("shutdown").V(1))
+				if shutdownErr != nil {
+					log.Error(shutdownErr, "could not shut down the application gracefully")
+					return fmt.Errorf("could not shut down the application gracefully: %w", shutdownErr)
 				} else {
 					log.Info("Application stopped.")
 					return nil

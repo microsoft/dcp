@@ -238,7 +238,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 		svc.Status.State = apiv1.ServiceStateNotReady
 
-		err := r.startProxyIfNeeded(ctx, svc, log)
+		err = r.startProxyIfNeeded(ctx, svc, log)
 		if err != nil {
 			log.Error(err, "could not start the proxy")
 			change |= additionalReconciliationNeeded
@@ -265,7 +265,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 				}
 
 				for _, proxyInstanceData := range serviceProxyData {
-					err := proxyInstanceData.proxy.Configure(config)
+					err = proxyInstanceData.proxy.Configure(config)
 					if err != nil {
 						log.Error(err, "could not configure the proxy")
 					}
@@ -345,7 +345,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 	if !r.noProxyStartOption() {
 		for _, proxyInstanceData := range proxies {
-			err := proxyInstanceData.proxy.Start()
+			err = proxyInstanceData.proxy.Start()
 			if err != nil {
 				stopAllProxies()
 				return fmt.Errorf("cound not start the proxy for the service: %w", err)

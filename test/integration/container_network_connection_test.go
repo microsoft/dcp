@@ -129,7 +129,7 @@ func TestContainerConnectedNetworkChanges(t *testing.T) {
 	})
 
 	containerPatch.Spec.Networks = &updatedNetworks
-	if err := client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(updatedCtr)); err != nil {
+	if err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(updatedCtr)); err != nil {
 		t.Fatalf("Unable to update Container: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestContainerConnectedNetworkChanges(t *testing.T) {
 
 	// Reset the networks to the original
 	containerPatch.Spec.Networks = ctr.Spec.Networks
-	if err := client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(updatedCtr)); err != nil {
+	if err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(updatedCtr)); err != nil {
 		t.Fatalf("Unable to update Container: %v", err)
 	}
 

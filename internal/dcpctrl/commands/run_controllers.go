@@ -75,14 +75,15 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 
 	// We need to make sure the API server is responding to requests before setting up the controllers
 	// as we can get connection refuesed errors during setup otherwise.
-	if _, err := resiliency.RetryGet(retryCtx, func() (interface{}, error) {
+	_, err = resiliency.RetryGet(retryCtx, func() (interface{}, error) {
 		var exeList apiv1.ExecutableList
-		if err := mgr.GetAPIReader().List(retryCtx, &exeList); err != nil {
-			return nil, err
+		if listErr := mgr.GetAPIReader().List(retryCtx, &exeList); listErr != nil {
+			return nil, listErr
 		}
 
 		return nil, nil
-	}); err != nil {
+	})
+	if err != nil {
 		log.Error(err, "unable to confirm the API server is responding")
 		return nil, err
 	}

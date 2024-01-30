@@ -99,13 +99,13 @@ func TestVolumeDeletion(t *testing.T) {
 	waitObjectDeleted[apiv1.ContainerVolume](t, ctx, ctrl_client.ObjectKeyFromObject(&vol))
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, err := orchestrator.InspectVolumes(ctx, []string{testName})
-		if err != nil {
-			if errors.Is(err, containers.ErrNotFound) {
+		_, inspectionErr := orchestrator.InspectVolumes(ctx, []string{testName})
+		if inspectionErr != nil {
+			if errors.Is(inspectionErr, containers.ErrNotFound) {
 				return true, nil
 			}
 
-			return false, err
+			return false, inspectionErr
 		}
 
 		return false, nil

@@ -566,9 +566,9 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 
 	for key, value := range envMap.Data() {
 		substitutionCtx := fmt.Sprintf("environment variable %s", key)
-		effectiveValue, err := executeTemplate(tmpl, exe, value, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveValue, templateErr := executeTemplate(tmpl, exe, value, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 		envMap.Set(key, effectiveValue)
 	}
@@ -594,9 +594,9 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	effectiveArgs := make([]string, len(exe.Spec.Args))
 	for i, arg := range exe.Spec.Args {
 		substitutionCtx := fmt.Sprintf("argument %s", arg)
-		effectiveArg, err := executeTemplate(tmpl, exe, arg, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveArg, templateErr := executeTemplate(tmpl, exe, arg, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 		effectiveArgs[i] = effectiveArg
 	}

@@ -39,14 +39,16 @@ func New(ctx context.Context, timeout time.Duration) (ctrl_client.Client, error)
 		return nil, fmt.Errorf("could not create the client for the API server: %w", err)
 	}
 
-	if _, err := resiliency.RetryGet(timeoutCtx, func() (bool, error) {
+	_, err = resiliency.RetryGet(timeoutCtx, func() (bool, error) {
 		var exeList apiv1.ExecutableList
-		if err := client.List(ctx, &exeList, &ctrl_client.ListOptions{Limit: 1}); err != nil {
-			return false, err
+		listErr := client.List(ctx, &exeList, &ctrl_client.ListOptions{Limit: 1})
+		if listErr != nil {
+			return false, listErr
 		}
 
 		return true, nil
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("could not confirm API server listening: %w", err)
 	}
 

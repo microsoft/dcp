@@ -21,9 +21,9 @@ const (
 // and find the root that ends with given path to file or directory.
 // Returns the root path found, or error.
 func FindRootFor(target PathFindTarget, tailElem ...string) (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get current directory: %w", err)
+	cwd, wdErr := os.Getwd()
+	if wdErr != nil {
+		return "", fmt.Errorf("failed to get current directory: %w", wdErr)
 	}
 
 	attemptNum := 0

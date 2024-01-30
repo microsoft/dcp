@@ -37,9 +37,9 @@ func GetExtensionsDirs() ([]string, error) {
 	extensionPaths := []string{}
 	if extensionPath, found := os.LookupEnv(DcpExtensionsPathEnv); found {
 		for _, path := range strings.Split(extensionPath, string(os.PathListSeparator)) {
-			path := strings.Trim(path, " ")
-			if path != "" {
-				extensionPaths = append(extensionPaths, path)
+			trimmed := strings.Trim(path, " ")
+			if trimmed != "" {
+				extensionPaths = append(extensionPaths, trimmed)
 			}
 		}
 	}
@@ -47,10 +47,11 @@ func GetExtensionsDirs() ([]string, error) {
 	if len(extensionPaths) == 0 {
 		dcpDir, err := GetDcpDir()
 		if err != nil {
-			if home, err := os.UserHomeDir(); err != nil {
+			home, homeDirGetErr := os.UserHomeDir()
+			if homeDirGetErr == nil {
 				dcpDir = filepath.Join(home, DcpRootDir)
 			} else {
-				return nil, fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+				return nil, fmt.Errorf("could not determine the path to the user's home directory: %w", homeDirGetErr)
 			}
 		}
 
@@ -67,10 +68,11 @@ func GetDcpBinDir() (string, error) {
 
 	dcpDir, err := GetDcpDir()
 	if err != nil {
-		if home, err := os.UserHomeDir(); err != nil {
+		home, homeDirGetErr := os.UserHomeDir()
+		if homeDirGetErr == nil {
 			dcpDir = filepath.Join(home, DcpRootDir)
 		} else {
-			return "", fmt.Errorf("could not determine the path to the user's home directory: %w", err)
+			return "", fmt.Errorf("could not determine the path to the user's home directory: %w", homeDirGetErr)
 		}
 	}
 
