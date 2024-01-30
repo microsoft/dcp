@@ -65,9 +65,8 @@ func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logge
 		debouncer:          newReconcilerDebouncer[any](reconciliationDebounceDelay),
 		runningReplicaSets: syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
 		replicaCounters:    syncmap.Map[types.NamespacedName, *atomic.Int32]{},
+		Log:                log,
 	}
-
-	r.Log = log.WithValues("Controller", executableReplicaSetFinalizer)
 
 	return &r
 }
@@ -264,7 +263,7 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				rsData.actualReplicas++
 				rsData.lastScaled = currentScaleTime.Time
 				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
-				log.Info("created Executable", "exe", exe)
+				log.V(1).Info("created Executable", "exe", exe)
 				change |= statusChanged
 			}
 		}

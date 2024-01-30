@@ -15,6 +15,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
 	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap/zapcore"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,6 +31,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -71,13 +73,13 @@ var (
 func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, processExecutor process.Executor) *ServiceReconciler {
 	r := ServiceReconciler{
 		Client:                client,
-		Log:                   log,
 		ProcessExecutor:       processExecutor,
 		ProxyConfigDir:        filepath.Join(os.TempDir(), "usvc-servicecontroller-serviceconfig"),
 		proxyData:             &syncmap.Map[types.NamespacedName, []proxyInstanceData]{},
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		lifetimeCtx:           lifetimeCtx,
 		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
+		Log:                   log,
 	}
 	return &r
 }
@@ -276,24 +278,31 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 	if svc.Status.ProxyProcessPid != oldPid {
 		if svc.Status.ProxyProcessPid != apiv1.UnknownPID {
-			log.Info(fmt.Sprintf("proxy process has been started for service %s (PID %d)", svc.NamespacedName(), *svc.Status.ProxyProcessPid))
+			log.V(1).Info(fmt.Sprintf("proxy process has been started for service %s (PID %d)", svc.NamespacedName(), *svc.Status.ProxyProcessPid))
 		}
 		change |= statusChanged
 	}
 
 	if svc.Status.State != oldState {
-		log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
+		// If the log level is info, we'll only log when the service becomes ready
+		logLevel, err := logger.GetDebugLogLevel()
+		if err == nil && logLevel == zapcore.DebugLevel {
+			log.V(1).Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
+		} else if svc.Status.State == apiv1.ServiceStateReady {
+			log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
+		}
+
 		change |= statusChanged
 	}
 
 	if svc.Status.EffectiveAddress != oldEffectiveAddress || svc.Status.EffectivePort != oldEffectivePort {
-		log.Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
+		log.V(1).Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
 		change |= statusChanged
 	}
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless && (svc.Status.ProxylessEndpointNamespace != oldEndpointNamespacedName.Namespace || svc.Status.ProxylessEndpointName != oldEndpointNamespacedName.Name) {
 		if svc.Status.EffectiveAddress != "" || svc.Status.EffectivePort != 0 {
-			log.Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
+			log.V(1).Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
 		}
 		change |= statusChanged
 	}
@@ -354,7 +363,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	}
 
 	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
-	log.Info("service proxy started",
+	log.V(1).Info("service proxy started",
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
 	)

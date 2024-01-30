@@ -135,9 +135,8 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		watchingResources:      syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
 		lifetimeCtx:            lifetimeCtx,
+		Log:                    log,
 	}
-
-	r.Log = log.WithValues("Controller", containerFinalizer)
 
 	go r.onShutdown()
 
@@ -377,14 +376,14 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 					return additionalReconciliationNeeded
 				}
 
-				log.Info("container started", "ContainerID", rcd.newContainerID)
+				log.V(1).Info("container started", "ContainerID", rcd.newContainerID)
 				rcd.startAttemptFinishedAt = metav1.Now()
 				container.Status.State = apiv1.ContainerStateRunning
 				container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
 
 				return statusChanged
 			} else {
-				log.Info("container has started successfully", "ContainerID", rcd.newContainerID)
+				log.V(1).Info("container has started successfully", "ContainerID", rcd.newContainerID)
 
 				container.Status.State = apiv1.ContainerStateRunning
 				container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
@@ -521,7 +520,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		}
 	}
 
-	log.Info("scheduling container start", "image", container.Spec.Image)
+	log.V(1).Info("scheduling container start", "image", container.Spec.Image)
 
 	if containerName == "" {
 		uniqueContainerName, err := MakeUniqueName(container.Name)
@@ -538,7 +537,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 			time.Sleep(delay)
 		}
 
-		log.Info("starting container", "image", container.Spec.Image)
+		log.V(1).Info("starting container", "image", container.Spec.Image)
 
 		containerID := getFailedContainerID(container.NamespacedName())
 		var rcd = newRunningContainerData(container)
@@ -576,7 +575,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.Now()
 		} else {
-			log.Info("container created", "ContainerID", containerID)
+			log.V(1).Info("container created", "ContainerID", containerID)
 
 			if inspected, err := r.findContainer(ctx, containerName); err != nil {
 				log.Error(err, "could not inspect the container")
@@ -597,7 +596,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 					rcd.startAttemptFinishedAt = metav1.Now()
 					goto finishStartupAttempt
 				} else {
-					log.Info("container started", "ContainerID", containerID)
+					log.V(1).Info("container started", "ContainerID", containerID)
 					rcd.startAttemptFinishedAt = metav1.Now()
 				}
 			} else {

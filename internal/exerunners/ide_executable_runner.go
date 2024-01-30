@@ -280,7 +280,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		}
 
 		runID := controllers.RunID(rid)
-		log.Info("IDE run session started", "RunID", runID)
+		log.V(1).Info("IDE run session started", "RunID", runID)
 		exeStatus.ExecutionID = string(runID)
 		exeStatus.StartupTimestamp = metav1.Now()
 
