@@ -302,7 +302,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(ctx context.Contex
 
 	// Check to see if we are connected to all the ContainerNetworks listed in the Container object spec
 	if len(connected) != len(*container.Spec.Networks) {
-		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.newContainerID, "Expected", len(*container.Spec.Networks), len(connected))
+		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.newContainerID, "Expected", len(*container.Spec.Networks), "Connected", len(connected))
 		return fmt.Errorf("container not connected to expected number of networks")
 	}
 
