@@ -442,18 +442,18 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 					changed |= additionalReconciliationNeeded
 				}
 
-				found = true
+				networkFound := true
 				for _, network := range container.Status.Networks {
 					if !slices.Any(connected, func(n *apiv1.ContainerNetwork) bool {
 						return n.Name == network
 					}) {
-						found = false
+						networkFound = false
 						break
 					}
 				}
 
 				// If the set of connected networks has changed, update the Container object status
-				if !found || len(connected) != len(container.Status.Networks) {
+				if !networkFound || len(connected) != len(container.Status.Networks) {
 					container.Status.Networks = slices.Map[*apiv1.ContainerNetwork, string](connected, func(n *apiv1.ContainerNetwork) string {
 						return n.NamespacedName().String()
 					})
