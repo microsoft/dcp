@@ -19,9 +19,6 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	It integrates your code, emulators and containers to give you a development environment
 	with minimum remote dependencies and maximum ease of use.`,
 		SilenceUsage: true,
-		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			log.Flush()
-		},
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
@@ -29,28 +26,28 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	var err error
 	var cmd *cobra.Command
 
-	if cmd, err = cmds.NewVersionCommand(log); cmd != nil {
-		rootCmd.AddCommand(cmd)
-	} else {
+	if cmd, err = cmds.NewVersionCommand(log); err != nil {
 		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = NewGenerateFileCommand(log); cmd != nil {
-		rootCmd.AddCommand(cmd)
-	} else {
+	if cmd, err = NewGenerateFileCommand(log); err != nil {
 		return nil, fmt.Errorf("could not set up 'generate-file' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = NewUpCommand(log); cmd != nil {
-		rootCmd.AddCommand(cmd)
-	} else {
+	if cmd, err = NewUpCommand(log); err != nil {
 		return nil, fmt.Errorf("could not set up 'up' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = NewStartApiSrvCommand(log); cmd != nil {
-		rootCmd.AddCommand(cmd)
-	} else {
+	if cmd, err = NewStartApiSrvCommand(log); err != nil {
 		return nil, fmt.Errorf("could not set up 'start-apiserver' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
 	}
 
 	log.AddLevelFlag(rootCmd.PersistentFlags())

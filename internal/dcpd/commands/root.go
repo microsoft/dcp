@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
@@ -29,14 +30,13 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	By default (no command specified), this executable runs the DCP API server.
 	`,
 		RunE: runApiServer(logger),
-		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			logger.Flush()
-		},
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	if cmd, _ := cmds.NewVersionCommand(logger); cmd != nil {
+	if cmd, err := cmds.NewVersionCommand(logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
+	} else {
 		rootCmd.AddCommand(cmd)
 	}
 

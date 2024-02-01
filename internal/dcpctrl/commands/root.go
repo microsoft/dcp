@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
@@ -9,7 +11,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-func NewRootCommand(logger logger.Logger) *cobra.Command {
+func NewRootCommand(logger logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		Use:   "dcpctrl",
 		Short: "Runs standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
@@ -20,14 +22,13 @@ func NewRootCommand(logger logger.Logger) *cobra.Command {
 
 	dcpctrl is the host process that runs the controllers for the DCP API objects.`,
 		SilenceUsage: true,
-		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			logger.Flush()
-		},
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	if cmd, _ := cmds.NewVersionCommand(logger); cmd != nil {
+	if cmd, err := cmds.NewVersionCommand(logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
+	} else {
 		rootCmd.AddCommand(cmd)
 	}
 
@@ -39,5 +40,5 @@ func NewRootCommand(logger logger.Logger) *cobra.Command {
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(logger.V(1))
 
-	return rootCmd
+	return rootCmd, nil
 }
