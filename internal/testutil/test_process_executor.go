@@ -175,14 +175,14 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		e.m.Lock()
 		defer e.m.Unlock()
 		i := e.findByPid(pid)
-		pe := e.Executions[i]
-		if !pe.StartWaitingCalled {
-			pe.StartWaitingCalled = true
-			if pe.startWaitingChan != nil {
-				close(pe.startWaitingChan)
+		updatedPE := e.Executions[i]
+		if !updatedPE.StartWaitingCalled {
+			updatedPE.StartWaitingCalled = true
+			if updatedPE.startWaitingChan != nil {
+				close(updatedPE.startWaitingChan)
 			}
 		}
-		e.Executions[i] = pe
+		e.Executions[i] = updatedPE
 	}
 
 	if len(e.AutoExecutions) > 0 {
@@ -193,9 +193,9 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 				} else {
 					go func(ae AutoExecution) {
 						exitCode := ae.RunCommand(&pe)
-						err := e.stopProcessImpl(pid, exitCode)
-						if err != nil {
-							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, err))
+						stopProcessErr := e.stopProcessImpl(pid, exitCode)
+						if stopProcessErr != nil {
+							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, stopProcessErr))
 						}
 					}(ae)
 					break

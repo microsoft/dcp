@@ -3,11 +3,11 @@ package main
 //go:generate goversioninfo
 
 import (
-	"fmt"
 	"os"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
+	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
@@ -27,14 +27,13 @@ func main() {
 
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(errSetup)
+		cmdutil.ErrorExit(log, err, errSetup)
 	}
 
 	err = root.ExecuteContext(ctx)
-
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(errCommand)
+		cmdutil.ErrorExit(log, err, errCommand)
+	} else {
+		log.Flush()
 	}
 }

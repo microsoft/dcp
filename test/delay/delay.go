@@ -148,7 +148,7 @@ func runChildrenAsNeeded() error {
 
 		process.DecoupleFromParent(cmd)
 
-		err := cmd.Start()
+		err = cmd.Start()
 		if err != nil {
 			return fmt.Errorf("could not start a child process: %w", err)
 		}

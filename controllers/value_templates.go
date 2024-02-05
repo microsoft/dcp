@@ -76,7 +76,7 @@ func newSpecValueTemplate(
 
 			// Need to take a peek at the Service to find out what port it is assigned.
 			var svc apiv1.Service
-			if err := client.Get(ctx, serviceName, &svc); err != nil {
+			if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
 				// CONSIDER in future we could be smarter and delay the startup of the Executable until
 				// the service appears in the system, leaving the Executable in "pending" state.
 				// This would necessitate watching over Services (specifically, Service creation).
@@ -99,7 +99,7 @@ func newSpecValueTemplate(
 
 			// Need to take a peek at the Service to find out what address it is assigned.
 			var svc apiv1.Service
-			if err := client.Get(ctx, serviceName, &svc); err != nil {
+			if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
 				// CONSIDER in future we could be smarter and delay the startup of the Executable until
 				// the service appears in the system, leaving the Executable in "pending" state.
 				// This would necessitate watching over Services (specifically, Service creation).

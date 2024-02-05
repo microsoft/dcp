@@ -1,4 +1,4 @@
-package docker
+package podman
 
 import (
 	"bufio"
@@ -34,15 +34,15 @@ var (
 	newNetworkNotFoundErrorMatch      = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
 	newNetworkAlreadyExistsErrorMatch = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
 
-	// We expect almost all Docker CLI invocations to finish within this time.
-	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
-	ordinaryDockerCommandTimeout = 30 * time.Second
+	// We expect almost all Podman CLI invocations to finish within this time.
+	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
+	ordinaryPodmanCommandTimeout = 30 * time.Second
 )
 
-type DockerCliOrchestrator struct {
+type PodmanCliOrchestrator struct {
 	log logr.Logger
 
-	// Process executor for running Docker commands
+	// Process executor for running Podman commands
 	executor process.Executor
 
 	// Event watcher for container events
@@ -52,38 +52,38 @@ type DockerCliOrchestrator struct {
 	networkEvtWatcher *containers.EventWatcher
 }
 
-func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
-	dco := &DockerCliOrchestrator{
+func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
+	pco := &PodmanCliOrchestrator{
 		log:      log,
 		executor: executor,
 	}
 
-	dco.containerEvtWatcher = containers.NewEventWatcher(dco, dco.doWatchContainers, log)
-	dco.networkEvtWatcher = containers.NewEventWatcher(dco, dco.doWatchNetworks, log)
+	pco.containerEvtWatcher = containers.NewEventWatcher(pco, pco.doWatchContainers, log)
+	pco.networkEvtWatcher = containers.NewEventWatcher(pco, pco.doWatchNetworks, log)
 
-	return dco
+	return pco
 }
 
-func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
-	cmd := makeDockerCommand(ctx, "volume", "create", name)
-	outBuf, _, err := dco.runDockerCommand(ctx, "CreateVolume", cmd, ordinaryDockerCommandTimeout)
+func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
+	cmd := makePodmanCommand(ctx, "volume", "create", name)
+	outBuf, _, err := pco.runPodmanCommand(ctx, "CreateVolume", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return err
 	}
 	return containers.ExpectCliStrings(outBuf, []string{name})
 }
 
-func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
+func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
 	if len(volumes) == 0 {
 		return nil, fmt.Errorf("must specify at least one volume")
 	}
 
-	cmd := makeDockerCommand(ctx, append(
-		[]string{"volume", "inspect", "--format", "{{json .}}"},
+	cmd := makePodmanCommand(ctx, append(
+		[]string{"volume", "inspect", "--format", "json"},
 		volumes...)...,
 	)
 
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectVolumes", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectVolumes", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
@@ -91,14 +91,14 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 	return asObjects(outBuf, unmarshalVolume)
 }
 
-func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
+func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
 	args := []string{"volume", "rm"}
 	if force {
 		args = append(args, "--force")
 	}
 	args = append(args, volumes...)
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveVolumes", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveVolumes", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
@@ -162,7 +162,7 @@ func applyCreateContainerOptions(args []string, options v1.ContainerSpec) []stri
 	return args
 }
 
-func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
+func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
 	args := []string{"create"}
 
 	if options.Name != "" {
@@ -181,11 +181,11 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 		args = append(args, options.Args...)
 	}
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makePodmanCommand(ctx, args...)
 
 	// Create container can take a long time to finish if the image is not available locally.
 	// Use a much longer timeout than for other commands.
-	outBuf, _, err := dco.runDockerCommand(ctx, "CreateContainer", cmd, 10*time.Minute)
+	outBuf, _, err := pco.runPodmanCommand(ctx, "CreateContainer", cmd, 10*time.Minute)
 	if err != nil {
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
@@ -198,7 +198,7 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 	return asId(outBuf)
 }
 
-func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
+func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
 	args := []string{"run"}
 
 	if options.Name != "" {
@@ -218,27 +218,27 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 		args = append(args, options.Args...)
 	}
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makePodmanCommand(ctx, args...)
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
-	outBuf, _, err := dco.runDockerCommand(ctx, "RunContainer", cmd, 10*time.Minute)
+	outBuf, _, err := pco.runPodmanCommand(ctx, "RunContainer", cmd, 10*time.Minute)
 	if err != nil {
 		return "", err
 	}
 	return asId(outBuf)
 }
 
-func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
+func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	cmd := makeDockerCommand(ctx, append(
-		[]string{"container", "inspect", "--format", "{{json .}}"},
+	cmd := makePodmanCommand(ctx, append(
+		[]string{"container", "inspect", "--format", "json"},
 		names...)...,
 	)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectContainers", cmd, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectContainers", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -246,40 +246,40 @@ func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names [
 	return asObjects(outBuf, unmarshalContainer)
 }
 
-func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, containerIDs []string) ([]string, error) {
-	if len(containerIDs) == 0 {
+func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, containerIds []string) ([]string, error) {
+	if len(containerIds) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "start"}
-	args = append(args, containerIDs...)
+	args = append(args, containerIds...)
 
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StartContainers", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "StartContainers", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
+		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	started := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return started, containers.ExpectCliStrings(outBuf, containerIDs)
+	return started, containers.ExpectCliStrings(outBuf, containerIds)
 }
 
-func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
+func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "stop"}
-	var timeout time.Duration = ordinaryDockerCommandTimeout
+	var timeout time.Duration = ordinaryPodmanCommandTimeout
 	if secondsToKill > 0 {
 		args = append(args, "--time", fmt.Sprintf("%d", secondsToKill))
-		timeout = time.Duration(secondsToKill)*time.Second + ordinaryDockerCommandTimeout
+		timeout = time.Duration(secondsToKill)*time.Second + ordinaryPodmanCommandTimeout
 	}
 	args = append(args, names...)
 
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StopContainers", cmd, timeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "StopContainers", cmd, timeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -289,7 +289,7 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []st
 	return stopped, containers.ExpectCliStrings(outBuf, names)
 }
 
-func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
+func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
@@ -300,8 +300,8 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	}
 	args = append(args, names...)
 
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveContainers", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveContainers", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
@@ -311,15 +311,15 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	return removed, containers.ExpectCliStrings(outBuf, names)
 }
 
-func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
-	return dco.containerEvtWatcher.Watch(sink)
+func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
+	return pco.containerEvtWatcher.Watch(sink)
 }
 
-func (dco *DockerCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
-	return dco.networkEvtWatcher.Watch(sink)
+func (pco *PodmanCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
+	return pco.networkEvtWatcher.Watch(sink)
 }
 
-func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
+func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
 	args := []string{"network", "create"}
 
 	if options.IPv6 {
@@ -328,15 +328,15 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 
 	args = append(args, options.Name)
 
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "CreateNetwork", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "CreateNetwork", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
 	}
 	return asId(outBuf)
 }
 
-func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
+func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
 	if len(options.Networks) == 0 {
 		return nil, fmt.Errorf("must specify at least one network")
 	}
@@ -347,8 +347,8 @@ func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	}
 	args = append(args, options.Networks...)
 
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveNetworks", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveNetworks", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
@@ -358,16 +358,16 @@ func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	return removed, containers.ExpectCliStrings(outBuf, options.Networks)
 }
 
-func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
 	if len(options.Networks) == 0 {
 		return nil, fmt.Errorf("must specify at least one network")
 	}
 
-	args := []string{"network", "inspect", "--format", "{{json .}}"}
+	args := []string{"network", "inspect", "--format", "json"}
 	args = append(args, options.Networks...)
 
-	cmd := makeDockerCommand(ctx, args...)
-	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectNetworks", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectNetworks", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
@@ -375,7 +375,7 @@ func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	return asObjects(outBuf, unmarshalNetwork)
 }
 
-func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
+func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
 	args := []string{"network", "connect"}
 
 	for i := range options.Aliases {
@@ -384,15 +384,15 @@ func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 
 	args = append(args, options.Network, options.Container)
 
-	cmd := makeDockerCommand(ctx, args...)
-	_, errBuf, err := dco.runDockerCommand(ctx, "ConnectNetwork", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	_, errBuf, err := pco.runPodmanCommand(ctx, "ConnectNetwork", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
 	return nil
 }
 
-func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options containers.DisconnectNetworkOptions) error {
+func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options containers.DisconnectNetworkOptions) error {
 	args := []string{"network", "disconnect"}
 
 	if options.Force {
@@ -401,24 +401,85 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 
 	args = append(args, options.Network, options.Container)
 
-	cmd := makeDockerCommand(ctx, args...)
-	_, errBuf, err := dco.runDockerCommand(ctx, "DisconnectNetwork", cmd, ordinaryDockerCommandTimeout)
+	cmd := makePodmanCommand(ctx, args...)
+	_, errBuf, err := pco.runPodmanCommand(ctx, "DisconnectNetwork", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
 	return nil
 }
 
-func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
-	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
-	cmd := makeDockerCommand(watcherCtx, args...)
+func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
+	args := []string{"events", "--filter", "type=container", "--format", "json"}
+	cmd := makePodmanCommand(watcherCtx, args...)
 
 	reader, writer := io.NewBufferedPipe()
 	cmd.Stdout = writer
 	defer writer.Close() // Ensure that the following scanner goroutine ends.
 
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer([]byte{}, 2048*1024) // Default max Scanner buffer is only 65k, which might not be enough for Docker events
+	scanner.Buffer([]byte{}, 2048*1024) // Default max Scanner buffer is only 65k, which might not be enough for Podman events
+
+	go func() {
+		for scanner.Scan() {
+			if watcherCtx.Err() != nil {
+				return // Cancellation has been requested, so we should stop scanning events
+			}
+
+			evtData := scanner.Text()
+			var evtMessage podmanEventMessage
+			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
+			if unmarshalErr != nil {
+				pco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", evtData)
+			} else {
+				pco.containerEvtWatcher.Notify((&evtMessage).ToEventMessage())
+			}
+		}
+
+		if scanner.Err() != nil {
+			pco.log.Error(scanner.Err(), "scanning for container events resulted in an error")
+		}
+	}()
+
+	pic := make(chan process.ProcessExitInfo, 1)
+	peh := process.NewChannelProcessExitHandler(pic)
+
+	// Container events are delivered on best-effort basis.
+	// If the "podman events" command fails unexpectedly, we will log the error,
+	// but we won't try to restart it.
+	pid, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh)
+	if err != nil {
+		pco.log.Error(err, "could not execute 'podman events' command; container events unavailable")
+		return
+	}
+
+	startWaitForProcessExit()
+
+	var exitInfo process.ProcessExitInfo
+	select {
+	case exitInfo = <-pic:
+		if exitInfo.Err != nil {
+			pco.log.Error(err, "'podman events' command failed")
+		}
+	case <-watcherCtx.Done():
+		// We are asked to shut down
+		err = pco.executor.StopProcess(pid)
+		if err != nil {
+			pco.log.Error(err, "could not stop 'podman events' command")
+		}
+	}
+}
+
+func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
+	args := []string{"events", "--filter", "type=network", "--format", "json"}
+	cmd := makePodmanCommand(watcherCtx, args...)
+
+	reader, writer := io.NewBufferedPipe()
+	cmd.Stdout = writer
+	defer writer.Close() // Ensure that the following scanner goroutine ends.
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer([]byte{}, 2048*1024) // Default max Scanner buffer is only 65k, which might not be enough for Podman events
 
 	go func() {
 		for scanner.Scan() {
@@ -430,14 +491,14 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 			var evtMessage containers.EventMessage
 			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
 			if unmarshalErr != nil {
-				dco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", evtData)
+				pco.log.Error(unmarshalErr, "network event data could not be parsed", "EventData", evtData)
 			} else {
-				dco.containerEvtWatcher.Notify(evtMessage)
+				pco.networkEvtWatcher.Notify(evtMessage)
 			}
 		}
 
 		if scanner.Err() != nil {
-			dco.log.Error(scanner.Err(), "scanning for container events resulted in an error")
+			pco.log.Error(scanner.Err(), "scanning for network events resulted in an error")
 		}
 	}()
 
@@ -445,11 +506,11 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 	peh := process.NewChannelProcessExitHandler(pic)
 
 	// Container events are delivered on best-effort basis.
-	// If the "docker events" command fails unexpectedly, we will log the error,
+	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh)
+	pid, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh)
 	if err != nil {
-		dco.log.Error(err, "could not execute 'docker events' command; container events unavailable")
+		pco.log.Error(err, "could not execute 'podman events' command; network events unavailable")
 		return
 	}
 
@@ -459,79 +520,18 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 	select {
 	case exitInfo = <-pic:
 		if exitInfo.Err != nil {
-			dco.log.Error(err, "'docker events' command failed")
+			pco.log.Error(err, "'podman events' command failed")
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		processStopErr := dco.executor.StopProcess(pid)
-		if processStopErr != nil {
-			dco.log.Error(processStopErr, "could not stop 'docker events' command")
+		err = pco.executor.StopProcess(pid)
+		if err != nil {
+			pco.log.Error(err, "could not stop 'podman events' command")
 		}
 	}
 }
 
-func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
-	args := []string{"events", "--filter", "type=network", "--format", "{{json .}}"}
-	cmd := makeDockerCommand(watcherCtx, args...)
-
-	reader, writer := io.NewBufferedPipe()
-	cmd.Stdout = writer
-	defer writer.Close() // Ensure that the following scanner goroutine ends.
-
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer([]byte{}, 2048*1024) // Default max Scanner buffer is only 65k, which might not be enough for Docker events
-
-	go func() {
-		for scanner.Scan() {
-			if watcherCtx.Err() != nil {
-				return // Cancellation has been requested, so we should stop scanning events
-			}
-
-			evtData := scanner.Text()
-			var evtMessage containers.EventMessage
-			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
-			if unmarshalErr != nil {
-				dco.log.Error(unmarshalErr, "network event data could not be parsed", "EventData", evtData)
-			} else {
-				dco.networkEvtWatcher.Notify(evtMessage)
-			}
-		}
-
-		if scanner.Err() != nil {
-			dco.log.Error(scanner.Err(), "scanning for network events resulted in an error")
-		}
-	}()
-
-	pic := make(chan process.ProcessExitInfo, 1)
-	peh := process.NewChannelProcessExitHandler(pic)
-
-	// Container events are delivered on best-effort basis.
-	// If the "docker events" command fails unexpectedly, we will log the error,
-	// but we won't try to restart it.
-	pid, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh)
-	if err != nil {
-		dco.log.Error(err, "could not execute 'docker events' command; network events unavailable")
-		return
-	}
-
-	startWaitForProcessExit()
-
-	var exitInfo process.ProcessExitInfo
-	select {
-	case exitInfo = <-pic:
-		if exitInfo.Err != nil {
-			dco.log.Error(err, "'docker events' command failed")
-		}
-	case <-watcherCtx.Done():
-		// We are asked to shut down
-		processStopErr := dco.executor.StopProcess(pid)
-		if processStopErr != nil {
-			dco.log.Error(processStopErr, "could not stop 'docker events' command")
-		}
-	}
-}
-
-func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+func (pco *PodmanCliOrchestrator) runPodmanCommand(ctx context.Context, commandName string, cmd *exec.Cmd, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
 	outBuf := new(bytes.Buffer)
 	errBuf := new(bytes.Buffer)
 	cmd.Stdout = outBuf
@@ -540,7 +540,7 @@ func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandN
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	exitCode, err := process.RunWithTimeout(effectiveCtx, dco.executor, cmd)
+	exitCode, err := process.RunWithTimeout(effectiveCtx, pco.executor, cmd)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		// If a timeout occurs, the content of the stdout and stderr buffers is not guaranteed to be complete.
 		return nil, nil, err
@@ -569,33 +569,35 @@ func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandN
 	return outBuf, errBuf, nil
 }
 
-func makeDockerCommand(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+func makePodmanCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "podman", args...)
 	return cmd
 }
 
-// Docker CLI returns JSON lines for most output, so split the lines before unmarshalling.
-func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T, error) {
+// Podman CLI returns a JSON array for most of its commands, so unmarshal the entire output as an array of values.
+func asObjects[T any, V any](b *bytes.Buffer, unmarshalFn func(*V, *T) error) ([]T, error) {
 	if b == nil {
-		return nil, fmt.Errorf("the Docker command timed out without returning any data")
+		return nil, fmt.Errorf("the Podman command timed out without returning any data")
 	}
 
 	retval := []T{}
-	chunks := bytes.Split(b.Bytes(), osutil.LF())
 
-	for _, chunk := range chunks {
-		chunk = bytes.TrimSpace(chunk)
-		if len(chunk) == 0 {
-			continue
-		}
+	var unmarshalRaw []V
+	err := json.Unmarshal(b.Bytes(), &unmarshalRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range unmarshalRaw {
+		rawValue := &unmarshalRaw[i]
 
 		var obj T
-		err := unmarshalFn(chunk, &obj)
+		err = unmarshalFn(rawValue, &obj)
 		if err != nil {
 			return nil, err
-		} else {
-			retval = append(retval, obj)
 		}
+
+		retval = append(retval, obj)
 	}
 
 	return retval, nil
@@ -603,7 +605,7 @@ func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T,
 
 func asId(b *bytes.Buffer) (string, error) {
 	if b == nil {
-		return "", fmt.Errorf("the Docker command timed out without returning object identifier")
+		return "", fmt.Errorf("the Podman command timed out without returning object identifier")
 	}
 
 	chunks := slices.NonEmpty[byte](slices.Map[[]byte, []byte](bytes.Split(b.Bytes(), osutil.LF()), bytes.TrimSpace))
@@ -613,36 +615,29 @@ func asId(b *bytes.Buffer) (string, error) {
 	return string(chunks[0]), nil
 }
 
-func unmarshalVolume(data []byte, vol *containers.InspectedVolume) error {
-	if data == nil {
-		return fmt.Errorf("the Docker command timed out without returning volume data")
-	}
+func unmarshalVolume(pvi *podmanInspectedVolume, vol *containers.InspectedVolume) error {
+	vol.Name = pvi.Name
+	vol.Driver = pvi.Driver
+	vol.MountPoint = pvi.MountPoint
+	vol.Scope = pvi.Scope
+	vol.CreatedAt = pvi.CreatedAt
+	vol.Labels = pvi.Labels
 
-	return json.Unmarshal(data, vol)
+	return nil
 }
 
-func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
-	if data == nil {
-		return fmt.Errorf("the Docker command timed out without returning container data")
-	}
-
-	var dci dockerInspectedContainer
-	err := json.Unmarshal(data, &dci)
-	if err != nil {
-		return err
-	}
-
-	ic.Id = dci.Id
-	ic.Name = dci.Name
-	ic.Image = dci.Config.Image
-	ic.CreatedAt = dci.Created
-	ic.StartedAt = dci.State.StartedAt
-	ic.FinishedAt = dci.State.FinishedAt
-	ic.Status = dci.State.Status
-	ic.ExitCode = dci.State.ExitCode
-	ic.Ports = dci.NetworkSettings.Ports
+func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedContainer) error {
+	ic.Id = pci.Id
+	ic.Name = pci.Name
+	ic.Image = pci.Config.Image
+	ic.CreatedAt = pci.Created
+	ic.StartedAt = pci.State.StartedAt
+	ic.FinishedAt = pci.State.FinishedAt
+	ic.Status = pci.State.Status
+	ic.ExitCode = pci.State.ExitCode
+	ic.Ports = pci.NetworkSettings.Ports
 	ic.Env = make(map[string]string)
-	for _, envVar := range dci.Config.Env {
+	for _, envVar := range pci.Config.Env {
 		parts := strings.SplitN(envVar, "=", 2)
 		if len(parts) > 1 {
 			ic.Env[parts[0]] = parts[1]
@@ -650,9 +645,9 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 			ic.Env[parts[0]] = ""
 		}
 	}
-	ic.Args = append(ic.Args, dci.Config.Entrypoint...)
-	ic.Args = append(ic.Args, dci.Config.Cmd...)
-	for name, network := range dci.NetworkSettings.Networks {
+	ic.Args = append(ic.Args, pci.Config.Entrypoint)
+	ic.Args = append(ic.Args, pci.Config.Cmd...)
+	for name, network := range pci.NetworkSettings.Networks {
 		ic.Networks = append(
 			ic.Networks,
 			containers.InspectedContainerNetwork{
@@ -668,99 +663,127 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	return nil
 }
 
-func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
-	if data == nil {
-		return fmt.Errorf("the Docker command timed out without returning network data")
+func unmarshalNetwork(pcn *podmanInspectedNetwork, net *containers.InspectedNetwork) error {
+	net.Id = pcn.Id
+	net.Name = pcn.Name
+	net.CreatedAt = pcn.Created
+	net.Driver = pcn.Driver
+	net.Scope = "local"
+	net.Labels = pcn.Labels
+	net.Attachable = true
+	net.Internal = pcn.Internal
+	net.Ingress = false
+	for i := range pcn.Subnets {
+		net.Subnets = append(net.Subnets, pcn.Subnets[i].Subnet)
+		net.Gateways = append(net.Gateways, pcn.Subnets[i].Gateway)
 	}
-
-	var dcn dockerInspectedNetwork
-	err := json.Unmarshal(data, &dcn)
-	if err != nil {
-		return err
-	}
-
-	net.Id = dcn.Id
-	net.Name = dcn.Name
-	net.CreatedAt = dcn.Created
-	net.Driver = dcn.Driver
-	net.Scope = dcn.Scope
-	net.Labels = dcn.Labels
-	net.Attachable = dcn.Attachable
-	net.Internal = dcn.Internal
-	net.Ingress = dcn.Ingress
-	for i := range dcn.Ipam.Config {
-		net.Subnets = append(net.Subnets, dcn.Ipam.Config[i].Subnet)
-		net.Gateways = append(net.Gateways, dcn.Ipam.Config[i].Gateway)
-	}
-	for id := range dcn.Containers {
+	for id := range pcn.Containers {
 		net.ContainerIDs = append(net.ContainerIDs, id)
 	}
 
 	return nil
 }
 
-// dockerInspectedContainerXxx correspond to data returned by "docker container inspect" command.
-// The definition only includes data that we care about.
-// For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
-type dockerInspectedContainer struct {
-	Id              string                                  `json:"Id"`
-	Name            string                                  `json:"Name,omitempty"`
-	Config          dockerInspectedContainerConfig          `json:"Config,omitempty"`
-	Created         time.Time                               `json:"Created,omitempty"`
-	State           dockerInspectedContainerState           `json:"State,omitempty"`
-	NetworkSettings dockerInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
+type podmanInspectedVolume struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	MountPoint string            `json:"Mountpoint"`
+	CreatedAt  time.Time         `json:"CreatedAt"`
+	Labels     map[string]string `json:"Labels,omitempty"`
+	Scope      string            `json:"Scope"`
 }
 
-type dockerInspectedContainerConfig struct {
+// podmanInspectedContainerXxx correspond to data returned by "podman container inspect" command.
+// The definition only includes data that we care about.
+type podmanInspectedContainer struct {
+	Id              string                                  `json:"Id"`
+	Name            string                                  `json:"Name,omitempty"`
+	Config          podmanInspectedContainerConfig          `json:"Config,omitempty"`
+	Created         time.Time                               `json:"Created,omitempty"`
+	State           podmanInspectedContainerState           `json:"State,omitempty"`
+	NetworkSettings podmanInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
+}
+
+type podmanInspectedContainerConfig struct {
 	Image      string   `json:"Image,omitempty"`
 	Env        []string `json:"Env,omitempty"`
 	Cmd        []string `json:"Cmd,omitempty"`
-	Entrypoint []string `json:"Entrypoint,omitempty"`
+	Entrypoint string   `json:"Entrypoint,omitempty"`
 }
 
-type dockerInspectedContainerState struct {
+type podmanInspectedContainerState struct {
 	Status     containers.ContainerStatus `json:"Status,omitempty"`
 	StartedAt  time.Time                  `json:"StartedAt,omitempty"`
 	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
 	ExitCode   int32                      `json:"ExitCode,omitempty"`
 }
 
-type dockerInspectedContainerNetworkSettings struct {
+type podmanInspectedContainerNetworkSettings struct {
 	Ports    containers.InspectedContainerPortMapping                  `json:"Ports,omitempty"`
-	Networks map[string]dockerInspectedContainerNetworkSettingsNetwork `json:"Networks,omitempty"`
+	Networks map[string]podmanInspectedContainerNetworkSettingsNetwork `json:"Networks,omitempty"`
 }
 
-type dockerInspectedContainerNetworkSettingsNetwork struct {
+type podmanInspectedContainerNetworkSettingsNetwork struct {
 	NetworkID  string `json:"NetworkID"`
 	IPAddress  string `json:"IPAddress,omitempty"`
 	Gateway    string `json:"Gateway,omitempty"`
 	MacAddress string `json:"MacAddress,omitempty"`
 }
 
-type dockerInspectedNetwork struct {
-	Id         string                     `json:"Id"`
-	Name       string                     `json:"Name"`
-	Created    time.Time                  `json:"Created"`
-	Scope      string                     `json:"Scope"`
-	Driver     string                     `json:"Driver"`
-	EnableIPv6 bool                       `json:"EnableIPv6"`
-	Internal   bool                       `json:"Internal"`
-	Attachable bool                       `json:"Attachable"`
-	Ingress    bool                       `json:"Ingress"`
-	Ipam       dockerInspectedNetworkIpam `json:"IPAM"`
-	Labels     map[string]string          `json:"Labels"`
-	Containers map[string]struct{}        `json:"Containers"`
+type podmanInspectedNetwork struct {
+	Id         string                         `json:"id"`
+	Name       string                         `json:"name"`
+	Created    time.Time                      `json:"created"`
+	Driver     string                         `json:"driver"`
+	EnableIPv6 bool                           `json:"ipv6_enabled"`
+	Internal   bool                           `json:"internal"`
+	DnsEnabled bool                           `json:"dns_enabled"`
+	Subnets    []podmanInspectedNetworkSubnet `json:"subnets"`
+	Labels     map[string]string              `json:"labels,omitempty"`
+	Containers map[string]struct{}            `json:"Containers"`
 }
 
-type dockerInspectedNetworkIpam struct {
-	Config []dockerInspectedNetworkIpamConfig `json:"Config"`
+type podmanInspectedNetworkSubnet struct {
+	Subnet  string `json:"subnet,omitempty"`
+	Gateway string `json:"gateway,omitempty"`
 }
 
-type dockerInspectedNetworkIpamConfig struct {
-	Subnet  string `json:"Subnet,omitempty"`
-	Gateway string `json:"Gateway,omitempty"`
+type podmanEventMessage struct {
+	// The type of the object that caused the event
+	Source containers.EventSource `json:"Type"`
+
+	// The ID of the resource triggering the event
+	ID string `json:"ID,omitempty"`
+
+	// The status change that triggered the event
+	Action containers.EventAction `json:"Status"`
 }
 
-var _ containers.VolumeOrchestrator = (*DockerCliOrchestrator)(nil)
-var _ containers.ContainerOrchestrator = (*DockerCliOrchestrator)(nil)
-var _ containers.NetworkOrchestrator = (*DockerCliOrchestrator)(nil)
+func (pem *podmanEventMessage) ToEventMessage() containers.EventMessage {
+	if pem.Source == containers.EventSourceNetwork {
+		// Podman only returns network events for containers, not the actual networks
+		return containers.EventMessage{
+			Source: pem.Source,
+			Action: pem.Action,
+			Actor: containers.EventActor{
+				ID: pem.ID,
+			},
+			Attributes: map[string]string{
+				"container": pem.ID,
+			},
+		}
+	}
+
+	return containers.EventMessage{
+		Source: pem.Source,
+		Action: pem.Action,
+		Actor: containers.EventActor{
+			ID: pem.ID,
+		},
+		Attributes: make(map[string]string),
+	}
+}
+
+var _ containers.VolumeOrchestrator = (*PodmanCliOrchestrator)(nil)
+var _ containers.ContainerOrchestrator = (*PodmanCliOrchestrator)(nil)
+var _ containers.NetworkOrchestrator = (*PodmanCliOrchestrator)(nil)

@@ -90,8 +90,8 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		runEvtHandlers := bootstrap.DcpRunEventHandlers{
 			AfterApiSrvStart: func() error {
 				// Start the application
-				err := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
-				return err
+				renderErr := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
+				return renderErr
 			},
 			BeforeApiSrvShutdown: func() error {
 				// Shut down the application.
@@ -101,9 +101,9 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
 				defer cancelShutdownCtx()
 				log.Info("Stopping the application...")
-				err := appmgmt.ShutdownApp(shutdownCtx, log)
-				if err != nil {
-					return fmt.Errorf("could not shut down the application gracefully: %w", err)
+				shutdownErr := appmgmt.ShutdownApp(shutdownCtx, log)
+				if shutdownErr != nil {
+					return fmt.Errorf("could not shut down the application gracefully: %w", shutdownErr)
 				} else {
 					log.Info("Application stopped.")
 					return nil

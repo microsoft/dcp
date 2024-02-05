@@ -80,11 +80,11 @@ func StartProfiling(ctx context.Context, pt string, log logr.Logger) error {
 
 	go func() {
 		<-ctx.Done()
-		if err := stopProfiling(); err != nil {
-			log.Error(err, "failed to stop profiling", "profileFileName", profileFileName)
+		if profilingErr := stopProfiling(); profilingErr != nil {
+			log.Error(profilingErr, "failed to stop profiling", "profileFileName", profileFileName)
 		}
-		if err := profileOutput.Close(); err != nil {
-			log.Error(err, "failed to close profile file", "profileFileName", profileFileName)
+		if closingErr := profileOutput.Close(); closingErr != nil {
+			log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
 		}
 	}()
 

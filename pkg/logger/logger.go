@@ -48,7 +48,7 @@ func New(name string) Logger {
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	// Honor Windows line endings for logs if appropriate
 	if runtime.GOOS == "windows" {
-		encoderConfig.LineEnding = "\r\n"
+		encoderConfig.LineEnding = string(osutil.CRLF())
 	}
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
 

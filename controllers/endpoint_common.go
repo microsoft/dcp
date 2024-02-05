@@ -52,7 +52,7 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 	}
 
 	var childEndpoints apiv1.EndpointList
-	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
+	if err = r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
 		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
@@ -87,7 +87,7 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 		}
 
 		if reservedServicePorts != nil {
-			if port, found := reservedServicePorts[serviceProducer.ServiceNamespacedName()]; found {
+			if port, portFound := reservedServicePorts[serviceProducer.ServiceNamespacedName()]; portFound {
 				serviceProducer.Port = port
 			}
 		}
@@ -102,14 +102,14 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 			continue
 		}
 
-		if err := ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
+		if err = ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
 			log.Error(err, "failed to set owner for endpoint",
 				"ServiceName", serviceProducer.ServiceName,
 				"Workload", owner.NamespacedName().String(),
 			)
 		}
 
-		if err := r.Create(ctx, endpoint); err != nil {
+		if err = r.Create(ctx, endpoint); err != nil {
 			log.Error(err, "could not persist Endpoint object",
 				"ServiceName", serviceProducer.ServiceName,
 				"Workload", owner.NamespacedName().String(),

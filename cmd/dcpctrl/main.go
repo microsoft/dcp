@@ -3,11 +3,11 @@ package main
 //go:generate goversioninfo
 
 import (
-	"fmt"
 	"os"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
+	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcpctrl/commands"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -15,6 +15,7 @@ import (
 
 const (
 	errCommandError = 1
+	errSetup        = 2
 	errPanic        = 3
 )
 
@@ -26,13 +27,16 @@ func main() {
 
 	telemetrySystem := telemetry.GetTelemetrySystem()
 
-	root := commands.NewRootCommand(log)
-	err := root.ExecuteContext(ctx)
+	root, err := commands.NewRootCommand(log)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		_ = telemetrySystem.Shutdown(ctx)
-		os.Exit(errCommandError)
+		cmdutil.ErrorExit(log, err, errSetup)
 	}
 
+	err = root.ExecuteContext(ctx)
 	_ = telemetrySystem.Shutdown(ctx)
+	if err != nil {
+		cmdutil.ErrorExit(log, err, errCommandError)
+	} else {
+		log.Flush()
+	}
 }

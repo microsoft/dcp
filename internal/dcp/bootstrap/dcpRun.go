@@ -52,9 +52,9 @@ func DcpRun(
 
 	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
-		controllerService, err := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags)
-		if err != nil {
-			return fmt.Errorf("could not start controller '%s': %w", controller.Name, err)
+		controllerService, ctrlCreationErr := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags)
+		if ctrlCreationErr != nil {
+			return fmt.Errorf("could not start controller '%s': %w", controller.Name, ctrlCreationErr)
 		}
 		hostedServices = append(hostedServices, controllerService)
 	}
@@ -77,7 +77,7 @@ func DcpRun(
 	}
 
 	if evtHandlers.AfterApiSrvStart != nil {
-		if err := evtHandlers.AfterApiSrvStart(); err != nil {
+		if err = evtHandlers.AfterApiSrvStart(); err != nil {
 			return errors.Join(err, shutdownHost())
 		}
 	}
@@ -113,13 +113,13 @@ func DcpRun(
 
 	if evtHandlers.BeforeApiSrvShutdown != nil {
 		log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.")
-		if err := evtHandlers.BeforeApiSrvShutdown(); err != nil {
+		if err = evtHandlers.BeforeApiSrvShutdown(); err != nil {
 			log.Error(err, "BeforeApiSrvShutdown event handler failed.")
 			return errors.Join(err, shutdownHost())
 		}
 	}
 
-	if err := shutdownHost(); err != nil {
+	if err = shutdownHost(); err != nil {
 		return err
 	} else {
 		log.Info("Shutdown complete.")

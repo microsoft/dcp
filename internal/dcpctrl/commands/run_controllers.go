@@ -18,10 +18,10 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/internal/docker"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -75,14 +75,15 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 
 	// We need to make sure the API server is responding to requests before setting up the controllers
 	// as we can get connection refuesed errors during setup otherwise.
-	if _, err := resiliency.RetryGet(retryCtx, func() (interface{}, error) {
+	_, err = resiliency.RetryGet(retryCtx, func() (interface{}, error) {
 		var exeList apiv1.ExecutableList
-		if err := mgr.GetAPIReader().List(retryCtx, &exeList); err != nil {
-			return nil, err
+		if listErr := mgr.GetAPIReader().List(retryCtx, &exeList); listErr != nil {
+			return nil, listErr
 		}
 
 		return nil, nil
-	}); err != nil {
+	})
+	if err != nil {
 		log.Error(err, "unable to confirm the API server is responding")
 		return nil, err
 	}
@@ -113,7 +114,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		processExecutor := process.NewOSExecutor()
-		containerOrchestrator := docker.NewDockerCliOrchestrator(log.WithName("DockerOrchestrator"), processExecutor)
+		containerOrchestrator := containers.GetContainerOrchestrator(log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", containers.GetRuntimeFlagArg()), processExecutor)
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 		exeRunners[apiv1.ExecutionTypeProcess] = processRunner

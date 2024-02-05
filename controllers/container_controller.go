@@ -63,8 +63,9 @@ type runningContainerData struct {
 
 func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 	return &runningContainerData{
-		reservedPorts: make(map[types.NamespacedName]int32),
-		runSpec:       ctr.Spec.DeepCopy(),
+		newContainerID: getFailedContainerID(ctr.NamespacedName()),
+		reservedPorts:  make(map[types.NamespacedName]int32),
+		runSpec:        ctr.Spec.DeepCopy(),
 	}
 }
 
@@ -135,9 +136,8 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		watchingResources:      syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
 		lifetimeCtx:            lifetimeCtx,
+		Log:                    log,
 	}
-
-	r.Log = log.WithValues("Controller", containerFinalizer)
 
 	go r.onShutdown()
 
@@ -214,7 +214,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
 		// we need the container startup to finish, before attemptin to delete everything.
 		// Otherwise we will be left with a dangling container that no one owns.
-		log.Info("Container object is being deleted")
+		log.V(1).Info("Container object is being deleted")
 		r.deleteContainer(ctx, &container, log)
 		change = deleteFinalizer(&container, containerFinalizer, log)
 		r.releaseContainerWatch(&container, log)
@@ -303,11 +303,11 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(ctx context.Contex
 
 	// Check to see if we are connected to all the ContainerNetworks listed in the Container object spec
 	if len(connected) != len(*container.Spec.Networks) {
-		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.newContainerID, "Expected", len(*container.Spec.Networks), len(connected))
+		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.newContainerID, "Expected", len(*container.Spec.Networks), "Connected", len(connected))
 		return fmt.Errorf("container not connected to expected number of networks")
 	}
 
-	if _, err := r.orchestrator.StartContainers(ctx, []string{rcd.newContainerID}); err != nil {
+	if _, err = r.orchestrator.StartContainers(ctx, []string{rcd.newContainerID}); err != nil {
 		log.Error(err, "failed to start Container", "ContainerID", rcd.newContainerID)
 		// We failed to start the container, so record the error and schedule additional reconciliation
 		rcd.startupError = err
@@ -377,14 +377,14 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 					return additionalReconciliationNeeded
 				}
 
-				log.Info("container started", "ContainerID", rcd.newContainerID)
+				log.V(1).Info("container started", "ContainerID", rcd.newContainerID)
 				rcd.startAttemptFinishedAt = metav1.Now()
 				container.Status.State = apiv1.ContainerStateRunning
 				container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
 
 				return statusChanged
 			} else {
-				log.Info("container has started successfully", "ContainerID", rcd.newContainerID)
+				log.V(1).Info("container has started successfully", "ContainerID", rcd.newContainerID)
 
 				container.Status.State = apiv1.ContainerStateRunning
 				container.Status.StartupTimestamp = rcd.startAttemptFinishedAt
@@ -437,23 +437,23 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 				container.Status.FinishTimestamp = metav1.Now()
 				return statusChanged
 			} else if container.Spec.Networks != nil {
-				connected, err := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
-				if err != nil {
+				connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
+				if connectionErr != nil {
 					changed |= additionalReconciliationNeeded
 				}
 
-				found := true
+				networkFound := true
 				for _, network := range container.Status.Networks {
 					if !slices.Any(connected, func(n *apiv1.ContainerNetwork) bool {
 						return n.Name == network
 					}) {
-						found = false
+						networkFound = false
 						break
 					}
 				}
 
 				// If the set of connected networks has changed, update the Container object status
-				if !found || len(connected) != len(container.Status.Networks) {
+				if !networkFound || len(connected) != len(container.Status.Networks) {
 					container.Status.Networks = slices.Map[*apiv1.ContainerNetwork, string](connected, func(n *apiv1.ContainerNetwork) string {
 						return n.NamespacedName().String()
 					})
@@ -483,6 +483,103 @@ func (r *ContainerReconciler) findContainer(ctx context.Context, container strin
 	}
 
 	return &res[0], nil
+}
+
+// If we made it here, we need to attempt to start the container
+func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, containerName string, log logr.Logger, delay time.Duration) func(context.Context) {
+	return func(startupCtx context.Context) {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+
+		rcd, err := func() (*runningContainerData, error) {
+			log.V(1).Info("starting container", "image", container.Spec.Image)
+
+			var rcd = newRunningContainerData(container)
+
+			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
+			if err != nil {
+				if isTransientTemplateError(err) {
+					log.Info("could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
+				} else {
+					log.Error(err, "could not compute effective environment for the Container")
+				}
+
+				return rcd, err
+			}
+
+			err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
+			if err != nil {
+				if isTransientTemplateError(err) {
+					log.Info("could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
+				} else {
+					log.Error(err, "could not compute effective invocation arguments for the Container")
+				}
+
+				return rcd, err
+			}
+
+			var defaultNetwork string
+			if rcd.runSpec.Networks != nil {
+				defaultNetwork = "bridge"
+			}
+
+			containerID, err := r.orchestrator.CreateContainer(startupCtx, ct.CreateContainerOptions{ContainerSpec: *rcd.runSpec, Name: containerName, Network: defaultNetwork})
+			// There are errors that can still result in a valid container ID, so we need to store it if one was returned
+			rcd.newContainerID = containerID
+
+			if err != nil {
+				log.Error(err, "could not create the container")
+				return rcd, err
+			}
+			log.V(1).Info("container created", "ContainerID", containerID)
+
+			inspected, err := r.findContainer(startupCtx, containerID)
+			if err != nil {
+				log.Error(err, "could not inspect the container")
+				return rcd, err
+			}
+
+			rcd.runSpec.Env = maps.MapToSlice[string, string, apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
+				return apiv1.EnvVar{Name: key, Value: value}
+			})
+
+			if rcd.runSpec.Networks == nil {
+				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID})
+				if err != nil {
+					log.Error(err, "could not start the container", "ContainerID", containerID)
+					return rcd, err
+				}
+
+				log.V(1).Info("container started", "ContainerID", containerID)
+				rcd.startAttemptFinishedAt = metav1.Now()
+			} else {
+				for i := range inspected.Networks {
+					network := inspected.Networks[i].Id
+					// Containers are attached to a default network when created ("bridge" for Docker or "podman" for Podman). We need to detach
+					// from any initial networks here so that we can fully control the network connections.
+					err = r.orchestrator.DisconnectNetwork(startupCtx, ct.DisconnectNetworkOptions{Network: network, Container: containerID, Force: true})
+					if err != nil {
+						log.Error(err, "could not detach network from the container", "ContainerID", containerID, "Network", network)
+						return rcd, err
+					}
+				}
+			}
+
+			return rcd, nil
+		}()
+
+		if err != nil {
+			rcd.startupError = err
+			rcd.startAttemptFinishedAt = metav1.Now()
+		}
+
+		r.runningContainers.Store(rcd.newContainerID, container.NamespacedName(), rcd)
+		err = r.debouncer.ReconciliationNeeded(container.NamespacedName(), rcd.newContainerID, r.scheduleContainerReconciliation)
+		if err != nil {
+			log.Error(err, "could not schedule reconcilation for Container object")
+		}
+	}
 }
 
 func (r *ContainerReconciler) createContainer(ctx context.Context, container *apiv1.Container, log logr.Logger, delay time.Duration) error {
@@ -521,7 +618,7 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		}
 	}
 
-	log.Info("scheduling container start", "image", container.Spec.Image)
+	log.V(1).Info("scheduling container start", "image", container.Spec.Image)
 
 	if containerName == "" {
 		uniqueContainerName, err := MakeUniqueName(container.Name)
@@ -532,95 +629,8 @@ func (r *ContainerReconciler) createContainer(ctx context.Context, container *ap
 		containerName = uniqueContainerName
 	}
 
-	// If we made it here, we need to attempt to start the container
-	doStartContainer := func(startupCtx context.Context) {
-		if delay > 0 {
-			time.Sleep(delay)
-		}
+	err := r.startupQueue.Enqueue(r.doStartContainer(container, containerName, log, delay))
 
-		log.Info("starting container", "image", container.Spec.Image)
-
-		containerID := getFailedContainerID(container.NamespacedName())
-		var rcd = newRunningContainerData(container)
-
-		err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
-		if err != nil {
-			if isTransientTemplateError(err) {
-				log.Info("could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
-			} else {
-				log.Error(err, "could not compute effective environment for the Container")
-			}
-			rcd.startupError = err
-			rcd.startAttemptFinishedAt = metav1.Now()
-			goto finishStartupAttempt
-		}
-
-		err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
-		if err != nil {
-			if isTransientTemplateError(err) {
-				log.Info("could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
-			} else {
-				log.Error(err, "could not compute effective invocation arguments for the Container")
-			}
-			rcd.startupError = err
-			rcd.startAttemptFinishedAt = metav1.Now()
-			goto finishStartupAttempt
-		}
-
-		containerID, err = r.orchestrator.CreateContainer(ctx, ct.CreateContainerOptions{ContainerSpec: *rcd.runSpec, Name: containerName})
-		// There are errors that can still result in a valid container ID, so we need to store it if one was returned
-		rcd.newContainerID = containerID
-
-		if err != nil {
-			log.Error(err, "could not create the container")
-			rcd.startupError = err
-			rcd.startAttemptFinishedAt = metav1.Now()
-		} else {
-			log.Info("container created", "ContainerID", containerID)
-
-			if inspected, err := r.findContainer(ctx, containerName); err != nil {
-				log.Error(err, "could not inspect the container")
-				rcd.startupError = err
-				rcd.startAttemptFinishedAt = metav1.Now()
-				goto finishStartupAttempt
-			} else {
-				rcd.runSpec.Env = maps.MapToSlice[string, string, apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
-					return apiv1.EnvVar{Name: key, Value: value}
-				})
-			}
-
-			if rcd.runSpec.Networks == nil {
-				_, err := r.orchestrator.StartContainers(ctx, []string{containerID})
-				if err != nil {
-					log.Error(err, "could not start the container", "ContainerID", containerID)
-					rcd.startupError = err
-					rcd.startAttemptFinishedAt = metav1.Now()
-					goto finishStartupAttempt
-				} else {
-					log.Info("container started", "ContainerID", containerID)
-					rcd.startAttemptFinishedAt = metav1.Now()
-				}
-			} else {
-				// Docker attaches containers to the "bridge" network by default, so we need to detach it here
-				// since we intend to only connect to the networks specified in the Container object.
-				err := r.orchestrator.DisconnectNetwork(ctx, ct.DisconnectNetworkOptions{Network: "bridge", Container: containerID, Force: true})
-				if err != nil {
-					log.Error(err, "could not detach the 'bridge' network from the container", "ContainerID", containerID)
-					rcd.startupError = err
-					rcd.startAttemptFinishedAt = metav1.Now()
-				}
-			}
-		}
-
-	finishStartupAttempt:
-		r.runningContainers.Store(containerID, container.NamespacedName(), rcd)
-		err = r.debouncer.ReconciliationNeeded(container.NamespacedName(), containerID, r.scheduleContainerReconciliation)
-		if err != nil {
-			log.Error(err, "could not schedule reconcilation for Container object")
-		}
-	}
-
-	err := r.startupQueue.Enqueue(doStartContainer)
 	if err != nil {
 		log.Error(err, "container was not started because the workload is shutting down")
 		container.Status.State = apiv1.ContainerStateFailedToStart
@@ -680,9 +690,9 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 
 	for i, envVar := range rcd.runSpec.Env {
 		substitutionCtx := fmt.Sprintf("environment variable %s", envVar.Name)
-		effectiveValue, err := executeTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveValue, templateErr := executeTemplate(tmpl, ctr, envVar.Value, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 
 		rcd.runSpec.Env[i] = apiv1.EnvVar{Name: envVar.Name, Value: effectiveValue}
@@ -704,9 +714,9 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 
 	for i, arg := range rcd.runSpec.Args {
 		substitutionCtx := fmt.Sprintf("argument %d", i)
-		effectiveValue, err := executeTemplate(tmpl, ctr, arg, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveValue, templateErr := executeTemplate(tmpl, ctr, arg, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 
 		rcd.runSpec.Args[i] = effectiveValue
@@ -887,14 +897,14 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			},
 		}
 
-		if err := ctrl.SetControllerReference(container, connection, r.Scheme()); err != nil {
+		if err = ctrl.SetControllerReference(container, connection, r.Scheme()); err != nil {
 			log.Error(err, "failed to set owner for network connection",
 				"Container", container.NamespacedName().String(),
 				"Network", namespacedNetworkName.String(),
 			)
 		}
 
-		if err := r.Create(ctx, connection); err != nil {
+		if err = r.Create(ctx, connection); err != nil {
 			log.Error(err, "could not persist ContainerNetworkConnection object",
 				"Container", container.NamespacedName().String(),
 				"Network", namespacedNetworkName.String(),

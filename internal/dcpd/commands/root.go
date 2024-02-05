@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
@@ -11,6 +12,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -28,14 +30,13 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 	By default (no command specified), this executable runs the DCP API server.
 	`,
 		RunE: runApiServer(logger),
-		PersistentPostRun: func(_ *cobra.Command, _ []string) {
-			logger.Flush()
-		},
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	if cmd, _ := cmds.NewVersionCommand(logger); cmd != nil {
+	if cmd, err := cmds.NewVersionCommand(logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
+	} else {
 		rootCmd.AddCommand(cmd)
 	}
 
@@ -46,6 +47,7 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 
 	cmds.AddMonitorFlags(rootCmd)
 
+	containers.EnsureRuntimeFlag(rootCmd.PersistentFlags())
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 
 	klog.SetLogger(logger.V(1))

@@ -87,12 +87,18 @@ type CreateContainerOptions struct {
 	// Name of the container
 	Name string
 
+	// Name or ID of a network to connect to
+	Network string
+
 	apiv1.ContainerSpec
 }
 
 type RunContainerOptions struct {
 	// Name of the container
 	Name string
+
+	// Name or ID of a network to connect to
+	Network string
 
 	apiv1.ContainerSpec
 }

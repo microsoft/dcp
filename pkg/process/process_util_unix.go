@@ -31,7 +31,7 @@ func FindProcess(pid Pid_t) (*os.Process, error) {
 	}
 
 	// Check if the process actually exists for Unix systems
-	if err := process.Signal(syscall.Signal(0)); err != nil {
+	if err = process.Signal(syscall.Signal(0)); err != nil {
 		return nil, err
 	}
 

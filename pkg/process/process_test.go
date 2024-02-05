@@ -34,10 +34,10 @@ func TestRunCompleted(t *testing.T) {
 		// The command will wait for 300 ms and then exit with code 12.
 		cmd := exec.Command("./delay", "-d", "300ms", "-e", "12")
 		cmd.Dir = delayToolDir
-		exitCode, err := RunToCompletion(testCtx, executor, cmd)
+		exitCode, runErr := RunToCompletion(testCtx, executor, cmd)
 		exitInfoChan <- ProcessExitInfo{
 			ExitCode: exitCode,
-			Err:      err,
+			Err:      runErr,
 			PID:      UnknownPID,
 		}
 	}()
@@ -140,10 +140,10 @@ func TestRunCancelled(t *testing.T) {
 	ctx, cancelFn := context.WithCancel(context.Background())
 
 	go func() {
-		_, startWaitForExit, err := executor.StartProcess(ctx, cmd, onProcessExited)
+		_, startWaitForExit, processStartErr := executor.StartProcess(ctx, cmd, onProcessExited)
 		startupNotification := NewProcessExitInfo()
-		if err != nil {
-			startupNotification.Err = err
+		if processStartErr != nil {
+			startupNotification.Err = processStartErr
 			exitInfoChan <- startupNotification
 			return
 		} else {

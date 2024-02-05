@@ -46,11 +46,12 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 }
 
 type ideRunSessionRequest struct {
-	ProjectPath   string         `json:"project_path"`
-	Debug         bool           `json:"debug,omitempty"`
-	Env           []apiv1.EnvVar `json:"env,omitempty"`
-	Args          []string       `json:"args,omitempty"`
-	LaunchProfile string         `json:"launch_profile,omitempty"`
+	ProjectPath          string         `json:"project_path"`
+	Debug                bool           `json:"debug,omitempty"`
+	Env                  []apiv1.EnvVar `json:"env,omitempty"`
+	Args                 []string       `json:"args,omitempty"`
+	LaunchProfile        string         `json:"launch_profile,omitempty"`
+	DisableLaunchProfile bool           `json:"disable_launch_profile,omitempty"`
 }
 
 const (
@@ -60,6 +61,7 @@ const (
 	ideEndpointPortVar  = "DEBUG_SESSION_PORT"
 	ideEndpointTokenVar = "DEBUG_SESSION_TOKEN"
 
-	csharpProjectPathAnnotation   = "csharp-project-path"
-	csharpLaunchProfileAnnotation = "csharp-launch-profile"
+	csharpProjectPathAnnotation          = "csharp-project-path"
+	csharpLaunchProfileAnnotation        = "csharp-launch-profile"
+	csharpDisableLaunchProfileAnnotation = "csharp-disable-launch-profile"
 )

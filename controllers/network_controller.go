@@ -6,10 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -76,7 +78,6 @@ var (
 func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.NetworkOrchestrator) *NetworkReconciler {
 	r := NetworkReconciler{
 		Client:               client,
-		Log:                  log,
 		orchestrator:         orchestrator,
 		existingNetworks:     maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus](),
 		notifyNetworkChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
@@ -87,9 +88,8 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		watchingResources:    syncmap.Map[types.UID, bool]{},
 		lock:                 &sync.Mutex{},
 		lifetimeCtx:          lifetimeCtx,
+		Log:                  log,
 	}
-
-	r.Log = log.WithValues("Controller", networkFinalizer)
 
 	go r.onShutdown()
 
@@ -156,7 +156,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted")
 
-		err := r.deleteNetwork(ctx, &network, log)
+		err = r.deleteNetwork(ctx, &network, log)
 		if err != nil {
 			// deleteNetwork() logged the error already
 			change = additionalReconciliationNeeded
@@ -173,7 +173,15 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := saveChanges(r.Client, ctx, &network, patch, change, nil, log)
+	reconciliationDelay := additionalReconciliationDelay
+	if (change & additionalReconciliationNeeded) == 0 {
+		// Schedule followup reconciliation on a random delay between 10 to 20 seconds (to avoid stampedes).
+		// The goal is to enable periodic reconciliation polling.
+		reconciliationDelay = time.Duration(rand.Intn(10)+10) * time.Second
+		change |= additionalReconciliationNeeded
+	}
+
+	result, err := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &network, patch, change, reconciliationDelay, nil, log)
 	return result, err
 }
 

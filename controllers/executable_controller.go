@@ -61,9 +61,8 @@ func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Cli
 		runs:              maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, *runInfo](),
 		notifyRunChanged:  chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		debouncer:         newReconcilerDebouncer[RunID](reconciliationDebounceDelay),
+		Log:               log,
 	}
-
-	r.Log = log.WithValues("Controller", executableFinalizer)
 
 	return &r
 }
@@ -125,7 +124,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() && !exe.Starting() {
 		// Remove the finalizer if deletion has been requested and the Executable has completed initial startup
-		log.Info("Executable is being deleted...")
+		log.V(1).Info("Executable is being deleted...")
 		r.releaseExecutableResources(ctx, &exe, log)
 		change = deleteFinalizer(&exe, executableFinalizer, log)
 
@@ -566,9 +565,9 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 
 	for key, value := range envMap.Data() {
 		substitutionCtx := fmt.Sprintf("environment variable %s", key)
-		effectiveValue, err := executeTemplate(tmpl, exe, value, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveValue, templateErr := executeTemplate(tmpl, exe, value, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 		envMap.Set(key, effectiveValue)
 	}
@@ -594,9 +593,9 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 	effectiveArgs := make([]string, len(exe.Spec.Args))
 	for i, arg := range exe.Spec.Args {
 		substitutionCtx := fmt.Sprintf("argument %s", arg)
-		effectiveArg, err := executeTemplate(tmpl, exe, arg, substitutionCtx, log)
-		if err != nil {
-			return err
+		effectiveArg, templateErr := executeTemplate(tmpl, exe, arg, substitutionCtx, log)
+		if templateErr != nil {
+			return templateErr
 		}
 		effectiveArgs[i] = effectiveArg
 	}
@@ -754,7 +753,7 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) objectChange 
 	if changed != noChange {
 		exe.Status = status
 
-		log.Info("Executable run changed", "PropertiesChanged", DiffString(originalStatusRI, ri))
+		log.V(1).Info("Executable run changed", "PropertiesChanged", DiffString(originalStatusRI, ri))
 	}
 
 	return changed

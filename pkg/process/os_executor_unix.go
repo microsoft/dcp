@@ -70,8 +70,8 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 	defer cancelTimeout()
 
 	var waitFunc WaitFunc = func() error {
-		_, err := proc.Wait()
-		return err
+		_, waitErr := proc.Wait()
+		return waitErr
 	}
 
 	pid, err := IntToPidT(proc.Pid)

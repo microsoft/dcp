@@ -28,38 +28,38 @@ func TestExpectStringsSingleLine(t *testing.T) {
 	b := bytes.Buffer{}
 
 	// Empty output should produce error
-	require.Error(t, expectStrings(&b, []string{"foo"}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"foo"}))
 
 	b.WriteString("something\n else")
 	// Must expect something
-	require.Error(t, expectStrings(&b, []string{}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{}))
 	// Cannot expect empty string
-	require.Error(t, expectStrings(&b, []string{"something", ""}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"something", ""}))
 	b.Reset()
 
 	// Just the expected string
 	b.WriteString("foo")
-	require.NoError(t, expectStrings(&b, []string{"foo"}))
+	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo"}))
 	b.Reset()
 
 	// Expected string with some whitespace around it
 	b.WriteString(" foo   ")
-	require.NoError(t, expectStrings(&b, []string{"foo"}))
+	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo"}))
 	b.Reset()
 
 	// Expected string ending with line feed
 	b.WriteString(" foo\n\n")
-	require.NoError(t, expectStrings(&b, []string{"foo"}))
+	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo"}))
 	b.Reset()
 
 	// Expected string on the second line of text
 	b.WriteString("  \nfoo\n")
-	require.NoError(t, expectStrings(&b, []string{"foo"}))
+	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo"}))
 	b.Reset()
 
 	// Expected string does not match actual data (should fail)
 	b.WriteString("bar")
-	require.Error(t, expectStrings(&b, []string{"foo"}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"foo"}))
 	b.Reset()
 }
 
@@ -68,31 +68,31 @@ func TestExpectStringsMultiline(t *testing.T) {
 
 	// Expected strings, exactly
 	b.WriteString("foo\nbar \n  baz")
-	require.NoError(t, expectStrings(&b, []string{"foo", "bar", "baz"}))
+	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo", "bar", "baz"}))
 	b.Reset()
 
 	// Some, but not all strings match
 	// .. mismatch at the beginning
 	b.WriteString("foo\nbar \n  baz")
-	require.Error(t, expectStrings(&b, []string{"notFoo", "bar", "baz"}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"notFoo", "bar", "baz"}))
 	b.Reset()
 	// .. mismatch in the middle
 	b.WriteString("foo\nbar \n  baz")
-	require.Error(t, expectStrings(&b, []string{"foo", "notBar", "baz"}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"foo", "notBar", "baz"}))
 	b.Reset()
 	// .. mismatch at the end
 	b.WriteString("foo\nbar \n  baz")
-	require.Error(t, expectStrings(&b, []string{"foo", "bar", "notBaz"}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"foo", "bar", "notBaz"}))
 	b.Reset()
 
 	// Less data than expected
 	b.WriteString("foo\nbar")
-	require.Error(t, expectStrings(&b, []string{"foo", "bar", "baz"}))
+	require.Error(t, ct.ExpectCliStrings(&b, []string{"foo", "bar", "baz"}))
 	b.Reset()
 
 	// More data than expected is OK
 	b.WriteString("foo\nbar \n  baz")
-	require.NoError(t, expectStrings(&b, []string{"foo", "bar"}))
+	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo", "bar"}))
 	b.Reset()
 }
 
@@ -328,7 +328,7 @@ func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessag
 	}
 }
 
-func subscribe(t *testing.T, ctx context.Context, dco *DockerCliOrchestrator) (*ct.EventSubscription, <-chan ct.EventMessage) {
+func subscribe(t *testing.T, ctx context.Context, dco ct.ContainerOrchestrator) (*ct.EventSubscription, <-chan ct.EventMessage) {
 	const initialEventChannelCapacity = 5
 	evtC := chanx.NewUnboundedChan[ct.EventMessage](ctx, initialEventChannelCapacity)
 	sub, err := dco.WatchContainers(evtC.In)
