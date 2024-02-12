@@ -158,6 +158,16 @@ func getID() string {
 	return uuid.New().String()
 }
 
+func (to *TestOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	return containers.ContainerRuntimeStatus{
+		Installed: true,
+		Running:   true,
+	}
+}
+
 func (to *TestOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()

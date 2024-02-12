@@ -34,8 +34,17 @@ func NewRootCmd(logger logger.Logger) (*cobra.Command, error) {
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
-	if cmd, err := cmds.NewVersionCommand(logger); err != nil {
+	var err error
+	var cmd *cobra.Command
+
+	if cmd, err = cmds.NewVersionCommand(logger); err != nil {
 		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	if cmd, err = cmds.NewInfoCommand(logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'info' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}

@@ -7,6 +7,7 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
+	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -32,6 +33,12 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
+	if cmd, err = cmds.NewInfoCommand(log); err != nil {
+		return nil, fmt.Errorf("could not set up 'info' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
 	if cmd, err = NewGenerateFileCommand(log); err != nil {
 		return nil, fmt.Errorf("could not set up 'generate-file' command: %w", err)
 	} else {
@@ -49,6 +56,8 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
+
+	containers.EnsureRuntimeFlag(rootCmd.PersistentFlags())
 
 	log.AddLevelFlag(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(log.V(1))

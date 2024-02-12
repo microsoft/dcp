@@ -21,6 +21,12 @@ const (
 	ContainerStatusDead       ContainerStatus = "dead"
 )
 
+type ContainerRuntimeStatus struct {
+	Installed bool
+	Running   bool
+	Error     string
+}
+
 type InspectedContainerPortMapping map[string][]InspectedContainerHostPortConfig
 
 type InspectedContainerHostPortConfig struct {
@@ -105,6 +111,9 @@ type RunContainerOptions struct {
 
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
+	// Check the runtime status
+	CheckStatus(ctx context.Context) ContainerRuntimeStatus
+
 	// Create (but do not start) a container. If successful, the ID of the container is returned.
 	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)
 

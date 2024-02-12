@@ -36,7 +36,6 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 
 	kubeconfig.EnsureKubeconfigFlag(startApiSrvCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
-	containers.EnsureRuntimeFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")

@@ -64,6 +64,52 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return dco
 }
 
+func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+	// "system df" was recommended by a developer at Docker, Inc. as reasonable command for ensuring Docker wakes up
+	// from resource saver mode: https://github.com/dotnet/aspire/issues/2075#issuecomment-1935278570
+	cmd := makeDockerCommand(ctx, "system", "df")
+	_, stdErr, err := dco.runDockerCommand(ctx, "Info", cmd, ordinaryDockerCommandTimeout)
+
+	if errors.Is(err, exec.ErrNotFound) {
+		// Try to get the inner error if this is an exec.ErrNotFound error
+		if unwrapErr := errors.Unwrap(err); errors.Is(unwrapErr, exec.ErrNotFound) {
+			err = unwrapErr
+		}
+
+		// Couldn't find the Docker CLI, so it's not installed
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     err.Error(),
+		}
+	} else if err != nil {
+		var stdErrString string
+
+		// Prefer returning any stderr from the runtime command, but if that is empty, use the error message from the error object.
+		// The goal is to make it easy for users to diagnose underlying container runtime issues based on the error message.
+		if stdErr != nil {
+			stdErrString = strings.TrimSpace(stdErr.String())
+		}
+
+		if stdErrString == "" {
+			stdErrString = err.Error()
+		}
+
+		// Error response from the Docker command, assume runtime isn't available
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     stdErrString,
+		}
+	}
+
+	// Info command returned successfully, assume runtime is ready
+	return containers.ContainerRuntimeStatus{
+		Installed: true,
+		Running:   true,
+	}
+}
+
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	cmd := makeDockerCommand(ctx, "volume", "create", name)
 	outBuf, _, err := dco.runDockerCommand(ctx, "CreateVolume", cmd, ordinaryDockerCommandTimeout)

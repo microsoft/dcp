@@ -64,6 +64,50 @@ func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return pco
 }
 
+func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+	cmd := makePodmanCommand(ctx, "container", "ls", "--last", "1", "--quiet")
+	_, stdErr, err := pco.runPodmanCommand(ctx, "Info", cmd, ordinaryPodmanCommandTimeout)
+
+	if errors.Is(err, exec.ErrNotFound) {
+		// Try to get the inner error if this is an exec.ErrNotFound error
+		if unwrapErr := errors.Unwrap(err); errors.Is(unwrapErr, exec.ErrNotFound) {
+			err = unwrapErr
+		}
+
+		// Couldn't find the Podman CLI, so it's not installed
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     err.Error(),
+		}
+	} else if err != nil {
+		var stdErrString string
+
+		// Prefer returning any stderr from the runtime command, but if that is empty, use the error message from the error object.
+		// The goal is to make it easy for users to diagnose underlying container runtime issues based on the error message.
+		if stdErr != nil {
+			stdErrString = strings.TrimSpace(stdErr.String())
+		}
+
+		if stdErrString == "" {
+			stdErrString = err.Error()
+		}
+
+		// Error response from the Podman command, assume runtime isn't available
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     stdErrString,
+		}
+	}
+
+	// Info command returned successfully, assume runtime is ready
+	return containers.ContainerRuntimeStatus{
+		Installed: true,
+		Running:   true,
+	}
+}
+
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	cmd := makePodmanCommand(ctx, "volume", "create", name)
 	outBuf, _, err := pco.runPodmanCommand(ctx, "CreateVolume", cmd, ordinaryPodmanCommandTimeout)
