@@ -12,9 +12,9 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
+	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
-	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -40,6 +40,7 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
 
+	container_flags.EnsureRuntimeFlag(startApiSrvCmd.Flags())
 	cmds.AddMonitorFlags(startApiSrvCmd)
 
 	return startApiSrvCmd, nil
@@ -50,6 +51,11 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 		log := log.WithName("start-apiserver")
 
 		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
+
+		if err := container_flags.EnsureValidRuntimeFlagArgValue(); err != nil {
+			log.Error(err, fmt.Sprintf("invalid argument %s", container_flags.GetRuntimeFlag()))
+			return err
+		}
 
 		if detach {
 			args := make([]string, 0, len(os.Args)-2)
@@ -124,7 +130,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()), containers.GetRuntimeFlag(), containers.GetRuntimeFlagArg()}
+		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg()}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}

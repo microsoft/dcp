@@ -7,14 +7,15 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/pkg/containers"
+	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 func NewRootCommand(logger logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
-		Use:   "dcpctrl",
-		Short: "Runs standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
+		SilenceErrors: true,
+		Use:           "dcpctrl",
+		Short:         "Runs standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
 		Long: `DCP is a developer tool for running multi-service applications.
 
 	It integrates your code, emulators and containers to give you an development environment
@@ -35,16 +36,10 @@ func NewRootCommand(logger logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = cmds.NewInfoCommand(logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'info' command: %w", err)
-	} else {
-		rootCmd.AddCommand(cmd)
-	}
-
 	rootCmd.AddCommand(NewGetCapabilitiesCommand(logger))
 	rootCmd.AddCommand(NewRunControllersCommand(logger))
 
-	containers.EnsureRuntimeFlag(rootCmd.PersistentFlags())
+	container_flags.EnsureRuntimeFlag(rootCmd.PersistentFlags())
 
 	logger.AddLevelFlag(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(logger.V(1))

@@ -12,6 +12,7 @@ import (
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
+	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
@@ -44,6 +45,8 @@ This command currently supports only Azure CLI-enabled applications of certain t
 	kubeconfig.EnsureKubeconfigFlag(upCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(upCmd.Flags())
 
+	container_flags.EnsureRuntimeFlag(upCmd.Flags())
+
 	upCmd.Flags().StringVarP(&upFlags.appRootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	upCmd.Flags().StringVarP(&upFlags.renderer, "app-type", "", "", "Specifies the type of application to run, if the type cannot be inferred unambiguously.")
 
@@ -53,6 +56,11 @@ This command currently supports only Azure CLI-enabled applications of certain t
 func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log := log.WithName("up")
+
+		if err := container_flags.EnsureValidRuntimeFlagArgValue(); err != nil {
+			log.Error(err, fmt.Sprintf("invalid argument %s", container_flags.GetRuntimeFlag()))
+			return err
+		}
 
 		appRootDir := upFlags.appRootDir
 		var err error
