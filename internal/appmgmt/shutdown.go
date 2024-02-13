@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
@@ -113,6 +114,12 @@ func cleanupResourceBatch(
 		if _, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				clientObj := obj.(client.Object)
+				parent := metav1.GetControllerOf(clientObj)
+				if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
+					log.Info("Resource has a parent, which should handle cleanup", "resource", clientObj, "parent", parent)
+					return
+				}
+
 				initialResourceCounts.Add(1)
 				totalResources := totalResourceCounts.Add(1)
 				log.Info("Deleting resource", "resource", gvr, "total", totalResources)
