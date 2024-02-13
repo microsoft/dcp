@@ -48,7 +48,7 @@ type VersionOutput struct {
 	BuildTime  *MyTime `json:"buildTimestamp,omitempty"`
 }
 
-func Version() *VersionOutput {
+func Version() VersionOutput {
 	var buildTime time.Time
 	if BuildTimestamp != "" {
 		if parsedTimestamp, err := strconv.ParseInt(BuildTimestamp, 10, 32); err == nil {
@@ -60,7 +60,7 @@ func Version() *VersionOutput {
 		ProductVersion = defaultVersion
 	}
 
-	return &VersionOutput{
+	return VersionOutput{
 		Version:    ProductVersion,
 		CommitHash: CommitHash,
 		BuildTime:  &MyTime{&buildTime},

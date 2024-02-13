@@ -18,10 +18,10 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
+	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
-	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -114,7 +114,10 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		processExecutor := process.NewOSExecutor()
-		containerOrchestrator := containers.GetContainerOrchestrator(log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", containers.GetRuntimeFlagArg()), processExecutor)
+		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), processExecutor)
+		if orchestratorErr != nil {
+			return err
+		}
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 		exeRunners[apiv1.ExecutionTypeProcess] = processRunner

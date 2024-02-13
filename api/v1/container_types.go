@@ -368,7 +368,7 @@ func (cl *ContainerList) GetItems() []ctrl_client.Object {
 
 func init() {
 	SchemeBuilder.Register(&Container{}, &ContainerList{})
-	SetCleanupPriority(&Container{}, 10)
+	SetCleanupPriority(&Container{}, 100)
 }
 
 // Ensure types support interfaces expected by our API server

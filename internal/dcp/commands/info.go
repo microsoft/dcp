@@ -6,8 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/microsoft/usvc-apiserver/internal/containers"
+	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/version"
-	"github.com/microsoft/usvc-apiserver/pkg/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -21,6 +22,8 @@ func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 		Args:  cobra.NoArgs,
 	}
 
+	container_flags.EnsureRuntimeFlag(infoCmd.PersistentFlags())
+
 	return infoCmd, nil
 }
 
@@ -32,8 +35,8 @@ type containerRuntime struct {
 }
 
 type information struct {
-	Version    *version.VersionOutput `json:",inline"`
-	Containers containerRuntime       `json:"containers"`
+	version.VersionOutput `json:",inline"`
+	Containers            containerRuntime `json:"containers"`
 }
 
 func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
@@ -43,12 +46,22 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 
 		processExecutor := process.NewOSExecutor()
-		status := containers.GetContainerOrchestrator(log, processExecutor).CheckStatus(ctx)
+		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(log, processExecutor)
+		var status containers.ContainerRuntimeStatus
+		if orchestratorErr != nil {
+			status = containers.ContainerRuntimeStatus{
+				Installed: false,
+				Running:   false,
+				Error:     orchestratorErr.Error(),
+			}
+		} else {
+			status = containerOrchestrator.CheckStatus(ctx)
+		}
 
 		info := information{
-			Version: version.Version(),
+			VersionOutput: version.Version(),
 			Containers: containerRuntime{
-				Runtime:   containers.GetRuntimeFlagArg(),
+				Runtime:   container_flags.GetRuntimeFlagArg(),
 				Installed: status.Installed,
 				Running:   status.Running,
 				Error:     status.Error,

@@ -294,7 +294,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 	} else {
 		log.V(1).Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
 		for _, exe := range childExecutables.Items {
-			if err = r.Delete(ctx, &exe); err != nil {
+			if err = r.Delete(ctx, &exe); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "failed to delete inactive child Executable object", "exe", exe)
 			}
 		}
