@@ -114,9 +114,9 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		processExecutor := process.NewOSExecutor()
-		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), processExecutor)
+		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), processExecutor)
 		if orchestratorErr != nil {
-			return err
+			return orchestratorErr
 		}
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)

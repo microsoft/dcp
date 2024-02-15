@@ -265,7 +265,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-			log.Error(err, "run session could not be started", "Status", resp.Status, "Body", respBody)
+			log.Error(err, "run session could not be started", "Status", resp.Status, "Body", string(respBody))
 			reportStartupFailure() // The IDE refused to run this Executable
 			return
 		}
@@ -355,7 +355,7 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	}
 
 	respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, respBody)
+	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, string(respBody))
 }
 
 func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, error) {

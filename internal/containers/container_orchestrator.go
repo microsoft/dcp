@@ -27,6 +27,10 @@ type ContainerRuntimeStatus struct {
 	Error     string
 }
 
+func (crs ContainerRuntimeStatus) IsRunning() bool {
+	return crs.Installed && crs.Running
+}
+
 type InspectedContainerPortMapping map[string][]InspectedContainerHostPortConfig
 
 type InspectedContainerHostPortConfig struct {

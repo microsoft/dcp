@@ -52,18 +52,28 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
 
-		if err := container_flags.EnsureValidRuntimeFlagArgValue(); err != nil {
-			log.Error(err, fmt.Sprintf("invalid argument %s", container_flags.GetRuntimeFlag()))
+		processExecutor := process.NewOSExecutor()
+		if err := container_flags.EnsureValidRuntimeFlagArgValue(ctx, log, processExecutor); err != nil {
+			log.Error(err, "invalid container runtime")
 			return err
 		}
 
 		if detach {
 			args := make([]string, 0, len(os.Args)-2)
 
+			hasContainerRuntimeFlag := false
 			for _, arg := range os.Args[1:] {
 				if arg != "--detach" {
 					args = append(args, arg)
 				}
+
+				if arg == container_flags.GetRuntimeFlag() {
+					hasContainerRuntimeFlag = true
+				}
+			}
+
+			if !hasContainerRuntimeFlag {
+				args = append(args, container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg())
 			}
 
 			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)

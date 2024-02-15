@@ -65,49 +65,89 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 }
 
 func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
-	// "system df" was recommended by a developer at Docker, Inc. as reasonable command for ensuring Docker wakes up
-	// from resource saver mode: https://github.com/dotnet/aspire/issues/2075#issuecomment-1935278570
-	cmd := makeDockerCommand(ctx, "system", "df")
-	_, stdErr, err := dco.runDockerCommand(ctx, "Info", cmd, ordinaryDockerCommandTimeout)
+	// Check the status of the Docker runtime
+	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
+	go func() {
+		// "system df" was recommended by a developer at Docker, Inc. as reasonable command for ensuring Docker wakes up
+		// from resource saver mode: https://github.com/dotnet/aspire/issues/2075#issuecomment-1935278570
+		cmd := makeDockerCommand(ctx, "system", "df")
+		_, stdErr, err := dco.runDockerCommand(ctx, "Status", cmd, ordinaryDockerCommandTimeout)
 
-	if errors.Is(err, exec.ErrNotFound) {
-		// Try to get the inner error if this is an exec.ErrNotFound error
-		if unwrapErr := errors.Unwrap(err); errors.Is(unwrapErr, exec.ErrNotFound) {
-			err = unwrapErr
+		if errors.Is(err, exec.ErrNotFound) {
+			// Try to get the inner error if this is an exec.ErrNotFound error
+			if unwrapErr := errors.Unwrap(err); errors.Is(unwrapErr, exec.ErrNotFound) {
+				err = unwrapErr
+			}
+
+			// Couldn't find the Docker CLI, so it's not installed
+			statusCh <- containers.ContainerRuntimeStatus{
+				Installed: false,
+				Running:   false,
+				Error:     err.Error(),
+			}
+		} else if err != nil {
+			var stdErrString string
+
+			// Prefer returning any stderr from the runtime command, but if that is empty, use the error message from the error object.
+			// The goal is to make it easy for users to diagnose underlying container runtime issues based on the error message.
+			if stdErr != nil {
+				stdErrString = strings.TrimSpace(stdErr.String())
+			}
+
+			if stdErrString == "" {
+				stdErrString = err.Error()
+			}
+
+			// Error response from the Docker command, assume runtime isn't available
+			statusCh <- containers.ContainerRuntimeStatus{
+				Installed: true,
+				Running:   false,
+				Error:     stdErrString,
+			}
 		}
 
-		// Couldn't find the Docker CLI, so it's not installed
-		return containers.ContainerRuntimeStatus{
-			Installed: false,
-			Running:   false,
-			Error:     err.Error(),
-		}
-	} else if err != nil {
-		var stdErrString string
-
-		// Prefer returning any stderr from the runtime command, but if that is empty, use the error message from the error object.
-		// The goal is to make it easy for users to diagnose underlying container runtime issues based on the error message.
-		if stdErr != nil {
-			stdErrString = strings.TrimSpace(stdErr.String())
-		}
-
-		if stdErrString == "" {
-			stdErrString = err.Error()
-		}
-
-		// Error response from the Docker command, assume runtime isn't available
-		return containers.ContainerRuntimeStatus{
+		// Info command returned successfully, assume runtime is ready
+		statusCh <- containers.ContainerRuntimeStatus{
 			Installed: true,
-			Running:   false,
-			Error:     stdErrString,
+			Running:   true,
 		}
+	}()
+
+	// Some users create a "docker" alias to different runtimes, try to detect that case
+	isDockerCh := make(chan bool, 1)
+	go func() {
+		cmd := makeDockerCommand(ctx, "info", "--format", "{{json .}}")
+		outBuf, _, err := dco.runDockerCommand(ctx, "AliasDetection", cmd, ordinaryDockerCommandTimeout)
+		if err != nil || outBuf == nil {
+			// Failed to run the command, or got no output. This is probably not a valid Docker runtime.
+			isDockerCh <- false
+		}
+
+		var info dockerInfo
+		if err = json.Unmarshal(outBuf.Bytes(), &info); err != nil {
+			// Didn't get valid JSON, this is probably not a valid Docker runtime.
+			isDockerCh <- false
+		}
+
+		if info.DockerRootDir == "" {
+			// Docker info should include DockerRootDir, this is probably a different runtime.
+			isDockerCh <- false
+		}
+
+		// Looks like a valid Docker runtime
+		isDockerCh <- true
+	}()
+
+	status := <-statusCh
+	isDocker := <-isDockerCh
+
+	if status.Installed && status.Running && !isDocker {
+		status.Installed = false
+		status.Running = false
+		status.Error = "docker command appears to be aliased to a different container runtime"
 	}
 
-	// Info command returned successfully, assume runtime is ready
-	return containers.ContainerRuntimeStatus{
-		Installed: true,
-		Running:   true,
-	}
+	return status
 }
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
@@ -743,6 +783,10 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 	}
 
 	return nil
+}
+
+type dockerInfo struct {
+	DockerRootDir string `json:"DockerRootDir,omitempty"`
 }
 
 // dockerInspectedContainerXxx correspond to data returned by "docker container inspect" command.

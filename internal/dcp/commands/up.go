@@ -19,6 +19,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -57,11 +58,6 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log := log.WithName("up")
 
-		if err := container_flags.EnsureValidRuntimeFlagArgValue(); err != nil {
-			log.Error(err, fmt.Sprintf("invalid argument %s", container_flags.GetRuntimeFlag()))
-			return err
-		}
-
 		appRootDir := upFlags.appRootDir
 		var err error
 		if appRootDir == "" {
@@ -79,6 +75,14 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 
 		commandCtx, cancelCommandCtx := context.WithCancel(kubeapiserver.SetupSignalContext())
 		defer cancelCommandCtx()
+
+		// Ensure a valid container runtime is available
+		processExecutor := process.NewOSExecutor()
+		err = container_flags.EnsureValidRuntimeFlagArgValue(commandCtx, log, processExecutor)
+		if err != nil {
+			log.Error(err, "invalid container runtime")
+			return err
+		}
 
 		err = perftrace.CaptureStartupProfileIfRequested(commandCtx, log)
 		if err != nil {
