@@ -63,6 +63,24 @@ const (
 	ExecutionTypeIDE ExecutionType = "IDE"
 )
 
+type EnvironmentBehavior string
+
+const (
+	// The executable will inherit the environment of the controller process.
+	// This is the default behavior.
+	EnvironmentBehaviorInherit EnvironmentBehavior = "Inherit"
+
+	// The executable will not inherit the environment of the controller process.
+	EnvironmentBehaviorDoNotInherit EnvironmentBehavior = "DoNotInherit"
+)
+
+// +k8s:openapi-gen=true
+type AmbientEnvironment struct {
+	// How environment variables should be inherited from the controller process.
+	// +kubebuilder:default:=Inherit
+	Behavior EnvironmentBehavior `json:"behavior,omitempty"`
+}
+
 // +k8s:openapi-gen=true
 type ExecutableTemplate struct {
 	// Labels to apply to child Executable objects
@@ -101,9 +119,8 @@ type ExecutableSpec struct {
 	// +kubebuilder:default:=Process
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
 
-	// Whether the executable should inherit the environment of the controller process.
-	// +kubebuilder:default:=false
-	DoNotInheritEnvironment bool `json:"doNotInheritEnvironment,omitempty"`
+	// Controls behavior of environment variables inherited from the controller process.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Should the controller attempt to stop the Executable
 	// +kubebuilder:default:=false

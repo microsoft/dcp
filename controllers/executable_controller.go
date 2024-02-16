@@ -537,11 +537,15 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
 	}
 
-	if !exe.Spec.DoNotInheritEnvironment {
+	if exe.Spec.AmbientEnvironment.Behavior == "" || exe.Spec.AmbientEnvironment.Behavior == apiv1.EnvironmentBehaviorInherit {
 		envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
 			parts := strings.SplitN(envStr, "=", 2)
 			return parts[0], parts[1]
 		}))
+	} else if exe.Spec.AmbientEnvironment.Behavior == apiv1.EnvironmentBehaviorDoNotInherit {
+		// Noop
+	} else {
+		return fmt.Errorf("unknown environment behavior: %s", exe.Spec.AmbientEnvironment.Behavior)
 	}
 
 	// Add environment variables from .env files.

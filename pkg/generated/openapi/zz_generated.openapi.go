@@ -17,6 +17,7 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
+		"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment":               schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
@@ -104,6 +105,25 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                                    schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
 		"k8s.io/apimachinery/pkg/runtime.Unknown":                                     schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
 		"k8s.io/apimachinery/pkg/version.Info":                                        schema_k8sio_apimachinery_pkg_version_Info(ref),
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"behavior": {
+						SchemaProps: spec.SchemaProps{
+							Description: "How environment variables should be inherited from the controller process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -1551,11 +1571,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 							Format:      "",
 						},
 					},
-					"doNotInheritEnvironment": {
+					"ambientEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Whether the executable should inherit the environment of the controller process.",
-							Type:        []string{"boolean"},
-							Format:      "",
+							Description: "Controls behavior of environment variables inherited from the controller process.",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment"),
 						},
 					},
 					"stop": {
@@ -1570,7 +1590,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+			"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
 	}
 }
 
