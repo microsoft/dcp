@@ -75,9 +75,10 @@ spec:
                 default: Process
                 description: The execution type for the Executable.
                 type: string
-              inheritAmbientEnvironment:
+              inheritEnvironment:
                 default: true
-                description: Options on how to handle ambient environment variables
+                description: Whether the executable should inherit the environment
+                  of the controller process.
                 type: boolean
               stop:
                 default: false

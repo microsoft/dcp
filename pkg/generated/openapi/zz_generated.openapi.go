@@ -1551,9 +1551,9 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 							Format:      "",
 						},
 					},
-					"inheritAmbientEnvironment": {
+					"inheritEnvironment": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Options on how to handle ambient environment variables",
+							Description: "Whether the executable should inherit the environment of the controller process.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

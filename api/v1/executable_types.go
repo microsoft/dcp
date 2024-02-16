@@ -101,9 +101,9 @@ type ExecutableSpec struct {
 	// +kubebuilder:default:=Process
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
 
-	// Options on how to handle ambient environment variables
+	// Whether the executable should inherit the environment of the controller process.
 	// +kubebuilder:default:=true
-	InheritAmbientEnvironment bool `json:"inheritAmbientEnvironment,omitempty"`
+	InheritEnvironment bool `json:"inheritEnvironment,omitempty"`
 
 	// Should the controller attempt to stop the Executable
 	// +kubebuilder:default:=false

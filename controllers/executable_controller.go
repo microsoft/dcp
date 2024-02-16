@@ -537,10 +537,12 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
 	}
 
-	envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
-		parts := strings.SplitN(envStr, "=", 2)
-		return parts[0], parts[1]
-	}))
+	if exe.Spec.InheritEnvironment {
+		envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
+			parts := strings.SplitN(envStr, "=", 2)
+			return parts[0], parts[1]
+		}))
+	}
 
 	// Add environment variables from .env files.
 	if len(exe.Spec.EnvFiles) > 0 {
