@@ -35,6 +35,16 @@ spec:
           spec:
             description: ExecutableSpec defines the desired state of an Executable
             properties:
+              ambientEnvironment:
+                description: Controls behavior of environment variables inherited
+                  from the controller process.
+                properties:
+                  behavior:
+                    default: Inherit
+                    description: How environment variables should be inherited from
+                      the controller process.
+                    type: string
+                type: object
               args:
                 description: Launch arguments to be passed to the Executable
                 items:

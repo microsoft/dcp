@@ -63,6 +63,24 @@ const (
 	ExecutionTypeIDE ExecutionType = "IDE"
 )
 
+type EnvironmentBehavior string
+
+const (
+	// The executable will inherit the environment of the controller process.
+	// This is the default behavior.
+	EnvironmentBehaviorInherit EnvironmentBehavior = "Inherit"
+
+	// The executable will not inherit the environment of the controller process.
+	EnvironmentBehaviorDoNotInherit EnvironmentBehavior = "DoNotInherit"
+)
+
+// +k8s:openapi-gen=true
+type AmbientEnvironment struct {
+	// How environment variables should be inherited from the controller process.
+	// +kubebuilder:default:=Inherit
+	Behavior EnvironmentBehavior `json:"behavior,omitempty"`
+}
+
 // +k8s:openapi-gen=true
 type ExecutableTemplate struct {
 	// Labels to apply to child Executable objects
@@ -100,6 +118,9 @@ type ExecutableSpec struct {
 	// The execution type for the Executable.
 	// +kubebuilder:default:=Process
 	ExecutionType ExecutionType `json:"executionType,omitempty"`
+
+	// Controls behavior of environment variables inherited from the controller process.
+	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
 	// Should the controller attempt to stop the Executable
 	// +kubebuilder:default:=false
@@ -215,6 +236,12 @@ func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	// TODO: implement validation https://github.com/microsoft/usvc-stdtypes/issues/2
 	errorList := field.ErrorList{}
 
+	if e.Spec.AmbientEnvironment.Behavior != "" &&
+		e.Spec.AmbientEnvironment.Behavior != EnvironmentBehaviorInherit &&
+		e.Spec.AmbientEnvironment.Behavior != EnvironmentBehaviorDoNotInherit {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "ambientEnvironment", "behavior"), e.Spec.AmbientEnvironment.Behavior, "Ambient environment behavior must be either Inherit or DoNotInherit."))
+	}
+
 	return errorList
 }
 
@@ -224,6 +251,10 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 	oldExe := obj.(*Executable)
 	if oldExe.Spec.Stop && e.Spec.Stop != oldExe.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	if oldExe.Spec.AmbientEnvironment.Behavior != e.Spec.AmbientEnvironment.Behavior {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "ambientEnvironment", "behavior"), "Cannot change ambient environment behavior once it is set."))
 	}
 
 	return errorList

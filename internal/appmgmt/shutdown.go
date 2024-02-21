@@ -50,15 +50,6 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		return err
 	}
 
-	factory := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 5*time.Second)
-	defer factory.Shutdown()
-
-	// The context for the informers needs to have it's defer cancellation registered AFTER
-	// the call to defer factory.Shutdown() or shutdown will block and the informers won't
-	// be terminated.
-	informerCtx, informerCtxCancel := context.WithCancel(shutdownCtx)
-	defer informerCtxCancel()
-
 	currentWeight := apiv1.CleanupResources[0].Weight
 	batchIndex := 0
 	resourceBatches := [][]*apiv1.WeightedResource{}
@@ -70,6 +61,7 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		}
 
 		if resource.Weight != currentWeight {
+			currentWeight = resource.Weight
 			batchIndex += 1
 		}
 
@@ -85,7 +77,7 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 
 	for _, resourceBatch := range resourceBatches {
 		log.Info("Cleaning up resource batch", "weight", resourceBatch[0].Weight, "length", len(resourceBatch))
-		if err = cleanupResourceBatch(informerCtx, dcpclient, factory, resourceBatch, log); err != nil {
+		if err = cleanupResourceBatch(shutdownCtx, dcpclient, dynamicClient, resourceBatch, log); err != nil {
 			return err
 		}
 	}
@@ -96,49 +88,59 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 func cleanupResourceBatch(
 	ctx context.Context,
 	dcpclient client.Client,
-	factory dynamicinformer.DynamicSharedInformerFactory,
+	dynamicClient *dynamic.DynamicClient,
 	batch []*apiv1.WeightedResource,
 	log logr.Logger,
 ) error {
+	if err := ctx.Err(); err != nil {
+		log.Info("context cancelled, skipping cleanup batch")
+		return err
+	}
+
+	factory := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClient, 20*time.Second)
+	defer factory.Shutdown()
+
+	// The context for the informers needs to have it's defer cancellation registered AFTER
+	// the call to defer factory.Shutdown() or shutdown will block and the informers won't
+	// be terminated.
 	cleanupCtx, cleanupCtxCancel := context.WithCancel(ctx)
 	defer cleanupCtxCancel()
 
 	initialResourceCounts := &atomic.Int32{}
 	totalResourceCounts := &atomic.Int32{}
 
+	cacheSyncCh := make(chan struct{})
 	for _, resource := range batch {
 		gvr := resource.Object.GetGroupVersionResource()
 		informer := factory.ForResource(gvr)
 
-		log.Info("Shutting down resource", "resource", gvr)
+		log.Info("shutting down resource", "resource", gvr)
 		if _, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj interface{}) {
 				clientObj := obj.(client.Object)
-				parent := metav1.GetControllerOf(clientObj)
-				if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
-					log.Info("Resource has a parent, which should handle cleanup", "resource", clientObj, "parent", parent)
-					return
-				}
-
 				initialResourceCounts.Add(1)
 				totalResources := totalResourceCounts.Add(1)
-				log.Info("Deleting resource", "resource", gvr, "total", totalResources)
-				if err := dcpclient.Delete(ctx, clientObj); err != nil {
-					log.Error(err, "could not delete resource", "resource", clientObj)
-				}
-			},
-			DeleteFunc: func(obj interface{}) {
-				clientObj := obj.(client.Object)
+
 				parent := metav1.GetControllerOf(clientObj)
 				if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
-					log.Info("Resource has a parent, ignoring")
+					log.Info("resource has a parent, which should handle cleanup", "resource", clientObj, "parent", parent)
 					return
 				}
 
+				go func(resourceNum int32) {
+					<-cacheSyncCh
+					log.Info("deleting resource", "resource", gvr, "total", resourceNum)
+					if err := dcpclient.Delete(ctx, clientObj, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+						log.Error(err, "could not delete resource", "resource", clientObj)
+					}
+				}(totalResources)
+			},
+			DeleteFunc: func(obj interface{}) {
 				totalResources := totalResourceCounts.Add(-1)
-				log.Info("Resource removed", "resource", gvr, "total", totalResources)
+				log.Info("resource deleted", "resource", gvr, "total", totalResources)
 
 				if totalResources <= 0 {
+					log.Info("all resources in batch deleted", "resources", totalResources)
 					cleanupCtxCancel()
 				}
 			},
@@ -147,12 +149,14 @@ func cleanupResourceBatch(
 		}
 	}
 
-	factory.Start(ctx.Done())
-	_ = factory.WaitForCacheSync(ctx.Done())
+	factory.Start(cleanupCtx.Done())
+	_ = factory.WaitForCacheSync(cleanupCtx.Done())
+	close(cacheSyncCh)
 
 	count := initialResourceCounts.Load()
-	log.Info("Waiting for resource batch to be deleted", "initialCount", count)
+	log.Info("waiting for resource batch to be deleted", "initialCount", count)
 	if count <= 0 {
+		log.Info("no resources in batch")
 		cleanupCtxCancel()
 	}
 

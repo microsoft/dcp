@@ -51,19 +51,19 @@ func stopTestEnvironment() error {
 
 	// Skip the first child, which is the current process.
 	for _, childPID := range chlidren[1:] {
-		exeName, err := getProcessExeName(uint32(childPID))
-		if err != nil {
-			return fmt.Errorf("failed to get executable name for process %d: %w", childPID, err)
+		exeName, procQueryErr := getProcessExeName(uint32(childPID))
+		if procQueryErr != nil {
+			return fmt.Errorf("failed to get executable name for process %d: %w", childPID, procQueryErr)
 		}
 
 		if slices.Contains(testEnvProcesses, exeName) {
-			process, err := os.FindProcess(int(childPID))
-			if err != nil {
-				return fmt.Errorf("failed to look up process %s (PID %d): %w", exeName, childPID, err)
+			process, procFindErr := os.FindProcess(int(childPID))
+			if procFindErr != nil {
+				return fmt.Errorf("failed to look up process %s (PID %d): %w", exeName, childPID, procFindErr)
 			}
-			err = process.Kill()
-			if err != nil {
-				return fmt.Errorf("failed to kill process %s (PID %d): %w", exeName, childPID, err)
+			procKillErr := process.Kill()
+			if procKillErr != nil {
+				return fmt.Errorf("failed to kill process %s (PID %d): %w", exeName, childPID, procKillErr)
 			}
 		}
 	}

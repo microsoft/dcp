@@ -301,7 +301,7 @@ endif
 
 ifeq ($(detected_OS),windows)
 define run-tests
-$$env:KUBEBUILDER_ASSETS = "$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)"; go test ./... $(TEST_OPTS); $$env:KUBEBUILDER_ASSETS = $$null
+$$env:KUBEBUILDER_ASSETS = "$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)"; go test ./... $(TEST_OPTS)
 endef
 else
 define run-tests

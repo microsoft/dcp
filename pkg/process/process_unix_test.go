@@ -44,7 +44,7 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 	// Only one process should be running, so the "tree" size is 1.
 	ensureProcessTree(t, pid, 1, 5*time.Second)
 
-	executor := NewOSExecutor()
+	executor := NewOSExecutor(log)
 	start := time.Now()
 	err = executor.StopProcess(pid)
 	require.NoError(t, err)

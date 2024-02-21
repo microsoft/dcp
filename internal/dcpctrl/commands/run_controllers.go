@@ -59,7 +59,8 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	// Depending on the usage pattern, the API server may not be available immediately.
 	// Do some retries with exponential back-off before giving up
 	mgr, err := resiliency.RetryGet(retryCtx, func() (ctrl_manager.Manager, error) {
-		return ctrlruntime.NewManager(ctrlruntime.GetConfigOrDie(), ctrlruntime.Options{
+		config := ctrlruntime.GetConfigOrDie()
+		return ctrlruntime.NewManager(config, ctrlruntime.Options{
 			Scheme:         scheme,
 			LeaderElection: false,
 			Metrics: metricsserver.Options{
@@ -113,7 +114,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			return fmt.Errorf("failed to initialize the controller manager: %w", err)
 		}
 
-		processExecutor := process.NewOSExecutor()
+		processExecutor := process.NewOSExecutor(log)
 		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), processExecutor)
 		if orchestratorErr != nil {
 			return orchestratorErr

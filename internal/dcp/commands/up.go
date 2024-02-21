@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
@@ -77,7 +78,7 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		defer cancelCommandCtx()
 
 		// Ensure a valid container runtime is available
-		processExecutor := process.NewOSExecutor()
+		processExecutor := process.NewOSExecutor(log)
 		err = container_flags.EnsureValidRuntimeFlagArgValue(commandCtx, log, processExecutor)
 		if err != nil {
 			log.Error(err, "invalid container runtime")
@@ -89,12 +90,12 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 			log.Error(err, "failed to capture startup profile")
 		}
 
-		allExtensions, err := bootstrap.GetExtensions(commandCtx)
+		allExtensions, err := bootstrap.GetExtensions(commandCtx, log)
 		if err != nil {
 			return err
 		}
 
-		effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, allExtensions)
+		effRenderer, err := getEffectiveRenderer(commandCtx, appRootDir, allExtensions, log)
 		if err != nil {
 			return err
 		}
@@ -102,7 +103,7 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		runEvtHandlers := bootstrap.DcpRunEventHandlers{
 			AfterApiSrvStart: func() error {
 				// Start the application
-				renderErr := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath)
+				renderErr := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath, log)
 				return renderErr
 			},
 			BeforeApiSrvShutdown: func() error {
@@ -143,7 +144,7 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 // C1. If there are no renderers that can render, error, giving all the reasons why renderes cannot render.
 // C2. If there is only one renderer that can render, use it.
 // C3. If there are multiple renderers that can render, error, giving the list of renderers that can render.
-func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions []bootstrap.DcpExtension) (bootstrap.DcpExtension, error) {
+func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions []bootstrap.DcpExtension, log logr.Logger) (bootstrap.DcpExtension, error) {
 	renderers := slices.Select(allExtensions, func(ext bootstrap.DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability)
 	})
@@ -168,7 +169,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 
 		candidate := matching[0]
 
-		canRenderResponse, err := candidate.CanRender(ctx, appRootDir)
+		canRenderResponse, err := candidate.CanRender(ctx, appRootDir, log)
 		if err != nil {
 			return bootstrap.DcpExtension{}, err // Unexpected error: the extension should be able to tell us whether it can render or not.
 		}
@@ -183,7 +184,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 	} else {
 		// C. The user has not specified a renderer.
 		// Need to gather responses to "can-render" from all available renderers.
-		responses, err := whoCanRender(ctx, renderers, appRootDir)
+		responses, err := whoCanRender(ctx, renderers, appRootDir, log)
 		if err != nil {
 			return bootstrap.DcpExtension{}, err // Unexpected error: all extension should be able to tell us whether it can render or not.
 		}
@@ -219,7 +220,7 @@ func getEffectiveRenderer(ctx context.Context, appRootDir string, allExtensions 
 // Returns a map of renderer index to CanRenderResponse.
 // The index refers to the passed-in renderers slice.
 // Only renderers that gave valid response (i.e. no error occurred) are included in the map.
-func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRootDir string) (map[int]extensions.CanRenderResponse, error) {
+func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRootDir string, log logr.Logger) (map[int]extensions.CanRenderResponse, error) {
 	const concurrency = uint16(4) // How many renderers to interrogate in parallel.
 	type rendererResponseWithErr struct {
 		Response extensions.CanRenderResponse
@@ -229,7 +230,7 @@ func whoCanRender(ctx context.Context, renderers []bootstrap.DcpExtension, appRo
 	rendererResponses := slices.MapConcurrent[bootstrap.DcpExtension, rendererResponseWithErr](
 		renderers,
 		func(r bootstrap.DcpExtension) rendererResponseWithErr {
-			resp, err := r.CanRender(ctx, appRootDir)
+			resp, err := r.CanRender(ctx, appRootDir, log)
 			return rendererResponseWithErr{resp, err}
 		}, concurrency)
 

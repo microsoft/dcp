@@ -737,7 +737,7 @@ func (r *ContainerReconciler) removeContainerNetworkConnections(
 	}
 
 	for i := range childNetworkConnections.Items {
-		if err := r.Delete(ctx, &childNetworkConnections.Items[i]); ctrl_client.IgnoreNotFound(err) != nil {
+		if err := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
 			log.Error(err, "could not delete ContainerNetworkConnection object", "Container", container.NamespacedName().String(), "ContainerNetworkConnection", childNetworkConnections.Items[i].NamespacedName().String())
 		}
 	}
@@ -764,7 +764,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		// If no networks are defined or the FinishTimestamp is set for the container, delete all connections
 		var err error
 		for i := range childNetworkConnections.Items {
-			if deleteErr := r.Delete(ctx, &childNetworkConnections.Items[i]); ctrl_client.IgnoreNotFound(err) != nil {
+			if deleteErr := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
 				err = errors.Join(err, deleteErr)
 			}
 		}
@@ -840,7 +840,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			continue
 		}
 
-		if err := r.Delete(ctx, &connection); ctrl_client.IgnoreNotFound(err) != nil {
+		if err := r.Delete(ctx, &connection, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
 			log.Error(err, "could not delete ContainerNetworkConnection object",
 				"Container", container.NamespacedName().String(),
 				"Network", connection.Spec.ContainerNetworkName,

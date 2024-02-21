@@ -45,7 +45,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 
 		ctx := cmd.Context()
 
-		processExecutor := process.NewOSExecutor()
+		processExecutor := process.NewOSExecutor(log)
 		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log, processExecutor)
 		var status containers.ContainerRuntimeStatus
 		if orchestratorErr != nil {

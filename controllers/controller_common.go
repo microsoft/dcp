@@ -172,7 +172,10 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 			update = obj.DeepCopy()
 			err = client.Status().Patch(ctx, update, patch)
 			if err != nil {
-				if errors.IsConflict(err) {
+				if errors.IsNotFound(err) {
+					log.V(1).Info(fmt.Sprintf("%s status update failed as it was removed", kind))
+					return ctrl.Result{}, nil
+				} else if errors.IsConflict(err) {
 					// Error is expected optimistic concurrency check error, simply requeue
 					log.V(1).Info(fmt.Sprintf("%s status update failed due to conflict", kind))
 					return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil
@@ -191,7 +194,10 @@ func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjec
 			update = obj.DeepCopy()
 			err = client.Patch(ctx, update, patch)
 			if err != nil {
-				if errors.IsConflict(err) {
+				if errors.IsNotFound(err) {
+					log.V(1).Info(fmt.Sprintf("%s object update failed as it was removed", kind))
+					return ctrl.Result{}, nil
+				} else if errors.IsConflict(err) {
 					// Error is expected optimistic concurrency check error, simply requeue
 					log.V(1).Info(fmt.Sprintf("%s object update failed due to conflict", kind))
 					return ctrl.Result{RequeueAfter: conflictRequeueDelay}, nil

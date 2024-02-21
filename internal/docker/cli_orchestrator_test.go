@@ -198,11 +198,6 @@ func TestReportsContainerEvents(t *testing.T) {
 	err = sub.Cancel()
 	require.NoError(t, err)
 	requireChanClosed(t, evtC, "The events channel should be closed when subscription is cancelled")
-
-	// This is the only subscription--the "docker events" command should be terminated.
-	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
-		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
-	})
 }
 
 // Stops reporting events when subscription is cancelled (but other subscriptions continue)
@@ -250,11 +245,6 @@ func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 	err = sub2.Cancel()
 	require.NoError(t, err)
 	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
-
-	/// The "docker events" command should be terminated after the last subscription is cancelled
-	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
-		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
-	})
 }
 
 // Starts the event watcher when the first subscription is created, and stops it when the last subscription is cancelled.
@@ -275,10 +265,6 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 	err := sub.Cancel()
 	require.NoError(t, err)
 	requireChanClosed(t, evtC, "The events channel should be closed when the subscription is cancelled")
-	// The "docker events" command should be terminated.
-	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
-		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
-	})
 
 	pe.ClearHistory()
 
@@ -293,11 +279,6 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 	err = sub2.Cancel()
 	require.NoError(t, err)
 	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
-
-	// The "docker events" command should be terminated again.
-	waitForDockerEventsExecution(t, ctx, pe, func(exec *ctrl_testutil.ProcessExecution) bool {
-		return exec.Finished() && exec.ExitCode == ctrl_testutil.KilledProcessExitCode
-	})
 }
 
 func waitForDockerEventsExecution(t *testing.T, ctx context.Context, executor *ctrl_testutil.TestProcessExecutor, cond func(exec *ctrl_testutil.ProcessExecution) bool) ctrl_testutil.ProcessExecution {

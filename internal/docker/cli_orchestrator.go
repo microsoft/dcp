@@ -549,10 +549,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		processStopErr := dco.executor.StopProcess(pid)
-		if processStopErr != nil {
-			dco.log.Error(processStopErr, "could not stop 'docker events' command")
-		}
+		dco.log.V(1).Info("stopping 'docker events' command", "pid", pid)
 	}
 }
 
@@ -610,10 +607,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		processStopErr := dco.executor.StopProcess(pid)
-		if processStopErr != nil {
-			dco.log.Error(processStopErr, "could not stop 'docker events' command")
-		}
+		dco.log.V(1).Info("stopping 'docker events' command", "pid", pid)
 	}
 }
 

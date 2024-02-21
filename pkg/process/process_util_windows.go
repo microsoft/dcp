@@ -20,22 +20,6 @@ func ForkFromParent(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE, HideWindow: true}
 }
 
-func GetBuiltInSid(domainAliasRid uint32) (*windows.SID, error) {
-	var sid *windows.SID
-	if err := windows.AllocateAndInitializeSid(
-		&windows.SECURITY_NT_AUTHORITY,
-		2,
-		windows.SECURITY_BUILTIN_DOMAIN_RID,
-		domainAliasRid,
-		0, 0, 0, 0, 0, 0,
-		&sid,
-	); err != nil {
-		return nil, err
-	}
-
-	return sid, nil
-}
-
 func FindProcess(pid Pid_t) (*os.Process, error) {
 	osPid, err := PidT_ToInt(pid)
 	if err != nil {

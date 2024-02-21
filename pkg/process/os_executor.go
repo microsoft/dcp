@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -38,12 +39,14 @@ func (f WaitFunc) Wait() error {
 type OSExecutor struct {
 	procsWaiting map[Pid_t]*waitState
 	lock         sync.Locker
+	log          logr.Logger
 }
 
-func NewOSExecutor() Executor {
+func NewOSExecutor(log logr.Logger) Executor {
 	return &OSExecutor{
 		procsWaiting: make(map[Pid_t]*waitState),
 		lock:         &sync.Mutex{},
+		log:          log.WithName("os-executor"),
 	}
 }
 
@@ -179,8 +182,21 @@ func (e *OSExecutor) StopProcess(pid Pid_t) error {
 		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
 	}
 
+	e.acquireLock()
+
+	// If this is a process with a wait state, ensure we don't try to stop it twice
+	ws, found := e.procsWaiting[pid]
+	if found {
+		// We are already waiting, just update the reason
+		ws.reason |= waitReasonStopping
+	}
+
+	e.releaseLock()
+
+	e.log.V(1).Info("stopping process tree", "root", pid, "tree", tree)
+
 	// If the root process cannot be stopped, don't bother with the rest of the tree.
-	err = e.stopSingleProcess(pid, optNotFoundIsError)
+	err = e.stopSingleProcess(pid, optNotFoundIsError|optTrySignal)
 	if err != nil {
 		return err
 	}
@@ -206,6 +222,7 @@ type processStoppingOpts uint16
 const (
 	optNone            processStoppingOpts = 0
 	optNotFoundIsError processStoppingOpts = 0x1
+	optTrySignal       processStoppingOpts = 0x2
 )
 
 var _ Executor = (*OSExecutor)(nil)

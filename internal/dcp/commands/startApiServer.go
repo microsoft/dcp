@@ -52,7 +52,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
 
-		processExecutor := process.NewOSExecutor()
+		processExecutor := process.NewOSExecutor(log)
 		if err := container_flags.EnsureValidRuntimeFlagArgValue(ctx, log, processExecutor); err != nil {
 			log.Error(err, "invalid container runtime")
 			return err
@@ -115,7 +115,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 
-		allExtensions, err := bootstrap.GetExtensions(ctx)
+		allExtensions, err := bootstrap.GetExtensions(ctx, log)
 		if err != nil {
 			return err
 		}

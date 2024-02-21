@@ -28,25 +28,23 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 		}
 	}
 
-	// Give the process a chance to gracefully exit.
-	// There is no established standard for what signals are used for graceful shutdown,
-	// but SIGTERM and SIGQUIT are commonly used.
-	err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts)
-	switch {
-	case err == nil:
-		return nil
-	case !errors.Is(err, context.DeadlineExceeded):
-		return err
-	}
-
-	// SIGTERM did not work, try SIGQUIT.
-	err = e.signalAndWaitForExit(proc, syscall.SIGQUIT, opts)
-	if err == nil {
-		return nil
+	if (opts & optTrySignal) != 0 {
+		// Give the process a chance to gracefully exit.
+		// There is no established standard for what signals are used for graceful shutdown,
+		// but SIGTERM and SIGQUIT are commonly used.
+		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts)
+		switch {
+		case err == nil:
+			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
+			return nil
+		case !errors.Is(err, context.DeadlineExceeded):
+			return err
+		}
 	}
 
 	err = proc.Kill()
 	if err == nil || errors.Is(err, os.ErrProcessDone) {
+		e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
 		return nil
 	} else {
 		return err

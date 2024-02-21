@@ -45,14 +45,14 @@ func DcpRun(
 	} else if len(apiServerExtensions) > 1 {
 		return fmt.Errorf("multiple API servers found")
 	}
-	apiServerSvc, err := NewDcpExtensionService(cwd, apiServerExtensions[0], "", invocationFlags)
+	apiServerSvc, err := NewDcpExtensionService(cwd, apiServerExtensions[0], "", invocationFlags, log)
 	if err != nil {
 		return fmt.Errorf("could not start the API server: %w", err)
 	}
 
 	hostedServices := []hosting.Service{apiServerSvc}
 	for _, controller := range controllers {
-		controllerService, ctrlCreationErr := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags)
+		controllerService, ctrlCreationErr := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags, log)
 		if ctrlCreationErr != nil {
 			return fmt.Errorf("could not start controller '%s': %w", controller.Name, ctrlCreationErr)
 		}

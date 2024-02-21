@@ -108,7 +108,8 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 	return err
 }
 
-func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.RunID, _ logr.Logger) error {
+func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
+	log.V(1).Info("stopping process...", "runID", runID)
 	err := r.pe.StopProcess(runIdToPID(runID))
 
 	if runState, found := r.runningProcesses.LoadAndDelete(runID); found {

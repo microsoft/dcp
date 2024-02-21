@@ -64,6 +64,16 @@ spec:
                   spec:
                     description: Spec for child Executables
                     properties:
+                      ambientEnvironment:
+                        description: Controls behavior of environment variables inherited
+                          from the controller process.
+                        properties:
+                          behavior:
+                            default: Inherit
+                            description: How environment variables should be inherited
+                              from the controller process.
+                            type: string
+                        type: object
                       args:
                         description: Launch arguments to be passed to the Executable
                         items:

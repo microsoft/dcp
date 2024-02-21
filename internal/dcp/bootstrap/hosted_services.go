@@ -4,11 +4,12 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
-func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string, invocationFlags []string) (*hosting.CommandService, error) {
+func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string, invocationFlags []string, log logr.Logger) (*hosting.CommandService, error) {
 	var allArgs []string
 	if command != "" {
 		allArgs = append(allArgs, command)
@@ -26,5 +27,5 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	// before terminating the API server.
 	process.DecoupleFromParent(cmd)
 
-	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor(), hosting.CommandServiceRunOptionShowStderr), nil
+	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor(log), hosting.CommandServiceRunOptionShowStderr, log), nil
 }

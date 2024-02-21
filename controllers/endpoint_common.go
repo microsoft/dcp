@@ -129,7 +129,7 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner dcpM
 	}
 
 	for _, endpoint := range childEndpoints.Items {
-		if err := r.Delete(ctx, &endpoint); err != nil {
+		if err := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
 			log.Error(err, "could not delete Endpoint object",
 				"Endpoint", endpoint.NamespacedName().String(),
 				"Workload", owner.NamespacedName().String(),

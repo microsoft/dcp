@@ -94,7 +94,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return err
 	}
 
-	// Register for recoonciliation on changes to ExecutalbeReplicaSet objects as well
+	// Register for reconciliation on changes to ExecutableReplicaSet objects as well
 	// as owned Executable objects (metadata.ownerReferences pointing to an ExecutableReplicaSet)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.ExecutableReplicaSet{}).
@@ -221,7 +221,9 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				exePatch.SetAnnotations(annotations)
 				exePatch.Spec.Stop = true
 				if err := r.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(exe, ctrl_client.MergeFromWithOptimisticLock{})); err != nil {
-					if errors.IsConflict(err) {
+					if errors.IsNotFound(err) {
+						log.V(1).Info("executable not found, nothing to update", "exe", exe)
+					} else if errors.IsConflict(err) {
 						// Expected optimistic concurrency check error, log it at debug level and move on
 						log.V(1).Info("conflict while soft deleting Executable", "exe", exe)
 					} else {
@@ -294,7 +296,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 	} else {
 		log.V(1).Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
 		for _, exe := range childExecutables.Items {
-			if err = r.Delete(ctx, &exe); err != nil && !errors.IsNotFound(err) {
+			if err = r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !errors.IsNotFound(err) {
 				log.Error(err, "failed to delete inactive child Executable object", "exe", exe)
 			}
 		}

@@ -507,10 +507,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		err = pco.executor.StopProcess(pid)
-		if err != nil {
-			pco.log.Error(err, "could not stop 'podman events' command")
-		}
+		pco.log.V(1).Info("stopping 'podman events' command", "pid", pid)
 	}
 }
 
@@ -568,10 +565,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		err = pco.executor.StopProcess(pid)
-		if err != nil {
-			pco.log.Error(err, "could not stop 'podman events' command")
-		}
+		pco.log.V(1).Info("stopping 'podman events' command", "pid", pid)
 	}
 }
 

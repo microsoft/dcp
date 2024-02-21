@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -40,8 +41,6 @@ const (
 )
 
 var (
-	processExecutor = process.NewOSExecutor()
-
 	// File basename -> extension
 	WellKnownExtensions = map[string]DcpExtension{
 		"dcpctrl": {
@@ -57,7 +56,7 @@ var (
 	}
 )
 
-func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
+func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error) {
 	extDirs, err := dcppaths.GetExtensionsDirs()
 	if err != nil {
 		return nil, err
@@ -92,7 +91,7 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 				isExe = info.Mode().Perm()&UserExecute != 0
 			}
 			if isExe {
-				ext, capabilityQueryErr := getExtensionCapabilities(ctx, path)
+				ext, capabilityQueryErr := getExtensionCapabilities(ctx, path, log)
 				if capabilityQueryErr != nil {
 					return capabilityQueryErr
 				}
@@ -110,7 +109,8 @@ func GetExtensions(ctx context.Context) ([]DcpExtension, error) {
 	return extensions, nil
 }
 
-func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, error) {
+func getExtensionCapabilities(ctx context.Context, path string, log logr.Logger) (DcpExtension, error) {
+	processExecutor := process.NewOSExecutor(log.WithName("extensions"))
 	if expandedPath, err := filepath.EvalSymlinks(path); err == nil {
 		// We will just do the get-capabilites call (slow path) if EvalSymlinks() fails.
 		exeName := filepath.Base(expandedPath)
@@ -153,7 +153,8 @@ func getExtensionCapabilities(ctx context.Context, path string) (DcpExtension, e
 	}, nil
 }
 
-func (ext *DcpExtension) CanRender(ctx context.Context, appRootDir string) (extensions.CanRenderResponse, error) {
+func (ext *DcpExtension) CanRender(ctx context.Context, appRootDir string, log logr.Logger) (extensions.CanRenderResponse, error) {
+	processExecutor := process.NewOSExecutor(log.WithName(ext.Name).WithName("can-render"))
 	if !slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability) {
 		return extensions.CanRenderResponse{}, fmt.Errorf("extension '%s' is not a workload renderer", ext.Id)
 	}
@@ -178,7 +179,8 @@ func (ext *DcpExtension) CanRender(ctx context.Context, appRootDir string) (exte
 	return canRenderResponse, nil
 }
 
-func (ext *DcpExtension) Render(ctx context.Context, appRootDir string, kubeconfigPath string) error {
+func (ext *DcpExtension) Render(ctx context.Context, appRootDir string, kubeconfigPath string, log logr.Logger) error {
+	processExecutor := process.NewOSExecutor(log.WithName(ext.Name).WithName("render"))
 	if !slices.Contains(ext.Capabilities, extensions.WorkloadRendererCapability) {
 		return fmt.Errorf("extension '%s' is not a workload renderer", ext.Id)
 	}

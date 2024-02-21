@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -26,7 +27,7 @@ type CommandService struct {
 	options  CommandServiceRunOptions
 }
 
-func NewCommandService(name string, cmd *exec.Cmd, executor process.Executor, options CommandServiceRunOptions) *CommandService {
+func NewCommandService(name string, cmd *exec.Cmd, executor process.Executor, options CommandServiceRunOptions, log logr.Logger) *CommandService {
 	svc := CommandService{
 		name:     name,
 		cmd:      cmd,
@@ -35,7 +36,7 @@ func NewCommandService(name string, cmd *exec.Cmd, executor process.Executor, op
 	}
 
 	if executor == nil {
-		svc.executor = process.NewOSExecutor()
+		svc.executor = process.NewOSExecutor(log)
 	} else {
 		svc.executor = executor
 	}

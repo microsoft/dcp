@@ -15,7 +15,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+)
+
+var (
+	log = logger.New("process-tests").Logger
 )
 
 func TestRunCompleted(t *testing.T) {
@@ -24,7 +29,7 @@ func TestRunCompleted(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor()
+	executor := NewOSExecutor(log)
 	testCtx, cancel := testutil.GetTestContext(t, 10*time.Second)
 	defer cancel()
 
@@ -58,7 +63,7 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor()
+	executor := NewOSExecutor(log)
 
 	// Start the process, but use a context that expires within 500 ms.
 	// If it takes more than 2 seconds to receive a notification that the process has exited,
@@ -87,7 +92,7 @@ func TestRunWithTimeout(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor()
+	executor := NewOSExecutor(log)
 
 	// Command returns on its own after 5 seconds. This prevents the test from hanging
 	// or leaving processes running after the test is done.
@@ -123,7 +128,7 @@ func TestRunCancelled(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor()
+	executor := NewOSExecutor(log)
 
 	// Command returns on its own after 5 seconds. This prevents the test from hanging.
 	exitInfoChan := make(chan ProcessExitInfo, 2)
@@ -196,7 +201,7 @@ func TestChildrenTerminated(t *testing.T) {
 	require.NoError(t, toolLaunchErr)
 
 	// Using a shared executor to make sure that process stopping works no matter how it was started.
-	executor := NewOSExecutor()
+	executor := NewOSExecutor(log)
 
 	for _, tc := range testcases {
 		tc := tc // capture range variable for use in a goroutine

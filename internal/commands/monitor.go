@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -44,7 +45,11 @@ func Monitor(ctx context.Context, logger logr.Logger) context.Context {
 		go func() {
 			defer monitorCtxCancel()
 			if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {
-				logger.Error(waitErr, "error waiting for process", "pid", monitorPid)
+				if errors.Is(waitErr, context.Canceled) {
+					logger.V(1).Info("monitoring cancelled by context", "pid", monitorPid)
+				} else {
+					logger.Error(waitErr, "error waiting for process", "pid", monitorPid)
+				}
 			} else {
 				logger.Info("monitor process exited, shutting down", "pid", monitorPid)
 			}

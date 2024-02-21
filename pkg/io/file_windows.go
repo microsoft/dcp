@@ -8,7 +8,6 @@ import (
 	"os"
 	"unsafe"
 
-	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"golang.org/x/sys/windows"
 )
 
@@ -24,13 +23,13 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 	defer processToken.Close()
 
 	// Get the SID for the Administrators group
-	adminSid, err := process.GetBuiltInSid(windows.DOMAIN_ALIAS_RID_ADMINS)
+	adminSid, err := GetBuiltInSid(windows.DOMAIN_ALIAS_RID_ADMINS)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
-		if err := windows.FreeSid(adminSid); err != nil {
-			fmt.Fprintln(os.Stderr, fmt.Errorf("could not free sid: %w", err))
+		if freeSidErr := windows.FreeSid(adminSid); err != nil {
+			fmt.Fprintln(os.Stderr, fmt.Errorf("could not free sid: %w", freeSidErr))
 		}
 	}()
 
@@ -117,12 +116,12 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 		return nil, fmt.Errorf("could not create security descriptor: %w", err)
 	}
 
-	if err := sd.SetDACL(acl, true, false); err != nil {
+	if err = sd.SetDACL(acl, true, false); err != nil {
 		return nil, fmt.Errorf("could not set dacl: %w", err)
 	}
 
 	// Ensure that the Security Descriptor applies the ACL and does not inherit permissions from the parent directory
-	if err := sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
+	if err = sd.SetControl(windows.SE_DACL_PROTECTED, windows.SE_DACL_PROTECTED); err != nil {
 		return nil, fmt.Errorf("could not set control flag: %w", err)
 	}
 
@@ -160,4 +159,20 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 	}
 
 	return nil
+}
+
+func GetBuiltInSid(domainAliasRid uint32) (*windows.SID, error) {
+	var sid *windows.SID
+	if err := windows.AllocateAndInitializeSid(
+		&windows.SECURITY_NT_AUTHORITY,
+		2,
+		windows.SECURITY_BUILTIN_DOMAIN_RID,
+		domainAliasRid,
+		0, 0, 0, 0, 0, 0,
+		&sid,
+	); err != nil {
+		return nil, err
+	}
+
+	return sid, nil
 }
