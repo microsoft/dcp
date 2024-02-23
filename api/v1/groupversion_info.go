@@ -36,7 +36,7 @@ var (
 	// Uses weighting to cleanup resources in batches
 	CleanupResources = []*WeightedResource{}
 
-	// A registry of log strear factories for different resource types
+	// A registry of log stream factories for different resource types
 	LogStreamFactories = syncmap.Map[schema.GroupVersionResource, ResourceLogStreamFactory]{}
 )
 
