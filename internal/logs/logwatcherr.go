@@ -152,7 +152,7 @@ func waitForLogChange(ctx context.Context, watcher *fsnotify.Watcher, path strin
 			}
 
 		case <-timer.C:
-			// Juust in case the file watch event(s) do not arrive as expected,
+			// Just in case the file watch event(s) do not arrive as expected,
 			// we will do some low-frequency polling too.
 			return
 		}
