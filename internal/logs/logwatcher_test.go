@@ -18,6 +18,7 @@ import (
 
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -26,12 +27,17 @@ const (
 	defaultTestTimeout = 20 * time.Second
 )
 
+func getTempLogFilePath(t *testing.T) string {
+	suffix, err := randdata.MakeRandomString(8)
+	require.NoError(t, err)
+	return filepath.Join(t.TempDir(), fmt.Sprintf("%s-%s.log", t.Name(), suffix))
+}
+
 // Ensure that log watcher in follow mode run on empty file does not return any data.
 func TestWatchLogsFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
-	tmpDir := t.TempDir()
-	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
+	tmpFilePath := getTempLogFilePath(t)
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	require.NoError(t, tmpFile.Close())
@@ -61,8 +67,7 @@ func TestWatchLogsFollowWholeFile(t *testing.T) {
 	t.Parallel()
 
 	const content = "hello\nworld\n"
-	tmpDir := t.TempDir()
-	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
+	tmpFilePath := getTempLogFilePath(t)
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	n, tmpFileErr := tmpFile.WriteString(content)
@@ -108,8 +113,7 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 	}
 
 	for try := 0; try < len(content)+1; try++ {
-		tmpDir := t.TempDir()
-		tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s-%d.log", t.Name(), try))
+		tmpFilePath := getTempLogFilePath(t)
 		tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
 		require.NoError(t, tmpFileErr)
 		t.Cleanup(func() {
@@ -151,8 +155,7 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 func TestWatchLogsMissingFile(t *testing.T) {
 	t.Parallel()
 
-	tmpDir := t.TempDir()
-	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
+	tmpFilePath := getTempLogFilePath(t)
 	// Do NOT create the file, that is the point of the test
 
 	testCtx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
@@ -165,8 +168,7 @@ func TestWatchLogsMissingFile(t *testing.T) {
 func TestWatchLogsNoFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
-	tmpDir := t.TempDir()
-	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
+	tmpFilePath := getTempLogFilePath(t)
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	require.NoError(t, tmpFile.Close())
@@ -185,8 +187,7 @@ func TestWatchLogsNoFollowWholeFile(t *testing.T) {
 	t.Parallel()
 
 	const content = "hello\nworld\n"
-	tmpDir := t.TempDir()
-	tmpFilePath := filepath.Join(tmpDir, fmt.Sprintf("%s.log", t.Name()))
+	tmpFilePath := getTempLogFilePath(t)
 	tmpFile, tmpFileErr := usvc_io.OpenFile(tmpFilePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, osutil.PermissionOwnerReadWriteOthersRead)
 	require.NoError(t, tmpFileErr)
 	n, tmpFileErr := tmpFile.WriteString(content)
