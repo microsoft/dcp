@@ -402,7 +402,7 @@ func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMe
 	return dco.containerEvtWatcher.Watch(sink)
 }
 
-func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.Writer, stderr io.Writer, options containers.StreamContainerLogsOptions) error {
+func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
 	args := []string{"container", "logs"}
 	args = options.Apply(args)
 	args = append(args, container)
@@ -412,6 +412,13 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	cmd.Stderr = stderr
 
 	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
+			dco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
+		}
+		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
+			dco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
+		}
+
 		if err != nil {
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				dco.log.Error(err, "capturing container logs failed", "Container", container)

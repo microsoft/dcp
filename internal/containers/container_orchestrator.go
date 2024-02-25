@@ -165,7 +165,7 @@ type ContainerOrchestrator interface {
 	WatchContainers(sink chan<- EventMessage) (*EventSubscription, error)
 
 	// Starts capturing container logs to the provided writers
-	CaptureContainerLogs(ctx context.Context, container string, stdout io.Writer, stderr io.Writer, options StreamContainerLogsOptions) error
+	CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options StreamContainerLogsOptions) error
 
 	VolumeOrchestrator
 	NetworkOrchestrator

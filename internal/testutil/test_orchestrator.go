@@ -849,7 +849,7 @@ func (to *TestOrchestrator) SimulateContainerExit(ctx context.Context, name stri
 	return containers.ErrNotFound
 }
 
-func (to *TestOrchestrator) CaptureContainerLogs(ctx context.Context, name string, stdout io.Writer, stderr io.Writer, options containers.StreamContainerLogsOptions) error {
+func (to *TestOrchestrator) CaptureContainerLogs(ctx context.Context, name string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -863,6 +863,13 @@ func (to *TestOrchestrator) CaptureContainerLogs(ctx context.Context, name strin
 			}
 		}
 	*/
+
+	if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
+		to.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", name)
+	}
+	if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
+		to.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", name)
+	}
 
 	return containers.ErrNotFound
 }

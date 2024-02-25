@@ -40,8 +40,8 @@ type LogDescriptor struct {
 	CancelContext context.CancelFunc
 
 	lock          *sync.Mutex // Protects the fields below
-	stdOut        *os.File
-	stdErr        *os.File
+	stdOut        *notifyWriteCloser
+	stdErr        *notifyWriteCloser
 	consumerCount uint32 // Number of active log watchers.
 	lastUsed      time.Time
 	disposed      bool
@@ -68,7 +68,7 @@ func NewLogDescriptor(
 
 // Returns information about destination files for capturing resource logs, creating them as necessary.
 // The returned bool indicates whether the files were created by this call.
-func (l *LogDescriptor) EnableLogCapturing(logsFolder string) (io.Writer, io.Writer, bool, error) {
+func (l *LogDescriptor) EnableLogCapturing(logsFolder string) (io.WriteCloser, io.WriteCloser, bool, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
@@ -101,7 +101,7 @@ func (l *LogDescriptor) LogConsumerStarting() (string, string, error) {
 
 	l.lastUsed = time.Now()
 	l.consumerCount++
-	return l.stdOut.Name(), l.stdErr.Name(), nil
+	return l.stdOut.Id(), l.stdErr.Id(), nil
 }
 
 // Notifies the log descriptor that a log watcher has stopped using the log files.
@@ -161,18 +161,24 @@ func (l *LogDescriptor) doCleanup(deadline context.Context) error {
 
 		if l.consumerCount > 0 {
 			return false, nil
-		} else {
-			return true, nil
 		}
+
+		if l.stdOut != nil && !l.stdOut.IsClosed() {
+			return false, nil
+		}
+
+		if l.stdErr != nil && !l.stdErr.IsClosed() {
+			return false, nil
+		}
+
+		return true, nil
 	})
 
-	stdOutPath := l.stdOut.Name()
-	stdErrPath := l.stdErr.Name()
-	stdOutCloseErr := l.stdOut.Close()
-	stdErrCloseErr := l.stdErr.Close()
+	stdOutPath := l.stdOut.Id()
+	stdErrPath := l.stdErr.Id()
 	stdOutRemoveErr := os.Remove(stdOutPath)
 	stdErrRemoveErr := os.Remove(stdErrPath)
-	return errors.Join(stdOutCloseErr, stdOutRemoveErr, stdErrCloseErr, stdErrRemoveErr)
+	return errors.Join(stdOutRemoveErr, stdErrRemoveErr)
 }
 
 func (l *LogDescriptor) createLogFiles(logsFolder string) error {
@@ -208,7 +214,7 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 		)
 	}
 
-	l.stdOut = stdOut
-	l.stdErr = stdErr
+	l.stdOut = newNotifyWriteCloser(stdOut, stdOutPath)
+	l.stdErr = newNotifyWriteCloser(stdErr, stdErrPath)
 	return nil
 }

@@ -48,7 +48,7 @@ func (lds *LogDescriptorSet) AcquireForResource(
 	cancel context.CancelFunc,
 	resourceName types.NamespacedName,
 	resourceUID types.UID,
-) (*LogDescriptor, io.Writer, io.Writer, bool, error) {
+) (*LogDescriptor, io.WriteCloser, io.WriteCloser, bool, error) {
 	lds.lock.Lock()
 
 	ld, found := lds.descriptors[resourceUID]
