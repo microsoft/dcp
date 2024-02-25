@@ -42,111 +42,77 @@ type LogDescriptor struct {
 	lock          *sync.Mutex // Protects the fields below
 	stdOut        *os.File
 	stdErr        *os.File
-	consumerCount uint32 // Number of active log watchers. Includes the log capturing goroutine.
+	consumerCount uint32 // Number of active log watchers.
+	lastUsed      time.Time
 	disposed      bool
 }
 
 // Creates new LogDescriptor.
 // Note: this is separated from log file creation so make sure that NewLogDescriptor() never fails,
 // and as a result, the LogDescriptor is easy to use as a value type in a syncmap.
-func NewLogDescriptor(ctx context.Context, cancel context.CancelFunc, resourceName types.NamespacedName, resourceUID types.UID) *LogDescriptor {
+func NewLogDescriptor(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	resourceName types.NamespacedName,
+	resourceUID types.UID,
+) *LogDescriptor {
 	return &LogDescriptor{
 		ResourceName:  resourceName,
 		ResourceUID:   resourceUID,
 		Context:       ctx,
 		CancelContext: cancel,
+		lastUsed:      time.Now(),
 		lock:          &sync.Mutex{},
 	}
 }
 
-// Creates destination files for capturing resource logs.
-// The LogDescriptor assumes there will be only one writer for both files,
-// so only one call to this method is allowed.
-func (l *LogDescriptor) EnableLogCapturing(logsFolder string) (io.Writer, io.Writer, error) {
+// Returns information about destination files for capturing resource logs, creating them as necessary.
+// The returned bool indicates whether the files were created by this call.
+func (l *LogDescriptor) EnableLogCapturing(logsFolder string) (io.Writer, io.Writer, bool, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
-	if l.disposed || l.Context.Err() != nil {
-		return nil, nil, fmt.Errorf("this LogDescriptor (for %s) has been disposed", l.ResourceName.String())
+	if l.disposed {
+		return nil, nil, false, fmt.Errorf("this LogDescriptor (for %s) has been disposed", l.ResourceName.String())
 	}
 
-	if l.stdOut != nil || l.stdErr != nil {
-		return nil, nil, fmt.Errorf("log files already exist for resource %s", l.ResourceName.String())
+	l.lastUsed = time.Now()
+
+	if l.stdOut != nil && l.stdErr != nil {
+		return l.stdOut, l.stdErr, false, nil
 	}
 
-	// To avoid file name conflicts when log watching is stopped and quickly started again for the same resource,
-	// we include a random suffix in the file names.
-	suffix, randErr := randdata.MakeRandomString(4)
-	if randErr != nil {
-		// Should never happen
-		return nil, nil, fmt.Errorf("could not generate random suffix for log file names for resource %s: %w", l.ResourceName.String(), randErr)
+	if err := l.createLogFiles(logsFolder); err != nil {
+		return nil, nil, false, err
 	}
 
-	stdOutFileName := fmt.Sprintf("%s_out_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
-	stdOutPath := filepath.Join(logsFolder, stdOutFileName)
-	stdOut, stdOutErr := usvc_io.OpenFile(stdOutPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if stdOutErr != nil {
-		// If we cannot create stdout or stderr file, this descriptor is pretty much unusable.
-		// We consider is disposed.
-		l.disposed = true
-		return nil, nil, fmt.Errorf("could not create stdout log file for resource %s: %w", l.ResourceName.String(), stdOutErr)
-	}
-
-	stdErrFileName := fmt.Sprintf("%s_err_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
-	stdErrPath := filepath.Join(logsFolder, stdErrFileName)
-	stdErr, stdErrErr := usvc_io.OpenFile(stdErrPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if stdErrErr != nil {
-		l.disposed = true
-		stdOutCloseErr := stdOut.Close()
-		stdOutRemoveErr := os.Remove(stdOutPath)
-		return nil, nil, errors.Join(
-			fmt.Errorf("could not create stderr log file for resource %s: %w", l.ResourceName.String(), stdErrErr),
-			stdOutCloseErr,
-			stdOutRemoveErr,
-		)
-	}
-
-	l.stdOut = stdOut
-	l.stdErr = stdErr
-	return stdOut, stdErr, nil
+	return l.stdOut, l.stdErr, true, nil
 }
 
-// Notifies the log descriptor that another log watcher (or the log streamer) has started to use the log files.
-// Returns the paths to the log files and an error if the log descriptor was disposed or the context was cancelled.
+// Notifies the log descriptor that another log watcher has started to use the log files.
+// Returns the paths to the log files, or an error if the log descriptor was disposed.
 func (l *LogDescriptor) LogConsumerStarting() (string, string, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
-	if !l.disposed {
-		l.consumerCount++
-		return l.stdOut.Name(), l.stdErr.Name(), nil
-	} else {
+	if l.disposed {
 		return "", "", fmt.Errorf("this LogDescriptor (for %s) has been disposed", l.ResourceName.String())
 	}
+
+	l.lastUsed = time.Now()
+	l.consumerCount++
+	return l.stdOut.Name(), l.stdErr.Name(), nil
 }
 
 // Notifies the log descriptor that a log watcher has stopped using the log files.
-// Should only be called if corresponding LogConsumerStarting() succeeded.
 func (l *LogDescriptor) LogConsumerStopped() {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
 	if l.consumerCount > 0 {
 		l.consumerCount--
+		l.lastUsed = time.Now()
 	}
-
-	// Self-dispose if there are no more consumers
-	// This will stop log capturing and delete the log files, saving machine resources.
-	if !l.disposed && l.consumerCount == 0 {
-		l.disposed = true
-		l.CancelContext()
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // No consumers, so we do not need to wait for them to stop
-
-	// CONSIDER: logging errors from self-disposal
-	_ = l.doCleanup(ctx)
 }
 
 func (l *LogDescriptor) IsDisposed() bool {
@@ -156,8 +122,17 @@ func (l *LogDescriptor) IsDisposed() bool {
 	return l.disposed
 }
 
-// Waits for all log watchers to stop (with a passed deadline) and then deletes the log files (best effort).
-func (l *LogDescriptor) Dispose(deadline context.Context) error {
+// Returns the number of active log watchers and last use time.
+func (l *LogDescriptor) Usage() (uint32, time.Time) {
+	l.lock.Lock()
+	defer l.lock.Unlock()
+
+	return l.consumerCount, l.lastUsed
+}
+
+// Waits for all log watchers to stop (with a context + extra time serving as deadline)
+// and then deletes the log files (best effort).
+func (l *LogDescriptor) Dispose(ctx context.Context, extraTime time.Duration) error {
 	l.lock.Lock()
 	if l.disposed {
 		l.lock.Unlock()
@@ -167,7 +142,16 @@ func (l *LogDescriptor) Dispose(deadline context.Context) error {
 	l.CancelContext()
 	l.lock.Unlock()
 
-	return l.doCleanup(deadline)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if extraTime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, extraTime)
+		defer cancel()
+	}
+
+	return l.doCleanup(ctx)
 }
 
 func (l *LogDescriptor) doCleanup(deadline context.Context) error {
@@ -189,4 +173,42 @@ func (l *LogDescriptor) doCleanup(deadline context.Context) error {
 	stdOutRemoveErr := os.Remove(stdOutPath)
 	stdErrRemoveErr := os.Remove(stdErrPath)
 	return errors.Join(stdOutCloseErr, stdOutRemoveErr, stdErrCloseErr, stdErrRemoveErr)
+}
+
+func (l *LogDescriptor) createLogFiles(logsFolder string) error {
+	// To avoid file name conflicts when log watching is stopped and quickly started again for the same resource,
+	// we include a random suffix in the file names.
+	suffix, randErr := randdata.MakeRandomString(4)
+	if randErr != nil {
+		// Should never happen
+		return fmt.Errorf("could not generate random suffix for log file names for resource %s: %w", l.ResourceName.String(), randErr)
+	}
+
+	stdOutFileName := fmt.Sprintf("%s_out_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
+	stdOutPath := filepath.Join(logsFolder, stdOutFileName)
+	stdOut, stdOutErr := usvc_io.OpenFile(stdOutPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if stdOutErr != nil {
+		// If we cannot create stdout or stderr file, this descriptor is pretty much unusable.
+		// We consider is disposed.
+		l.disposed = true
+		return fmt.Errorf("could not create stdout log file for resource %s: %w", l.ResourceName.String(), stdOutErr)
+	}
+
+	stdErrFileName := fmt.Sprintf("%s_err_%s_%s", l.ResourceName.Name, l.ResourceUID, string(suffix))
+	stdErrPath := filepath.Join(logsFolder, stdErrFileName)
+	stdErr, stdErrErr := usvc_io.OpenFile(stdErrPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if stdErrErr != nil {
+		l.disposed = true
+		stdOutCloseErr := stdOut.Close()
+		stdOutRemoveErr := os.Remove(stdOutPath)
+		return errors.Join(
+			fmt.Errorf("could not create stderr log file for resource %s: %w", l.ResourceName.String(), stdErrErr),
+			stdOutCloseErr,
+			stdOutRemoveErr,
+		)
+	}
+
+	l.stdOut = stdOut
+	l.stdErr = stdErr
+	return nil
 }

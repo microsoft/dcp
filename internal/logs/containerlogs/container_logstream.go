@@ -8,13 +8,11 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
@@ -24,21 +22,16 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 var (
 	// A map of Container resource UID to the log descriptor for the container.
 	// Used for streaming logs from the container.
-	containerLogs = syncmap.Map[types.UID, *logs.LogDescriptor]{}
+	containerLogs *logs.LogDescriptorSet
 
 	containerOrchestrator containers.ContainerOrchestrator = nil
 	containerWatcher      watch.Interface                  = nil
 	lock                                                   = &sync.Mutex{}
-)
-
-const (
-	logCaptureShutdownTimeout = 2 * time.Second
 )
 
 func CreateContainerLogStream(
@@ -78,51 +71,32 @@ func CreateContainerLogStream(
 
 	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
 	log := contextdata.GetContextLogger(requestCtx)
-	logFolder := os.TempDir()
-	if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
-		logFolder = dcpSessionDir
+
+	co, err := ensureDependencies(hostLifetimeCtx, parentKindStorage, log)
+	if err != nil {
+		return nil, err
 	}
 
-	containerWatcherErr := ensureContainerWatcher(hostLifetimeCtx, parentKindStorage, log)
-	if containerWatcherErr != nil {
-		log.Error(containerWatcherErr, "failed to create Container watcher")
-		return nil, apierrors.NewInternalError(containerWatcherErr)
+	logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
+	ld, stdOutWriter, stdErrWriter, newlyCreated, err := containerLogs.AcquireForResource(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
+	if err != nil {
+		log.Error(err, "Failed to enable log capturing for Container", "Container", ctr.NamespacedName())
+		return nil, apierrors.NewInternalError(err)
 	}
 
-	ld, ldExisted := containerLogs.LoadOrStoreNew(ctr.UID, func() *logs.LogDescriptor {
-		logDescriptorCtx, cancel := context.WithCancel(requestCtx)
-		return logs.NewLogDescriptor(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
-	})
-
-	if !ldExisted {
+	if newlyCreated {
 		// Need to start log capturing for the container
-
-		co, coErr := ensureContainerOrchestrator(requestCtx, log)
-		if coErr != nil {
-			log.Error(coErr, "failed to get Container orchestrator")
-			containerLogs.Delete(ctr.UID)
-			return nil, apierrors.NewInternalError(coErr)
-		}
-
-		stdOutWriter, stdErrWriter, logCaptureErr := ld.EnableLogCapturing(logFolder)
-		if logCaptureErr != nil {
-			log.Error(logCaptureErr, "Failed to enable log capturing for Container", "Container", ctr.NamespacedName())
-			containerLogs.Delete(ctr.UID)
-			return nil, apierrors.NewInternalError(logCaptureErr)
-		}
-
-		logCaptureErr = co.CaptureContainerLogs(ld.Context, ctr.Status.ContainerID, stdOutWriter, stdErrWriter, containers.StreamContainerLogsOptions{
+		logCaptureErr := co.CaptureContainerLogs(ld.Context, ctr.Status.ContainerID, stdOutWriter, stdErrWriter, containers.StreamContainerLogsOptions{
 			Follow: true,
 		})
 		if logCaptureErr != nil {
 			log.Error(logCaptureErr, "Failed to start capturing logs for Container", "Container", ctr.NamespacedName())
-			shutdownCtx, cancel := context.WithTimeout(requestCtx, logCaptureShutdownTimeout)
-			defer cancel()
-			disposeErr := ld.Dispose(shutdownCtx)
+			disposeErr := ld.Dispose(requestCtx, 0)
 			if disposeErr != nil {
-				log.Error(disposeErr, "Failed to dispose log descriptor after failed log capture", "Container", ctr.NamespacedName())
+				log.V(1).Info("Failed to dispose log descriptor after failed log capture",
+					"Container", ctr.NamespacedName(),
+					"Error", disposeErr.Error())
 			}
-			containerLogs.Delete(ctr.UID)
 			return nil, apierrors.NewInternalError(logCaptureErr)
 		}
 	}
@@ -154,6 +128,24 @@ func CreateContainerLogStream(
 	}()
 
 	return reader, nil
+}
+
+func ensureDependencies(hostLifetimeCtx context.Context, parentKindStorage registry_rest.StandardStorage, log logr.Logger) (containers.ContainerOrchestrator, error) {
+	ensureContainerLogDescriptors(hostLifetimeCtx)
+
+	containerWatcherErr := ensureContainerWatcher(hostLifetimeCtx, parentKindStorage, log)
+	if containerWatcherErr != nil {
+		log.Error(containerWatcherErr, "failed to create Container watcher")
+		return nil, apierrors.NewInternalError(containerWatcherErr)
+	}
+
+	co, coErr := ensureContainerOrchestrator(hostLifetimeCtx, log)
+	if coErr != nil {
+		log.Error(coErr, "failed to get Container orchestrator")
+		return nil, apierrors.NewInternalError(coErr)
+	}
+
+	return co, nil
 }
 
 func ensureContainerOrchestrator(ctx context.Context, log logr.Logger) (containers.ContainerOrchestrator, error) {
@@ -193,7 +185,24 @@ func ensureContainerWatcher(hostLifetimeCtx context.Context, containerStorage re
 	return nil
 }
 
+func ensureContainerLogDescriptors(hostLifetimeCtx context.Context) {
+	lock.Lock()
+	defer lock.Unlock()
+	if containerLogs != nil {
+		return
+	}
+
+	logFolder := os.TempDir()
+	if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
+		logFolder = dcpSessionDir
+	}
+
+	containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, logFolder)
+}
+
 func processContainerEvents(hostLifetimeCtx context.Context, containerWatcher watch.Interface, log logr.Logger) {
+	ensureContainerLogDescriptors(hostLifetimeCtx)
+
 	for {
 		select {
 
@@ -216,23 +225,9 @@ func processContainerEvents(hostLifetimeCtx context.Context, containerWatcher wa
 				continue
 			}
 
-			ld, deleted := containerLogs.LoadAndDelete(ctr.UID)
-			if !deleted {
-				// We weren't watching logs of this container, so there is nothing to do
-				continue
-			}
-
-			// Need to stop the log streamer and any log watchers for this container as it is being deleted
-			// Run the disposal of the log descriptor in a separate goroutine to avoid blocking the container watcher
-
-			go func(ld *logs.LogDescriptor, containerName types.NamespacedName) {
-				shutdownCtx, cancel := context.WithTimeout(hostLifetimeCtx, logCaptureShutdownTimeout)
-				defer cancel()
-				disposeErr := ld.Dispose(shutdownCtx)
-				if disposeErr != nil {
-					log.Error(disposeErr, "Failed to dispose log descriptor after container was deleted", "Container", containerName.String())
-				}
-			}(ld, ctr.NamespacedName())
+			// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
+			// It is OK to call RealaeseForResource() if the resource is not in the set, it is a no-op in that case.
+			containerLogs.ReleaseForResource(ctr.UID)
 		}
 	}
 }
