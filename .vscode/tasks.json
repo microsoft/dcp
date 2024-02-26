@@ -3,26 +3,10 @@
     "tasks": [
         {
             "type": "shell",
-            "label": "compile",
+            "label": "compile-debug",
             "command": "make",
-            "args": ["compile"],
-            "options": {
-                "env": {
-                    "BUILD_ARGS": "-gcflags=all=\"-N -l\""
-                }
-            }
-        },
-
-        {
-            "type": "shell",
-            "label": "build",
-            "command": "make",
-            "args": ["build"],
-            "options": {
-                "env": {
-                    "BUILD_ARGS": "-gcflags=all=\"-N -l\""
-                }
-            }
+            "args": ["compile-debug"],
+            "problemMatcher": ["$go"]
         }
     ]
 }

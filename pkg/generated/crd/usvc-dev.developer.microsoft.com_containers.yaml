@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.13.0
+    controller-gen.kubebuilder.io/version: v0.14.0
   name: containers.usvc-dev.developer.microsoft.com
 spec:
   group: usvc-dev.developer.microsoft.com
@@ -21,14 +21,19 @@ spec:
           such as Docker or Podman
         properties:
           apiVersion:
-            description: 'APIVersion defines the versioned schema of this representation
-              of an object. Servers should convert recognized schemas to the latest
-              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: 'Kind is a string value representing the REST resource this
-              object represents. Servers may infer this from the endpoint the client
-              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -73,9 +78,9 @@ spec:
                 description: Container image
                 type: string
               networks:
-                description: ContaineNetworks resources the container should be attached
-                  to. If omitted or nil, the container will be attached to the default
-                  network and the controller will not manage network connections.
+                description: |-
+                  ContaineNetworks resources the container should be attached to. If omitted or nil, the container will
+                  be attached to the default network and the controller will not manage network connections.
                 items:
                   properties:
                     aliases:
@@ -141,8 +146,9 @@ spec:
                         be read-only
                       type: boolean
                     source:
-                      description: 'Bind mounts: the host directory to mount Volume
-                        mounts: name of the volume to mount'
+                      description: |-
+                        Bind mounts: the host directory to mount
+                        Volume mounts: name of the volume to mount
                       type: string
                     target:
                       description: The path within the container that the mount will
@@ -200,8 +206,9 @@ spec:
                 x-kubernetes-list-type: map
               exitCode:
                 default: -1
-                description: Exit code of the Container. Default is -1, meaning the
-                  exit code is not known, or the container is still running.
+                description: |-
+                  Exit code of the Container.
+                  Default is -1, meaning the exit code is not known, or the container is still running.
                 format: int32
                 type: integer
               finishTimestamp:

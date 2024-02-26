@@ -6,25 +6,26 @@ import (
 	"context"
 	"net"
 
+	"go.opentelemetry.io/otel/metric"
+
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
-	"go.opentelemetry.io/otel/metric/instrument/syncint64"
 )
 
 var (
-	localhostAllocationModeCounter    syncint64.UpDownCounter
-	ipv4ZeroOneAllocationModeCounter  syncint64.UpDownCounter
-	ipv4LoopbackAllocationModeCounter syncint64.UpDownCounter
-	ipv6ZeroOneAllocationModeCounter  syncint64.UpDownCounter
-	proxylessAllocationModeCounter    syncint64.UpDownCounter
+	localhostAllocationModeCounter    metric.Int64UpDownCounter
+	ipv4ZeroOneAllocationModeCounter  metric.Int64UpDownCounter
+	ipv4LoopbackAllocationModeCounter metric.Int64UpDownCounter
+	ipv6ZeroOneAllocationModeCounter  metric.Int64UpDownCounter
+	proxylessAllocationModeCounter    metric.Int64UpDownCounter
 
-	ipv4OnlyCounter  syncint64.UpDownCounter
-	ipv6OnlyCounter  syncint64.UpDownCounter
-	dualStackCounter syncint64.UpDownCounter
+	ipv4OnlyCounter  metric.Int64UpDownCounter
+	ipv6OnlyCounter  metric.Int64UpDownCounter
+	dualStackCounter metric.Int64UpDownCounter
 
-	tcpServiceCounter syncint64.UpDownCounter
-	udpServiceCounter syncint64.UpDownCounter
+	tcpServiceCounter metric.Int64UpDownCounter
+	udpServiceCounter metric.Int64UpDownCounter
 )
 
 func init() {

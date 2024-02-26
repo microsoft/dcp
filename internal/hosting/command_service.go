@@ -8,7 +8,7 @@ import (
 	"os/exec"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -50,7 +50,7 @@ func (s *CommandService) Name() string {
 
 func (s *CommandService) Run(ctx context.Context) error {
 	if (s.options & CommandServiceRunOptionShowStderr) != 0 {
-		reader, writer := io.NewBufferedPipe()
+		reader, writer := usvc_io.NewBufferedPipe()
 		s.cmd.Stderr = writer
 		defer writer.Close() // Ensure the following goroutine exits
 		go func() {

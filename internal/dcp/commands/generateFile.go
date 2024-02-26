@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/internal/password"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
@@ -130,7 +131,7 @@ func openInputFile(fileName string) (*os.File, error) {
 		return nil, fmt.Errorf("the value of --input parameter points to a directory--file was expected")
 	}
 
-	input, err := os.OpenFile(fileName, os.O_RDONLY, osutil.PermissionOwnerReadWriteOthersRead)
+	input, err := usvc_io.OpenFile(fileName, os.O_RDONLY, osutil.PermissionOwnerReadWriteOthersRead)
 	if err != nil {
 		return nil, fmt.Errorf("template file could not be opened: %w", err)
 	}
@@ -151,7 +152,7 @@ func openOrCreateOutputFile(fileName string, newFilePerm os.FileMode) (*os.File,
 	}
 
 	// The permissions are really only used
-	output, err := os.OpenFile(fileName, fopenFlags, newFilePerm)
+	output, err := usvc_io.OpenFile(fileName, fopenFlags, newFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf(errMsg, err)
 	}

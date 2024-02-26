@@ -11,7 +11,7 @@ import (
 	"github.com/felixge/fgprof"
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
@@ -71,7 +71,7 @@ func StartProfiling(ctx context.Context, pt string, log logr.Logger) error {
 
 	// The profile name is <programName>-<profileType>-<timestamp>-<pid>.pprof
 	profileFileName := fmt.Sprintf("%s-%s-%d-%d.pprof", programName, pt, time.Now().Unix(), os.Getpid())
-	profileOutput, err := io.OpenFile(filepath.Join(profileFolder, profileFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+	profileOutput, err := usvc_io.OpenFile(filepath.Join(profileFolder, profileFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return fmt.Errorf("failed to create profile file '%s': %w", profileFileName, err)
 	}

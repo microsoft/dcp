@@ -11,3 +11,5 @@ type EnvVar struct {
 	Value string `json:"value,omitempty"`
 	// CONSIDER allowing expansion of existing variable references e.g. using ${VAR_NAME} syntax and $$ to escape the $ sign
 }
+
+const LogSubresourceName = "log"

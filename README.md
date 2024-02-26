@@ -91,58 +91,67 @@ You can also run individual tests via VS Code "run test" and "debug test" gestur
 We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again.
 
 ### Make it easier to use `kubectl` with DCP 
-Define a shell alias.
-
-Linux/macOS:
-
-```shell
-alias kk='kubectl --kubeconfig ~/.dcp/kubeconfig
-```
-
-Windows:
+For working with DCP in the context of Aspire tooling (which creates a separate `kubeconfig` file for every application run) the following set of PowerShell functions and aliases might be useful:
 
 ```powershell
-function dcpKubectl() { & kubectl --kubeconfig "$env:USERPROFILE\.dcp\kubeconfig" $args }
-Set-Alias kk dcpKubectl
-``` 
+function dcpKubeconfigPath() {
+    param (
+        [string]$dcpPid
+    )
 
-For working with DCP in the context of Aspire tooling (which creates a separate `kubeconfig` file for every application run) the following PowerShell function/alias might be useful:
+    if (-not [string]::IsNullOrWhiteSpace($dcpPid)) {
+        $dcpProcess = Get-Process -Id $dcpPid
 
-```powershell
-function dcpdKubectl() {
-    $DcpPid = $null
-    if ($args.Length -gt 1 -and $args[0] -eq "-DcpPid") {
-        $DcpPid = $args[1]
-        $args = $args | Select-Object -Skip 2
-    }
-
-    if ($null -ne $DcpPid) {
-        $dcpProcess = Get-Process -Id $DcpPid
         if ($? -eq $false) {
-            throw "No DCP process with PID $DcpPid found"
+            throw "No DCP process with PID $dcpPid found"
         }
 
-        $kubeconfig = $dcpProcess | Select-Object -ExpandProperty CommandLine | ForEach-Object { $_.Split() } | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
     } else {
+        # Use "dcpd" process to figure out where the kubeconfig file is --
+        # when debugging the API server we might be running without a controllers process (dcpctrl).
         $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcpd" })
         if ($dcpProcesses.Count -eq 0) {
             throw "No DCP processes found"
         } elseif ($dcpProcesses.Count -gt 1) {
-            Write-Error "Multiple DCP processes found, use -DcpPid parameter to specify which one to use (pass DCP process ID)"
             $dcpProcesses | Select-Object Id, CommandLine | Format-List
-            return
+            throw "Multiple DCP processes found, use -DcpPid parameter to specify which one to use (pass DCP process ID)"
         } else {
-            $kubeconfig = $dcpProcesses[0].CommandLine.Split() | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
+            $dcpProcess = $dcpProcesses[0]
         }
     }
+    
+    $kubeconfig = $dcpProcess | Select-Object -ExpandProperty CommandLine | ForEach-Object { $_.Split() } | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
+    if ([string]::IsNullOrWhiteSpace($kubeconfig)) {
+        $kubeconfig = "$env:USERPROFILE/.dcp/kubeconfig"
+    }
+
+    return $kubeconfig
+}
+
+function dcpKubeconfigContent() {
+    $kubeconfig = dcpKubeconfigPath
+    Get-Content $kubeconfig
+}
+
+function dcpdKubectl() {
+    $dcpPid = $null
+    if ($args.Length -gt 1 -and $args[0] -eq "-DcpPid") {
+        $dcpPid = $args[1]
+        $args = $args | Select-Object -Skip 2
+    }
+
+    $kubeconfig = dcpKubeconfigPath $dcpPid
 
     & kubectl --kubeconfig "$kubeconfig" $args
 }
 
-Set-Alias kk -Value dcpdKubectl
+Set-Alias kk dcpdKubectl
+Set-Alias kkconfig dcpKubeconfigContent
 ```
 
-You invoke it with the name of the Aspire app host project (the one that is set as startup project), for example `kkm AppHost api-resources`.
+To issue a command against the DCP API server use `kk` alias. Fore example, to display a list of running Executable objects do `kk get exe`.
+
+`kkconfig` will display the content of the API server config file that is used by the running Aspire app. This can be useful to find out which port the API server is running at.
 
 > For debugging Aspire tests (part of `CloudApplicationTests` suite) the name of the relevant process that started DCP is `testhost`.
  
@@ -186,7 +195,7 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 
 > Note: you want to use `make compile-debug` for building DCP for debugging. By default DCP is built with optimizations on, which can result in strange behavior during debugging (somewhat unpredictable order of statements, local data "disappearing" in the middle of a function etc.)
 
-### I need to debug DCP in the context of Aspire (Visual Studio-based) run
+### I need to debug DCP controllers in the context of an Aspire (Visual Studio-based) application run
 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
 
@@ -194,11 +203,14 @@ The following procedure can be used to debug DCP controllers when an application
 1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace (a "Function Breakpoint" that refers to the fully-qualified name of the method will work fine, you do not need to have `Aspire.Hosting` project in your solution).
 1. Open `usvc-apiserver` repository in Visual Studio Code. 
 1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet. 
-1. Switch to Visual Studio Code, select `attach to controller process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary. 
+1. Switch to Visual Studio Code, select `attach to controllers process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary. 
 1. Switch back to Visual Studio and continue (F5). The workload definition will be created by the `ApplicationExecutor` and sent to DCP for execution.
 
-The same steps can also be used to debug `ApplicationExecutor` (in Visual Studio) if you suspect that the workload that DCP receives is set up incorrectly.
+The same steps can also be used to:
+- Debug `ApplicationExecutor` (in Visual Studio) if you suspect that the workload that DCP receives is set up incorrectly.
+- Debug code that is hosted by the DCP API server (e.g. log storage/streaming), except that you want to attach to the API server process instead, using `attach to API server process` debug configuration.
 
+> Tip: if the API server request is failing before hitting DCP code, a good place to put a breakpoint is one of the endpoint handlers in `${GOPATH}/pkg/mod/k8s.io/apiserver@{version}/pkg/endpoints/handlers`. You can figure out which `apiserver` package version DCP is using from the `go.mod` file, and your `${GOPATH}` value can be learned by running `go env` command.
 
 ### Taking performance traces
 

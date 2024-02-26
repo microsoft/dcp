@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
@@ -29,7 +29,7 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 		}
 
 		telemetryFileName := fmt.Sprintf("telemetry-%s-%d-%d.json", logName, time.Now().Unix(), os.Getpid())
-		telemetryFile, logFileErr := io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
+		telemetryFile, logFileErr := usvc_io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
 
 		if logFileErr != nil {
 			return nil, logFileErr
@@ -57,7 +57,7 @@ func (discardExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 	return nil
 }
 
-func (discardExporter) Export(context.Context, metricdata.ResourceMetrics) error {
+func (discardExporter) Export(context.Context, *metricdata.ResourceMetrics) error {
 	return nil
 }
 
@@ -67,4 +67,12 @@ func (discardExporter) ForceFlush(context.Context) error {
 
 func (discardExporter) Shutdown(ctx context.Context) error {
 	return nil
+}
+
+func (discardExporter) Aggregation(ik sdkmetric.InstrumentKind) sdkmetric.Aggregation {
+	return sdkmetric.DefaultAggregationSelector(ik)
+}
+
+func (discardExporter) Temporality(ik sdkmetric.InstrumentKind) metricdata.Temporality {
+	return sdkmetric.DefaultTemporalitySelector(ik)
 }

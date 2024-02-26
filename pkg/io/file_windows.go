@@ -130,15 +130,15 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 		SecurityDescriptor: sd,
 	}
 
-	pathHandle, err := windows.UTF16PtrFromString(name)
-	if err != nil {
-		return nil, fmt.Errorf("could not create path handle: %w", err)
+	pathHandle, pathErr := windows.UTF16PtrFromString(name)
+	if pathErr != nil {
+		return nil, fmt.Errorf("could not create path handle: %w", pathErr)
 	}
 
 	// Create the new file with the given ACL rules
-	fileHandle, err := windows.CreateFile(pathHandle, windows.GENERIC_WRITE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.CREATE_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
-	if err != nil {
-		return nil, fmt.Errorf("could not create file: %w", err)
+	fileHandle, fileCreateErr := windows.CreateFile(pathHandle, windows.GENERIC_WRITE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.CREATE_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if fileCreateErr != nil {
+		return nil, fmt.Errorf("could not create file: %w", fileCreateErr)
 	}
 
 	return os.NewFile(uintptr(fileHandle), name), nil
