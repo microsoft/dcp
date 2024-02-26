@@ -27,7 +27,7 @@ type WatchLogOptions struct {
 }
 
 // WatchLogs watches a log file on disk and sends its contents to supplied writer
-func WatchLogs(ctx context.Context, path string, dest *io.PipeWriter, opts WatchLogOptions) error {
+func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts WatchLogOptions) error {
 	if path == "" {
 		return fmt.Errorf("log file path is empty")
 	}
@@ -84,7 +84,7 @@ func WatchLogs(ctx context.Context, path string, dest *io.PipeWriter, opts Watch
 		if n > 0 {
 			_, writeErr := dest.Write(buf[:n])
 			if writeErr != nil {
-				if writeErr == io.ErrClosedPipe {
+				if errors.Is(writeErr, io.ErrClosedPipe) {
 					// This is normal if the client has disconnected.
 					return nil
 				} else {
