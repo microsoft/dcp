@@ -524,7 +524,12 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 				defaultNetwork = "bridge"
 			}
 
-			containerID, err := r.orchestrator.CreateContainer(startupCtx, ct.CreateContainerOptions{ContainerSpec: *rcd.runSpec, Name: containerName, Network: defaultNetwork})
+			creationOptions := ct.CreateContainerOptions{
+				ContainerSpec: *rcd.runSpec,
+				Name:          containerName,
+				Network:       defaultNetwork,
+			}
+			containerID, err := r.orchestrator.CreateContainer(startupCtx, creationOptions)
 			// There are errors that can still result in a valid container ID, so we need to store it if one was returned
 			rcd.newContainerID = containerID
 

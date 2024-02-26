@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -14,8 +15,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	v1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/io"
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -194,7 +195,7 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	return removed, containers.ExpectCliStrings(outBuf, volumes)
 }
 
-func applyCreateContainerOptions(args []string, options v1.ContainerSpec) []string {
+func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
 	for _, mount := range options.VolumeMounts {
 		mountVal := fmt.Sprintf("type=%s,src=%s,target=%s", mount.Type, mount.Source, mount.Target)
 		if mount.ReadOnly {
@@ -237,7 +238,7 @@ func applyCreateContainerOptions(args []string, options v1.ContainerSpec) []stri
 		args = append(args, "--env-file", envFile)
 	}
 
-	if options.RestartPolicy != "" && options.RestartPolicy != v1.RestartPolicyNone {
+	if options.RestartPolicy != "" && options.RestartPolicy != apiv1.RestartPolicyNone {
 		args = append(args, fmt.Sprintf("--restart=%s", options.RestartPolicy))
 	}
 
@@ -401,6 +402,43 @@ func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMe
 	return dco.containerEvtWatcher.Watch(sink)
 }
 
+func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
+	args := []string{"container", "logs"}
+	args = options.Apply(args)
+	args = append(args, container)
+
+	cmd := makeDockerCommand(ctx, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
+			dco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
+		}
+		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
+			dco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
+		}
+
+		if err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				dco.log.Error(err, "capturing container logs failed", "Container", container)
+			}
+		} else if exitCode != 0 {
+			dco.log.Error(
+				fmt.Errorf("capturing container logs failed with exit code %d", exitCode),
+				"capturing container logs failed",
+				"Container", container,
+			)
+		}
+	}
+	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	if err != nil {
+		return err
+	}
+	startWaitForProcessExit()
+	return nil
+}
+
 func (dco *DockerCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
 	return dco.networkEvtWatcher.Watch(sink)
 }
@@ -499,7 +537,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(watcherCtx, args...)
 
-	reader, writer := io.NewBufferedPipe()
+	reader, writer := usvc_io.NewBufferedPipe()
 	cmd.Stdout = writer
 	defer writer.Close() // Ensure that the following scanner goroutine ends.
 
@@ -557,7 +595,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=network", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(watcherCtx, args...)
 
-	reader, writer := io.NewBufferedPipe()
+	reader, writer := usvc_io.NewBufferedPipe()
 	cmd.Stdout = writer
 	defer writer.Close() // Ensure that the following scanner goroutine ends.
 

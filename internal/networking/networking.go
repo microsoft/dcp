@@ -98,3 +98,7 @@ func IsIPv4(address string) bool {
 func IsIPv6(address string) bool {
 	return net.ParseIP(address).To16() != nil
 }
+
+func IsValidPort(port int) bool {
+	return port >= 1 && port <= 65535
+}

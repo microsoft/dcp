@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -843,6 +844,31 @@ func (to *TestOrchestrator) SimulateContainerExit(ctx context.Context, name stri
 
 			return nil
 		}
+	}
+
+	return containers.ErrNotFound
+}
+
+func (to *TestOrchestrator) CaptureContainerLogs(ctx context.Context, name string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	/*
+		for _, container := range to.containers {
+			if container.matches(name) {
+				// TODO: simulate log streaming
+			}
+		}
+	*/
+
+	if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
+		to.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", name)
+	}
+	if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
+		to.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", name)
 	}
 
 	return containers.ErrNotFound

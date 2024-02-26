@@ -4,16 +4,13 @@ package telemetry
 
 import (
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/instrument"
-	"go.opentelemetry.io/otel/metric/instrument/syncint64"
-	"go.opentelemetry.io/otel/metric/unit"
 )
 
-func NewInt64Counter(meter metric.Meter, name string, description string) syncint64.Counter {
-	counter, err := meter.SyncInt64().Counter(
+func NewInt64Counter(meter metric.Meter, name string, description string) metric.Int64Counter {
+	counter, err := meter.Int64Counter(
 		name,
-		instrument.WithDescription(description),
-		instrument.WithUnit(unit.Dimensionless),
+		metric.WithDescription(description),
+		metric.WithUnit("1"), // dimensionless
 	)
 	if err != nil {
 		panic(err)
@@ -21,11 +18,11 @@ func NewInt64Counter(meter metric.Meter, name string, description string) syncin
 	return counter
 }
 
-func NewInt64UpDownCounter(meter metric.Meter, name string, description string) syncint64.UpDownCounter {
-	counter, err := meter.SyncInt64().UpDownCounter(
+func NewInt64UpDownCounter(meter metric.Meter, name string, description string) metric.Int64UpDownCounter {
+	counter, err := meter.Int64UpDownCounter(
 		name,
-		instrument.WithDescription(description),
-		instrument.WithUnit(unit.Dimensionless),
+		metric.WithDescription(description),
+		metric.WithUnit("1"), // dimensionless
 	)
 	if err != nil {
 		panic(err)

@@ -10,9 +10,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-
+	generic_registry "k8s.io/apiserver/pkg/registry/generic"
+	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -20,9 +22,11 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 )
 
-// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
-var validContainerName = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
-var validContainerNameRegexp = regexp.MustCompile(validContainerName)
+var (
+	// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
+	validContainerName       = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
+	validContainerNameRegexp = regexp.MustCompile(validContainerName)
+)
 
 type ContainerRestartPolicy string
 
@@ -341,6 +345,12 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	return errorList
 }
 
+func (_ *Container) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{
+		&ContainerLogResource{},
+	}
+}
+
 // ContainerList contains a list of Executable instances
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
@@ -366,6 +376,42 @@ func (cl *ContainerList) GetItems() []ctrl_client.Object {
 	return retval
 }
 
+type ContainerLogResource struct{}
+
+func (clr *ContainerLogResource) Name() string {
+	return LogSubresourceName
+}
+
+func (clr *ContainerLogResource) GetStorageProvider(
+	obj apiserver_resource.Object,
+	rootPath string,
+	parentSP apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return func(scheme *runtime.Scheme, reg generic_registry.RESTOptionsGetter) (registry_rest.Storage, error) {
+		storage, err := parentSP(scheme, reg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parent (%s) storage: %w", obj.GetObjectKind().GroupVersionKind().Kind, err)
+		}
+
+		containerStorage, isGetter := storage.(registry_rest.StandardStorage)
+		if !isGetter {
+			return nil, fmt.Errorf("parent (%s) should implement registry_rest.Getter", obj.GetObjectKind().GroupVersionKind().Kind)
+		}
+
+		logStreamFactory, found := LogStreamFactories.Load(obj.GetGroupVersionResource())
+		if !found {
+			return nil, fmt.Errorf("log stream factory not found for resource %s", obj.GetGroupVersionResource().String())
+		}
+
+		logStorage, err := NewLogStorage(containerStorage, logStreamFactory)
+		if err != nil {
+			return nil, err
+		}
+
+		return logStorage, nil
+	}
+}
+
 func init() {
 	SchemeBuilder.Register(&Container{}, &ContainerList{})
 	SetCleanupPriority(&Container{}, 100)
@@ -380,3 +426,5 @@ var _ apiserver_resource.StatusSubResource = (*ContainerStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Container)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Container)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*Container)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*Container)(nil)
+var _ apiserver_resource.GenericSubResource = (*ContainerLogResource)(nil)

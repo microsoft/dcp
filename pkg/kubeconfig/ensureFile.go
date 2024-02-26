@@ -15,7 +15,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
@@ -52,13 +52,25 @@ func EnsureKubeconfigFile(fs *pflag.FlagSet, port int32) (string, error) {
 		}
 	}
 
-	homePath, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("could not obtain user home directory when checking for Kubeconfig file: %w", err)
+	homePath, homeDirErr := os.UserHomeDir()
+	if homeDirErr != nil {
+		return "", fmt.Errorf("could not obtain user home directory when checking for Kubeconfig file: %w", homeDirErr)
 	}
 
-	defaultPath := filepath.Join(homePath, ".dcp", "kubeconfig")
-	return doEnsureKubeconfigFile(defaultPath, port)
+	dcpFolder := filepath.Join(homePath, ".dcp")
+	dcpFolderInfo, dcpFolderErr := os.Stat(dcpFolder)
+	if errors.Is(dcpFolderErr, iofs.ErrNotExist) {
+		if err := os.MkdirAll(dcpFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
+			return "", fmt.Errorf("failed to create DCP default folder '%s' for storing kubeconfig file: %w", dcpFolder, err)
+		}
+	} else if dcpFolderErr != nil {
+		return "", fmt.Errorf("failed to verify the existence of DCP  default folder '%s': %w", dcpFolder, dcpFolderErr)
+	} else if !dcpFolderInfo.IsDir() {
+		return "", fmt.Errorf("'%s' exists, but is not a directory and cannot be used to store DCP kubeconfig file", dcpFolder)
+	}
+
+	kubeconfigPath := filepath.Join(dcpFolder, "kubeconfig")
+	return doEnsureKubeconfigFile(kubeconfigPath, port)
 }
 
 func createKubeconfigFile(path string, port int32) error {
@@ -124,7 +136,7 @@ func createKubeconfigFile(path string, port int32) error {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 
-	if err = io.WriteFile(path, contents, osutil.PermissionOnlyOwnerReadWrite); err != nil {
+	if err = usvc_io.WriteFile(path, contents, osutil.PermissionOnlyOwnerReadWrite); err != nil {
 		return fmt.Errorf("could not write Kubeconfig file: %w", err)
 	}
 

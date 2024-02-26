@@ -4,22 +4,19 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.14.0
-  name: containervolumes.usvc-dev.developer.microsoft.com
+  name: logoptions.usvc-dev.developer.microsoft.com
 spec:
   group: usvc-dev.developer.microsoft.com
   names:
-    kind: ContainerVolume
-    listKind: ContainerVolumeList
-    plural: containervolumes
-    singular: containervolume
+    kind: LogOptions
+    listKind: LogOptionsList
+    plural: logoptions
+    singular: logoptions
   scope: Cluster
   versions:
   - name: v1
     schema:
       openAPIV3Schema:
-        description: |-
-          ContainerVolume represents a volume that can be consumed by Container instances
-          Its lifetime is independent from the lifetime of containers
         properties:
           apiVersion:
             description: |-
@@ -28,6 +25,9 @@ spec:
               may reject unrecognized values.
               More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
+          follow:
+            description: If true, follow the logs for the Executable or Container.
+            type: boolean
           kind:
             description: |-
               Kind is a string value representing the REST resource this object represents.
@@ -38,15 +38,11 @@ spec:
             type: string
           metadata:
             type: object
-          spec:
-            description: VolumeSpec defines the desired state of a ContainerVolume
-            properties:
-              name:
-                description: Name of the volume
-                type: string
-            required:
-            - name
-            type: object
+          source:
+            description: |-
+              The source of the logs to display.
+              Note: the K8s API server does not support non-standard types in query parameters, so we can't use LogStreamSource here.
+            type: string
         type: object
     served: true
     storage: true

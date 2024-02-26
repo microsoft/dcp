@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
-	"github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
@@ -142,7 +142,7 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	}
 
 	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
-	logOutput, err := io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d.log", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	logOutput, err := usvc_io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d.log", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}

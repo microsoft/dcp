@@ -147,13 +147,13 @@ type SelectFunc[T any] interface {
 }
 
 func Select[T any, SF SelectFunc[T]](ss []T, selector SF) []T {
-	return accumulateIf[T, SF, []T](ss, selector, func(ss []T, el T) []T {
+	return AccumulateIf[T, SF, []T](ss, selector, func(ss []T, el T) []T {
 		return append(ss, el)
 	})
 }
 
 func LenIf[T any, SF SelectFunc[T]](ss []T, selector SF) int {
-	return accumulateIf[T, SF, int](ss, selector, func(currentCount int, _ T) int {
+	return AccumulateIf[T, SF, int](ss, selector, func(currentCount int, _ T) int {
 		return currentCount + 1
 	})
 }
@@ -198,11 +198,15 @@ func Any[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
 	return IndexFunc(ss, selector) != -1
 }
 
-type accumulatorFunc[T any, R any] interface {
+type AccumulatorFunc[T any, R any] interface {
 	~func(R, T) R | ~func(R, *T) R
 }
 
-func accumulateIf[T any, SF SelectFunc[T], R any, AF accumulatorFunc[T, R]](ss []T, selector SF, accumulator AF) R {
+func Accumulate[T any, R any, AF AccumulatorFunc[T, R]](ss []T, accumulator AF) R {
+	return AccumulateIf[T, func(T) bool, R, AF](ss, func(_ T) bool { return true }, accumulator)
+}
+
+func AccumulateIf[T any, SF SelectFunc[T], R any, AF AccumulatorFunc[T, R]](ss []T, selector SF, accumulator AF) R {
 	sf := func(i int, s T) bool {
 		switch tsf := (any)(selector).(type) {
 		case func(int, T) bool:
@@ -214,7 +218,7 @@ func accumulateIf[T any, SF SelectFunc[T], R any, AF accumulatorFunc[T, R]](ss [
 		case func(*T) bool:
 			return tsf(&s)
 		default:
-			panic(fmt.Sprintf("accumulateIf cannot understand selector function type %T", selector))
+			panic(fmt.Sprintf("AccumulateIf cannot understand selector function type %T", selector))
 		}
 	}
 
@@ -225,7 +229,7 @@ func accumulateIf[T any, SF SelectFunc[T], R any, AF accumulatorFunc[T, R]](ss [
 		case func(R, *T) R:
 			return taf(current, &el)
 		default:
-			panic(fmt.Sprintf("accumulateIf cannot understand accumulator function type %T", accumulator))
+			panic(fmt.Sprintf("AccumulateIf cannot understand accumulator function type %T", accumulator))
 		}
 	}
 

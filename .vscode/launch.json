@@ -1,27 +1,39 @@
 {
     "version": "0.2.0",
     "configurations": [
+        // Note: for running programs individually we use mode "exec" (not "debug") so that the binary used during debugging
+        // has a predictable name (dcp, dcpd, dcpctlr). This allows us to discover the kubeconfig file location dynamically
+        // and interrogate the API server via kubectl utility (see README.md for more details on that).
+
         {
             "name": "dcpd launch",
             "type": "go",
             "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}/cmd/dcpd/main.go",
+            "mode": "exec",
+            "program": "${workspaceFolder}/bin/ext/dcpd",
             "args": [
                 "-v=1"
             ],
+            "windows": {
+                "program": "${workspaceFolder}/bin/ext/dcpd.exe"
+            },
+            "preLaunchTask": "compile-debug"
         },
 
         {
             "name": "dcpctrl run-controllers",
             "type": "go",
             "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}/cmd/dcpctrl/main.go",
+            "mode": "exec",
+            "program": "${workspaceFolder}/bin/ext/dcpctrl",
             "args": [
                 "run-controllers",
                 "-v=1"
             ],
+            "windows": {
+                "program": "${workspaceFolder}/bin/ext/dcpctrl.exe"
+            },
+            "preLaunchTask": "compile-debug"
         },
 
         {
@@ -34,7 +46,10 @@
                 "start-apiserver",
                 "-v=1"
             ],
-            "preLaunchTask": "compile"
+            "windows": {
+                "program": "${workspaceFolder}/bin/dcp.exe"
+            },
+            "preLaunchTask": "compile-debug"
         },
 
         {
@@ -43,6 +58,14 @@
             "request": "attach",
             "mode": "local",
             "processId": "dcpctrl"
+        },
+
+        {
+            "name": "attach to API server process",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": "dcpd"
         },
 
         {

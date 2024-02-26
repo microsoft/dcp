@@ -3,19 +3,19 @@
 package controllers
 
 import (
-	"go.opentelemetry.io/otel/metric/instrument/syncint64"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 )
 
 var (
-	metadataOrSpecSaveCounter syncint64.Counter
-	statusSaveCounter         syncint64.Counter
-	saveFailedCounter         syncint64.Counter
+	metadataOrSpecSaveCounter metric.Int64Counter
+	statusSaveCounter         metric.Int64Counter
+	saveFailedCounter         metric.Int64Counter
 
-	getSucceededCounter syncint64.Counter
-	getFailedCounter    syncint64.Counter
-	getNotFoundCounter  syncint64.Counter
+	getSucceededCounter metric.Int64Counter
+	getFailedCounter    metric.Int64Counter
+	getNotFoundCounter  metric.Int64Counter
 )
 
 func init() {

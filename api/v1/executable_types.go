@@ -4,15 +4,19 @@ package v1
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	generic_registry "k8s.io/apiserver/pkg/registry/generic"
+	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -269,6 +273,12 @@ func (e *Executable) Done() bool {
 	return !e.Status.FinishTimestamp.IsZero()
 }
 
+func (_ *Executable) GenericSubResources() []apiserver_resource.GenericSubResource {
+	return []apiserver_resource.GenericSubResource{
+		&ExecutableLogResource{},
+	}
+}
+
 // ExecutableList contains a list of Executable instances
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
@@ -294,6 +304,42 @@ func (el *ExecutableList) GetItems() []ctrl_client.Object {
 	return retval
 }
 
+type ExecutableLogResource struct{}
+
+func (elr *ExecutableLogResource) Name() string {
+	return LogSubresourceName
+}
+
+func (elr *ExecutableLogResource) GetStorageProvider(
+	obj apiserver_resource.Object,
+	rootPath string,
+	parentSP apiserver.StorageProvider,
+) apiserver.StorageProvider {
+	return func(scheme *runtime.Scheme, reg generic_registry.RESTOptionsGetter) (registry_rest.Storage, error) {
+		storage, err := parentSP(scheme, reg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get parent (%s) storage: %w", obj.GetObjectKind().GroupVersionKind().Kind, err)
+		}
+
+		exeStorage, isGetter := storage.(registry_rest.StandardStorage)
+		if !isGetter {
+			return nil, fmt.Errorf("parent (%s) should implement registry_rest.Getter", obj.GetObjectKind().GroupVersionKind().Kind)
+		}
+
+		logStreamFactory, found := LogStreamFactories.Load(obj.GetGroupVersionResource())
+		if !found {
+			return nil, fmt.Errorf("log stream factory not found for resource %s", obj.GetGroupVersionResource().String())
+		}
+
+		logStorage, err := NewLogStorage(exeStorage, logStreamFactory)
+		if err != nil {
+			return nil, err
+		}
+
+		return logStorage, nil
+	}
+}
+
 func init() {
 	SchemeBuilder.Register(&Executable{}, &ExecutableList{})
 	SetCleanupPriority(&Executable{}, 100)
@@ -308,3 +354,5 @@ var _ apiserver_resource.StatusSubResource = (*ExecutableStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Executable)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Executable)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*Executable)(nil)
+var _ apiserver_resource.ObjectWithGenericSubResource = (*Executable)(nil)
+var _ apiserver_resource.GenericSubResource = (*ExecutableLogResource)(nil)

@@ -12,6 +12,8 @@ import (
 	"golang.org/x/exp/slices"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
+
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 // +k8s:deepcopy-gen=false
@@ -33,6 +35,9 @@ var (
 	// Track the resources that need to be automatically cleaned up at shutdown
 	// Uses weighting to cleanup resources in batches
 	CleanupResources = []*WeightedResource{}
+
+	// A registry of log stream factories for different resource types
+	LogStreamFactories = syncmap.Map[schema.GroupVersionResource, ResourceLogStreamFactory]{}
 )
 
 var (

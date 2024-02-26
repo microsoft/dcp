@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 ifneq (3.81,$(firstword $(sort $(MAKE_VERSION) 3.81)))
-    $(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
+	$(error This Makefile requires make version 3.81 or newer. You have make version $(MAKE_VERSION))
 endif
 
 # Detect the operating system, and configure shell and shell commands.
@@ -18,7 +18,7 @@ ifeq ($(OS),Windows_NT)
 	home_dir := $(USERPROFILE)
 	install := Copy-Item
 	exe_suffix := .exe
-	BUILD_TIMESTAMP ?= $(shell Get-Date -UFormat %s)
+	BUILD_TIMESTAMP ?= $(shell Get-Date -UFormat %FT%T+00 -AsUTC)
 else
 	# -o pipefail will treat a pipeline as failed if one of the elements fail.
 	SHELL := /usr/bin/env bash -o pipefail
@@ -33,7 +33,7 @@ else
 	home_dir := $(HOME)
 	install := install -p
 	exe_suffix :=
-	BUILD_TIMESTAMP ?= $(shell date -u +%s)
+	BUILD_TIMESTAMP ?= $(shell date -u +%FT%T+00)
 endif
 
 # Honor GOOS settings from the environment to determine appropriate suffix.
@@ -95,11 +95,11 @@ ENVTEST ?= $(TOOL_BIN)/setup-envtest$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.55.1
-CONTROLLER_TOOLS_VERSION ?= v0.13.0
-CODE_GENERATOR_VERSION ?= v0.28.2
+GOLANGCI_LINT_VERSION ?= v1.56.2
+CONTROLLER_TOOLS_VERSION ?= v0.14.0
+CODE_GENERATOR_VERSION ?= v0.29.1
 GOVERSIONINFO_VERSION ?= v1.4.0
-ENVTEST_K8S_VERSION = 1.28.0
+ENVTEST_K8S_VERSION = 1.29.1
 GO_LICENSES_VERSION = v1.6.0
 
 # DCP Version information
@@ -115,9 +115,11 @@ version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.Produ
 export CGO_ENABLED=0
 
 ifeq ($(detected_OS),windows)
-    GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Recurse -File | Select-Object -ExpandProperty FullName | Select-String -NotMatch 'pkg\\generated\\')
+	GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
+	TYPE_SOURCES := $(shell Get-ChildItem -Path './api/v1/*' -Include '*.go' -Exclude 'zz_generated*' -File | Select-Object -ExpandProperty FullName)
 else
-    GO_SOURCES := $(shell find . -name '*.go' -type f -not -path "./pkg/generated/*")
+	GO_SOURCES := $(shell find . -name '*.go' -not -name 'zz_generated*' -type f)
+	TYPE_SOURCES := $(shell find ./api/v1 -name '*.go' -not -name 'zz_generated*' -type f)
 endif
 
 ##@ General
@@ -148,7 +150,7 @@ generate-ci: generate generate-licenses ## Generate all codegen artifacts and li
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
-$(repo_dir)/api/v1/zz_generated.deepcopy.go : $(GO_SOURCES) controller-gen
+$(repo_dir)/api/v1/zz_generated.deepcopy.go : $(TYPE_SOURCES) controller-gen
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/v1/..."
 
 define run-openapi-gen
@@ -156,7 +158,7 @@ $(OPENAPI_GEN) \
 	--input-dirs github.com/microsoft/usvc-apiserver/api/v1 \
 	--input-dirs "k8s.io/apimachinery/pkg/apis/meta/v1,k8s.io/apimachinery/pkg/runtime,k8s.io/apimachinery/pkg/version" \
 	--output-package pkg/generated/openapi \
-	-O zz_generated.openapi \
+	--output-file-base zz_generated.openapi \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
 	--output-base "$(repo_dir)" $(OPENAPI_GEN_OPTS)
 endef
@@ -168,7 +170,7 @@ generate-openapi: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## G
 generate-openapi-debug: OPENAPI_GEN_OPTS = -v 6
 generate-openapi-debug: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## Runs OpenAPI generator with additional options for debugging
 
-$(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(GO_SOURCES) openapi-gen
+$(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES) openapi-gen
 	$(run-openapi-gen)
 
 # At run time DCP does not use CRDs, but they are used by tests.
@@ -177,7 +179,7 @@ crd_files = $(crd_prefix)containers.yaml $(crd_prefix)containervolumes.yaml $(cr
 
 .PHONY: generate-crd
 generate-crd: $(crd_files) ## Generates CRD documents for resources defined in this repo
-$(crd_files) : $(GO_SOURCES) controller-gen
+$(crd_files) : $(TYPE_SOURCES) controller-gen
 	$(CONTROLLER_GEN) crd paths="./api/v1/..." output:crd:artifacts:config=pkg/generated/crd
 
 .PHONY: generate-goversioninfo

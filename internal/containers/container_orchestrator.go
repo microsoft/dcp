@@ -2,6 +2,7 @@ package containers
 
 import (
 	"context"
+	"io"
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -113,6 +114,23 @@ type RunContainerOptions struct {
 	apiv1.ContainerSpec
 }
 
+type StreamContainerLogsOptions struct {
+	// Follow the logs vs. just returning the current logs at the time the command was run
+	Follow bool
+
+	// If greater than 0, include only last N lines of the log
+	Tail int
+
+	// Only include log entries since a given timestomp
+	Since time.Time
+
+	// Only include log entries before a given timestamp
+	Until time.Time
+
+	// Request the container orchestrator to add timestamps to the log entries
+	Timestamps bool
+}
+
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
 	// Check the runtime status
@@ -145,6 +163,9 @@ type ContainerOrchestrator interface {
 	// Subscribes to events about container state changes
 	// When the subscription is cancelled, the channel will be closed
 	WatchContainers(sink chan<- EventMessage) (*EventSubscription, error)
+
+	// Starts capturing container logs to the provided writers
+	CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options StreamContainerLogsOptions) error
 
 	VolumeOrchestrator
 	NetworkOrchestrator
