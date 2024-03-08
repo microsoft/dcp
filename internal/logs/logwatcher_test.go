@@ -86,7 +86,7 @@ func TestWatchLogsFollowWholeFile(t *testing.T) {
 		close(watcherDone)
 	}()
 
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+	err := wait.PollUntilContextCancel(ctx, cleanupReadyPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
 		return bytes.Equal(buf.Bytes(), []byte(content)), nil
 	})
 	require.NoError(t, err, "watcher did not emit expected content, buffer content is: %s", string(buf.Bytes()))
@@ -142,7 +142,7 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 		}
 
 		// After all writes are done, the watcher should have emitted all the content
-		err := wait.PollUntilContextCancel(tryCtx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		err := wait.PollUntilContextCancel(tryCtx, cleanupReadyPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
 			return bytes.Equal(buf.Bytes(), []byte(allContent)), nil
 		})
 		require.NoError(t, err, "watcher did not emit expected content, buffer content is: %s", string(buf.Bytes()))

@@ -16,7 +16,7 @@ import (
 
 const (
 	defaultBufferSize    = 4096 // Does not have to be, but it is the same size as bufio default buffer size (Go 1.22)
-	logReadRetryInterval = 500 * time.Millisecond
+	logReadRetryInterval = 400 * time.Millisecond
 )
 
 type WatchLogOptions struct {
@@ -93,9 +93,6 @@ func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts Watch
 		}
 
 		// Wait a bit and try reading from the file again.
-		if !timer.Stop() {
-			<-timer.C
-		}
 		timer.Reset(logReadRetryInterval)
 		select {
 		case <-ctx.Done():
