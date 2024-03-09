@@ -41,9 +41,13 @@ type LogOptions struct {
 	// +optional
 	Source string `json:"source,omitempty"`
 
+	// If true, include timestamps (RFC3339) in the logs.
+	// +optional
+	Timestamps bool `json:"timestamps,omitempty"`
+
 	// CONSIDER other options such as the timestamp from which to start showing logs,
 	// whether to include timestamps etc. For inspiration see K8s PodLogOptions struct definition:
-	// https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/types.go#L5162
+	// https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/types.go#L5212
 }
 
 func (lo *LogOptions) GetGroupVersionResource() schema.GroupVersionResource {

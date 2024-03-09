@@ -56,6 +56,11 @@ func CreateExecutableLogStream(
 		return nil, apierrors.NewBadRequest(fmt.Sprintf("Invalid log source '%s'. Supported log sources are '%s' and '%s'", opts.Source, apiv1.LogStreamSourceStdout, apiv1.LogStreamSourceStderr))
 	}
 
+	if opts.Timestamps {
+		// Not implemented yet
+		return nil, apierrors.NewBadRequest("Timestamps are not supported yet for Executable logs")
+	}
+
 	reader, writer := io.Pipe()
 	log := contextdata.GetContextLogger(requestCtx)
 	go func() {

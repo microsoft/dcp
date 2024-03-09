@@ -56,8 +56,8 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	watcherDone := make(chan struct{})
 
 	go func() {
-		err := WatchLogs(ctx, stdOutPath, buf, WatchLogOptions{Follow: true})
-		require.NoError(t, err)
+		watcherErr := WatchLogs(ctx, stdOutPath, buf, WatchLogOptions{Follow: true})
+		require.NoError(t, watcherErr)
 		ld.LogConsumerStopped()
 		close(watcherDone)
 	}()
@@ -66,8 +66,8 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	for i := 0; i < numWrites; i++ {
 		logWriteTimes = append(logWriteTimes, time.Now())
 		content := []byte(fmt.Sprintf("%d\n", i))
-		_, err := stdoutWriter.Write(content)
-		require.NoError(t, err)
+		_, writeErr := stdoutWriter.Write(content)
+		require.NoError(t, writeErr)
 		time.Sleep(writeDelay)
 	}
 
