@@ -1788,6 +1788,13 @@ func schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
+					"timestamps": {
+						SchemaProps: spec.SchemaProps{
+							Description: "If true, include timestamps (RFC3339) in the logs.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
