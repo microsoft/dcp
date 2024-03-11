@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"testing"
@@ -496,7 +497,9 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 
 	// Delete endpoint1
 	t.Logf("Deleting Endpoint '%s'", endpoint1.ObjectMeta.Name)
-	err = client.Delete(ctx, &endpoint1)
+	err = retryOnConflict(ctx, endpoint1.NamespacedName(), func(ctx context.Context, currentEndpoint *apiv1.Endpoint) error {
+		return client.Delete(ctx, currentEndpoint)
+	})
 	require.NoError(t, err, "Could not delete an Endpoint %s", endpoint1.ObjectMeta.Name)
 
 	// Ensure Service switches to endpoint2
@@ -510,7 +513,9 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 
 	// Delete endpoint2
 	t.Logf("Deleting Endpoint '%s'", endpoint2.ObjectMeta.Name)
-	err = client.Delete(ctx, &endpoint2)
+	err = retryOnConflict(ctx, endpoint2.NamespacedName(), func(ctx context.Context, currentEndpoint *apiv1.Endpoint) error {
+		return client.Delete(ctx, currentEndpoint)
+	})
 	require.NoError(t, err, "Could not delete an Endpoint %s", endpoint2.ObjectMeta.Name)
 
 	// Ensure Service is no longer ready

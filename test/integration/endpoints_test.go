@@ -42,8 +42,10 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 	})
 	t.Log("Found Endpoint with correct spec")
 
-	t.Log("Deleting Executable...")
-	err = client.Delete(ctx, &exe)
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
 	require.NoError(t, err, "Could not delete Executable")
 
 	t.Log("Check if Endpoint deleted...")
@@ -90,7 +92,9 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	t.Log("Found Endpoint with correct spec")
 
 	t.Log("Deleting Container...")
-	err = client.Delete(ctx, &container)
+	err = retryOnConflict(ctx, container.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
 	require.NoError(t, err, "Could not delete Container")
 
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", container.ObjectMeta.Name)

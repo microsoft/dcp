@@ -6,21 +6,19 @@ import (
 	"regexp"
 	"strconv"
 	"testing"
-	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
-	"github.com/stretchr/testify/require"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-)
-
-const (
-	maxUpdatedAttempts = 5
 )
 
 func TestExecutableReplicaSetScales(t *testing.T) {
@@ -166,12 +164,18 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 	ownedExes, err := getOwnedExes(ctx, &exers)
 	require.NoError(t, err, "Failed to retrieve owned Executable replicas")
 
-	oldUid := ownedExes[0].UID
+	exeToDelete := ownedExes[0]
+	oldUid := exeToDelete.UID
 
-	if err = client.Delete(ctx, ownedExes[0], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+	t.Logf("Deleting replica '%s'", exeToDelete.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exeToDelete.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, exeToDelete, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
+	})
+	if err != nil {
 		t.Fatalf("could not delete Executable: %v", err)
 	}
 
+	t.Logf("Waiting for ExecutableReplicaSet '%s' to recreate the deleted replica", exers.ObjectMeta.Name)
 	ensureReplicasRecreated := func(ctx context.Context) (bool, error) {
 		newOwnedExes, ownedExesQueryErr := getOwnedExes(ctx, &exers)
 		if ownedExesQueryErr != nil {
@@ -294,16 +298,9 @@ func TestExecutableReplicaSetDeleteRemovesExecutables(t *testing.T) {
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
-	ensureReplicaSetDeleted := func(ctx context.Context) (bool, error) {
-		if deleteErr := client.Delete(ctx, &exers); err != nil {
-			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", deleteErr)
-			return false, deleteErr
-		}
-
-		return true, nil
-	}
-
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureReplicaSetDeleted)
+	err = retryOnConflict(ctx, exers.NamespacedName(), func(ctx context.Context, currentExers *apiv1.ExecutableReplicaSet) error {
+		return client.Delete(ctx, currentExers)
+	})
 	require.NoError(t, err, "ExecutableReplicaSet was not deleted")
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0, 0))
@@ -341,16 +338,9 @@ func TestExecutableReplicaSetDeleteRemovesSoftDeleteExecutables(t *testing.T) {
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, initialScaleTo, 0))
 	require.NoError(t, err, "ExecutableReplicaSet did not create the expected number of Executables")
 
-	ensureReplicaSetDeleted := func(ctx context.Context) (bool, error) {
-		if deleteErr := client.Delete(ctx, &exers); deleteErr != nil {
-			t.Fatalf("Unable to delete ExecutableReplicaSet: %v", deleteErr)
-			return false, deleteErr
-		}
-
-		return true, nil
-	}
-
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureReplicaSetDeleted)
+	err = retryOnConflict(ctx, exers.NamespacedName(), func(ctx context.Context, currentExers *apiv1.ExecutableReplicaSet) error {
+		return client.Delete(ctx, currentExers)
+	})
 	require.NoError(t, err, "ExecutableReplicaSet was not deleted")
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, 0, 0))
@@ -584,32 +574,12 @@ func getOwnedExes(ctx context.Context, exers *apiv1.ExecutableReplicaSet) ([]*ap
 	return ownedExes, nil
 }
 
-func updateExecutableReplicaSet(ctx context.Context, key ctrl_client.ObjectKey, applyChanges func(*apiv1.ExecutableReplicaSet) error) error {
-	var lastError error = nil
-
-	for attempt := 0; attempt < maxUpdatedAttempts; attempt++ {
-		var exers apiv1.ExecutableReplicaSet
-		if err := client.Get(ctx, key, &exers); err != nil {
-			lastError = err
-			time.Sleep(time.Second)
-			continue
+func updateExecutableReplicaSet(ctx context.Context, name types.NamespacedName, applyChanges func(*apiv1.ExecutableReplicaSet) error) error {
+	return retryOnConflict(ctx, name, func(ctx context.Context, currentExeRS *apiv1.ExecutableReplicaSet) error {
+		patch := ctrl_client.MergeFromWithOptions(currentExeRS.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+		if err := applyChanges(currentExeRS); err != nil {
+			return err
 		}
-
-		patch := ctrl_client.MergeFromWithOptions(exers.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
-		if err := applyChanges(&exers); err != nil {
-			lastError = err
-			time.Sleep(time.Second)
-			continue
-		}
-
-		if err := client.Patch(ctx, &exers, patch); err != nil {
-			lastError = err
-			time.Sleep(time.Second)
-			continue
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("update failed, last error was %w", lastError)
+		return client.Patch(ctx, currentExeRS, patch)
+	})
 }
