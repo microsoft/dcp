@@ -227,7 +227,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 				}
 			}
 
-			if svc.Status.ProxylessEndpointNamespace == "" || svc.Status.ProxylessEndpointName == "" {
+			if svc.Status.ProxylessEndpointNamespace == "" && svc.Status.ProxylessEndpointName == "" {
 				// No proxyless Endpoint has been chosen yet (or the chosen one no longer exists), so we need to choose one
 				svc.Status.ProxylessEndpointNamespace = serviceEndpoints.Items[0].ObjectMeta.Namespace
 				svc.Status.ProxylessEndpointName = serviceEndpoints.Items[0].ObjectMeta.Name
@@ -295,14 +295,14 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		change |= statusChanged
 	}
 
-	if svc.Status.EffectiveAddress != oldEffectiveAddress || svc.Status.EffectivePort != oldEffectivePort {
+	if svc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless && (svc.Status.EffectiveAddress != oldEffectiveAddress || svc.Status.EffectivePort != oldEffectivePort) {
 		log.V(1).Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
 		change |= statusChanged
 	}
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless && (svc.Status.ProxylessEndpointNamespace != oldEndpointNamespacedName.Namespace || svc.Status.ProxylessEndpointName != oldEndpointNamespacedName.Name) {
 		if svc.Status.EffectiveAddress != "" || svc.Status.EffectivePort != 0 {
-			log.V(1).Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
+			log.V(1).Info(fmt.Sprintf("proxyless service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
 		}
 		change |= statusChanged
 	}
