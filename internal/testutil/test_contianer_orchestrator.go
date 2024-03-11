@@ -23,7 +23,7 @@ var (
 	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
 )
 
-type TestOrchestrator struct {
+type TestContainerOrchestrator struct {
 	randomNameLength       int
 	volumes                map[string]containerVolume
 	networks               map[string]containerNetwork
@@ -40,8 +40,8 @@ type containerExit struct {
 	stdErr   string
 }
 
-func NewTestOrchestrator(log logr.Logger) *TestOrchestrator {
-	to := &TestOrchestrator{
+func NewTestContainerOrchestrator(log logr.Logger) *TestContainerOrchestrator {
+	to := &TestContainerOrchestrator{
 		randomNameLength: 20,
 		volumes:          map[string]containerVolume{},
 		networks: map[string]containerNetwork{
@@ -73,7 +73,7 @@ func NewTestOrchestrator(log logr.Logger) *TestOrchestrator {
 	return to
 }
 
-func (to *TestOrchestrator) FailMatchingContainers(ctx context.Context, name string, exitCode int32, stdErr string) {
+func (to *TestContainerOrchestrator) FailMatchingContainers(ctx context.Context, name string, exitCode int32, stdErr string) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -88,13 +88,13 @@ func (to *TestOrchestrator) FailMatchingContainers(ctx context.Context, name str
 	}()
 }
 
-func (to *TestOrchestrator) doWatchContainers(watcherCtx context.Context) {
+func (to *TestContainerOrchestrator) doWatchContainers(watcherCtx context.Context) {
 }
 
-func (to *TestOrchestrator) doWatchNetworks(watcherCtx context.Context) {
+func (to *TestContainerOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 }
 
-func (to *TestOrchestrator) getRandomName() (string, error) {
+func (to *TestContainerOrchestrator) getRandomName() (string, error) {
 	postfixBytes := make([]byte, to.randomNameLength)
 	if read, err := rand.Read(postfixBytes); err != nil {
 		return "", err
@@ -159,7 +159,7 @@ func getID() string {
 	return uuid.New().String()
 }
 
-func (to *TestOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+func (to *TestContainerOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -169,7 +169,7 @@ func (to *TestOrchestrator) CheckStatus(ctx context.Context) containers.Containe
 	}
 }
 
-func (to *TestOrchestrator) CreateVolume(ctx context.Context, name string) error {
+func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -182,7 +182,7 @@ func (to *TestOrchestrator) CreateVolume(ctx context.Context, name string) error
 	return nil
 }
 
-func (to *TestOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
+func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -199,7 +199,7 @@ func (to *TestOrchestrator) RemoveVolumes(ctx context.Context, volumes []string,
 	return volumes, nil
 }
 
-func (to *TestOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
+func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -228,14 +228,14 @@ func (to *TestOrchestrator) InspectVolumes(ctx context.Context, volumes []string
 	return result, nil
 }
 
-func (to *TestOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
+func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
 	return to.networkEventsWatcher.Watch(sink)
 }
 
-func (to *TestOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
+func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -272,7 +272,7 @@ func (to *TestOrchestrator) CreateNetwork(ctx context.Context, options container
 	return id.id, nil
 }
 
-func (to *TestOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
+func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -320,7 +320,7 @@ func (to *TestOrchestrator) RemoveNetworks(ctx context.Context, options containe
 	return ids, nil
 }
 
-func (to *TestOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -362,7 +362,7 @@ func (to *TestOrchestrator) InspectNetworks(ctx context.Context, options contain
 	return result, nil
 }
 
-func (to *TestOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
+func (to *TestContainerOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -385,7 +385,7 @@ func (to *TestOrchestrator) ConnectNetwork(ctx context.Context, options containe
 	return errors.Join(containers.ErrNotFound, fmt.Errorf("network not found"))
 }
 
-func (to *TestOrchestrator) doConnectNetwork(ctx context.Context, network containerNetwork, container testContainer) error {
+func (to *TestContainerOrchestrator) doConnectNetwork(ctx context.Context, network containerNetwork, container testContainer) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -409,7 +409,7 @@ func (to *TestOrchestrator) doConnectNetwork(ctx context.Context, network contai
 	return nil
 }
 
-func (to *TestOrchestrator) DisconnectNetwork(ctx context.Context, options containers.DisconnectNetworkOptions) error {
+func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, options containers.DisconnectNetworkOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -455,14 +455,14 @@ func (to *TestOrchestrator) DisconnectNetwork(ctx context.Context, options conta
 	return nil
 }
 
-func (to *TestOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
+func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
 	return to.containerEventsWatcher.Watch(sink)
 }
 
-func (to *TestOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
+func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -478,7 +478,7 @@ func (to *TestOrchestrator) CreateContainer(ctx context.Context, options contain
 	return container.id, nil
 }
 
-func (to *TestOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (testContainer, error) {
+func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (testContainer, error) {
 	if ctx.Err() != nil {
 		return testContainer{}, ctx.Err()
 	}
@@ -547,7 +547,7 @@ func (to *TestOrchestrator) doCreateContainer(ctx context.Context, name string, 
 	return container, nil
 }
 
-func (to *TestOrchestrator) StartContainers(ctx context.Context, names []string) ([]string, error) {
+func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names []string) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -581,7 +581,7 @@ func (to *TestOrchestrator) StartContainers(ctx context.Context, names []string)
 	return result, nil
 }
 
-func (to *TestOrchestrator) doStartContainer(ctx context.Context, container testContainer) (string, error) {
+func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container testContainer) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -624,7 +624,7 @@ func (to *TestOrchestrator) doStartContainer(ctx context.Context, container test
 	return container.id, nil
 }
 
-func (to *TestOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
+func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -640,7 +640,7 @@ func (to *TestOrchestrator) RunContainer(ctx context.Context, options containers
 	return container.id, nil
 }
 
-func (to *TestOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
+func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -677,7 +677,7 @@ func (to *TestOrchestrator) StopContainers(ctx context.Context, names []string, 
 	return results, nil
 }
 
-func (to *TestOrchestrator) doStopContainer(ctx context.Context, container testContainer) (testContainer, error) {
+func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container testContainer) (testContainer, error) {
 	if ctx.Err() != nil {
 		return container, ctx.Err()
 	}
@@ -702,7 +702,7 @@ func (to *TestOrchestrator) doStopContainer(ctx context.Context, container testC
 	return container, nil
 }
 
-func (to *TestOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
+func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -749,7 +749,7 @@ func (to *TestOrchestrator) RemoveContainers(ctx context.Context, names []string
 	return results, nil
 }
 
-func (to *TestOrchestrator) doRemoveContainer(ctx context.Context, container testContainer) (string, error) {
+func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, container testContainer) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -770,7 +770,7 @@ func (to *TestOrchestrator) doRemoveContainer(ctx context.Context, container tes
 	return container.id, nil
 }
 
-func (to *TestOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
+func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -819,7 +819,7 @@ func (to *TestOrchestrator) InspectContainers(ctx context.Context, names []strin
 	return result, nil
 }
 
-func (to *TestOrchestrator) SimulateContainerExit(ctx context.Context, name string) error {
+func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, name string) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -849,7 +849,7 @@ func (to *TestOrchestrator) SimulateContainerExit(ctx context.Context, name stri
 	return containers.ErrNotFound
 }
 
-func (to *TestOrchestrator) CaptureContainerLogs(ctx context.Context, name string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
+func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, name string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -874,4 +874,4 @@ func (to *TestOrchestrator) CaptureContainerLogs(ctx context.Context, name strin
 	return containers.ErrNotFound
 }
 
-var _ containers.ContainerOrchestrator = (*TestOrchestrator)(nil)
+var _ containers.ContainerOrchestrator = (*TestContainerOrchestrator)(nil)

@@ -91,7 +91,6 @@ CONTROLLER_GEN ?= $(TOOL_BIN)/controller-gen$(exe_suffix)
 OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
 GOVERSIONINFO_GEN ?= $(TOOL_BIN)/goversioninfo$(exe_suffix)
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
-ENVTEST ?= $(TOOL_BIN)/setup-envtest$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
@@ -99,7 +98,6 @@ GOLANGCI_LINT_VERSION ?= v1.56.2
 CONTROLLER_TOOLS_VERSION ?= v0.14.0
 CODE_GENERATOR_VERSION ?= v0.29.1
 GOVERSIONINFO_VERSION ?= v1.4.0
-ENVTEST_K8S_VERSION = 1.29.1
 GO_LICENSES_VERSION = v1.6.0
 
 # DCP Version information
@@ -143,7 +141,7 @@ help: ## Display this help.
 ##@ Code generation
 
 .PHONY: generate
-generate: generate-object-methods generate-openapi generate-crd generate-goversioninfo ## Generate object copy methods, OpenAPI definitions, and CRD definitions.
+generate: generate-object-methods generate-openapi generate-goversioninfo ## Generate object copy methods, OpenAPI definitions, and binary version info.
 
 .PHONY: generate-ci
 generate-ci: generate generate-licenses ## Generate all codegen artifacts and licenses/notice files.
@@ -172,15 +170,6 @@ generate-openapi-debug: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.g
 
 $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES) openapi-gen
 	$(run-openapi-gen)
-
-# At run time DCP does not use CRDs, but they are used by tests.
-crd_prefix = $(repo_dir)/pkg/generated/crd/usvc-dev.developer.microsoft.com_
-crd_files = $(crd_prefix)containers.yaml $(crd_prefix)containervolumes.yaml $(crd_prefix)executables.yaml
-
-.PHONY: generate-crd
-generate-crd: $(crd_files) ## Generates CRD documents for resources defined in this repo
-$(crd_files) : $(TYPE_SOURCES) controller-gen
-	$(CONTROLLER_GEN) crd paths="./api/v1/..." output:crd:artifacts:config=pkg/generated/crd
 
 .PHONY: generate-goversioninfo
 generate-goversioninfo: goversioninfo-gen
@@ -301,36 +290,22 @@ endif
 
 ##@ Test targets
 
-ifeq ($(detected_OS),windows)
-define run-tests
-$$env:KUBEBUILDER_ASSETS = "$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)"; go test ./... $(TEST_OPTS)
-endef
-else
-define run-tests
-KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)" go test ./... $(TEST_OPTS)
-endef
-endif
-
 .PHONY: test
 test: TEST_OPTS = -coverprofile cover.out
-test: delay-tool envtest ## Run all tests in the repository
-	$(run-tests)
+test: build-dcpd delay-tool ## Run all tests in the repository
+	go test ./... $(TEST_OPTS)
 
 .PHONY: test-ci
 ifeq ($(detected_OS),windows)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
-test-ci: lint delay-tool envtest
-	$(run-tests)
+test-ci: lint build-dcpd delay-tool
+	go test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: lint delay-tool envtest ## Runs tests in a way appropriate for CI pipeline, with linting etc.
-	CGO_ENABLED=1 $(run-tests)
+test-ci: lint build-dcpd delay-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+	CGO_ENABLED=1 go test ./... $(TEST_OPTS)
 endif
-
-.PHONY: show-test-vars
-show-test-vars: envtest ## Shows the values of variables used in test targets
-	@echo "KUBEBUILDER_ASSETS=$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)"
 
 ## Development and test support targets
 
@@ -352,15 +327,6 @@ $(BIN_DIR):
 
 $(DCP_DIR):
 	$(mkdir) $(DCP_DIR)
-
-.PHONY: envtest
-envtest: $(ENVTEST)
-$(ENVTEST): | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(ENVTEST)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest; $$env:GOBIN = $$null; }
-else
-	[[ -s $(ENVTEST) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-endif
 
 .PHONY: golangci-lint
 ifeq ($(detected_OS),windows)

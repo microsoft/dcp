@@ -14,8 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
-	"github.com/microsoft/usvc-apiserver/pkg/dcpclient"
 )
 
 func ShutdownApp(ctx context.Context, log logr.Logger) error {
@@ -32,7 +32,7 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		log.Error(err, "failed to capture shutdown profile")
 	}
 
-	dcpclient, err := dcpclient.New(shutdownCtx, 5*time.Second)
+	dcpclient, err := dcpclient.NewClient(shutdownCtx, 5*time.Second)
 	if err != nil {
 		log.Error(err, "could not get dcpclient")
 		return err

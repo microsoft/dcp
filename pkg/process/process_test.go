@@ -79,9 +79,10 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	_, err = RunToCompletion(ctx, executor, cmd)
 
 	elapsed := time.Since(start)
+	elapsedStr := testutil.FormatDuration(elapsed)
 	require.True(t, errors.Is(err, context.DeadlineExceeded))
 	if elapsed > 2*time.Second {
-		t.Fatal("Process was not terminated timely, elapsed time was ", elapsed)
+		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
 }
 
@@ -113,11 +114,12 @@ func TestRunWithTimeout(t *testing.T) {
 	cancelFn()
 	<-runCallEndedCh
 	elapsed := time.Since(start)
+	elapsedStr := testutil.FormatDuration(elapsed)
 
 	// Normally we expect the RunWithTimeout() call to return much faster than 500 ms,
 	// but we allow for some slack in case the test is running on a heavily loaded machine.
 	if elapsed > 500*time.Millisecond {
-		t.Fatal("RunWithTimeout() call did not return immediately after context cancellation, elapsed time was ", elapsed)
+		t.Fatal("RunWithTimeout() call did not return immediately after context cancellation, elapsed time was ", elapsedStr)
 	}
 }
 
@@ -165,10 +167,11 @@ func TestRunCancelled(t *testing.T) {
 	cancelFn()
 	exitInfo = <-exitInfoChan
 	elapsed := time.Since(start)
+	elapsedStr := testutil.FormatDuration(elapsed)
 
 	require.True(t, errors.Is(exitInfo.Err, context.Canceled))
 	if elapsed > 2*time.Second {
-		t.Fatal("Process was not terminated timely")
+		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
 }
 

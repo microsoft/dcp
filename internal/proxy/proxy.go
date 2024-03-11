@@ -194,7 +194,7 @@ func (p *Proxy) Configure(newConfig ProxyConfig) error {
 			p.shutdownAllUDPStreams()
 		}
 		if state == ProxyStateRunning {
-			<-p.configurationApplied.WaitChannel()
+			<-p.configurationApplied.Wait()
 		}
 	}
 

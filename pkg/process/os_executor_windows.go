@@ -24,20 +24,23 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 	}
 
 	// Windows has no signals, and there is no universal way to "ask a process to stop",
-	// so we just kill the process, but before that, if we are already waiting for the process to exit,
-	// we need to update the "reason" field, to indicate that we attempted to kill the process,
-	// so that we do not try to stop it again in case the context used for StartProcess() expires.
-	e.acquireLock()
-	ws, found := e.procsWaiting[pid]
-	if found {
-		ws.reason |= waitReasonStopping
+	// so we just kill the process, but before that, we need to check if we are not already waiting for the process.
+	var waitFunc WaitFunc = func() error {
+		_, waitErr := proc.Wait()
+		return waitErr
 	}
-	e.releaseLock()
 
-	err = proc.Kill()
-	if err == nil || errors.Is(err, os.ErrProcessDone) {
-		return nil
+	_, waitEnded, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {
+		err = proc.Kill()
+		if err == nil || errors.Is(err, os.ErrProcessDone) {
+			return nil
+		} else {
+			return err
+		}
 	} else {
-		return err
+		// We already initiated the stop for this process, just wait for that to complete
+		<-waitEnded
+		return nil
 	}
 }

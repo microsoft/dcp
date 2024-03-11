@@ -8,17 +8,14 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 	ctrl_manager "sigs.k8s.io/controller-runtime/pkg/manager"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
+	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
@@ -26,15 +23,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
-
-var (
-	scheme = apiruntime.NewScheme()
-)
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(apiv1.AddToScheme(scheme))
-}
 
 func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 	runControllersCmd := &cobra.Command{
@@ -56,18 +44,14 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, 15*time.Second)
 	defer cancelRetryCtx()
 
+	scheme := dcpclient.NewScheme()
+
 	// Depending on the usage pattern, the API server may not be available immediately.
 	// Do some retries with exponential back-off before giving up
 	mgr, err := resiliency.RetryGet(retryCtx, func() (ctrl_manager.Manager, error) {
 		config := ctrlruntime.GetConfigOrDie()
-		return ctrlruntime.NewManager(config, ctrlruntime.Options{
-			Scheme:         scheme,
-			LeaderElection: false,
-			Metrics: metricsserver.Options{
-				BindAddress: "0",
-			},
-			Logger: log.WithName("ControllerManager"),
-		})
+		ctrlMgrOpts := controllers.NewControllerManagerOptions(ctx, scheme, log)
+		return ctrlruntime.NewManager(config, ctrlMgrOpts)
 	})
 	if err != nil {
 		log.Error(err, "unable to create controller manager")

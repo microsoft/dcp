@@ -16,7 +16,7 @@ func NewAutoResetEvent(initialState bool) *AutoResetEvent {
 	return retval
 }
 
-func (e *AutoResetEvent) WaitChannel() <-chan struct{} {
+func (e *AutoResetEvent) Wait() <-chan struct{} {
 	return e.channel
 }
 

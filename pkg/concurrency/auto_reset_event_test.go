@@ -53,7 +53,7 @@ func TestEventMultipleWaiters(t *testing.T) {
 
 	for i := 0; i < numWaiters; i++ {
 		go func() {
-			<-event.WaitChannel()
+			<-event.Wait()
 			waiterDone <- struct{}{}
 		}()
 	}
@@ -83,7 +83,7 @@ func TestFreezeEvent(t *testing.T) {
 
 func ensureEventSet(t *testing.T, event *AutoResetEvent) {
 	select {
-	case <-event.WaitChannel():
+	case <-event.Wait():
 	default:
 		require.Fail(t, "event not set")
 	}
@@ -91,7 +91,7 @@ func ensureEventSet(t *testing.T, event *AutoResetEvent) {
 
 func ensureEventNotSet(t *testing.T, event *AutoResetEvent) {
 	select {
-	case <-event.WaitChannel():
+	case <-event.Wait():
 		require.Fail(t, "event set")
 	default:
 	}

@@ -381,7 +381,7 @@ func (dco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				dco.log.Error(err, "capturing container logs failed", "Container", container)
 			}
-		} else if exitCode != 0 {
+		} else if exitCode != 0 && exitCode != process.UnknownExitCode {
 			dco.log.Error(
 				fmt.Errorf("streaming container logs failed with exit code %d", exitCode),
 				"capturing container logs failed",
@@ -616,6 +616,7 @@ func (pco *PodmanCliOrchestrator) runPodmanCommand(ctx context.Context, commandN
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
 	exitCode, err := process.RunWithTimeout(effectiveCtx, pco.executor, cmd)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		// If a timeout occurs, the content of the stdout and stderr buffers is not guaranteed to be complete.

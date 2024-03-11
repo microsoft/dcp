@@ -11,15 +11,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
 const (
-	defaultBufferSize   = 4096 // Does not have to be, but it is the same size as bufio default buffer size (Go 1.22)
-	maxFileWatchTimeout = 10 * time.Second
-	minFileWatchTimeout = 100 * time.Millisecond
-	fileWatchRetries    = 3
+	defaultBufferSize    = 4096 // Does not have to be, but it is the same size as bufio default buffer size (Go 1.22)
+	logReadRetryInterval = 400 * time.Millisecond
 )
 
 type WatchLogOptions struct {
@@ -54,24 +51,13 @@ func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts Watch
 	buf := make([]byte, defaultBufferSize)
 	defer dest.Close()
 
-	// Defer watcher/timer creation until they are needed. We do not need to be notified about file changes
-	// when we are still tranmitting already-existing contents to the destination.
-	//
-	// TODO: we should
-	// 1. Store log files in a separate directory off of session directory
-	// 2. Use a single file watcher over the whole logs directory
-	// 3. Have individual log file watchers subscribe to the directory watcher for change notifications to their own files
-	var watcher *fsnotify.Watcher
-	var timer *time.Timer
-
-	// If this is the first time we are watching a resource, there is a lot of opportunity for timing issues to occur.
-	// We might be just spinning up the log capturing process, and the log source file might be empty.
-	// This means first read will not get any data, and we set up a file notification watcher.
-	// If the log data is small and gets written in one shot right after our first read, but before we set up the watcher,
-	// we will miss the change event.
-	// To work around this issue we will start with a small watch timeout and increase it exponentially to maxFileWatchTimeout.
-	// After we get going, it is unlikely that we miss any change events, so we can keep the timeout at max.
-	watchTimeout := minFileWatchTimeout
+	// We experimented with file change notification libraries like fsnotify (github.com/fsnotify/fsnotify),
+	// but ultimately decided to rely on simple polling. The reasons are:
+	// - fsnotify does not work reliably on Windows
+	// - We deal with at most a handful of log files, and they are modified and read by our own, single process,
+	//   which means the likelyhood of having the file contents cached in memory by the OS is very high,
+	//   and the cost of making a read() call to check for new data is very low.
+	timer := time.NewTimer(0)
 
 	for {
 		if ctx.Err() != nil {
@@ -106,86 +92,13 @@ func WatchLogs(ctx context.Context, path string, dest io.WriteCloser, opts Watch
 			return fmt.Errorf("failed to read log file '%s': %w", path, readErr)
 		}
 
-		if watcher == nil {
-			var infraErr error
-			watcher, timer, infraErr = createFileWatchInfra(path)
-			if infraErr != nil {
-				return infraErr
-			}
-			defer watcher.Close()
-			defer timer.Stop()
-			// Try again to read from log file as we might have missed the change event between last read and adding the watcher.
-			continue
-		}
-
-		endReason := waitForLogChange(ctx, watcher, path, timer, watchTimeout)
-
-		if endReason == waitEndReasonTimerExpired && watchTimeout < maxFileWatchTimeout {
-			watchTimeout *= 2
-			if watchTimeout > maxFileWatchTimeout {
-				watchTimeout = maxFileWatchTimeout
-			}
-		}
-	}
-}
-
-func createFileWatchInfra(path string) (*fsnotify.Watcher, *time.Timer, error) {
-	watcher, watcherErr := fsnotify.NewWatcher()
-	if watcherErr != nil {
-		return nil, nil, fmt.Errorf("failed to create file watcher for log file '%s': %w", path, watcherErr)
-	}
-
-	watcherErr = watcher.Add(path)
-	if watcherErr != nil {
-		watcher.Close()
-		return nil, nil, fmt.Errorf("failed to add log file '%s' to watcher: %w", path, watcherErr)
-	}
-
-	timer := time.NewTimer(minFileWatchTimeout)
-	return watcher, timer, nil
-}
-
-type waitEndReason int
-
-const (
-	waitEndReasonFileChanged waitEndReason = iota
-	waitEndReasonWatcherError
-	waitEndReasonTimerExpired
-	waitEndReasonContextCancelled
-)
-
-func waitForLogChange(
-	ctx context.Context,
-	watcher *fsnotify.Watcher,
-	path string,
-	timer *time.Timer,
-	watchTimeout time.Duration,
-) waitEndReason {
-	fileWatchRetryCount := 0
-	timer.Reset(watchTimeout)
-
-	for {
+		// Wait a bit and try reading from the file again.
+		timer.Reset(logReadRetryInterval)
 		select {
 		case <-ctx.Done():
-			return waitEndReasonContextCancelled
-
-		case we := <-watcher.Events:
-			if (we.Op == fsnotify.Write || we.Op == fsnotify.Remove) && we.Name == path {
-				return waitEndReasonFileChanged
-			}
-
-		case <-watcher.Errors:
-			// Unlikely to happen, but the watcher might fail to deliver some events if there is a lot of file activity,
-			// so we will retry a few times.
-			if fileWatchRetryCount < fileWatchRetries {
-				fileWatchRetryCount++
-			} else {
-				return waitEndReasonWatcherError
-			}
-
+			return nil
 		case <-timer.C:
-			// Just in case the file watch event(s) do not arrive as expected, we will do some polling too.
-			return waitEndReasonTimerExpired
+			continue
 		}
 	}
 }

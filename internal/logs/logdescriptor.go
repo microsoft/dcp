@@ -21,11 +21,8 @@ import (
 )
 
 const (
-	pollImmediately = true // Don't wait before polling for the first time
-)
-
-var (
-	waitPollInterval = 200 * time.Millisecond
+	pollImmediately          = true // Don't wait before polling for the first time
+	cleanupReadyPollInterval = 200 * time.Millisecond
 )
 
 // LogDescriptor is a struct that holds information about logs beloning to a DCP resource
@@ -40,8 +37,8 @@ type LogDescriptor struct {
 	CancelContext context.CancelFunc
 
 	lock          *sync.Mutex // Protects the fields below
-	stdOut        *notifyWriteCloser
-	stdErr        *notifyWriteCloser
+	stdOut        *logfile
+	stdErr        *logfile
 	consumerCount uint32 // Number of active log watchers.
 	lastUsed      time.Time
 	disposed      bool
@@ -155,7 +152,7 @@ func (l *LogDescriptor) Dispose(ctx context.Context, extraTime time.Duration) er
 }
 
 func (l *LogDescriptor) doCleanup(deadline context.Context) error {
-	_ = wait.PollUntilContextCancel(deadline, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+	_ = wait.PollUntilContextCancel(deadline, cleanupReadyPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		l.lock.Lock()
 		defer l.lock.Unlock()
 
@@ -214,7 +211,7 @@ func (l *LogDescriptor) createLogFiles(logsFolder string) error {
 		)
 	}
 
-	l.stdOut = newNotifyWriteCloser(stdOut, stdOutPath)
-	l.stdErr = newNotifyWriteCloser(stdErr, stdErrPath)
+	l.stdOut = newLogFile(stdOut, stdOutPath)
+	l.stdErr = newLogFile(stdErr, stdErrPath)
 	return nil
 }

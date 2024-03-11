@@ -16,15 +16,21 @@ import (
 type waitReason uint32
 
 const (
+	waitReasonNone       waitReason = 0x0
 	waitReasonMonitoring waitReason = 0x1
 	waitReasonStopping   waitReason = 0x2
 )
 
+type waitResult struct {
+	waitErr error // The error returned by the wait function, if any
+}
+
 type waitState struct {
-	waitErr     error         // The error returned by the wait function
-	waitEndedCh chan struct{} // A channel that will be closed when the wait function ends
-	waitEnded   time.Time     // The time when the wait function ended
-	reason      waitReason    // The reason why are waiting on the process
+	waitable     Waitable        // The waitable that is being waited on
+	waitEndedCh  chan struct{}   // A channel that gets closed when the wait ends
+	waitResultCh chan waitResult // A channel that delivers the result of the wait
+	waitEnded    time.Time       // The time when the wait function ended
+	reason       waitReason      // The reason why are waiting on the process
 }
 
 type Waitable interface {
@@ -55,107 +61,119 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 		return UnknownPID, nil, err
 	}
 
-	// The caller might not call startWaitForProcessExit(), but if they do, we need to get a notification
-	// when the process exits, so we can
-	var processStopCh chan *waitState
-	if handler != nil {
-		processStopCh = make(chan *waitState, 1)
-	}
-
 	osPid := cmd.Process.Pid
 	pid, err := IntToPidT(osPid)
 	if err != nil {
 		return UnknownPID, nil, err
 	}
 
+	// Get the wait result channel, but do not actually start waiting
+	// This also has the effect of tying the wait for this process to the command that started it.
+	waitResultCh, _, _ := e.tryStartWaiting(pid, cmd, waitReasonNone)
+
+	// Start the goroutine that waits for the context to expire.
 	go func() {
+
 		select {
 
-		case ws := <-processStopCh:
-			// Do not report anything if the context expired, or nobody is listening
-			if ctx.Err() != nil || handler == nil {
-				return
-			} else {
-				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
-				handler.OnProcessExited(pid, exitCode, execError)
+		case wr := <-waitResultCh:
+			// The process exited before the context expired.
+			if handler != nil {
+				exitCode, execError := getProcessExecResult(wr.waitErr, cmd)
+				handler.OnProcessExited(pid, exitCode, errors.Join(ctx.Err(), execError))
 			}
 
 		case <-ctx.Done():
-			e.acquireLock()
-			needToStopProcess := false
-			ws, found := e.procsWaiting[pid]
-			if !found || (ws.reason&waitReasonStopping) == 0 {
-				// The context associated with the process start has expired, but we haven't attempted to stop the process yet.
-				needToStopProcess = true
-			}
-			e.releaseLock()
-
+			_, _, shouldStopProcess := e.tryStartWaiting(pid, cmd, waitReasonStopping)
 			var stopProcessErr error = nil
-			if needToStopProcess {
+
+			if shouldStopProcess {
 				// CONSIDER: having an option to specify whether to shut down the process when the context expires.
-				stopProcessErr = e.StopProcess(pid)
+				stopProcessErr = e.stopProcessInternal(pid, optIsResponsibleForStopping)
 			}
+
+			wr := <-waitResultCh
 
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(stopProcessErr, cmd)
-				handler.OnProcessExited(pid, exitCode, errors.Join(ctx.Err(), execError))
+				exitCode, execError := getProcessExecResult(wr.waitErr, cmd)
+				handler.OnProcessExited(pid, exitCode, errors.Join(stopProcessErr, execError, ctx.Err()))
 			}
 		}
 	}()
 
 	startWaitingForProcessExit := func() {
-		ws := e.tryStartWaiting(pid, cmd, waitReasonMonitoring)
-
-		if handler != nil {
-			go func() {
-				<-ws.waitEndedCh
-				processStopCh <- ws
-				close(processStopCh)
-			}()
-		}
+		_, _, _ = e.tryStartWaiting(pid, cmd, waitReasonMonitoring)
 	}
 
 	return pid, startWaitingForProcessExit, nil
 }
 
-func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) *waitState {
+// Atomically starts waiting on the passed waitable if noting is already waiting in association with the process
+// identified by PID. If the process is already being waited on, the reason is updated.
+//
+// Returns the channel that can be used to retrieve the wait result, the channel that signals the wait ended,
+// and a boolean indicating whether the caller is the first one to indicate that the reason for the wait
+// is "stopping the process", and thus IT is the caller that must stop the process.
+func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) (<-chan waitResult, chan struct{}, bool) {
+	doWait := func(ws *waitState) {
+		err := ws.waitable.Wait()
+
+		e.acquireLock()
+		defer e.releaseLock()
+
+		ws.waitEnded = time.Now()
+
+		// There might be up to two different goroutines reading from the wait result channel:
+		// the one that was started by StartProcess() and the one that was started by StopProcess().
+		// We need to ensure that both of them are able get the result.
+		ws.waitResultCh <- waitResult{waitErr: err}
+		ws.waitResultCh <- waitResult{waitErr: err}
+		close(ws.waitResultCh)
+		close(ws.waitEndedCh)
+	}
+
 	e.acquireLock()
 	defer e.releaseLock()
 
 	ws, found := e.procsWaiting[pid]
+	callerShouldStopProcess := false
+
 	if found {
-		// We are already waiting, just update the reason
+		if !ws.waitEnded.IsZero() {
+			// The process has already exited, and we captured the wait result, there is no need to start waiting again,
+			// or update anything.
+			return ws.waitResultCh, ws.waitEndedCh, false
+		}
+
+		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
+		if ws.reason == waitReasonNone && reason != waitReasonNone {
+			go doWait(ws)
+		}
 		ws.reason |= reason
 	} else {
+		callerShouldStopProcess = (reason & waitReasonStopping) != 0
 		ws = &waitState{
-			waitEndedCh: make(chan struct{}),
-			reason:      reason,
+			waitable:     waitable,
+			waitResultCh: make(chan waitResult, 2),
+			waitEndedCh:  make(chan struct{}),
+			reason:       reason,
 		}
 		e.procsWaiting[pid] = ws
-
-		go func() {
-			err := waitable.Wait()
-
-			e.acquireLock()
-			defer e.releaseLock()
-			endedWaitState, endedWaitStateFound := e.procsWaiting[pid]
-			if !endedWaitStateFound {
-				panic(fmt.Sprintf("process with pid %d was not found in the waiting list", pid))
-			}
-			endedWaitState.waitErr = err
-			endedWaitState.waitEnded = time.Now()
-			close(endedWaitState.waitEndedCh)
-		}()
+		if reason != waitReasonNone {
+			go doWait(ws)
+		}
 	}
 
-	return ws
+	return ws.waitResultCh, ws.waitEndedCh, callerShouldStopProcess
 }
 
-// Returns the process execution error and process exit code depending on the result of process wait call.
+// Returns the process execution error and process exit code depending on the result of command wait call.
 func getProcessExecResult(waitErr error, cmd *exec.Cmd) (int32, error) {
 	var ee *exec.ExitError
-	if waitErr == nil || errors.As(waitErr, &ee) {
+	if waitErr == nil {
 		return int32(cmd.ProcessState.ExitCode()), nil
+	} else if errors.As(waitErr, &ee) {
+		return int32(ee.ExitCode()), nil
 	} else {
 		return UnknownExitCode, waitErr
 	}
@@ -177,26 +195,19 @@ func (e *OSExecutor) releaseLock() {
 }
 
 func (e *OSExecutor) StopProcess(pid Pid_t) error {
+	return e.stopProcessInternal(pid, optNone)
+}
+
+func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) error {
 	tree, err := GetProcessTree(pid)
 	if err != nil {
 		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
 	}
 
-	e.acquireLock()
-
-	// If this is a process with a wait state, ensure we don't try to stop it twice
-	ws, found := e.procsWaiting[pid]
-	if found {
-		// We are already waiting, just update the reason
-		ws.reason |= waitReasonStopping
-	}
-
-	e.releaseLock()
-
 	e.log.V(1).Info("stopping process tree", "root", pid, "tree", tree)
 
 	// If the root process cannot be stopped, don't bother with the rest of the tree.
-	err = e.stopSingleProcess(pid, optNotFoundIsError|optTrySignal)
+	err = e.stopSingleProcess(pid, opts|optNotFoundIsError|optTrySignal)
 	if err != nil {
 		return err
 	}
@@ -207,7 +218,7 @@ func (e *OSExecutor) StopProcess(pid Pid_t) error {
 	}
 
 	childStoppingErrors := slices.MapConcurrent[Pid_t, error](tree, func(id Pid_t) error {
-		return e.stopSingleProcess(id, optNone)
+		return e.stopSingleProcess(id, opts)
 	}, slices.MaxConcurrency)
 	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
 	if len(childStoppingErrors) > 0 {
@@ -223,6 +234,9 @@ const (
 	optNone            processStoppingOpts = 0
 	optNotFoundIsError processStoppingOpts = 0x1
 	optTrySignal       processStoppingOpts = 0x2
+
+	// The caller is responsible for stopping the process, disregard "shouldStopProcess" value returned by tryStartWaiting().
+	optIsResponsibleForStopping processStoppingOpts = 0x4
 )
 
 var _ Executor = (*OSExecutor)(nil)

@@ -90,7 +90,7 @@ func (q *ConcurrentBoundedQueue[T]) Dequeue() (T, bool) {
 }
 
 func (q *ConcurrentBoundedQueue[T]) NewData() <-chan struct{} {
-	return q.newData.WaitChannel()
+	return q.newData.Wait()
 }
 
 func (q *ConcurrentBoundedQueue[T]) next(i int) int {

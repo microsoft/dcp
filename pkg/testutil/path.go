@@ -41,10 +41,11 @@ func FindRootFor(target PathFindTarget, tailElem ...string) (string, error) {
 			return "", fmt.Errorf("could not check for existence of path '%s': %w", attempt, err)
 		}
 
-		cwd = filepath.Dir(cwd)
 		if isRoot(cwd) || attemptNum == 100 {
 			return "", fmt.Errorf("path ending with '%s' not found", filepath.Join(tailElem...))
 		}
+
+		cwd = filepath.Dir(cwd)
 	}
 }
 
@@ -57,4 +58,21 @@ func isRoot(path string) bool {
 		return matched
 	}
 	return false
+}
+
+// Returns temporary directory root path for use in tests.
+// Agenst running tests in CI pipelines often require that tests use temporary directory that
+// is different from what TEMP or TMPDIR environment variables point to. This function takes care of that.
+func TestTempRoot() string {
+	azdoTemp, found := os.LookupEnv("AGENT_TEMPDIRECTORY") // Azure DevOps pipeline
+	if found {
+		return azdoTemp
+	}
+
+	ghTemp, found := os.LookupEnv("RUNNER_TEMP") // GitHub Actions
+	if found {
+		return ghTemp
+	}
+
+	return os.TempDir()
 }

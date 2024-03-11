@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 // Tests that processes that ignore SIGTERM can still be terminated.
@@ -49,10 +50,11 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 	err = executor.StopProcess(pid)
 	require.NoError(t, err)
 	elapsed := time.Since(start)
+	elapsedStr := testutil.FormatDuration(elapsed)
 	if elapsed > delay {
 		// It is expected that the process will not exit immediately, because it will ignore SIGTERM.
 		// It should not take more than `signalAndWaitTimeout` though.
-		t.Fatal("Process was not terminated timely")
+		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
 	ensureAllStopped(t, []Pid_t{pid}, 5*time.Second)
 }

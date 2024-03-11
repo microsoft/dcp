@@ -58,7 +58,7 @@ func EnsureKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 		return "", fmt.Errorf("invalid port number: %d", port)
 	}
 
-	kubeconfigPath, err := EnsureKubeconfigFile(flags, port)
+	kubeconfigPath, err := EnsureKubeconfigFileFromFlags(flags, port)
 	if err != nil {
 		return "", fmt.Errorf("unable to ensure existence of a Kubeconfig file: %w", err)
 	}

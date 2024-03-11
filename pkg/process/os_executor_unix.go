@@ -28,11 +28,23 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 		}
 	}
 
+	var waitFunc WaitFunc = func() error {
+		_, waitErr := proc.Wait()
+		return waitErr
+	}
+
+	waitResultCh, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
+		// We already initiated the stop for this process, just wait for that to complete
+		<-waitEndedCh
+		return nil
+	}
+
 	if (opts & optTrySignal) != 0 {
 		// Give the process a chance to gracefully exit.
 		// There is no established standard for what signals are used for graceful shutdown,
 		// but SIGTERM and SIGQUIT are commonly used.
-		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts)
+		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts, waitResultCh)
 		switch {
 		case err == nil:
 			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
@@ -55,7 +67,7 @@ const signalAndWaitTimeout = 10 * time.Second
 
 // Sends a given signal to a process and waits for it to exit.
 // If the process does not exit within 10 seconds, the function returns context.DeadlineExceeded.
-func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, opts processStoppingOpts) error {
+func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, opts processStoppingOpts, waitResultCh <-chan waitResult) error {
 	err := proc.Signal(sig)
 	switch {
 	case errors.Is(err, os.ErrProcessDone):
@@ -67,20 +79,10 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 	timeoutCtx, cancelTimeout := context.WithTimeout(context.Background(), signalAndWaitTimeout)
 	defer cancelTimeout()
 
-	var waitFunc WaitFunc = func() error {
-		_, waitErr := proc.Wait()
-		return waitErr
-	}
-
-	pid, err := IntToPidT(proc.Pid)
-	if err != nil {
-		return err
-	}
-
-	ws := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 	select {
-	case <-ws.waitEndedCh:
-		err = ws.waitErr
+
+	case wr := <-waitResultCh:
+		err = wr.waitErr
 		var ee *exec.ExitError
 		if err == nil || errors.Is(err, os.ErrProcessDone) || errors.As(err, &ee) {
 			// These are all expected errors, the process exited successfully.
@@ -90,12 +92,13 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 		// Receiving ECHILD when calling wait() on the child process is expected,
 		// (the parent process might have terminated them).
 		var sysErr *os.SyscallError
-		isEChildErr := err != nil && errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
+		isEChildErr := errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
 		if isEChildErr && (opts&optNotFoundIsError) == 0 {
 			return nil
 		}
 
 		return fmt.Errorf("could not wait for process %d to exit: %w", proc.Pid, err)
+
 	case <-timeoutCtx.Done():
 		return context.DeadlineExceeded
 	}

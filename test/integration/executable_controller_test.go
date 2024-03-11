@@ -130,7 +130,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 				require.NoError(t, err)
 				pid, err := process.Int64ToPidT(pid64)
 				require.NoError(t, err)
-				processExecutor.SimulateProcessExit(t, pid, int32(expectedEC))
+				testProcessExecutor.SimulateProcessExit(t, pid, int32(expectedEC))
 			},
 		},
 		{
@@ -231,7 +231,7 @@ func TestExecutableStopState(t *testing.T) {
 			},
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
-					killedProcesses := processExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
+					killedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
@@ -342,7 +342,7 @@ func TestExecutableDeletion(t *testing.T) {
 			},
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
-					killedProcesses := processExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
+					killedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
@@ -433,13 +433,13 @@ func TestExecutableStartupFailureProcess(t *testing.T) {
 	}
 
 	t.Logf("Preparing run for Executable '%s'... (should fail)", exe.ObjectMeta.Name)
-	processExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
 		Condition: ctrl_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
 		StartupError: fmt.Errorf("simulated startup failure for Executable '%s'", exe.ObjectMeta.Name),
 	})
-	defer processExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
@@ -543,7 +543,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	require.NoError(t, err, "Process could not be started")
 
 	t.Logf("Ensure the Executable '%s' process got the service port injected...", exe.ObjectMeta.Name)
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
 	require.True(t, slices.Contains(pe.Cmd.Env, "SVC_PORT=7733"), "Port was not injected into the Executable '%s' process environment variables. The process environment variables are: %v", exe.ObjectMeta.Name, pe.Cmd.Env)
 
@@ -555,6 +555,9 @@ func TestExecutableServingPortInjected(t *testing.T) {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
+
+	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
+	waitServiceReady(t, ctx, &svc)
 }
 
 // Verify ports are injected into Executable environment variables via portForServing template function.
@@ -607,7 +610,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	require.NoError(t, err, "Process could not be started")
 
 	t.Logf("Ensure the process for Executable '%s' is running...", exe.ObjectMeta.Name)
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find the Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
 
 	// Validate the injected port
@@ -636,6 +639,9 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected port information. The effective environemtn is %v", exe.ObjectMeta.Name, effectiveEnv)
+
+	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
+	waitServiceReady(t, ctx, &svc)
 }
 
 // Verify ports are injected into Executable using startup parameters and portForServing template function.
@@ -687,7 +693,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 	// Note: arguments for the process follow C/Unix convention, that is, args[0] is the path to the program.
 
 	t.Logf("Ensure the Executable '%s' process got the service port injected...", exe.ObjectMeta.Name)
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
 	require.Equal(t, "7746", pe.Cmd.Args[2], "Port was not injected into the Executable '%s' process startup parameters. The process startup parameters are: %v", exe.ObjectMeta.Name, pe.Cmd.Args)
 
@@ -696,6 +702,9 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 		return len(currentExe.Status.EffectiveArgs) == 2, nil
 	})
 	require.Equal(t, updatedExe.Status.EffectiveArgs[1], "7746", "The Executable '%s' startup parameters do not include expected port. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+
+	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
+	waitServiceReady(t, ctx, &svc)
 }
 
 // Verify ports are injected into Executable using startup parameters and portForServing template function.
@@ -746,7 +755,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 	require.NoError(t, err, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure the process for Executable '%s' got the service port injected...", exe.ObjectMeta.Name)
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find the Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
 
 	// Validate the injected port
@@ -772,6 +781,9 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 		return len(currentExe.Status.EffectiveArgs) == 2, nil
 	})
 	require.Equal(t, updatedExe.Status.EffectiveArgs[1], portStr, "The Executable '%s' startup parameters do not include expected port. The startup parameters are %v", exe.ObjectMeta.Name, updatedExe.Status.EffectiveArgs)
+
+	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
+	waitServiceReady(t, ctx, &svc)
 }
 
 // Verify ports are injected into Executable using a combination of startup parameters and environment variables.
@@ -891,7 +903,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	require.NoError(t, err, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
 
 	t.Logf("Ensure the process for Executable '%s' is running...", exe.ObjectMeta.Name)
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find the Executable '%s' process with PID %d", exe.ObjectMeta.Name, pid)
 
 	// VALIDATION PART 1: validate ports injected via environment variables
@@ -986,6 +998,11 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	expectedPorts := []int32{svcAPort, svcBExpectedPort, svcCPort, svcDPort}
 	actualPorts := slices.Map[*apiv1.Endpoint, int32](endpoints, func(e *apiv1.Endpoint) int32 { return e.Spec.Port })
 	require.ElementsMatch(t, expectedPorts, actualPorts, "Some ports used by Endpoints of Executable '%s' are not matching what was injected into the Executable", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure services exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
+	for _, svc := range services {
+		waitServiceReady(t, ctx, &svc)
+	}
 }
 
 // Verify ports are injected into Executable environment variables via portFor template function.
@@ -1081,7 +1098,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 	require.NoError(t, err, "Process could not be started")
 
 	t.Logf("Ensure the Executable process got templated env vars injected...")
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find the process with PID %d", pid)
 
 	// Validate the templated env vars
@@ -1175,7 +1192,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 		Spec: apiv1.ServiceSpec{
 			Protocol: apiv1.TCP,
 			Address:  IPAddr,
-			Port:     26003,
+			Port:     26010,
 		},
 	}
 
@@ -1185,7 +1202,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 
 	var spAnn strings.Builder
 	spAnn.WriteString("[")
-	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s", "address": "%s"}`, svc.ObjectMeta.Name, IPAddr))
+	spAnn.WriteString(fmt.Sprintf(`{"serviceName":"%s", "address": "%s", "port": 26011}`, svc.ObjectMeta.Name, IPAddr))
 	spAnn.WriteString("]")
 
 	server := apiv1.Executable{
@@ -1200,6 +1217,10 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 				{
 					Name:  "ADDRESS",
 					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
+				},
+				{
+					Name:  "PORT",
+					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
 				},
 			},
 		},
@@ -1241,7 +1262,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	require.NoError(t, err, "Process for Executable '%s' could not be started", consumer.ObjectMeta.Name)
 
 	t.Logf("Ensure the process for Executable '%s' is running...", consumer.ObjectMeta.Name)
-	pe, found := processExecutor.FindByPid(pid)
+	pe, found := testProcessExecutor.FindByPid(pid)
 	require.True(t, found, "Could not find the Executable '%s' process with PID %d", consumer.ObjectMeta.Name, pid)
 
 	serverAddressExpectedArg := fmt.Sprintf("--server-address=%s", IPAddr)
@@ -1254,13 +1275,16 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 		consumer.ObjectMeta.Name,
 		pe.Cmd.Args,
 	)
+
+	t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", server.ObjectMeta.Name)
+	waitServiceReady(t, ctx, &svc)
 }
 
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {
 	pid := process.UnknownPID
 
 	processStarted := func(_ context.Context) (bool, error) {
-		runningProcessesWithPath := processExecutor.FindAll([]string{cmdPath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
+		runningProcessesWithPath := testProcessExecutor.FindAll([]string{cmdPath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
 			return pe.Running()
 		})
 

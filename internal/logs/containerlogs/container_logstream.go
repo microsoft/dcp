@@ -87,7 +87,8 @@ func CreateContainerLogStream(
 	if newlyCreated {
 		// Need to start log capturing for the container
 		logCaptureErr := co.CaptureContainerLogs(ld.Context, ctr.Status.ContainerID, stdOutWriter, stdErrWriter, containers.StreamContainerLogsOptions{
-			Follow: true,
+			Follow:     true,
+			Timestamps: opts.Timestamps,
 		})
 		if logCaptureErr != nil {
 			log.Error(logCaptureErr, "Failed to start capturing logs for Container", "Container", ctr.NamespacedName())

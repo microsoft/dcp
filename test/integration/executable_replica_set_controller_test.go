@@ -399,7 +399,7 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 	require.NoError(t, err, "Failed to parse PID from Executable status")
 	pid, err := process.Int64ToPidT(pid64)
 	require.NoError(t, err)
-	if err = processExecutor.StopProcess(pid); err != nil {
+	if err = testProcessExecutor.StopProcess(pid); err != nil {
 		t.Fatalf("could not kill process: %v", err)
 	}
 

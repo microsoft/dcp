@@ -20,27 +20,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
-func doEnsureKubeconfigFile(configPath string, port int32) (string, error) {
-	info, err := os.Stat(configPath)
-	if err != nil && errors.Is(err, iofs.ErrNotExist) {
-		if err = createKubeconfigFile(configPath, port); err != nil {
-			return "", err
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("could not check whether kubeconfig file ('%s') exists: %w", configPath, err)
-	} else if info.IsDir() {
-		return "", fmt.Errorf("specified kubeconfig ('%s') is a directory", configPath)
-	}
-
-	return configPath, nil
-}
-
 // Returns path to Kubeconfig file to be used for configuring to the DCP API server,
 // and by clients (to connect to the API server).
 // If the --kubeconfig parameter is passed, the returned value will be the parameter value.
 // If the --kubeconfig parameter is missing, the default location (~/.dcp/kubeconfig) will be checked,
 // and if the kubeconfig file is not there, it will be created.
-func EnsureKubeconfigFile(fs *pflag.FlagSet, port int32) (string, error) {
+func EnsureKubeconfigFileFromFlags(fs *pflag.FlagSet, port int32) (string, error) {
 	f := EnsureKubeconfigFlag(fs)
 	if f != nil {
 		path := strings.TrimSpace(f.Value.String())
@@ -71,6 +56,28 @@ func EnsureKubeconfigFile(fs *pflag.FlagSet, port int32) (string, error) {
 
 	kubeconfigPath := filepath.Join(dcpFolder, "kubeconfig")
 	return doEnsureKubeconfigFile(kubeconfigPath, port)
+}
+
+// Creates the kubeconfig file using given path as necessary.
+// This function is primarily intended for use in tests; other code should use EnsureKubeconfigFileFromFlags() instead.
+func EnsureKubeconfigFile(kubeconfigPath string) error {
+	_, err := doEnsureKubeconfigFile(kubeconfigPath, 0)
+	return err
+}
+
+func doEnsureKubeconfigFile(configPath string, port int32) (string, error) {
+	info, err := os.Stat(configPath)
+	if err != nil && errors.Is(err, iofs.ErrNotExist) {
+		if err = createKubeconfigFile(configPath, port); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("could not check whether kubeconfig file ('%s') exists: %w", configPath, err)
+	} else if info.IsDir() {
+		return "", fmt.Errorf("specified kubeconfig ('%s') is a directory", configPath)
+	}
+
+	return configPath, nil
 }
 
 func createKubeconfigFile(path string, port int32) error {

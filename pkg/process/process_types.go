@@ -29,7 +29,8 @@ type Executor interface {
 
 type ProcessExitHandler interface {
 	// Indicates that process with a given PID has finished execution
-	// If err is nil, the process exit code was properly captured and the exitCode value is valid
+	// If err is nil, the process exit code was properly captured and the exitCode value is valid.
+	// Note that if the process was terminated by a signal, the exit code will be UnknownExitCode (-1).
 	// if err is not nil, there was a problem tracking the process and the exitCode value is not valid
 	OnProcessExited(pid Pid_t, exitCode int32, err error)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"unsafe"
 
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"golang.org/x/sys/windows"
 )
 
@@ -15,6 +16,11 @@ import (
 // the file is only readable by other elevated processes. If not running as administrator, we
 // simply use the standard os.OpenFile function.
 func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
+	if flag == os.O_RDONLY {
+		// If we are only reading the file, we don't need to do anything special
+		return os.OpenFile(name, flag, perm)
+	}
+
 	// Get the actual token for the process
 	var processToken windows.Token
 	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken); err != nil {
@@ -56,6 +62,12 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 		return nil, err
 	}
 
+	var standardUserAccessPermissions windows.ACCESS_MASK = windows.READ_CONTROL | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA
+
+	if perm&osutil.PermissionGroupRead == osutil.PermissionGroupRead {
+		standardUserAccessPermissions |= windows.FILE_GENERIC_READ
+	}
+
 	var explicitEntries []windows.EXPLICIT_ACCESS
 	// Add an ACL entry for the user running the process
 	explicitEntries = append(
@@ -63,7 +75,7 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 		windows.EXPLICIT_ACCESS{
 			// Grant the user permission to read the ACL list for the file, read attributes, and delete the file
 			// DO NOT grant read permission as we want to limit access to the file to elevated processes only
-			AccessPermissions: windows.READ_CONTROL | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA,
+			AccessPermissions: standardUserAccessPermissions,
 			AccessMode:        windows.GRANT_ACCESS,
 			Inheritance:       windows.NO_INHERITANCE,
 			Trustee: windows.TRUSTEE{

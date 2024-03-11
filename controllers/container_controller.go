@@ -429,41 +429,51 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 			container.Status.State = apiv1.ContainerStateRemoved
 			container.Status.FinishTimestamp = metav1.Now()
 			return statusChanged
-		} else {
-			changed := r.updateContainerStatus(container, inspected)
-			if container.Status.State == apiv1.ContainerStateRunning && container.Spec.Stop {
-				r.stopContainer(ctx, container, log)
-				container.Status.State = apiv1.ContainerStateExited
-				container.Status.FinishTimestamp = metav1.Now()
-				return statusChanged
-			} else if container.Spec.Networks != nil {
-				connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
-				if connectionErr != nil {
-					changed |= additionalReconciliationNeeded
-				}
+		}
 
-				networkFound := true
-				for _, network := range container.Status.Networks {
-					if !slices.Any(connected, func(n *apiv1.ContainerNetwork) bool {
-						return n.Name == network
-					}) {
-						networkFound = false
-						break
-					}
-				}
+		changed := r.updateContainerStatus(container, inspected)
+		if container.Status.State == apiv1.ContainerStateRunning && container.Spec.Stop {
+			r.stopContainer(ctx, container, log)
+			container.Status.State = apiv1.ContainerStateExited
+			container.Status.FinishTimestamp = metav1.Now()
+			return statusChanged
+		} else if container.Spec.Networks != nil {
+			connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
+			if connectionErr != nil {
+				// The error was already logged by ensureContainerNetworkConnections()
+				log.V(1).Info("an error occurred while managing container network connections, scheduling additional reconciliation...")
+				changed |= additionalReconciliationNeeded
+			}
 
-				// If the set of connected networks has changed, update the Container object status
-				if !networkFound || len(connected) != len(container.Status.Networks) {
-					container.Status.Networks = slices.Map[*apiv1.ContainerNetwork, string](connected, func(n *apiv1.ContainerNetwork) string {
-						return n.NamespacedName().String()
-					})
-
-					changed |= statusChanged
+			var notConnected []string
+			for _, network := range container.Status.Networks {
+				if !slices.Any(connected, func(n *apiv1.ContainerNetwork) bool {
+					return n.NamespacedName().String() == network
+				}) {
+					notConnected = append(notConnected, network)
 				}
 			}
 
-			return changed
+			// If the set of connected networks has changed, update the Container object status
+			if len(notConnected) > 0 || len(connected) != len(container.Status.Networks) {
+				if len(notConnected) > 0 {
+					log.V(1).Info("container became disconnected from some networks, updating status...", "DisonnectedNetworks", notConnected)
+				}
+
+				connectedNetworkNames := slices.Map[*apiv1.ContainerNetwork, string](connected, func(n *apiv1.ContainerNetwork) string {
+					return n.NamespacedName().String()
+				})
+
+				if len(connected) != len(container.Status.Networks) {
+					log.V(1).Info("container become connected to new networks, updating status...", "ConnectedNetworks", connected)
+				}
+
+				container.Status.Networks = connectedNetworkNames
+				changed |= statusChanged
+			}
 		}
+
+		return changed
 
 	default:
 		// Container failed to  start and is marked as such, so nothing more to do.
@@ -789,6 +799,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 
 	if inspected == nil {
 		if i, err := r.findContainer(ctx, rcd.newContainerID); err != nil {
+			log.Error(err, "could not inspect the container", "ContainerID", rcd.newContainerID)
 			return []*apiv1.ContainerNetwork{}, err
 		} else {
 			inspected = i

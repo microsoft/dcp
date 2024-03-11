@@ -573,6 +573,11 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 
 	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected port...", ctr.ObjectMeta.Name)
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected port for service B. The startup parameters are %v", ctr.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
+
+	t.Logf("Ensure services exposed by Container '%s' get to Ready state...", ctr.ObjectMeta.Name)
+	for _, svc := range services {
+		waitServiceReady(t, ctx, &svc)
+	}
 }
 
 func TestContainerServingAddressInjected(t *testing.T) {
@@ -655,6 +660,9 @@ func TestContainerServingAddressInjected(t *testing.T) {
 
 	t.Logf("Ensure the Status.EffectiveArgs for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)
 	require.Equal(t, updatedCtr.Status.EffectiveArgs[0], expectedArg, "The Container '%s' startup parameters do not include expected address information for service '%s'. The startup parameters are %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, updatedCtr.Status.EffectiveArgs)
+
+	t.Logf("Ensure service exposed by Container '%s' gets to Ready state...", ctr.ObjectMeta.Name)
+	waitServiceReady(t, ctx, &svc)
 }
 
 func TestPersistentContainerDeletion(t *testing.T) {

@@ -140,7 +140,7 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 	t.Log("Found Endpoint with correct spec")
 
 	t.Log("Simulate Executable stopping...")
-	processExecutor.SimulateProcessExit(t, pid, 0)
+	testProcessExecutor.SimulateProcessExit(t, pid, 0)
 
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return currentExe.Done(), nil

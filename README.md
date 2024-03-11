@@ -53,34 +53,24 @@ On Windows open the Environment Variables applet and add `$USERPROFILE\.dcp` to 
 `make test` will install all dependencies and run all the tests.
 
 ### Running subsets of tests from command line
-You can also run individual tests from command line, including integration tests. To do so you just need to ensure that the K8s binaries are downloaded and set the `KUBEBUILDER_ASSETS` environment variable. To see what the variable value should be (and install K8s test binaries as a side effect) do
+Now you can run `go test` commands to run selected tests, including integration tests. for example, to run just Endpoint controller tests in verbose mode with race detection:
 
 ```shell
-make show-test-vars
+ go test -race -count 1 -run TestEndpoint -v ./test/integration/...
 ```
-After that set the `KUBEBUILDER_ASSETS` environment variable, for example
+`-count 1` is a Go idiom that forces test (re-)run even if Go thinks nothing has changed and a previous, cached test result is still valid. `-race` enables automatic race detection. which is always worth enabling, but is unfortunately not supported on Windows (but is supported inside WSL). For more information on these, and other Go test options run `go help testflag`.
 
-```shell
-$env:KUBEBUILDER_ASSETS = '(value shown by make show-test-vars)' # Windows
-export KUBEBUILDER_ASSETS='(value shown by make show-test-vars)' # Non-Windows
-```
-Now you can run `go test` commands to run tests, for example, to run just Endpoint controller tests in verbose mode with race detection:
-
-```shell
- go test -race -run TestEndpoint -v ./test/integration/...
-```
+`TEST_CONTEXT_TIMEOUT` is an environment variable that can be set to change the default test timeout (60 seconds). E.g. `TEST_CONTEXT_TIMEOUT=30` changes it to 30 seconds.
 
 ### Debugging tests
-You can also run individual tests via VS Code "run test" and "debug test" gestures. A few caveats:
+You can also run individual tests via VS Code "run test" and "debug test" gestures. When tests are running under the debugger, the timeout is increased to 60 minutes via VS Code repository settings.
 
-1. Run `make test` at least once from command line before debugging tests. This will ensure that test K8s binaries are downloaded and installed properly into `.toolbin` directory.
-1. Integration test timeouts are increased to 60 minutes (refer to `.vscode/settings.json` to change that). This helps with test debugging.
-1. If the test is killed while running under the debugger, it will leave orphaned `kube-apiserver` and `etcd` processes. You can check if such processes exist by running following commands:
+If the test is killed while running under the debugger, may leave orphaned `dcpd` process. You can check if such processes exist by running following commands:
 
     | Task | Command (macOS) | Command (Linux) | Command (Windows) |
     | --- | --- | --- | --- |
-    | Check for orphaned `kube-apiserver` and `etcd` processes. | `pgrep -lf kube-apiserver` <br/> `pgrep -lf etcd` | `pgrep -af kube-apiserver` <br/> `pgrep -af etcd` | `pslist kube-apiserver` <br/> `pslist etcd` |
-    | Kill orphaned `kube-apiserver` and `etcd` processes. | `pkill -lf kube-apiserver` <br/> `pkill -lf etcd` | `pkill -af kube-apiserver` <br/> `pkill -af etcd` | `pskill kube-apiserver` <br/> `pskill etcd` |
+    | Check for orphaned `dcpd` processes. | `pgrep -lf dcpd` | `pgrep -af dcpd` | `pslist dcpd` |
+    | Kill orphaned `dcpd` processes. | `pkill -lf dcpd` | `pkill -af dcpd` | `pskill dcpd` |
 
     `pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
 
@@ -200,6 +190,7 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
 
 1. Open the solution with your application in Visual Studio. 
+1. See the section above for "I need to test a local build of `dcp` with Aspire tooling".
 1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace (a "Function Breakpoint" that refers to the fully-qualified name of the method will work fine, you do not need to have `Aspire.Hosting` project in your solution).
 1. Open `usvc-apiserver` repository in Visual Studio Code. 
 1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet. 

@@ -274,13 +274,9 @@ func (r *ExecutableReconciler) ensureExecutableRunning(ctx context.Context, exe 
 		return runInfo.ApplyTo(exe, log)
 	}
 
-	executionType := exe.Spec.ExecutionType
-	if executionType == "" {
-		executionType = apiv1.ExecutionTypeProcess
-	}
-	runner, found := r.ExecutableRunners[executionType]
-	if !found {
-		log.Error(fmt.Errorf("no runner found for execution type '%s'", executionType), "the Executable cannot be run and will be marked as finished")
+	runner, runnerNotFoundErr := r.getExecutableRunner(exe)
+	if runnerNotFoundErr != nil {
+		log.Error(runnerNotFoundErr, "the Executable cannot be run and will be marked as finished")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 		exe.Status.FinishTimestamp = metav1.Now()
 		return statusChanged
@@ -370,11 +366,10 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 		return
 	}
 
-	runner, found := r.ExecutableRunners[exe.Spec.ExecutionType]
-	if !found {
+	runner, runnerNotFoundErr := r.getExecutableRunner(exe)
+	if runnerNotFoundErr != nil {
 		// Should never happen
-		err := fmt.Errorf("no runner found for execution type '%s'", exe.Spec.ExecutionType)
-		log.Error(err, "the Executable cannot be stopped")
+		log.Error(runnerNotFoundErr, "the Executable cannot be stopped")
 		return
 	}
 
@@ -384,6 +379,20 @@ func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Ex
 	} else {
 		log.V(1).Info("Executable stopped", "RunID", runID)
 	}
+}
+
+func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable) (ExecutableRunner, error) {
+	executionType := exe.Spec.ExecutionType
+	if executionType == "" {
+		executionType = apiv1.ExecutionTypeProcess
+	}
+
+	runner, found := r.ExecutableRunners[executionType]
+	if !found {
+		return nil, fmt.Errorf("no runner found for execution type '%s'", executionType)
+	}
+
+	return runner, nil
 }
 
 func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
