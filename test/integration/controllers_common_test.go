@@ -26,6 +26,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -313,4 +314,26 @@ func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) {
 	_ = waitObjectAssumesState(t, ctx, svc.NamespacedName(), func(svc *apiv1.Service) (bool, error) {
 		return svc.Status.State == apiv1.ServiceStateReady, nil
 	})
+}
+
+func retryOnConflict[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](ctx context.Context, name types.NamespacedName, action func(context.Context, PT) error) error {
+
+	try := func() error {
+		var apiObject PT = new(T)
+		err := client.Get(ctx, name, PT(apiObject))
+		if err != nil {
+			return resiliency.Permanent(fmt.Errorf("unable to fetch the object '%s' from API server: %w", name.String(), err))
+		}
+
+		err = action(ctx, apiObject)
+		if apierrors.IsConflict(err) {
+			return err // Retry
+		} else if err != nil {
+			return resiliency.Permanent(err)
+		}
+
+		return nil
+	}
+
+	return resiliency.Retry(ctx, try)
 }

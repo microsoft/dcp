@@ -265,7 +265,10 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-			log.Error(err, "run session could not be started", "Status", resp.Status, "Body", string(respBody))
+			log.Error(err, "run session could not be started",
+				"Status", resp.Status,
+				"Body", parseResponseBody(respBody),
+			)
 			reportStartupFailure() // The IDE refused to run this Executable
 			return
 		}
@@ -329,6 +332,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	const runSessionCouldNotBeStopped = "run session could not be stopped: "
 
+	// TODO enable when new protocol lands in the VS world
+	// url := fmt.Sprintf("http://localhost:%s%s/%s?%s=%s", r.portStr, ideRunSessionResourcePath, runID, queryParamApiVersion, version20240303)
 	url := fmt.Sprintf("http://localhost:%s%s/%s", r.portStr, ideRunSessionResourcePath, runID)
 
 	req, err := http.NewRequest(http.MethodDelete, url, nil)
@@ -355,16 +360,43 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	}
 
 	respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, string(respBody))
+	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, parseResponseBody(respBody))
 }
 
 func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, error) {
-	projectPath := exe.Annotations[csharpProjectPathAnnotation]
-	if projectPath == "" {
-		return nil, fmt.Errorf("missing required annotation '%s'", csharpProjectPathAnnotation)
+	var isrBody []byte
+	var err error
+	var url string
+
+	if exe.Annotations[csharpProjectPathAnnotation] != "" {
+		isrBody, err = r.prepareRunRequestDeprecated(exe)
+		if err != nil {
+			return nil, fmt.Errorf("failed to prepare IDE run request: %w", err)
+		}
+		url = fmt.Sprintf("http://localhost:%s%s", r.portStr, ideRunSessionResourcePath)
+	} else if exe.Annotations[launchConfigurationsAnnotation] != "" {
+		isrBody, err = r.prepareRunRequestV1(exe)
+		if err != nil {
+			return nil, fmt.Errorf("failed to prepare IDE run request: %w", err)
+		}
+		url = fmt.Sprintf("http://localhost:%s%s?%s=%s", r.portStr, ideRunSessionResourcePath, queryParamApiVersion, version20240303)
+	} else {
+		return nil, fmt.Errorf("IDE execution was requested for the Executable but the required '%s' annotation is missing", launchConfigurationsAnnotation)
 	}
 
-	isr := ideRunSessionRequest{
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(isrBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
+	return req, nil
+}
+
+func (r *IdeExecutableRunner) prepareRunRequestDeprecated(exe *apiv1.Executable) ([]byte, error) {
+	projectPath := exe.Annotations[csharpProjectPathAnnotation]
+
+	isr := ideRunSessionRequestDeprecated{
 		ProjectPath: projectPath,
 		Env:         exe.Status.EffectiveEnv,
 		Args:        exe.Status.EffectiveArgs,
@@ -377,18 +409,32 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 
 	isrBody, err := json.Marshal(isr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		return nil, fmt.Errorf("failed to create Executable run request body: %w", err)
 	}
 
-	url := fmt.Sprintf("http://localhost:%s%s", r.portStr, ideRunSessionResourcePath)
+	return isrBody, nil
+}
 
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(isrBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte, error) {
+	launchConfigsRaw := exe.Annotations[launchConfigurationsAnnotation]
+	var launchConfigs json.RawMessage
+	unmarshalErr := json.Unmarshal([]byte(launchConfigsRaw), &launchConfigs)
+	if unmarshalErr != nil {
+		return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
-	return req, nil
+
+	isr := ideRunSessionRequestV1{
+		LaunchConfigurations: json.RawMessage(launchConfigs),
+		Env:                  exe.Status.EffectiveEnv,
+		Args:                 exe.Status.EffectiveArgs,
+	}
+
+	isrBody, marshalErr := json.Marshal(isr)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to create Executable run request body: %w", marshalErr)
+	}
+
+	return isrBody, nil
 }
 
 func (r *IdeExecutableRunner) ensureNotificationSocket() error {
@@ -401,6 +447,9 @@ func (r *IdeExecutableRunner) ensureNotificationSocket() error {
 
 	headers := http.Header{}
 	headers.Add("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
+
+	// TODO enable when new protocol lands in the VS world
+	// url := fmt.Sprintf("ws://localhost:%s%s?%s=%s", r.portStr, ideRunSessionNotificationResourcePath, queryParamApiVersion, version20240303)
 	url := fmt.Sprintf("ws://localhost:%s%s", r.portStr, ideRunSessionNotificationResourcePath)
 
 	dialer := websocket.Dialer{
@@ -593,6 +642,20 @@ func getLastUrlPathSegment(rawURL string) (string, error) {
 		return "", fmt.Errorf("URL '%s' has no path segments", rawURL)
 	}
 	return pathSegments[len(pathSegments)-1], nil
+}
+
+func parseResponseBody(rawBody []byte) string {
+	if len(rawBody) == 0 {
+		return ""
+	}
+
+	var errResp errorResponse
+	err := json.Unmarshal(rawBody, &errResp)
+	if err == nil {
+		return errResp.String()
+	} else {
+		return string(rawBody)
+	}
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)

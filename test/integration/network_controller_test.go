@@ -57,8 +57,9 @@ func TestRemoveNetworkInstance(t *testing.T) {
 	updatedNet := ensureNetworkCreated(t, ctx, &net)
 
 	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
-
-	err = client.Delete(ctx, updatedNet)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
 	require.NoError(t, err, "could not delete a ContainerNetwork object")
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
@@ -153,8 +154,9 @@ func TestRemovePersistentNetworkInstance(t *testing.T) {
 	updatedNet := ensureNetworkCreated(t, ctx, &net)
 
 	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
-
-	err = client.Delete(ctx, updatedNet)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
 	require.NoError(t, err, "could not delete a ContainerNetwork object")
 
 	waitObjectDeleted[apiv1.ContainerNetwork](t, ctx, ctrl_client.ObjectKeyFromObject(&net))

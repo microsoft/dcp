@@ -361,9 +361,11 @@ func TestContainerStop(t *testing.T) {
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
-	containerPatch := updatedCtr.DeepCopy()
-	containerPatch.Spec.Stop = true
-	err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(&ctr))
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Stop = true
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
 	require.NoError(t, err, "Container object could not be patched")
 
 	// The container should be marked as "failed to start", and the Message property of its status
@@ -379,7 +381,9 @@ func TestContainerStop(t *testing.T) {
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
-	err = client.Delete(ctx, &ctr)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
 	require.NoError(t, err, "Container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
@@ -415,7 +419,9 @@ func TestContainerDeletion(t *testing.T) {
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
-	err = client.Delete(ctx, &ctr)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
 	require.NoError(t, err, "Container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
@@ -692,7 +698,9 @@ func TestPersistentContainerDeletion(t *testing.T) {
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
-	err = client.Delete(ctx, &ctr)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
@@ -738,7 +746,9 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID does not match existing value")
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
-	err = client.Delete(ctx, &ctr)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)

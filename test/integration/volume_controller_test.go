@@ -88,14 +88,16 @@ func TestVolumeDeletion(t *testing.T) {
 	err := client.Create(ctx, &vol)
 	require.NoError(t, err, "Could not create a ContainerVolume object")
 
-	t.Log("Ensure that a corresponding Docker volume was created...")
+	t.Logf("Ensure that ContainerVolume '%s' has a corresponding Docker volume created...", vol.ObjectMeta.Name)
 	_ = ensureVolumeCreated(t, ctx, &vol)
 
-	t.Log("Deleting ContainerVolume object...")
-	err = client.Delete(ctx, &vol)
+	t.Logf("Deleting ContainerVolume '%s'...", vol.ObjectMeta.Name)
+	err = retryOnConflict(ctx, vol.NamespacedName(), func(ctx context.Context, currentVol *apiv1.ContainerVolume) error {
+		return client.Delete(ctx, currentVol)
+	})
 	require.NoError(t, err, "ContainerVolume object could not be deleted")
 
-	t.Log("Ensure that ContainerVolume object really disappeared from the API server...")
+	t.Logf("Ensure that ContainerVolume '%s' object really disappeared from the API server...", vol.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.ContainerVolume](t, ctx, ctrl_client.ObjectKeyFromObject(&vol))
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {

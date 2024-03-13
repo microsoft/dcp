@@ -1,9 +1,12 @@
 package exerunners
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -45,13 +48,91 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 	return retval
 }
 
-type ideRunSessionRequest struct {
+/*
+In case we ever need to deal with IDE launch configurations explicitly, here are the definitions
+
+type launchConfigurationType string
+
+const (
+	launchConfigurationTypeProject launchConfigurationType = "project"
+)
+
+type ideLaunchConfiguration struct {
+	Type launchConfigurationType `json:"type"`
+}
+
+type projectLaunchMode string
+
+const (
+	projectLaunchModeDebug   projectLaunchMode = "Debug"
+	projectLaunchModeNoDebug projectLaunchMode = "NoDebug"
+)
+
+type projectLaunchConfiguration struct {
+	ideLaunchConfiguration
+	ProjectPath          string            `json:"project_path"`
+	LaunchMode           projectLaunchMode `json:"mode,omitempty"`
+	LaunchProfile        string            `json:"launch_profile,omitempty"`
+	DisableLaunchProfile bool              `json:"disable_launch_profile,omitempty"`
+}
+*/
+
+type ideRunSessionRequestV1 struct {
+	// This is typically an array of ideLaunchConfiguration-derived objects,
+	// but in this implementation we will take whatever the model annotation contains
+	// and just pass it through to the IDE (that is why the type is json.RawMessage).
+	// Must have at least one element.
+	LaunchConfigurations json.RawMessage `json:"launch_configurations"`
+
+	Env  []apiv1.EnvVar `json:"env,omitempty"`
+	Args []string       `json:"args,omitempty"`
+}
+
+// Deprecated, will be removed in future release
+type ideRunSessionRequestDeprecated struct {
 	ProjectPath          string         `json:"project_path"`
 	Debug                bool           `json:"debug,omitempty"`
 	Env                  []apiv1.EnvVar `json:"env,omitempty"`
 	Args                 []string       `json:"args,omitempty"`
 	LaunchProfile        string         `json:"launch_profile,omitempty"`
 	DisableLaunchProfile bool           `json:"disable_launch_profile,omitempty"`
+}
+
+type errorDetail struct {
+	Code    string        `json:"code"`
+	Message string        `json:"message,omitempty"`
+	Details []errorDetail `json:"details,omitempty"`
+}
+
+type errorResponse struct {
+	Error errorDetail `json:"error"`
+}
+
+func (er *errorResponse) String() string {
+	var b strings.Builder
+	er.Error.writeDetails(&b, []byte(""))
+	return b.String()
+}
+
+var errorDetailChildIndent = []byte(strings.Repeat(" ", 2))
+
+func (ed *errorDetail) writeDetails(b *strings.Builder, indent []byte) {
+	switch {
+	case ed.Code != "" && ed.Message != "":
+		fmt.Fprintf(b, "%s%s: %s", indent, ed.Code, ed.Message)
+	case ed.Code != "":
+		fmt.Fprintf(b, "%s%s", indent, ed.Code)
+	case ed.Message != "":
+		fmt.Fprintf(b, "%s%s", indent, ed.Message)
+	}
+
+	if len(ed.Details) > 0 {
+		childIndent := append(indent, errorDetailChildIndent...)
+		for _, detail := range ed.Details {
+			b.Write(osutil.WithNewline(nil))
+			detail.writeDetails(b, childIndent)
+		}
+	}
 }
 
 const (
@@ -61,7 +142,13 @@ const (
 	ideEndpointPortVar  = "DEBUG_SESSION_PORT"
 	ideEndpointTokenVar = "DEBUG_SESSION_TOKEN"
 
+	launchConfigurationsAnnotation = "usvc-dev.developer.microsoft.com/executable-controller/launch-configurations"
+
+	// The following 3 annotations are deprecated and will be removed in future release
 	csharpProjectPathAnnotation          = "csharp-project-path"
 	csharpLaunchProfileAnnotation        = "csharp-launch-profile"
 	csharpDisableLaunchProfileAnnotation = "csharp-disable-launch-profile"
+
+	version20240303      = "2024-03-03"
+	queryParamApiVersion = "api-version"
 )

@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"slices"
 	"testing"
 	"time"
@@ -123,14 +124,16 @@ func TestContainerConnectedNetworkChanges(t *testing.T) {
 
 	updatedNetwork2 := ensureNetworkCreated(t, ctx, &net2)
 
-	containerPatch := updatedCtr.DeepCopy()
-	updatedNetworks := append(*(ctr.Spec.Networks), apiv1.ContainerNetworkConnectionConfig{
-		Name: net2.NamespacedName().String(),
+	err = retryOnConflict(ctx, updatedCtr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		updatedNetworks := append(*(currentCtr.Spec.Networks), apiv1.ContainerNetworkConnectionConfig{
+			Name: net2.NamespacedName().String(),
+		})
+		containerPatch.Spec.Networks = &updatedNetworks
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
 	})
-
-	containerPatch.Spec.Networks = &updatedNetworks
-	if err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(updatedCtr)); err != nil {
-		t.Fatalf("Unable to update Container: %v", err)
+	if err != nil {
+		t.Fatalf("Unable to update Container '%s' to use additional network: %v", updatedCtr.NamespacedName().String(), err)
 	}
 
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
@@ -143,13 +146,14 @@ func TestContainerConnectedNetworkChanges(t *testing.T) {
 		return false, nil
 	})
 
-	updatedCtr = containerPatch
-	containerPatch = containerPatch.DeepCopy()
-
-	// Reset the networks to the original
-	containerPatch.Spec.Networks = ctr.Spec.Networks
-	if err = client.Patch(ctx, containerPatch, ctrl_client.MergeFrom(updatedCtr)); err != nil {
-		t.Fatalf("Unable to update Container: %v", err)
+	err = retryOnConflict(ctx, updatedCtr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		// Reset the networks to the original
+		containerPatch.Spec.Networks = ctr.Spec.Networks
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	if err != nil {
+		t.Fatalf("Unable to update Container '%s' to use the original network only: %v", updatedCtr.NamespacedName().String(), err)
 	}
 
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {

@@ -188,7 +188,7 @@ func (r *ExecutableReconciler) OnRunChanged(runID RunID, pid process.Pid_t, exit
 
 	if newRunInfo.exitCode != apiv1.UnknownExitCode {
 		newRunInfo.exeState = apiv1.ExecutableStateFinished
-	} else if newRunInfo.pid != apiv1.UnknownPID {
+	} else {
 		newRunInfo.exeState = apiv1.ExecutableStateRunning
 	}
 
