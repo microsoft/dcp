@@ -65,6 +65,10 @@ func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return pco
 }
 
+func (*PodmanCliOrchestrator) ContainerHost() string {
+	return "host.containers.internal"
+}
+
 func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	cmd := makePodmanCommand(ctx, "container", "ls", "--last", "1", "--quiet")
 	_, stdErr, err := pco.runPodmanCommand(ctx, "Info", cmd, ordinaryPodmanCommandTimeout)
@@ -203,6 +207,8 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 	if options.Command != "" {
 		args = append(args, "--entrypoint", options.Command)
 	}
+
+	args = append(args, options.RunArgs...)
 
 	return args
 }

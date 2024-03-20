@@ -136,6 +136,10 @@ type ContainerSpec struct {
 
 	// Should this container be created and persisted between DCP runs?
 	Persistent bool `json:"persistent,omitempty"`
+
+	// Additional arguments to pass to the container run command
+	// +listType:=atomic
+	RunArgs []string `json:"runArgs,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -345,7 +349,7 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	return errorList
 }
 
-func (_ *Container) GenericSubResources() []apiserver_resource.GenericSubResource {
+func (*Container) GenericSubResources() []apiserver_resource.GenericSubResource {
 	return []apiserver_resource.GenericSubResource{
 		&ContainerLogResource{},
 	}

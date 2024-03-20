@@ -65,6 +65,10 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return dco
 }
 
+func (*DockerCliOrchestrator) ContainerHost() string {
+	return "host.docker.internal"
+}
+
 func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	// Check the status of the Docker runtime
 	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
@@ -245,6 +249,8 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 	if options.Command != "" {
 		args = append(args, "--entrypoint", options.Command)
 	}
+
+	args = append(args, options.RunArgs...)
 
 	return args
 }

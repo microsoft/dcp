@@ -159,6 +159,10 @@ func getID() string {
 	return uuid.New().String()
 }
 
+func (*TestContainerOrchestrator) ContainerHost() string {
+	return "host.test.internal"
+}
+
 func (to *TestContainerOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()

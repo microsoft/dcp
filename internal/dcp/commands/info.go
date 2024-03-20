@@ -28,10 +28,20 @@ func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 }
 
 type containerRuntime struct {
-	Runtime   string `json:"runtime"`
-	Installed bool   `json:"installed"`
-	Running   bool   `json:"running"`
-	Error     string `json:"error,omitempty"`
+	// Name of the container runtime (i.e. docker, podman)
+	Runtime string `json:"runtime"`
+
+	// Default hostname within a container for accessing the host machine network
+	HostName string `json:"hostName"`
+
+	// Is the runtime installed?
+	Installed bool `json:"installed"`
+
+	// Is the runtime running?
+	Running bool `json:"running"`
+
+	// Error message if the runtime is not installed or not running
+	Error string `json:"error,omitempty"`
 }
 
 type information struct {
@@ -62,6 +72,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 			VersionOutput: version.Version(),
 			Containers: containerRuntime{
 				Runtime:   container_flags.GetRuntimeFlagArg(),
+				HostName:  containerOrchestrator.ContainerHost(),
 				Installed: status.Installed,
 				Running:   status.Running,
 				Error:     status.Error,
