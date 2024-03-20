@@ -48,7 +48,7 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 	}
 }
 
-func EnsureKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
+func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
 		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
@@ -58,7 +58,7 @@ func EnsureKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 		return "", fmt.Errorf("invalid port number: %d", port)
 	}
 
-	kubeconfigPath, err := EnsureKubeconfigFileFromFlags(flags, port)
+	kubeconfigPath, err := RequireKubeconfigFileFromFlags(flags, port)
 	if err != nil {
 		return "", fmt.Errorf("unable to ensure existence of a Kubeconfig file: %w", err)
 	}
@@ -69,4 +69,27 @@ func EnsureKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	}
 
 	return kubeconfigPath, nil
+}
+
+func GetKubeconfigFlagValue(flags *pflag.FlagSet) (*Kubeconfig, error) {
+	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
+	if f == nil {
+		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
+	}
+
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("invalid port number: %d", port)
+	}
+
+	k, err := GetKubeconfigFromFlags(flags, port)
+	if err != nil {
+		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", err)
+	}
+
+	err = f.Value.Set(k.Path())
+	if err != nil {
+		return nil, fmt.Errorf("unable to set kubeconfig flag value: %w", err)
+	}
+
+	return k, nil
 }

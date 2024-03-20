@@ -112,7 +112,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
+		kconfig, err := kubeconfig.GetKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
 			return err
 		}
@@ -145,11 +145,11 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kubeconfigPath, "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg()}
+		invocationFlags := []string{"--kubeconfig", kconfig.Path(), "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg()}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
-		err = bootstrap.DcpRun(ctx, rootDir, log, allExtensions, invocationFlags, runEvtHandlers)
+		err = bootstrap.DcpRun(ctx, rootDir, kconfig, allExtensions, invocationFlags, log, runEvtHandlers)
 
 		return err
 	}

@@ -88,7 +88,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 
 		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
 
-		_, err = kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
+		_, err = kubeconfig.RequireKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}

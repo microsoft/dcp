@@ -38,13 +38,15 @@ const (
 
 type ApiServer struct {
 	name         string
+	config       *kubeconfig.Kubeconfig
 	logger       logr.Logger
 	runCompleted bool
 }
 
-func NewApiServer(name string, logger logr.Logger) *ApiServer {
+func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger) *ApiServer {
 	return &ApiServer{
 		name:         name,
+		config:       config,
 		logger:       logger,
 		runCompleted: false,
 	}
@@ -54,7 +56,7 @@ func (s *ApiServer) Name() string {
 	return s.name
 }
 
-func (s *ApiServer) Run(ctx context.Context) error {
+func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
 	log.Info("Starting API server...")
@@ -62,7 +64,7 @@ func (s *ApiServer) Run(ctx context.Context) error {
 	if s.runCompleted {
 		err := fmt.Errorf("API server has already been run")
 		log.Error(err, msgApiServerStartupFailed)
-		return err
+		return nil, err
 	}
 	defer func() {
 		s.runCompleted = true
@@ -100,40 +102,44 @@ func (s *ApiServer) Run(ctx context.Context) error {
 	}
 	builder = builder.WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, openapi.GetOpenAPIDefinitions)
 
-	options, err := computeServerOptions(builder, log)
+	options, err := computeServerOptions(builder, s.config, log)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	config, err := options.Config()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server configuration: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
-		return err
+		return nil, err
 	}
 
 	addDcpHttpHandlers(config, ctx, log)
 
 	err = configureForLogServing(config, persistentDcpTypes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	completedConfig := config.Complete()
 	stoppedCh, err := options.RunTiltServerFromConfig(completedConfig, ctx)
 	if err != nil {
 		log.Error(err, "API server execution error")
-		return err
+		return nil, err
+	}
+
+	// Save the kubeconfig if we haven't yet
+	err = s.config.EnsureExists()
+	if err != nil {
+		return nil, err
 	}
 
 	log.Info("API server started", "Address", options.ServingOptions.BindAddress.String(), "Port", options.ServingOptions.BindPort)
 
-	<-stoppedCh
-	log.Info("API server shut down")
-	return nil
+	return stoppedCh, nil
 }
 
-func computeServerOptions(builder *serverbuilder.Server, log logr.Logger) (*start.TiltServerOptions, error) {
+func computeServerOptions(builder *serverbuilder.Server, kconfig *kubeconfig.Kubeconfig, log logr.Logger) (*start.TiltServerOptions, error) {
 	options, err := builder.ToServerOptions()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)
@@ -152,13 +158,7 @@ func computeServerOptions(builder *serverbuilder.Server, log logr.Logger) (*star
 		return nil, err
 	}
 
-	kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(fs)
-	if err != nil {
-		log.Error(err, msgApiServerStartupFailed)
-		return nil, err
-	}
-
-	address, port, token, err := kubeconfig.GetKubeConfigData(kubeconfigPath)
+	address, port, token, err := kconfig.GetData()
 	if err != nil {
 		err = fmt.Errorf("could not obtain address, port and security token information from Kubeconfig file: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
