@@ -148,7 +148,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 
 	// Using generous timeout because the client factory is going to interrogate the API server that we just have started.
 	var clientErr error
-	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 30*time.Second, config)
+	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 40*time.Second, config)
 	if clientErr != nil {
 		return fmt.Errorf("failed to create controller-runtime client: %w", clientErr)
 	}

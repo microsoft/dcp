@@ -84,6 +84,7 @@ DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
 
 # Locations and definitions for tool binaries
+GO_BIN ?= go
 TOOL_BIN ?= $(repo_dir)/.toolbin
 GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
 CONTROLLER_GEN ?= $(TOOL_BIN)/controller-gen$(exe_suffix)
@@ -93,7 +94,7 @@ DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.56.2
+GOLANGCI_LINT_VERSION ?= v1.57.0
 CONTROLLER_TOOLS_VERSION ?= v0.14.0
 CODE_GENERATOR_VERSION ?= v0.29.1
 GOVERSIONINFO_VERSION ?= v1.4.0
@@ -108,8 +109,8 @@ COMMIT ?= $(shell git rev-parse HEAD)
 
 version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.ProductVersion=$(VERSION)' -X 'github.com/microsoft/usvc-apiserver/internal/version.CommitHash=$(COMMIT)' -X 'github.com/microsoft/usvc-apiserver/internal/version.BuildTimestamp=$(BUILD_TIMESTAMP)'
 
-# Disable C interop https://dave.cheney.net/2016/01/18/cgo-is-not-go
-export CGO_ENABLED=0
+# CGO_ENABLED has to be enabled (set to 1) for FIPS compliant builds
+export CGO_ENABLED ?= 0
 
 ifeq ($(detected_OS),windows)
 	GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
@@ -172,8 +173,13 @@ $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES) opena
 
 .PHONY: generate-goversioninfo
 generate-goversioninfo: goversioninfo-gen
+ifeq ($(build_os),windows)
 	$(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
+else
+	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
+	-$(rm_f) $(repo_dir)/cmd/dcpctrl/resource.syso
+endif
 
 .PHONY: generate-licenses
 generate-licenses: generate-dependency-notices ## Generates license/notice files for all dependencies
@@ -186,52 +192,48 @@ generate-dependency-notices: go-licenses
 controller-gen: $(CONTROLLER_GEN)
 $(CONTROLLER_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(CONTROLLER_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(CONTROLLER_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(CONTROLLER_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+	[[ -s $(CONTROLLER_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 endif
 
 .PHONY: openapi-gen
 openapi-gen: $(OPENAPI_GEN)
 $(OPENAPI_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
+	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
 endif
 
 .PHONY: goversioninfo-gen
 goversioninfo-gen: $(GOVERSIONINFO_GEN)
 $(GOVERSIONINFO_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(GOVERSIONINFO_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(GOVERSIONINFO_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(GOVERSIONINFO_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION)
+	[[ -s $(GOVERSIONINFO_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@$(GOVERSIONINFO_VERSION)
 endif
 
 .PHONY: go-licenses
 go-licenses: $(GO_LICENSES)
 $(GO_LICENSES): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; go install github.com/google/go-licenses@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install github.com/google/go-licenses@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" go install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
+	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install github.com/google/go-licenses@$(GO_LICENSES_VERSION)
 endif
 
 # delay-tool is used for process package testing
 .PHONY: delay-tool
 delay-tool: $(DELAY_TOOL)
 $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
-	go build -o $(DELAY_TOOL) github.com/microsoft/usvc-apiserver/test/delay
+	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/usvc-apiserver/test/delay
 
 ##@ Development
 
 release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
-release: compile ## Builds all binaries with flags to reduce binary size
-
-build: generate compile ## Runs codegen and builds DCP CLI and controller host
-
-build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds DCP CLI and controller host with flags to reduce binary size
+release: build-dcpctrl build-dcp ## Builds all binaries with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
 compile: build-dcpctrl build-dcp ## Builds DCP CLI and controller host (skips codegen)
@@ -239,15 +241,19 @@ compile: build-dcpctrl build-dcp ## Builds DCP CLI and controller host (skips co
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 compile-debug: build-dcpctrl build-dcp ## Builds DCP CLI and controller host with debug symbols (good for debugging; skips codegen)
 
+build: generate compile ## Runs codegen and builds DCP CLI and controller host
+
+build-ci: generate-ci release ## Runs codegen, including license/notice files, then builds DCP CLI and controller host with flags to reduce binary size
+
 .PHONY: build-dcp
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
 $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
-	go build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
+	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
 
 .PHONY: build-dcpctrl
 build-dcpctrl: $(DCPCTRL_BINARY) ## Builds DCP standard controller host (dcpctrl)
 $(DCPCTRL_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	go build -o $(DCPCTRL_BINARY) $(BUILD_ARGS) ./cmd/dcpctrl
+	$(GO_BIN) build -o $(DCPCTRL_BINARY) $(BUILD_ARGS) ./cmd/dcpctrl
 
 .PHONY: clean
 clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.
@@ -282,20 +288,26 @@ endif
 ##@ Test targets
 
 .PHONY: test
-test: TEST_OPTS = -coverprofile cover.out
+ifeq ($(CGO_ENABLED),0)
+test: TEST_OPTS = -coverprofile cover.out -count 1
 test: build-dcp delay-tool ## Run all tests in the repository
-	go test ./... $(TEST_OPTS)
+	$(GO_BIN) test ./... $(TEST_OPTS)
+else
+test: TEST_OPTS = -coverprofile cover.out -race -count 1
+test: build-dcp delay-tool ## Run all tests in the repository
+	$(GO_BIN) test ./... $(TEST_OPTS)
+endif
 
 .PHONY: test-ci
-ifeq ($(detected_OS),windows)
+ifeq ($(CGO_ENABLED),0)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
 test-ci: lint build-dcp delay-tool
-	go test ./... $(TEST_OPTS)
+	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
 test-ci: lint build-dcp delay-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
-	CGO_ENABLED=1 go test ./... $(TEST_OPTS)
+	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
 ## Development and test support targets
