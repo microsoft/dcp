@@ -74,6 +74,17 @@ func (m *Map[Key, Value]) LoadAndDelete(key Key) (Value, bool) {
 	}
 }
 
+// Returns true if the map is empty.
+// Note that this is point-in-time check, and the map might be modified immediately after this method returns.
+func (m *Map[Key, Value]) Empty() bool {
+	empty := true
+	m.syncMap().Range(func(_, _ any) bool {
+		empty = false
+		return false
+	})
+	return empty
+}
+
 func zeroIfNil[T any](v any) T {
 	if v == nil {
 		return zero[T]()

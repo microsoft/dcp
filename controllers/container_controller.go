@@ -36,6 +36,7 @@ const (
 	MaxParallelContainerStarts        = 6
 	startupRetryDelay                 = 1 * time.Second
 	noDelay                           = 0 * time.Second
+	stopContainerTimeoutSeconds       = 10                          // How long the container orchestrator will wait for a container to stop before killing it
 	ownerKey                          = ".metadata.controllerOwner" // client index key for child ContainerNetworkConnections
 )
 
@@ -261,7 +262,7 @@ func (r *ContainerReconciler) stopContainer(ctx context.Context, container *apiv
 	}
 
 	log.V(1).Info("calling container orchestrator to stop the container...", "ContainerID", containerID)
-	_, err := r.orchestrator.StopContainers(ctx, []string{containerID}, 10)
+	_, err := r.orchestrator.StopContainers(ctx, []string{containerID}, stopContainerTimeoutSeconds)
 	if err != nil {
 		log.Error(err, "could not stop the running container corresponding to Container object", "ContainerID", containerID)
 	}
@@ -284,8 +285,15 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	r.runningContainers.DeleteBySecondKey(container.NamespacedName())
 
 	if !container.Spec.Persistent {
+		// We want to stop the container first to give it a chance to clean up
+		log.V(1).Info("calling container orchestrator to stop the container...", "ContainerID", containerID)
+		_, err := r.orchestrator.StopContainers(ctx, []string{containerID}, stopContainerTimeoutSeconds)
+		if err != nil {
+			log.Error(err, "could not stop the running container corresponding to Container object", "ContainerID", containerID)
+		}
+
 		log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
-		_, err := r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
+		_, err = r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
 		if err != nil {
 			log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)
 		}
@@ -976,18 +984,10 @@ func (r *ContainerReconciler) releaseContainerWatch(container *apiv1.Container, 
 	defer r.lock.Unlock()
 
 	r.watchingResources.Delete(container.UID)
-
-	var found bool
-	r.watchingResources.Range(func(_ types.UID, _ bool) bool {
-		found = true
-		return false
-	})
-	if found {
-		return // There are still other resources being watched, nothing to do
+	if r.watchingResources.Empty() {
+		log.Info("no more Container resources are being watched, cancelling container watch")
+		r.cancelContainerWatch()
 	}
-
-	log.Info("no more Container resources are being watched, cancelling container watch")
-	r.cancelContainerWatch()
 }
 
 func (r *ContainerReconciler) containerEventWorker(

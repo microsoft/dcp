@@ -23,6 +23,10 @@ var (
 	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
 )
 
+const (
+	TestEventActionStopWithoutRemove containers.EventAction = "stop_without_remove"
+)
+
 type TestContainerOrchestrator struct {
 	randomNameLength       int
 	volumes                map[string]containerVolume
@@ -670,7 +674,7 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names [
 	var results []string
 
 	for _, container := range containersToStop {
-		_, err := to.doStopContainer(ctx, container)
+		_, err := to.doStopContainer(ctx, container, stoppingOnly)
 		if err != nil {
 			return results, err
 		}
@@ -681,7 +685,12 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names [
 	return results, nil
 }
 
-func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container testContainer) (testContainer, error) {
+type stopContainerAction string
+
+const stoppingOnly stopContainerAction = "stoppingOnly"
+const stopAndRemove stopContainerAction = "stopAndRemove"
+
+func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, container testContainer, stopAction stopContainerAction) (testContainer, error) {
 	if ctx.Err() != nil {
 		return container, ctx.Err()
 	}
@@ -702,6 +711,15 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 		Action: containers.EventActionStop,
 		Actor:  containers.EventActor{ID: container.id},
 	})
+
+	if stopAction == stoppingOnly {
+		// For testing purposes we want to differentiate between a stop and a remove
+		to.containerEventsWatcher.Notify(containers.EventMessage{
+			Source: containers.EventSourcePlugin,
+			Action: TestEventActionStopWithoutRemove,
+			Actor:  containers.EventActor{ID: container.id},
+		})
+	}
 
 	return container, nil
 }
@@ -734,7 +752,7 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 	for i := range containersToRemove {
 		container := containersToRemove[i]
 		if force {
-			stoppedContainer, err := to.doStopContainer(ctx, container)
+			stoppedContainer, err := to.doStopContainer(ctx, container, stopAndRemove)
 			if err != nil {
 				return results, err
 			}
