@@ -9,10 +9,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/smallnest/chanx"
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -368,9 +370,7 @@ func TestContainerStop(t *testing.T) {
 	})
 	require.NoError(t, err, "Container object could not be patched")
 
-	// The container should be marked as "failed to start", and the Message property of its status
-	// should contain the error from container orchestrator, i.e. Docker
-	t.Log("Ensure container state is 'failed to start'...")
+	t.Log("Ensure container state is 'Exited'...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		return c.Status.State == apiv1.ContainerStateExited, nil
 	})
@@ -418,6 +418,15 @@ func TestContainerDeletion(t *testing.T) {
 
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
+	// Subscribe to container events to verify that the container is deleted gracefully
+	ctrEventCh := chanx.NewUnboundedChan[containers.EventMessage](ctx, 2)
+	ctrEventSub, watchErr := orchestrator.WatchContainers(ctrEventCh.In)
+	require.NoError(t, watchErr, "could not subscribe to container events")
+	defer func() {
+		cancelErr := ctrEventSub.Cancel()
+		require.NoError(t, cancelErr, "could not cancel the container event subscription")
+	}()
+
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
 	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
 		return client.Delete(ctx, currentCtr)
@@ -427,9 +436,40 @@ func TestContainerDeletion(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
 
-	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
-	require.Error(t, err, "expected the container to be gone")
-	require.Len(t, inspected, 0, "expected the container to be gone")
+	t.Logf("Ensure that the Container '%s' is stopped and removed gracefully...", ctr.ObjectMeta.Name)
+	stopCount := 0
+	removeCount := 0
+
+readEvents:
+	for {
+		select {
+		case event, isOpen := <-ctrEventCh.Out:
+			if !isOpen {
+				t.Fatal("container event channel was closed unexpectedly")
+			}
+
+			if event.Actor.ID != updatedCtr.Status.ContainerID {
+				break
+			}
+
+			// Note: containers.EventActionStop is raised when the container is killed,
+			// so it is not a good indicator that the container is being stopped gracefully.
+
+			switch event.Action {
+			case ctrl_testutil.TestEventActionStopWithoutRemove:
+				stopCount++
+			case containers.EventActionDestroy:
+				removeCount++
+			}
+
+			if stopCount == 1 && removeCount == 1 {
+				t.Logf("Container '%s' was stopped and removed gracefully", ctr.ObjectMeta.Name)
+				break readEvents
+			}
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for container events")
+		}
+	}
 }
 
 func TestContainerRestart(t *testing.T) {
