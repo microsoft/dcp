@@ -531,6 +531,12 @@ func (r *ExecutableReconciler) createEndpoint(
 	return endpoint, nil
 }
 
+// Environment variables starting with these prefixes will never be applied to Executables.
+var suppressVarPrefixes = []string{
+	"DEBUG_SESSION",
+	"DCP_",
+}
+
 // Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
 func (r *ExecutableReconciler) computeEffectiveEnvironment(
 	ctx context.Context,
@@ -585,6 +591,10 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 			return templateErr
 		}
 		envMap.Set(key, effectiveValue)
+	}
+
+	for _, prefix := range suppressVarPrefixes {
+		envMap.DeletePrefix(prefix)
 	}
 
 	exe.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](envMap.Data(), func(key string, value string) apiv1.EnvVar {

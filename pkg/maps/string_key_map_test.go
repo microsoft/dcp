@@ -193,3 +193,77 @@ func TestStringKeyApply(t *testing.T) {
 		"charlie": 3,
 	}, mci.Data(), cmpopts.EquateEmpty()))
 }
+
+func TestStringMapDeletePrefix(t *testing.T) {
+	mcs := NewStringKeyMap[int](StringMapModeCaseSensitive)
+
+	require.NotPanics(t, func() { mcs.DeletePrefix("") })
+	require.NotPanics(t, func() { mcs.DeletePrefix("DCP_") })
+
+	mcs.Apply(map[string]int{
+		"alpha":                   1,
+		"bravo":                   2,
+		"charlie":                 3,
+		"DCP_SECRET":              223,
+		"delta":                   4,
+		"DEBUG_SESSION_TOKEN":     3456,
+		"DEBUG_SESSION_ALT_TOKEN": 3457,
+		"echo":                    5,
+	})
+
+	mcs.DeletePrefix("not_there")
+	require.Equal(t, 8, mcs.Len()) // No change
+
+	mcs.DeletePrefix("DCP_")
+	require.Equal(t, 7, mcs.Len())
+	_, found := mcs.Get("DCP_SECRET")
+	require.False(t, found)
+
+	mcs.DeletePrefix("DEBUG_SESSION")
+	require.Equal(t, 5, mcs.Len())
+	_, found = mcs.Get("DEBUG_SESSION_TOKEN")
+	require.False(t, found)
+	_, found = mcs.Get("DEBUG_SESSION_ALT_TOKEN")
+	require.False(t, found)
+
+	mcs.DeletePrefix("DCP_")
+	require.Equal(t, 5, mcs.Len()) // No change
+	mcs.DeletePrefix("")
+	require.Equal(t, 5, mcs.Len()) // No change
+
+	mci := NewStringKeyMap[int](StringMapModeCaseInsensitive)
+
+	require.NotPanics(t, func() { mci.DeletePrefix("") })
+	require.NotPanics(t, func() { mci.DeletePrefix("DCP_") })
+
+	mci.Apply(map[string]int{
+		"alpha":                   1,
+		"bravo":                   2,
+		"charlie":                 3,
+		"DCP_SECRET":              223,
+		"delta":                   4,
+		"DEBUG_SESSION_TOKEN":     3456,
+		"debug_SESSION_ALT_token": 3457, // Note mixed casing
+		"echo":                    5,
+	})
+
+	mci.DeletePrefix("not_there")
+	require.Equal(t, 8, mci.Len()) // No change
+
+	mci.DeletePrefix("DCP_")
+	require.Equal(t, 7, mci.Len())
+	_, found = mci.Get("DCP_SECRET")
+	require.False(t, found)
+
+	mci.DeletePrefix("debug_session") // Note different casing
+	require.Equal(t, 5, mci.Len())
+	_, found = mci.Get("DEBUG_SESSION_TOKEN")
+	require.False(t, found)
+	_, found = mcs.Get("debug_SESSION_ALT_token")
+	require.False(t, found)
+
+	mci.DeletePrefix("DCP_")
+	require.Equal(t, 5, mci.Len()) // No change
+	mci.DeletePrefix("")
+	require.Equal(t, 5, mci.Len()) // No change
+}
