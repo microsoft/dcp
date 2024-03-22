@@ -531,8 +531,8 @@ func (r *ExecutableReconciler) createEndpoint(
 	return endpoint, nil
 }
 
-// Environment variables starting with these prefixes will not be inherited from the ambient environment.
-var doNotInheritVarPrefixes = []string{
+// Environment variables starting with these prefixes will never be applied to Executables.
+var suppressVarPrefixes = []string{
 	"DEBUG_SESSION",
 	"DCP_",
 }
@@ -563,10 +563,6 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		return fmt.Errorf("unknown environment behavior: %s", exe.Spec.AmbientEnvironment.Behavior)
 	}
 
-	for _, prefix := range doNotInheritVarPrefixes {
-		envMap.DeletePrefix(prefix)
-	}
-
 	// Add environment variables from .env files.
 	if len(exe.Spec.EnvFiles) > 0 {
 		if additionalEnv, err := godotenv.Read(exe.Spec.EnvFiles...); err != nil {
@@ -595,6 +591,10 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 			return templateErr
 		}
 		envMap.Set(key, effectiveValue)
+	}
+
+	for _, prefix := range suppressVarPrefixes {
+		envMap.DeletePrefix(prefix)
 	}
 
 	exe.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](envMap.Data(), func(key string, value string) apiv1.EnvVar {
