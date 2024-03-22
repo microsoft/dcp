@@ -531,6 +531,12 @@ func (r *ExecutableReconciler) createEndpoint(
 	return endpoint, nil
 }
 
+// Environment variables starting with these prefixes will not be inherited from the ambient environment.
+var doNotInheritVarPrefixes = []string{
+	"DEBUG_SESSION",
+	"DCP_",
+}
+
 // Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
 func (r *ExecutableReconciler) computeEffectiveEnvironment(
 	ctx context.Context,
@@ -555,6 +561,10 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		// Noop
 	} else {
 		return fmt.Errorf("unknown environment behavior: %s", exe.Spec.AmbientEnvironment.Behavior)
+	}
+
+	for _, prefix := range doNotInheritVarPrefixes {
+		envMap.DeletePrefix(prefix)
 	}
 
 	// Add environment variables from .env files.
