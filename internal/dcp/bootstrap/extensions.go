@@ -48,11 +48,6 @@ var (
 			Id:           "dcpctrl",
 			Capabilities: []extensions.ExtensionCapability{extensions.ControllerCapability},
 		},
-		"dcpd": {
-			Name:         "DCP API server",
-			Id:           "dcpd",
-			Capabilities: []extensions.ExtensionCapability{extensions.ApiServerCapability},
-		},
 	}
 )
 

@@ -7,7 +7,19 @@ import (
 	"net"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"golang.org/x/net/nettest"
 )
+
+// Wrap the standard net.LookupIP method to filter for supported IP address types
+func LookupIP(host string) ([]net.IP, error) {
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+
+	return slices.Select(ips, IsValidIP), nil
+}
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
 // Even if this method is called twice in a row, it should not return the same port.
@@ -101,4 +113,14 @@ func IsIPv6(address string) bool {
 
 func IsValidPort(port int) bool {
 	return port >= 1 && port <= 65535
+}
+
+func IsValidIP(ip net.IP) bool {
+	if ip.To4() != nil && nettest.SupportsIPv4() {
+		return true
+	} else if len(ip.To16()) == net.IPv6len && nettest.SupportsIPv6() {
+		return true
+	}
+
+	return false
 }

@@ -8,19 +8,19 @@ At the highest level of abstraction Kubernetes can be thought as a document data
 
 Instances of resources are created simply "resources", or "objects". The latter term is especially popular in the context of accessing Kubernetes via API.
 
-> Kubernetes convention is to start the names of resource kinds with uppercase letter (a Pod, Service, Executable etc). This makes it clear whether we are talking about a resource kind (e.g. Executable) vs an instance of a kind (executable = "some specific executable"). 
+> Kubernetes convention is to start the names of resource kinds with uppercase letter (a Pod, Service, Executable etc). This makes it clear whether we are talking about a resource kind (e.g. Executable) vs an instance of a kind (executable = "some specific executable").
 
 ## Resource grouping and versioning
 
-Kubernetes resource kinds are organized into named groups, the idea being that related resources will belong to the same group. The resource group concept is similar to a namespace concept in programming languages; it helps avoid naming conflicts for different resource kinds, but otherwise does not place any restrictions on resources. For example, resources from different groups can freely refer to one another. 
+Kubernetes resource kinds are organized into named groups, the idea being that related resources will belong to the same group. The resource group concept is similar to a namespace concept in programming languages; it helps avoid naming conflicts for different resource kinds, but otherwise does not place any restrictions on resources. For example, resources from different groups can freely refer to one another.
 
 > In DCP all resource kinds belong to `usvc-dev.developer.microsoft.com` group.
 
 > API groups should not be confused with [Kubernetes namespaces](https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/). Namespaces are a means for grouping Kubernetes objects (not kinds). They often serve as a security boundary, isolating resources that belong to different applications.
 
-Resource kinds can have multiple versions (also called **API versions**). Every object in the system has its version information stored with it; this version is called "storage version" for this object. Kubernetes design guidelines emphasize that clients should be able, to the largest extent possible, use their preferred API version when working with an object, even if the storage version is different than the client API version. Kubernetes has facilities to support this scenario, but it requires additional effort by the programmer to translate versions on the fly as necessary. 
+Resource kinds can have multiple versions (also called **API versions**). Every object in the system has its version information stored with it; this version is called "storage version" for this object. Kubernetes design guidelines emphasize that clients should be able, to the largest extent possible, use their preferred API version when working with an object, even if the storage version is different than the client API version. Kubernetes has facilities to support this scenario, but it requires additional effort by the programmer to translate versions on the fly as necessary.
 
-> In DCP all resources have a single version, `v1`. 
+> In DCP all resources have a single version, `v1`.
 
 ---
 
@@ -28,14 +28,14 @@ Resource kinds can have multiple versions (also called **API versions**). Every 
 The part of Kubernetes that orchestrates all the work performed by a Kubernetes cluster is called control plane. You can read [Kubernetes control plane conceptual overview](https://kubernetes.io/docs/concepts/overview/components/#control-plane-components) to learn more about Kubernetes control plane and all its components. The most important control plane components are the API server and the data store (also called backing store).
 
 ## API server
-The **API server** is the control plane component that exposes the Kubernetes API and handles requests that query and modify resources. 
+The **API server** is the control plane component that exposes the Kubernetes API and handles requests that query and modify resources.
 
 > In DCP we use [an API server library from the Tilt project](https://github.com/tilt-dev/tilt-apiserver) to implement our API server. The API server exposes a Kubernetes-compatible interface, but does not "know" about any standard Kubernetes resource types. Instead, it is configured to recognize DCP-specific resource types for describing the developer workload, such as Executable, Container etc.
 
 ## Data store
-The **data store** manages resource data. Kubernetes uses [etcd](https://etcd.io/docs/) as its default data store, a consistent and highly available key-value database. 
+The **data store** manages resource data. Kubernetes uses [etcd](https://etcd.io/docs/) as its default data store, a consistent and highly available key-value database.
 
-> DCP does not need the high availability of etcd, and does not need to persist data beyond the lifetime of the dcpd daemon, so it uses an in-memory data store instead. In future, if workload data persistence is required, DCP could switch to a single-node etcd instance for storing workload data on disk.
+> DCP does not need the high availability of etcd, and does not need to persist data beyond the lifetime of the dcp daemon, so it uses an in-memory data store instead. In future, if workload data persistence is required, DCP could switch to a single-node etcd instance for storing workload data on disk.
 
 ---
 
@@ -43,17 +43,17 @@ The **data store** manages resource data. Kubernetes uses [etcd](https://etcd.io
 
 The objects stored in Kubernetes data store serve as **a model** for the real world. That is, the objects describe how the world should be, and store data about their corresponding real world entities. In DCP the "real world" is developer workload (application) that DCP is supposed to run and monitor. For example, when an Executable object is created, its data must include the path to the program that DCP should run. When DCP starts the program, it will add information about the running program to the Executable object (e.g. its process ID when the program is running, and exit code when the program exits).
 
-The part of DCP that is responsible for making the developer workload correspond to the model is called **a controller**. Typically, every kind of resource has its own controller, all running independently and in parallel. Each controller registers with the API server and gets notified about any changes to object of a kind that the controller handles. The controller compares the model with the workload on the machine and performs actions that make the workload correspond to the model. It is also watching the workload for state changes, and updates the model objects so that they reflect the state of the workload. 
+The part of DCP that is responsible for making the developer workload correspond to the model is called **a controller**. Typically, every kind of resource has its own controller, all running independently and in parallel. Each controller registers with the API server and gets notified about any changes to object of a kind that the controller handles. The controller compares the model with the workload on the machine and performs actions that make the workload correspond to the model. It is also watching the workload for state changes, and updates the model objects so that they reflect the state of the workload.
 
 > When talking about nonstandard Kubernetes resource kinds, a combination of custom resource definition (CRD) and its associated controller is often called **an operator**.
 
-This two-way synchronization between the Kubernetes object model and "the real world" (the running workload in DCP case) is called **reconciliation**. The main part of every controller code is a "reconciliation function" that is called whenever a change is detected, either to the model, or the real world. 
+This two-way synchronization between the Kubernetes object model and "the real world" (the running workload in DCP case) is called **reconciliation**. The main part of every controller code is a "reconciliation function" that is called whenever a change is detected, either to the model, or the real world.
 
-> Although the reconciliation function is typically triggered by a change, there is no guarantee that the function will be called within any specific amount of time. Consequently, the controller should not assume that the change that triggered reconciliation accurately represents the latest state of the model, or the real world. In other words, it is *not true* that Kubernetes will present the controller with a complete history of changes for every object the controller is interested in. In Kubernetes documentation this assumption is called **edge-based behavior** and is listed specifically listed as a mistake. 
+> Although the reconciliation function is typically triggered by a change, there is no guarantee that the function will be called within any specific amount of time. Consequently, the controller should not assume that the change that triggered reconciliation accurately represents the latest state of the model, or the real world. In other words, it is *not true* that Kubernetes will present the controller with a complete history of changes for every object the controller is interested in. In Kubernetes documentation this assumption is called **edge-based behavior** and is listed specifically listed as a mistake.
 >
-> Instead, the controller should ensure that it has the most recent information about both the model and the world, and only then decide what the next action (if any) should be. In Kubernetes documentation this is referred to as **level-based** behavior. 
+> Instead, the controller should ensure that it has the most recent information about both the model and the world, and only then decide what the next action (if any) should be. In Kubernetes documentation this is referred to as **level-based** behavior.
 
---- 
+---
 
 # Resource spec and status
 
@@ -80,11 +80,11 @@ A full list of object metadata properties can be found [in Kubernetes documentat
 
 ## The spec
 
-The spec part of object data represents **the desired state of the world**. This data is specific to the object kind and is meant to be set by clients. Controllers usually do not modify any spec data; they just read it and react to changes. 
+The spec part of object data represents **the desired state of the world**. This data is specific to the object kind and is meant to be set by clients. Controllers usually do not modify any spec data; they just read it and react to changes.
 
 ## The status
 
-The status represents **how the world actually is**. More precisely, status is the state of the world as witnessed by the controller during last execution of reconciliation function. 
+The status represents **how the world actually is**. More precisely, status is the state of the world as witnessed by the controller during last execution of reconciliation function.
 
 Status data should be created and modified by controllers. Clients read the status to get information about the world, but do not modify status data.
 
@@ -103,14 +103,14 @@ DCP API server and its core controllers are implemented in Go. Users of Go have 
 | [kubebuilder](https://book.kubebuilder.io/introduction.html) | `kubebuilder` is a code generation scaffolding tool that leverages `controller-runtime`. It is meant to get you quickly started with your controller implementation and allow rapid iteration when your spec- and/or status data change. |
 | [Operator Framework](https://operatorframework.io) | Operator Framework is a set of developer tools and Kubernetes components that aid in operator development, handling such tasks as operator installation, update and management. It leverages `kubebuilder` and other tools. |
 
-In DCP we rely mostly on `container-runtime` and associated code generation tools. We also use types and functions form `client-go` library. 
+In DCP we rely mostly on `container-runtime` and associated code generation tools. We also use types and functions form `client-go` library.
 
-## Most important library primitives 
+## Most important library primitives
 
 In this paragraph we briefly describe the most important types in the Kubernetes client libraries. The information here is intended to help you understand what the intention of the particular DCP code snippet is, based on what library types it may use.
 
 ### ClientSet
-At a most basic level, the `client-go` library has the facility to generate a strongly-typed client for a given resource kind (in the form of a Go structure). This type of basic client is called a `ClientSet`, and it enables CRUD operation on a single kind, by talking to Kubernetes API server directly. 
+At a most basic level, the `client-go` library has the facility to generate a strongly-typed client for a given resource kind (in the form of a Go structure). This type of basic client is called a `ClientSet`, and it enables CRUD operation on a single kind, by talking to Kubernetes API server directly.
 
 The "set" part comes into play when you need to work with more than one kind of resource. `ClientSet` instances can be merged to form an aggregate `ClientSet`, which "knows about" multiple resource kinds, including all standard Kubernetes kinds.
 
@@ -149,13 +149,13 @@ type StatusClient interface {
 `controller-runtime` clients require much less boilerplate code  than `client-go` clients do, but there is still some (primarily for deep-copying of objects). The library has a dedicated code generator called `controller-gen`, see below.
 
 
-### Informers 
+### Informers
 An `Informer` combines the ability to receive and handle notifications about changes to objects of a particular kind with an in-memory cache with indexed lookup. This places minimal load on the API server and increases performance. Under the covers the Informer fills its object cache upon startup and then signs up for change notifications for the desired object kinds. It will also handle connection failures and various kinds of common API server errors.
 
 > Caveat: unlike `controller-runtime` `Client` objects, objects returned by `Informers`, `Listers` and `Watchers` are direct pointers to client cache content. The controller cone must make a copy before modifying them.
 
 ### Scheme and RESTMapper
-These two types play a role of configuration/helper data that enable calling Kubernetes API server REST endpoint. 
+These two types play a role of configuration/helper data that enable calling Kubernetes API server REST endpoint.
 
 `Scheme` contains the mapping between resource group, version, and kind (`GroupVersionKind` struct, or GVK) and the Go struct that holds the data for the objects of that kinds. It is used to serialize and deserialize data exchanged with the API server.
 
@@ -187,7 +187,7 @@ Kubernetes custom resources and controllers typically use generated code for man
 - object/deep copy generator (for generating deep copy code used by `client-go` runtime),
 - OpenAPI schema generator
 - webhook generator (for authoring validating and mutating webhooks)
-- RBAC generator (for generating roles and setting up secure object access for generators). 
+- RBAC generator (for generating roles and setting up secure object access for generators).
 
 The result is either Go source files, or YAML-format manifests (with Kustomize overrides) that can be applied directly to a Kubernetes templates.
 
@@ -195,7 +195,7 @@ In DCP we use a code generation tool associated with `controller-runtime` librar
 
 Another popular code generation tool for Kubernetes is called `code-generator`; it is also a set of code generators, targeting the lower-level `client-go` library. We use the [`openapi-gen` generator](https://github.com/kubernetes/kube-openapi) from that set to generate OpenAPI schemas for our types.
 
-Both `controller-gen` generators and `code-generators` are driven by specially-formatted comments in the source code. The comments start with plus (+) sign, followed by the tag that the generator recognizes, for example 
+Both `controller-gen` generators and `code-generators` are driven by specially-formatted comments in the source code. The comments start with plus (+) sign, followed by the tag that the generator recognizes, for example
 ```go
 // +k8s:openapi-gen=true
 ```
@@ -206,7 +206,7 @@ instructs the `openapi-gen` generator to generate OpenAPI schema for the followi
 ## General rules
 
 ### Objects are always slightly stale
-All standard Kubernetes client libraries use a cache, so objects that the client sees can always be somewhat out of date. Moreover, Kubernetes does not make any guarantees in terms of how soon controllers will be notified about a change to objects they are watching, so even if the cache is bypassed, there is still no such thing as "object data that is guaranteed fresh" in Kubernetes. The best approach is to keep a mindset that all data "seen" by controller code is <u>a snapshot</u> from (hopefully near) past. 
+All standard Kubernetes client libraries use a cache, so objects that the client sees can always be somewhat out of date. Moreover, Kubernetes does not make any guarantees in terms of how soon controllers will be notified about a change to objects they are watching, so even if the cache is bypassed, there is still no such thing as "object data that is guaranteed fresh" in Kubernetes. The best approach is to keep a mindset that all data "seen" by controller code is <u>a snapshot</u> from (hopefully near) past.
 
 ## Working with the object data cache
 
@@ -219,7 +219,7 @@ There are a few mechanisms in `controller-runtime` that allow changing the defau
 - When creating a `DelegatingClient`, certain object kinds can be configured to always be read directly from the API server.
 - `Watches` can be restricted to a give set of namespaces by using `cache.MultiNamesapceCacheBuilder`, or setting `cache.Options.Namespace`.
 - Watches can be filtered (e.g. by label) per object kind by using `cache.Options.SelectorsByObject`.
-- `APIReader` can be used for ad-hoc, cache-bypassing queries (although the need for that should be rare). Also keep in mind that the `APIReader` call will result in a quorum-read from the underlying etcd storage, which might be costly with a heavily-used cluster, and especially if a lot of data is returned, so always use namespace and label filters if possible. 
+- `APIReader` can be used for ad-hoc, cache-bypassing queries (although the need for that should be rare). Also keep in mind that the `APIReader` call will result in a quorum-read from the underlying etcd storage, which might be costly with a heavily-used cluster, and especially if a lot of data is returned, so always use namespace and label filters if possible.
 
 ### Object updates and the cache
 The cache is not used for data-modification functions (`Create`, `Update`, `Patch`, and `Delete`). This means you should usually do the update towards the end of the reconciliation function, and then return. Do not use `Client` APIs to read the object again, because most likely the cache will not be updated yet and you will read stale data. If you need the updated object data (e.g. generation number), the data-modification functions will save these (new) data into the object passed to them.
@@ -229,7 +229,7 @@ Another point to remember is that even if a particular update initiate by a cont
 An advanced technique employed by some controllers is to anticipate `Watcher` events for newly created or updated objects by storing expected event data about them (context) in memory and processing them in a simplified manner. For example, a controller might create a bunch of child objects of a kind that it also watches; it can expect receiving a reconciliation function call for each created child object. This controller also "knows" that a bunch of children have been just created, so it can take this information into account when deciding whether to create more children, even if the cache has not been updated yet with the new child data.
 
 ### `SharedInformerFactory` does not produce globally shared `Informers`
-Although `controller-runtime` uses `client-go` primitives under the covers, it does not use `client-go` default object cache and pool of `Informers`. In particular, `Informers` created by `SharedInformerFactory` that is part of `client-go` will not be using the `controller-runtime` object cache, and are completely separate from `Informers` used by `controller-runtime`. 
+Although `controller-runtime` uses `client-go` primitives under the covers, it does not use `client-go` default object cache and pool of `Informers`. In particular, `Informers` created by `SharedInformerFactory` that is part of `client-go` will not be using the `controller-runtime` object cache, and are completely separate from `Informers` used by `controller-runtime`.
 
 A rule of thumb to avoid such issues is to consistently use for data retrieval either `client-go`, or `controller-runtime`, but not both.
 
@@ -319,7 +319,7 @@ Note that:
     patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})
     // ...
     ```
-- Update methods (both `Update()` and `Patch()`) take a copy of the current object data (`DeepCopy()` is used to create the copy). Why this is helpful will be explained in the next paragraph, about updating sub-resources.  
+- Update methods (both `Update()` and `Patch()`) take a copy of the current object data (`DeepCopy()` is used to create the copy). Why this is helpful will be explained in the next paragraph, about updating sub-resources.
 
 ### Updating sub-resources
 For those scenarios when the update <u>applies only to a sub-resource</u>, `controller-runtime` offers a specialized `SubResourceClient`. The most common example of a sub-resource is the object status. Indeed, updating the status is perhaps the most common object update scenario for controllers. This is why the `controller-runtime` has a `Status()` helper method for accessing the status sub-resource client right off of the root object client. Here is how a controller can use it:
@@ -392,22 +392,22 @@ The [server-side apply](https://kubernetes.io/docs/reference/using-api/server-si
 
 Controllers typically use option (1); options (2) and (3) are reserved for human administrators using tools such as `kubectl`.
 
-The limitation of server-side apply patch is that there is no way to delete any field that is not already owned by the controller supplying the patch. The workaround is for the controller to use an update operation or the "JSON merge" patch type. 
+The limitation of server-side apply patch is that there is no way to delete any field that is not already owned by the controller supplying the patch. The workaround is for the controller to use an update operation or the "JSON merge" patch type.
 
 The advantages of a server-side apply patch method are:
 - Because concurrency checks are made per-field, multiple actors can update different fields without conflicts or retries.
 - Individual list items or map/object elements can be owned and updated by different actors.
-- The object does not need to be read to construct a patch--it is enough to start with an object in its blank (default) state and apply necessary changes. The patch can then be submitted and per-field concurrency checks will be applied by the server.  
+- The object does not need to be read to construct a patch--it is enough to start with an object in its blank (default) state and apply necessary changes. The patch can then be submitted and per-field concurrency checks will be applied by the server.
 
 > Another mechanism for granular object updates is/was a "strategic merge patch". It can still be found in `controller-runtime` APIs, but it could only be used with built-in Kubernetes object kinds, and is considered obsolete.
 
 ### Choosing the object method update
 In general, there are no hard rules for choosing the API to update objects, but here are some thoughts to consider:
-- Patching is often preferable to updating because it is less error-prone and reduces the amount of network traffic. Updating involves sending all the object data, and increases the possibility of changing something inadvertently. 
-- Updates are always subject to optimistic concurrency, but with patching the controller has a choice. 
+- Patching is often preferable to updating because it is less error-prone and reduces the amount of network traffic. Updating involves sending all the object data, and increases the possibility of changing something inadvertently.
+- Updates are always subject to optimistic concurrency, but with patching the controller has a choice.
 - A JSON merge patch with optimistic locking is a good compromise and a safe default.
-- Server-side apply patch has been designed for the scenario when multiple actors update different portions of object data. 
-- When a change that involves most/all object data, a full update might make sense. 
+- Server-side apply patch has been designed for the scenario when multiple actors update different portions of object data.
+- When a change that involves most/all object data, a full update might make sense.
 
 
 ## Reacting to external (real-world) changes
@@ -442,7 +442,7 @@ func (r *XxxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
     // Tell controller_runtime to invoke the reconciliation function whenever an event is written to the channel
     Watches(&src, &ctrl_handler.EnqueueRequestForObject{}). // "sigs.k8s.io/controller-runtime/pkg/handler"
-  
+
     Complete(r)
 }
 ```
@@ -464,20 +464,20 @@ A finalizer is nothing more than a tag that is added to a list (called `finalize
 
 1. The Kubernetes will be watching the object as well. When all controllers are done with the cleanup work and the `finalizers` list becomes empty, Kubernetes will erase the object from the data store, finishing the deletion process.
 
-You can read more about how finalizers work in [Kubernetes documentation](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/). 
+You can read more about how finalizers work in [Kubernetes documentation](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/).
 
 ### Deleting object hierarchies
 
-Kubernetes objects can form a hierarchy (actually, a directed graph) via `ownerReferences` metadata property. Objects can have multiple owners. The general rule is, when ALL owners are deleted, the object with no owners left is a candidate for automatic deletion. The following discussion assumes a single owner; when multiple owners are present, deleting the owner does not affect children other than the need to update `ownerReferences` (by removing the reference to deleted owner). 
+Kubernetes objects can form a hierarchy (actually, a directed graph) via `ownerReferences` metadata property. Objects can have multiple owners. The general rule is, when ALL owners are deleted, the object with no owners left is a candidate for automatic deletion. The following discussion assumes a single owner; when multiple owners are present, deleting the owner does not affect children other than the need to update `ownerReferences` (by removing the reference to deleted owner).
 
 Kubernetes does not implement a true auto-deletion of orphaned children. The deletion is always facilitated by some controller; however, Kubernetes has ability to specify the intent for how children should be deleted as part of parent deletion request. This is known as "propagation policy". Kubernetes recognizes three different policies:
 
-- `Background` (the default): the owner deletion is completed first; its children are deleted afterwards, asychronously. This means any client looking for the owner object will see the owner and all its childern, or receive a `NotFound` error. 
+- `Background` (the default): the owner deletion is completed first; its children are deleted afterwards, asychronously. This means any client looking for the owner object will see the owner and all its childern, or receive a `NotFound` error.
 - `Foreground`: with this policy, children that have an `ownerReference` with `blockOwnerDeletion` flag set to true must be deleted first, before the owner is garbage-collected. For clients it means that they may observe the owner in a "being deleted" state, with some children deleted, but others not (yet).
 - `Orphan`: this policy effectively ignores the owner references, decoupling the lifetime of the owner from its children.
 
-For more information refer to [Garbage Collection topic](https://kubernetes.io/docs/concepts/architecture/garbage-collection/) in Kubernetes documentation and [Using Finalizers to Control Deletion](https://kubernetes.io/blog/2021/05/14/using-finalizers-to-control-deletion/) Kubernetes blog post. 
+For more information refer to [Garbage Collection topic](https://kubernetes.io/docs/concepts/architecture/garbage-collection/) in Kubernetes documentation and [Using Finalizers to Control Deletion](https://kubernetes.io/blog/2021/05/14/using-finalizers-to-control-deletion/) Kubernetes blog post.
 
-The presence of finalizers can make the orchestration of object hierarchy deletion quite complicated. The most straightforward tactics is often to limit the scope of auto-deletion by relying on finalizers and owner object controllers to delete children as appropriate. This works well if it is the parent object controller that creates the children (think ReplicaSet and its Replicas). 
+The presence of finalizers can make the orchestration of object hierarchy deletion quite complicated. The most straightforward tactics is often to limit the scope of auto-deletion by relying on finalizers and owner object controllers to delete children as appropriate. This works well if it is the parent object controller that creates the children (think ReplicaSet and its Replicas).
 
 Another possibility for object hierarchy deletion is to have child controllers watch the parent objects and delete children when the parent gets removed. This option is useful if it is the parent controller is not involved in child creation.

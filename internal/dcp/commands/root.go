@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
@@ -59,6 +60,7 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 
 	log.AddLevelFlag(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(log.V(1))
+	klog.SetLogger(log.V(1))
 
 	return rootCmd, nil
 }

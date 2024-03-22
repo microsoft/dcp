@@ -4,12 +4,11 @@ package controllers
 
 import (
 	"context"
-	"net"
 
 	"go.opentelemetry.io/otel/metric"
+	"golang.org/x/net/nettest"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 )
 
@@ -74,17 +73,8 @@ func serviceCounters(ctx context.Context, service *apiv1.Service, addend int64) 
 
 func stackCounters(ctx context.Context, service *apiv1.Service, addend int64) {
 	// Localhost can be both IPv4 and IPv6, check to see if the machine supports IPv6
-	supportsIPv4 := false
-	supportsIPv6 := false
-	ips, err := net.LookupIP("localhost")
-	if err != nil {
-		return // Best effort
-	}
-
-	for _, ip := range ips {
-		supportsIPv4 = supportsIPv4 || networking.IsIPv4(ip.String())
-		supportsIPv6 = supportsIPv6 || networking.IsIPv6(ip.String())
-	}
+	supportsIPv4 := nettest.SupportsIPv4()
+	supportsIPv6 := nettest.SupportsIPv6()
 
 	if supportsIPv4 && supportsIPv6 {
 		dualStackCounter.Add(ctx, addend)

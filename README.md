@@ -1,9 +1,6 @@
 # DCP monorepo
 This repository contains the core components of the Developer Control Plane tool:
--  `dcp` CLI that users invoke to run applications and for other, related tasks.
--  `dcpd` is the DCP API server that holds the workload model. It is used by controllers, workload renderers, and API providers to create workload definition, run it, and expose information about it.
-
-	`dcpd` is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
+-  `dcp` CLI that users invoke to run applications and for other, related tasks. If invoked with `start-apiserver` it will act as the API server that holds the workload model used by controllers, workload renderers, and API providers to create a workload definition, run it, and expose information about it. The API server is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
 -  `dcpctrl` is the core DCP controllers that implement the standard behavior for DCP workload models.
 
 
@@ -65,22 +62,22 @@ Now you can run `go test` commands to run selected tests, including integration 
 ### Debugging tests
 You can also run individual tests via VS Code "run test" and "debug test" gestures. When tests are running under the debugger, the timeout is increased to 60 minutes via VS Code repository settings.
 
-If the test is killed while running under the debugger, may leave orphaned `dcpd` process. You can check if such processes exist by running following commands:
+If the test is killed while running under the debugger, may leave orphaned `dcp` process. You can check if such processes exist by running following commands:
 
     | Task | Command (macOS) | Command (Linux) | Command (Windows) |
     | --- | --- | --- | --- |
-    | Check for orphaned `dcpd` processes. | `pgrep -lf dcpd` | `pgrep -af dcpd` | `pslist dcpd` |
-    | Kill orphaned `dcpd` processes. | `pkill -lf dcpd` | `pkill -af dcpd` | `pskill dcpd` |
+    | Check for orphaned `dcp` processes. | `pgrep -lf dcp` | `pgrep -af dcp` | `pslist dcp` |
+    | Kill orphaned `dcp` processes. | `pkill -lf dcp` | `pkill -af dcp` | `pskill dcp` |
 
     `pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
 
 
 ## Troubleshooting and debugging tips
 
-### `make lint` times out (or ends with an error that says "Killed") 
+### `make lint` times out (or ends with an error that says "Killed")
 We have seen the linter occasionally go into a persistent, bad state. Do `make clean`, then retry `make lint` again.
 
-### Make it easier to use `kubectl` with DCP 
+### Make it easier to use `kubectl` with DCP
 For working with DCP in the context of Aspire tooling (which creates a separate `kubeconfig` file for every application run) the following set of PowerShell functions and aliases might be useful:
 
 ```powershell
@@ -97,9 +94,9 @@ function dcpKubeconfigPath() {
         }
 
     } else {
-        # Use "dcpd" process to figure out where the kubeconfig file is --
+        # Use "dcp" process to figure out where the kubeconfig file is --
         # when debugging the API server we might be running without a controllers process (dcpctrl).
-        $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcpd" })
+        $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcp" })
         if ($dcpProcesses.Count -eq 0) {
             throw "No DCP processes found"
         } elseif ($dcpProcesses.Count -gt 1) {
@@ -109,7 +106,7 @@ function dcpKubeconfigPath() {
             $dcpProcess = $dcpProcesses[0]
         }
     }
-    
+
     $kubeconfig = $dcpProcess | Select-Object -ExpandProperty CommandLine | ForEach-Object { $_.Split() } | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
     if ([string]::IsNullOrWhiteSpace($kubeconfig)) {
         $kubeconfig = "$env:USERPROFILE/.dcp/kubeconfig"
@@ -123,7 +120,7 @@ function dcpKubeconfigContent() {
     Get-Content $kubeconfig
 }
 
-function dcpdKubectl() {
+function dcpKubectl() {
     $dcpPid = $null
     if ($args.Length -gt 1 -and $args[0] -eq "-DcpPid") {
         $dcpPid = $args[1]
@@ -135,7 +132,7 @@ function dcpdKubectl() {
     & kubectl --kubeconfig "$kubeconfig" $args
 }
 
-Set-Alias kk dcpdKubectl
+Set-Alias kk dcpKubectl
 Set-Alias kkconfig dcpKubeconfigContent
 ```
 
@@ -144,9 +141,9 @@ To issue a command against the DCP API server use `kk` alias. Fore example, to d
 `kkconfig` will display the content of the API server config file that is used by the running Aspire app. This can be useful to find out which port the API server is running at.
 
 > For debugging Aspire tests (part of `CloudApplicationTests` suite) the name of the relevant process that started DCP is `testhost`.
- 
+
 ### After `make generate-openapi` the generated file is empty (almost all contents has been removed).
-Looks like the OpenAPI code generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues. 
+Looks like the OpenAPI code generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues.
 
 We have seen an issue where the generator would latch to a specific version of `go` compiler and and fail when the compiler is updated. Deleting `.toolbin/openapi-gen` binary usually helps in this case.
 
@@ -179,7 +176,7 @@ Set the `DCP_DIAGNOSTICS_LOG_LEVEL` environment variable to `debug`. The logs wi
 
 ### I need to debug DCP
 
-There are several VS Code debug configurations available for this repository. They are very straightforward; take a look at `launch.json` and choose one that fits your needs best, or create a custom one for your scenario. 
+There are several VS Code debug configurations available for this repository. They are very straightforward; take a look at `launch.json` and choose one that fits your needs best, or create a custom one for your scenario.
 
 If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging wiki](https://github.com/golang/vscode-go/wiki/debugging) and [documentation for the underlying delve Go debugger](https://github.com/go-delve/delve/blob/master/Documentation/cli/README.md) might be helpful.
 
@@ -189,12 +186,12 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
 
-1. Open the solution with your application in Visual Studio. 
+1. Open the solution with your application in Visual Studio.
 1. See the section above for "I need to test a local build of `dcp` with Aspire tooling".
 1. Set a breakpoint in `ApplicationExecutor.RunApplicationAsync` method. The class is in `Aspire.Hosting.Dcp` namespace (a "Function Breakpoint" that refers to the fully-qualified name of the method will work fine, you do not need to have `Aspire.Hosting` project in your solution).
-1. Open `usvc-apiserver` repository in Visual Studio Code. 
-1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet. 
-1. Switch to Visual Studio Code, select `attach to controllers process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary. 
+1. Open `usvc-apiserver` repository in Visual Studio Code.
+1. Run the application. When the breakpoint is hit, the DCP API server and controller host should already be started, but no workload objects have been created yet.
+1. Switch to Visual Studio Code, select `attach to controllers process` debug configuration and start debugging. When prompted, select the `dcpctrl` process (there should be just one). Set breakpoints in controller code as necessary.
 1. Switch back to Visual Studio and continue (F5). The workload definition will be created by the `ApplicationExecutor` and sent to DCP for execution.
 
 The same steps can also be used to:

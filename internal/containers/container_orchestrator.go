@@ -133,6 +133,9 @@ type StreamContainerLogsOptions struct {
 
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
+	// Get the container machine host name for the runtime
+	ContainerHost() string
+
 	// Check the runtime status
 	CheckStatus(ctx context.Context) ContainerRuntimeStatus
 

@@ -69,7 +69,7 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		kubeconfigPath, err := kubeconfig.EnsureKubeconfigFlagValue(cmd.Flags())
+		kconfig, err := kubeconfig.GetKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
 			return err
 		}
@@ -103,7 +103,7 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		runEvtHandlers := bootstrap.DcpRunEventHandlers{
 			AfterApiSrvStart: func() error {
 				// Start the application
-				renderErr := effRenderer.Render(commandCtx, appRootDir, kubeconfigPath, log)
+				renderErr := effRenderer.Render(commandCtx, appRootDir, kconfig.Path(), log)
 				return renderErr
 			},
 			BeforeApiSrvShutdown: func() error {
@@ -124,11 +124,11 @@ func runApp(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kubeconfigPath}
+		invocationFlags := []string{"--kubeconfig", kconfig.Path()}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
-		err = bootstrap.DcpRun(commandCtx, appRootDir, log, allExtensions, invocationFlags, runEvtHandlers)
+		err = bootstrap.DcpRun(commandCtx, appRootDir, kconfig, allExtensions, invocationFlags, log, runEvtHandlers)
 		return err
 	}
 }

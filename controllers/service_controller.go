@@ -16,6 +16,7 @@ import (
 	"github.com/smallnest/chanx"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap/zapcore"
+	"golang.org/x/net/nettest"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -397,7 +398,7 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 	if requestedServiceAddress == "localhost" {
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
 
-		ips, err := net.LookupIP(requestedServiceAddress)
+		ips, err := networking.LookupIP(requestedServiceAddress)
 		if err != nil || len(ips) == 0 {
 			return nil, fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
 		}
@@ -537,9 +538,19 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
 			requestedServiceAddress = "127.0.0.1"
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
+			// Use the standard LookupIP implementation because we want to specifically limit to IPv4 addresses
 			ips, err := net.LookupIP("localhost")
-			if err != nil || len(ips) == 0 {
+			if err != nil {
 				return "", fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
+			}
+
+			// Only select valid IPv4 addresses
+			ips = slices.Select(ips, func(ip net.IP) bool {
+				return ip.To4() != nil && nettest.SupportsIPv4()
+			})
+
+			if len(ips) == 0 {
+				return "", fmt.Errorf("could not obtain valid IP address(es) for 'localhost': %w", err)
 			}
 			requestedServiceAddress = networking.IpToString(ips[rand.Intn(len(ips))])
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {

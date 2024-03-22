@@ -11,6 +11,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/nettest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -329,6 +330,10 @@ func TestServiceIPv6Address(t *testing.T) {
 			Protocol:              apiv1.TCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeIPv6ZeroOne,
 		},
+	}
+
+	if !nettest.SupportsIPv6() {
+		return
 	}
 
 	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)

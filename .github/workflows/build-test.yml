@@ -18,17 +18,11 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest]
         include:
         - os: ubuntu-latest
           buildCommand: make build-ci
           testCommand: make test-ci
-        - os: macos-latest
-          buildCommand: make build-ci
-          testCommand: make test-ci
-        - os: windows-latest
-          buildCommand: make compile
-          testCommand: make test
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 

@@ -89,9 +89,9 @@ func TestMain(m *testing.M) {
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
 // Returns the DCP API server process ID or an error.
 func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExited *concurrency.AutoResetEvent) error {
-	dcpdPath, dcpdPathErr := getDcpdExecutablePath()
-	if dcpdPathErr != nil {
-		return fmt.Errorf("failed to find the DCPD executable: %w", dcpdPathErr)
+	dcpPath, dcpPathErr := getDcpExecutablePath()
+	if dcpPathErr != nil {
+		return fmt.Errorf("failed to find the DCP executable: %w", dcpPathErr)
 	}
 
 	suffix, randErr := randdata.MakeRandomString(8)
@@ -105,17 +105,17 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 
 	// We are going to stop the API server only after all the controller manager is done.
 	// This avoids a bunch of shutdown errors from the manager.
-	dcpdCtx, stopDcpd := context.WithCancel(context.Background())
+	dcpCtx, stopDcp := context.WithCancel(context.Background())
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
 	managerDone := concurrency.NewAutoResetEvent(true)
 	_ = context.AfterFunc(ctx, func() {
 		<-managerDone.Wait()
-		stopDcpd()
+		stopDcp()
 	})
 
-	cmd := exec.CommandContext(ctx, dcpdPath, "--kubeconfig", kubeconfigPath)
+	cmd := exec.CommandContext(ctx, dcpPath, "start-apiserver", "--server-only", "--kubeconfig", kubeconfigPath)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -134,10 +134,10 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		onApiServerExited.Set()
 	})
 
-	_, startWaitForProcessExit, dcpdStartErr := pe.StartProcess(dcpdCtx, cmd, apiserverExitHandler)
-	if dcpdStartErr != nil {
+	_, startWaitForProcessExit, dcpStartErr := pe.StartProcess(dcpCtx, cmd, apiserverExitHandler)
+	if dcpStartErr != nil {
 		_ = os.Remove(kubeconfigPath)
-		return fmt.Errorf("failed to start the API server process: %w", dcpdStartErr)
+		return fmt.Errorf("failed to start the API server process: %w", dcpStartErr)
 	}
 	startWaitForProcessExit()
 
@@ -148,7 +148,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 
 	// Using generous timeout because the client factory is going to interrogate the API server that we just have started.
 	var clientErr error
-	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 20*time.Second, config)
+	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 40*time.Second, config)
 	if clientErr != nil {
 		return fmt.Errorf("failed to create controller-runtime client: %w", clientErr)
 	}
@@ -238,26 +238,26 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	return nil
 }
 
-func getDcpdExecutablePath() (string, error) {
-	dcpdExeName := "dcpd"
+func getDcpExecutablePath() (string, error) {
+	dcpExeName := "dcp"
 	if runtime.GOOS == "windows" {
-		dcpdExeName += ".exe"
+		dcpExeName += ".exe"
 	}
 
 	outputBin, found := os.LookupEnv("OUTPUT_BIN")
 	if found {
-		dcpPath := filepath.Join(outputBin, dcppaths.DcpExtensionsDir, dcpdExeName)
+		dcpPath := filepath.Join(outputBin, dcpExeName)
 		file, err := os.Stat(dcpPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to find the DCPD executable: %w", err)
+			return "", fmt.Errorf("failed to find the DCP executable: %w", err)
 		}
 		if file.IsDir() {
-			return "", fmt.Errorf("the expected path to DCPD executable is a directory: %s", dcpPath)
+			return "", fmt.Errorf("the expected path to DCP executable is a directory: %s", dcpPath)
 		}
 		return dcpPath, nil
 	}
 
-	tail := []string{dcppaths.DcpBinDir, dcppaths.DcpExtensionsDir, dcpdExeName}
+	tail := []string{dcppaths.DcpBinDir, dcpExeName}
 	rootFolder, err := testutil.FindRootFor(testutil.FileTarget, tail...)
 	if err != nil {
 		return "", err

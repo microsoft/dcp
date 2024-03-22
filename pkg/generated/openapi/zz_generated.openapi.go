@@ -804,6 +804,21 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"runArgs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Additional arguments to pass to the container run command",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"image"},
 			},

@@ -142,7 +142,7 @@ const (
 	ideEndpointPortVar  = "DEBUG_SESSION_PORT"
 	ideEndpointTokenVar = "DEBUG_SESSION_TOKEN"
 
-	launchConfigurationsAnnotation = "usvc-dev.developer.microsoft.com/executable-controller/launch-configurations"
+	launchConfigurationsAnnotation = "executable.usvc-dev.developer.microsoft.com/launch-configurations"
 
 	// The following 3 annotations are deprecated and will be removed in future release
 	csharpProjectPathAnnotation          = "csharp-project-path"
