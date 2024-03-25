@@ -1,6 +1,8 @@
 package maps
 
 import (
+	"strings"
+
 	"golang.org/x/text/cases"
 )
 
@@ -75,6 +77,26 @@ func (skm StringKeyMap[T]) Delete(key string) {
 		delete(skm.keys, canonicalKey)
 	} else {
 		delete(skm.data, key)
+	}
+}
+
+// DeletePrefix deletes all keys that have the given prefix.
+func (skm StringKeyMap[T]) DeletePrefix(prefix string) {
+	if prefix == "" {
+		return // No-op
+	}
+
+	canonicalPrefix := skm.canonicalize(prefix)
+	for canonicalKey, desiredKey := range skm.keys {
+		if strings.HasPrefix(canonicalKey, canonicalPrefix) {
+			delete(skm.data, desiredKey)
+			delete(skm.keys, canonicalKey)
+		}
+	}
+	for key := range skm.data {
+		if strings.HasPrefix(key, prefix) {
+			delete(skm.data, key)
+		}
 	}
 }
 

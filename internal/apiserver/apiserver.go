@@ -14,6 +14,7 @@ import (
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
+	"k8s.io/apiserver/pkg/server/dynamiccertificates"
 	kubeserverfilters "k8s.io/apiserver/pkg/server/filters"
 
 	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
@@ -41,15 +42,62 @@ type ApiServer struct {
 	config       *kubeconfig.Kubeconfig
 	logger       logr.Logger
 	runCompleted bool
+	builder      *serverbuilder.Server
+	options      *start.TiltServerOptions
+	// Types that have data stored in the API server.
+	persistentDcpTypes []apiserver_resource.Object
 }
 
 func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger) *ApiServer {
-	return &ApiServer{
+	apiServer := &ApiServer{
 		name:         name,
 		config:       config,
 		logger:       logger,
 		runCompleted: false,
+		builder:      serverbuilder.NewServerBuilder(),
+		persistentDcpTypes: []apiserver_resource.Object{
+			&apiv1.Executable{},
+			&apiv1.Endpoint{},
+			&apiv1.ExecutableReplicaSet{},
+			&apiv1.Container{},
+			&apiv1.ContainerVolume{},
+			&apiv1.ContainerNetwork{},
+			&apiv1.ContainerNetworkConnection{},
+			&apiv1.Service{},
+		},
 	}
+
+	// The two constants below are just metadata for Swagger UI
+	const openApiConfigrationName = "DCP"
+	const openApiConfigurationVersion = "1.0.0" // TODO: use DCP executable version
+
+	// Types that must be recognizable by the API server, but are not persisted
+	// (they are used for request processing only).
+	var additionalDcpTypes = []apiserver_resource.Object{
+		&apiv1.LogOptions{},
+		&apiv1.LogStreamer{},
+	}
+
+	for _, o := range apiServer.persistentDcpTypes {
+		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
+	}
+	for _, o := range additionalDcpTypes {
+		apiServer.builder = apiServer.builder.WithResource(o)
+	}
+	apiServer.builder = apiServer.builder.WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, openapi.GetOpenAPIDefinitions)
+
+	return apiServer
+}
+
+func (s *ApiServer) Options() (*start.TiltServerOptions, error) {
+	if s.options != nil {
+		return s.options, nil
+	}
+
+	options, err := s.builder.ToServerOptions()
+	s.options = options
+
+	return s.options, err
 }
 
 func (s *ApiServer) Name() string {
@@ -70,39 +118,7 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 		s.runCompleted = true
 	}()
 
-	// The two constants below are just metadata for Swagger UI
-	const openApiConfigrationName = "DCP"
-	const openApiConfigurationVersion = "1.0.0" // TODO: use DCP executable version
-
-	// Types that have data stored in the API server.
-	var persistentDcpTypes = []apiserver_resource.Object{
-		&apiv1.Executable{},
-		&apiv1.Endpoint{},
-		&apiv1.ExecutableReplicaSet{},
-		&apiv1.Container{},
-		&apiv1.ContainerVolume{},
-		&apiv1.ContainerNetwork{},
-		&apiv1.ContainerNetworkConnection{},
-		&apiv1.Service{},
-	}
-
-	// Types that must be recognizable by the API server, but are not persisted
-	// (they are used for request processing only).
-	var additionalDcpTypes = []apiserver_resource.Object{
-		&apiv1.LogOptions{},
-		&apiv1.LogStreamer{},
-	}
-
-	builder := serverbuilder.NewServerBuilder()
-	for _, o := range persistentDcpTypes {
-		builder = builder.WithResourceMemoryStorage(o, dataFolderPath)
-	}
-	for _, o := range additionalDcpTypes {
-		builder = builder.WithResource(o)
-	}
-	builder = builder.WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, openapi.GetOpenAPIDefinitions)
-
-	options, err := computeServerOptions(builder, s.config, log)
+	options, err := s.computeServerOptions(log)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +132,7 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 
 	addDcpHttpHandlers(config, ctx, log)
 
-	err = configureForLogServing(config, persistentDcpTypes)
+	err = configureForLogServing(config, s.persistentDcpTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -139,8 +155,8 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 	return stoppedCh, nil
 }
 
-func computeServerOptions(builder *serverbuilder.Server, kconfig *kubeconfig.Kubeconfig, log logr.Logger) (*start.TiltServerOptions, error) {
-	options, err := builder.ToServerOptions()
+func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOptions, error) {
+	options, err := s.Options()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
@@ -150,7 +166,6 @@ func computeServerOptions(builder *serverbuilder.Server, kconfig *kubeconfig.Kub
 	fs := pflag.NewFlagSet("DCP API server", pflag.ContinueOnError)
 	fs.ParseErrorsWhitelist.UnknownFlags = true
 	fs.AddGoFlagSet(flag.CommandLine) // Adds flags defined by standard K8s packages, which put them in flag.CommandLine flag set.
-	options.ServingOptions.AddFlags(fs)
 	err = fs.Parse(os.Args[1:])
 	if err != nil {
 		err = fmt.Errorf("invalid API server invocation options: %w", err)
@@ -158,7 +173,7 @@ func computeServerOptions(builder *serverbuilder.Server, kconfig *kubeconfig.Kub
 		return nil, err
 	}
 
-	address, port, token, err := kconfig.GetData()
+	address, port, token, certificateData, err := s.config.GetData()
 	if err != nil {
 		err = fmt.Errorf("could not obtain address, port and security token information from Kubeconfig file: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
@@ -178,6 +193,22 @@ func computeServerOptions(builder *serverbuilder.Server, kconfig *kubeconfig.Kub
 		if !haveToken {
 			options.ServingOptions.BearerToken = token
 		}
+	}
+
+	if certificateData != nil {
+		cert, certErr := certificateData.Certificate()
+		if certErr != nil {
+			return nil, fmt.Errorf("unable to obtain certificate data: %w", certErr)
+		}
+		key, keyErr := certificateData.Key()
+		if keyErr != nil {
+			return nil, fmt.Errorf("unable to obtain key data: %w", keyErr)
+		}
+		options.ServingOptions.ServerCert.GeneratedCert, err = dynamiccertificates.NewStaticCertKeyContent("DCP self signed certificate", cert, key)
+		if err != nil {
+			return nil, fmt.Errorf("unable to create static certificate: %w", err)
+		}
+		options.ServingOptions.ServerCert.PregeneratedCert = true
 	}
 
 	err = options.Validate(nil)
