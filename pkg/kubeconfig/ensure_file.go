@@ -46,8 +46,19 @@ func (k *Kubeconfig) EnsureExists() error {
 			return fmt.Errorf("could not write Kubeconfig file: %w", contentErr)
 		}
 
-		if writeErr := usvc_io.WriteFile(k.path, contents, osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
+		// Write file to a temporary file first, then rename the file to the final name.
+		// This avoids failures related to file locking and clients reading partially-written file.
+		suffix, suffixErr := randdata.MakeRandomString(6)
+		if suffixErr != nil {
+			return fmt.Errorf("could not generate random suffix for new kubeconfig file: %w", suffixErr)
+		}
+
+		if writeErr := usvc_io.WriteFile(k.path+string(suffix), contents, osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
 			return fmt.Errorf("could not write Kubeconfig file: %w", writeErr)
+		}
+
+		if renameErr := os.Rename(k.path+string(suffix), k.path); renameErr != nil {
+			return fmt.Errorf("could not rename temporary Kubeconfig file to final location: %w", renameErr)
 		}
 	} else if info.IsDir() {
 		return fmt.Errorf("specified kubeconfig ('%s') is a directory", k.path)
@@ -243,7 +254,7 @@ func createKubeconfig(port int32) (*clientcmd_api.Config, error) {
 		InsecureSkipTLSVerify: true,
 	}
 
-	const authTokenLength = 12
+	const authTokenLength = 32
 	token, err := randdata.MakeRandomString(authTokenLength)
 	if err != nil {
 		return nil, fmt.Errorf("could not generate authentication token for the DCP API server: %w", err)
