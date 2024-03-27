@@ -90,6 +90,15 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 			if shouldStopProcess {
 				// CONSIDER: having an option to specify whether to shut down the process when the context expires.
 				stopProcessErr = e.stopProcessInternal(pid, optIsResponsibleForStopping)
+				if stopProcessErr != nil {
+					if handler != nil {
+						// Let the caller know that the process did not stopp upon context expiration
+						handler.OnProcessExited(pid, UnknownExitCode, errors.Join(stopProcessErr, ctx.Err()))
+					}
+
+					// There is no point waiting for the result if the process could not be stopped and we reported the error.
+					break
+				}
 			}
 
 			wr := <-waitResultCh

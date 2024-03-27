@@ -124,7 +124,7 @@ func getExtensionCapabilities(ctx context.Context, path string, log logr.Logger)
 	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelTimeoutCtx()
 
-	cmd := exec.CommandContext(ctx, path, "get-capabilities")
+	cmd := exec.Command(path, "get-capabilities")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -155,7 +155,7 @@ func (ext *DcpExtension) CanRender(ctx context.Context, appRootDir string, log l
 	}
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, ext.Path, "can-render")
+	cmd := exec.Command(ext.Path, "can-render")
 	cmd.Args = append(cmd.Args, "--root-dir", appRootDir) // append because the first argument is the executable path
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -181,7 +181,7 @@ func (ext *DcpExtension) Render(ctx context.Context, appRootDir string, kubeconf
 	}
 
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, ext.Path, "render-workload")
+	cmd := exec.Command(ext.Path, "render-workload")
 	cmd.Args = append(cmd.Args,
 		"--root-dir", appRootDir,
 		"--kubeconfig", kubeconfigPath,
