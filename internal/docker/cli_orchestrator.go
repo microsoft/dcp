@@ -75,7 +75,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	go func() {
 		// "system df" was recommended by a developer at Docker, Inc. as reasonable command for ensuring Docker wakes up
 		// from resource saver mode: https://github.com/dotnet/aspire/issues/2075#issuecomment-1935278570
-		cmd := makeDockerCommand(ctx, "system", "df")
+		cmd := makeDockerCommand("system", "df")
 		_, stdErr, err := dco.runDockerCommand(ctx, "Status", cmd, ordinaryDockerCommandTimeout)
 
 		if errors.Is(err, exec.ErrNotFound) {
@@ -121,7 +121,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	// Some users create a "docker" alias to different runtimes, try to detect that case
 	isDockerCh := make(chan bool, 1)
 	go func() {
-		cmd := makeDockerCommand(ctx, "info", "--format", "{{json .}}")
+		cmd := makeDockerCommand("info", "--format", "{{json .}}")
 		outBuf, _, err := dco.runDockerCommand(ctx, "AliasDetection", cmd, ordinaryDockerCommandTimeout)
 		if err != nil || outBuf == nil {
 			// Failed to run the command, or got no output. This is probably not a valid Docker runtime.
@@ -156,7 +156,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 }
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
-	cmd := makeDockerCommand(ctx, "volume", "create", name)
+	cmd := makeDockerCommand("volume", "create", name)
 	outBuf, _, err := dco.runDockerCommand(ctx, "CreateVolume", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return err
@@ -169,7 +169,7 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 		return nil, fmt.Errorf("must specify at least one volume")
 	}
 
-	cmd := makeDockerCommand(ctx, append(
+	cmd := makeDockerCommand(append(
 		[]string{"volume", "inspect", "--format", "{{json .}}"},
 		volumes...)...,
 	)
@@ -188,7 +188,7 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 		args = append(args, "--force")
 	}
 	args = append(args, volumes...)
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveVolumes", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
@@ -274,7 +274,7 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 		args = append(args, options.Args...)
 	}
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 
 	// Create container can take a long time to finish if the image is not available locally.
 	// Use a much longer timeout than for other commands.
@@ -311,7 +311,7 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 		args = append(args, options.Args...)
 	}
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
@@ -327,7 +327,7 @@ func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names [
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	cmd := makeDockerCommand(ctx, append(
+	cmd := makeDockerCommand(append(
 		[]string{"container", "inspect", "--format", "{{json .}}"},
 		names...)...,
 	)
@@ -347,7 +347,7 @@ func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, container
 	args := []string{"container", "start"}
 	args = append(args, containerIDs...)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StartContainers", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
@@ -371,7 +371,7 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []st
 	}
 	args = append(args, names...)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "StopContainers", cmd, timeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
@@ -393,7 +393,7 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	}
 	args = append(args, names...)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveContainers", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
@@ -413,7 +413,7 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	args = options.Apply(args)
 	args = append(args, container)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -458,7 +458,7 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 
 	args = append(args, options.Name)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "CreateNetwork", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
@@ -477,7 +477,7 @@ func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	}
 	args = append(args, options.Networks...)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "RemoveNetworks", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
@@ -496,7 +496,7 @@ func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	args := []string{"network", "inspect", "--format", "{{json .}}"}
 	args = append(args, options.Networks...)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runDockerCommand(ctx, "InspectNetworks", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
@@ -514,7 +514,7 @@ func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 
 	args = append(args, options.Network, options.Container)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	_, errBuf, err := dco.runDockerCommand(ctx, "ConnectNetwork", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
@@ -531,7 +531,7 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 
 	args = append(args, options.Network, options.Container)
 
-	cmd := makeDockerCommand(ctx, args...)
+	cmd := makeDockerCommand(args...)
 	_, errBuf, err := dco.runDockerCommand(ctx, "DisconnectNetwork", cmd, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
@@ -541,7 +541,7 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 
 func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
-	cmd := makeDockerCommand(watcherCtx, args...)
+	cmd := makeDockerCommand(args...)
 
 	reader, writer := usvc_io.NewBufferedPipe()
 	cmd.Stdout = writer
@@ -599,7 +599,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 
 func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=network", "--format", "{{json .}}"}
-	cmd := makeDockerCommand(watcherCtx, args...)
+	cmd := makeDockerCommand(args...)
 
 	reader, writer := usvc_io.NewBufferedPipe()
 	cmd.Stdout = writer
@@ -694,8 +694,8 @@ func (dco *DockerCliOrchestrator) runDockerCommand(ctx context.Context, commandN
 	return outBuf, errBuf, nil
 }
 
-func makeDockerCommand(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "docker", args...)
+func makeDockerCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("docker", args...)
 	return cmd
 }
 

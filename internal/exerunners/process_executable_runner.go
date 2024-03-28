@@ -47,7 +47,7 @@ func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 }
 
 func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
-	cmd := makeCommand(ctx, exe, log)
+	cmd := makeCommand(exe)
 	log.Info("starting process...", "executable", cmd.Path)
 	log.V(1).Info("process settings",
 		"executable", cmd.Path,
@@ -129,8 +129,8 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 	return err
 }
 
-func makeCommand(ctx context.Context, exe *apiv1.Executable, log logr.Logger) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, exe.Spec.ExecutablePath)
+func makeCommand(exe *apiv1.Executable) *exec.Cmd {
+	cmd := exec.Command(exe.Spec.ExecutablePath)
 	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
 	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })

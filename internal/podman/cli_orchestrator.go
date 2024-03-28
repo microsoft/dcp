@@ -70,7 +70,7 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 }
 
 func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
-	cmd := makePodmanCommand(ctx, "container", "ls", "--last", "1", "--quiet")
+	cmd := makePodmanCommand("container", "ls", "--last", "1", "--quiet")
 	_, stdErr, err := pco.runPodmanCommand(ctx, "Info", cmd, ordinaryPodmanCommandTimeout)
 
 	if errors.Is(err, exec.ErrNotFound) {
@@ -114,7 +114,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
-	cmd := makePodmanCommand(ctx, "volume", "create", name)
+	cmd := makePodmanCommand("volume", "create", name)
 	outBuf, _, err := pco.runPodmanCommand(ctx, "CreateVolume", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return err
@@ -127,7 +127,7 @@ func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 		return nil, fmt.Errorf("must specify at least one volume")
 	}
 
-	cmd := makePodmanCommand(ctx, append(
+	cmd := makePodmanCommand(append(
 		[]string{"volume", "inspect", "--format", "json"},
 		volumes...)...,
 	)
@@ -146,7 +146,7 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 		args = append(args, "--force")
 	}
 	args = append(args, volumes...)
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveVolumes", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
@@ -232,7 +232,7 @@ func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options c
 		args = append(args, options.Args...)
 	}
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 
 	// Create container can take a long time to finish if the image is not available locally.
 	// Use a much longer timeout than for other commands.
@@ -269,7 +269,7 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 		args = append(args, options.Args...)
 	}
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
@@ -285,7 +285,7 @@ func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names [
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
-	cmd := makePodmanCommand(ctx, append(
+	cmd := makePodmanCommand(append(
 		[]string{"container", "inspect", "--format", "json"},
 		names...)...,
 	)
@@ -305,7 +305,7 @@ func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, container
 	args := []string{"container", "start"}
 	args = append(args, containerIds...)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "StartContainers", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
@@ -329,7 +329,7 @@ func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, names []st
 	}
 	args = append(args, names...)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "StopContainers", cmd, timeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
@@ -351,7 +351,7 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	}
 	args = append(args, names...)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveContainers", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
@@ -371,7 +371,7 @@ func (dco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	args = options.Apply(args)
 	args = append(args, container)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -416,7 +416,7 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 
 	args = append(args, options.Name)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "CreateNetwork", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
@@ -435,7 +435,7 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	}
 	args = append(args, options.Networks...)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "RemoveNetworks", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
@@ -454,7 +454,7 @@ func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	args := []string{"network", "inspect", "--format", "json"}
 	args = append(args, options.Networks...)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runPodmanCommand(ctx, "InspectNetworks", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
@@ -472,7 +472,7 @@ func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 
 	args = append(args, options.Network, options.Container)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runPodmanCommand(ctx, "ConnectNetwork", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
@@ -489,7 +489,7 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 
 	args = append(args, options.Network, options.Container)
 
-	cmd := makePodmanCommand(ctx, args...)
+	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runPodmanCommand(ctx, "DisconnectNetwork", cmd, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
@@ -499,7 +499,7 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 
 func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=container", "--format", "json"}
-	cmd := makePodmanCommand(watcherCtx, args...)
+	cmd := makePodmanCommand(args...)
 
 	reader, writer := usvc_io.NewBufferedPipe()
 	cmd.Stdout = writer
@@ -557,7 +557,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 
 func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=network", "--format", "json"}
-	cmd := makePodmanCommand(watcherCtx, args...)
+	cmd := makePodmanCommand(args...)
 
 	reader, writer := usvc_io.NewBufferedPipe()
 	cmd.Stdout = writer
@@ -652,8 +652,8 @@ func (pco *PodmanCliOrchestrator) runPodmanCommand(ctx context.Context, commandN
 	return outBuf, errBuf, nil
 }
 
-func makePodmanCommand(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "podman", args...)
+func makePodmanCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("podman", args...)
 	return cmd
 }
 
@@ -728,7 +728,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 			ic.Env[parts[0]] = ""
 		}
 	}
-	ic.Args = append(ic.Args, pci.Config.Entrypoint)
+	ic.Args = append(ic.Args, pci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, pci.Config.Cmd...)
 	for name, network := range pci.NetworkSettings.Networks {
 		ic.Networks = append(
@@ -787,11 +787,35 @@ type podmanInspectedContainer struct {
 	NetworkSettings podmanInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
 }
 
+// Custom type to handle the fact that podman 4.x returns entrypoint as a string, while
+// podman 5.x returns it as an array of strings.
+type podmanEntrypoint []string
+
+func (pe *podmanEntrypoint) UnmarshalJSON(b []byte) error {
+	var maybeArray []string
+	arrayErr := json.Unmarshal(b, &maybeArray)
+	if arrayErr != nil {
+		var maybeString string
+		stringErr := json.Unmarshal(b, &maybeString)
+		if stringErr != nil {
+			return fmt.Errorf("error parsing container inspect: Entrypoint is neither a string nor an array of strings")
+		}
+
+		// entrypoint was a string, normalize to an array of one value
+		*pe = podmanEntrypoint{maybeString}
+		return nil
+	}
+
+	// entrypoint is an array of strings
+	*pe = podmanEntrypoint(maybeArray)
+	return nil
+}
+
 type podmanInspectedContainerConfig struct {
-	Image      string   `json:"Image,omitempty"`
-	Env        []string `json:"Env,omitempty"`
-	Cmd        []string `json:"Cmd,omitempty"`
-	Entrypoint string   `json:"Entrypoint,omitempty"`
+	Image      string           `json:"Image,omitempty"`
+	Env        []string         `json:"Env,omitempty"`
+	Cmd        []string         `json:"Cmd,omitempty"`
+	Entrypoint podmanEntrypoint `json:"Entrypoint,omitempty"`
 }
 
 type podmanInspectedContainerState struct {
