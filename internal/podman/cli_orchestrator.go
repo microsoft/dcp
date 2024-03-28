@@ -728,7 +728,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 			ic.Env[parts[0]] = ""
 		}
 	}
-	ic.Args = append(ic.Args, pci.Config.Entrypoint)
+	ic.Args = append(ic.Args, pci.Config.Entrypoint...)
 	ic.Args = append(ic.Args, pci.Config.Cmd...)
 	for name, network := range pci.NetworkSettings.Networks {
 		ic.Networks = append(
@@ -787,11 +787,35 @@ type podmanInspectedContainer struct {
 	NetworkSettings podmanInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
 }
 
+// Custom type to handle the fact that podman 4.x returns entrypoint as a string, while
+// podman 5.x returns it as an array of strings.
+type podmanEntrypoint []string
+
+func (pe *podmanEntrypoint) UnmarshalJSON(b []byte) error {
+	var maybeArray []string
+	arrayErr := json.Unmarshal(b, &maybeArray)
+	if arrayErr != nil {
+		var maybeString string
+		stringErr := json.Unmarshal(b, &maybeString)
+		if stringErr != nil {
+			return fmt.Errorf("error parsing container inspect: Entrypoint is neither a string nor an array of strings")
+		}
+
+		// entrypoint was a string, normalize to an array of one value
+		*pe = podmanEntrypoint{maybeString}
+		return nil
+	}
+
+	// entrypoint is an array of strings
+	*pe = podmanEntrypoint(maybeArray)
+	return nil
+}
+
 type podmanInspectedContainerConfig struct {
-	Image      string   `json:"Image,omitempty"`
-	Env        []string `json:"Env,omitempty"`
-	Cmd        []string `json:"Cmd,omitempty"`
-	Entrypoint string   `json:"Entrypoint,omitempty"`
+	Image      string           `json:"Image,omitempty"`
+	Env        []string         `json:"Env,omitempty"`
+	Cmd        []string         `json:"Cmd,omitempty"`
+	Entrypoint podmanEntrypoint `json:"Entrypoint,omitempty"`
 }
 
 type podmanInspectedContainerState struct {
