@@ -217,4 +217,5 @@ DCP has knowledge of a number of environment variables that can change its behav
 | `DCP_DIAGNOSTICS_LOG_LEVEL` | If set, enabled DCP diagnostic logging. <br/> Can be set to `error`, `info`, or `debug`; for troubleshooting `debug` is recommended, although it results in the most verbose output. |
 | `DCP_DIAGNOSTICS_LOG_FOLDER` | If set to a valid filesystem folder, DCP will place the diagnostic logging files there. Otherwise (if enabled) they are written to the default temporary files folder. |
 | `DCP_PERF_TRACE` | If set, instructs DCP to capture a performance trace during startup and/or shutdown. For more information see [performance investigations page](performance-investigations.md). |
-| `DCP_PRESERVE_EXECUTABLE_LOGS` | If set, the logs from Executables will not be deleted when DCP shuts down. This can be useful to capture results of test runs that use DCP as the workload orchestrator. |
+| `DCP_PRESERVE_EXECUTABLE_LOGS` | If set (to "true", "yes", or "1"), the logs from Executables will not be deleted when DCP shuts down. This can be useful to capture results of test runs that use DCP as the workload orchestrator. |
+| `DCP_RESOURCE_WATCH_TIMEOUT_SECONDS` | A timeout for resource watch requests, in seconds. Watch requests will time out shortly after the specified value, to avoid the "thundering herd" problem. Useful for testing watch retry logic. |
