@@ -183,8 +183,8 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 	webSocketScheme := "ws"
 	apiVersion := ""
 
-	serverCertEncodedBytes := os.Getenv(ideEndpointCertVar)
-	if serverCertEncodedBytes != "" {
+	serverCertEncodedBytes, certFound := os.LookupEnv(ideEndpointCertVar)
+	if certFound {
 		certBytes, decodeErr := base64.StdEncoding.AppendDecode(nil, []byte(serverCertEncodedBytes))
 		if decodeErr != nil {
 			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", decodeErr)
