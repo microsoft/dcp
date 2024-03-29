@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -48,9 +49,6 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 	return retval
 }
 
-/*
-In case we ever need to deal with IDE launch configurations explicitly, here are the definitions
-
 type launchConfigurationType string
 
 const (
@@ -75,7 +73,6 @@ type projectLaunchConfiguration struct {
 	LaunchProfile        string            `json:"launch_profile,omitempty"`
 	DisableLaunchProfile bool              `json:"disable_launch_profile,omitempty"`
 }
-*/
 
 type ideRunSessionRequestV1 struct {
 	// This is typically an array of ideLaunchConfiguration-derived objects,
@@ -83,6 +80,15 @@ type ideRunSessionRequestV1 struct {
 	// and just pass it through to the IDE (that is why the type is json.RawMessage).
 	// Must have at least one element.
 	LaunchConfigurations json.RawMessage `json:"launch_configurations"`
+
+	Env  []apiv1.EnvVar `json:"env,omitempty"`
+	Args []string       `json:"args,omitempty"`
+}
+
+// This struct is defined solely for the purpose of supporting the transition between
+// the old and new IDE protocol. Will be removed in future release.
+type ideRunSessionRequestV1Explicit struct {
+	LaunchConfigurations []projectLaunchConfiguration `json:"launch_configurations"`
 
 	Env  []apiv1.EnvVar `json:"env,omitempty"`
 	Args []string       `json:"args,omitempty"`
@@ -135,12 +141,18 @@ func (ed *errorDetail) writeDetails(b *strings.Builder, indent []byte) {
 	}
 }
 
+type infoResponse struct {
+	ProtocolsSupported []string `json:"protocols_supported"`
+}
+
 const (
 	ideRunSessionResourcePath             = "/run_session"
 	ideRunSessionNotificationResourcePath = "/run_session/notify"
+	ideRunSessionInfoPath                 = "/info"
 
 	ideEndpointPortVar  = "DEBUG_SESSION_PORT"
 	ideEndpointTokenVar = "DEBUG_SESSION_TOKEN"
+	ideEndpointCertVar  = "DEBUG_SESSION_SERVER_CERTIFICATE"
 
 	launchConfigurationsAnnotation = "executable.usvc-dev.developer.microsoft.com/launch-configurations"
 
@@ -151,4 +163,6 @@ const (
 
 	version20240303      = "2024-03-03"
 	queryParamApiVersion = "api-version"
+
+	defaultIdeEndpointRequestTimeout = 5 * time.Second
 )

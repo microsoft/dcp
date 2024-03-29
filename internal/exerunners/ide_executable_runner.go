@@ -3,6 +3,9 @@ package exerunners
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,10 +16,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/gorilla/websocket"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
@@ -25,9 +29,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 type startingState struct {
@@ -129,43 +132,128 @@ func (rs *runState) CloseOutputWriters() {
 }
 
 type IdeExecutableRunner struct {
-	notifySocket *websocket.Conn
-	lock         *sync.Mutex
-	startupQueue *resiliency.WorkQueue // Queue for starting IDE run sessions
-	activeRuns   syncmap.Map[controllers.RunID, *runState]
-	log          logr.Logger
-	portStr      string // The local port on which the IDE is listening for run session requests
-	tokenStr     string // The security token to use when connecting to the IDE
+	notifySocket    *websocket.Conn
+	lock            *sync.Mutex
+	startupQueue    *resiliency.WorkQueue // Queue for starting IDE run sessions
+	activeRuns      syncmap.Map[controllers.RunID, *runState]
+	log             logr.Logger
+	lifetimeCtx     context.Context   // Lifetime context of the controller hosting this runner
+	portStr         string            // The local port on which the IDE is listening for run session requests
+	tokenStr        string            // The security token to use when connecting to the IDE
+	client          http.Client       // The client to make HTTP requests to the IDE
+	wsDialer        *websocket.Dialer // The websocket client to make requests to the IDE
+	httpScheme      string            // The scheme to use when connecting to the IDE (HTTP or HTTPS)
+	webSocketScheme string            // The scheme to use when connecting to the IDE via websockets (ws or wss)
+
+	// The value of the api-version parameter, indicating protocol version the runner is using when talking tot the IDE
+	// If empty, it indicates "pre-Aspire GA" (obsolete) protocol version.
+	// TODO: remove pre-Aspire GA support after Aspire GA is released.
+	apiVersion string
 }
 
 func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeExecutableRunner, error) {
 	const runnerNotAvailable = "Executables cannot be started via IDE: "
 	const missingRequiredEnvVar = "missing required environment variable '%s'"
 
+	createAndLogError := func(format string, a ...any) error {
+		err := fmt.Errorf(format, a...)
+		log.Info(runnerNotAvailable + err.Error())
+		return err
+	}
+
 	portStr, found := os.LookupEnv(ideEndpointPortVar)
 	if !found {
-		err := fmt.Errorf(missingRequiredEnvVar, ideEndpointPortVar)
-		log.Info(runnerNotAvailable + err.Error())
-		return nil, err
+		return nil, createAndLogError(missingRequiredEnvVar, ideEndpointPortVar)
 	}
 	portStr = strings.TrimSpace(portStr)
 	portStr = strings.TrimPrefix(portStr, "localhost:") // Visual Studio prepends "localhost:" to port number.
 
 	tokenStr, found := os.LookupEnv(ideEndpointTokenVar)
 	if !found {
-		err := fmt.Errorf(missingRequiredEnvVar, ideEndpointTokenVar)
-		log.Info(runnerNotAvailable + err.Error())
-		return nil, err
+		return nil, createAndLogError(missingRequiredEnvVar, ideEndpointTokenVar)
 	}
 	tokenStr = strings.TrimSpace(tokenStr)
 
+	client := http.Client{}
+	wsDialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: defaultIdeEndpointRequestTimeout,
+	}
+	httpScheme := "http"
+	webSocketScheme := "ws"
+	apiVersion := ""
+
+	serverCertEncodedBytes, certFound := os.LookupEnv(ideEndpointCertVar)
+	if certFound {
+		certBytes, decodeErr := base64.StdEncoding.AppendDecode(nil, []byte(serverCertEncodedBytes))
+		if decodeErr != nil {
+			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", decodeErr)
+		}
+
+		cert, certParseErr := x509.ParseCertificate(certBytes)
+		if certParseErr != nil {
+			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", certParseErr)
+		}
+
+		caCertPool := x509.NewCertPool()
+		caCertPool.AddCert(cert)
+		tlsConfig := &tls.Config{
+			RootCAs: caCertPool,
+		}
+		client.Transport = &http.Transport{
+			TLSClientConfig: tlsConfig,
+		}
+		wsDialer.TLSClientConfig = tlsConfig
+		httpScheme = "https"
+		webSocketScheme = "wss"
+	}
+
+	// Query for supported protocol version
+	req, reqCancel, reqCreationErr := makeIdeRequest(
+		lifetimeCtx,
+		httpScheme,
+		portStr,
+		ideRunSessionInfoPath,
+		http.MethodGet,
+		tokenStr,
+		"",  // No API version--we are making this call to determine the API version to use,
+		nil, // No body for this request
+	)
+	if reqCreationErr != nil {
+		return nil, createAndLogError("failed to create IDE endpoint info request: %w", reqCreationErr)
+	}
+	defer reqCancel()
+
+	clientResp, reqErr := client.Do(req)
+
+	// We fall back to pre-Aspire GA protocol version if the request fails.
+	if reqErr == nil && clientResp.StatusCode == http.StatusOK {
+		defer clientResp.Body.Close()
+		respBody, bodyReadErr := io.ReadAll(clientResp.Body)
+		if bodyReadErr == nil {
+			var info infoResponse
+			unmarshalErr := json.Unmarshal(respBody, &info)
+			if unmarshalErr != nil {
+				log.Error(unmarshalErr, "failed to parse IDE info response")
+			} else if slices.Contains(info.ProtocolsSupported, version20240303) {
+				apiVersion = version20240303
+			}
+		}
+	}
+
 	return &IdeExecutableRunner{
-		lock:         &sync.Mutex{},
-		startupQueue: resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
-		activeRuns:   syncmap.Map[controllers.RunID, *runState]{},
-		log:          log,
-		portStr:      portStr,
-		tokenStr:     tokenStr,
+		lock:            &sync.Mutex{},
+		startupQueue:    resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
+		activeRuns:      syncmap.Map[controllers.RunID, *runState]{},
+		log:             log,
+		lifetimeCtx:     lifetimeCtx,
+		portStr:         portStr,
+		tokenStr:        tokenStr,
+		client:          client,
+		wsDialer:        wsDialer,
+		httpScheme:      httpScheme,
+		webSocketScheme: webSocketScheme,
+		apiVersion:      apiVersion,
 	}, nil
 }
 
@@ -210,12 +298,13 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			runChangeHandler.OnStartingCompleted(namespacedName, controllers.UnknownRunID, *exeStatus, func() {})
 		}
 
-		req, err := r.prepareRunRequest(exe)
+		req, reqCancel, err := r.prepareRunRequest(exe)
 		if err != nil {
 			log.Error(err, "run session could not be started")
 			reportStartupFailure()
 			return
 		}
+		defer reqCancel()
 
 		// Set up temp files for capturing stdout and stderr. These files (if successfully created)
 		// will be cleaned up by the Executable controller when the Executable is deleted.
@@ -247,9 +336,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			log.V(1).Info("Sending IDE run session request", "URL", req.URL)
 		}
 
-		client := http.Client{}
 		var resp *http.Response
-		resp, err = client.Do(req)
+		resp, err = r.client.Do(req)
 		if err != nil {
 			log.Error(err, "run session could not be started")
 			reportStartupFailure()
@@ -332,18 +420,13 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	const runSessionCouldNotBeStopped = "run session could not be stopped: "
 
-	// TODO enable when new protocol lands in the VS world
-	// url := fmt.Sprintf("http://localhost:%s%s/%s?%s=%s", r.portStr, ideRunSessionResourcePath, runID, queryParamApiVersion, version20240303)
-	url := fmt.Sprintf("http://localhost:%s%s/%s", r.portStr, ideRunSessionResourcePath, runID)
-
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	req, reqCancel, err := r.makeRequest(ideRunSessionResourcePath+"/"+string(runID), http.MethodDelete, nil)
 	if err != nil {
 		return fmt.Errorf(runSessionCouldNotBeStopped+"failed to create request: %w", err)
 	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
+	defer reqCancel()
 
-	client := http.Client{}
-	resp, err := client.Do(req)
+	resp, err := r.client.Do(req)
 	if err != nil {
 		return fmt.Errorf(runSessionCouldNotBeStopped+"%w", err)
 	}
@@ -363,78 +446,131 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, parseResponseBody(respBody))
 }
 
-func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, error) {
+func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, context.CancelFunc, error) {
 	var isrBody []byte
-	var err error
-	var url string
+	var bodyErr error
 
-	if exe.Annotations[csharpProjectPathAnnotation] != "" {
-		isrBody, err = r.prepareRunRequestDeprecated(exe)
-		if err != nil {
-			return nil, fmt.Errorf("failed to prepare IDE run request: %w", err)
+	if r.apiVersion == version20240303 {
+		isrBody, bodyErr = r.prepareRunRequestV1(exe)
+		if bodyErr != nil {
+			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
 		}
-		url = fmt.Sprintf("http://localhost:%s%s", r.portStr, ideRunSessionResourcePath)
-	} else if exe.Annotations[launchConfigurationsAnnotation] != "" {
-		isrBody, err = r.prepareRunRequestV1(exe)
-		if err != nil {
-			return nil, fmt.Errorf("failed to prepare IDE run request: %w", err)
-		}
-		url = fmt.Sprintf("http://localhost:%s%s?%s=%s", r.portStr, ideRunSessionResourcePath, queryParamApiVersion, version20240303)
 	} else {
-		return nil, fmt.Errorf("IDE execution was requested for the Executable but the required '%s' annotation is missing", launchConfigurationsAnnotation)
+		isrBody, bodyErr = r.prepareRunRequestDeprecated(exe)
+		if bodyErr != nil {
+			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
+		}
 	}
 
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(isrBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	req, reqCancel, reqErr := r.makeRequest(ideRunSessionResourcePath, http.MethodPut, bytes.NewBuffer(isrBody))
+	if reqErr != nil {
+		return nil, nil, fmt.Errorf("failed to create IDE run session request: %w", reqErr)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
-	return req, nil
+	return req, reqCancel, nil
 }
 
 func (r *IdeExecutableRunner) prepareRunRequestDeprecated(exe *apiv1.Executable) ([]byte, error) {
-	projectPath := exe.Annotations[csharpProjectPathAnnotation]
+	if exe.Annotations[csharpProjectPathAnnotation] != "" {
+		projectPath := exe.Annotations[csharpProjectPathAnnotation]
 
-	isr := ideRunSessionRequestDeprecated{
-		ProjectPath: projectPath,
-		Env:         exe.Status.EffectiveEnv,
-		Args:        exe.Status.EffectiveArgs,
-	}
-	if _, disableLaunchProfile := exe.Annotations[csharpDisableLaunchProfileAnnotation]; disableLaunchProfile {
-		isr.DisableLaunchProfile = true
-	} else if launchProfile, haveLaunchProfile := exe.Annotations[csharpLaunchProfileAnnotation]; haveLaunchProfile {
-		isr.LaunchProfile = launchProfile
-	}
+		isr := ideRunSessionRequestDeprecated{
+			ProjectPath: projectPath,
+			Env:         exe.Status.EffectiveEnv,
+			Args:        exe.Status.EffectiveArgs,
+		}
+		if _, disableLaunchProfile := exe.Annotations[csharpDisableLaunchProfileAnnotation]; disableLaunchProfile {
+			isr.DisableLaunchProfile = true
+		} else if launchProfile, haveLaunchProfile := exe.Annotations[csharpLaunchProfileAnnotation]; haveLaunchProfile {
+			isr.LaunchProfile = launchProfile
+		}
 
-	isrBody, err := json.Marshal(isr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Executable run request body: %w", err)
-	}
+		isrBody, err := json.Marshal(isr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Executable run request body: %w", err)
+		}
+		return isrBody, nil
+	} else if exe.Annotations[launchConfigurationsAnnotation] != "" {
+		// A bif of a transient situation, but possible in Aspire P5 timeframe: we have got the V1 annotation,
+		// but we are asked to speak the deprecated protocol.
 
-	return isrBody, nil
+		var launchConfigs []projectLaunchConfiguration
+		unmarshalErr := json.Unmarshal([]byte(exe.Annotations[launchConfigurationsAnnotation]), &launchConfigs)
+		if unmarshalErr != nil {
+			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
+		}
+		if len(launchConfigs) != 1 {
+			return nil, fmt.Errorf("Executable cannot be run; it must have exactly one launch configuration, but %d were provided", len(launchConfigs))
+		}
+
+		isr := ideRunSessionRequestDeprecated{
+			ProjectPath:          launchConfigs[0].ProjectPath,
+			Env:                  exe.Status.EffectiveEnv,
+			Args:                 exe.Status.EffectiveArgs,
+			LaunchProfile:        launchConfigs[0].LaunchProfile,
+			DisableLaunchProfile: launchConfigs[0].DisableLaunchProfile,
+			Debug:                launchConfigs[0].LaunchMode == projectLaunchModeDebug,
+		}
+
+		isrBody, err := json.Marshal(isr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Executable run request body: %w", err)
+		}
+		return isrBody, nil
+	} else {
+		return nil, fmt.Errorf("IDE execution was requested for the Executable but the required '%s' annotation is missing", launchConfigurationsAnnotation)
+	}
 }
 
 func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte, error) {
-	launchConfigsRaw := exe.Annotations[launchConfigurationsAnnotation]
-	var launchConfigs json.RawMessage
-	unmarshalErr := json.Unmarshal([]byte(launchConfigsRaw), &launchConfigs)
-	if unmarshalErr != nil {
-		return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
-	}
+	if exe.Annotations[launchConfigurationsAnnotation] != "" {
+		launchConfigsRaw := exe.Annotations[launchConfigurationsAnnotation]
+		var launchConfigs json.RawMessage
+		unmarshalErr := json.Unmarshal([]byte(launchConfigsRaw), &launchConfigs)
+		if unmarshalErr != nil {
+			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
+		}
 
-	isr := ideRunSessionRequestV1{
-		LaunchConfigurations: json.RawMessage(launchConfigs),
-		Env:                  exe.Status.EffectiveEnv,
-		Args:                 exe.Status.EffectiveArgs,
-	}
+		isr := ideRunSessionRequestV1{
+			LaunchConfigurations: json.RawMessage(launchConfigs),
+			Env:                  exe.Status.EffectiveEnv,
+			Args:                 exe.Status.EffectiveArgs,
+		}
 
-	isrBody, marshalErr := json.Marshal(isr)
-	if marshalErr != nil {
-		return nil, fmt.Errorf("failed to create Executable run request body: %w", marshalErr)
-	}
+		isrBody, marshalErr := json.Marshal(isr)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to create Executable run request body: %w", marshalErr)
+		}
+		return isrBody, nil
+	} else if exe.Annotations[csharpProjectPathAnnotation] != "" {
+		// A bif of a transient situation, but possible in Aspire P5 timeframe: we have got the old annotation,
+		// but we are asked to speak the new protocol.
 
-	return isrBody, nil
+		isr := ideRunSessionRequestV1Explicit{
+			LaunchConfigurations: []projectLaunchConfiguration{
+				{
+					ideLaunchConfiguration: ideLaunchConfiguration{Type: launchConfigurationTypeProject},
+					ProjectPath:            exe.Annotations[csharpProjectPathAnnotation],
+				},
+			},
+			Env:  exe.Status.EffectiveEnv,
+			Args: exe.Status.EffectiveArgs,
+		}
+
+		if _, disableLaunchProfile := exe.Annotations[csharpDisableLaunchProfileAnnotation]; disableLaunchProfile {
+			isr.LaunchConfigurations[0].DisableLaunchProfile = true
+		} else if launchProfile, haveLaunchProfile := exe.Annotations[csharpLaunchProfileAnnotation]; haveLaunchProfile {
+			isr.LaunchConfigurations[0].LaunchProfile = launchProfile
+		}
+
+		isrBody, marshalErr := json.Marshal(isr)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to create Executable run request body: %w", marshalErr)
+		}
+		return isrBody, nil
+	} else {
+		return nil, fmt.Errorf("IDE execution was requested for the Executable but the required '%s' annotation is missing",
+			launchConfigurationsAnnotation)
+	}
 }
 
 func (r *IdeExecutableRunner) ensureNotificationSocket() error {
@@ -447,16 +583,14 @@ func (r *IdeExecutableRunner) ensureNotificationSocket() error {
 
 	headers := http.Header{}
 	headers.Add("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
-
-	// TODO enable when new protocol lands in the VS world
-	// url := fmt.Sprintf("ws://localhost:%s%s?%s=%s", r.portStr, ideRunSessionNotificationResourcePath, queryParamApiVersion, version20240303)
-	url := fmt.Sprintf("ws://localhost:%s%s", r.portStr, ideRunSessionNotificationResourcePath)
-
-	dialer := websocket.Dialer{
-		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: 5 * time.Second, // If it takes more than 5 seconds to connect, something is wrong
+	var url string
+	if r.apiVersion == version20240303 {
+		url = fmt.Sprintf("%s://localhost:%s%s?%s=%s", r.webSocketScheme, r.portStr, ideRunSessionNotificationResourcePath, queryParamApiVersion, version20240303)
+	} else {
+		url = fmt.Sprintf("%s://localhost:%s%s", r.webSocketScheme, r.portStr, ideRunSessionNotificationResourcePath)
 	}
-	socket, _, err := dialer.Dial(url, headers)
+
+	socket, _, err := r.wsDialer.Dial(url, headers)
 	if err != nil {
 		return fmt.Errorf("failed to connect to IDE run session notification endpoint: %w", err)
 	}
@@ -631,6 +765,23 @@ func (r *IdeExecutableRunner) closeNotifySocket() {
 	r.lock.Unlock()
 }
 
+func (r *IdeExecutableRunner) makeRequest(
+	requestPath string,
+	httpMethod string,
+	body io.Reader,
+) (*http.Request, context.CancelFunc, error) {
+	return makeIdeRequest(
+		r.lifetimeCtx,
+		r.httpScheme,
+		r.portStr,
+		requestPath,
+		httpMethod,
+		r.tokenStr,
+		r.apiVersion,
+		body,
+	)
+}
+
 func getLastUrlPathSegment(rawURL string) (string, error) {
 	url, err := url.Parse(rawURL)
 	if err != nil {
@@ -656,6 +807,40 @@ func parseResponseBody(rawBody []byte) string {
 	} else {
 		return string(rawBody)
 	}
+}
+
+func makeIdeRequest(
+	parentCtx context.Context,
+	uriScheme string,
+	portStr string,
+	requestPath string,
+	httpMethod string,
+	securityToken string,
+	apiVersion string,
+	body io.Reader,
+) (*http.Request, context.CancelFunc, error) {
+	var url string
+	if apiVersion != "" {
+		url = fmt.Sprintf("%s://localhost:%s%s?%s=%s", uriScheme, portStr, requestPath, queryParamApiVersion, apiVersion)
+	} else {
+		url = fmt.Sprintf("%s://localhost:%s%s", uriScheme, portStr, requestPath)
+	}
+	reqCtx, reqCtxCancel := context.WithTimeout(parentCtx, defaultIdeEndpointRequestTimeout)
+
+	req, reqCreationErr := http.NewRequestWithContext(reqCtx, httpMethod, url, body)
+	if reqCreationErr != nil {
+		reqCtxCancel()
+		return nil, nil, fmt.Errorf("failed to create IDE endpoint info request: %w", reqCreationErr)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", securityToken))
+
+	// Assume the body is JSON if it is provided
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	return req, reqCtxCancel, nil
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
