@@ -126,17 +126,20 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 		if err != nil || outBuf == nil {
 			// Failed to run the command, or got no output. This is probably not a valid Docker runtime.
 			isDockerCh <- false
+			return
 		}
 
 		var info dockerInfo
 		if err = json.Unmarshal(outBuf.Bytes(), &info); err != nil {
 			// Didn't get valid JSON, this is probably not a valid Docker runtime.
 			isDockerCh <- false
+			return
 		}
 
 		if info.DockerRootDir == "" {
 			// Docker info should include DockerRootDir, this is probably a different runtime.
 			isDockerCh <- false
+			return
 		}
 
 		// Looks like a valid Docker runtime
