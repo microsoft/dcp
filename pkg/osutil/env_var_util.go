@@ -1,0 +1,39 @@
+package osutil
+
+import (
+	"os"
+	"strconv"
+	"strings"
+)
+
+// Returns true if the environemnt variable "switch" is enabled.
+// The environment variable is considered enabled if it is set to one of the "truthy" values:
+// "1", "true", "on", or "yes".
+func EnvVarSwitchEnabled(varName string) bool {
+	value, found := os.LookupEnv(varName)
+	if !found || strings.TrimSpace(value) == "" {
+		return false
+	}
+
+	value = strings.TrimSpace(value)
+	enabled := strings.EqualFold(value, "1") ||
+		strings.EqualFold(value, "true") ||
+		strings.EqualFold(value, "on") ||
+		strings.EqualFold(value, "yes")
+	return enabled
+}
+
+func EnvVarIntVal(varName string) (int, bool) {
+	value, found := os.LookupEnv(varName)
+	if !found || strings.TrimSpace(value) == "" {
+		return 0, false
+	}
+
+	value = strings.TrimSpace(value)
+	val, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+
+	return int(val), true
+}
