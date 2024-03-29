@@ -73,9 +73,8 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 	// Check the status of the Docker runtime
 	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
 	go func() {
-		// "system df" was recommended by a developer at Docker, Inc. as reasonable command for ensuring Docker wakes up
-		// from resource saver mode: https://github.com/dotnet/aspire/issues/2075#issuecomment-1935278570
-		cmd := makeDockerCommand("system", "df")
+		// Run a simple command to check if the Docker CLI is installed and responsive
+		cmd := makeDockerCommand("container", "ls", "-l")
 		_, stdErr, err := dco.runDockerCommand(ctx, "Status", cmd, ordinaryDockerCommandTimeout)
 
 		if errors.Is(err, exec.ErrNotFound) {

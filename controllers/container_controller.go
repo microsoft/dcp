@@ -84,6 +84,9 @@ type ContainerReconciler struct {
 	// Channel used to trigger reconciliation when underlying containers change
 	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 
+	// A map of containers that are in the process of starting, searchable by Container object name.
+	startingContainers syncmap.Map[types.NamespacedName, bool]
+
 	// A map that stores information about running containers,
 	// searchable by container ID (first key), or Container object name (second key).
 	// Usually both keys are valid, but when the container is starting, we do not have the real container ID yet,
@@ -125,6 +128,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		Client:                 client,
 		orchestrator:           orchestrator,
 		notifyContainerChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		startingContainers:     syncmap.Map[types.NamespacedName, bool]{},
 		runningContainers:      maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, *runningContainerData](),
 		networkConnections:     syncmap.Map[containerNetworkConnectionKey, bool]{},
 		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, MaxParallelContainerStarts),
@@ -211,7 +215,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	deletionRequested := container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()
-	if deletionRequested && container.Status.State != apiv1.ContainerStateStarting {
+	if deletionRequested && container.Status.State != "" && container.Status.State != apiv1.ContainerStatePending && container.Status.State != apiv1.ContainerStateStarting {
 		// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting,
 		// we need the container startup to finish, before attemptin to delete everything.
 		// Otherwise we will be left with a dangling container that no one owns.
@@ -283,6 +287,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 
 	// Since the container is being removed, we want to remove it from runningContainers map now
 	r.runningContainers.DeleteBySecondKey(container.NamespacedName())
+	r.startingContainers.Delete(container.NamespacedName())
 
 	if !container.Spec.Persistent {
 		// We want to stop the container first to give it a chance to clean up
@@ -328,17 +333,19 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(ctx context.Contex
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
 	containerID, rcd, found := r.runningContainers.FindBySecondKey(container.NamespacedName())
+	_, starting := r.startingContainers.Load(container.NamespacedName())
 
 	switch {
 
 	case container.Status.State == "" || container.Status.State == apiv1.ContainerStatePending:
 
 		// Check if we haven't already started this (sometimes we might get stale data from the object cache).
-		if found {
+		if starting {
+			container.Status.State = apiv1.ContainerStateStarting
 			// Just wait a bit for the cache to catch up and reconcile again
-			return additionalReconciliationNeeded
+			return statusChanged
 		} else {
-			if container.Spec.Stop {
+			if container.Spec.Stop || (container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()) {
 				// The container was started with a desired state of stopped, don't attempt to start
 				container.Status.State = apiv1.ContainerStateFailedToStart
 				container.Status.FinishTimestamp = metav1.Now()
@@ -607,6 +614,8 @@ func (r *ContainerReconciler) doStartContainer(container *apiv1.Container, conta
 
 func (r *ContainerReconciler) createContainer(ctx context.Context, container *apiv1.Container, log logr.Logger, delay time.Duration) error {
 	container.Status.ExitCode = apiv1.UnknownExitCode
+
+	r.startingContainers.Store(container.NamespacedName(), true)
 
 	containerName := strings.TrimSpace(container.Spec.ContainerName)
 
