@@ -28,13 +28,15 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 const (
-	msgApiServerStartupFailed = "API server could not be started"
-	dataFolderPath            = "data" // Not really used for in-memory storage, but needs to be consistent between CRDs.
-	invalidPort               = -1
+	msgApiServerStartupFailed          = "API server could not be started"
+	dataFolderPath                     = "data" // Not really used for in-memory storage, but needs to be consistent between CRDs.
+	invalidPort                        = -1
+	DCP_RESOURCE_WATCH_TIMEOUT_SECONDS = "DCP_RESOURCE_WATCH_TIMEOUT_SECONDS"
 )
 
 type ApiServer struct {
@@ -128,6 +130,12 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 		err = fmt.Errorf("unable to create API server configuration: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
 		return nil, err
+	}
+
+	watchTimeout, watchTimeoutProvided := osutil.EnvVarIntVal(DCP_RESOURCE_WATCH_TIMEOUT_SECONDS)
+	if watchTimeoutProvided && watchTimeout > 0 {
+		// The K8s config option is called MinRequestTimeout, but it really only applies to watch requests.
+		config.GenericConfig.MinRequestTimeout = watchTimeout
 	}
 
 	addDcpHttpHandlers(config, ctx, log)

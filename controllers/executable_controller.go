@@ -31,6 +31,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
+const (
+	DCP_PRESERVE_EXECUTABLE_LOGS = "DCP_PRESERVE_EXECUTABLE_LOGS"
+)
+
 // ExecutableReconciler reconciles a Executable object
 type ExecutableReconciler struct {
 	ctrl_client.Client
@@ -466,6 +470,10 @@ func (r *ExecutableReconciler) updateRunState(ctx context.Context, exe *apiv1.Ex
 
 func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
 	// Do not bother updating the Executable object--this method is called when the object is being deleted.
+
+	if osutil.EnvVarSwitchEnabled(DCP_PRESERVE_EXECUTABLE_LOGS) {
+		return
+	}
 
 	if exe.Status.StdOutFile != "" {
 		if err := os.Remove(exe.Status.StdOutFile); err != nil && !errors.Is(err, os.ErrNotExist) {

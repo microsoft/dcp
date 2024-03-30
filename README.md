@@ -64,12 +64,12 @@ You can also run individual tests via VS Code "run test" and "debug test" gestur
 
 If the test is killed while running under the debugger, may leave orphaned `dcp` process. You can check if such processes exist by running following commands:
 
-    | Task | Command (macOS) | Command (Linux) | Command (Windows) |
-    | --- | --- | --- | --- |
-    | Check for orphaned `dcp` processes. | `pgrep -lf dcp` | `pgrep -af dcp` | `pslist dcp` |
-    | Kill orphaned `dcp` processes. | `pkill -lf dcp` | `pkill -af dcp` | `pskill dcp` |
+| Task | Command (macOS) | Command (Linux) | Command (Windows) |
+| --- | --- | --- | --- |
+| Check for orphaned `dcp` processes. | `pgrep -lf dcp` | `pgrep -af dcp` | `pslist dcp` |
+| Kill orphaned `dcp` processes. | `pkill -lf dcp` | `pkill -af dcp` | `pskill dcp` |
 
-    `pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
+`pslist` and `pskill` Windows tools are part of [Sysinternals tool suite](https://learn.microsoft.com/sysinternals/).
 
 
 ## Troubleshooting and debugging tips
@@ -203,3 +203,19 @@ The same steps can also be used to:
 ### Taking performance traces
 
 See [performance investigations page](performance-investigations.md).
+
+### Environment variables affecting DCP behavior
+
+DCP has knowledge of a number of environment variables that can change its behavior; they are used mostly for testing.
+
+| Variable | Description |
+| --- | --------- |
+| `DCP_BIN_PATH` and `DCP_EXTENSIONS_PATH` | These variables point to, respectively, the DCP root binary/configuration directory, and the DCP extensions directory. DCP root directory contains the main DCP CLI/API server binary and the default access configuration (kubeconfig) file. The extensions directory contains the DCP controller process binary and other extensions, if present. <br/> By default, DCP assumes the root directory to be `${HOME}/.dcp`. .NET Aspire tooling is using these environment variables to instruct DCP to use locations and binaries inside Aspire.Hosting.Orchestration workload instead. |
+| `DEBUG_SESSION_PORT`, `DEBUG_SESSION_TOKEN`, and `DEBUG_SESSION_SERVER_CERTIFICATE` | These are variables that configure the endpoint for running Executables via a developer IDE/under debugger. For more information see [IDE execution specification](https://github.com/dotnet/aspire/blob/main/docs/specs/IDE-execution.md). |
+| `DCP_SESSION_FOLDER` | This variable is used for isolating multiple DCP instances running concurrently on the same machine. If set (to a valid filesystem folder), DCP process(es) will create files related to their execution in this folder: the access configuration file (kubeconfig), captured Executable/Container logs, etc. |
+| `DCP_LOG_SOCKET` | If set to a Unix domain socket, DCP will write its execution logs to that socket instead of writing them to standard error stream (`stderr`). This allows programs that launch DCP to capture its output even if DCP is running in `--detach` mode. <br/> The `--detach` mode causes DCP to fork itself and break the parent-child relationship (and lifetime dependency) from the process that launched it, but the side effect of doing so is that the parent process loses ability to monitor DCP standard output and standard error streamd. |
+| `DCP_DIAGNOSTICS_LOG_LEVEL` | If set, enabled DCP diagnostic logging. <br/> Can be set to `error`, `info`, or `debug`; for troubleshooting `debug` is recommended, although it results in the most verbose output. |
+| `DCP_DIAGNOSTICS_LOG_FOLDER` | If set to a valid filesystem folder, DCP will place the diagnostic logging files there. Otherwise (if enabled) they are written to the default temporary files folder. |
+| `DCP_PERF_TRACE` | If set, instructs DCP to capture a performance trace during startup and/or shutdown. For more information see [performance investigations page](performance-investigations.md). |
+| `DCP_PRESERVE_EXECUTABLE_LOGS` | If set (to "true", "yes", or "1"), the logs from Executables will not be deleted when DCP shuts down. This can be useful to capture results of test runs that use DCP as the workload orchestrator. |
+| `DCP_RESOURCE_WATCH_TIMEOUT_SECONDS` | A timeout for resource watch requests, in seconds. Watch requests will time out shortly after the specified value, to avoid the "thundering herd" problem. Useful for testing watch retry logic. |
