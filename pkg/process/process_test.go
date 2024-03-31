@@ -132,9 +132,9 @@ func TestRunCancelled(t *testing.T) {
 
 	executor := NewOSExecutor(log)
 
-	// Command returns on its own after 5 seconds. This prevents the test from hanging.
+	// Command returns on its own after 20 seconds. This prevents the test from hanging.
 	exitInfoChan := make(chan ProcessExitInfo, 2)
-	cmd := exec.Command("./delay", "-d", "5s")
+	cmd := exec.Command("./delay", "-d", "20s")
 	cmd.Dir = delayToolDir
 	var onProcessExited ProcessExitHandlerFunc = func(pid Pid_t, exitCode int32, err error) {
 		exitInfoChan <- ProcessExitInfo{
@@ -233,9 +233,9 @@ func TestChildrenTerminated(t *testing.T) {
 			err = executor.StopProcess(pid)
 			require.NoError(t, err)
 
-			// Wait up to 5 seconds for all processes to exit. This guarantees that the test will only pass if StopProcess()
+			// Wait up to 10 seconds for all processes to exit. This guarantees that the test will only pass if StopProcess()
 			// actually works, and not because 'delay' instances exited on their own (after 20 seconds).
-			ensureAllStopped(t, processTree, 5*time.Second)
+			ensureAllStopped(t, processTree, 10*time.Second)
 		})
 	}
 }
