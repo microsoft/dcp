@@ -13,7 +13,7 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 ### Starting a new major or minor release
 
 1. Ensure you have the latest branch history by running `git fetch`
-1. Create a new release branch from `origin/main` named `release/<major>.<minor>.0` where `<major>.<minor>` is the intended version of the release (`git checkout -b release/<major>.<minor>.0 origin/main`).
+1. Create a new release branch from `origin/main` named `release/<major>.<minor>` where `<major>.<minor>` is the intended version of the release (`git checkout -b release/<major>.<minor> origin/main`).
 1. Push the new release branch (and tag if applicable) to GitHub by running `git push origin`
 1. Any further changes to finalize the release should be made with dual check-in to both the `main` and `release` branch.
 1. Once we're ready to complete the release fetch the latest changes `git fetch`, copy the hash of the appropriate commit in the release branch (usually the latest commit), and tag the commit with the appropriate version number (`git tag v<major>.<minor>.0 <commit hash>`). Finally push the new tag to GitHub (`git push --tags`).
