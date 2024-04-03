@@ -6,7 +6,7 @@ branches:
     increment: Patch
     prevent-increment-of-merged-branch-version: true
     track-merge-target: false
-    source-branches: [ 'main', 'release-candidate' ]
+    source-branches: [ 'main', 'release' ]
     tracks-release-branches: false
     is-release-branch: false
     is-mainline: true
@@ -15,7 +15,7 @@ branches:
     regex: ^main$
     mode: ContinuousDeployment
     tag: alpha
-    increment: Patch
+    increment: Minor
     prevent-increment-of-merged-branch-version: false
     track-merge-target: true
     source-branches: []
@@ -23,14 +23,14 @@ branches:
     is-release-branch: false
     is-mainline: false
     pre-release-weight: 0
-  release-candidate:
+  release:
     regex: ^release[/-]
     mode: ContinuousDeployment
     tag: rc
-    increment: None
+    increment: Patch
     prevent-increment-of-merged-branch-version: true
     track-merge-target: false
-    source-branches: [ 'main', 'production', 'release-candidate' ]
+    source-branches: [ 'main', 'production', 'release' ]
     tracks-release-branches: false
     is-release-branch: true
     is-mainline: false
@@ -38,22 +38,21 @@ branches:
   feature:
     regex: ^dev[/-]
     tag: useBranchName
-    increment: Inherit
+    increment: None
     prevent-increment-of-merged-branch-version: false
     track-merge-target: false
-    source-branches: [ 'main', 'production', 'release-candidate', 'feature' ]
+    source-branches: [ 'main', 'production', 'release', 'feature' ]
     tracks-release-branches: false
     is-release-branch: false
     is-mainline: false
     pre-release-weight: 30000
   pull-request:
     regex: ^(pull|pull\-requests|pr)[/-]
-    tag: PullRequest
-    increment: Inherit
+    tag: pr
+    increment: None
     prevent-increment-of-merged-branch-version: false
-    tag-number-pattern: '[/-](?<number>\d+)[-/]'
     track-merge-target: false
-    source-branches: [ 'main', 'production', 'release-candidate', 'feature' ]
+    source-branches: [ 'release', 'main', 'production', 'feature' ]
     tracks-release-branches: false
     is-release-branch: false
     is-mainline: false
