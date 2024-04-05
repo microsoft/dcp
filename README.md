@@ -219,3 +219,4 @@ DCP has knowledge of a number of environment variables that can change its behav
 | `DCP_PERF_TRACE` | If set, instructs DCP to capture a performance trace during startup and/or shutdown. For more information see [performance investigations page](performance-investigations.md). |
 | `DCP_PRESERVE_EXECUTABLE_LOGS` | If set (to "true", "yes", or "1"), the logs from Executables will not be deleted when DCP shuts down. This can be useful to capture results of test runs that use DCP as the workload orchestrator. |
 | `DCP_RESOURCE_WATCH_TIMEOUT_SECONDS` | A timeout for resource watch requests, in seconds. Watch requests will time out shortly after the specified value, to avoid the "thundering herd" problem. Useful for testing watch retry logic. |
+| `DCP_IDE_REQUEST_TIMEOUT_SECONDS` | A timeout for requests to IDE run session endpoint. Defaults to 30 seconds. |
