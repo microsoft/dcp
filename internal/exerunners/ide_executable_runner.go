@@ -300,7 +300,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		req, reqCancel, err := r.prepareRunRequest(exe)
 		if err != nil {
-			log.Error(err, "run session could not be started")
+			log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
 			reportStartupFailure()
 			return
 		}
@@ -339,7 +339,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		var resp *http.Response
 		resp, err = r.client.Do(req)
 		if err != nil {
-			log.Error(err, "run session could not be started")
+			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
 			reportStartupFailure()
 			return
 		}
@@ -353,7 +353,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-			log.Error(err, "run session could not be started",
+			log.Error(err, runSessionCouldNotBeStarted+"IDE returned a response indicating failure",
 				"Status", resp.Status,
 				"Body", parseResponseBody(respBody),
 			)

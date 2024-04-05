@@ -164,5 +164,16 @@ const (
 	version20240303      = "2024-03-03"
 	queryParamApiVersion = "api-version"
 
-	defaultIdeEndpointRequestTimeout = 5 * time.Second
+	DCP_IDE_REQUEST_TIMEOUT_SECONDS = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
 )
+
+var (
+	defaultIdeEndpointRequestTimeout = 30 * time.Second
+)
+
+func init() {
+	ideRequestTimeout, found := osutil.EnvVarIntVal(DCP_IDE_REQUEST_TIMEOUT_SECONDS)
+	if found && ideRequestTimeout > 0 {
+		defaultIdeEndpointRequestTimeout = time.Duration(ideRequestTimeout) * time.Second
+	}
+}
