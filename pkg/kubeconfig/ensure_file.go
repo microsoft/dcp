@@ -34,7 +34,9 @@ import (
 )
 
 const (
-	keyLength = 2048
+	caKeyLength           = 4096
+	keyLength             = 2048
+	defaultExpirationDays = 7
 )
 
 type certificateData struct {
@@ -281,7 +283,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool) (*Kub
 
 func generateCertificates(ip net.IP) (*certificateData, error) {
 	// Generate keys for the CA certificate; do not persist after creating the certificates
-	caKey, caKeyErr := rsa.GenerateKey(cryptorand.Reader, keyLength)
+	caKey, caKeyErr := rsa.GenerateKey(cryptorand.Reader, caKeyLength)
 	if caKeyErr != nil {
 		return nil, caKeyErr
 	}
@@ -299,7 +301,7 @@ func generateCertificates(ip net.IP) (*certificateData, error) {
 			CommonName: ip.String(),
 		},
 		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(1, 0, 0),
+		NotAfter:              time.Now().AddDate(0, 0, defaultExpirationDays),
 		IsCA:                  true,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
@@ -324,7 +326,7 @@ func generateCertificates(ip net.IP) (*certificateData, error) {
 		Subject:      pkix.Name{},
 		IPAddresses:  []net.IP{ip},
 		NotBefore:    time.Now(),
-		NotAfter:     time.Now().AddDate(1, 0, 0),
+		NotAfter:     time.Now().AddDate(0, 0, defaultExpirationDays),
 		SubjectKeyId: serverPublicKeySubjectId[:],
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		KeyUsage:     x509.KeyUsageDigitalSignature,
