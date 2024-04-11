@@ -53,6 +53,10 @@ func Version() VersionOutput {
 	if BuildTimestamp != "" {
 		if parsedTimestamp, err := strconv.ParseInt(BuildTimestamp, 10, 32); err == nil {
 			buildTime = time.Unix(parsedTimestamp, 0)
+		} else {
+			if maybeTime, timeErr := time.Parse(time.RFC3339, BuildTimestamp); timeErr == nil {
+				buildTime = maybeTime
+			}
 		}
 	}
 

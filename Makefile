@@ -18,7 +18,7 @@ ifeq ($(OS),Windows_NT)
 	home_dir := $(USERPROFILE)
 	install := Copy-Item
 	exe_suffix := .exe
-	BUILD_TIMESTAMP ?= $(shell Get-Date -UFormat %FT%T+00 -AsUTC)
+	BUILD_TIMESTAMP ?= $(shell Get-Date -UFormat %FT%TZ -AsUTC)
 else
 	# -o pipefail will treat a pipeline as failed if one of the elements fail.
 	SHELL := /usr/bin/env bash -o pipefail
@@ -33,7 +33,7 @@ else
 	home_dir := $(HOME)
 	install := install -p
 	exe_suffix :=
-	BUILD_TIMESTAMP ?= $(shell date -u +%FT%T+00)
+	BUILD_TIMESTAMP ?= $(shell date -u +%FT%TZ)
 endif
 
 # Honor GOOS settings from the environment to determine appropriate suffix.
