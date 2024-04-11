@@ -22,7 +22,7 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 
 1. If a change needs to be made to both the release branch and main, the change can be made first in the main branch and then, once the PR is merged, a backport PR can be created to merge the changes into a target release branch by commenting on the original PR in the format `/backport to <target branch>` (for example, `/backport to release/0.2`). This will kick off a GitHub action to create a backport branch.
 1. Currently, automatic creation of the PR will fail, but if the bot is able to create the new backport branch (there are no merge conflicts with the target release branch), it will add a comment to the PR with a link that will take you to the "Create a PR" page with all fields pre-filled. Fill out the template and submit the new PR.
-1. If for some reason creating the new branch fails, you'll have to resort to manually cherry-picking the PR changes into a new branch and handling any merge conflicts yourself, before creating the new PR manually.
+1. If for some reason creating the new branch fails, you'll have to resort to manually cherry-picking the PR changes into a new branch (created from the release branch) and handling any merge conflicts yourself, before creating the new PR manually.
 
 ### Starting a final release build
 
