@@ -48,7 +48,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 
 	// Depending on the usage pattern, the API server may not be available immediately.
 	// Do some retries with exponential back-off before giving up
-	mgr, err := resiliency.RetryGet(retryCtx, func() (ctrl_manager.Manager, error) {
+	mgr, err := resiliency.RetryGetExponential(retryCtx, func() (ctrl_manager.Manager, error) {
 		config := ctrlruntime.GetConfigOrDie()
 		ctrlMgrOpts := controllers.NewControllerManagerOptions(ctx, scheme, log)
 		return ctrlruntime.NewManager(config, ctrlMgrOpts)
@@ -60,7 +60,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 
 	// We need to make sure the API server is responding to requests before setting up the controllers
 	// as we can get connection refuesed errors during setup otherwise.
-	_, err = resiliency.RetryGet(retryCtx, func() (interface{}, error) {
+	_, err = resiliency.RetryGetExponential(retryCtx, func() (interface{}, error) {
 		var exeList apiv1.ExecutableList
 		if listErr := mgr.GetAPIReader().List(retryCtx, &exeList); listErr != nil {
 			return nil, listErr

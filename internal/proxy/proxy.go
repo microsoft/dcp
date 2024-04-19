@@ -304,7 +304,7 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 var errTcpDialFailed = errors.New("Could not establish TCP connection to endpoint")
 
 func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn) {
-	err := resiliency.Retry(p.lifetimeCtx, func() error {
+	err := resiliency.RetryExponential(p.lifetimeCtx, func() error {
 		streamErr := p.startTCPStream(incoming, &currentConfig)
 		if errors.Is(streamErr, errTcpDialFailed) {
 			// Retryable error, incoming connection still alive

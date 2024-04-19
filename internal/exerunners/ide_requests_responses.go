@@ -163,8 +163,10 @@ const (
 
 	version20240303      = "2024-03-03"
 	queryParamApiVersion = "api-version"
+	instanceIdHeader     = "Microsoft-Developer-DCP-Instance-ID"
 
 	DCP_IDE_REQUEST_TIMEOUT_SECONDS = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
+	DCP_INSTANCE_ID_PREFIX          = "DCP_INSTANCE_ID_PREFIX"
 )
 
 var (

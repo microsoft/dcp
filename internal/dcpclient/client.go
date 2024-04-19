@@ -31,14 +31,14 @@ func NewClient(ctx context.Context, timeout time.Duration) (ctrl_client.Client, 
 
 	scheme := NewScheme()
 
-	client, err := resiliency.RetryGet(timeoutCtx, func() (ctrl_client.Client, error) {
+	client, err := resiliency.RetryGetExponential(timeoutCtx, func() (ctrl_client.Client, error) {
 		return ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("could not create the client for the API server: %w", err)
 	}
 
-	_, err = resiliency.RetryGet(timeoutCtx, func() (bool, error) {
+	_, err = resiliency.RetryGetExponential(timeoutCtx, func() (bool, error) {
 		var exeList apiv1.ExecutableList
 		listErr := client.List(ctx, &exeList, &ctrl_client.ListOptions{Limit: 1})
 		if listErr != nil {
@@ -65,14 +65,14 @@ func NewClientFromKubeconfigFile(ctx context.Context, timeout time.Duration, con
 
 	scheme := NewScheme()
 
-	client, err := resiliency.RetryGet(timeoutCtx, func() (ctrl_client.Client, error) {
+	client, err := resiliency.RetryGetExponential(timeoutCtx, func() (ctrl_client.Client, error) {
 		return ctrl_client.New(config, ctrl_client.Options{Scheme: scheme})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("could not create the client for the API server: %w", err)
 	}
 
-	_, err = resiliency.RetryGet(timeoutCtx, func() (bool, error) {
+	_, err = resiliency.RetryGetExponential(timeoutCtx, func() (bool, error) {
 		var exeList apiv1.ExecutableList
 		listErr := client.List(ctx, &exeList, &ctrl_client.ListOptions{Limit: 1})
 		if listErr != nil {

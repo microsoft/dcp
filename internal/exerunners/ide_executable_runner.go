@@ -3,9 +3,7 @@ package exerunners
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/base64"
+
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +16,6 @@ import (
 	"sync"
 
 	"github.com/go-logr/logr"
-	"github.com/gorilla/websocket"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -29,7 +26,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
@@ -132,129 +129,33 @@ func (rs *runState) CloseOutputWriters() {
 }
 
 type IdeExecutableRunner struct {
-	notifySocket    *websocket.Conn
-	lock            *sync.Mutex
-	startupQueue    *resiliency.WorkQueue // Queue for starting IDE run sessions
-	activeRuns      syncmap.Map[controllers.RunID, *runState]
-	log             logr.Logger
-	lifetimeCtx     context.Context   // Lifetime context of the controller hosting this runner
-	portStr         string            // The local port on which the IDE is listening for run session requests
-	tokenStr        string            // The security token to use when connecting to the IDE
-	client          http.Client       // The client to make HTTP requests to the IDE
-	wsDialer        *websocket.Dialer // The websocket client to make requests to the IDE
-	httpScheme      string            // The scheme to use when connecting to the IDE (HTTP or HTTPS)
-	webSocketScheme string            // The scheme to use when connecting to the IDE via websockets (ws or wss)
-
-	// The value of the api-version parameter, indicating protocol version the runner is using when talking tot the IDE
-	// If empty, it indicates "pre-Aspire GA" (obsolete) protocol version.
-	// TODO: remove pre-Aspire GA support after Aspire GA is released.
-	apiVersion string
+	lock                *sync.Mutex
+	startupQueue        *resiliency.WorkQueue // Queue for starting IDE run sessions
+	activeRuns          syncmap.Map[controllers.RunID, *runState]
+	log                 logr.Logger
+	lifetimeCtx         context.Context // Lifetime context of the controller hosting this runner
+	connectionInfo      *ideConnectionInfo
+	notificationHandler *ideNotificationHandler
 }
 
 func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeExecutableRunner, error) {
-	const runnerNotAvailable = "Executables cannot be started via IDE: "
-	const missingRequiredEnvVar = "missing required environment variable '%s'"
-
-	createAndLogError := func(format string, a ...any) error {
-		err := fmt.Errorf(format, a...)
-		log.Info(runnerNotAvailable + err.Error())
-		return err
+	connInfo, err := NewIdeConnectionInfo(lifetimeCtx, log)
+	if err != nil {
+		return nil, err
 	}
 
-	portStr, found := os.LookupEnv(ideEndpointPortVar)
-	if !found {
-		return nil, createAndLogError(missingRequiredEnvVar, ideEndpointPortVar)
-	}
-	portStr = strings.TrimSpace(portStr)
-	portStr = strings.TrimPrefix(portStr, "localhost:") // Visual Studio prepends "localhost:" to port number.
-
-	tokenStr, found := os.LookupEnv(ideEndpointTokenVar)
-	if !found {
-		return nil, createAndLogError(missingRequiredEnvVar, ideEndpointTokenVar)
-	}
-	tokenStr = strings.TrimSpace(tokenStr)
-
-	client := http.Client{}
-	wsDialer := &websocket.Dialer{
-		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: defaultIdeEndpointRequestTimeout,
-	}
-	httpScheme := "http"
-	webSocketScheme := "ws"
-	apiVersion := ""
-
-	serverCertEncodedBytes, certFound := os.LookupEnv(ideEndpointCertVar)
-	if certFound {
-		certBytes, decodeErr := base64.StdEncoding.AppendDecode(nil, []byte(serverCertEncodedBytes))
-		if decodeErr != nil {
-			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", decodeErr)
-		}
-
-		cert, certParseErr := x509.ParseCertificate(certBytes)
-		if certParseErr != nil {
-			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", certParseErr)
-		}
-
-		caCertPool := x509.NewCertPool()
-		caCertPool.AddCert(cert)
-		tlsConfig := &tls.Config{
-			RootCAs: caCertPool,
-		}
-		client.Transport = &http.Transport{
-			TLSClientConfig: tlsConfig,
-		}
-		wsDialer.TLSClientConfig = tlsConfig
-		httpScheme = "https"
-		webSocketScheme = "wss"
+	r := &IdeExecutableRunner{
+		lock:           &sync.Mutex{},
+		startupQueue:   resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
+		activeRuns:     syncmap.Map[controllers.RunID, *runState]{},
+		log:            log,
+		lifetimeCtx:    lifetimeCtx,
+		connectionInfo: connInfo,
 	}
 
-	// Query for supported protocol version
-	req, reqCancel, reqCreationErr := makeIdeRequest(
-		lifetimeCtx,
-		httpScheme,
-		portStr,
-		ideRunSessionInfoPath,
-		http.MethodGet,
-		tokenStr,
-		"",  // No API version--we are making this call to determine the API version to use,
-		nil, // No body for this request
-	)
-	if reqCreationErr != nil {
-		return nil, createAndLogError("failed to create IDE endpoint info request: %w", reqCreationErr)
-	}
-	defer reqCancel()
-
-	clientResp, reqErr := client.Do(req)
-
-	// We fall back to pre-Aspire GA protocol version if the request fails.
-	if reqErr == nil && clientResp.StatusCode == http.StatusOK {
-		defer clientResp.Body.Close()
-		respBody, bodyReadErr := io.ReadAll(clientResp.Body)
-		if bodyReadErr == nil {
-			var info infoResponse
-			unmarshalErr := json.Unmarshal(respBody, &info)
-			if unmarshalErr != nil {
-				log.Error(unmarshalErr, "failed to parse IDE info response")
-			} else if slices.Contains(info.ProtocolsSupported, version20240303) {
-				apiVersion = version20240303
-			}
-		}
-	}
-
-	return &IdeExecutableRunner{
-		lock:            &sync.Mutex{},
-		startupQueue:    resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
-		activeRuns:      syncmap.Map[controllers.RunID, *runState]{},
-		log:             log,
-		lifetimeCtx:     lifetimeCtx,
-		portStr:         portStr,
-		tokenStr:        tokenStr,
-		client:          client,
-		wsDialer:        wsDialer,
-		httpScheme:      httpScheme,
-		webSocketScheme: webSocketScheme,
-		apiVersion:      apiVersion,
-	}, nil
+	nh := NewIdeNotificationHandler(lifetimeCtx, r, connInfo, log)
+	r.notificationHandler = nh
+	return r, nil
 }
 
 func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
@@ -264,9 +165,9 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		return fmt.Errorf(runSessionCouldNotBeStarted + "missing required runChangeHandler")
 	}
 
-	notifySocketErr := r.ensureNotificationSocket()
-	if notifySocketErr != nil {
-		return fmt.Errorf(runSessionCouldNotBeStarted+"%w", notifySocketErr)
+	ideConnErr := r.notificationHandler.WaitConnected(ctx)
+	if ideConnErr != nil {
+		return fmt.Errorf(runSessionCouldNotBeStarted+"%w", ideConnErr)
 	}
 
 	r.lock.Lock()
@@ -337,7 +238,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		}
 
 		var resp *http.Response
-		resp, err = r.client.Do(req)
+		resp, err = r.connectionInfo.GetClient().Do(req)
 		if err != nil {
 			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
 			reportStartupFailure()
@@ -426,7 +327,7 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	}
 	defer reqCancel()
 
-	resp, err := r.client.Do(req)
+	resp, err := r.connectionInfo.GetClient().Do(req)
 	if err != nil {
 		return fmt.Errorf(runSessionCouldNotBeStopped+"%w", err)
 	}
@@ -450,7 +351,7 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 	var isrBody []byte
 	var bodyErr error
 
-	if r.apiVersion == version20240303 {
+	if r.connectionInfo.apiVersion == version20240303 {
 		isrBody, bodyErr = r.prepareRunRequestV1(exe)
 		if bodyErr != nil {
 			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
@@ -573,109 +474,7 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 	}
 }
 
-func (r *IdeExecutableRunner) ensureNotificationSocket() error {
-	r.lock.Lock()
-	if r.notifySocket != nil {
-		r.lock.Unlock()
-		return nil
-	}
-	r.lock.Unlock()
-
-	headers := http.Header{}
-	headers.Add("Authorization", fmt.Sprintf("Bearer %s", r.tokenStr))
-	var url string
-	if r.apiVersion == version20240303 {
-		url = fmt.Sprintf("%s://localhost:%s%s?%s=%s", r.webSocketScheme, r.portStr, ideRunSessionNotificationResourcePath, queryParamApiVersion, version20240303)
-	} else {
-		url = fmt.Sprintf("%s://localhost:%s%s", r.webSocketScheme, r.portStr, ideRunSessionNotificationResourcePath)
-	}
-
-	socket, _, err := r.wsDialer.Dial(url, headers)
-	if err != nil {
-		return fmt.Errorf("failed to connect to IDE run session notification endpoint: %w", err)
-	}
-
-	r.lock.Lock()
-	if r.notifySocket == nil {
-		r.notifySocket = socket
-		go r.processNotifications()
-	}
-	r.lock.Unlock()
-	return nil
-}
-
-func (r *IdeExecutableRunner) processNotifications() {
-	for {
-		msgType, msg, err := r.notifySocket.ReadMessage()
-		if err != nil {
-			r.closeNotifySocket()
-			r.log.Error(err, "failed to read message from IDE run session notification endpoint, stopping notifications processing")
-			return
-		}
-
-		switch msgType {
-		case websocket.CloseMessage:
-			r.log.Info("IDE closed the run session notification endpoint")
-			r.closeNotifySocket()
-			return
-
-		case websocket.TextMessage:
-			var basicNotification ideSessionNotificationBase
-			err = json.Unmarshal(msg, &basicNotification)
-			if err != nil {
-				r.log.Error(err, "invalid IDE basic session notification received, recycling connection...")
-				r.closeNotifySocket()
-				return
-			}
-
-			if basicNotification.SessionID == "" {
-				r.log.Error(fmt.Errorf("received IDE run session notification with empty session ID"), "recycling connection...")
-				r.closeNotifySocket()
-				return
-			}
-
-			switch basicNotification.NotificationType {
-			case notificationTypeProcessRestarted:
-				var pcn ideRunSessionProcessChangedNotification
-				err = json.Unmarshal(msg, &pcn)
-				if err != nil {
-					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
-					r.closeNotifySocket()
-					return
-				} else {
-					r.handleSessionChange(pcn)
-				}
-
-			case notificationTypeSessionTerminated:
-				var stn ideRunSessionTerminatedNotification
-				err = json.Unmarshal(msg, &stn)
-				if err != nil {
-					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
-					r.closeNotifySocket()
-					return
-				} else {
-					r.handleSessionTerminated(stn)
-				}
-
-			case notificationTypeServiceLogs:
-				var nsl ideSessionLogNotification
-				err = json.Unmarshal(msg, &nsl)
-				if err != nil {
-					r.log.Error(err, "invalid IDE run session notification received, recycling connection...")
-					r.closeNotifySocket()
-					return
-				} else {
-					r.handleSessionLogs(nsl)
-				}
-			}
-
-		default:
-			r.log.Info("unexpected message type '%c' received from session notification endpoint, ignoring...", msgType)
-		}
-	}
-}
-
-func (r *IdeExecutableRunner) handleSessionChange(pcn ideRunSessionProcessChangedNotification) {
+func (r *IdeExecutableRunner) HandleSessionChange(pcn ideRunSessionProcessChangedNotification) {
 	runID := controllers.RunID(pcn.SessionID)
 	r.log.V(1).Info("IDE run session changed", "RunID", runID, "PID", pcn.PID)
 
@@ -689,7 +488,7 @@ func (r *IdeExecutableRunner) handleSessionChange(pcn ideRunSessionProcessChange
 	runState.NotifyRunChangedAsync(r.lock)
 }
 
-func (r *IdeExecutableRunner) handleSessionTerminated(stn ideRunSessionTerminatedNotification) {
+func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminatedNotification) {
 	runID := controllers.RunID(stn.SessionID)
 	exitCode := apiv1.UnknownExitCode
 	if stn.ExitCode != nil {
@@ -716,7 +515,7 @@ func (r *IdeExecutableRunner) handleSessionTerminated(stn ideRunSessionTerminate
 	runState.NotifyRunChangedAsync(r.lock)
 }
 
-func (r *IdeExecutableRunner) handleSessionLogs(nsl ideSessionLogNotification) {
+func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {
 	runID := controllers.RunID(nsl.SessionID)
 
 	runState := r.ensureRunState(runID)
@@ -756,28 +555,15 @@ func (r *IdeExecutableRunner) fetchRunStateForDeletion(runID controllers.RunID) 
 	return runState
 }
 
-func (r *IdeExecutableRunner) closeNotifySocket() {
-	r.lock.Lock()
-	if r.notifySocket != nil {
-		_ = r.notifySocket.Close()
-		r.notifySocket = nil
-	}
-	r.lock.Unlock()
-}
-
 func (r *IdeExecutableRunner) makeRequest(
 	requestPath string,
 	httpMethod string,
 	body io.Reader,
 ) (*http.Request, context.CancelFunc, error) {
-	return makeIdeRequest(
+	return r.connectionInfo.MakeIdeRequest(
 		r.lifetimeCtx,
-		r.httpScheme,
-		r.portStr,
 		requestPath,
 		httpMethod,
-		r.tokenStr,
-		r.apiVersion,
 		body,
 	)
 }
@@ -807,40 +593,6 @@ func parseResponseBody(rawBody []byte) string {
 	} else {
 		return string(rawBody)
 	}
-}
-
-func makeIdeRequest(
-	parentCtx context.Context,
-	uriScheme string,
-	portStr string,
-	requestPath string,
-	httpMethod string,
-	securityToken string,
-	apiVersion string,
-	body io.Reader,
-) (*http.Request, context.CancelFunc, error) {
-	var url string
-	if apiVersion != "" {
-		url = fmt.Sprintf("%s://localhost:%s%s?%s=%s", uriScheme, portStr, requestPath, queryParamApiVersion, apiVersion)
-	} else {
-		url = fmt.Sprintf("%s://localhost:%s%s", uriScheme, portStr, requestPath)
-	}
-	reqCtx, reqCtxCancel := context.WithTimeout(parentCtx, defaultIdeEndpointRequestTimeout)
-
-	req, reqCreationErr := http.NewRequestWithContext(reqCtx, httpMethod, url, body)
-	if reqCreationErr != nil {
-		reqCtxCancel()
-		return nil, nil, fmt.Errorf("failed to create IDE endpoint info request: %w", reqCreationErr)
-	}
-
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", securityToken))
-
-	// Assume the body is JSON if it is provided
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	return req, reqCtxCancel, nil
 }
 
 var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)

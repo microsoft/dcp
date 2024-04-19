@@ -335,5 +335,5 @@ func retryOnConflict[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]
 		return nil
 	}
 
-	return resiliency.Retry(ctx, try)
+	return resiliency.RetryExponential(ctx, try)
 }
