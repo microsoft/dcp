@@ -32,7 +32,7 @@ type ideConnectionInfo struct {
 	// The value of the api-version parameter, indicating protocol version the runner is using when talking tot the IDE
 	// If empty, it indicates "pre-Aspire GA" (obsolete) protocol version.
 	// TODO: remove pre-Aspire GA support after Aspire GA is released.
-	apiVersion string
+	apiVersion apiVersion
 
 	httpClient *http.Client      // The client to make HTTP requests to the IDE
 	wsDialer   *websocket.Dialer // The dialer to use when connecting to the IDE via WebSocket protocol
@@ -137,6 +137,8 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 			unmarshalErr := json.Unmarshal(respBody, &info)
 			if unmarshalErr != nil {
 				log.Error(unmarshalErr, "failed to parse IDE info response")
+			} else if slices.Contains(info.ProtocolsSupported, version20240423) {
+				connInfo.apiVersion = version20240423
 			} else if slices.Contains(info.ProtocolsSupported, version20240303) {
 				connInfo.apiVersion = version20240303
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -27,9 +28,13 @@ const (
 	handlerStateDisposed   ideNotificationHandlerState = 0x8
 	handlerStateAny        ideNotificationHandlerState = 0xFFFFFFFF
 
-	// Timeout for reading messages from the IDE run session notification endpoint.
-	// This is just a read operation timeout, allowing us to check whether we are being asked to shut down.
-	defaultReadTimeout = 3 * time.Second
+	// Timeout for operations on the WebSocket connection to the IDE notification endpoint.
+	operationTimeout = 20 * time.Second
+
+	// The period for sending ping messages to detect stale IDE notification connections.
+	// Must be smaller than operationTimeout.
+	// This is also the period in which we will detect lifetime context cancellation and shut down the handler.
+	pingPeriod = 5 * time.Second
 )
 
 func (s ideNotificationHandlerState) String() string {
@@ -65,6 +70,7 @@ type ideNotificationHandler struct {
 	log                  logr.Logger
 	notifySocket         *websocket.Conn
 	connInfo             *ideConnectionInfo
+	reportTimeoutErrors  bool
 }
 
 func NewIdeNotificationHandler(
@@ -82,6 +88,9 @@ func NewIdeNotificationHandler(
 		log:                  log,
 		connInfo:             connInfo,
 	}
+
+	// Before version20240423 the endpoint was not sending pong responses to ping messages, to timeouts are somewhat expected.
+	retval.reportTimeoutErrors = equalOrNewer(connInfo.apiVersion, version20240423)
 
 	return retval
 }
@@ -228,35 +237,62 @@ func (nh *ideNotificationHandler) closeNotifySocket(sendClosingMessage bool) {
 }
 
 func (nh *ideNotificationHandler) receiveNotifications() {
-	reportErrorAndReconnect := func(err error, msg string, keysAndValues ...any) {
-		nh.log.V(1).Error(err, msg, keysAndValues...)
-		stateTransitionErr := nh.setState(handlerStateConnected, handlerStateInitial, func() { nh.closeNotifySocket(sendClosingMessage) })
-		if stateTransitionErr != nil {
-			// Should never happen--we were in connected state, so the transition to initial statue should have succeeded
-			nh.log.Error(errors.Join(err, stateTransitionErr), "failed to transition to initial state when processing error from reading IDE run session notification messages")
-			_ = nh.setState(handlerStateAny, handlerStateDisposed, nil)
+	connCtx, cancelConnCtx := context.WithCancel(nh.lifetimeCtx)
+	defer cancelConnCtx()
+
+	closeConn := func() {
+		cancelConnCtx()
+		nh.closeNotifySocket(sendClosingMessage)
+	}
+
+	closeConnAndReconnect := func(ioError error) {
+		if nh.lifetimeCtx.Err() != nil {
+			// We are being asked to shut down. Do not attempt to reconnect.
+			_ = nh.setState(handlerStateAny, handlerStateDisposed, closeConn)
+			return
 		} else {
-			go nh.tryConnecting() // Attempt to reconnect
+			stateTransitionErr := nh.setState(handlerStateConnected, handlerStateInitial, closeConn)
+			if stateTransitionErr != nil {
+				// Should never happen--we were in connected state, so the transition to initial statue should have succeeded
+				nh.log.Error(errors.Join(ioError, stateTransitionErr), "failed to transition to initial state when processing error from reading IDE run session notification messages")
+				_ = nh.setState(handlerStateAny, handlerStateDisposed, nil)
+			} else {
+				go nh.tryConnecting() // Attempt to reconnect
+			}
 		}
 	}
 
+	reportErrorAndReconnect := func(err error, msg string, keysAndValues ...any) {
+		if connCtx.Err() == nil {
+			// Only report unexpected errors (errors that are not due to context cancellation).
+			if nh.reportTimeoutErrors || !isTimeout(err) {
+				nh.log.V(1).Error(err, msg, keysAndValues...)
+			}
+		}
+
+		closeConnAndReconnect(err)
+	}
+
+	setupErr := nh.notifySocket.SetReadDeadline(time.Now().Add(operationTimeout))
+	if setupErr != nil {
+		reportErrorAndReconnect(setupErr, "failed to set read deadline on IDE run session notification endpoint, recycling connection...")
+		return
+	}
+
+	nh.notifySocket.SetPongHandler(func(string) error {
+		// If we receive a pong response to our ping, it means the connection is alive, so we can extend the operation (read) deadline.
+		deadline := time.Now().Add(operationTimeout)
+		if connCtx.Err() != nil {
+			// We are being asked to end the connection. Set the deadline to now to force a timeout and exit the message reading loop.
+			deadline = time.Now()
+		}
+		return nh.notifySocket.SetReadDeadline(deadline)
+	})
+
+	go nh.doPinging(connCtx, nh.notifySocket)
+
 	for {
-		if nh.lifetimeCtx.Err() != nil {
-			nh.log.V(1).Info("IDE run session notification handler is being shut down...")
-			_ = nh.setState(handlerStateAny, handlerStateDisposed, func() { nh.closeNotifySocket(sendClosingMessage) })
-			return
-		}
-
-		readDeadlineErr := nh.notifySocket.SetReadDeadline(time.Now().Add(defaultReadTimeout))
-		if readDeadlineErr != nil {
-			reportErrorAndReconnect(readDeadlineErr, "failed to set read deadline on IDE run session notification endpoint, recycling connection...")
-			return
-		}
-
 		msgType, msg, msgReadErr := nh.notifySocket.ReadMessage()
-		if errors.Is(msgReadErr, os.ErrDeadlineExceeded) {
-			continue // Opportunity to check if we are being asked to shut down
-		}
 
 		var closeErr *websocket.CloseError
 		if errors.As(msgReadErr, &closeErr) {
@@ -266,6 +302,18 @@ func (nh *ideNotificationHandler) receiveNotifications() {
 
 		if msgReadErr != nil {
 			reportErrorAndReconnect(msgReadErr, "failed to read message from IDE run session notification endpoint, recycling connection...")
+			return
+		}
+
+		if connCtx.Err() != nil {
+			closeConnAndReconnect(nil)
+			return
+		}
+
+		// We received a message successfully and we are not asked to reconnect, so we can reset the read deadline.
+		deadlineResetErr := nh.notifySocket.SetReadDeadline(time.Now().Add(operationTimeout))
+		if deadlineResetErr != nil {
+			reportErrorAndReconnect(deadlineResetErr, "failed to reset read deadline on IDE run session notification endpoint, recycling connection...")
 			return
 		}
 
@@ -322,4 +370,40 @@ func (nh *ideNotificationHandler) receiveNotifications() {
 			nh.log.Info("unexpected message type '%c' received from session notification endpoint, ignoring...", msgType)
 		}
 	}
+}
+
+func (nh *ideNotificationHandler) doPinging(connCtx context.Context, conn *websocket.Conn) {
+	pingTimer := time.NewTimer(0)
+
+	for {
+		if connCtx.Err() != nil {
+			pingTimer.Stop()
+			return
+		}
+
+		pingTimer.Reset(pingPeriod)
+
+		select {
+		case <-connCtx.Done():
+			pingTimer.Stop()
+			return
+		case <-pingTimer.C:
+			pingErr := conn.WriteMessage(websocket.PingMessage, nil)
+			if pingErr != nil {
+				nh.log.V(1).Error(pingErr, "failed to send ping message to IDE run session notification endpoint")
+			}
+		}
+	}
+}
+
+func isTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return true
+	}
+
+	return false
 }

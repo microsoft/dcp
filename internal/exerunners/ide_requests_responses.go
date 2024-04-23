@@ -142,8 +142,10 @@ func (ed *errorDetail) writeDetails(b *strings.Builder, indent []byte) {
 }
 
 type infoResponse struct {
-	ProtocolsSupported []string `json:"protocols_supported"`
+	ProtocolsSupported []apiVersion `json:"protocols_supported"`
 }
+
+type apiVersion string
 
 const (
 	ideRunSessionResourcePath             = "/run_session"
@@ -161,9 +163,10 @@ const (
 	csharpLaunchProfileAnnotation        = "csharp-launch-profile"
 	csharpDisableLaunchProfileAnnotation = "csharp-disable-launch-profile"
 
-	version20240303      = "2024-03-03"
-	queryParamApiVersion = "api-version"
-	instanceIdHeader     = "Microsoft-Developer-DCP-Instance-ID"
+	version20240303      apiVersion = "2024-03-03"
+	version20240423      apiVersion = "2024-04-23"
+	queryParamApiVersion            = "api-version"
+	instanceIdHeader                = "Microsoft-Developer-DCP-Instance-ID"
 
 	DCP_IDE_REQUEST_TIMEOUT_SECONDS = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
 	DCP_INSTANCE_ID_PREFIX          = "DCP_INSTANCE_ID_PREFIX"
@@ -172,6 +175,18 @@ const (
 var (
 	defaultIdeEndpointRequestTimeout = 30 * time.Second
 )
+
+func equalOrNewer(currentVersion, baselineVersion apiVersion) bool {
+	currentVersionTime, paraseErr := time.Parse(time.DateOnly, string(currentVersion))
+	if paraseErr != nil {
+		return false
+	}
+	baselineVersionTime, paraseErr := time.Parse(time.DateOnly, string(baselineVersion))
+	if paraseErr != nil {
+		return false
+	}
+	return currentVersionTime.After(baselineVersionTime) || currentVersionTime.Equal(baselineVersionTime)
+}
 
 func init() {
 	ideRequestTimeout, found := osutil.EnvVarIntVal(DCP_IDE_REQUEST_TIMEOUT_SECONDS)

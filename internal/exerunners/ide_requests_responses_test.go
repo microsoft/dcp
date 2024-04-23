@@ -89,3 +89,19 @@ func TestErrorResponseString(t *testing.T) {
 	expected := fmt.Sprintf("BadStuff: Bad stuff explanation%s  MoreBadStuff: Details about bad stuff", osutil.WithNewline(nil))
 	require.Equal(t, expected, errResp.String())
 }
+
+func TestApiVersionComparison(t *testing.T) {
+	t.Parallel()
+
+	// If some version is missing or invalid, assume the current version is "older"
+	require.False(t, equalOrNewer("", ""))
+	require.False(t, equalOrNewer("2024-04-23", ""))
+	require.False(t, equalOrNewer("", "2024-04-23"))
+	require.False(t, equalOrNewer("zzzzz", "2024-04-23"))
+	require.False(t, equalOrNewer("2024-04-23", "zzzzz"))
+
+	// Valid versions should be compared correctly
+	require.True(t, equalOrNewer("2024-04-23", "2024-04-23"))
+	require.True(t, equalOrNewer("2024-04-23", "2024-03-03"))
+	require.False(t, equalOrNewer("2024-03-03", "2024-04-23"))
+}
