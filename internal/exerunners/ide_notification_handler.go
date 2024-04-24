@@ -173,8 +173,8 @@ func (nh *ideNotificationHandler) tryConnecting() {
 		headers.Add("Authorization", fmt.Sprintf("Bearer %s", nh.connInfo.tokenStr))
 		headers.Add(instanceIdHeader, nh.connInfo.instanceId)
 		var url string
-		if nh.connInfo.apiVersion == version20240303 {
-			url = fmt.Sprintf("%s://localhost:%s%s?%s=%s", nh.connInfo.webSocketScheme, nh.connInfo.portStr, ideRunSessionNotificationResourcePath, queryParamApiVersion, version20240303)
+		if equalOrNewer(nh.connInfo.apiVersion, version20240303) {
+			url = fmt.Sprintf("%s://localhost:%s%s?%s=%s", nh.connInfo.webSocketScheme, nh.connInfo.portStr, ideRunSessionNotificationResourcePath, queryParamApiVersion, nh.connInfo.apiVersion)
 		} else {
 			url = fmt.Sprintf("%s://localhost:%s%s", nh.connInfo.webSocketScheme, nh.connInfo.portStr, ideRunSessionNotificationResourcePath)
 		}

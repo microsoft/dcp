@@ -351,7 +351,7 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 	var isrBody []byte
 	var bodyErr error
 
-	if r.connectionInfo.apiVersion == version20240303 {
+	if equalOrNewer(r.connectionInfo.apiVersion, version20240303) {
 		isrBody, bodyErr = r.prepareRunRequestV1(exe)
 		if bodyErr != nil {
 			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
