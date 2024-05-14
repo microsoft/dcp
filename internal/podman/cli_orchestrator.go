@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/sync"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 )
@@ -38,6 +39,10 @@ var (
 	// We expect almost all Podman CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
 	ordinaryPodmanCommandTimeout = 30 * time.Second
+
+	// Cache and synchronization control for checking runtime status
+	status *containers.ContainerRuntimeStatus
+	syncCh = sync.NewSyncChannel()
 )
 
 type PodmanCliOrchestrator struct {
@@ -69,7 +74,22 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 	return "host.containers.internal"
 }
 
-func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
+	if syncErr := syncCh.Lock(ctx); syncErr != nil {
+		// Timed out, assume Podman is not responsive and unavailable
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     "Timed out while checking Podman status; Podman CLI is not responsive.",
+		}
+	}
+
+	defer syncCh.Unlock()
+
+	if status != nil && !ignoreCache {
+		return *status
+	}
+
 	cmd := makePodmanCommand("container", "ls", "--last", "1", "--quiet")
 	_, stdErr, err := pco.runBufferedPodmanCommand(ctx, "Info", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 
@@ -80,7 +100,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 		}
 
 		// Couldn't find the Podman CLI, so it's not installed
-		return containers.ContainerRuntimeStatus{
+		status = &containers.ContainerRuntimeStatus{
 			Installed: false,
 			Running:   false,
 			Error:     err.Error(),
@@ -99,18 +119,20 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 		}
 
 		// Error response from the Podman command, assume runtime isn't available
-		return containers.ContainerRuntimeStatus{
+		status = &containers.ContainerRuntimeStatus{
 			Installed: true,
 			Running:   false,
 			Error:     stdErrString,
 		}
+	} else {
+		// Info command returned successfully, assume runtime is ready
+		status = &containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   true,
+		}
 	}
 
-	// Info command returned successfully, assume runtime is ready
-	return containers.ContainerRuntimeStatus{
-		Installed: true,
-		Running:   true,
-	}
+	return *status
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {

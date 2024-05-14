@@ -75,7 +75,7 @@ func EnsureValidRuntimeFlagArgValue(ctx context.Context, log logr.Logger, execut
 			// Check each supported runtime to see if it's installed and running
 			go func(supportedRuntime *RuntimeFlagValue) {
 				orchestrator := supportedRuntime.OrchestratorFactory(log, executor)
-				status := orchestrator.CheckStatus(ctx)
+				status := orchestrator.CheckStatus(ctx, true)
 				log.Info("runtime status", "runtime", supportedRuntime.Name, "status", status)
 				runtimesCh <- runtimeSupport{supportedRuntime, status}
 			}(supportedRuntimes[i])

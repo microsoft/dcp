@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/sync"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 )
@@ -38,6 +39,10 @@ var (
 	// We expect almost all Docker CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
+
+	// Cache and synchronization control for checking runtime status
+	status *containers.ContainerRuntimeStatus
+	syncCh = sync.NewSyncChannel()
 )
 
 type DockerCliOrchestrator struct {
@@ -69,7 +74,22 @@ func (*DockerCliOrchestrator) ContainerHost() string {
 	return "host.docker.internal"
 }
 
-func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
+	if syncErr := syncCh.Lock(ctx); syncErr != nil {
+		// Timed out, assume Docker is not responsive and unavailable
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     "Timed out while checking Docker status; Docker CLI is not responsive.",
+		}
+	}
+
+	defer syncCh.Unlock()
+
+	if status != nil && !ignoreCache {
+		return *status
+	}
+
 	// Check the status of the Docker runtime
 	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
 	go func() {
@@ -161,7 +181,8 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 		isDockerCh <- true
 	}()
 
-	status := <-statusCh
+	newStatus := <-statusCh
+	status = &newStatus
 	isDocker := <-isDockerCh
 
 	if status.Installed && status.Running && !isDocker {
@@ -170,7 +191,7 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context) containers.Co
 		status.Error = "docker command appears to be aliased to a different container runtime"
 	}
 
-	return status
+	return newStatus
 }
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {

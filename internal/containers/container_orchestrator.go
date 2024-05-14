@@ -150,7 +150,7 @@ type ContainerOrchestrator interface {
 	ContainerHost() string
 
 	// Check the runtime status
-	CheckStatus(ctx context.Context) ContainerRuntimeStatus
+	CheckStatus(ctx context.Context, ignoreCache bool) ContainerRuntimeStatus
 
 	// Create (but do not start) a container. If successful, the ID of the container is returned.
 	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)

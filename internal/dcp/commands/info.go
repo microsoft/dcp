@@ -66,7 +66,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 				Error:     orchestratorErr.Error(),
 			}
 		} else {
-			status = containerOrchestrator.CheckStatus(ctx)
+			status = containerOrchestrator.CheckStatus(ctx, false)
 			containerHost = containerOrchestrator.ContainerHost()
 		}
 

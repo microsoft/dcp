@@ -167,7 +167,7 @@ func (*TestContainerOrchestrator) ContainerHost() string {
 	return "host.test.internal"
 }
 
-func (to *TestContainerOrchestrator) CheckStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+func (to *TestContainerOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
