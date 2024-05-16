@@ -40,18 +40,6 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
-	if cmd, err = NewGenerateFileCommand(log); err != nil {
-		return nil, fmt.Errorf("could not set up 'generate-file' command: %w", err)
-	} else {
-		rootCmd.AddCommand(cmd)
-	}
-
-	if cmd, err = NewUpCommand(log); err != nil {
-		return nil, fmt.Errorf("could not set up 'up' command: %w", err)
-	} else {
-		rootCmd.AddCommand(cmd)
-	}
-
 	if cmd, err = NewStartApiSrvCommand(log); err != nil {
 		return nil, fmt.Errorf("could not set up 'start-apiserver' command: %w", err)
 	} else {
