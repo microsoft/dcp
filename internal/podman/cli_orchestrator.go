@@ -512,6 +512,10 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	return nil
 }
 
+func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
+	return "podman"
+}
+
 func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=container", "--format", "json"}
 	cmd := makePodmanCommand(args...)

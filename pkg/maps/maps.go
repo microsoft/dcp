@@ -11,7 +11,7 @@ type MapFunc[K comparable, V any, T any] interface {
 
 // Transforms a map[K]V into a map[K]T using given mapping function.
 // Keys are preserved, but values are replaced with the result of the mapping
-func Map[K comparable, V any, T any, MF MapFunc[K, V, T]](m map[K]V, mapping MF) map[K]T {
+func Map[K comparable, V any, T any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, mapping MF) map[K]T {
 	if len(m) == 0 {
 		return nil
 	}
@@ -36,7 +36,7 @@ func Map[K comparable, V any, T any, MF MapFunc[K, V, T]](m map[K]V, mapping MF)
 
 // Maps a map to a slice. Note that iteration order over a map is not defined,
 // so make no assumptions about the order of the items in the resulting slice.
-func MapToSlice[K comparable, V any, T any, MF MapFunc[K, V, T]](m map[K]V, mapping MF) []T {
+func MapToSlice[K comparable, V any, T any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, mapping MF) []T {
 	if len(m) == 0 {
 		return nil
 	}
@@ -61,15 +61,15 @@ func MapToSlice[K comparable, V any, T any, MF MapFunc[K, V, T]](m map[K]V, mapp
 	return res
 }
 
-// Maps a slice to a map. The slice is processed in order, and entries produced by later elements
-// may override entries produced by earlier elements (if keys are equal).
-// So in general case it should NOT be assumed that the resulting map will contain as many elements
-// as the original slice.
 type KeyValFunc[T any, K comparable, V any] interface {
 	~func(T) (K, V)
 }
 
-func SliceToMap[T any, K comparable, V any, KVF KeyValFunc[T, K, V]](s []T, f KVF) map[K]V {
+// Maps a slice to a map. The slice is processed in order, and entries produced by later elements
+// may override entries produced by earlier elements (if keys are equal).
+// So in general case it should NOT be assumed that the resulting map will contain as many elements
+// as the original slice.
+func SliceToMap[T any, K comparable, V any, KVF KeyValFunc[T, K, V], S ~[]T](s S, f KVF) map[K]V {
 	if len(s) == 0 {
 		return nil
 	}
@@ -86,7 +86,7 @@ type SelectFunc[K comparable, V any] interface {
 	~func(K) bool | ~func(K, V) bool
 }
 
-func Select[K comparable, V any, SF SelectFunc[K, V]](m map[K]V, selector SF) map[K]V {
+func Select[K comparable, V any, SF SelectFunc[K, V], MM ~map[K]V](m MM, selector SF) MM {
 	f := func(k K, v V) bool {
 		switch tf := (any)(selector).(type) {
 		case func(K) bool:
@@ -107,7 +107,7 @@ func Select[K comparable, V any, SF SelectFunc[K, V]](m map[K]V, selector SF) ma
 	return res
 }
 
-func Keys[K comparable, V any](m map[K]V) []K {
+func Keys[K comparable, V any, M ~map[K]V](m M) []K {
 	if len(m) == 0 {
 		return nil
 	}
@@ -121,7 +121,7 @@ func Keys[K comparable, V any](m map[K]V) []K {
 	return res
 }
 
-func Values[K comparable, V any](m map[K]V) []V {
+func Values[K comparable, V any, M ~map[K]V](m M) []V {
 	if len(m) == 0 {
 		return nil
 	}
@@ -135,7 +135,7 @@ func Values[K comparable, V any](m map[K]V) []V {
 	return res
 }
 
-func Apply[K comparable, V any](m1 map[K]V, m2 map[K]V) map[K]V {
+func Apply[K comparable, V any, M ~map[K]V](m1 M, m2 M) M {
 	if len(m1) == 0 {
 		return m2
 	}

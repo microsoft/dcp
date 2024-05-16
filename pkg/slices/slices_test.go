@@ -290,6 +290,46 @@ func TestAny(t *testing.T) {
 	require.False(t, result)
 }
 
+func TestIndexFunc(t *testing.T) {
+	// IndexOf with empty data set should return -1
+	var data []string
+	result := IndexFunc(data, func(s string) bool { return true })
+	require.Equal(t, -1, result)
+
+	data = []string{"alpha1", "alpha2", "bravo1", "bravo2"}
+
+	// Selector includes index
+	result = IndexFunc(data, func(i int, s string) bool {
+		return s == "alpha1"
+	})
+	require.Equal(t, 0, result)
+
+	// Selector does not include index
+	result = IndexFunc(data, func(s string) bool {
+		return s == "alpha2"
+	})
+	require.Equal(t, 1, result)
+
+	// Selector includes index and operates on pointers
+	result = IndexFunc(data, func(i int, s *string) bool {
+		return *s == "bravo1"
+	})
+	require.Equal(t, 2, result)
+
+	// Selector does not include index and operates on pointers
+	result = IndexFunc(data, func(s *string) bool {
+		return *s == "bravo2"
+	})
+	require.Equal(t, 3, result)
+
+	// Index should be -1 if selector does not select anything
+	result = IndexFunc(data, func(s string) bool {
+		return false
+	})
+	require.Equal(t, -1, result)
+
+}
+
 func TestNonEmpty(t *testing.T) {
 	// NonEmpty with slices of strings
 	require.Empty(t, NonEmpty[string]([]string{}))
@@ -303,4 +343,73 @@ func TestNonEmpty(t *testing.T) {
 		[][]byte{[]byte("alpha"), []byte("bravo")},
 		NonEmpty[byte]([][]byte{[]byte("alpha"), []byte(""), []byte("bravo"), []byte("")}),
 	)
+}
+
+func TestDiff(t *testing.T) {
+	// Difference between two empty slices should be empty
+	aMinusB, bMinusA := Diff([]string{}, []string{})
+	require.Empty(t, aMinusB)
+	require.Empty(t, bMinusA)
+
+	// Difference between empty and non-empty slice should be empty
+	aMinusB, bMinusA = Diff([]string{}, []string{"something"})
+	require.Empty(t, aMinusB)
+	require.EqualValues(t, []string{"something"}, bMinusA)
+
+	// Difference between non-empty and empty slice should be the non-empty slice
+	aMinusB, bMinusA = Diff([]string{"alpha", "bravo"}, []string{})
+	require.EqualValues(t, []string{"alpha", "bravo"}, aMinusB)
+	require.Empty(t, bMinusA)
+
+	// First slice is a subset of the second slice (difference is empty)
+	aMinusB, bMinusA = Diff([]string{"bravo", "alpha"}, []string{"charlie", "alpha", "bravo"})
+	require.Empty(t, aMinusB)
+	require.EqualValues(t, []string{"charlie"}, bMinusA)
+
+	// First slice is a superset of the second slice
+	aMinusB, bMinusA = Diff([]string{"charlie", "alpha", "bravo"}, []string{"bravo", "alpha"})
+	require.EqualValues(t, []string{"charlie"}, aMinusB)
+	require.Empty(t, bMinusA)
+
+	// First slice and second slice have no elements in common
+	aMinusB, bMinusA = Diff([]string{"charlie", "delta"}, []string{"alpha", "bravo"})
+	require.EqualValues(t, []string{"charlie", "delta"}, aMinusB)
+	require.EqualValues(t, []string{"alpha", "bravo"}, bMinusA)
+
+	// First slice and second slice have some elements in common
+	aMinusB, bMinusA = Diff([]string{"charlie", "delta", "alpha"}, []string{"alpha", "bravo"})
+	require.EqualValues(t, []string{"charlie", "delta"}, aMinusB)
+	require.EqualValues(t, []string{"bravo"}, bMinusA)
+}
+
+func TestDiffFunc(t *testing.T) {
+	type point2d struct {
+		x int
+		y int
+	}
+
+	samePoint := func(p1, p2 point2d) bool {
+		return p1.x == p2.x && p1.y == p2.y
+	}
+
+	// Difference between two empty slices should be empty
+	require.Empty(t, DiffFunc([]point2d{}, []point2d{}, samePoint))
+
+	// Difference between empty and non-empty slice should be empty
+	require.Empty(t, DiffFunc([]point2d{}, []point2d{{1, 2}}, samePoint))
+
+	// Difference between non-empty and empty slice should be the non-empty slice
+	require.EqualValues(t, []point2d{{1, 2}, {3, 4}}, DiffFunc([]point2d{{1, 2}, {3, 4}}, []point2d{}, samePoint))
+
+	// First slice is a subset of the second slice (difference is empty)
+	require.Empty(t, DiffFunc([]point2d{{1, 2}, {3, 4}}, []point2d{{5, 6}, {3, 4}, {1, 2}}, samePoint))
+
+	// First slice is a superset of the second slice
+	require.EqualValues(t, []point2d{{5, 6}}, DiffFunc([]point2d{{5, 6}, {1, 2}, {3, 4}}, []point2d{{3, 4}, {1, 2}}, samePoint))
+
+	// First slice and second slice have no elements in common
+	require.EqualValues(t, []point2d{{5, 6}, {7, 8}}, DiffFunc([]point2d{{5, 6}, {7, 8}}, []point2d{{1, 2}, {3, 4}}, samePoint))
+
+	// First slice and second slice have some elements in common
+	require.EqualValues(t, []point2d{{5, 6}, {7, 8}}, DiffFunc([]point2d{{5, 6}, {7, 8}, {1, 2}}, []point2d{{1, 2}, {3, 4}}, samePoint))
 }

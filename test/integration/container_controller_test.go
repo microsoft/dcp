@@ -775,7 +775,10 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 		Name:          testName,
 		ContainerSpec: ctr.Spec,
 	})
-	require.NoError(t, err, "could not create container")
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = orchestrator.StartContainers(ctx, []string{id})
+	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
 	err = client.Create(ctx, &ctr)

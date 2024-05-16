@@ -69,7 +69,7 @@ func (c *containerLogStreamer) StreamLogs(
 	}
 
 	switch ctr.Status.State {
-	case apiv1.ContainerStateUnknown, apiv1.ContainerStateNotFound, apiv1.ContainerStateRemoved:
+	case apiv1.ContainerStateUnknown:
 		return status, nil, apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
 
 	case "", apiv1.ContainerStatePending:
@@ -242,7 +242,7 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 			}
 		}
 
-		if ctr.Status.State == apiv1.ContainerStateFailedToStart || ctr.Status.State == apiv1.ContainerStateRemoved || ctr.Status.State == apiv1.ContainerStateExited || ctr.Status.State == apiv1.ContainerStateUnknown {
+		if ctr.Status.State == apiv1.ContainerStateFailedToStart || ctr.Status.State == apiv1.ContainerStateExited || ctr.Status.State == apiv1.ContainerStateUnknown {
 			// If the container isn't running, ensure standard logs stop streaming once they reach EOF
 			if logs, found := c.stdioLogStreams.Load(ctr.UID); found {
 				log.V(1).Info("stopping stdio follow logs for container", "Container", ctr.Status.ContainerID, "StreamCount", len(logs))

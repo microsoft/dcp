@@ -1,17 +1,19 @@
 package slices
 
 import (
+	"cmp"
 	"fmt"
+	stdslices "slices"
 	"sync"
 
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
-func Contains[T comparable](ss []T, s T) bool {
+func Contains[T comparable, S ~[]T](ss S, s T) bool {
 	return Index(ss, s) != -1
 }
 
-func Index[T comparable](ss []T, s T) int {
+func Index[T comparable, S ~[]T](ss S, s T) int {
 	for i, b := range ss {
 		if b == s {
 			return i
@@ -23,7 +25,7 @@ func Index[T comparable](ss []T, s T) int {
 // This is "naive" algorithm that works well for short sequences (less than 5 elements),
 // which is our main use case.
 // If a need arises, we could switch this to Knuth-Morris-Pratt algorithm.
-func SeqIndex[T comparable](ss []T, seq []T) int {
+func SeqIndex[T comparable, S ~[]T](ss S, seq S) int {
 	if len(ss) == 0 || len(seq) == 0 || len(seq) > len(ss) {
 		return -1
 	}
@@ -46,7 +48,7 @@ func SeqIndex[T comparable](ss []T, seq []T) int {
 	return -1
 }
 
-func StartsWith[T comparable](ss []T, prefix []T) bool {
+func StartsWith[T comparable, S ~[]T](ss S, prefix S) bool {
 	return SeqIndex(ss, prefix) == 0
 }
 
@@ -54,20 +56,20 @@ type MapFunc[T any, R any] interface {
 	~func(int, T) R | ~func(T) R | ~func(int, *T) R | ~func(*T) R
 }
 
-func Map[T any, R any, MF MapFunc[T, R]](ss []T, mapping MF) []R {
+func Map[T any, R any, MF MapFunc[T, R], S ~[]T](ss S, mapping MF) []R {
 	if len(ss) == 0 {
 		return nil
 	}
-	f := func(i int, s T) R {
+	f := func(i int, s *T) R {
 		switch tf := (any)(mapping).(type) {
 		case func(int, T) R:
-			return tf(i, s)
+			return tf(i, *s)
 		case func(T) R:
-			return tf(s)
+			return tf(*s)
 		case func(int, *T) R:
-			return tf(i, &s)
+			return tf(i, s)
 		case func(*T) R:
-			return tf(&s)
+			return tf(s)
 		default:
 			panic(fmt.Sprintf("Map cannot understand function type %T", mapping))
 		}
@@ -75,7 +77,7 @@ func Map[T any, R any, MF MapFunc[T, R]](ss []T, mapping MF) []R {
 
 	res := make([]R, len(ss))
 	for i, s := range ss {
-		res[i] = f(i, s)
+		res[i] = f(i, &s)
 	}
 	return res
 }
@@ -84,21 +86,21 @@ const MaxConcurrency = uint16(0)
 
 // MapConcurrent will call the mapping functions concurrently, up to specified concurrency level.
 // If concurrency == 0 (MaxConcurrency), every function will be called using separate goroutine.
-func MapConcurrent[T any, R any, MF MapFunc[T, R]](ss []T, mapping MF, concurrency uint16) []R {
+func MapConcurrent[T any, R any, MF MapFunc[T, R], S ~[]T](ss S, mapping MF, concurrency uint16) []R {
 	if len(ss) == 0 {
 		return nil
 	}
 
-	f := func(i int, s T) R {
+	f := func(i int, s *T) R {
 		switch tf := (any)(mapping).(type) {
 		case func(int, T) R:
-			return tf(i, s)
+			return tf(i, *s)
 		case func(T) R:
-			return tf(s)
+			return tf(*s)
 		case func(int, *T) R:
-			return tf(i, &s)
+			return tf(i, s)
 		case func(*T) R:
-			return tf(&s)
+			return tf(s)
 		default:
 			panic(fmt.Sprintf("MapConcurrent cannot understand function type %T", mapping))
 		}
@@ -112,7 +114,7 @@ func MapConcurrent[T any, R any, MF MapFunc[T, R]](ss []T, mapping MF, concurren
 		for i, s := range ss {
 			go func(i int, s T) {
 				defer wg.Done()
-				r := f(i, s)
+				r := f(i, &s)
 				res.Store(i, r)
 			}(i, s)
 		}
@@ -126,7 +128,7 @@ func MapConcurrent[T any, R any, MF MapFunc[T, R]](ss []T, mapping MF, concurren
 					<-sem
 					wg.Done()
 				}()
-				r := f(i, s)
+				r := f(i, &s)
 				res.Store(i, r)
 			}(i, s)
 		}
@@ -146,39 +148,41 @@ type SelectFunc[T any] interface {
 	~func(int, T) bool | ~func(T) bool | ~func(int, *T) bool | ~func(*T) bool
 }
 
-func Select[T any, SF SelectFunc[T]](ss []T, selector SF) []T {
-	return AccumulateIf[T, SF, []T](ss, selector, func(ss []T, el T) []T {
+func Select[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) S {
+	return AccumulateIf[T, S](ss, selector, func(ss S, el T) S {
 		return append(ss, el)
 	})
 }
 
-func LenIf[T any, SF SelectFunc[T]](ss []T, selector SF) int {
-	return AccumulateIf[T, SF, int](ss, selector, func(currentCount int, _ T) int {
+func LenIf[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) int {
+	return AccumulateIf[T, int](ss, selector, func(currentCount int, _ T) int {
 		return currentCount + 1
 	})
 }
 
-func NonEmpty[E any, T ~string | []E](ss []T) []T {
+func NonEmpty[E any, T ~string | ~[]E, S ~[]T](ss S) S {
 	return Select(ss, func(e *T) bool { return len(*e) > 0 })
 }
 
-func All[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
+func All[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) bool {
 	return LenIf(ss, selector) == len(ss)
 }
 
-func IndexFunc[T any, SF SelectFunc[T]](ss []T, selector SF) int {
-	sf := func(i int, s T) bool {
+// IndexFunc returns the index of the first element that matches the selector function.
+// The name is not great, but it matches the Go standard library's `slices.IndexFunc` function.
+func IndexFunc[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) int {
+	sf := func(i int, s *T) bool {
 		switch tsf := (any)(selector).(type) {
 		case func(int, T) bool:
-			return tsf(i, s)
+			return tsf(i, *s)
 		case func(T) bool:
-			return tsf(s)
+			return tsf(*s)
 		case func(int, *T) bool:
-			return tsf(i, &s)
+			return tsf(i, s)
 		case func(*T) bool:
-			return tsf(&s)
+			return tsf(s)
 		default:
-			panic(fmt.Sprintf("accumulateIf cannot understand selector function type %T", selector))
+			panic(fmt.Sprintf("IndexFunc cannot understand selector function type %T", selector))
 		}
 	}
 
@@ -187,14 +191,14 @@ func IndexFunc[T any, SF SelectFunc[T]](ss []T, selector SF) int {
 	}
 
 	for i, s := range ss {
-		if sf(i, s) {
+		if sf(i, &s) {
 			return i
 		}
 	}
 	return -1
 }
 
-func Any[T any, SF SelectFunc[T]](ss []T, selector SF) bool {
+func Any[T any, SF SelectFunc[T], S ~[]T](ss S, selector SF) bool {
 	return IndexFunc(ss, selector) != -1
 }
 
@@ -202,32 +206,32 @@ type AccumulatorFunc[T any, R any] interface {
 	~func(R, T) R | ~func(R, *T) R
 }
 
-func Accumulate[T any, R any, AF AccumulatorFunc[T, R]](ss []T, accumulator AF) R {
-	return AccumulateIf[T, func(T) bool, R, AF](ss, func(_ T) bool { return true }, accumulator)
+func Accumulate[T any, R any, AF AccumulatorFunc[T, R], S ~[]T](ss S, accumulator AF) R {
+	return AccumulateIf[T, R, func(T) bool](ss, func(_ T) bool { return true }, accumulator)
 }
 
-func AccumulateIf[T any, SF SelectFunc[T], R any, AF AccumulatorFunc[T, R]](ss []T, selector SF, accumulator AF) R {
-	sf := func(i int, s T) bool {
+func AccumulateIf[T any, R any, SF SelectFunc[T], AF AccumulatorFunc[T, R], S ~[]T](ss S, selector SF, accumulator AF) R {
+	sf := func(i int, s *T) bool {
 		switch tsf := (any)(selector).(type) {
 		case func(int, T) bool:
-			return tsf(i, s)
+			return tsf(i, *s)
 		case func(T) bool:
-			return tsf(s)
+			return tsf(*s)
 		case func(int, *T) bool:
-			return tsf(i, &s)
+			return tsf(i, s)
 		case func(*T) bool:
-			return tsf(&s)
+			return tsf(s)
 		default:
 			panic(fmt.Sprintf("AccumulateIf cannot understand selector function type %T", selector))
 		}
 	}
 
-	af := func(current R, el T) R {
+	af := func(current R, el *T) R {
 		switch taf := (any)(accumulator).(type) {
 		case func(R, T) R:
-			return taf(current, el)
+			return taf(current, *el)
 		case func(R, *T) R:
-			return taf(current, &el)
+			return taf(current, el)
 		default:
 			panic(fmt.Sprintf("AccumulateIf cannot understand accumulator function type %T", accumulator))
 		}
@@ -239,9 +243,94 @@ func AccumulateIf[T any, SF SelectFunc[T], R any, AF AccumulatorFunc[T, R]](ss [
 	}
 
 	for i, s := range ss {
-		if sf(i, s) {
-			res = af(res, s)
+		if sf(i, &s) {
+			res = af(res, &s)
 		}
 	}
 	return res
+}
+
+// Computes set difference between two slices, returning
+// a slice of elements that are in `a` but not in `b`,
+// and a slice of elements that are in `b` but not in `a`.
+func Diff[T cmp.Ordered, S []T](a, b S) (S, S) {
+	if len(a) == 0 {
+		return nil, b
+	}
+	if len(b) == 0 {
+		return a, nil
+	}
+
+	ac := stdslices.Clone(a)
+	stdslices.Sort(ac)
+	bc := stdslices.Clone(b)
+	stdslices.Sort(bc)
+
+	var aMinusB, bMinusA S
+	var i, j int
+
+	for i < len(ac) && j < len(bc) {
+		switch cmp.Compare(ac[i], bc[j]) {
+		case -1:
+			aMinusB = append(aMinusB, ac[i])
+			i++
+		case 0:
+			i++
+			j++
+		case 1:
+			bMinusA = append(bMinusA, bc[j])
+			j++
+		}
+	}
+
+	for ; i < len(ac); i++ {
+		aMinusB = append(aMinusB, ac[i])
+	}
+
+	for ; j < len(bc); j++ {
+		bMinusA = append(bMinusA, bc[j])
+	}
+
+	return aMinusB, bMinusA
+}
+
+type EqualFunc[T any] interface {
+	~func(T, T) bool | ~func(*T, *T) bool
+}
+
+func DiffFunc[T any, EF EqualFunc[T], S ~[]T](a, b S, equalFunc EF) S {
+	if len(a) == 0 {
+		return nil
+	}
+	if len(b) == 0 {
+		return a
+	}
+
+	eq := func(first *T, second *T) bool {
+		switch teq := (any)(equalFunc).(type) {
+		case func(T, T) bool:
+			return teq(*first, *second)
+		case func(*T, *T) bool:
+			return teq(first, second)
+		default:
+			panic(fmt.Sprintf("DiffFunc cannot understand equality function type %T", equalFunc))
+		}
+	}
+
+	var diff S
+
+	for _, el := range a {
+		found := false
+		for _, bel := range b {
+			if eq(&el, &bel) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			diff = append(diff, el)
+		}
+	}
+
+	return diff
 }

@@ -243,3 +243,50 @@ func NewControllerManagerOptions(lifetimeCtx context.Context, scheme *apiruntime
 		BaseContext: func() context.Context { return lifetimeCtx },
 	}
 }
+
+type ReconcilerType interface {
+}
+
+type PReconcilerType[RT ReconcilerType] interface {
+	*RT
+	ctrl_client.Client
+}
+type ObjectStateType interface {
+	~string
+}
+
+type PObjectWithStatusStruct[T ObjectStruct] interface {
+	PObjectStruct[T]
+	apiserver_resource.ObjectWithStatusSubResource
+}
+
+// A function invoked from the reconciliation loop when an object reaches a particular state.
+// The responsibilty of the state initializer is threefold:
+// 1. Set the object's to the desired state (usually by modifying its Status).
+// 2. Update the in-memory data structures that track the object's state (data owned by the reconciler).
+// 3. Make necessary changes to the real-world resources that the object represents.
+// NOTE: the initializer MUST return noChange if no changes were made to the object, in order to avoid infinite reconciliation loops
+type stateInitializerFunc[
+	O ObjectStruct, PO PObjectWithStatusStruct[O],
+	R ReconcilerType, PR PReconcilerType[R],
+	OS ObjectStateType,
+] func(context.Context, PR, PO, OS, logr.Logger) objectChange
+
+func getStateInitializer[
+	O ObjectStruct, PO PObjectWithStatusStruct[O],
+	R ReconcilerType, PR PReconcilerType[R],
+	OS ObjectStateType,
+](m map[OS]stateInitializerFunc[O, PO, R, PR, OS], state OS, log logr.Logger) stateInitializerFunc[O, PO, R, PR, OS] {
+	handler, found := m[state]
+	if found {
+		return handler
+	}
+
+	log.Error(fmt.Errorf("could not find a handler for current object state, will use empty state handler instead"), "", "ObjectState", state)
+	handler, found = m[""]
+	if found {
+		return handler
+	}
+
+	panic("the state handler map has no empty state handler")
+}

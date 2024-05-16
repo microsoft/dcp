@@ -571,6 +571,10 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	return nil
 }
 
+func (dco *DockerCliOrchestrator) DefaultNetworkName() string {
+	return "bridge"
+}
+
 func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
 	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(args...)

@@ -463,6 +463,10 @@ func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, opti
 	return nil
 }
 
+func (to *TestContainerOrchestrator) DefaultNetworkName() string {
+	return "bridge"
+}
+
 func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()

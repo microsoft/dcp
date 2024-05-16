@@ -167,14 +167,14 @@ func TestReturnsErrorIfContextCancelled(t *testing.T) {
 		return i, nil
 	}
 
-	const debounceDelay = time.Millisecond * 300
+	const debounceDelay = time.Millisecond * 500
 	const contextTimeoutDelay = time.Millisecond * 100
 
 	deb := NewDebounceLast(runner, debounceDelay)
-	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
-	defer cancel()
 
 	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
+	defer cancel()
 	_, err := deb.Run(ctx, 7)
 	finish := time.Now()
 

@@ -155,6 +155,9 @@ type ContainerNetworkConnectionConfig struct {
 type ContainerState string
 
 const (
+	// Same as ContainerStatePending. May be encountered if the Container status has not been initialized yet.
+	ContainerStateEmpty ContainerState = ""
+
 	// Pending is the initial Container state. No attempt has been made to run the container yet.
 	ContainerStatePending ContainerState = "Pending"
 
@@ -173,14 +176,11 @@ const (
 	// Container finished execution
 	ContainerStateExited ContainerState = "Exited"
 
-	// Container was running at some point, but has been removed.
-	ContainerStateRemoved ContainerState = "Removed"
-
 	// Unknown means for some reason container state is unavailable.
 	ContainerStateUnknown ContainerState = "Unknown"
 
-	// An existing container was not found
-	ContainerStateNotFound ContainerState = "NotFound"
+	// Container is in the process of stopping
+	ContainerStateStopping ContainerState = "Stopping"
 )
 
 // ContainerStatus describes the status of a Container
