@@ -72,14 +72,11 @@ func NewExecutableReconciler(lifetimeCtx context.Context, client ctrl_client.Cli
 }
 
 func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	src := ctrl_source.Channel{
-		Source: r.notifyRunChanged.Out,
-	}
-
+	src := ctrl_source.Channel(r.notifyRunChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Executable{}).
 		Owns(&apiv1.Endpoint{}).
-		WatchesRawSource(&src, &ctrl_handler.EnqueueRequestForObject{}).
+		WatchesRawSource(src).
 		Complete(r)
 }
 

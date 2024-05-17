@@ -102,14 +102,11 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	src := ctrl_source.Channel{
-		Source: r.notifyProxyRunChanged.Out,
-	}
-
+	src := ctrl_source.Channel(r.notifyProxyRunChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
-		WatchesRawSource(&src, &handler.EnqueueRequestForObject{}).
+		WatchesRawSource(src).
 		Complete(r)
 }
 

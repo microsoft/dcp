@@ -351,8 +351,8 @@ THE SOFTWARE.
 
 ---------------------------------------------------------
 
-github.com/cenkalti/backoff/v4 v4.2.1 - MIT
-https://github.com/cenkalti/backoff/blob/v4.2.1/LICENSE
+github.com/cenkalti/backoff/v4 v4.3.0 - MIT
+https://github.com/cenkalti/backoff/blob/v4.3.0/LICENSE
 
 The MIT License (MIT)
 
@@ -910,8 +910,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-github.com/evanphx/json-patch/v5 v5.8.0 - BSD-3-Clause
-https://github.com/evanphx/json-patch/blob/v5.8.0/v5/LICENSE
+github.com/evanphx/json-patch/v5 v5.9.0 - BSD-3-Clause
+https://github.com/evanphx/json-patch/blob/v5.9.0/v5/LICENSE
 
 Copyright (c) 2014, Evan Phoenix
 All rights reserved.
@@ -944,8 +944,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-github.com/felixge/fgprof v0.9.3 - MIT
-https://github.com/felixge/fgprof/blob/v0.9.3/LICENSE.txt
+github.com/felixge/fgprof v0.9.4 - MIT
+https://github.com/felixge/fgprof/blob/v0.9.4/LICENSE.txt
 
 The MIT License (MIT)
 Copyright © 2020 Felix Geisendörfer <felix@felixge.de>
@@ -2530,8 +2530,8 @@ third-party archives.
 
 ---------------------------------------------------------
 
-github.com/golang/protobuf v1.5.3 - BSD-3-Clause
-https://github.com/golang/protobuf/blob/v1.5.3/LICENSE
+github.com/golang/protobuf v1.5.4 - BSD-3-Clause
+https://github.com/golang/protobuf/blob/v1.5.4/LICENSE
 
 Copyright 2010 The Go Authors.  All rights reserved.
 
@@ -2567,8 +2567,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-github.com/google/cel-go v0.17.7 - Apache-2.0
-https://github.com/google/cel-go/blob/v0.17.7/LICENSE
+github.com/google/cel-go v0.17.8 - Apache-2.0
+https://github.com/google/cel-go/blob/v0.17.8/LICENSE
 
 
                                  Apache License
@@ -3268,8 +3268,8 @@ https://github.com/google/gofuzz/blob/v1.2.0/LICENSE
 
 ---------------------------------------------------------
 
-github.com/google/pprof/profile v0.0.0-20211214055906-6f57359322fd - Apache-2.0
-https://github.com/google/pprof/blob/6f57359322fd/LICENSE
+github.com/google/pprof/profile v0.0.0-20240227163752-401108e1b7e7 - Apache-2.0
+https://github.com/google/pprof/blob/401108e1b7e7/LICENSE
 
 
                                  Apache License
@@ -3515,30 +3515,35 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-github.com/gorilla/websocket v1.5.0 - BSD-2-Clause
-https://github.com/gorilla/websocket/blob/v1.5.0/LICENSE
+github.com/gorilla/websocket v1.5.1 - BSD-3-Clause
+https://github.com/gorilla/websocket/blob/v1.5.1/LICENSE
 
-Copyright (c) 2013 The Gorilla WebSocket Authors. All rights reserved.
+Copyright (c) 2023 The Gorilla Authors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
+modification, are permitted provided that the following conditions are
+met:
 
-  Redistributions of source code must retain the above copyright notice, this
-  list of conditions and the following disclaimer.
+	 * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+	 * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+	 * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
 
-  Redistributions in binary form must reproduce the above copyright notice,
-  this list of conditions and the following disclaimer in the documentation
-  and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
@@ -5864,8 +5869,8 @@ SOFTWARE.
 
 ---------------------------------------------------------
 
-github.com/tilt-dev/tilt-apiserver/pkg v0.11.1-0.20240324004542-6e632f968b38 - Apache-2.0
-https://github.com/tilt-dev/tilt-apiserver/blob/6e632f968b38/LICENSE
+github.com/tilt-dev/tilt-apiserver/pkg v0.12.0 - Apache-2.0
+https://github.com/tilt-dev/tilt-apiserver/blob/v0.12.0/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -9283,8 +9288,8 @@ THE SOFTWARE.
 
 ---------------------------------------------------------
 
-golang.org/x/crypto/cryptobyte v0.17.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/crypto/+/v0.17.0:LICENSE
+golang.org/x/crypto/cryptobyte v0.21.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/crypto/+/v0.21.0:LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -9355,8 +9360,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/net v0.19.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/net/+/v0.19.0:LICENSE
+golang.org/x/net v0.23.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/net/+/v0.23.0:LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -9427,8 +9432,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/sync/singleflight v0.5.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sync/+/v0.5.0:LICENSE
+golang.org/x/sync/singleflight v0.6.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sync/+/v0.6.0:LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -9463,8 +9468,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/sys/unix v0.16.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.16.0:LICENSE
+golang.org/x/sys/unix v0.18.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.18.0:LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -9499,8 +9504,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/term v0.15.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/term/+/v0.15.0:LICENSE
+golang.org/x/term v0.18.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/term/+/v0.18.0:LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -10793,8 +10798,8 @@ limitations under the License.
 
 ---------------------------------------------------------
 
-k8s.io/api v0.29.1 - Apache-2.0
-https://github.com/kubernetes/api/blob/v0.29.1/LICENSE
+k8s.io/api v0.30.0 - Apache-2.0
+https://github.com/kubernetes/api/blob/v0.30.0/LICENSE
 
 
                                  Apache License
@@ -11004,8 +11009,8 @@ https://github.com/kubernetes/api/blob/v0.29.1/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/apiextensions-apiserver/pkg/apis/apiextensions v0.29.0 - Apache-2.0
-https://github.com/kubernetes/apiextensions-apiserver/blob/v0.29.0/LICENSE
+k8s.io/apiextensions-apiserver/pkg/apis/apiextensions v0.30.0 - Apache-2.0
+https://github.com/kubernetes/apiextensions-apiserver/blob/v0.30.0/LICENSE
 
 
                                  Apache License
@@ -11215,8 +11220,8 @@ https://github.com/kubernetes/apiextensions-apiserver/blob/v0.29.0/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/apimachinery/pkg v0.29.1 - Apache-2.0
-https://github.com/kubernetes/apimachinery/blob/v0.29.1/LICENSE
+k8s.io/apimachinery/pkg v0.30.0 - Apache-2.0
+https://github.com/kubernetes/apimachinery/blob/v0.30.0/LICENSE
 
 
                                  Apache License
@@ -11426,8 +11431,8 @@ https://github.com/kubernetes/apimachinery/blob/v0.29.1/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/apimachinery/third_party/forked/golang v0.29.1 - BSD-3-Clause
-https://github.com/kubernetes/apimachinery/blob/v0.29.1/third_party/forked/golang/LICENSE
+k8s.io/apimachinery/third_party/forked/golang v0.30.0 - BSD-3-Clause
+https://github.com/kubernetes/apimachinery/blob/v0.30.0/third_party/forked/golang/LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -11462,8 +11467,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-k8s.io/apiserver v0.29.1 - Apache-2.0
-https://github.com/kubernetes/apiserver/blob/v0.29.1/LICENSE
+k8s.io/apiserver v0.30.0 - Apache-2.0
+https://github.com/kubernetes/apiserver/blob/v0.30.0/LICENSE
 
 
                                  Apache License
@@ -11673,8 +11678,8 @@ https://github.com/kubernetes/apiserver/blob/v0.29.1/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/client-go v0.29.1 - Apache-2.0
-https://github.com/kubernetes/client-go/blob/v0.29.1/LICENSE
+k8s.io/client-go v0.30.0 - Apache-2.0
+https://github.com/kubernetes/client-go/blob/v0.30.0/LICENSE
 
 
                                  Apache License
@@ -11884,8 +11889,8 @@ https://github.com/kubernetes/client-go/blob/v0.29.1/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/component-base v0.29.1 - Apache-2.0
-https://github.com/kubernetes/component-base/blob/v0.29.1/LICENSE
+k8s.io/component-base v0.30.0 - Apache-2.0
+https://github.com/kubernetes/component-base/blob/v0.30.0/LICENSE
 
 
                                  Apache License
@@ -12095,8 +12100,8 @@ https://github.com/kubernetes/component-base/blob/v0.29.1/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/klog/v2 v2.110.1 - Apache-2.0
-https://github.com/kubernetes/klog/blob/v2.110.1/LICENSE
+k8s.io/klog/v2 v2.120.1 - Apache-2.0
+https://github.com/kubernetes/klog/blob/v2.120.1/LICENSE
 
 Apache License
 Version 2.0, January 2004
@@ -12295,8 +12300,8 @@ third-party archives.
 
 ---------------------------------------------------------
 
-k8s.io/kube-openapi/pkg v0.0.0-20231010175941-2dd684a91f00 - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/LICENSE
+k8s.io/kube-openapi/pkg v0.0.0-20240228011516-70dd3763d340 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/70dd3763d340/LICENSE
 
 
                                  Apache License
@@ -12506,8 +12511,8 @@ https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/LICENSE
 
 ---------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json v0.0.0-20231010175941-2dd684a91f00 - BSD-3-Clause
-https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/pkg/internal/third_party/go-json-experiment/json/LICENSE
+k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json v0.0.0-20240228011516-70dd3763d340 - BSD-3-Clause
+https://github.com/kubernetes/kube-openapi/blob/70dd3763d340/pkg/internal/third_party/go-json-experiment/json/LICENSE
 
 Copyright (c) 2020 The Go Authors. All rights reserved.
 
@@ -12542,8 +12547,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/errors v0.0.0-20231010175941-2dd684a91f00 - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/pkg/validation/errors/LICENSE
+k8s.io/kube-openapi/pkg/validation/errors v0.0.0-20240228011516-70dd3763d340 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/70dd3763d340/pkg/validation/errors/LICENSE
 
 
                                  Apache License
@@ -12753,8 +12758,8 @@ https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/pkg/validation/erro
 
 ---------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/spec v0.0.0-20231010175941-2dd684a91f00 - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/pkg/validation/spec/LICENSE
+k8s.io/kube-openapi/pkg/validation/spec v0.0.0-20240228011516-70dd3763d340 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/70dd3763d340/pkg/validation/spec/LICENSE
 
 
                                  Apache License
@@ -12964,8 +12969,8 @@ https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/pkg/validation/spec
 
 ---------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/strfmt v0.0.0-20231010175941-2dd684a91f00 - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/2dd684a91f00/pkg/validation/strfmt/LICENSE
+k8s.io/kube-openapi/pkg/validation/strfmt v0.0.0-20240228011516-70dd3763d340 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/70dd3763d340/pkg/validation/strfmt/LICENSE
 
 
                                  Apache License
@@ -13422,8 +13427,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.28.0 - Apache-2.0
-https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/konnectivity-client/v0.28.0/konnectivity-client/LICENSE
+sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.29.0 - Apache-2.0
+https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/konnectivity-client/v0.29.0/konnectivity-client/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -13632,8 +13637,8 @@ https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/konnectivity-cli
 
 ---------------------------------------------------------
 
-sigs.k8s.io/controller-runtime v0.17.0 - Apache-2.0
-https://github.com/kubernetes-sigs/controller-runtime/blob/v0.17.0/LICENSE
+sigs.k8s.io/controller-runtime v0.18.0 - Apache-2.0
+https://github.com/kubernetes-sigs/controller-runtime/blob/v0.18.0/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004

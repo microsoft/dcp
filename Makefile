@@ -94,11 +94,12 @@ DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.57.0
-CONTROLLER_TOOLS_VERSION ?= v0.14.0
-CODE_GENERATOR_VERSION ?= v0.29.1
+GOLANGCI_LINT_VERSION ?= v1.58.1
+CONTROLLER_TOOLS_VERSION ?= v0.15.0
+CODE_GENERATOR_VERSION ?= v0.30.0
 GOVERSIONINFO_VERSION ?= v1.4.0
 GO_LICENSES_VERSION = v1.6.0
+OPENAPI_GENERATOR_VERSION = v0.29.4
 
 # DCP Version information
 VERSION ?= dev
@@ -184,9 +185,11 @@ endif
 .PHONY: generate-licenses
 generate-licenses: generate-dependency-notices ## Generates license/notice files for all dependencies
 
+# # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244. 
+# The awk script converts the output of `go list std` (line separated modules) to the input that `--ignore` expects
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
-	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver > NOTICE
+	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)
@@ -201,9 +204,9 @@ endif
 openapi-gen: $(OPENAPI_GEN)
 $(OPENAPI_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(CODE_GENERATOR_VERSION)
+	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION)
 endif
 
 .PHONY: goversioninfo-gen
