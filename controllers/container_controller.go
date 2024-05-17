@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -541,7 +542,6 @@ func (r *ContainerReconciler) createContainer(
 	log logr.Logger,
 	delay time.Duration,
 ) {
-
 	containerName := strings.TrimSpace(container.Spec.ContainerName)
 
 	// Determine whether we need to check for an existing container
@@ -555,6 +555,28 @@ func (r *ContainerReconciler) createContainer(
 			rcd.containerState = apiv1.ContainerStateRunning
 			r.runningContainers.UpdateChangingSecondKey(container.NamespacedName(), placeholderID, rcd.containerID, rcd)
 			return
+		}
+	}
+
+	for _, volume := range container.Spec.VolumeMounts {
+		if volume.Type == apiv1.BindMount {
+			_, err := os.Stat(volume.Source)
+			if errors.Is(err, os.ErrNotExist) {
+				err = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
+				if err != nil {
+					log.Error(err, "could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
+					rcd.containerState = apiv1.ContainerStateFailedToStart
+					rcd.startupError = err
+					rcd.startAttemptFinishedAt = metav1.Now()
+					return
+				}
+			} else if err != nil {
+				log.Error(err, "could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
+				rcd.containerState = apiv1.ContainerStateFailedToStart
+				rcd.startupError = err
+				rcd.startAttemptFinishedAt = metav1.Now()
+				return
+			}
 		}
 	}
 
