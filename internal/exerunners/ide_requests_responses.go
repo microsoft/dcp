@@ -173,7 +173,7 @@ const (
 )
 
 var (
-	defaultIdeEndpointRequestTimeout = 30 * time.Second
+	defaultIdeEndpointRequestTimeout = 120 * time.Second
 )
 
 func equalOrNewer(currentVersion, baselineVersion apiVersion) bool {
