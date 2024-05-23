@@ -48,6 +48,14 @@ type StreamCommandOptions struct {
 	StdErrStream io.Writer
 }
 
+type BuildImageOptions struct {
+	Tags []string
+
+	*apiv1.ContainerBuildContext
+
+	StreamCommandOptions
+}
+
 type InspectedContainer struct {
 	// ID of the container
 	Id string `json:"Id"`
@@ -151,6 +159,9 @@ type ContainerOrchestrator interface {
 
 	// Check the runtime status
 	CheckStatus(ctx context.Context, ignoreCache bool) ContainerRuntimeStatus
+
+	// Build a new container image. If successful, the ID of the image is returned.
+	BuildImage(ctx context.Context, options BuildImageOptions) error
 
 	// Create (but do not start) a container. If successful, the ID of the container is returned.
 	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)

@@ -801,3 +801,92 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 }
+
+// Ensure a container instance is started when new Container object appears
+func TestContainerWithBuildContextInstanceStarts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-with-build-context-instance-starts"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Build: &apiv1.ContainerBuildContext{
+				Context:    ".",
+				Dockerfile: "./Dockerfile",
+			},
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	_, _ = ensureContainerRunning(t, ctx, &ctr)
+
+	require.True(t, orchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image to be present in the orchestrator")
+}
+
+func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-container-with-build-context-already-exists"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Build: &apiv1.ContainerBuildContext{
+				Context:    ".",
+				Dockerfile: "./Dockefile",
+			},
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+		},
+	}
+
+	id, err := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = orchestrator.StartContainers(ctx, []string{id})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID does not match existing value")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+
+	require.False(t, orchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image build to be skipped")
+}

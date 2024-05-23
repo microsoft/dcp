@@ -179,6 +179,47 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	return removed, containers.ExpectCliStrings(outBuf, volumes)
 }
 
+func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	args := []string{"build"}
+
+	if options.Dockerfile != "" {
+		args = append(args, "-f", options.Dockerfile)
+	}
+
+	// Apply all specified tags to the image
+	for _, tag := range options.Tags {
+		args = append(args, "-t", tag)
+	}
+
+	// Apply all specified build arguments
+	for _, buildArg := range options.Args {
+		if buildArg.Value != "" {
+			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", buildArg.Name, buildArg.Value))
+		} else {
+			args = append(args, "--build-arg", buildArg.Name)
+		}
+	}
+
+	// If a build stage is given, use it
+	if options.Stage != "" {
+		args = append(args, "--target", options.Stage)
+	}
+
+	// Append the build context argument
+	args = append(args, options.Context)
+
+	cmd := makePodmanCommand(args...)
+
+	// Building an image can take a long time to finish, particularly if any base images are not available locally.
+	// Use a much longer timeout than for other commands.
+	_, _, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
 	for _, mount := range options.VolumeMounts {
 		mountVal := fmt.Sprintf("type=%s,src=%s,target=%s", mount.Type, mount.Source, mount.Target)

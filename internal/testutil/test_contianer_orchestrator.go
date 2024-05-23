@@ -31,6 +31,7 @@ type TestContainerOrchestrator struct {
 	randomNameLength       int
 	volumes                map[string]containerVolume
 	networks               map[string]containerNetwork
+	images                 map[string]bool
 	containers             map[string]testContainer
 	containersToFail       map[string]containerExit
 	containerEventsWatcher *containers.EventWatcher
@@ -65,6 +66,7 @@ func NewTestContainerOrchestrator(log logr.Logger) *TestContainerOrchestrator {
 				isDefault: true,
 			},
 		},
+		images:           map[string]bool{},
 		containers:       map[string]testContainer{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
@@ -465,6 +467,29 @@ func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, opti
 
 func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 	return "bridge"
+}
+
+func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	for _, image := range options.Tags {
+		to.images[image] = true
+	}
+
+	return nil
+}
+
+func (to *TestContainerOrchestrator) HasImage(tag string) bool {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	_, found := to.images[tag]
+	return found
 }
 
 func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {

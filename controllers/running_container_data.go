@@ -46,6 +46,9 @@ type runningContainerData struct {
 	// The exit code (if available) from the container.
 	exitCode *int32
 
+	// Tracks whether startup has been attempted for the container
+	startupAttempted bool
+
 	// Standard output from startup commands will be streamed to this file for log streaming support.
 	startupStdOutFile *os.File
 
@@ -77,11 +80,15 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 		placeholderID = placeholderContainerIdPrefix + ctr.NamespacedName().String()
 	}
 
+	// Update the image name for container build scenarios
+	runSpec := ctr.Spec.DeepCopy()
+	runSpec.Image = ctr.SpecifiedImageNameOrDefault()
+
 	return &runningContainerData{
 		containerState: apiv1.ContainerStatePending,
 		containerID:    placeholderID,
 		reservedPorts:  make(map[types.NamespacedName]int32),
-		runSpec:        ctr.Spec.DeepCopy(),
+		runSpec:        runSpec,
 		exitCode:       apiv1.UnknownExitCode,
 	}
 }
@@ -101,6 +108,7 @@ func (rcd *runningContainerData) clone() *runningContainerData {
 		startAttemptFinishedAt: rcd.startAttemptFinishedAt,
 		reservedPorts:          stdmaps.Clone(rcd.reservedPorts),
 		runSpec:                rcd.runSpec.DeepCopy(),
+		startupAttempted:       rcd.startupAttempted,
 	}
 
 	if rcd.exitCode != nil {

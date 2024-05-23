@@ -19,6 +19,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 	return map[string]common.OpenAPIDefinition{
 		"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment":               schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":            schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
@@ -173,6 +174,57 @@ func schema_microsoft_usvc_apiserver_api_v1_Container(ref common.ReferenceCallba
 		},
 		Dependencies: []string{
 			"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"context": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path to the directory to be used as the root of the build context",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"dockerfile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path to a Dockerfile to use for the build",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"args": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Additional --build-arg values to pass to the build command",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+					"stage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional: The name of the build stage to use for the build",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"context"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
 	}
 }
 
@@ -677,10 +729,15 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 				Properties: map[string]spec.Schema{
 					"image": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Container image",
-							Default:     "",
+							Description: "Optional container image (required if Build is not specified) If Build is specified and Image is set, the value of Image will be used to tag the resulting built image. If Build is omitted, the value of Image will be used to pull the container image to run.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"build": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional build context to use to build the container image",
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext"),
 						},
 					},
 					"containerName": {
@@ -820,11 +877,10 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 						},
 					},
 				},
-				Required: []string{"image"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
 	}
 }
 

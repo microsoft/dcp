@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -95,11 +96,31 @@ type ContainerPort struct {
 	HostIP string `json:"hostIP,omitempty"`
 }
 
+// +k8s:openapi-gen=true
+type ContainerBuildContext struct {
+	// The path to the directory to be used as the root of the build context
+	Context string `json:"context"`
+
+	// The path to a Dockerfile to use for the build
+	Dockerfile string `json:"dockerfile,omitempty"`
+
+	// Additional --build-arg values to pass to the build command
+	Args []EnvVar `json:"args,omitempty"`
+
+	// Optional: The name of the build stage to use for the build
+	Stage string `json:"stage,omitempty"`
+}
+
 // ContainerSpec defines the desired state of a Container
 // +k8s:openapi-gen=true
 type ContainerSpec struct {
-	// Container image
-	Image string `json:"image"`
+	// Optional container image (required if Build is not specified)
+	// If Build is specified and Image is set, the value of Image will be used to tag the resulting built image.
+	// If Build is omitted, the value of Image will be used to pull the container image to run.
+	Image string `json:"image,omitempty"`
+
+	// Optional build context to use to build the container image
+	Build *ContainerBuildContext `json:"build,omitempty"`
 
 	// Optional container name
 	ContainerName string `json:"containerName,omitempty"`
@@ -160,6 +181,9 @@ const (
 
 	// Pending is the initial Container state. No attempt has been made to run the container yet.
 	ContainerStatePending ContainerState = "Pending"
+
+	// Building is an optional state that indicates the container is in the process of being built.
+	ContainerStateBuilding ContainerState = "Building"
 
 	// Container is in the process of starting
 	ContainerStateStarting ContainerState = "Starting"
@@ -293,8 +317,14 @@ func (e *Container) NamespacedName() types.NamespacedName {
 func (e *Container) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if e.Spec.Image == "" {
+	if e.Spec.Build == nil && e.Spec.Image == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
+	}
+
+	if e.Spec.Build != nil {
+		if e.Spec.Build.Context == "" {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "build", "context"), "context must be set to a non-empty value when build is specified"))
+		}
 	}
 
 	// Validate the object name to ensure it is a valid container name
@@ -322,6 +352,10 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	// The image property cannot be changed after the resource is first created
 	if oldContainer.Spec.Image != e.Spec.Image {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "image"), "image cannot be changed"))
+	}
+
+	if !oldContainer.Spec.Build.Equal(e.Spec.Build) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "build"), "build cannot be changed"))
 	}
 
 	// A container name cannot be changed after it's created
@@ -353,6 +387,29 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	}
 
 	return errorList
+}
+
+// Equivalnce check for ContainerBuildContex for use in validation
+func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
+	if c1 == c2 {
+		return true
+	}
+
+	if c1 == nil || c2 == nil {
+		return false
+	}
+
+	return c1.Context == c2.Context && c1.Dockerfile == c2.Dockerfile && c1.Stage == c2.Stage && slices.EqualFunc(c1.Args, c2.Args, func(e1 EnvVar, e2 EnvVar) bool {
+		return e1.Name == e2.Name && e1.Value == e2.Value
+	})
+}
+
+func (c *Container) SpecifiedImageNameOrDefault() string {
+	if c.Spec.Image != "" {
+		return c.Spec.Image
+	}
+
+	return c.NamespacedName().Name + ":dev"
 }
 
 func (*Container) GenericSubResources() []apiserver_resource.GenericSubResource {
