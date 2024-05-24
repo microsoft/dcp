@@ -30,6 +30,8 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 		doneChan: make(chan struct{}),
 	}
 
+	fw.follow.Store(true)
+
 	go func() {
 		defer close(fw.doneChan)
 		// Goroutine that handles following the source and writing to the destination
