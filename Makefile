@@ -91,6 +91,7 @@ CONTROLLER_GEN ?= $(TOOL_BIN)/controller-gen$(exe_suffix)
 OPENAPI_GEN ?= $(TOOL_BIN)/openapi-gen$(exe_suffix)
 GOVERSIONINFO_GEN ?= $(TOOL_BIN)/goversioninfo$(exe_suffix)
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
+LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
@@ -233,6 +234,12 @@ delay-tool: $(DELAY_TOOL)
 $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/usvc-apiserver/test/delay
 
+# lfwriter tool is used for testing lockfile package
+.PHONY: lfwriter-tool
+lfwriter-tool: $(LFWRITER_TOOL)
+$(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/usvc-apiserver/test/lfwriter
+
 ##@ Development
 
 release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
@@ -293,11 +300,11 @@ endif
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
 test: TEST_OPTS = -coverprofile cover.out -count 1
-test: build-dcp delay-tool ## Run all tests in the repository
+test: build-dcp delay-tool lfwriter-tool ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test: TEST_OPTS = -coverprofile cover.out -race -count 1
-test: build-dcp delay-tool ## Run all tests in the repository
+test: build-dcp delay-tool lfwriter-tool ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
@@ -305,11 +312,11 @@ endif
 ifeq ($(CGO_ENABLED),0)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
-test-ci: lint build-dcp delay-tool
+test-ci: lint build-dcp delay-tool lfwriter-tool
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: lint build-dcp delay-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: lint build-dcp delay-tool lfwriter-tool ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 

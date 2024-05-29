@@ -22,11 +22,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	clientcmd "k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -170,13 +172,13 @@ func (k *Kubeconfig) GetData() (net.IP, int, string, *certificateData, error) {
 // If the --kubeconfig parameter is passed, the returned value will be the parameter value.
 // If the --kubeconfig parameter is missing, the default location (~/.dcp/kubeconfig) will be checked,
 // and if the kubeconfig file is not there, it will be created.
-func GetKubeconfigFromFlags(fs *pflag.FlagSet, port int32) (*Kubeconfig, error) {
+func GetKubeconfigFromFlags(fs *pflag.FlagSet, port int32, log logr.Logger) (*Kubeconfig, error) {
 	kubeconfigPath, err := getKubeConfigPath(fs)
 	if err != nil {
 		return nil, err
 	}
 
-	return getKubeconfig(kubeconfigPath, port, true)
+	return getKubeconfig(kubeconfigPath, port, true, log)
 }
 
 // Validates and returns path to Kubeconfig file to be used for connecting to the DCP API server by clients.
@@ -203,8 +205,8 @@ func RequireKubeconfigFileFromFlags(fs *pflag.FlagSet, port int32) (string, erro
 
 // Creates the kubeconfig file using given path as necessary.
 // This function is primarily intended for use in tests; other code should use EnsureKubeconfigFileFromFlags() instead.
-func EnsureKubeconfigFile(kubeconfigPath string) error {
-	k, err := getKubeconfig(kubeconfigPath, 0, false)
+func EnsureKubeconfigFile(kubeconfigPath string, log logr.Logger) error {
+	k, err := getKubeconfig(kubeconfigPath, 0, false, log)
 	if err != nil {
 		return err
 	}
@@ -226,21 +228,9 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 		}
 	}
 
-	homePath, homeDirErr := os.UserHomeDir()
-	if homeDirErr != nil {
-		return "", fmt.Errorf("could not obtain user home directory when checking for Kubeconfig file: %w", homeDirErr)
-	}
-
-	dcpFolder := filepath.Join(homePath, ".dcp")
-	dcpFolderInfo, dcpFolderErr := os.Stat(dcpFolder)
-	if errors.Is(dcpFolderErr, iofs.ErrNotExist) {
-		if err := os.MkdirAll(dcpFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
-			return "", fmt.Errorf("failed to create DCP default folder '%s' for storing kubeconfig file: %w", dcpFolder, err)
-		}
-	} else if dcpFolderErr != nil {
-		return "", fmt.Errorf("failed to verify the existence of DCP  default folder '%s': %w", dcpFolder, dcpFolderErr)
-	} else if !dcpFolderInfo.IsDir() {
-		return "", fmt.Errorf("'%s' exists, but is not a directory and cannot be used to store DCP kubeconfig file", dcpFolder)
+	dcpFolder, dcpFolderErr := dcppaths.EnsureDcpRootDir()
+	if dcpFolderErr != nil {
+		return "", fmt.Errorf("could not determine the path to the DCP default folder; do not know where to find or create the kubeconfig file: %w", dcpFolderErr)
 	}
 
 	kubeconfigPath := filepath.Join(dcpFolder, "kubeconfig")
@@ -249,7 +239,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 
 // For an existing kubeconfig file, read the data and return it. If no kubeconfig file exists, generate the
 // data and return that (to be persisted after API server starts).
-func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool) (*Kubeconfig, error) {
+func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, log logr.Logger) (*Kubeconfig, error) {
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
@@ -260,7 +250,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool) (*Kub
 		}
 
 		// Create a new config
-		config, certificateData, err = createKubeconfig(port, useCertificate)
+		config, certificateData, err = createKubeconfig(port, useCertificate, log)
 		if err != nil {
 			return nil, err
 		}
@@ -344,7 +334,7 @@ func generateCertificates(ip net.IP) (*certificateData, error) {
 	}, nil
 }
 
-func createKubeconfig(port int32, useCertifiate bool) (*clientcmd_api.Config, *certificateData, error) {
+func createKubeconfig(port int32, useCertifiate bool, log logr.Logger) (*clientcmd_api.Config, *certificateData, error) {
 	// The "localhost" hostname resolves to all loopback addresses on the machine. For dual-stack machines (very common)
 	// it will contain both IPv4 and IPv6 addresses. However, different programming languages and libraries may
 	// "choose" different addresses to try first (e.g. some might prefer IPv4 vs IPv6).
@@ -361,7 +351,7 @@ func createKubeconfig(port int32, useCertifiate bool) (*clientcmd_api.Config, *c
 	address := networking.IpToString(ip)
 
 	if port == 0 {
-		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, address); newPortErr != nil {
+		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, address, log); newPortErr != nil {
 			return nil, nil, newPortErr
 		} else {
 			port = newPort

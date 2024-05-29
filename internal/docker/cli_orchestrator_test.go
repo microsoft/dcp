@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 

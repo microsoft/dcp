@@ -29,7 +29,7 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 	defer processToken.Close()
 
 	// Get the SID for the Administrators group
-	adminSid, err := GetBuiltInSid(windows.DOMAIN_ALIAS_RID_ADMINS)
+	adminSid, err := osutil.GetBuiltInSid(windows.DOMAIN_ALIAS_RID_ADMINS)
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +64,8 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 
 	var standardUserAccessPermissions windows.ACCESS_MASK = windows.READ_CONTROL | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA
 
+	// You can use "group read" permission to enable read access to the file
+	// for the same user when the user is running in non-elevated mode.
 	if perm&osutil.PermissionGroupRead == osutil.PermissionGroupRead {
 		standardUserAccessPermissions |= windows.FILE_GENERIC_READ
 	}
@@ -148,7 +150,11 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 	}
 
 	// Create the new file with the given ACL rules
-	fileHandle, fileCreateErr := windows.CreateFile(pathHandle, windows.GENERIC_WRITE, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.CREATE_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	var access uint32 = windows.GENERIC_WRITE
+	if flag&os.O_RDWR == os.O_RDWR {
+		access |= windows.GENERIC_READ
+	}
+	fileHandle, fileCreateErr := windows.CreateFile(pathHandle, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, sa, windows.CREATE_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if fileCreateErr != nil {
 		return nil, fmt.Errorf("could not create file: %w", fileCreateErr)
 	}
@@ -171,20 +177,4 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 	}
 
 	return nil
-}
-
-func GetBuiltInSid(domainAliasRid uint32) (*windows.SID, error) {
-	var sid *windows.SID
-	if err := windows.AllocateAndInitializeSid(
-		&windows.SECURITY_NT_AUTHORITY,
-		2,
-		windows.SECURITY_BUILTIN_DOMAIN_RID,
-		domainAliasRid,
-		0, 0, 0, 0, 0, 0,
-		&sid,
-	); err != nil {
-		return nil, err
-	}
-
-	return sid, nil
 }

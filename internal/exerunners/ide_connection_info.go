@@ -15,11 +15,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/gorilla/websocket"
 
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
-
-const instanceIdLength uint32 = 12
 
 // A set of data related to how IDE requests are formed.
 type ideConnectionInfo struct {
@@ -61,16 +59,6 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	}
 	tokenStr = strings.TrimSpace(tokenStr)
 
-	idBytes, err := randdata.MakeRandomString(instanceIdLength)
-	if err != nil {
-		return nil, createAndLogError("failed to generate DCP instance ID: %W", err)
-	}
-	instanceId := string(idBytes)
-	value, found := os.LookupEnv(DCP_INSTANCE_ID_PREFIX)
-	if found && strings.TrimSpace(value) != "" {
-		instanceId = value + instanceId
-	}
-
 	client := http.Client{}
 	wsDialer := websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
@@ -111,7 +99,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 		webSocketScheme: webSocketScheme,
 		httpClient:      &client,
 		wsDialer:        &wsDialer,
-		instanceId:      instanceId,
+		instanceId:      networking.GetProgramInstanceID(),
 	}
 
 	// Query for supported protocol version
@@ -149,7 +137,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 		"port", portStr,
 		"httpScheme", httpScheme,
 		"webSocketScheme", webSocketScheme,
-		"instanceId", instanceId,
+		"instanceId", networking.GetProgramInstanceID(),
 		"apiVersion", connInfo.apiVersion,
 	)
 

@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
-package testutil
+package ctrlutil
 
 import (
 	"context"

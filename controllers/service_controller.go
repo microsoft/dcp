@@ -377,7 +377,7 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 	var getProxyPort func(proxyAddress string) (int32, error)
 	if svc.Spec.Port == 0 {
 		getProxyPort = func(proxyAddress string) (int32, error) {
-			return networking.GetFreePort(svc.Spec.Protocol, proxyAddress)
+			return networking.GetFreePort(svc.Spec.Protocol, proxyAddress, log)
 		}
 	} else {
 		getProxyPort = func(_ string) (int32, error) {
@@ -421,7 +421,7 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 
 			if usingSamePort {
 				proxyPort = lastPort
-				err = networking.CheckPortAvailable(svc.Spec.Protocol, proxyInstanceAddress, proxyPort)
+				err = networking.CheckPortAvailable(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, log)
 				if err != nil {
 					usingSamePort = false
 					log.Info("could not use the same port for all addresses associated with 'localhost', service will be reachable only using specific IP address", "AttemptedCommonPort", lastPort)

@@ -112,7 +112,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		kconfig, err := kubeconfig.GetKubeconfigFlagValue(cmd.Flags())
+		kconfig, err := kubeconfig.GetKubeconfigFlagValue(cmd.Flags(), log)
 		if err != nil {
 			return err
 		}
