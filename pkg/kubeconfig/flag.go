@@ -4,6 +4,7 @@ import (
 	goflag "flag"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
@@ -71,7 +72,7 @@ func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	return kubeconfigPath, nil
 }
 
-func GetKubeconfigFlagValue(flags *pflag.FlagSet) (*Kubeconfig, error) {
+func GetKubeconfigFlagValue(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
 		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
@@ -81,7 +82,7 @@ func GetKubeconfigFlagValue(flags *pflag.FlagSet) (*Kubeconfig, error) {
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
-	k, err := GetKubeconfigFromFlags(flags, port)
+	k, err := GetKubeconfigFromFlags(flags, port, log)
 	if err != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", err)
 	}

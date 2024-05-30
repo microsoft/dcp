@@ -62,7 +62,7 @@ func newSpecValueTemplate(
 		"portForServing": func(serviceNamespacedName string) (int32, error) {
 			switch contextObj := contextObj.(type) {
 			case *apiv1.Executable:
-				return portForServingFromExecutable(serviceNamespacedName, contextObj, servicesProduced, reservedPorts, client, ctx)
+				return portForServingFromExecutable(serviceNamespacedName, contextObj, servicesProduced, reservedPorts, client, ctx, log)
 			case *apiv1.Container:
 				return portForServingFromContainer(serviceNamespacedName, contextObj, servicesProduced, client, ctx)
 			default:
@@ -170,6 +170,7 @@ func portForServingFromExecutable(
 	reservedPorts map[types.NamespacedName]int32,
 	client ctrl_client.Client,
 	ctx context.Context,
+	log logr.Logger,
 ) (int32, error) {
 	var serviceName = asNamespacedName(serviceNamespacedName, exe.GetObjectMeta().Namespace)
 
@@ -200,7 +201,7 @@ func portForServingFromExecutable(
 			)
 		}
 
-		port, err := networking.GetFreePort(svc.Spec.Protocol, sp.Address)
+		port, err := networking.GetFreePort(svc.Spec.Protocol, sp.Address, log)
 		if err != nil {
 			return 0, fmt.Errorf(
 				"could not allocate a port for service '%s' with desired address '%s': %w",

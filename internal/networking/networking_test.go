@@ -3,13 +3,14 @@
 package networking
 
 import (
-	"fmt"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"testing"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,15 +19,25 @@ type protocolTestCase struct {
 	protocol apiv1.PortProtocol
 }
 
-var protocolTestCases = []protocolTestCase{
-	{
-		name:     "TCP",
-		protocol: apiv1.TCP,
-	},
-	{
-		name:     "UDP",
-		protocol: apiv1.UDP,
-	},
+var (
+	protocolTestCases = []protocolTestCase{
+		{
+			name:     "TCP",
+			protocol: apiv1.TCP,
+		},
+		{
+			name:     "UDP",
+			protocol: apiv1.UDP,
+		},
+	}
+
+	log = logger.New("networking-tests").Logger
+)
+
+func TestMain(m *testing.M) {
+	EnableStrictMruPortHandling(log)
+	code := m.Run()
+	os.Exit(code)
 }
 
 func TestGetFreePort(t *testing.T) {
@@ -38,8 +49,8 @@ func TestGetFreePort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			port1, err1 := GetFreePort(tc.protocol, "localhost")
-			port2, err2 := GetFreePort(tc.protocol, "localhost")
+			port1, err1 := GetFreePort(tc.protocol, "localhost", log)
+			port2, err2 := GetFreePort(tc.protocol, "localhost", log)
 
 			require.NoError(t, err1, "error1: %v", err1)
 			require.NoError(t, err2, "error2: %v", err2)
@@ -63,7 +74,7 @@ func TestCanGetFreePortForAllLocalIPs(t *testing.T) {
 
 			for _, ip := range ips {
 				address := IpToString(ip)
-				_, err = GetFreePort(tc.protocol, address)
+				_, err = GetFreePort(tc.protocol, address, log)
 				require.NoError(t, err, "Could not get free port for address %s", address)
 			}
 		})
@@ -90,33 +101,33 @@ func TestCheckPortAvailable(t *testing.T) {
 				go func(ip net.IP) {
 					defer wg.Done()
 					address := IpToString(ip)
-					port, err := GetFreePort(tc.protocol, address)
+					port, err := GetFreePort(tc.protocol, address, log)
 					require.NoError(t, err, "Could not get free port for address %s", address)
 
-					err = CheckPortAvailable(tc.protocol, address, port)
+					err = CheckPortAvailable(tc.protocol, address, port, log)
 					require.NoError(t, err, "Port %d on address %s is not available", port, address)
 
 					// Occupy the port
 					var listener io.Closer
 					if tc.protocol == apiv1.UDP {
-						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", address, port))
-						require.NoError(t, resolutionErr, "Could not resolve UDP address %s:%d", address, port)
+						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", addressAndPort(address, port))
+						require.NoError(t, resolutionErr, "Could not resolve UDP address %s", addressAndPort(address, port))
 						listener, err = net.ListenUDP("udp", udpaddr)
 						require.NoError(t, err, "Could not listen on UDP address %s:%d", address, port)
 					} else {
-						tcpaddr, resolutionErr := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", address, port))
-						require.NoError(t, resolutionErr, "Could not resolve TCP address %s:%d", address, port)
+						tcpaddr, resolutionErr := net.ResolveTCPAddr("tcp", addressAndPort(address, port))
+						require.NoError(t, resolutionErr, "Could not resolve TCP address %s", addressAndPort(address, port))
 						listener, err = net.ListenTCP("tcp", tcpaddr)
 						require.NoError(t, err, "Could not listen on TCP address %s:%d", address, port)
 					}
 
-					err = CheckPortAvailable(tc.protocol, address, port)
+					err = CheckPortAvailable(tc.protocol, address, port, log)
 					require.Error(t, err, "Port %d on address %s is available", port, address)
 
 					err = listener.Close()
 					require.NoError(t, err, "Could not close listener on port %d on address %s", port, address)
 
-					err = CheckPortAvailable(tc.protocol, address, port)
+					err = CheckPortAvailable(tc.protocol, address, port, log)
 					require.NoError(t, err, "Port %d on address %s is not available", port, address)
 				}(ip)
 			}

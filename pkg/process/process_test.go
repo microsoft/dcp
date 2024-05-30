@@ -3,10 +3,7 @@ package process
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"time"
 
 	wait "k8s.io/apimachinery/pkg/util/wait"
@@ -15,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -305,17 +303,7 @@ func TestContextCancelsWatch(t *testing.T) {
 }
 
 func getDelayToolDir() (string, error) {
-	delayExeName := "delay"
-	if runtime.GOOS == "windows" {
-		delayExeName += ".exe"
-	}
-
-	rootDir, err := testutil.FindRootFor(testutil.FileTarget, ".toolbin", delayExeName)
-	if err == nil {
-		return filepath.Join(rootDir, ".toolbin"), nil
-	} else {
-		return "", fmt.Errorf("could not find 'delay' test tool: %w", err)
-	}
+	return int_testutil.GetTestToolDir("delay")
 }
 
 func ensureProcessTree(t *testing.T, rootPid Pid_t, expectedSize int, timeout time.Duration) {

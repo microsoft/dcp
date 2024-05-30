@@ -26,8 +26,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -57,6 +58,8 @@ func TestMain(m *testing.M) {
 		log.SetLevel(zapcore.DebugLevel)
 	}
 	ctrl.SetLogger(log.Logger)
+
+	networking.EnableStrictMruPortHandling(log.Logger)
 
 	ctx, cancel := context.WithCancel(
 		context.WithValue(context.Background(), controllers.ServiceReconcilerProxyHandling, controllers.DoNotStartProxies),
@@ -99,7 +102,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		return fmt.Errorf("failed to generate random string for kubeconfig file suffix: %w", randErr)
 	}
 	kubeconfigPath := filepath.Join(testutil.TestTempRoot(), fmt.Sprintf("kubeconfig-test-%s", suffix))
-	if kubeconfigErr := kubeconfig.EnsureKubeconfigFile(kubeconfigPath); kubeconfigErr != nil {
+	if kubeconfigErr := kubeconfig.EnsureKubeconfigFile(kubeconfigPath, log); kubeconfigErr != nil {
 		return kubeconfigErr
 	}
 

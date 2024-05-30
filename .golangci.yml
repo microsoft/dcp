@@ -5,3 +5,5 @@ linters-settings:
     settings:
       shadow:
         strict: true
+    disable:
+      - loopclosure # https://go.dev/doc/faq#closures_and_goroutines, we are using Go 1.22+ now

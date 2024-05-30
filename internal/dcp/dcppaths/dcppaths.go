@@ -1,10 +1,14 @@
 package dcppaths
 
 import (
+	"errors"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 const (
@@ -77,4 +81,31 @@ func GetDcpBinDir() (string, error) {
 	}
 
 	return filepath.Join(dcpDir, DcpBinDir), nil
+}
+
+// Returns the full path to DCP root directory, attempting to create it as necessary.
+func EnsureDcpRootDir() (string, error) {
+	homePath, homeDirErr := os.UserHomeDir()
+	if homeDirErr != nil {
+		return "", fmt.Errorf("could not obtain user home directory: %w", homeDirErr)
+	}
+
+	dcpFolder := filepath.Join(homePath, DcpRootDir)
+	dcpFolderInfo, dcpFolderErr := os.Stat(dcpFolder)
+	if errors.Is(dcpFolderErr, iofs.ErrNotExist) {
+		if err := os.MkdirAll(dcpFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
+			return "", fmt.Errorf("failed to create DCP default directory '%s': %w", dcpFolder, err)
+		}
+	} else if dcpFolderErr != nil {
+		return "", fmt.Errorf("failed to verify the existence of DCP  default directory '%s': %w", dcpFolder, dcpFolderErr)
+	} else if !dcpFolderInfo.IsDir() {
+		return "", fmt.Errorf("'%s' exists, but is not a directory and cannot be used DCP default directory", dcpFolder)
+	}
+
+	absDcpFolder, absErr := filepath.Abs(dcpFolder)
+	if absErr != nil {
+		return "", fmt.Errorf("could not determine the absolute path to DCP default directory '%s': %w", dcpFolder, absErr)
+	}
+
+	return absDcpFolder, nil
 }

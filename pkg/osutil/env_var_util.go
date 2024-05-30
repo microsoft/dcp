@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Returns true if the environemnt variable "switch" is enabled.
@@ -36,4 +37,28 @@ func EnvVarIntVal(varName string) (int, bool) {
 	}
 
 	return int(val), true
+}
+
+func EnvVarIntValWithDefault(varName string, defaultVal int) int {
+	val, found := EnvVarIntVal(varName)
+	if !found {
+		return defaultVal
+	} else {
+		return val
+	}
+}
+
+func EnvVarDurationValWithDefault(varName string, defaultVal time.Duration) time.Duration {
+	value, found := os.LookupEnv(varName)
+	if !found || strings.TrimSpace(value) == "" {
+		return defaultVal
+	}
+
+	value = strings.TrimSpace(value)
+	val, err := time.ParseDuration(value)
+	if err != nil {
+		return defaultVal
+	}
+
+	return val
 }

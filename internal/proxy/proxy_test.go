@@ -7,15 +7,28 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/require"
+
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
-	"github.com/stretchr/testify/require"
 )
+
+var (
+	log = logger.New("proxy-tests").Logger
+)
+
+func TestMain(m *testing.M) {
+	networking.EnableStrictMruPortHandling(log)
+	code := m.Run()
+	os.Exit(code)
+}
 
 func TestInvalidProxyMode(t *testing.T) {
 	t.Parallel()
@@ -111,7 +124,7 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	require.NoError(t, err)
 
 	// Configure the proxy
-	port, err := networking.GetFreePort(apiv1.TCP, "127.0.0.1")
+	port, err := networking.GetFreePort(apiv1.TCP, "127.0.0.1", log)
 	require.NoError(t, err)
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
@@ -263,7 +276,7 @@ func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
 }
 
 func setupTcpProxy(t *testing.T, ctx context.Context) *Proxy {
-	// For debugging you can replace logr.Discard() with logger.New("testName").Logger and set DCP_DIAGNOSTICS_LOG_LEVEL=debug
+	// For debugging you can replace logr.Discard() with "log" and set DCP_DIAGNOSTICS_LOG_LEVEL=debug
 	proxy := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 
