@@ -21,7 +21,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
@@ -317,12 +316,7 @@ func (c *containerLogStreamer) ensureContainerLogDescriptors(hostLifetimeCtx con
 		return
 	}
 
-	logFolder := os.TempDir()
-	if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
-		logFolder = dcpSessionDir
-	}
-
-	c.containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, logFolder)
+	c.containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, usvc_io.DcpTempDir)
 }
 
 var _ apiv1.ResourceLogStreamer = (*containerLogStreamer)(nil)

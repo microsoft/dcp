@@ -7,7 +7,6 @@ import (
 	"fmt"
 	stdmaps "maps"
 	"os"
-	"path/filepath"
 	stdslices "slices"
 	"strings"
 
@@ -18,7 +17,6 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
@@ -125,14 +123,9 @@ func (rcd *runningContainerData) ensureStartupOutputFiles(ctr *apiv1.Container, 
 		return
 	}
 
-	outputRootFolder := os.TempDir()
-	if dcpSessionDir, found := os.LookupEnv(logger.DCP_SESSION_FOLDER); found {
-		outputRootFolder = dcpSessionDir
-	}
-
 	// We might perform multiple startup attempts, so if the file(s) already exist, we will reuse them.
 
-	stdOutFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_startout_%s", ctr.Name, ctr.UID)), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	stdOutFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_startout_%s", ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing container startup standard output data")
 		rcd.startupStdOutFile = nil
@@ -140,7 +133,7 @@ func (rcd *runningContainerData) ensureStartupOutputFiles(ctr *apiv1.Container, 
 		rcd.startupStdOutFile = stdOutFile
 	}
 
-	stdErrFile, err := usvc_io.OpenFile(filepath.Join(outputRootFolder, fmt.Sprintf("%s_starterr_%s", ctr.Name, ctr.UID)), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	stdErrFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_starterr_%s", ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		log.Error(err, "failed to create temporary file for capturing container startup standard error data")
 		rcd.startupStdErrFile = nil

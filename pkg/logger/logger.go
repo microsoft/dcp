@@ -24,7 +24,6 @@ const (
 	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
 	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
 	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
-	DCP_SESSION_FOLDER         = "DCP_SESSION_FOLDER"         // Folder to delete when finished with a session
 	verbosityFlagName          = "verbosity"
 	verbosityFlagShortName     = "v"
 	stdOutMaxLevel             = zapcore.InfoLevel
@@ -165,7 +164,7 @@ func CleanupSessionFolderIfNeeded() {
 		return
 	}
 
-	dcpSessionDir, found := os.LookupEnv(DCP_SESSION_FOLDER)
+	dcpSessionDir, found := os.LookupEnv(usvc_io.DCP_SESSION_FOLDER)
 	if found {
 		if err := os.RemoveAll(dcpSessionDir); err != nil && !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(os.Stderr, "failed to remove session directory: %v\n", err)
