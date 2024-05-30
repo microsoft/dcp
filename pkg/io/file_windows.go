@@ -64,10 +64,23 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 
 	var standardUserAccessPermissions windows.ACCESS_MASK = windows.READ_CONTROL | windows.DELETE | windows.FILE_READ_ATTRIBUTES | windows.FILE_READ_EA
 
-	// You can use "group read" permission to enable read access to the file
+	// You can use "everyone read (0004)" permission to enable read access to the file
 	// for the same user when the user is running in non-elevated mode.
-	if perm&osutil.PermissionGroupRead == osutil.PermissionGroupRead {
+	if perm&osutil.PermissionCheckEveryoneRead == osutil.PermissionCheckEveryoneRead {
 		standardUserAccessPermissions |= windows.FILE_GENERIC_READ
+	}
+
+	// You can use "everyone write (0002)" permission to enable write access to the file
+	// for the same user when the user is running in non-elevated mode.
+	if perm&osutil.PermissionCheckEveryoneWrite == osutil.PermissionCheckEveryoneWrite {
+		standardUserAccessPermissions |= windows.FILE_GENERIC_WRITE
+	}
+
+	// You can use "everyone execute (0001)" permission to enable execute access tot he file
+	// for the same user when the user is running in non-elevated mode.
+	if perm&osutil.PermissionCheckEveryoneExecute == osutil.PermissionCheckEveryoneExecute {
+		standardUserAccessPermissions |= windows.FILE_GENERIC_EXECUTE
+
 	}
 
 	var explicitEntries []windows.EXPLICIT_ACCESS
