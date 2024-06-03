@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -32,6 +34,7 @@ type TestContainerOrchestrator struct {
 	volumes                map[string]containerVolume
 	networks               map[string]containerNetwork
 	images                 map[string]bool
+	imageIds               map[string]string
 	containers             map[string]testContainer
 	containersToFail       map[string]containerExit
 	containerEventsWatcher *containers.EventWatcher
@@ -67,6 +70,7 @@ func NewTestContainerOrchestrator(log logr.Logger) *TestContainerOrchestrator {
 			},
 		},
 		images:           map[string]bool{},
+		imageIds:         map[string]string{},
 		containers:       map[string]testContainer{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
@@ -477,11 +481,40 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 		return ctx.Err()
 	}
 
+	if options.IidFile != "" {
+		guid := uuid.New().String()
+		err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
+		if err != nil {
+			return err
+		}
+		to.images[guid] = true
+
+		for _, imageTag := range options.Tags {
+			to.imageIds[imageTag] = guid
+		}
+
+		for _, imageTag := range options.AdditionalTags {
+			to.imageIds[imageTag] = guid
+		}
+	}
+
 	for _, image := range options.Tags {
 		to.images[image] = true
 	}
 
+	for _, image := range options.AdditionalTags {
+		to.images[image] = true
+	}
+
 	return nil
+}
+
+func (to *TestContainerOrchestrator) GetImageId(tag string) (string, bool) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	id, found := to.imageIds[tag]
+	return id, found
 }
 
 func (to *TestContainerOrchestrator) HasImage(tag string) bool {

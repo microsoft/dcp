@@ -186,7 +186,17 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "-f", options.Dockerfile)
 	}
 
-	// Apply all specified tags to the image
+	// If specified, the ID of the image will be written to this file
+	if options.IidFile != "" {
+		args = append(args, "--iidfile", options.IidFile)
+	}
+
+	// Apply all tags from the controller
+	for _, tag := range options.AdditionalTags {
+		args = append(args, "-t", tag)
+	}
+
+	// Apply all tags specified in the build context to the image
 	for _, tag := range options.Tags {
 		args = append(args, "-t", tag)
 	}
@@ -198,6 +208,11 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 		} else {
 			args = append(args, "--build-arg", buildArg.Name)
 		}
+	}
+
+	// Apply all specified build secrets
+	for _, secret := range options.Secrets {
+		args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
 	}
 
 	// If a build stage is given, use it

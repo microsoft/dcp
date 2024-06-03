@@ -20,6 +20,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment":               schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":            schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret":             schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
@@ -198,6 +199,21 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 							Format:      "",
 						},
 					},
+					"tags": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Additional tags to apply to the image",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
 					"args": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Additional --build-arg values to pass to the build command",
@@ -207,6 +223,20 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
 										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+					"secrets": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Build time secrets to be passed in to the builder via --secret",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret"),
 									},
 								},
 							},
@@ -224,7 +254,36 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ID of the secret",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The source filepath of the secret",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"id", "source"},
+			},
+		},
 	}
 }
 

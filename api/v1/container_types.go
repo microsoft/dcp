@@ -97,6 +97,15 @@ type ContainerPort struct {
 }
 
 // +k8s:openapi-gen=true
+type ContainerBuildSecret struct {
+	// The ID of the secret
+	ID string `json:"id"`
+
+	// The source filepath of the secret
+	Source string `json:"source"`
+}
+
+// +k8s:openapi-gen=true
 type ContainerBuildContext struct {
 	// The path to the directory to be used as the root of the build context
 	Context string `json:"context"`
@@ -104,8 +113,14 @@ type ContainerBuildContext struct {
 	// The path to a Dockerfile to use for the build
 	Dockerfile string `json:"dockerfile,omitempty"`
 
+	// Additional tags to apply to the image
+	Tags []string `json:"tags,omitempty"`
+
 	// Additional --build-arg values to pass to the build command
 	Args []EnvVar `json:"args,omitempty"`
+
+	// Build time secrets to be passed in to the builder via --secret
+	Secrets []ContainerBuildSecret `json:"secrets,omitempty"`
 
 	// Optional: The name of the build stage to use for the build
 	Stage string `json:"stage,omitempty"`
@@ -325,6 +340,16 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 		if e.Spec.Build.Context == "" {
 			errorList = append(errorList, field.Required(field.NewPath("spec", "build", "context"), "context must be set to a non-empty value when build is specified"))
 		}
+
+		for i, secret := range e.Spec.Build.Secrets {
+			if secret.ID == "" {
+				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("id"), "id must be set to a non-empty value"))
+			}
+
+			if secret.Source == "" {
+				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("source"), "source must be set to a non-empty value"))
+			}
+		}
 	}
 
 	// Validate the object name to ensure it is a valid container name
@@ -399,9 +424,33 @@ func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
 		return false
 	}
 
-	return c1.Context == c2.Context && c1.Dockerfile == c2.Dockerfile && c1.Stage == c2.Stage && slices.EqualFunc(c1.Args, c2.Args, func(e1 EnvVar, e2 EnvVar) bool {
+	if c1.Context != c2.Context {
+		return false
+	}
+
+	if c1.Dockerfile != c2.Dockerfile {
+		return false
+	}
+
+	if c1.Stage != c2.Stage {
+		return false
+	}
+
+	// If the build arguments aren't the same
+	if !slices.EqualFunc(c1.Args, c2.Args, func(e1 EnvVar, e2 EnvVar) bool {
 		return e1.Name == e2.Name && e1.Value == e2.Value
-	})
+	}) {
+		return false
+	}
+
+	// If the secret arguments aren't the same
+	if !slices.EqualFunc(c1.Secrets, c2.Secrets, func(s1 ContainerBuildSecret, s2 ContainerBuildSecret) bool {
+		return s1.ID == s2.ID && s1.Source == s2.Source
+	}) {
+		return false
+	}
+
+	return true
 }
 
 func (c *Container) SpecifiedImageNameOrDefault() string {

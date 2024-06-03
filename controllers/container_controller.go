@@ -3,10 +3,12 @@
 package controllers
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -711,7 +713,8 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			tags := []string{container.SpecifiedImageNameOrDefault()}
 
 			buildOptions := ct.BuildImageOptions{
-				Tags:                  tags,
+				AdditionalTags:        tags,
+				IidFile:               filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
 				ContainerBuildContext: container.Spec.Build,
 				StreamCommandOptions: ct.StreamCommandOptions{
 					// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
@@ -724,6 +727,22 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			if buildErr != nil {
 				log.Error(buildErr, "could not build the image")
 				return buildErr
+			}
+
+			iidFile, fileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_iid_%s", container.Name, container.UID), os.O_RDONLY, osutil.PermissionOwnerReadWriteOthersRead)
+			if fileErr != nil {
+				// Log an error, but this is best effort, we'll use the image name if we can't read the ID file
+				log.Error(fileErr, "could not open the image ID file")
+			} else {
+				reader := bufio.NewReader(iidFile)
+				idBytes, _, readErr := reader.ReadLine()
+				if readErr != nil {
+					// Log an error, but this is best effort, we'll use the image name if we can't read the ID file
+					log.Error(readErr, "could not read the image ID from the ID file")
+				} else {
+					// We know the actual Image ID, so use that instead of the original name
+					rcd.runSpec.Image = string(idBytes)
+				}
 			}
 
 			rcd.containerState = apiv1.ContainerStateStarting
