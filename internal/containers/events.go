@@ -1,5 +1,11 @@
 package containers
 
+import (
+	"fmt"
+
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
+)
+
 type EventSource string
 
 const (
@@ -37,4 +43,13 @@ type EventMessage struct {
 
 	// Key value attributes associated with the event
 	Attributes map[string]string `json:"Attributes,omitempty"`
+}
+
+func (em *EventMessage) String() string {
+	return fmt.Sprintf("{Source: %s, Action: %s, Actor: %v, Attributes: %v}",
+		logger.FriendlyString(string(em.Source)),
+		logger.FriendlyString(string(em.Action)),
+		logger.FriendlyString(em.Actor.ID),
+		logger.FriendlyStringMap(em.Attributes),
+	)
 }

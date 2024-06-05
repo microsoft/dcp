@@ -11,7 +11,9 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -21,31 +23,52 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/queue"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
-const DefaultReadWriteTimeout = 3 * time.Second
-const DefaultConnectionTimeout = 5 * time.Second
-const MaxCachedUdpPackets = 20
+const (
+	DefaultReadWriteTimeout  = 3 * time.Second
+	DefaultConnectionTimeout = 5 * time.Second
+	MaxCachedUdpPackets      = 20
 
-// Even though the maximum UDP packet size is 64 kB, most networks have a maximum transmission unit (MTU)
-// that is much lower. E.g. Ethernet MTU is only 1500 bytes. And packet fragmentation is something
-// that every UDP client must be prepared to deal with.
-// That is why we use a buffer of 4kB for UDP packet data.
-const UdpPacketBufferSize = 4 * 1024
+	// Even though the maximum UDP packet size is 64 kB, most networks have a maximum transmission unit (MTU)
+	// that is much lower. E.g. Ethernet MTU is only 1500 bytes. And packet fragmentation is something
+	// that every UDP client must be prepared to deal with.
+	// That is why we use a buffer of 4kB for UDP packet data.
+	UdpPacketBufferSize = 4 * 1024
 
-// The time after which a UDP stream will be shut down if it has not been used.
-const UdpStreamInactivityTimeout = 2 * time.Minute
+	// The size of the TCP data buffer, used for single read between two TCP connections (32 kB).
+	TcpDataBufferSize = 32 * 1024
+
+	// The time after which a UDP stream will be shut down if it has not been used.
+	UdpStreamInactivityTimeout = 2 * time.Minute
+)
+
+var errInvalidWrite = errors.New("invalid write operation")
 
 type ProxyConfig struct {
 	Endpoints []Endpoint
 }
 
-func (pc ProxyConfig) Clone() ProxyConfig {
+func (pc *ProxyConfig) Clone() ProxyConfig {
 	endpoints := make([]Endpoint, len(pc.Endpoints))
 	copy(endpoints, pc.Endpoints)
 	return ProxyConfig{Endpoints: endpoints}
+}
+
+func (pc *ProxyConfig) String() string {
+	var b bytes.Buffer
+	b.WriteString("[")
+	for i, endpoint := range pc.Endpoints {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(networking.AddressAndPort(endpoint.Address, endpoint.Port))
+	}
+	b.WriteString("]")
+	return b.String()
 }
 
 type Endpoint struct {
@@ -101,6 +124,7 @@ type Proxy struct {
 	configurationApplied        *concurrency.AutoResetEvent
 	readWriteTimeout            time.Duration
 	connectionTimeout           time.Duration
+	streamSeqNo                 uint32
 
 	udpStreams syncmap.Map[string, udpStream]
 
@@ -154,7 +178,7 @@ func (p *Proxy) Start() error {
 
 	lc := net.ListenConfig{}
 	if p.mode == apiv1.TCP {
-		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
+		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", networking.AddressAndPort(p.ListenAddress, p.ListenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
 			return err
@@ -165,7 +189,7 @@ func (p *Proxy) Start() error {
 
 		go p.runTCP(tcpListener)
 	} else if p.mode == apiv1.UDP {
-		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", fmt.Sprintf("%s:%d", p.ListenAddress, p.ListenPort))
+		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", networking.AddressAndPort(p.ListenAddress, p.ListenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
 			return err
@@ -245,6 +269,7 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 	// Wait until the config has been loaded the first time before accepting any connections
 	config := <-p.endpointConfigLoadedChannel.Out
 	p.configurationApplied.Set()
+	p.log.V(1).Info("initial endpoint configuration loaded", "Config", config.String())
 
 	// Make a channel that will receive a connection when one is accepted
 	connectionChannel := chanx.NewUnboundedChan[net.Conn](p.lifetimeCtx, 1)
@@ -276,7 +301,7 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 				return
 			}
 			p.configurationApplied.Set()
-			p.log.V(1).Info("Configuration changed; new configuration will be applied to future connections...")
+			p.log.V(1).Info("endpoint configuration changed; new configuration will be applied to future connections...", "Config", config.String())
 
 			if len(config.Endpoints) >= 0 {
 				for _, conn := range parkedConnections {
@@ -331,46 +356,60 @@ func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 		return errors.Join(err, incoming.Close())
 	}
 
-	p.log.V(1).Info(fmt.Sprintf("Accepted TCP connection from %s, forwarding to %s:%d ...", incoming.RemoteAddr().String(), endpoint.Address, endpoint.Port))
+	if p.log.V(1).Enabled() {
+		p.log.V(1).Info(fmt.Sprintf("Accepted TCP connection from %s, forwarding to %s ...",
+			incoming.RemoteAddr().String(),
+			networking.AddressAndPort(endpoint.Address, endpoint.Port),
+		))
+	}
 
 	var d net.Dialer
 	// We use relatively short deadline for dialing because we want to try another endpoint fairly quickly if connection establishment fails.
 	dialContext, dialContextCancel := context.WithTimeout(p.lifetimeCtx, p.connectionTimeout)
 	defer dialContextCancel()
 
-	if outgoing, dialErr := d.DialContext(dialContext, "tcp", fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port)); dialErr != nil {
-		p.log.V(1).Info(fmt.Sprintf("Error establishing TCP connection to %s:%d, will try another endpoint", endpoint.Address, endpoint.Port))
+	ap := networking.AddressAndPort(endpoint.Address, endpoint.Port)
+	if outgoing, dialErr := d.DialContext(dialContext, "tcp", ap); dialErr != nil {
+		p.log.V(1).Info(fmt.Sprintf("Error establishing TCP connection to %s, will try another endpoint", ap))
 		// Do not close incoming connection
 		return fmt.Errorf("%w: %w", errTcpDialFailed, dialErr)
 	} else {
 		streamCtx, streamCtxCancel := context.WithCancel(p.lifetimeCtx)
 		copyingWg := &sync.WaitGroup{}
 		copyingWg.Add(2)
+		streamID := strconv.FormatUint(uint64(atomic.AddUint32(&p.streamSeqNo, 1)), 10)
 
 		_ = context.AfterFunc(streamCtx, func() {
 			copyingWg.Wait() // Do not close either connection until both streams have finished copying.
-			p.log.V(1).Info(fmt.Sprintf("Closing connections associated with TCP stream from %s to %s", incoming.RemoteAddr().String(), outgoing.RemoteAddr().String()))
+
+			if p.log.V(1).Enabled() {
+				p.log.V(1).Info(fmt.Sprintf("Closing connections associated with TCP stream %s from %s to %s",
+					streamID,
+					incoming.RemoteAddr().String(),
+					outgoing.RemoteAddr().String()),
+				)
+			}
+
 			_ = incoming.Close()
 			_ = outgoing.Close()
 		})
 
-		p.log.V(1).Info("Started TCP stream", "Stream", getStreamDescription(incoming, outgoing))
-		go p.copyStream(streamCtx, streamCtxCancel, copyingWg, incoming, outgoing)
-		go p.copyStream(streamCtx, streamCtxCancel, copyingWg, outgoing, incoming)
+		if p.log.V(1).Enabled() {
+			p.log.V(1).Info("Started TCP stream", "Stream", getStreamDescription(streamID, incoming, outgoing))
+		}
+
+		go p.copyStream(streamID+" (in)", streamCtx, streamCtxCancel, copyingWg, incoming, outgoing)
+		go p.copyStream(streamID+" (out)", streamCtx, streamCtxCancel, copyingWg, outgoing, incoming)
 		return nil
 	}
 }
-
-// There are many reasons why a network I/O operation may fail, and the failures are reported differently by different APIs
-// and on different platforms. That is why we generally do not log errors from those operations exept in specific circumstances,
-// such as DNS name resolution or initial connection establishment. In all other cases we just shut down the communication stream
-// and let the client(s) retry.
 
 // Copies data from incoming to outgoing connection until there is no more data to copy,
 // or the passed context is cancelled. The passed context corresponds to the lifetime of the (bi-directional) stream,
 // so if either half of the stream is done/encounters an error, the other half will be stopped.
 // When copying is done, the passed WaitGroup is decremented.
 func (p *Proxy) copyStream(
+	streamID string,
 	streamCtx context.Context,
 	streamCtxCancel context.CancelFunc,
 	copyingWg *sync.WaitGroup,
@@ -381,6 +420,8 @@ func (p *Proxy) copyStream(
 		streamCtxCancel()
 		copyingWg.Done()
 	}()
+
+	buffer := make([]byte, TcpDataBufferSize)
 
 	for {
 		if streamCtx.Err() != nil {
@@ -402,18 +443,172 @@ func (p *Proxy) copyStream(
 		// return an error. This is expected (it gives us the opportunity to check the lifetime context)
 		// so it won't be logged, and as long as the lifetime context is still active, the deadline will be refreshed.
 
-		if bytesWritten, err := io.Copy(outgoing, incoming); err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				// This is expected regularly, so don't log it
-				continue
-			} else {
-				p.log.V(1).Info(fmt.Sprintf("Error copying TCP stream: %s", err.Error()))
-				return
-			}
-		} else if bytesWritten == 0 {
-			// Connection has closed normally
-			p.log.V(1).Info("TCP stream end-of-data encountered", "Stream", getStreamDescription(incoming, outgoing))
+		cdr := copyData(incoming, outgoing, buffer)
+
+		if cdr.readError == nil && cdr.writeError == nil {
+			// Should never happen
+			p.log.Error(fmt.Errorf("TCP proxy stream ended prematurely"), "copyData() returned with no given reason",
+				"Stream", getStreamDescription(streamID, incoming, outgoing),
+				"StreamOutcome", cdr.String(),
+			)
 			return
+		}
+
+		if errors.Is(cdr.readError, os.ErrDeadlineExceeded) || errors.Is(cdr.writeError, os.ErrDeadlineExceeded) {
+			// This is expected regularly, so don't log it
+
+			if cdr.bytesRead != cdr.bytesWritten {
+				p.log.Error(fmt.Errorf("Data loss occurred during TCP traffic streaming"), "",
+					"Stream", getStreamDescription(streamID, incoming, outgoing),
+					"StreamOutcome", cdr.String(),
+				)
+			}
+			// ... and continue to the next iteration
+		} else {
+			if p.log.V(1).Enabled() {
+				var msg string
+				if cdr.readError == io.EOF {
+					msg = "Client closed incoming connection"
+				} else if cdr.writeError == io.EOF {
+					msg = "The outgoing connection was terminated; we will terminate client connection accordingly"
+				} else {
+					// There are many reasons why a network I/O operation may fail,
+					// and the failures are reported differently by different APIs and on different platforms.
+					// That is why we generally do not log errors from those operations exept in specific circumstances,
+					// such as DNS name resolution or initial connection establishment.
+					// In all other cases we just shut down the communication stream and let the client(s) retry.
+
+					msg = "An error copying TCP stream"
+				}
+				p.log.V(1).Info(msg,
+					"Stream", getStreamDescription(streamID, incoming, outgoing),
+					"StreamOutcome", cdr.String(),
+				)
+			}
+
+			return
+		}
+	}
+}
+
+type copyDataResult struct {
+	bytesRead                    int64
+	bytesWritten                 int64
+	lastSuccessfulReadTimestamp  time.Time
+	lastSuccessfulWriteTimestamp time.Time
+	readErrorTimestamp           time.Time
+	writeErrorTimestamp          time.Time
+	readError                    error
+	writeError                   error
+}
+
+func (cdr *copyDataResult) String() string {
+	retval := fmt.Sprintf("{BytesRead: %d, BytesWritten: %d, LastSuccessfulRead: %s, LastSuccessfulWrite: %s, ReadError: %s, ReadErrorTimestamp: %s, WriteError: %s, WriteErrorTimestamp: %s}",
+		cdr.bytesRead,
+		cdr.bytesWritten,
+		logger.FriendlyTimestamp(cdr.lastSuccessfulReadTimestamp),
+		logger.FriendlyTimestamp(cdr.lastSuccessfulWriteTimestamp),
+		logger.FriendlyErrorString(cdr.readError),
+		logger.FriendlyTimestamp(cdr.readErrorTimestamp),
+		logger.FriendlyErrorString(cdr.writeError),
+		logger.FriendlyTimestamp(cdr.writeErrorTimestamp),
+	)
+	return retval
+}
+
+type DeadlineReader interface {
+	io.Reader
+	SetReadDeadline(t time.Time) error
+}
+
+type DeadlineWriter interface {
+	io.Writer
+	SetWriteDeadline(t time.Time) error
+}
+
+// copyData() copies data from incoming to outgoing connection until there is no more data to copy, or an error occurs.
+// This is similar in function to io.Copy from the standard library, except for the following differences:
+//  1. copyData() does not take advantage of ReaderFrom/WriterTo interfaces, so it cannot do zero-copy I/O.
+//  2. It does return EOF as an error value (because we want to differentiate between connection close and zero-byte read).
+//  3. The result has a bunch of additional data that are useful for debugging.
+//  4. copyData() will handle correctly read/write deadlines and partial reads/writes when deadline occurs.
+//     io.Copy() does not handle partial reads/writes when a deadline occurs, and can loose data when a read is successful,
+//     but a write is interrupted by a deadline.
+func copyData(incoming DeadlineReader, outgoing DeadlineWriter, buf []byte) copyDataResult {
+	var res copyDataResult
+	var read, written int
+
+	for {
+		read, res.readError = incoming.Read(buf)
+		res.bytesRead += int64(read)
+		if res.readError != nil {
+			res.readErrorTimestamp = time.Now()
+		} else {
+			res.lastSuccessfulReadTimestamp = time.Now()
+		}
+
+		if read > 0 {
+			written, res.writeError = outgoing.Write(buf[0:read])
+			invalidWrite := written < 0 || read < written
+
+			if errors.Is(res.writeError, os.ErrDeadlineExceeded) && written < read && !invalidWrite {
+				// Special case: we have read some data, and maybe wrote some,
+				// but the write operation was interrupted by a deadline, so we need to retry it.
+
+				res.bytesWritten += int64(written)
+
+				deadline := time.Now().Add(DefaultReadWriteTimeout)
+				if err := outgoing.SetWriteDeadline(deadline); err != nil {
+					res.writeError = errors.Join(res.writeError, err)
+					res.writeErrorTimestamp = time.Now()
+					return res
+				}
+
+				var writeRetryErr error
+				toWrite := read - written
+
+				written, writeRetryErr = outgoing.Write(buf[written:read])
+				invalidWrite = written < 0 || toWrite < written
+				if writeRetryErr != nil || invalidWrite {
+					if writeRetryErr != nil {
+						writeRetryErr = errInvalidWrite
+					}
+					res.writeError = errors.Join(res.writeError, writeRetryErr)
+					res.writeErrorTimestamp = time.Now()
+					return res
+				}
+
+				// Remaining data was written successfully, res.writeError is os.ErrDeadlineExceeded,
+				// rest of the logic applies.
+			}
+
+			if res.writeError != nil || invalidWrite {
+				if res.writeError == nil {
+					res.writeError = errInvalidWrite
+				}
+				if invalidWrite {
+					return res
+				}
+				res.writeErrorTimestamp = time.Now()
+			} else {
+				res.lastSuccessfulWriteTimestamp = time.Now()
+			}
+
+			res.bytesWritten += int64(written)
+
+			if res.writeError != nil {
+				return res
+			}
+
+			if read != written {
+				res.writeError = io.ErrShortWrite
+				res.writeErrorTimestamp = time.Now()
+				return res
+			}
+		}
+
+		if res.readError != nil {
+			return res
 		}
 	}
 }
@@ -426,6 +621,7 @@ func (p *Proxy) runUDP(udpListener net.PacketConn) {
 	// Wait until the config file has been loaded the first time before accepting any packets
 	config := <-p.endpointConfigLoadedChannel.Out
 	p.configurationApplied.Set()
+	p.log.V(1).Info("initial endpoint configuration loaded", "Config", config.String())
 
 	buffer := make([]byte, UdpPacketBufferSize)
 
@@ -437,7 +633,7 @@ func (p *Proxy) runUDP(udpListener net.PacketConn) {
 			}
 			p.tryStartExistingUDPStreams(config, udpListener)
 			p.configurationApplied.Set()
-			p.log.V(1).Info("Configuration changed; new configuration will be applied to future packets...")
+			p.log.V(1).Info("Configuration changed; new configuration will be applied to future packets...", "Config", config.String())
 
 		default:
 			// No config change, continue
@@ -503,7 +699,7 @@ func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn,
 		// No endpoints yet
 		return false
 	}
-	endpointAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", endpoint.Address, endpoint.Port))
+	endpointAddr, err := net.ResolveUDPAddr("udp", networking.AddressAndPort(endpoint.Address, endpoint.Port))
 	if err != nil {
 		p.log.Error(err, "Could not resolve endpoint address", "EndpointAddress", endpoint.Address, "EndpointPort", endpoint.Port)
 		return false
@@ -671,9 +867,10 @@ func chooseEndpoint(config *ProxyConfig) (*Endpoint, error) {
 	return &config.Endpoints[rand.Intn(len(config.Endpoints))], nil
 }
 
-func getStreamDescription(incoming, outgoing net.Conn) string {
+func getStreamDescription(streamID string, incoming, outgoing net.Conn) string {
 	return fmt.Sprintf(
-		"%s -> %s (proxy) %s -> %s",
+		"%s: %s -> %s (proxy) %s -> %s",
+		streamID,
 		incoming.RemoteAddr().String(),
 		incoming.LocalAddr().String(),
 		outgoing.LocalAddr().String(),

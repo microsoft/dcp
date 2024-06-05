@@ -4,6 +4,7 @@ package logger
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,12 +24,16 @@ func IsPtrValDifferent[T int32 | int64, PT *T](p1 PT, p2 PT) bool {
 	return *p1 != *p2
 }
 
-func FriendlyTimestamp(ts metav1.Time) string {
+func FriendlyTimestamp(ts time.Time) string {
 	if ts.IsZero() {
 		return "(zero)"
 	} else {
 		return ts.Format(time.StampMilli)
 	}
+}
+
+func FriendlyMetav1Timestamp(ts metav1.Time) string {
+	return FriendlyTimestamp(ts.Time)
 }
 
 func FriendlyString(s string) string {
@@ -37,4 +42,24 @@ func FriendlyString(s string) string {
 	} else {
 		return s
 	}
+}
+
+func FriendlyErrorString(err error) string {
+	if err == nil {
+		return "(none)"
+	}
+	return err.Error()
+}
+
+func FriendlyStringMap(m map[string]string) string {
+	var b strings.Builder
+	var sep string = ""
+	b.WriteString("{")
+	for k, v := range m {
+		b.WriteString(sep)
+		b.WriteString(fmt.Sprintf("'%s': '%s'", FriendlyString(k), FriendlyString(v)))
+		sep = ", "
+	}
+	b.WriteString("}")
+	return b.String()
 }

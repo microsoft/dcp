@@ -46,7 +46,7 @@ func TestMruFileReadWrite(t *testing.T) {
 		r := mruPortFileRecord{
 			Address:        address,
 			Port:           port,
-			AddressAndPort: addressAndPort(address, port),
+			AddressAndPort: AddressAndPort(address, port),
 			Timestamp:      time.Now(),
 			Instance:       GetProgramInstanceID(),
 		}
@@ -71,13 +71,13 @@ func TestMruFileReadWrite(t *testing.T) {
 	}
 
 	// Should be able to find "first", "last", and "somewhere in the middle" records
-	i, found := std_slices.BinarySearchFunc(usedPorts, addressAndPort("127.0.0.1", 10000), matchAddressAndPort)
+	i, found := std_slices.BinarySearchFunc(usedPorts, AddressAndPort("127.0.0.1", 10000), matchAddressAndPort)
 	require.True(t, found)
 	require.Equal(t, 0, i)
-	i, found = std_slices.BinarySearchFunc(usedPorts, addressAndPort("127.0.0.2", 10090), matchAddressAndPort)
+	i, found = std_slices.BinarySearchFunc(usedPorts, AddressAndPort("127.0.0.2", 10090), matchAddressAndPort)
 	require.True(t, found)
 	require.Equal(t, 9, i)
-	i, found = std_slices.BinarySearchFunc(usedPorts, addressAndPort("127.0.0.1", 10060), matchAddressAndPort)
+	i, found = std_slices.BinarySearchFunc(usedPorts, AddressAndPort("127.0.0.1", 10060), matchAddressAndPort)
 	require.True(t, found)
 	require.Equal(t, 3, i)
 
@@ -119,7 +119,7 @@ func TestOldPortEntriesRemoved(t *testing.T) {
 		r := mruPortFileRecord{
 			Address:        "127.0.0.1",
 			Port:           port,
-			AddressAndPort: addressAndPort("127.0.0.1", port),
+			AddressAndPort: AddressAndPort("127.0.0.1", port),
 			Timestamp:      timestamp,
 			Instance:       GetProgramInstanceID(),
 		}

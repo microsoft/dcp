@@ -294,13 +294,19 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 	}
 
 	if svc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless && (svc.Status.EffectiveAddress != oldEffectiveAddress || svc.Status.EffectivePort != oldEffectivePort) {
-		log.V(1).Info(fmt.Sprintf("service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
+		log.V(1).Info(fmt.Sprintf("service %s is now running on %s",
+			svc.NamespacedName(),
+			networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort)),
+		)
 		change |= statusChanged
 	}
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless && (svc.Status.ProxylessEndpointNamespace != oldEndpointNamespacedName.Namespace || svc.Status.ProxylessEndpointName != oldEndpointNamespacedName.Name) {
 		if svc.Status.EffectiveAddress != "" || svc.Status.EffectivePort != 0 {
-			log.V(1).Info(fmt.Sprintf("proxyless service %s is now running on %s:%d", svc.NamespacedName(), svc.Status.EffectiveAddress, svc.Status.EffectivePort))
+			log.V(1).Info(fmt.Sprintf("proxyless service %s is now running on %s",
+				svc.NamespacedName(),
+				networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort)),
+			)
 		}
 		change |= statusChanged
 	}

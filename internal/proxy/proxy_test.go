@@ -5,7 +5,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -116,7 +115,7 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	proxy.connectionTimeout = 500 * time.Millisecond
 
 	// Write some data to the proxy
-	clientConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", proxy.EffectiveAddress, proxy.EffectivePort))
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress, proxy.EffectivePort))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn)
 	msg := []byte("This is amazing!")
@@ -267,7 +266,7 @@ func TestRandomEndpointSelection(t *testing.T) {
 const autoAllocatePort = 0
 
 func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
-	serverListener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	serverListener, err := net.Listen("tcp", networking.AddressAndPort("127.0.0.1", port))
 	require.NoError(t, err)
 	require.NotNil(t, serverListener)
 	effectivePort := serverListener.Addr().(*net.TCPAddr).Port
@@ -289,7 +288,7 @@ func setupTcpProxy(t *testing.T, ctx context.Context) *Proxy {
 
 func verifiyProxiedTcpConnection(t *testing.T, proxy *Proxy, server net.Listener) {
 	// Set up a client
-	clientConn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", proxy.EffectiveAddress, proxy.EffectivePort))
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress, proxy.EffectivePort))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn)
 
@@ -314,7 +313,7 @@ func verifiyProxiedTcpConnection(t *testing.T, proxy *Proxy, server net.Listener
 }
 
 func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
-	serverConn, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+	serverConn, err := net.ListenPacket("udp", networking.AddressAndPort("127.0.0.1", port))
 	require.NoError(t, err)
 	require.NotNil(t, serverConn)
 	effectivePort := serverConn.LocalAddr().(*net.UDPAddr).Port

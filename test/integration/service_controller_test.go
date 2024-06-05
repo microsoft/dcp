@@ -8,6 +8,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -429,7 +430,7 @@ func TestServiceRandomPort(t *testing.T) {
 		if s.Status.EffectiveAddress == "" || s.Status.EffectivePort == 0 {
 			return false, nil
 		}
-		_, addressResolutionErr := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", s.Status.EffectiveAddress, s.Status.EffectivePort))
+		_, addressResolutionErr := net.ResolveTCPAddr("tcp", networking.AddressAndPort(s.Status.EffectiveAddress, s.Status.EffectivePort))
 		return addressResolutionErr == nil, nil
 	})
 	t.Log("Service has random port.")

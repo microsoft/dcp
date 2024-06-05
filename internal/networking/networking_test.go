@@ -109,16 +109,18 @@ func TestCheckPortAvailable(t *testing.T) {
 
 					// Occupy the port
 					var listener io.Closer
+					ap := AddressAndPort(address, port)
+
 					if tc.protocol == apiv1.UDP {
-						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", addressAndPort(address, port))
-						require.NoError(t, resolutionErr, "Could not resolve UDP address %s", addressAndPort(address, port))
+						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", ap)
+						require.NoError(t, resolutionErr, "Could not resolve UDP address %s", ap)
 						listener, err = net.ListenUDP("udp", udpaddr)
-						require.NoError(t, err, "Could not listen on UDP address %s:%d", address, port)
+						require.NoError(t, err, "Could not listen on UDP address %s", ap)
 					} else {
-						tcpaddr, resolutionErr := net.ResolveTCPAddr("tcp", addressAndPort(address, port))
-						require.NoError(t, resolutionErr, "Could not resolve TCP address %s", addressAndPort(address, port))
+						tcpaddr, resolutionErr := net.ResolveTCPAddr("tcp", ap)
+						require.NoError(t, resolutionErr, "Could not resolve TCP address %s", ap)
 						listener, err = net.ListenTCP("tcp", tcpaddr)
-						require.NoError(t, err, "Could not listen on TCP address %s:%d", address, port)
+						require.NoError(t, err, "Could not listen on TCP address %s", ap)
 					}
 
 					err = CheckPortAvailable(tc.protocol, address, port, log)

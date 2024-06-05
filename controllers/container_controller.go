@@ -1467,6 +1467,10 @@ func (r *ContainerReconciler) processContainerEvent(em ct.EventMessage) {
 			return
 		}
 
+		if r.Log.V(1).Enabled() {
+			r.Log.V(1).Info("container event received, scheduling reconciliation", "ContainerID", containerID, "Event", em.String())
+		}
+
 		r.scheduleContainerReconciliation(owner, containerID)
 	}
 }
@@ -1484,6 +1488,10 @@ func (r *ContainerReconciler) processNetworkEvent(em ct.EventMessage) {
 		if !running {
 			// We are not tracking this container
 			return
+		}
+
+		if r.Log.V(1).Enabled() {
+			r.Log.V(1).Info("network event received, scheduling reconciliation", "ContainerID", containerID, "Event", em.String())
 		}
 
 		r.scheduleContainerReconciliation(owner, containerID)

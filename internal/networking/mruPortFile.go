@@ -141,7 +141,7 @@ func (l *mruPortFile) tryLockAndRead(ctx context.Context) ([]mruPortFileRecord, 
 		records = append(records, mruPortFileRecord{
 			Address:        strings.TrimSpace(address),
 			Port:           int32(port),
-			AddressAndPort: addressAndPort(address, int32(port)),
+			AddressAndPort: AddressAndPort(address, int32(port)),
 			Timestamp:      timestamp,
 			Instance:       strings.TrimSpace(instance),
 		})

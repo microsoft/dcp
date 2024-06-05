@@ -788,7 +788,9 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) objectChange 
 	if changed != noChange {
 		exe.Status = status
 
-		log.V(1).Info("Executable run changed", "PropertiesChanged", DiffString(originalStatusRI, ri))
+		if log.V(1).Enabled() {
+			log.V(1).Info("Executable run changed", "PropertiesChanged", DiffString(originalStatusRI, ri))
+		}
 	}
 
 	return changed
@@ -801,8 +803,8 @@ func (ri *runInfo) String() string {
 		logger.IntPtrValToString(ri.pid),
 		logger.FriendlyString(ri.executionID),
 		logger.IntPtrValToString(ri.exitCode),
-		logger.FriendlyTimestamp(ri.startupTimestamp),
-		logger.FriendlyTimestamp(ri.finishTimestamp),
+		logger.FriendlyMetav1Timestamp(ri.startupTimestamp),
+		logger.FriendlyMetav1Timestamp(ri.finishTimestamp),
 		logger.FriendlyString(ri.stdOutFile),
 		logger.FriendlyString(ri.stdErrFile),
 	)
@@ -829,11 +831,11 @@ func DiffString(r1, r2 *runInfo) string {
 	}
 
 	if r1.startupTimestamp != r2.startupTimestamp {
-		sb.WriteString(fmt.Sprintf("startupTimestamp=%s->%s, ", logger.FriendlyTimestamp(r1.startupTimestamp), logger.FriendlyTimestamp(r2.startupTimestamp)))
+		sb.WriteString(fmt.Sprintf("startupTimestamp=%s->%s, ", logger.FriendlyMetav1Timestamp(r1.startupTimestamp), logger.FriendlyMetav1Timestamp(r2.startupTimestamp)))
 	}
 
 	if r1.finishTimestamp != r2.finishTimestamp {
-		sb.WriteString(fmt.Sprintf("finishTimestamp=%s->%s, ", logger.FriendlyTimestamp(r1.finishTimestamp), logger.FriendlyTimestamp(r2.finishTimestamp)))
+		sb.WriteString(fmt.Sprintf("finishTimestamp=%s->%s, ", logger.FriendlyMetav1Timestamp(r1.finishTimestamp), logger.FriendlyMetav1Timestamp(r2.finishTimestamp)))
 	}
 
 	if r1.stdOutFile != r2.stdOutFile {

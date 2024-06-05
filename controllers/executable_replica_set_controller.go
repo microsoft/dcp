@@ -222,27 +222,27 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				exePatch.Spec.Stop = true
 				if err := r.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(exe, ctrl_client.MergeFromWithOptimisticLock{})); err != nil {
 					if errors.IsNotFound(err) {
-						log.V(1).Info("executable not found, nothing to update", "exe", exe)
+						log.V(1).Info("executable not found, nothing to update", "exe", exe.NamespacedName())
 					} else if errors.IsConflict(err) {
 						// Expected optimistic concurrency check error, log it at debug level and move on
-						log.V(1).Info("conflict while soft deleting Executable", "exe", exe)
+						log.V(1).Info("conflict while soft deleting Executable", "exe", exe.NamespacedName())
 					} else {
-						log.Error(err, "unable to soft delete Executable", "exe", exe)
+						log.Error(err, "unable to soft delete Executable", "exe", exe.NamespacedName())
 					}
 
 					change |= additionalReconciliationNeeded
 					continue
 				} else {
-					log.V(1).Info("soft deleted Executable", "exe", exe)
+					log.V(1).Info("soft deleted Executable", "exe", exe.NamespacedName())
 				}
 			} else {
 				// Default delete on scale down behavior
 				if err := r.Delete(ctx, exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
-					log.Error(err, "unable to delete Executable", "exe", exe)
+					log.Error(err, "unable to delete Executable", "exe", exe.NamespacedName())
 					change |= additionalReconciliationNeeded
 					continue
 				} else {
-					log.V(1).Info("deleted Executable", "exe", exe)
+					log.V(1).Info("deleted Executable", "exe", exe.NamespacedName())
 				}
 			}
 
@@ -264,14 +264,14 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				log.Error(exeSetupErr, "unable to create Executable")
 				change |= additionalReconciliationNeeded
 			} else if exeCreationErr := r.Create(ctx, exe); exeCreationErr != nil {
-				log.Error(exeCreationErr, "unable to create Executable", "exe", exe)
+				log.Error(exeCreationErr, "unable to create Executable", "exe", exe.NamespacedName())
 				change |= additionalReconciliationNeeded
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
 				rsData.actualReplicas++
 				rsData.lastScaled = currentScaleTime.Time
 				r.runningReplicaSets.Store(replicaSet.NamespacedName(), rsData)
-				log.V(1).Info("created Executable", "exe", exe)
+				log.V(1).Info("created Executable", "exe", exe.NamespacedName())
 				change |= statusChanged
 			}
 		}
@@ -297,7 +297,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 		log.V(1).Info("deleting ExecutableReplicaSet children", "Count", childExecutables.ItemCount())
 		for _, exe := range childExecutables.Items {
 			if err = r.Delete(ctx, &exe, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !errors.IsNotFound(err) {
-				log.Error(err, "failed to delete inactive child Executable object", "exe", exe)
+				log.Error(err, "failed to delete inactive child Executable object", "exe", exe.NamespacedName())
 			}
 		}
 	}

@@ -359,7 +359,7 @@ func createKubeconfig(port int32, useCertifiate bool, log logr.Logger) (*clientc
 	}
 
 	cluster := clientcmd_api.Cluster{
-		Server: fmt.Sprintf("https://%s:%d", address, port),
+		Server: "https://" + networking.AddressAndPort(address, port),
 	}
 
 	var certificateData *certificateData

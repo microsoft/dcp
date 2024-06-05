@@ -111,14 +111,14 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 				return false, portErr
 			}
 
-			_, recentlyUsed := std_slices.BinarySearchFunc(usedPorts, addressAndPort(address, port), matchAddressAndPort)
+			_, recentlyUsed := std_slices.BinarySearchFunc(usedPorts, AddressAndPort(address, port), matchAddressAndPort)
 
 			if !recentlyUsed {
 				allocatedPort = port
 				usedPorts = append(usedPorts, mruPortFileRecord{
 					Address:        address,
 					Port:           allocatedPort,
-					AddressAndPort: addressAndPort(address, allocatedPort),
+					AddressAndPort: AddressAndPort(address, allocatedPort),
 					Timestamp:      time.Now(),
 					Instance:       programInstanceID,
 				})
@@ -183,7 +183,7 @@ func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32,
 		log.Error(unlockErr, "could not unlock the most recently used ports file") // Should never happen
 	}
 
-	desired := addressAndPort(address, port)
+	desired := AddressAndPort(address, port)
 	i, found := std_slices.BinarySearchFunc(usedPorts, desired, matchAddressAndPort)
 	if found && usedPorts[i].Instance != programInstanceID {
 		return fmt.Errorf("port %d is already in use by another process", port)
@@ -243,7 +243,7 @@ func GetProgramInstanceID() string {
 
 func doCheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32) error {
 	if protocol == apiv1.UDP {
-		udpaddr, err := net.ResolveUDPAddr("udp", addressAndPort(address, port))
+		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, port))
 		if err != nil {
 			return err
 		}
@@ -255,7 +255,7 @@ func doCheckPortAvailable(protocol apiv1.PortProtocol, address string, port int3
 			return nil
 		}
 	} else {
-		tcpaddr, err := net.ResolveTCPAddr("tcp", addressAndPort(address, port))
+		tcpaddr, err := net.ResolveTCPAddr("tcp", AddressAndPort(address, port))
 		if err != nil {
 			return err
 		}
@@ -271,7 +271,7 @@ func doCheckPortAvailable(protocol apiv1.PortProtocol, address string, port int3
 
 func doGetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 	if protocol == apiv1.UDP {
-		udpaddr, err := net.ResolveUDPAddr("udp", addressAndPort(address, 0))
+		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, 0))
 		if err != nil {
 			return 0, err
 		}
@@ -284,7 +284,7 @@ func doGetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 			return port, nil
 		}
 	} else {
-		tcpaddr, err := net.ResolveTCPAddr("tcp", addressAndPort(address, 0))
+		tcpaddr, err := net.ResolveTCPAddr("tcp", AddressAndPort(address, 0))
 		if err != nil {
 			return 0, err
 		}
@@ -299,7 +299,7 @@ func doGetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 	}
 }
 
-func addressAndPort(address string, port int32) string {
+func AddressAndPort(address string, port int32) string {
 	return fmt.Sprintf("%s:%d", address, port)
 }
 
