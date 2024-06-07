@@ -353,7 +353,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 	if portAllocationErr != nil {
 		stopAllProxies()
-		return fmt.Errorf("cound not create the proxy for the service: %w", portAllocationErr)
+		return fmt.Errorf("could not create the proxy for the service: %w", portAllocationErr)
 	}
 
 	if !r.noProxyStartOption() {
@@ -361,7 +361,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 			err = proxyInstanceData.proxy.Start()
 			if err != nil {
 				stopAllProxies()
-				return fmt.Errorf("cound not start the proxy for the service: %w", err)
+				return fmt.Errorf("could not start the proxy for the service: %w", err)
 			}
 		}
 	}
