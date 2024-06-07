@@ -96,13 +96,28 @@ type ContainerPort struct {
 	HostIP string `json:"hostIP,omitempty"`
 }
 
+type BuildSecretType string
+
+const (
+	EnvSecret  BuildSecretType = "env"
+	FileSecret BuildSecretType = "file"
+)
+
 // +k8s:openapi-gen=true
 type ContainerBuildSecret struct {
+	// The type of secret (defaults to file)
+	Type BuildSecretType `json:"type,omitempty"`
+
 	// The ID of the secret
 	ID string `json:"id"`
 
-	// The source filepath of the secret
-	Source string `json:"source"`
+	// If type is file (or empty), the source filepath of the secret, if type is env, the environment variable name
+	// Required for file secrets, optional for env secrets (defaults to the ID)
+	Source string `json:"source,omitempty"`
+
+	// Only used for "env" type secrets. If set, this value is applied via the configured environment variable
+	// to the build command. If unset, it is assumed the environment secret comes from an ambient environment variables
+	Value string `json:"value,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -342,11 +357,15 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 		}
 
 		for i, secret := range e.Spec.Build.Secrets {
+			if secret.Type != "" && secret.Type != FileSecret && secret.Type != EnvSecret {
+				errorList = append(errorList, field.Invalid(field.NewPath("spec", "build", "secrets").Index(i).Child("type"), secret.Type, "type must be one of 'file' or 'env'"))
+			}
+
 			if secret.ID == "" {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("id"), "id must be set to a non-empty value"))
 			}
 
-			if secret.Source == "" {
+			if secret.Type != EnvSecret && secret.Source == "" {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("source"), "source must be set to a non-empty value"))
 			}
 		}
@@ -437,16 +456,12 @@ func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
 	}
 
 	// If the build arguments aren't the same
-	if !slices.EqualFunc(c1.Args, c2.Args, func(e1 EnvVar, e2 EnvVar) bool {
-		return e1.Name == e2.Name && e1.Value == e2.Value
-	}) {
+	if !slices.Equal(c1.Args, c2.Args) {
 		return false
 	}
 
 	// If the secret arguments aren't the same
-	if !slices.EqualFunc(c1.Secrets, c2.Secrets, func(s1 ContainerBuildSecret, s2 ContainerBuildSecret) bool {
-		return s1.ID == s2.ID && s1.Source == s2.Source
-	}) {
+	if !slices.Equal(c1.Secrets, c2.Secrets) {
 		return false
 	}
 

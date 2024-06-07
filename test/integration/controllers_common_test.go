@@ -3,6 +3,7 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -117,6 +119,16 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		<-managerDone.Wait()
 		stopDcp()
 	})
+
+	testSecretKey := make([]byte, 24)
+	_, keyErr := rand.Read(testSecretKey)
+	if keyErr != nil {
+		log.Error(keyErr, "failed to generate a random key for testing secret encryption")
+		return keyErr
+	}
+
+	// Enable secrets for this test
+	secrets.SetSecretsKey(testSecretKey)
 
 	cmd := exec.CommandContext(ctx, dcpPath, "start-apiserver", "--server-only", "--kubeconfig", kubeconfigPath)
 	var stdout, stderr bytes.Buffer

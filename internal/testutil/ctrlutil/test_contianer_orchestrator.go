@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -35,6 +36,7 @@ type TestContainerOrchestrator struct {
 	networks               map[string]containerNetwork
 	images                 map[string]bool
 	imageIds               map[string]string
+	imageSecrets           map[string]map[string]string
 	containers             map[string]testContainer
 	containersToFail       map[string]containerExit
 	containerEventsWatcher *containers.EventWatcher
@@ -71,6 +73,7 @@ func NewTestContainerOrchestrator(log logr.Logger) *TestContainerOrchestrator {
 		},
 		images:           map[string]bool{},
 		imageIds:         map[string]string{},
+		imageSecrets:     map[string]map[string]string{},
 		containers:       map[string]testContainer{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
@@ -500,10 +503,26 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 
 	for _, image := range options.Tags {
 		to.images[image] = true
+
+		to.imageSecrets[image] = map[string]string{}
+
+		for _, secret := range options.Secrets {
+			if secret.Type == apiv1.EnvSecret && secret.Value != "" {
+				to.imageSecrets[image][secret.ID] = secrets.DecryptSecret(secret.Value)
+			}
+		}
 	}
 
 	for _, image := range options.AdditionalTags {
 		to.images[image] = true
+
+		to.imageSecrets[image] = map[string]string{}
+
+		for _, secret := range options.Secrets {
+			if secret.Type == apiv1.EnvSecret && secret.Value != "" {
+				to.imageSecrets[image][secret.ID] = secrets.DecryptSecret(secret.Value)
+			}
+		}
 	}
 
 	return nil
@@ -515,6 +534,14 @@ func (to *TestContainerOrchestrator) GetImageId(tag string) (string, bool) {
 
 	id, found := to.imageIds[tag]
 	return id, found
+}
+
+func (to *TestContainerOrchestrator) GetImageSecrets(tag string) (map[string]string, bool) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	secrets, found := to.imageSecrets[tag]
+	return secrets, found
 }
 
 func (to *TestContainerOrchestrator) HasImage(tag string) bool {

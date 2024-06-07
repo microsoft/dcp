@@ -264,6 +264,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.Refe
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The type of secret (defaults to file)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"id": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The ID of the secret",
@@ -274,14 +281,20 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.Refe
 					},
 					"source": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The source filepath of the secret",
-							Default:     "",
+							Description: "If type is file (or empty), the source filepath of the secret, if type is env, the environment variable name Required for file secrets, optional for env secrets (defaults to the ID)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Only used for \"env\" type secrets. If set, this value is applied via the configured environment variable to the build command. If unset, it is assumed the environment secret comes from an ambient environment variables",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 				},
-				Required: []string{"id", "source"},
+				Required: []string{"id"},
 			},
 		},
 	}

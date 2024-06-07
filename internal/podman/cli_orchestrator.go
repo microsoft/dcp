@@ -23,6 +23,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/sync"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/secrets"
 )
 
 var (
@@ -210,9 +211,27 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 		}
 	}
 
+	// Secret values that need to be applied to the build command environment
+	secretEnvironment := map[string]string{}
+
 	// Apply all specified build secrets
 	for _, secret := range options.Secrets {
-		args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
+		switch secret.Type {
+		case apiv1.FileSecret, "":
+			args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
+		case apiv1.EnvSecret:
+			if secret.Source != "" {
+				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.Source))
+				if secret.Value != "" {
+					secretEnvironment[secret.Source] = secret.Value
+				}
+			} else {
+				args = append(args, "--secret", fmt.Sprintf("id=%s", secret.ID))
+				if secret.Value != "" {
+					secretEnvironment[secret.ID] = secret.Value
+				}
+			}
+		}
 	}
 
 	// If a build stage is given, use it
@@ -224,6 +243,11 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 	args = append(args, options.Context)
 
 	cmd := makePodmanCommand(args...)
+
+	// Append secret environment
+	for secretName, secretValue := range secretEnvironment {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", secretName, secrets.DecryptSecret(secretValue)))
+	}
 
 	// Building an image can take a long time to finish, particularly if any base images are not available locally.
 	// Use a much longer timeout than for other commands.
