@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/secrets"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -891,4 +892,48 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	require.Len(t, inspected, 1, "expected to find a single container")
 
 	require.False(t, orchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image build to be skipped")
+}
+
+func TestContainerWithBuildContextDecryptsSecrets(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-with-build-context-decrypts-secrets"
+	const imageName = testName + "-image"
+
+	const secretName = "secret"
+	const plainText = "secret-value-for-build"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Build: &apiv1.ContainerBuildContext{
+				Context:    ".",
+				Dockerfile: "./Dockerfile",
+				Secrets: []apiv1.ContainerBuildSecret{{
+					Type:  apiv1.EnvSecret,
+					ID:    secretName,
+					Value: secrets.EncryptSecret(plainText),
+				}},
+			},
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	newCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	require.NotEqual(t, plainText, newCtr.Spec.Build.Secrets[0].Value, "expected secret to be encrypted")
+
+	secrets, found := orchestrator.GetImageSecrets(ctr.SpecifiedImageNameOrDefault())
+	require.True(t, found, "expected secrets to be present for container ")
+	require.Len(t, secrets, 1, "expected one secret to be present for container")
+	require.Equal(t, plainText, secrets[secretName], "expected secret to be decrypted")
 }
