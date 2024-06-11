@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -246,6 +247,7 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 
 	// Append secret environment
 	for secretName, secretValue := range secretEnvironment {
+		cmd.Env = os.Environ()
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", secretName, secrets.DecryptSecret(secretValue)))
 	}
 
