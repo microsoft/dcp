@@ -3,7 +3,12 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"time"
 
 	wait "k8s.io/apimachinery/pkg/util/wait"
@@ -12,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -302,8 +308,106 @@ func TestContextCancelsWatch(t *testing.T) {
 	}
 }
 
+func TestMonitorProcessExitsWithErrorForInvalidPid(t *testing.T) {
+	t.Parallel()
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+
+	// Set a reasonable timeout that gives the wait polling time to see the delay process exit
+	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer testCancel()
+
+	dcpProcCmd := exec.CommandContext(testCtx, dcpProc)
+	err := dcpProcCmd.Run()
+	require.Error(t, err)
+}
+
+func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
+	t.Parallel()
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+
+	delayToolDir, toolLaunchErr := getDelayToolDir()
+	require.NoError(t, toolLaunchErr)
+
+	// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
+	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer testCancel()
+
+	// All commands will return on its own after 30 seconds. This prevents the test from launching a bunch of processes
+	// that turn into zombies.
+	parentCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
+	parentCmd.Dir = delayToolDir
+	parentCmdErr := parentCmd.Start()
+
+	parentPid, parentPidErr := IntToPidT(parentCmd.Process.Pid)
+	require.NoError(t, parentPidErr)
+	ensureProcessTree(t, parentPid, 1, 5*time.Second)
+
+	require.NoError(t, parentCmdErr, "command should start without error")
+
+	childrenCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s", "--child-spec=1,1")
+	childrenCmd.Dir = delayToolDir
+	childrenCmdErr := childrenCmd.Start()
+	require.NoError(t, childrenCmdErr, "command should start without error")
+
+	pid, pidErr := IntToPidT(childrenCmd.Process.Pid)
+	require.NoError(t, pidErr)
+
+	ensureProcessTree(t, pid, 3, 10*time.Second)
+
+	dcpProcCmd := exec.CommandContext(testCtx, dcpProc, "--monitor", strconv.Itoa(parentCmd.Process.Pid), "--proc", strconv.Itoa(childrenCmd.Process.Pid))
+	dcpProcCmd.Stdout = os.Stdout
+	dcpProcCmd.Stderr = os.Stderr
+	dcpProcCmdErr := dcpProcCmd.Start()
+	require.NoError(t, dcpProcCmdErr, "command should start without error")
+
+	// Give enough time for the monitor process to start before killing the parent process
+	<-time.After(1 * time.Second)
+
+	killErr := parentCmd.Process.Kill()
+	require.NoError(t, killErr)
+	_ = parentCmd.Wait()
+
+	_ = childrenCmd.Wait()
+	require.True(t, childrenCmd.ProcessState.Exited(), "child process should have exited")
+
+	dcpWaitErr := dcpProcCmd.Wait()
+	require.NoError(t, dcpWaitErr)
+}
+
 func getDelayToolDir() (string, error) {
 	return int_testutil.GetTestToolDir("delay")
+}
+
+func getDcpProcExecutablePath() (string, error) {
+	dcpExeName := "dcpproc"
+	if runtime.GOOS == "windows" {
+		dcpExeName += ".exe"
+	}
+
+	outputBin, found := os.LookupEnv("OUTPUT_BIN")
+	if found {
+		dcpPath := filepath.Join(outputBin, dcpExeName)
+		file, err := os.Stat(dcpPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to find the DCP executable: %w", err)
+		}
+		if file.IsDir() {
+			return "", fmt.Errorf("the expected path to DCP executable is a directory: %s", dcpPath)
+		}
+		return dcpPath, nil
+	}
+
+	tail := []string{dcppaths.DcpBinDir, dcppaths.DcpExtensionsDir, dcppaths.DcpBinDir, dcpExeName}
+	rootFolder, err := testutil.FindRootFor(testutil.FileTarget, tail...)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
 }
 
 func ensureProcessTree(t *testing.T, rootPid Pid_t, expectedSize int, timeout time.Duration) {

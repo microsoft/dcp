@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -95,6 +98,8 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		exe.Status.State = apiv1.ExecutableStateRunning
 		exe.Status.StartupTimestamp = metav1.Now()
 
+		r.runWatcher(ctx, pid, log)
+
 		runChangeHandler.OnStartingCompleted(exe.NamespacedName(), pidToRunID(pid), exe.Status, startWaitForProcessExit)
 	}
 
@@ -120,6 +125,31 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 	}
 
 	return err
+}
+
+func (r *ProcessExecutableRunner) runWatcher(ctx context.Context, pid process.Pid_t, log logr.Logger) {
+	// This is a best effort and will only log errors if the process watcher can't be started
+	if _, found := os.LookupEnv(controllers.DCP_SKIP_MONITOR_PROCESSES); !found {
+		binPath, binPathErr := dcppaths.GetDcpBinDir()
+		if binPathErr != nil {
+			log.Error(binPathErr, "could not resolve path to process monitor", "PID", pid)
+		} else {
+			procMonitorPath := filepath.Join(binPath, "dcpproc")
+			if runtime.GOOS == "windows" {
+				procMonitorPath += ".exe"
+			}
+
+			// DCP doesn't shut down if DCPCTRL goes away, but DCPCTRL will shut down if DCP goes away. For now, watching DCPCTRL is the safer bet.
+			monitorPid := os.Getpid()
+
+			// Monitor the parent process and the service process
+			monitorCmd := exec.Command(procMonitorPath, "--monitor", strconv.Itoa(monitorPid), "--proc", strconv.FormatInt(int64(pid), 10))
+			_, _, monitorErr := r.pe.StartProcess(ctx, monitorCmd, nil)
+			if monitorErr != nil {
+				log.Error(monitorErr, "failed to start process monitor", "executable", procMonitorPath, "PID", pid)
+			}
+		}
+	}
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {

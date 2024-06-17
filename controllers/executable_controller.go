@@ -33,6 +33,7 @@ import (
 
 const (
 	DCP_PRESERVE_EXECUTABLE_LOGS = "DCP_PRESERVE_EXECUTABLE_LOGS"
+	DCP_SKIP_MONITOR_PROCESSES   = "DCP_SKIP_MONITOR_PROCESSES"
 )
 
 // ExecutableReconciler reconciles a Executable object

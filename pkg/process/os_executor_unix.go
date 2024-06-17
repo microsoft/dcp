@@ -93,7 +93,7 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 		// (the parent process might have terminated them).
 		var sysErr *os.SyscallError
 		isEChildErr := errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
-		if isEChildErr && (opts&optNotFoundIsError) == 0 {
+		if isEChildErr {
 			return nil
 		}
 

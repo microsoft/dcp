@@ -82,6 +82,7 @@ EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
 BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
+DCPPROC_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcpproc$(bin_exe_suffix)
 
 # Locations and definitions for tool binaries
 GO_BIN ?= go
@@ -178,19 +179,21 @@ generate-goversioninfo: goversioninfo-gen
 ifeq ($(build_os),windows)
 	$(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
+	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpproc/resource.syso
 else
 	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
 	-$(rm_f) $(repo_dir)/cmd/dcpctrl/resource.syso
+	-$(rm_f) $(repo_dir)/cmd/dcpproc/resource.syso
 endif
 
 .PHONY: generate-licenses
 generate-licenses: generate-dependency-notices ## Generates license/notice files for all dependencies
 
-# # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244. 
+# # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244.
 # The awk script converts the output of `go list std` (line separated modules) to the input that `--ignore` expects
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
-	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE
+	$(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN)
@@ -243,13 +246,13 @@ $(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
 ##@ Development
 
 release: BUILD_ARGS := $(BUILD_ARGS) -ldflags "-s -w $(version_values)"
-release: build-dcpctrl build-dcp ## Builds all binaries with flags to reduce binary size
+release: build-dcpproc build-dcpctrl build-dcp ## Builds all binaries with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
-compile: build-dcpctrl build-dcp ## Builds DCP CLI and controller host (skips codegen)
+compile: build-dcpproc build-dcpctrl build-dcp ## Builds DCP CLI and controller host (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-compile-debug: build-dcpctrl build-dcp ## Builds DCP CLI and controller host with debug symbols (good for debugging; skips codegen)
+compile-debug: build-dcpproc build-dcpctrl build-dcp ## Builds DCP CLI and controller host with debug symbols (good for debugging; skips codegen)
 
 build: generate compile ## Runs codegen and builds DCP CLI and controller host
 
@@ -264,6 +267,11 @@ $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 build-dcpctrl: $(DCPCTRL_BINARY) ## Builds DCP standard controller host (dcpctrl)
 $(DCPCTRL_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 	$(GO_BIN) build -o $(DCPCTRL_BINARY) $(BUILD_ARGS) ./cmd/dcpctrl
+
+.PHONY: build-dcpproc
+build-dcpproc: $(DCPPROC_BINARY) ## Builds DCP process monitor (dcpproc)
+$(DCPPROC_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
+	$(GO_BIN) build -o $(DCPPROC_BINARY) $(BUILD_ARGS) ./cmd/dcpproc
 
 .PHONY: clean
 clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.
@@ -280,12 +288,14 @@ else
 endif
 
 .PHONY: install
-install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) ## Installs all binaries to their destinations
+install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) $(BIN_DIR) ## Installs all binaries to their destinations
+	$(install) $(DCPPROC_BINARY) $(BIN_DIR)
 	$(install) $(DCPCTRL_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCP_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
+	$(rm_f) $(BIN_DIR)/dcpproc$(bin_exe_suffix)
 	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
 
@@ -298,7 +308,7 @@ endif
 ##@ Test targets
 
 .PHONY: test-prereqs
-test-prereqs: build-dcp delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
+test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
