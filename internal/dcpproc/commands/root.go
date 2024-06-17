@@ -52,15 +52,20 @@ func monitorProcess(log logger.Logger) func(cmd *cobra.Command, args []string) e
 		monitorCtx, dcpMonitorErr := cmds.MonitorPid(cmd.Context(), dcpMonitorPidInt64, monitorInterval, log)
 		if dcpMonitorErr != nil {
 			if errors.Is(dcpMonitorErr, os.ErrProcessDone) {
+				// If the monitor process is already terminated, stop the service immediately
+				log.Info("DCP process already exited, shutting down service process", "DCPPID", dcpMonitorPidInt64, "PID", procMonitorPidInt64)
 				executor := process.NewOSExecutor(log)
 				stopErr := executor.StopProcess(pidT)
 				if stopErr != nil {
 					log.Error(stopErr, "failed to stop service process", "PID", procMonitorPidInt64)
+					return stopErr
 				}
-			}
 
-			log.Error(dcpMonitorErr, "invalid DCP monitor PID", "DCPPID", dcpMonitorPidInt64)
-			return dcpMonitorErr
+				return nil
+			} else {
+				log.Error(dcpMonitorErr, "invalid DCP monitor PID", "DCPPID", dcpMonitorPidInt64)
+				return dcpMonitorErr
+			}
 		}
 
 		processCtx, procMonitorErr := cmds.MonitorPid(cmd.Context(), procMonitorPidInt64, monitorInterval, log)
