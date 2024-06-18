@@ -299,6 +299,9 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
+	// Enable plain output mode (Docker only)
+	args = append(args, "--progress", "plain")
+
 	// Append the build context argument
 	args = append(args, options.Context)
 
