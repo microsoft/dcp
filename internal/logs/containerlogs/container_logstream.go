@@ -178,6 +178,7 @@ func (c *containerLogStreamer) StreamLogs(
 				c.stdioLogStreams.Store(ctr.UID, followWriters)
 			}
 
+			// If we're following, we need to report that to the caller so they can wait for the goroutine to complete
 			go func() {
 				defer cleanup()
 				defer src.Close()
@@ -193,19 +194,16 @@ func (c *containerLogStreamer) StreamLogs(
 
 			return apiv1.ResourceStreamStatusStreaming, followWriter.Done(), nil
 		} else {
-			doneCh := make(chan struct{})
-			go func() {
-				defer cleanup()
-				defer src.Close()
-				defer close(doneCh)
+			// If we aren't following, just copy the file and report that we're done streaming
+			defer cleanup()
+			defer src.Close()
 
-				_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
-				if copyErr != nil {
-					log.Error(copyErr, "failed to copy log file to destination")
-				}
-			}()
+			_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
+			if copyErr != nil {
+				log.Error(copyErr, "failed to copy log file to destination")
+			}
 
-			return apiv1.ResourceStreamStatusDone, doneCh, nil
+			return apiv1.ResourceStreamStatusDone, nil, nil
 		}
 	}
 
