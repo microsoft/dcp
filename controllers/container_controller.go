@@ -474,12 +474,19 @@ func updateContainerData(
 	log.V(1).Info("inspecting container resource...", "ContainerID", containerID)
 	inspected, err := r.findContainer(ctx, containerID)
 	if err != nil {
-		log.Info("container resource could not be inspected, might have been removed... ",
-			"ContainerID", containerID,
-			"Error", err.Error(),
-		)
-		// Could be a transient error, so for know we keep the rest of the status as-is.
-		return change
+		if errors.Is(err, containers.ErrNotFound) {
+			log.Info("container resource not found, assuming it was removed... ", "ContainerID", containerID)
+			return ensureUnknownState(ctx, r, container, desiredState, log)
+		} else {
+			log.Info("container resource could not be inspected ",
+				"ContainerID", containerID,
+				"Error", err.Error(),
+			)
+			// Could be a transient error, so for know we keep the rest of the status as-is.
+			// Don't try to reconcile again unconditionally (that might result in an infinite loop),
+			// but instead wait for another event from the container watcher.
+			return change
+		}
 	}
 
 	rcd.updateFromInspectedContainer(inspected)
@@ -540,9 +547,10 @@ func ensureUnknownState(
 	desiredState apiv1.ContainerState,
 	log logr.Logger,
 ) objectChange {
-	log.Error(fmt.Errorf("the state of the Container became undetermined"), "", "RequestedContainerState", desiredState)
-
 	change := setContainerState(container, apiv1.ContainerStateUnknown)
+	if change != noChange {
+		log.Error(fmt.Errorf("the state of the Container became undetermined"), "", "RequestedContainerState", desiredState)
+	}
 	if container.Status.FinishTimestamp.IsZero() {
 		container.Status.FinishTimestamp = metav1.Now()
 		change |= statusChanged
@@ -557,6 +565,13 @@ func ensureUnknownState(
 	// and do best-effort clean up of orchestrator-managed resources when the Container object is deleted,
 	// or when DCP is shutting down.
 	r.cleanupDcpContainerResources(ctx, container, log)
+	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
+	if !found {
+		// Should never happen--the runningContaienrs map should have the data about the Container object.
+		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
+	} else {
+		rcd.containerState = apiv1.ContainerStateUnknown
+	}
 
 	return change
 }
