@@ -937,3 +937,37 @@ func TestContainerWithBuildContextDecryptsSecrets(t *testing.T) {
 	require.Len(t, secrets, 1, "expected one secret to be present for container")
 	require.Equal(t, plainText, secrets[secretName], "expected secret to be decrypted")
 }
+
+func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-stete-becomes-unknown-after-deletion"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Deleting Container resource '%s'...", updatedCtr.Status.ContainerID)
+	_, err = orchestrator.RemoveContainers(ctx, []string{updatedCtr.Status.ContainerID}, true /* force */)
+	require.NoError(t, err, "could not remove container resource '%s'", updatedCtr.Status.ContainerID)
+
+	t.Logf("Ensure Container object status becomes 'Unknown'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateUnknown, nil
+	})
+}
