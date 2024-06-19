@@ -101,11 +101,11 @@ func (c *containerLogStreamer) StreamLogs(
 	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) {
 		// Startup stdout log streaming
 		logFilePath = ctr.Status.StartupStdOutFile
-		follow = follow && ctr.Status.State == apiv1.ContainerStateStarting
+		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
 	} else if opts.Source == string(apiv1.LogStreamSourceStartupStderr) {
 		// Startup stderr log streaming
 		logFilePath = ctr.Status.StartupStdErrFile
-		follow = follow && ctr.Status.State == apiv1.ContainerStateStarting
+		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
 	} else {
 		if ctr.Status.ContainerID == "" {
 			log.V(1).Info("container has no container ID yet, not ready to stream logs")
@@ -184,6 +184,8 @@ func (c *containerLogStreamer) StreamLogs(
 
 				<-followWriter.Done()
 
+				log.V(1).Info("log streamer completed", "Container", ctr.Status.ContainerID, "Source", opts.Source)
+
 				if followWriter.Err() != nil {
 					log.Error(followWriter.Err(), "failed to stream logs for Container")
 				}
@@ -203,7 +205,7 @@ func (c *containerLogStreamer) StreamLogs(
 				}
 			}()
 
-			return apiv1.ResourceStreamStatusStreaming, doneCh, nil
+			return apiv1.ResourceStreamStatusDone, doneCh, nil
 		}
 	}
 
@@ -229,7 +231,7 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 	}
 
 	if evt.Type == watch.Modified {
-		if ctr.Status.State != apiv1.ContainerStateStarting {
+		if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
 			// If done starting the container, ensure startup logs stop streaming once they reach EOF
 			if logs, found := c.startupLogStreams.Load(ctr.UID); found {
 				log.V(1).Info("stopping startup follow logs for container", "Container", ctr.Status.ContainerID, "StreamCount", len(logs))
