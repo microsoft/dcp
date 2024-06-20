@@ -258,6 +258,8 @@ func (r *ContainerReconciler) canBeDeleted(container *apiv1.Container) bool {
 
 	retval := !found ||
 		(rcd.containerState == apiv1.ContainerStateStarting && !rcd.startupAttempted) || // Container finished building but isn't starting yet
+		(container.Spec.Persistent && rcd.containerState != apiv1.ContainerStateBuilding &&
+			rcd.containerState != apiv1.ContainerStateStarting) ||
 		(rcd.containerState != apiv1.ContainerStateBuilding &&
 			rcd.containerState != apiv1.ContainerStateStarting &&
 			rcd.containerState != apiv1.ContainerStateStopping &&
@@ -458,7 +460,7 @@ func updateContainerData(
 		return ensureUnknownState(ctx, r, container, desiredState, log)
 	}
 
-	if container.Spec.Stop || (container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero()) {
+	if container.Spec.Stop || (container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() && !container.Spec.Persistent) {
 		// Start the stopping sequence
 		rcd.containerState = apiv1.ContainerStateStopping
 		change |= setContainerState(container, apiv1.ContainerStateStopping)

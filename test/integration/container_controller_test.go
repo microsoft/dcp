@@ -750,6 +750,7 @@ func TestPersistentContainerDeletion(t *testing.T) {
 	inspected, err := orchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, inspected[0].Status, containers.ContainerStatusRunning, "expected the container to be running")
 }
 
 func TestPersistentContainerAlreadyExists(t *testing.T) {
