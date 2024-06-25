@@ -362,12 +362,19 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 			if err != nil {
 				stopAllProxies()
 				return fmt.Errorf("could not start the proxy for the service: %w", err)
+			} else {
+				log.V(1).Info("service proxy started",
+					"ProxyListenAddress", proxyInstanceData.proxy.ListenAddress,
+					"ProxyListenPort", proxyInstanceData.proxy.ListenPort,
+					"ProxyEffectiveAddress", proxyInstanceData.proxy.EffectiveAddress,
+					"ProxyEffectivePort", proxyInstanceData.proxy.EffectivePort,
+				)
 			}
 		}
 	}
 
 	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
-	log.V(1).Info("service proxy started",
+	log.V(1).Info("service serving traffic",
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
 	)
@@ -401,9 +408,9 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 	if requestedServiceAddress == "localhost" {
 		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
 
-		ips, err := networking.LookupIP(requestedServiceAddress)
-		if err != nil || len(ips) == 0 {
-			return nil, fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
+		ips, err := networking.GetLocalhostIps()
+		if err != nil {
+			return nil, err
 		}
 
 		// We will try to use the same port for all addresses if possible.
@@ -516,15 +523,24 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		return "localhost", getProxyPort(eligibleProxies[0].proxy)
 	}
 
-	// We give preference to IPv4 because it is the safer default
-	// (e.g. host.docker.internal resolves to IPv4 on dual-stack machines).
-	eligibleIPv4Proxies := slices.Select(eligibleProxies, func(pd proxyInstanceData) bool {
-		return networking.IsIPv4(getProxyAddress(pd.proxy))
+	var isPreferredAddress func(string) bool
+	switch networking.GetIpVersionPreference() {
+	case networking.IpVersionPreference4:
+		isPreferredAddress = networking.IsIPv4
+	case networking.IpVersionPreference6:
+		isPreferredAddress = networking.IsIPv6
+	default:
+		// We give preference to IPv4 because it is the safer default
+		// (e.g. host.docker.internal resolves to IPv4 on dual-stack machines).
+		isPreferredAddress = networking.IsIPv4
+	}
+	preferredProxies := slices.Select(eligibleProxies, func(pd proxyInstanceData) bool {
+		return isPreferredAddress(getProxyAddress(pd.proxy))
 	})
 
 	var sourceProxy *proxy.Proxy
-	if len(eligibleIPv4Proxies) > 0 {
-		sourceProxy = eligibleIPv4Proxies[0].proxy
+	if len(preferredProxies) > 0 {
+		sourceProxy = preferredProxies[0].proxy
 	} else {
 		sourceProxy = eligibleProxies[0].proxy
 	}
