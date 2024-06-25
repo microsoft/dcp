@@ -335,16 +335,9 @@ func generateCertificates(ip net.IP) (*certificateData, error) {
 }
 
 func createKubeconfig(port int32, useCertifiate bool, log logr.Logger) (*clientcmd_api.Config, *certificateData, error) {
-	// The "localhost" hostname resolves to all loopback addresses on the machine. For dual-stack machines (very common)
-	// it will contain both IPv4 and IPv6 addresses. However, different programming languages and libraries may
-	// "choose" different addresses to try first (e.g. some might prefer IPv4 vs IPv6).
-	// The result can be long connection delays. To avoid that we will use specific IP address.
-	ips, err := networking.LookupIP("localhost")
+	ips, err := networking.GetLocalhostIps()
 	if err != nil {
-		return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not obtain IP address(es) for localhost: %w", err)
-	}
-	if len(ips) == 0 {
-		return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not obtain IP address(es) for localhost")
+		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
 	}
 
 	ip := ips[0]

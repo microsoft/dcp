@@ -24,8 +24,14 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
+type IpVersionPreference string
+
 const (
 	instanceIdLength uint32 = 12
+
+	IpVersionPreferenceNone IpVersionPreference = "None"
+	IpVersionPreference4    IpVersionPreference = "IPv4"
+	IpVersionPreference6    IpVersionPreference = "IPv6"
 )
 
 var (
@@ -33,6 +39,7 @@ var (
 	portFileErrorReported bool
 	packageMruPortFile    *mruPortFile
 	programInstanceID     string
+	ipVersionPreference   IpVersionPreference
 )
 
 func init() {
@@ -46,6 +53,20 @@ func init() {
 	value, found := os.LookupEnv("DCP_INSTANCE_ID_PREFIX")
 	if found && strings.TrimSpace(value) != "" {
 		programInstanceID = value + programInstanceID
+	}
+
+	value, found = os.LookupEnv("DCP_IP_VERSION_PREFERENCE")
+	if !found {
+		ipVersionPreference = IpVersionPreferenceNone
+	} else {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "ipv4", "v4", "4":
+			ipVersionPreference = IpVersionPreference4
+		case "ipv6", "v6", "6":
+			ipVersionPreference = IpVersionPreference6
+		default:
+			ipVersionPreference = IpVersionPreferenceNone
+		}
 	}
 }
 
@@ -194,24 +215,20 @@ func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32,
 
 func IpToString(ip net.IP) string {
 	var address string
-	// The order of checks is significant here
-	if ip4 := ip.To4(); len(ip4) == net.IPv4len {
-		address = ip4.String()
-	} else if ip6 := ip.To16(); len(ip6) == net.IPv6len {
-		address = fmt.Sprintf("[%s]", ip6.String())
+	if IsValidIPv6(ip) {
+		address = fmt.Sprintf("[%s]", ip.String())
 	} else {
-		// Not sure what kind address this is, but it is worth trying
 		address = ip.String()
 	}
 	return address
 }
 
 func IsIPv4(address string) bool {
-	return net.ParseIP(address).To4() != nil
+	return IsValidIPv4(net.ParseIP(address))
 }
 
 func IsIPv6(address string) bool {
-	return net.ParseIP(address).To16() != nil
+	return IsValidIPv6(net.ParseIP(address))
 }
 
 func IsValidPort(port int) bool {
@@ -219,13 +236,18 @@ func IsValidPort(port int) bool {
 }
 
 func IsValidIP(ip net.IP) bool {
-	if ip.To4() != nil && nettest.SupportsIPv4() {
-		return true
-	} else if len(ip.To16()) == net.IPv6len && nettest.SupportsIPv6() {
-		return true
-	}
+	return IsValidIPv4(ip) || IsValidIPv6(ip)
+}
 
-	return false
+func IsValidIPv4(ip net.IP) bool {
+	return len(ip.To4()) == net.IPv4len && nettest.SupportsIPv4()
+}
+
+func IsValidIPv6(ip net.IP) bool {
+	// ip.To16() always works (it is always possible to convert IPv4 adress to IPv6)
+	// But we are not interested in conversion; we want to know if the passed address is native IPv6 and not IPv4.
+	// This is why we check if IPv4 conversion fails.
+	return len(ip.To16()) == net.IPv6len && len(ip.To4()) == 0 && nettest.SupportsIPv6()
 }
 
 // Used by tests, makes the use of the most recently used ports file mandatory
@@ -239,6 +261,10 @@ func EnableStrictMruPortHandling(log logr.Logger) {
 
 func GetProgramInstanceID() string {
 	return programInstanceID
+}
+
+func GetIpVersionPreference() IpVersionPreference {
+	return ipVersionPreference
 }
 
 func doCheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32) error {
@@ -339,4 +365,33 @@ func ensurePackageMruPortFile(log logr.Logger) error {
 	}
 
 	return err
+}
+
+func GetLocalhostIps() ([]net.IP, error) {
+	// The "localhost" hostname resolves to all loopback addresses on the machine. For dual-stack machines (very common)
+	// it will contain both IPv4 and IPv6 addresses. However, different programming languages and libraries may
+	// "choose" different addresses to try first (e.g. some might prefer IPv4 vs IPv6).
+	// The result can be long connection delays. To avoid that we prefer to use specific IP addresses in configuration.
+
+	ips, err := LookupIP("localhost")
+	if err != nil || len(ips) == 0 {
+		return nil, fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
+	}
+
+	// Account for IP version user preference if possble
+	var isPreferredIp func(net.IP) bool
+	switch GetIpVersionPreference() {
+	case IpVersionPreference4:
+		isPreferredIp = IsValidIPv4
+	case IpVersionPreference6:
+		isPreferredIp = IsValidIPv6
+	default:
+		isPreferredIp = func(_ net.IP) bool { return true }
+	}
+	preferredIps := slices.Select(ips, isPreferredIp)
+	if len(preferredIps) > 0 {
+		ips = preferredIps
+	}
+
+	return ips, nil
 }
