@@ -65,7 +65,7 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 }
 
 const (
-	numPostfixBytes = 4
+	numPostfixBytes = 6
 )
 
 var (
@@ -73,16 +73,20 @@ var (
 	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
 )
 
-func MakeUniqueName(prefix string) (string, error) {
+// Returns a name made probabilistically unique by appending a random postfix,
+// together with the used random postfix and an error, if any.
+func MakeUniqueName(prefix string) (string, string, error) {
 	postfixBytes := make([]byte, numPostfixBytes)
 
 	if read, err := rand.Read(postfixBytes); err != nil {
-		return "", err
+		return "", "", err
 	} else if read != numPostfixBytes {
-		return "", fmt.Errorf("could not generate %d bytes of randomness", numPostfixBytes)
+		return "", "", fmt.Errorf("could not generate %d bytes of randomness", numPostfixBytes)
 	}
 
-	return fmt.Sprintf("%s-%s", prefix, strings.ToLower(randomNameEncoder.EncodeToString(postfixBytes))), nil
+	postfix := strings.ToLower(randomNameEncoder.EncodeToString(postfixBytes))
+	uniqueName := fmt.Sprintf("%s-%s", prefix, postfix)
+	return uniqueName, postfix, nil
 }
 
 type ObjectStruct interface {
