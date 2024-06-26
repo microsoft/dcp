@@ -510,7 +510,7 @@ func (r *ExecutableReconciler) createEndpoint(
 	serviceProducer ServiceProducer,
 	log logr.Logger,
 ) (*apiv1.Endpoint, error) {
-	endpointName, err := MakeUniqueName(owner.GetName())
+	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "could not generate unique name for Endpoint object")
 		return nil, err

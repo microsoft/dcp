@@ -46,8 +46,14 @@ type ExecutableReplicaSetReconciler struct {
 }
 
 const (
-	ExecutableReplicaStateAnnotation = "executable-replica-set.usvc-dev.developer.microsoft.com/replica-state"
-	ExecutableDisplayNameAnnotation  = "executable-replica-set.usvc-dev.developer.microsoft.com/display-name"
+	ExecutableReplicaStateAnnotation   = "executable-replica-set.usvc-dev.developer.microsoft.com/replica-state"
+	ExecutableDisplayNameAnnotation    = "executable-replica-set.usvc-dev.developer.microsoft.com/display-name"
+	ExecutableReplicaIdAnnotation      = "executable-replica-set.usvc-dev.developer.microsoft.com/replica-id"
+	ExecutableReplicaSetNameAnnotation = "executable-replica-set.usvc-dev.developer.microsoft.com/replica-set-name"
+
+	// Used by .NET Aspire.
+	// CONSIDER having means to create this annotation based on information in Executable spec template.
+	OtelServiceinstaneIdAnnotation = "otel-service-instance-id"
 )
 
 const (
@@ -106,7 +112,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 // Create a new Executable replica for the given ExecutableReplicaSet
 func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.ExecutableReplicaSet, log logr.Logger) (*apiv1.Executable, error) {
 	// Replica names are postfixed with a unique string to avoid collisions.
-	uniqueName, err := MakeUniqueName(replicaSet.Name)
+	uniqueName, postfix, err := MakeUniqueName(replicaSet.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +137,9 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 	}
 	exe.Annotations[ExecutableReplicaStateAnnotation] = string(ExecutableReplicaSetStateActive)
 	exe.Annotations[ExecutableDisplayNameAnnotation] = displayName
+	exe.Annotations[ExecutableReplicaIdAnnotation] = postfix
+	exe.Annotations[OtelServiceinstaneIdAnnotation] = postfix
+	exe.Annotations[ExecutableReplicaSetNameAnnotation] = replicaSet.Name
 
 	for k, v := range replicaSet.Spec.Template.Labels {
 		exe.Labels[k] = v

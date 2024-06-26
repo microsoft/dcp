@@ -257,7 +257,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	}
 
 	if networkName == "" {
-		uniqueNetworkName, err := MakeUniqueName(network.Name)
+		uniqueNetworkName, _, err := MakeUniqueName(network.Name)
 		if err != nil {
 			return additionalReconciliationNeeded
 		}

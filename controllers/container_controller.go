@@ -703,7 +703,7 @@ func (r *ContainerReconciler) createContainer(
 	log.V(1).Info("scheduling container start", "image", container.SpecifiedImageNameOrDefault())
 
 	if containerName == "" {
-		uniqueContainerName, err := MakeUniqueName(container.Name)
+		uniqueContainerName, _, err := MakeUniqueName(container.Name)
 		if err != nil {
 			log.Error(err, "could not generate a unique container name")
 			rcd.containerState = apiv1.ContainerStateFailedToStart
@@ -1247,7 +1247,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			continue
 		}
 
-		uniqueName, err := MakeUniqueName(fmt.Sprint(container.Name, "-", namespacedNetworkName.Name))
+		uniqueName, _, err := MakeUniqueName(fmt.Sprint(container.Name, "-", namespacedNetworkName.Name))
 		if err != nil {
 			log.Error(err, "could not generate unique name for ContainerNetworkConnection object")
 			continue
@@ -1293,7 +1293,7 @@ func (r *ContainerReconciler) createEndpoint(
 	serviceProducer ServiceProducer,
 	log logr.Logger,
 ) (*apiv1.Endpoint, error) {
-	endpointName, err := MakeUniqueName(owner.GetName())
+	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
 		log.Error(err, "could not generate unique name for Endpoint object")
 		return nil, err
