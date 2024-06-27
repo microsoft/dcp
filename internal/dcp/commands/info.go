@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -12,6 +14,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
+
+// Default timeout for the info command
+var timeout = 20
 
 func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 	infoCmd := &cobra.Command{
@@ -23,6 +28,7 @@ func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 	}
 
 	container_flags.EnsureRuntimeFlag(infoCmd.PersistentFlags())
+	infoCmd.Flags().IntVarP(&timeout, "timeout", "t", 20, "Timeout for the command in seconds")
 
 	return infoCmd, nil
 }
@@ -53,7 +59,8 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log := log.WithName("info")
 
-		ctx := cmd.Context()
+		ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(timeout)*time.Second)
+		defer cancel()
 
 		processExecutor := process.NewOSExecutor(log)
 		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log, processExecutor)
