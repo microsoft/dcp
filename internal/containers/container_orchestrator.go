@@ -167,7 +167,7 @@ type ContainerOrchestrator interface {
 	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)
 
 	// Start one or more stopped containers. Returns list of started containers.
-	StartContainers(ctx context.Context, containers []string) ([]string, error)
+	StartContainers(ctx context.Context, containers []string, streamOptions StreamCommandOptions) ([]string, error)
 
 	// Starts the container. If successful, the ID of the container is returned.
 	RunContainer(ctx context.Context, options RunContainerOptions) (string, error)
