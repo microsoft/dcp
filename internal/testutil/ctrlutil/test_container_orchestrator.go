@@ -628,7 +628,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 	return container, nil
 }
 
-func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names []string) ([]string, error) {
+func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -651,7 +651,7 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 	}
 
 	for _, container := range containersToStart {
-		id, err := to.doStartContainer(ctx, container)
+		id, err := to.doStartContainer(ctx, container, streamOptions)
 		if err != nil {
 			return result, err
 		}
@@ -662,9 +662,17 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 	return result, nil
 }
 
-func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container testContainer) (string, error) {
+func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container testContainer, streamOptions containers.StreamCommandOptions) (string, error) {
+	streamIfPossible := func(err error) error {
+		if streamOptions.StdErrStream != nil {
+			_, writeErr := streamOptions.StdErrStream.Write([]byte(err.Error()))
+			err = errors.Join(err, writeErr)
+		}
+		return err
+	}
+
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return "", streamIfPossible(ctx.Err())
 	}
 
 	for name, exit := range to.containersToFail {
@@ -682,12 +690,12 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 				Actor:  containers.EventActor{ID: container.id},
 			})
 
-			return container.id, fmt.Errorf("container failed to start: %s", exit.stdErr)
+			return container.id, streamIfPossible(fmt.Errorf("container failed to start: %s", exit.stdErr))
 		}
 	}
 
 	if container.status != containers.ContainerStatusCreated && container.status != containers.ContainerStatusExited {
-		return "", fmt.Errorf("container is not in a state to be started")
+		return "", streamIfPossible(fmt.Errorf("container is not in a state to be started"))
 	}
 
 	container.status = containers.ContainerStatusRunning
@@ -714,7 +722,7 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 		return "", err
 	}
 
-	if _, err = to.doStartContainer(ctx, container); err != nil {
+	if _, err = to.doStartContainer(ctx, container, options.StreamCommandOptions); err != nil {
 		return container.id, err
 	}
 

@@ -506,7 +506,7 @@ func TestContainerRestart(t *testing.T) {
 		return statusUpdated, nil
 	})
 
-	_, err = orchestrator.StartContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	_, err = orchestrator.StartContainers(ctx, []string{updatedCtr.Status.ContainerID}, containers.StreamCommandOptions{})
 	require.NoError(t, err, "could not simulate container start")
 
 	t.Log("Ensure container state is 'running'...")
@@ -779,7 +779,7 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = orchestrator.StartContainers(ctx, []string{id})
+	_, err = orchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -868,7 +868,7 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = orchestrator.StartContainers(ctx, []string{id})
+	_, err = orchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)

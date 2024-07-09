@@ -467,7 +467,7 @@ func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names [
 	return asObjects(outBuf, unmarshalContainer)
 }
 
-func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, containerIDs []string) ([]string, error) {
+func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, containerIDs []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
 	if len(containerIDs) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
@@ -476,7 +476,7 @@ func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, container
 	args = append(args, containerIDs...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StartContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StartContainers", cmd, streamOptions.StdOutStream, streamOptions.StdErrStream, ordinaryDockerCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
 	}

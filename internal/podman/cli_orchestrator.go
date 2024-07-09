@@ -405,7 +405,7 @@ func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names [
 	return asObjects(outBuf, unmarshalContainer)
 }
 
-func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, containerIds []string) ([]string, error) {
+func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, containerIds []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
 	if len(containerIds) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
@@ -414,7 +414,7 @@ func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, container
 	args = append(args, containerIds...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StartContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StartContainers", cmd, streamOptions.StdOutStream, streamOptions.StdErrStream, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
 	}

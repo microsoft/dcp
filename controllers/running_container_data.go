@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -156,6 +157,29 @@ func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 			log.Error(closeErr, "failed to close startup standard error file")
 		}
 	}
+}
+
+func (rcd *runningContainerData) onStartupTaskFinished() {
+	// One of the startup tasks is done; make sure that the startup output file(s)
+	// have a couple of blank lines separating the current content from what follows (best effort).
+	if rcd.startupStdOutFile != nil {
+		_, _ = rcd.startupStdOutFile.Write(osutil.WithNewline(osutil.WithNewline(nil)))
+	}
+	if rcd.startupStdErrFile != nil {
+		_, _ = rcd.startupStdErrFile.Write(osutil.WithNewline(osutil.WithNewline(nil)))
+	}
+}
+
+func (rcd *runningContainerData) getStartupStreamOptions() containers.StreamCommandOptions {
+	var streamOptions containers.StreamCommandOptions
+	// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
+	if rcd.startupStdOutFile != nil {
+		streamOptions.StdOutStream = usvc_io.NewTimestampWriter(rcd.startupStdOutFile)
+	}
+	if rcd.startupStdErrFile != nil {
+		streamOptions.StdErrStream = usvc_io.NewTimestampWriter(rcd.startupStdErrFile)
+	}
+	return streamOptions
 }
 
 func (rcd *runningContainerData) hasValidContainerID() bool {

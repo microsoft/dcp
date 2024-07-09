@@ -334,11 +334,6 @@ func ensureBuildingState(
 	// Bottom line we always want to apply the changes to the Container object.
 	change |= rcd.applyTo(container)
 
-	if rcd.containerState != apiv1.ContainerStateBuilding {
-		// Transitioning to a different state, build attempt(s) are done.
-		rcd.closeStartupLogFiles(log)
-	}
-
 	return change
 }
 
@@ -387,7 +382,7 @@ func ensureStartingState(
 		// The second portion of startup sequence of a container with custom networks.
 		// Need to create ContainerNetworkConnection objects and start the container resource.
 
-		started, err := r.handleInitialNetworkConnections(ctx, container, rcd.containerID, log)
+		started, err := r.handleInitialNetworkConnections(ctx, container, rcd, log)
 		switch {
 		case err != nil:
 			rcd.startupError = err
@@ -413,11 +408,6 @@ func ensureStartingState(
 	// Bottom line we always want to apply the changes to the Container object.
 	change |= rcd.applyTo(container)
 
-	if rcd.containerState != apiv1.ContainerStateStarting {
-		// Transitioning to a different state, startup attempt(s) are done.
-		rcd.closeStartupLogFiles(log)
-	}
-
 	return change
 }
 
@@ -439,6 +429,7 @@ func ensureFailedToStartState(
 		}
 	} else {
 		change |= rcd.applyTo(container)
+		rcd.closeStartupLogFiles(log)
 	}
 
 	return change
@@ -520,6 +511,7 @@ func ensureExitedState(ctx context.Context,
 		return ensureUnknownState(ctx, r, container, desiredState, log)
 	}
 
+	rcd.closeStartupLogFiles(log)
 	removeEndpointsForWorkload(r, ctx, container, log)
 
 	if len(container.Status.Networks) > 0 {
@@ -573,6 +565,7 @@ func ensureUnknownState(
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
 	} else {
 		rcd.containerState = apiv1.ContainerStateUnknown
+		rcd.closeStartupLogFiles(log)
 	}
 
 	return change
@@ -594,6 +587,7 @@ func ensureStoppingState(
 		return ensureUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
 	}
 
+	rcd.closeStartupLogFiles(log)
 	removeEndpointsForWorkload(r, ctx, container, log)
 
 	if rcd.stopAttemptInitiated {
@@ -853,26 +847,17 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				},
 			}...)
 
+			streamOptions := rcd.getStartupStreamOptions()
 			creationOptions := containers.CreateContainerOptions{
-				ContainerSpec: *rcd.runSpec,
-				Name:          containerName,
-				Network:       defaultNetwork,
-				StreamCommandOptions: containers.StreamCommandOptions{
-					// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
-					StdOutStream: usvc_io.NewTimestampWriter(rcd.startupStdOutFile),
-					StdErrStream: usvc_io.NewTimestampWriter(rcd.startupStdErrFile),
-				},
+				ContainerSpec:        *rcd.runSpec,
+				Name:                 containerName,
+				Network:              defaultNetwork,
+				StreamCommandOptions: streamOptions,
 			}
 			containerID, err := r.orchestrator.CreateContainer(startupCtx, creationOptions)
 
-			// This starting attempt is done; make sure that the output file(s) have a couple of blank lines
-			// separating this attempt from the next (best effort).
-			if rcd.startupStdOutFile != nil {
-				_, _ = rcd.startupStdOutFile.Write(osutil.WithNewline(osutil.WithNewline(nil)))
-			}
-			if rcd.startupStdErrFile != nil {
-				_, _ = rcd.startupStdErrFile.Write(osutil.WithNewline(osutil.WithNewline(nil)))
-			}
+			// This starting attempt is done; add a separator line to the startup logs.
+			rcd.onStartupTaskFinished()
 
 			// There are errors that can still result in a valid container ID, so we need to store it if one was returned
 			rcd.containerID = containerID
@@ -892,7 +877,8 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			rcd.updateFromInspectedContainer(inspected)
 
 			if rcd.runSpec.Networks == nil {
-				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID})
+				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID}, streamOptions)
+				rcd.onStartupTaskFinished()
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
 					return err
@@ -1034,22 +1020,22 @@ func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, 
 func (r *ContainerReconciler) handleInitialNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
-	containerID string,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) (bool, error) {
-	connected, err := r.ensureContainerNetworkConnections(ctx, container, nil, containerID, log)
+	connected, err := r.ensureContainerNetworkConnections(ctx, container, nil, rcd.containerID, log)
 	if err != nil {
 		return false, err
 	}
 
 	// Check to see if we are connected to all the ContainerNetworks listed in the Container object spec
 	if len(connected) != len(*container.Spec.Networks) {
-		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", containerID, "Expected", len(*container.Spec.Networks), "Connected", len(connected))
+		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.containerID, "Expected", len(*container.Spec.Networks), "Connected", len(connected))
 		return false, nil
 	}
 
-	if _, err = r.orchestrator.StartContainers(ctx, []string{containerID}); err != nil {
-		log.Error(err, "failed to start Container", "ContainerID", containerID)
+	if _, err = r.orchestrator.StartContainers(ctx, []string{rcd.containerID}, rcd.getStartupStreamOptions()); err != nil {
+		log.Error(err, "failed to start Container", "ContainerID", rcd.containerID)
 		return false, err
 	}
 
