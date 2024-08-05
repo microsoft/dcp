@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"io"
 	"sync"
 	"time"
 )
@@ -38,7 +39,7 @@ func (trw *testReaderWriter) Read(p []byte) (n int, err error) {
 	defer trw.lock.Unlock()
 
 	if trw.nextReadResult >= len(trw.readResults) {
-		panic("Read() called too many times")
+		return 0, io.EOF
 	}
 
 	result := trw.readResults[trw.nextReadResult]

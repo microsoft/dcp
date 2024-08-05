@@ -23,13 +23,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/queue"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 const (
-	DefaultReadWriteTimeout  = 3 * time.Second
+	DefaultReadWriteTimeout  = 5 * time.Second
 	DefaultConnectionTimeout = 5 * time.Second
 	MaxCachedUdpPackets      = 20
 
@@ -421,99 +420,40 @@ func (p *Proxy) copyStream(
 		copyingWg.Done()
 	}()
 
-	buffer := make([]byte, TcpDataBufferSize)
+	// Buffered network stream immediately starts copying data between the two connections and returns when the stream reports
+	// an error (either io.EOF for normal termination or another error for abnormal termination).
+	stream := StreamNetworkData(streamCtx, TcpDataBufferSize, incoming, outgoing, DefaultReadWriteTimeout)
 
-	for {
-		if streamCtx.Err() != nil {
-			return
-		}
+	if errors.Join(stream.WriteError, stream.ReadError) == nil {
+		p.log.Error(
+			fmt.Errorf("TCP proxy stream ended prematurely"),
+			"bufferedNetworkStream returned with no given reason",
+			"Stream", getStreamDescription(streamID, incoming, outgoing),
+			"StreamOutcome", stream.LogProperties(),
+		)
+	} else {
+		if p.log.V(1).Enabled() {
+			var msg string
+			if errors.Is(stream.ReadError, io.EOF) {
+				msg = "Client closed incoming connection"
+			} else if errors.Is(stream.WriteError, io.EOF) {
+				msg = "The outgoing connection was terminated; we will terminate client connection accordingly"
+			} else {
+				// There are many reasons why a network I/O operation may fail,
+				// and the failures are reported differently by different APIs and on different platforms.
+				// That is why we generally do not log errors from those operations exept in specific circumstances,
+				// such as DNS name resolution or initial connection establishment.
+				// In all other cases we just shut down the communication stream and let the client(s) retry.
 
-		deadline := time.Now().Add(p.readWriteTimeout)
-
-		if err := incoming.SetReadDeadline(deadline); err != nil {
-			p.log.V(1).Info(fmt.Sprintf("Error setting read deadline for TCP connection: %s", err.Error()))
-			return
-		}
-		if err := outgoing.SetWriteDeadline(deadline); err != nil {
-			p.log.V(1).Info(fmt.Sprintf("Error setting write deadline for TCP connection: %s", err.Error()))
-			return
-		}
-
-		// Copy will block for at most 3 seconds before hitting the deadline, at which point it will
-		// return an error. This is expected (it gives us the opportunity to check the lifetime context)
-		// so it won't be logged, and as long as the lifetime context is still active, the deadline will be refreshed.
-
-		cdr := copyData(incoming, outgoing, buffer)
-
-		if cdr.readError == nil && cdr.writeError == nil {
-			// Should never happen
-			p.log.Error(fmt.Errorf("TCP proxy stream ended prematurely"), "copyData() returned with no given reason",
+				msg = "An error copying TCP stream"
+			}
+			p.log.V(1).Info(
+				msg,
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
-				"StreamOutcome", cdr.String(),
+				"StreamOutcome", stream.LogProperties(),
 			)
-			return
-		}
-
-		if errors.Is(cdr.readError, os.ErrDeadlineExceeded) || errors.Is(cdr.writeError, os.ErrDeadlineExceeded) {
-			// This is expected regularly, so don't log it
-
-			if cdr.bytesRead != cdr.bytesWritten {
-				p.log.Error(fmt.Errorf("Data loss occurred during TCP traffic streaming"), "",
-					"Stream", getStreamDescription(streamID, incoming, outgoing),
-					"StreamOutcome", cdr.String(),
-				)
-			}
-			// ... and continue to the next iteration
-		} else {
-			if p.log.V(1).Enabled() {
-				var msg string
-				if cdr.readError == io.EOF {
-					msg = "Client closed incoming connection"
-				} else if cdr.writeError == io.EOF {
-					msg = "The outgoing connection was terminated; we will terminate client connection accordingly"
-				} else {
-					// There are many reasons why a network I/O operation may fail,
-					// and the failures are reported differently by different APIs and on different platforms.
-					// That is why we generally do not log errors from those operations exept in specific circumstances,
-					// such as DNS name resolution or initial connection establishment.
-					// In all other cases we just shut down the communication stream and let the client(s) retry.
-
-					msg = "An error copying TCP stream"
-				}
-				p.log.V(1).Info(msg,
-					"Stream", getStreamDescription(streamID, incoming, outgoing),
-					"StreamOutcome", cdr.String(),
-				)
-			}
-
-			return
 		}
 	}
-}
-
-type copyDataResult struct {
-	bytesRead                    int64
-	bytesWritten                 int64
-	lastSuccessfulReadTimestamp  time.Time
-	lastSuccessfulWriteTimestamp time.Time
-	readErrorTimestamp           time.Time
-	writeErrorTimestamp          time.Time
-	readError                    error
-	writeError                   error
-}
-
-func (cdr *copyDataResult) String() string {
-	retval := fmt.Sprintf("{BytesRead: %d, BytesWritten: %d, LastSuccessfulRead: %s, LastSuccessfulWrite: %s, ReadError: %s, ReadErrorTimestamp: %s, WriteError: %s, WriteErrorTimestamp: %s}",
-		cdr.bytesRead,
-		cdr.bytesWritten,
-		logger.FriendlyTimestamp(cdr.lastSuccessfulReadTimestamp),
-		logger.FriendlyTimestamp(cdr.lastSuccessfulWriteTimestamp),
-		logger.FriendlyErrorString(cdr.readError),
-		logger.FriendlyTimestamp(cdr.readErrorTimestamp),
-		logger.FriendlyErrorString(cdr.writeError),
-		logger.FriendlyTimestamp(cdr.writeErrorTimestamp),
-	)
-	return retval
 }
 
 type DeadlineReader interface {
@@ -524,93 +464,6 @@ type DeadlineReader interface {
 type DeadlineWriter interface {
 	io.Writer
 	SetWriteDeadline(t time.Time) error
-}
-
-// copyData() copies data from incoming to outgoing connection until there is no more data to copy, or an error occurs.
-// This is similar in function to io.Copy from the standard library, except for the following differences:
-//  1. copyData() does not take advantage of ReaderFrom/WriterTo interfaces, so it cannot do zero-copy I/O.
-//  2. It does return EOF as an error value (because we want to differentiate between connection close and zero-byte read).
-//  3. The result has a bunch of additional data that are useful for debugging.
-//  4. copyData() will handle correctly read/write deadlines and partial reads/writes when deadline occurs.
-//     io.Copy() does not handle partial reads/writes when a deadline occurs, and can loose data when a read is successful,
-//     but a write is interrupted by a deadline.
-func copyData(incoming DeadlineReader, outgoing DeadlineWriter, buf []byte) copyDataResult {
-	var res copyDataResult
-	var read, written int
-
-	for {
-		read, res.readError = incoming.Read(buf)
-		res.bytesRead += int64(read)
-		if res.readError != nil {
-			res.readErrorTimestamp = time.Now()
-		} else {
-			res.lastSuccessfulReadTimestamp = time.Now()
-		}
-
-		if read > 0 {
-			written, res.writeError = outgoing.Write(buf[0:read])
-			invalidWrite := written < 0 || read < written
-
-			if errors.Is(res.writeError, os.ErrDeadlineExceeded) && written < read && !invalidWrite {
-				// Special case: we have read some data, and maybe wrote some,
-				// but the write operation was interrupted by a deadline, so we need to retry it.
-
-				res.bytesWritten += int64(written)
-
-				deadline := time.Now().Add(DefaultReadWriteTimeout)
-				if err := outgoing.SetWriteDeadline(deadline); err != nil {
-					res.writeError = errors.Join(res.writeError, err)
-					res.writeErrorTimestamp = time.Now()
-					return res
-				}
-
-				var writeRetryErr error
-				toWrite := read - written
-
-				written, writeRetryErr = outgoing.Write(buf[written:read])
-				invalidWrite = written < 0 || toWrite < written
-				if writeRetryErr != nil || invalidWrite {
-					if writeRetryErr != nil {
-						writeRetryErr = errInvalidWrite
-					}
-					res.writeError = errors.Join(res.writeError, writeRetryErr)
-					res.writeErrorTimestamp = time.Now()
-					return res
-				}
-
-				// Remaining data was written successfully, res.writeError is os.ErrDeadlineExceeded,
-				// rest of the logic applies.
-			}
-
-			if res.writeError != nil || invalidWrite {
-				if res.writeError == nil {
-					res.writeError = errInvalidWrite
-				}
-				if invalidWrite {
-					return res
-				}
-				res.writeErrorTimestamp = time.Now()
-			} else {
-				res.lastSuccessfulWriteTimestamp = time.Now()
-			}
-
-			res.bytesWritten += int64(written)
-
-			if res.writeError != nil {
-				return res
-			}
-
-			if read != written {
-				res.writeError = io.ErrShortWrite
-				res.writeErrorTimestamp = time.Now()
-				return res
-			}
-		}
-
-		if res.readError != nil {
-			return res
-		}
-	}
 }
 
 func (p *Proxy) runUDP(udpListener net.PacketConn) {
