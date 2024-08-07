@@ -20,6 +20,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
@@ -1400,17 +1401,51 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 
 // CONTAINER RESOURCE MANAGEMENT METHODS
 
-func (r *ContainerReconciler) findContainer(ctx context.Context, container string) (*containers.InspectedContainer, error) {
-	res, err := r.orchestrator.InspectContainers(ctx, []string{container})
-	if err != nil {
-		return nil, err
+func (r *ContainerReconciler) findContainer(findContext context.Context, container string) (*containers.InspectedContainer, error) {
+	attempt := 0
+	const maxAttempts = 6
+	var ic *containers.InspectedContainer
+
+	// Occasionally we are not able to get the container information on first try, so we retry a few times
+	// See https://github.com/dotnet/aspire/issues/5109 for customer report.
+	tryInspect := func(ctx context.Context) (bool, error) {
+		attempt++
+
+		res, err := r.orchestrator.InspectContainers(ctx, []string{container})
+		if err != nil {
+			if attempt == maxAttempts {
+				return false, err
+			} else {
+				return false, nil // retry
+			}
+		}
+
+		if len(res) == 0 {
+			if attempt == maxAttempts {
+				return false, containers.ErrNotFound
+			} else {
+				return false, nil // retry
+			}
+		}
+
+		ic = &res[0]
+		return true, nil
 	}
 
-	if len(res) == 0 {
-		return nil, containers.ErrNotFound
+	// Note: the max total time we will attempt to inspect the container
+	// (assuming the context is not cancelled) is \sum_{i=1}^{maxAttempts-1}{200 ms * 2^{(i-1)}} = about 6 seconds.
+	backoff := wait.Backoff{
+		Duration: 200 * time.Millisecond, // Initial delay
+		Factor:   2,                      // How much to multiply the delay by each iteration
+		Jitter:   0.1,
+		Steps:    maxAttempts,
 	}
-
-	return &res[0], nil
+	waitErr := wait.ExponentialBackoffWithContext(findContext, backoff, tryInspect)
+	if waitErr != nil {
+		return nil, waitErr
+	} else {
+		return ic, nil
+	}
 }
 
 func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, log logr.Logger) {
