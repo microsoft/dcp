@@ -75,7 +75,7 @@ func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 	r := ServiceReconciler{
 		Client:                client,
 		ProcessExecutor:       processExecutor,
-		ProxyConfigDir:        filepath.Join(usvc_io.DcpTempDir, "usvc-servicecontroller-serviceconfig"),
+		ProxyConfigDir:        filepath.Join(usvc_io.DcpTempDir(), "usvc-servicecontroller-serviceconfig"),
 		proxyData:             &syncmap.Map[types.NamespacedName, []proxyInstanceData]{},
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		lifetimeCtx:           lifetimeCtx,

@@ -739,7 +739,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			}...)
 
 			buildOptions := containers.BuildImageOptions{
-				IidFile:               filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
+				IidFile:               filepath.Join(usvc_io.DcpTempDir(), fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()

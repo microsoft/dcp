@@ -21,10 +21,9 @@ import (
 )
 
 const (
-	DCP_DIAGNOSTICS_LOG_FOLDER   = "DCP_DIAGNOSTICS_LOG_FOLDER"   // Folder to write debug logs to (defaults to a temp folder)
-	DCP_DIAGNOSTICS_LOG_LEVEL    = "DCP_DIAGNOSTICS_LOG_LEVEL"    // Log level to include in debug logs (defaults to none)
-	DCP_LOG_SOCKET               = "DCP_LOG_SOCKET"               // Unix socket to write console logs to instead of stderr
-	DCP_PRESERVE_EXECUTABLE_LOGS = "DCP_PRESERVE_EXECUTABLE_LOGS" // If truthy ("1", "true", "on", "yes"), preserve logs from executable runs
+	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
+	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
+	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
 
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
@@ -153,29 +152,6 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 
 	// Return a new log core for the debug log
 	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
-}
-
-var shouldCleanupSessionFolder bool = true
-
-func PreserveSessionFolder() {
-	shouldCleanupSessionFolder = false
-}
-
-func CleanupSessionFolderIfNeeded() {
-	if !shouldCleanupSessionFolder {
-		return
-	}
-
-	if osutil.EnvVarSwitchEnabled(DCP_PRESERVE_EXECUTABLE_LOGS) {
-		return
-	}
-
-	dcpSessionDir, found := os.LookupEnv(usvc_io.DCP_SESSION_FOLDER)
-	if found {
-		if err := os.RemoveAll(dcpSessionDir); err != nil && !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "failed to remove session directory: %v\n", err)
-		}
-	}
 }
 
 // Returns the folder to write detailed logs and perf traces to.

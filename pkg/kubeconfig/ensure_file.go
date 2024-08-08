@@ -228,12 +228,18 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 		}
 	}
 
-	dcpFolder, dcpFolderErr := dcppaths.EnsureDcpRootDir()
-	if dcpFolderErr != nil {
-		return "", fmt.Errorf("could not determine the path to the DCP default folder; do not know where to find or create the kubeconfig file: %w", dcpFolderErr)
+	var kubeconfigFolder string
+	if usvc_io.DcpSessionDir() != "" {
+		kubeconfigFolder = usvc_io.DcpSessionDir()
+	} else {
+		var dcpFolderErr error
+		kubeconfigFolder, dcpFolderErr = dcppaths.EnsureDcpRootDir()
+		if dcpFolderErr != nil {
+			return "", fmt.Errorf("could not determine the path to the DCP default folder; do not know where to find or create the kubeconfig file: %w", dcpFolderErr)
+		}
 	}
 
-	kubeconfigPath := filepath.Join(dcpFolder, "kubeconfig")
+	kubeconfigPath := filepath.Join(kubeconfigFolder, "kubeconfig")
 	return kubeconfigPath, nil
 }
 

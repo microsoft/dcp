@@ -116,7 +116,7 @@ func setupSocketListener(to *TestContainerOrchestrator) error {
 	if suffixErr != nil {
 		return fmt.Errorf("could not create orchestrator socket file name: %w", suffixErr)
 	}
-	to.socketFilePath = filepath.Join(usvc_io.DcpTempDir, fmt.Sprintf("tco_sock_%s", string(suffix)))
+	to.socketFilePath = filepath.Join(usvc_io.DcpTempDir(), fmt.Sprintf("tco_sock_%s", string(suffix)))
 
 	socketListener, listenErr := net.Listen("unix", to.socketFilePath)
 	if listenErr != nil {

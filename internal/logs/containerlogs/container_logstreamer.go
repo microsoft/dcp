@@ -345,7 +345,7 @@ func (c *containerLogStreamer) ensureContainerLogDescriptors(hostLifetimeCtx con
 		return
 	}
 
-	c.containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, usvc_io.DcpTempDir, c.log.WithName("LogDescriptorSet"))
+	c.containerLogs = logs.NewLogDescriptorSet(hostLifetimeCtx, usvc_io.DcpTempDir(), c.log.WithName("LogDescriptorSet"))
 }
 
 var _ apiv1.ResourceLogStreamer = (*containerLogStreamer)(nil)

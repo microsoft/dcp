@@ -15,6 +15,7 @@ import (
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -81,7 +82,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)
 
-			logger.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
+			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
 			forked := exec.Command(os.Args[0], args...)
 			process.ForkFromParent(forked)

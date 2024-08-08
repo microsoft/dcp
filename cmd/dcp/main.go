@@ -10,6 +10,7 @@ import (
 
 	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
@@ -26,7 +27,7 @@ func main() {
 		log.Error(fmt.Errorf("panic: %v", value), "exiting due to panic")
 		os.Exit(errPanic)
 	})
-	defer logger.CleanupSessionFolderIfNeeded()
+	defer usvc_io.CleanupSessionFolderIfNeeded()
 
 	ctx := kubeapiserver.SetupSignalContext()
 
