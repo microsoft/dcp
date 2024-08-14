@@ -99,10 +99,10 @@ func (rs *runState) IncreaseCompletionCallReadiness() {
 	rs.handlerWG.Done()
 }
 
-func (rs *runState) SetOutputWriters(stdOut, stdErr io.Writer) error {
+func (rs *runState) SetOutputWriters(stdOut, stdErr io.WriteCloser) error {
 	var err error
 	if stdOut != nil {
-		err = rs.stdOut.SetTarget(stdOut)
+		err = rs.stdOut.SetTarget(usvc_io.NewTimestampWriter(stdOut))
 	} else {
 		err = rs.stdOut.SetTarget(io.Discard)
 	}
@@ -111,7 +111,7 @@ func (rs *runState) SetOutputWriters(stdOut, stdErr io.Writer) error {
 	}
 
 	if stdErr != nil {
-		err = rs.stdErr.SetTarget(stdErr)
+		err = rs.stdErr.SetTarget(usvc_io.NewTimestampWriter(stdErr))
 	} else {
 		err = rs.stdErr.SetTarget(io.Discard)
 	}
