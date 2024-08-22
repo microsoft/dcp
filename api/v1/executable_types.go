@@ -27,6 +27,9 @@ import (
 type ExecutableState string
 
 const (
+	// Same as ExecutableStateStarting. May be encountered if the Executable status has not been initialized yet.
+	ExecutableStateEmpty ExecutableState = ""
+
 	// The Executable has been scheduled to launch, but we will need to re-evaluate its state in a subsequent
 	// reconciliation loop.
 	ExecutableStateStarting ExecutableState = "Starting"
@@ -174,6 +177,9 @@ type ExecutableStatus struct {
 	// Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.
 	// +listType:=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
+
+	// Health status of the Executable
+	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
 }
 
 func (es ExecutableStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

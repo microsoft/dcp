@@ -1126,6 +1126,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 							},
 						},
 					},
+					"healthStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Health status of the Container",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
@@ -1898,6 +1905,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 									},
 								},
 							},
+						},
+					},
+					"healthStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Health status of the Executable",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

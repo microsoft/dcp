@@ -139,6 +139,7 @@ func (lds *LogDescriptorSet) ReleaseForResource(resourceUID types.UID) {
 
 func (lds *LogDescriptorSet) scavenger() {
 	timer := time.NewTimer(oldDescriptorScavengeInterval)
+	defer timer.Stop()
 
 	for {
 		select {

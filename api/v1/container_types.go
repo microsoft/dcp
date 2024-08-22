@@ -36,13 +36,13 @@ const (
 	RestartPolicyNone ContainerRestartPolicy = "no"
 
 	// Restart only if the container exits with non-zero status
-	RestartPolicyOnFailure = "on-failure"
+	RestartPolicyOnFailure ContainerRestartPolicy = "on-failure"
 
 	// Restart container, except if container is explicitly stopped (or container daemon is stopped/restarted)
-	RestartPolicyUnlessStopped = "unless-stopped"
+	RestartPolicyUnlessStopped ContainerRestartPolicy = "unless-stopped"
 
 	// Always try to restart the container
-	RestartPolicyAlways = "always"
+	RestartPolicyAlways ContainerRestartPolicy = "always"
 )
 
 type VolumeMountType string
@@ -297,6 +297,9 @@ type ContainerStatus struct {
 
 	// List of ContainerNetworks the Container is connected to
 	Networks []string `json:"networks,omitempty"`
+
+	// Health status of the Container
+	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
 }
 
 func (cs ContainerStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

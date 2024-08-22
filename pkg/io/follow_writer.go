@@ -38,6 +38,7 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 		reader := bufio.NewReader(source)
 		buf := make([]byte, defaultBufferSize)
 		timer := time.NewTimer(0)
+		defer timer.Stop()
 
 		for {
 			if fw.done.Load() {

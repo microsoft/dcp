@@ -193,7 +193,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	t.Log("Found Endpoint with correct spec")
 
 	t.Log("Simulate Container stopping...")
-	err = containerOrchestrator.SimulateContainerExit(ctx, inspected.Id)
+	err = containerOrchestrator.SimulateContainerExit(ctx, inspected.Id, 0)
 	require.NoError(t, err, "Could not simulate container exit")
 
 	t.Log("Ensure Container object status reflects the state of the running container...")

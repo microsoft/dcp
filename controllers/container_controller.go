@@ -69,14 +69,14 @@ type containerStateInitializerFunc = stateInitializerFunc[
 var containerStateInitializers = map[apiv1.ContainerState]containerStateInitializerFunc{
 	apiv1.ContainerStateEmpty:         handleNewContainer,
 	apiv1.ContainerStatePending:       handleNewContainer,
-	apiv1.ContainerStateBuilding:      ensureBuildingState,
-	apiv1.ContainerStateStarting:      ensureStartingState,
-	apiv1.ContainerStateFailedToStart: ensureFailedToStartState,
+	apiv1.ContainerStateBuilding:      ensureContainerBuildingState,
+	apiv1.ContainerStateStarting:      ensureContainerStartingState,
+	apiv1.ContainerStateFailedToStart: ensureContainerFailedToStartState,
 	apiv1.ContainerStateRunning:       updateContainerData,
 	apiv1.ContainerStatePaused:        updateContainerData,
-	apiv1.ContainerStateExited:        ensureExitedState,
-	apiv1.ContainerStateUnknown:       ensureUnknownState,
-	apiv1.ContainerStateStopping:      ensureStoppingState,
+	apiv1.ContainerStateExited:        ensureContainerExitedState,
+	apiv1.ContainerStateUnknown:       ensureContainerUnknownState,
+	apiv1.ContainerStateStopping:      ensureContainerStoppingState,
 }
 
 type ContainerReconciler struct {
@@ -227,21 +227,19 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
-	currentContainerState := container.Status.State
+	targetContainerState := container.Status.State
 	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
 	if found {
 		// In-memory container state is not subject to issues related to caching and
 		// status updates failed due to conflict, so it is fresher and has precedence.
-		currentContainerState = rcd.containerState
+		targetContainerState = rcd.containerState
 	}
-
-	newContainerState := currentContainerState
 
 	// Even if the new container state is (as it is usually the case) the same as the current state,
 	// we still want to run the state handler to ensure that the Container object Status,
 	// and the real-world resources associated with the Container object, are up to date.
-	initalizer := getStateInitializer(containerStateInitializers, newContainerState, log)
-	change := initalizer(ctx, r, container, newContainerState, log)
+	initalizer := getStateInitializer(containerStateInitializers, targetContainerState, log)
+	change := initalizer(ctx, r, container, targetContainerState, log)
 	return change
 }
 
@@ -289,20 +287,23 @@ func handleNewContainer(
 	_ apiv1.ContainerState,
 	_ logr.Logger,
 ) objectChange {
+	var change objectChange
+
 	if container.Spec.Stop {
 		// The container was started with a desired state of stopped, don't attempt to start it.
-		container.Status.State = apiv1.ContainerStateFailedToStart
+		change = setContainerState(container, apiv1.ContainerStateFailedToStart)
 	} else if container.Spec.Build != nil {
 		// Container has a build context, so need to build it first.
-		container.Status.State = apiv1.ContainerStateBuilding
+		change = setContainerState(container, apiv1.ContainerStateBuilding)
 	} else {
 		// Initiate startup sequence.
-		container.Status.State = apiv1.ContainerStateStarting
+		change = setContainerState(container, apiv1.ContainerStateStarting)
 	}
-	return statusChanged
+
+	return change
 }
 
-func ensureBuildingState(
+func ensureContainerBuildingState(
 	ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
@@ -338,7 +339,7 @@ func ensureBuildingState(
 	return change
 }
 
-func ensureStartingState(
+func ensureContainerStartingState(
 	ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
@@ -412,7 +413,7 @@ func ensureStartingState(
 	return change
 }
 
-func ensureFailedToStartState(
+func ensureContainerFailedToStartState(
 	ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
@@ -449,7 +450,7 @@ func updateContainerData(
 	if !found {
 		// Should never happen--the runningContaienrs map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-		return ensureUnknownState(ctx, r, container, desiredState, log)
+		return ensureContainerUnknownState(ctx, r, container, desiredState, log)
 	}
 
 	if container.Spec.Stop || (container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() && !container.Spec.Persistent) {
@@ -470,7 +471,7 @@ func updateContainerData(
 	if err != nil {
 		if errors.Is(err, containers.ErrNotFound) {
 			log.Info("container resource not found, assuming it was removed... ", "ContainerID", containerID)
-			return ensureUnknownState(ctx, r, container, desiredState, log)
+			return ensureContainerUnknownState(ctx, r, container, desiredState, log)
 		} else {
 			log.Info("container resource could not be inspected ",
 				"ContainerID", containerID,
@@ -497,7 +498,7 @@ func updateContainerData(
 	return change
 }
 
-func ensureExitedState(ctx context.Context,
+func ensureContainerExitedState(ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	desiredState apiv1.ContainerState,
@@ -509,7 +510,7 @@ func ensureExitedState(ctx context.Context,
 	if !found {
 		// Should never happen--the runningContaienrs map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-		return ensureUnknownState(ctx, r, container, desiredState, log)
+		return ensureContainerUnknownState(ctx, r, container, desiredState, log)
 	}
 
 	rcd.closeStartupLogFiles(log)
@@ -535,7 +536,7 @@ func ensureExitedState(ctx context.Context,
 	return change
 }
 
-func ensureUnknownState(
+func ensureContainerUnknownState(
 	ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
@@ -572,7 +573,7 @@ func ensureUnknownState(
 	return change
 }
 
-func ensureStoppingState(
+func ensureContainerStoppingState(
 	ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
@@ -585,7 +586,7 @@ func ensureStoppingState(
 	if !found {
 		// Should never happen--the runningContaienrs map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-		return ensureUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
+		return ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
 	}
 
 	rcd.closeStartupLogFiles(log)
@@ -599,7 +600,7 @@ func ensureStoppingState(
 		err := r.startupQueue.Enqueue(r.stopContainer(container, rcd, log))
 		if err != nil {
 			log.Error(err, "could not stop the container")
-			change |= ensureUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
+			change |= ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
 		}
 	}
 
@@ -1582,12 +1583,41 @@ func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 // MISCELLANEOUS HELPER METHODS
 
 func setContainerState(container *apiv1.Container, state apiv1.ContainerState) objectChange {
-	if container.Status.State == state {
-		return noChange
+	change := noChange
+	healthStatus := getDefaultContainerHealthStatus(container, state)
+
+	if container.Status.State != state {
+		container.Status.State = state
+		change = statusChanged
 	}
 
-	container.Status.State = state
-	return statusChanged
+	if container.Status.HealthStatus != healthStatus {
+		container.Status.HealthStatus = healthStatus
+		change = statusChanged
+	}
+
+	return change
+}
+
+func getDefaultContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerState) apiv1.HealthStatus {
+	switch state {
+	case apiv1.ContainerStateEmpty, apiv1.ContainerStatePending, apiv1.ContainerStateBuilding, apiv1.ContainerStateStarting, apiv1.ContainerStatePaused, apiv1.ContainerStateUnknown, apiv1.ContainerStateStopping:
+		return apiv1.HealthStatusCaution
+	case apiv1.ContainerStateRunning:
+		return apiv1.HealthStatusHealthy
+	case apiv1.ContainerStateFailedToStart:
+		return apiv1.HealthStatusUnhealthy
+	case apiv1.ContainerStateExited:
+		if ctr.Status.ExitCode == apiv1.UnknownExitCode || *ctr.Status.ExitCode == 0 {
+			return apiv1.HealthStatusCaution
+		} else {
+			return apiv1.HealthStatusUnhealthy
+		}
+	default:
+		// This should never happen and would indicate we failed to account for some Container state.
+		// Report the status as unhalthy, but do not panic. This should be pretty visible for clients and cause a bug report.
+		return apiv1.HealthStatusUnhealthy
+	}
 }
 
 func (r *ContainerReconciler) computeEffectiveEnvironment(

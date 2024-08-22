@@ -59,6 +59,7 @@ func WatchLogs(ctx context.Context, path string, dest io.Writer, opts WatchLogOp
 	//   which means the likelyhood of having the file contents cached in memory by the OS is very high,
 	//   and the cost of making a read() call to check for new data is very low.
 	timer := time.NewTimer(0)
+	defer timer.Stop()
 
 	for {
 		if ctx.Err() != nil {

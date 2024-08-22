@@ -326,12 +326,6 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		change |= statusChanged
 	}
 
-	// We only overwrite the startup timestamp if it is not already set, to avoid problems with rounding errors.
-	if !rcd.startAttemptFinishedAt.IsZero() && ctr.Status.StartupTimestamp.IsZero() {
-		ctr.Status.StartupTimestamp = rcd.startAttemptFinishedAt
-		change |= statusChanged
-	}
-
 	// From the runSpec the runningContainerData has, only Env and Args will ever be modified
 	// (as a result of evaluating template expressions that may be embedded in environment variables or command arguments).
 
@@ -355,9 +349,21 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		change |= statusChanged
 	}
 
-	if ctr.Status.FinishTimestamp.IsZero() && rcd.containerState == apiv1.ContainerStateExited {
-		ctr.Status.FinishTimestamp = metav1.Now()
+	// We overwrite timestamps only if they are not already set, to avoid problems with rounding errors.
+
+	if ctr.Status.StartupTimestamp.IsZero() && !rcd.startAttemptFinishedAt.IsZero() {
+		ctr.Status.StartupTimestamp = rcd.startAttemptFinishedAt
 		change |= statusChanged
+	}
+
+	if ctr.Status.FinishTimestamp.IsZero() {
+		if rcd.containerState == apiv1.ContainerStateExited {
+			ctr.Status.FinishTimestamp = metav1.Now()
+			change |= statusChanged
+		} else if rcd.containerState == apiv1.ContainerStateFailedToStart && !rcd.startAttemptFinishedAt.IsZero() {
+			ctr.Status.FinishTimestamp = rcd.startAttemptFinishedAt
+			change |= statusChanged
+		}
 	}
 
 	return change

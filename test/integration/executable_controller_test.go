@@ -1865,6 +1865,105 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	require.NoError(t, scanner.Err(), "The log stream for Executable '%s' did not end gracefully", exe.ObjectMeta.Name)
 }
 
+// Ensure that Executable health status changes according to its state (no health probes).
+// When running the Executable should be Healthy.
+// If the Executable fails to start, it should be Unhealthy.
+// Finished with zero exit code--Caution. Finished with non-zero exit code--Unhealthy.
+func TestExecutableHealthBasic(t *testing.T) {
+	type testcase struct {
+		description            string
+		exeName                string
+		simulateStartupFailure bool
+		exitCode               int32
+		expectedState          apiv1.ExecutableState
+		expectedHealthStatus   apiv1.HealthStatus
+	}
+
+	testcases := []testcase{
+		{
+			description:            "exit-zero",
+			exeName:                "test-executable-health-basic-exit-zero",
+			simulateStartupFailure: false,
+			exitCode:               0,
+			expectedState:          apiv1.ExecutableStateFinished,
+			expectedHealthStatus:   apiv1.HealthStatusCaution,
+		},
+		{
+			description:            "exit-non-zero",
+			exeName:                "test-executable-health-basic-exit-non-zero",
+			simulateStartupFailure: false,
+			exitCode:               1,
+			expectedState:          apiv1.ExecutableStateFinished,
+			expectedHealthStatus:   apiv1.HealthStatusUnhealthy,
+		},
+		{
+			description:            "startup-failure",
+			exeName:                "test-executable-health-basic-startup-failure",
+			simulateStartupFailure: true,
+			expectedState:          apiv1.ExecutableStateFailedToStart,
+			expectedHealthStatus:   apiv1.HealthStatusUnhealthy,
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			exe := apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tc.exeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/" + tc.exeName,
+				},
+			}
+
+			if tc.simulateStartupFailure {
+				t.Logf("Simulating Executable '%s' startup failure...", exe.ObjectMeta.Name)
+				testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+					Condition: ctrl_testutil.ProcessSearchCriteria{
+						Command: []string{exe.Spec.ExecutablePath},
+					},
+					StartupError: fmt.Errorf("simulated statup failure for Executable '%s'", exe.ObjectMeta.Name),
+				})
+				defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+					Command: []string{exe.Spec.ExecutablePath},
+				})
+			}
+
+			t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+			err := client.Create(ctx, exe.DeepCopy())
+			require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+			if !tc.simulateStartupFailure {
+				t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+				_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+					return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+				})
+				pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+				require.NoError(t, processErr, "Process for Executable '%s' could not be started", exe.ObjectMeta.Name)
+
+				t.Logf("Simulate Executable '%s' run finish...", exe.ObjectMeta.Name)
+				testProcessExecutor.SimulateProcessExit(t, pid, tc.exitCode)
+			}
+
+			t.Logf("Ensure Executable '%s' is in the expected state, including health status...", exe.ObjectMeta.Name)
+			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+				hasFinishTimestamp := !currentExe.Status.FinishTimestamp.IsZero()
+				inExpectedState := currentExe.Status.State == tc.expectedState
+				hasExpectedHealthStatus := currentExe.Status.HealthStatus == tc.expectedHealthStatus
+				return hasFinishTimestamp && inExpectedState && hasExpectedHealthStatus, nil
+			})
+		})
+	}
+}
+
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {
 	pid := process.UnknownPID
 

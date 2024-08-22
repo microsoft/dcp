@@ -1119,7 +1119,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 	return result, nil
 }
 
-func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, name string) error {
+func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, name string, exitCode int32) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1130,7 +1130,7 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 	for _, container := range to.containers {
 		if container.matches(name) {
 			container.status = containers.ContainerStatusExited
-			container.exitCode = 0
+			container.exitCode = exitCode
 			container.finishedAt = time.Now().UTC()
 			container.stdoutLog.Close()
 			container.stderrLog.Close()

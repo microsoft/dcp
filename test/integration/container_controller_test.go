@@ -129,7 +129,7 @@ func TestContainerMarkedDone(t *testing.T) {
 
 	updatedContainer, _ := ensureContainerRunning(t, ctx, &ctr)
 
-	err = containerOrchestrator.SimulateContainerExit(ctx, updatedContainer.Status.ContainerID)
+	err = containerOrchestrator.SimulateContainerExit(ctx, updatedContainer.Status.ContainerID, 0)
 	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure Container object status reflects the state of the running container...")
@@ -170,7 +170,8 @@ func TestContainerStartupFailure(t *testing.T) {
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
 		statusUpdated := c.Status.State == apiv1.ContainerStateFailedToStart
 		messageOK := strings.Contains(c.Status.Message, errMsg)
-		return statusUpdated && messageOK, nil
+		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		return statusUpdated && messageOK && unhealthy, nil
 	})
 }
 
@@ -495,7 +496,7 @@ func TestContainerRestart(t *testing.T) {
 	require.NoError(t, err, "could not create a Container")
 
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
-	err = containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID)
+	err = containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, 0)
 	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure container state is 'stopped'...")
@@ -923,7 +924,7 @@ func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
 
 	t.Logf("Ensure Container object status becomes 'Unknown'...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
-		return c.Status.State == apiv1.ContainerStateUnknown, nil
+		return c.Status.State == apiv1.ContainerStateUnknown && c.Status.HealthStatus == apiv1.HealthStatusCaution, nil
 	})
 }
 
@@ -953,7 +954,7 @@ func TestContainerLogsNonFollow(t *testing.T) {
 			containerName: exitedContainerName,
 			ensureDesiredState: func(t *testing.T, ctx context.Context, c *apiv1.Container) {
 				require.True(t, c.Status.State == apiv1.ContainerStateRunning)
-				exitErr := containerOrchestrator.SimulateContainerExit(ctx, c.Status.ContainerID)
+				exitErr := containerOrchestrator.SimulateContainerExit(ctx, c.Status.ContainerID, 0)
 				require.NoError(t, exitErr)
 				_ = ensureContainerState(t, ctx, c, apiv1.ContainerStateExited)
 			},
@@ -1122,7 +1123,7 @@ func TestContainerLogsFollowAfterExit(t *testing.T) {
 	}
 
 	t.Logf("Transitioning Container '%s' to 'Exited' state...", ctr.ObjectMeta.Name)
-	exitErr := containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID)
+	exitErr := containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, 0)
 	require.NoError(t, exitErr)
 	updatedCtr = ensureContainerState(t, ctx, updatedCtr, apiv1.ContainerStateExited)
 
@@ -1332,4 +1333,93 @@ func TestContainerLogsFollowStreamEndsOnDelete(t *testing.T) {
 	gotLine := scanner.Scan()
 	require.False(t, gotLine, "Unexpectedly read a line from log stream for Container '%s' after it was deleted", updatedCtr.ObjectMeta.Name)
 	require.NoError(t, scanner.Err(), "The log stream for Container '%s' did not end gracefully", updatedCtr.ObjectMeta.Name)
+}
+
+// Ensure that the Container health status changes according to its state (no health probes).
+// When running the Container should be Healthy.
+// If the container fails to start, it should be Unhealthy.
+// Stopped with zero exit code--Caution. Stopped with non-zero exit code--Unhealthy.
+func TestContainerHealthBasic(t *testing.T) {
+	type testcase struct {
+		description            string
+		containerName          string
+		simulateStartupFailure bool
+		exitCode               int32
+		expectedState          apiv1.ContainerState
+		expectedHealthStatus   apiv1.HealthStatus
+	}
+
+	testcases := []testcase{
+		{
+			description:            "exit-zero",
+			containerName:          "container-health-basic-exit-zero",
+			simulateStartupFailure: false,
+			exitCode:               0,
+			expectedState:          apiv1.ContainerStateExited,
+			// Only running containers can be healthy
+			expectedHealthStatus: apiv1.HealthStatusCaution,
+		},
+		{
+			description:            "exit-non-zero",
+			containerName:          "container-health-basic-exit-non-zero",
+			simulateStartupFailure: false,
+			exitCode:               1,
+			expectedState:          apiv1.ContainerStateExited,
+			expectedHealthStatus:   apiv1.HealthStatusUnhealthy,
+		},
+		{
+			description:            "startup-failure",
+			containerName:          "container-health-basic-startup-failure",
+			simulateStartupFailure: true,
+			expectedState:          apiv1.ContainerStateFailedToStart,
+			expectedHealthStatus:   apiv1.HealthStatusUnhealthy,
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			ctr := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      tc.containerName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ContainerSpec{
+					Image: tc.containerName + "-image",
+				},
+			}
+
+			if tc.simulateStartupFailure {
+				errMsg := fmt.Sprintf("Simulating Container '%s' startup failure", ctr.ObjectMeta.Name)
+				containerOrchestrator.FailMatchingContainers(ctx, ctr.ObjectMeta.Name, 1, errMsg)
+			}
+
+			t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+			err := client.Create(ctx, &ctr)
+			require.NoError(t, err, "Could not create Container object")
+
+			if !tc.simulateStartupFailure {
+				updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+				require.Equal(t, apiv1.HealthStatusHealthy, updatedCtr.Status.HealthStatus, "Expected the Container to be healthy")
+
+				t.Logf("Simulating Container '%s' exit with zero exit code...", ctr.ObjectMeta.Name)
+				err = containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, tc.exitCode)
+				require.NoError(t, err, "could not simulate Container exit")
+			}
+
+			t.Logf("Ensure Container '%s' state and health status are updated...", ctr.ObjectMeta.Name)
+			waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+				hasFinishTimestamp := !c.Status.FinishTimestamp.IsZero()
+				inExpectedState := c.Status.State == tc.expectedState
+				hasExpectedHealthStatus := c.Status.HealthStatus == tc.expectedHealthStatus
+				return hasFinishTimestamp && inExpectedState && hasExpectedHealthStatus, nil
+			})
+		})
+	}
 }

@@ -56,6 +56,7 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 			var syscallErr syscall.Errno
 			if found := errors.As(err, &syscallErr); found && syscallErr == syscall.ECHILD {
 				timer := time.NewTimer(p.WaitPollInterval)
+				defer timer.Stop()
 
 				for done := false; !done; {
 					select {
@@ -71,7 +72,7 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 							p.err = nil
 							done = true
 						} else {
-							timer = time.NewTimer(p.WaitPollInterval)
+							timer.Reset(p.WaitPollInterval)
 						}
 
 					case <-ctx.Done():
