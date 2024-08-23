@@ -41,19 +41,19 @@ func (tw *timestampWriter) Write(p []byte) (int, error) {
 	tw.buffer.Reset()
 
 	for _, b := range p {
-		if b == '\r' || b == '\n' {
-			tw.needsTimestamp = true
-			if err := tw.buffer.WriteByte(b); err != nil {
-				return 0, err
-			}
-			continue
-		}
-
 		if tw.needsTimestamp {
 			if _, err := tw.buffer.WriteString(time.Now().UTC().Format(timestampFormat) + " "); err != nil {
 				return 0, err
 			}
 			tw.needsTimestamp = false
+		}
+
+		if b == '\n' {
+			tw.needsTimestamp = true
+			if err := tw.buffer.WriteByte(b); err != nil {
+				return 0, err
+			}
+			continue
 		}
 
 		if err := tw.buffer.WriteByte(b); err != nil {

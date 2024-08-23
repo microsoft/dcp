@@ -19,7 +19,6 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -43,7 +42,7 @@ func TestWatchLogsFollowEmptyFile(t *testing.T) {
 	require.NoError(t, tmpFile.Close())
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
-	buf := testutil.NewBufferWriter(1)
+	buf := testutil.NewBufferWriter()
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	watcherDone := make(chan struct{})
 
@@ -77,7 +76,7 @@ func TestWatchLogsFollowWholeFile(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
-	buf := testutil.NewBufferWriter(uint(len(content)))
+	buf := testutil.NewBufferWriter()
 	watcherDone := make(chan struct{})
 
 	go func() {
@@ -101,7 +100,6 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 	t.Parallel()
 
 	var content = []string{"alpha\n", "beta\n", "gamma\n", "delta\n"}
-	contentTotalLen := slices.Accumulate[string, uint](content, func(soFar uint, s string) uint { return soFar + uint(len(s)) })
 	allContent := strings.Join(content, "")
 	testCtx, cancelTestCtx := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancelTestCtx()
@@ -122,7 +120,7 @@ func TestWatchLogsFollowGetsAllData(t *testing.T) {
 		})
 
 		tryCtx, cancel := context.WithCancel(testCtx)
-		buf := testutil.NewBufferWriter(contentTotalLen)
+		buf := testutil.NewBufferWriter()
 		watcherDone := make(chan struct{})
 
 		for write := 0; write < len(content); write++ {
@@ -174,7 +172,7 @@ func TestWatchLogsNoFollowEmptyFile(t *testing.T) {
 	require.NoError(t, tmpFile.Close())
 	t.Cleanup(func() { _ = os.Remove(tmpFilePath) })
 
-	buf := testutil.NewBufferWriter(1)
+	buf := testutil.NewBufferWriter()
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
@@ -198,7 +196,7 @@ func TestWatchLogsNoFollowWholeFile(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	buf := testutil.NewBufferWriter(uint(len(content)))
+	buf := testutil.NewBufferWriter()
 
 	err := WatchLogs(ctx, tmpFilePath, buf, WatchLogOptions{Follow: false})
 	require.NoError(t, err)

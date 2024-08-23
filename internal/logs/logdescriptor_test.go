@@ -57,7 +57,7 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	defer ld.LogConsumerStopped()
 
 	// Make 8 writes at the span of 4 * logReadRetryInterval.
-	buf := testutil.NewBufferWriter(4096) // big enough to hold all writes
+	buf := testutil.NewBufferWriter()
 	const numWrites = 8
 	const writeDelay = 4 * logReadRetryInterval / numWrites
 	watcherDone := make(chan struct{})

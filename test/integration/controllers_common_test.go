@@ -56,8 +56,7 @@ var (
 )
 
 const (
-	pollImmediately           = true // Don't wait before polling for the first time
-	rfc3339MiliTimestampRegex = `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`
+	pollImmediately = true // Don't wait before polling for the first time
 )
 
 func TestMain(m *testing.M) {

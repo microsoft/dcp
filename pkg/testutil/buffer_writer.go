@@ -12,11 +12,11 @@ import (
 )
 
 // BufferWriter is an implementation of io.WriteCloser that writes to a (dynamically expanding) buffer.
-// Writes succeed until the buffer is full. All methods are goroutine-safe.
-// Every write operation is tracked and timestamped, and the written data with associated timestamps
-// can be retrieved using Chunks() method.
-// The BufferWriter can also have a set of "target" writers attached. These writers receive
-// all data written to the BufferWriter.
+// All methods are goroutine-safe.
+// Every write operation is tracked and timestamped.
+// The written data with associated timestamps can be retrieved using Chunks() method.
+// The BufferWriter can also have a set of "target" writers attached.
+// These writers receive all data written to the BufferWriter.
 
 type Chunk struct {
 	Offset    int
@@ -28,17 +28,15 @@ type BufferWriter struct {
 	data       []byte
 	chunks     []Chunk
 	lock       *sync.Mutex
-	maxSize    uint
 	closed     bool
 	closedCh   chan struct{}
 	closeError error
 	targets    []io.Writer
 }
 
-func NewBufferWriter(maxSize uint) *BufferWriter {
+func NewBufferWriter() *BufferWriter {
 	return &BufferWriter{
 		lock:     &sync.Mutex{},
-		maxSize:  maxSize,
 		closed:   false,
 		closedCh: make(chan struct{}),
 	}

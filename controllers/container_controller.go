@@ -235,7 +235,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 		targetContainerState = rcd.containerState
 	}
 
-	// Even if the new container state is (as it is usually the case) the same as the current state,
+	// Even if the new container state is (as it is usually the case) the same as the target state,
 	// we still want to run the state handler to ensure that the Container object Status,
 	// and the real-world resources associated with the Container object, are up to date.
 	initalizer := getStateInitializer(containerStateInitializers, targetContainerState, log)
@@ -1615,7 +1615,7 @@ func getDefaultContainerHealthStatus(ctr *apiv1.Container, state apiv1.Container
 		}
 	default:
 		// This should never happen and would indicate we failed to account for some Container state.
-		// Report the status as unhalthy, but do not panic. This should be pretty visible for clients and cause a bug report.
+		// Report the status as unhealthy, but do not panic. This should be pretty visible for clients and cause a bug report.
 		return apiv1.HealthStatusUnhealthy
 	}
 }

@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+const (
+	RFC3339MiliTimestampRegex = `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`
+)
+
 // Formats a duration into a human readable string.
 // If this proves not enough, consider https://github.com/hako/durafmt
 func FormatDuration(duration time.Duration) string {

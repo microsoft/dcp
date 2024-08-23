@@ -36,7 +36,6 @@ var (
 
 const (
 	TestEventActionStopWithoutRemove containers.EventAction = "stop_without_remove"
-	maxContainerLogSize              uint                   = 1024 * 1024
 	containerLogsHttpPath            string                 = "/apis/usvc-dev.developer.microsoft.com/v1/containers/%s/log"
 )
 
@@ -767,8 +766,8 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		ports:     map[string][]containers.InspectedContainerHostPortConfig{},
 		args:      options.Args,
 		env:       map[string]string{},
-		stdoutLog: testutil.NewBufferWriter(maxContainerLogSize),
-		stderrLog: testutil.NewBufferWriter(maxContainerLogSize),
+		stdoutLog: testutil.NewBufferWriter(),
+		stderrLog: testutil.NewBufferWriter(),
 	}
 
 	for _, env := range options.Env {

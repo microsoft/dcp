@@ -1778,7 +1778,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		Source:     "stdout",
 		Timestamps: true,
 	}
-	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(rfc3339MiliTimestampRegex + " " + "Standard output log line 1")}, nil)
+	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(testutil.RFC3339MiliTimestampRegex + " " + "Standard output log line 1")}, nil)
 	require.NoError(t, err)
 
 	opts = apiv1.LogOptions{
@@ -1786,7 +1786,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		Source:     "stderr",
 		Timestamps: true,
 	}
-	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(rfc3339MiliTimestampRegex + " " + "Standard error log line 1")}, nil)
+	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(testutil.RFC3339MiliTimestampRegex + " " + "Standard error log line 1")}, nil)
 	require.NoError(t, err)
 }
 
