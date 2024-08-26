@@ -7,7 +7,17 @@ import (
 )
 
 const (
-	RFC3339MiliTimestampRegex = `\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z`
+	// RFC3339MiliTimestampRegex is a regex that matches a timestamp in RFC3339 format with milliseconds. Explanation:
+	// 4 digits for the year
+	// 2 digits for the month, restricted to 01-12
+	// 2 digits for the day, restricted to 01-31
+	// T (time separator)
+	// 2 digits for the hour, restricted to 00-23
+	// 2 digits for the minute, restricted to 00-59
+	// 2 digits for the second, restricted to 00-59
+	// Period and 3 digits for the milliseconds portion
+	// Z (UTC timezone)
+	RFC3339MiliTimestampRegex = `\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])\.\d{3}Z`
 )
 
 // Formats a duration into a human readable string.
