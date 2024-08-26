@@ -156,7 +156,7 @@ func (r *ExecutableReplicaSetReconciler) createExecutable(replicaSet *apiv1.Exec
 }
 
 // Ensure the ExecutableReplicaSet status matches the current state of the replicas.
-func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, replicas []*apiv1.Executable, log logr.Logger) objectChange {
+func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(replicaSet *apiv1.ExecutableReplicaSet, replicas []*apiv1.Executable) objectChange {
 	change := noChange
 
 	observedReplicas := int32(len(replicas))
@@ -173,9 +173,8 @@ func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(ctx context.Context
 		change = statusChanged
 	}
 
-	var numRunningReplicas int32
-	var numFailedReplicas int32
-	var numFinishedReplicas int32
+	var numRunningReplicas, numFailedReplicas, numFinishedReplicas, numHealthyReplicas int32
+
 	for _, exe := range replicas {
 		switch exe.Status.State {
 		case apiv1.ExecutableStateRunning:
@@ -184,6 +183,9 @@ func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(ctx context.Context
 			numFailedReplicas++
 		case apiv1.ExecutableStateFinished, apiv1.ExecutableStateTerminated:
 			numFinishedReplicas++
+		}
+		if exe.Status.HealthStatus == apiv1.HealthStatusHealthy {
+			numHealthyReplicas++
 		}
 	}
 
@@ -199,6 +201,19 @@ func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(ctx context.Context
 
 	if replicaSet.Status.FinishedReplicas != numFinishedReplicas {
 		replicaSet.Status.FinishedReplicas = numFinishedReplicas
+		change |= statusChanged
+	}
+
+	var newHealthStatus apiv1.HealthStatus
+	if numHealthyReplicas >= replicaSet.Spec.Replicas {
+		newHealthStatus = apiv1.HealthStatusHealthy
+	} else if numHealthyReplicas > 0 {
+		newHealthStatus = apiv1.HealthStatusCaution
+	} else {
+		newHealthStatus = apiv1.HealthStatusUnhealthy
+	}
+	if replicaSet.Status.HealthStatus != newHealthStatus {
+		replicaSet.Status.HealthStatus = newHealthStatus
 		change |= statusChanged
 	}
 
@@ -401,7 +416,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 
 			log = log.WithValues("TotalReplicas", totalReplicas).WithValues("ActiveReplicas", len(activeReplicas))
 
-			change = r.updateReplicaStatus(ctx, &replicaSet, activeReplicas, log)
+			change = r.updateReplicaStatus(&replicaSet, activeReplicas)
 
 			log.V(1).Info("loaded child Executables", "RunningReplicas", replicaSet.Status.RunningReplicas, "FinishedReplicas", replicaSet.Status.FinishedReplicas, "FailedReplicas", replicaSet.Status.FailedReplicas)
 

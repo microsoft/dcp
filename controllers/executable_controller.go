@@ -307,6 +307,8 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	if exe.Status.State == apiv1.ExecutableStateRunning {
 		// This was a synchronous startup, OnStartupCompleted() has been called already and queued the update of the runs map.
 		// Endpoints will be created during next reconciliation loop, no need to call ensureEndpointsForWorkload() here.
+
+		setExecutableState(exe, apiv1.ExecutableStateRunning) // Make sure health status is updated.
 	} else if exe.Status.State == apiv1.ExecutableStateStarting {
 		run.UpdateFrom(exe.Status)
 		r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), run)

@@ -1710,6 +1710,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref commo
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
 						},
 					},
+					"healthStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Health status of the replica set",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"observedReplicas", "runningReplicas", "failedReplicas", "finishedReplicas"},
 			},

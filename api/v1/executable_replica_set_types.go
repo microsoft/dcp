@@ -55,6 +55,9 @@ type ExecutableReplicaSetStatus struct {
 
 	// Last time the replica set was scaled up or down by the controller
 	LastScaleTime metav1.Time `json:"lastScaleTime,omitempty"`
+
+	// Health status of the replica set
+	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
 }
 
 // CopyTo implements apiserver_resource.ObjectWithStatusSubResource.

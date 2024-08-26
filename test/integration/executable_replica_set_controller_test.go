@@ -538,6 +538,86 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 	}
 }
 
+func TestExecutableReplicaSetHealthStatus(t *testing.T) {
+	const scaleTo = 3
+
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exers := apiv1.ExecutableReplicaSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "executable-replica-set-health-status",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableReplicaSetSpec{
+			Replicas: int32(scaleTo),
+			Template: apiv1.ExecutableTemplate{
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/executable-replica-set-health-status",
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating ExecutableReplicaSet '%s'", exers.ObjectMeta.Name)
+	if err := client.Create(ctx, &exers); err != nil {
+		t.Fatalf("could not create ExecutableReplicaSet: %v", err)
+	}
+	replicaErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
+	require.NoError(t, replicaErr, "ExecutableReplicaSet did not create the expected number of Executable replicas")
+
+	t.Logf("Ensure ExecutableReplicaSet '%s' is healthy...", exers.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedExers *apiv1.ExecutableReplicaSet) (bool, error) {
+		return updatedExers.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
+	})
+
+	ownedExes, getExeErr := getOwnedExes(ctx, &exers)
+	require.NoError(t, getExeErr, "Failed to retrieve owned Executable replicas")
+
+	stopExecutableProcess := func(exe *apiv1.Executable) {
+		require.NotEmpty(t, exe.Status.ExecutionID, "Executable does not have an execution ID")
+		pid64, parseErr := strconv.ParseInt(exe.Status.ExecutionID, 10, 32)
+		require.NoError(t, parseErr, "Failed to parse PID from Executable status")
+		pid, convertErr := process.Int64ToPidT(pid64)
+		require.NoError(t, convertErr)
+		testProcessExecutor.SimulateProcessExit(t, pid, 0)
+	}
+
+	t.Log("Stopping first Executable process...")
+	stopExecutableProcess(ownedExes[0])
+
+	t.Logf("Ensure ExecutableReplicaSet '%s' health status is 'Caution'...", exers.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedExers *apiv1.ExecutableReplicaSet) (bool, error) {
+		return updatedExers.Status.HealthStatus == apiv1.HealthStatusCaution, nil
+	})
+
+	t.Logf("Stopping remaining Executables...")
+	for _, exe := range ownedExes[1:] {
+		stopExecutableProcess(exe)
+	}
+
+	t.Logf("Ensure ExecutableReplicaSet '%s' health status is 'Unhealthy'...", exers.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedExers *apiv1.ExecutableReplicaSet) (bool, error) {
+		return updatedExers.Status.HealthStatus == apiv1.HealthStatusUnhealthy, nil
+	})
+
+	t.Logf("Deleting all existing Executables...")
+	for _, exe := range ownedExes {
+		deleteErr := retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+			return client.Delete(ctx, currentExe)
+		})
+		require.NoError(t, deleteErr, "Failed to delete Executable '%s'", exe.ObjectMeta.Name)
+	}
+
+	t.Logf("Waiting for replica set '%s' to create new replicas and become healthy again...", exers.ObjectMeta.Name)
+	replicaErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, ensureExpectedReplicaCount(t, &exers, scaleTo, 0))
+	require.NoError(t, replicaErr, "ExecutableReplicaSet did not -recreate the expected number of Executable replicas")
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exers), func(updatedExers *apiv1.ExecutableReplicaSet) (bool, error) {
+		return updatedExers.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
+	})
+}
+
 func ensureExpectedReplicaCount(t *testing.T, exers *apiv1.ExecutableReplicaSet, expectedActive int, expectedInactive int) func(ctx context.Context) (bool, error) {
 	return func(ctx context.Context) (bool, error) {
 		ownedExes, err := getOwnedExes(ctx, exers)
