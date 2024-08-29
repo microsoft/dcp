@@ -17,13 +17,6 @@ func IntPtrValToString[T int32 | int64, PT *T](p PT) string {
 	return fmt.Sprintf("%d", *p)
 }
 
-func IsPtrValDifferent[T int32 | int64, PT *T](p1 PT, p2 PT) bool {
-	if p1 == nil || p2 == nil {
-		return p1 != p2
-	}
-	return *p1 != *p2
-}
-
 func FriendlyTimestamp(ts time.Time) string {
 	if ts.IsZero() {
 		return "(zero)"

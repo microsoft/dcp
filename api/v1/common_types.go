@@ -13,11 +13,3 @@ type EnvVar struct {
 }
 
 const LogSubresourceName = "log"
-
-type HealthStatus string
-
-const (
-	HealthStatusHealthy   HealthStatus = "Healthy"
-	HealthStatusCaution   HealthStatus = "Caution"
-	HealthStatusUnhealthy HealthStatus = "Unhealthy"
-)

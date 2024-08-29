@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
 // Stores information about Executable run
@@ -194,7 +195,7 @@ func DiffString(r1, r2 *runInfo) string {
 		sb.WriteString(fmt.Sprintf("exeState=%s->%s, ", r1.exeState, r2.exeState))
 	}
 
-	if logger.IsPtrValDifferent(r1.pid, r2.pid) {
+	if !pointers.EqualValue(r1.pid, r2.pid) {
 		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.pid), logger.IntPtrValToString(r2.pid)))
 	}
 
@@ -202,7 +203,7 @@ func DiffString(r1, r2 *runInfo) string {
 		sb.WriteString(fmt.Sprintf("executionID=%s->%s, ", logger.FriendlyString(r1.executionID), logger.FriendlyString(r2.executionID)))
 	}
 
-	if logger.IsPtrValDifferent(r1.exitCode, r2.exitCode) {
+	if pointers.EqualValue(r1.exitCode, r2.exitCode) {
 		sb.WriteString(fmt.Sprintf("exitCode=%s->%s, ", logger.IntPtrValToString(r1.exitCode), logger.IntPtrValToString(r2.exitCode)))
 	}
 

@@ -206,6 +206,10 @@ type ContainerSpec struct {
 
 	// Labels to apply to the container
 	Labels []ContainerLabel `json:"labels,omitempty"`
+
+	// Health probe configuration for the Container
+	// +listType:=atomic
+	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -300,6 +304,11 @@ type ContainerStatus struct {
 
 	// Health status of the Container
 	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
+
+	// Results of running health probes (most reacent per probe)
+	// +listType:=map
+	// +listMapKey:=probeName
+	HealthProbeResults []HealthProbeResult `json:"healthProbeResults,omitempty"`
 }
 
 func (cs ContainerStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
@@ -425,6 +434,11 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
 	}
 
+	healthProbesPath := field.NewPath("spec", "healthProbes")
+	for i, probe := range e.Spec.HealthProbes {
+		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
+	}
+
 	return errorList
 }
 
@@ -473,6 +487,16 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	// Forbid changing labels after the resource is created
 	if !slices.Equal(oldContainer.Spec.Labels, e.Spec.Labels) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "labels"), "labels cannot be changed"))
+	}
+
+	if len(oldContainer.Spec.HealthProbes) != len(e.Spec.HealthProbes) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes"), "Health probes cannot be changed once a Container is created."))
+	} else {
+		for i, probe := range oldContainer.Spec.HealthProbes {
+			if !probe.Equal(e.Spec.HealthProbes[i]) {
+				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once a Container is created."))
+			}
+		}
 	}
 
 	return errorList

@@ -44,6 +44,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                           schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                       schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe":                  schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":             schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":         schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec":         schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref),
@@ -51,6 +52,11 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":                 schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":               schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbe":                      schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult":                schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule":              schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HttpHeader":                       schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HttpProbe":                        schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.LogOptions":                       schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.LogStreamer":                      schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Service":                          schema_microsoft_usvc_apiserver_api_v1_Service(ref),
@@ -1006,11 +1012,25 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 					},
+					"healthProbes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Health probe configuration for the Container",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
 	}
 }
 
@@ -1133,11 +1153,25 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 							Format:      "",
 						},
 					},
+					"healthProbeResults": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Results of running health probes (most reacent per probe)",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -1531,6 +1565,29 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref common.ReferenceC
 	}
 }
 
+func schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ExecutableProbe contains the configuration for an Executable health probe.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"executableTemplate": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Template for creating the Executable that performs the health check",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate"),
+						},
+					},
+				},
+				Required: []string{"executableTemplate"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate"},
+	}
+}
+
 func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1813,12 +1870,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 							Format:      "",
 						},
 					},
+					"healthProbes": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Health probe configuration for the Executable",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"executablePath"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+			"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"},
 	}
 }
 
@@ -1921,12 +1992,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 							Format:      "",
 						},
 					},
+					"healthProbeResults": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Results of running health probes (most reacent per probe)",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult"),
+									},
+								},
+							},
+						},
+					},
 				},
 				Required: []string{"state"},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 
@@ -1981,6 +2066,226 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref common.Refere
 		},
 		Dependencies: []string{
 			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HealthProbe represents a health check to be performed on a Container or Executable. It is a discriminated union differentiated by the Type property.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the probe. This is used to identify the probe in the status of the parent object. Must be unique within the parent object.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Type of the health probe",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"executableProbe": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For Executable-type health probes, the configuration for the Executable health probe.",
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe"),
+						},
+					},
+					"httpProbe": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For HTTP-type health probes, the configuration for the HTTP health probe.",
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.HttpProbe"),
+						},
+					},
+					"schedule": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Schedule for running the probe",
+							Default:     map[string]interface{}{},
+							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule"),
+						},
+					},
+					"annotations": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Annotations (metadata) for the health probe",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name", "type", "schedule"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule", "github.com/microsoft/usvc-apiserver/api/v1.HttpProbe"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HealthProbeResult represents the result of a single execution of a health probe.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"outcome": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Outcome of the health probe",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timestamp for the result",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"probeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the probe to which this result corresponds",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"reason": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Human-readable message describing the outcome",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"outcome", "timestamp", "probeName"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HealthProbeSchedule represents a schedule for running a health probe.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind of the schedule",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"interval": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Interval at which the probe should run",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"timeout": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Timeout for the probe (if the probe does not complete within this time, it is considered failed)",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+					"initialDelay": {
+						SchemaProps: spec.SchemaProps{
+							Description: "How long to wait between parent object startup and the first probe run",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Duration"),
+						},
+					},
+				},
+				Required: []string{"interval"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.Duration"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HttpHeader represents a single HTTP header to be included in an HTTP health probe.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the HTTP header",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value of the HTTP header",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "HttpProbe contains the configuration for an HTTP health probe.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"url": {
+						SchemaProps: spec.SchemaProps{
+							Description: "URL to probe",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"headers": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Headers to include in the HTTP request",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HttpHeader"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"url"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.HttpHeader"},
 	}
 }
 

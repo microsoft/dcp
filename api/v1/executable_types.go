@@ -5,6 +5,8 @@ package v1
 import (
 	"context"
 	"fmt"
+	stdmaps "maps"
+	stdslices "slices"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -100,6 +102,18 @@ type ExecutableTemplate struct {
 	Spec ExecutableSpec `json:"spec"`
 }
 
+func (et ExecutableTemplate) Equal(other ExecutableTemplate) bool {
+	if !stdmaps.Equal(et.Labels, other.Labels) {
+		return false
+	}
+
+	if !stdmaps.Equal(et.Annotations, other.Annotations) {
+		return false
+	}
+
+	return et.Spec.Equal(other.Spec)
+}
+
 // ExecutableSpec defines the desired state of an Executable
 // +k8s:openapi-gen=true
 type ExecutableSpec struct {
@@ -132,6 +146,83 @@ type ExecutableSpec struct {
 	// Should the controller attempt to stop the Executable
 	// +kubebuilder:default:=false
 	Stop bool `json:"stop,omitempty"`
+
+	// Health probe configuration for the Executable
+	// +listType:=atomic
+	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
+}
+
+func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
+	if es.ExecutablePath != other.ExecutablePath {
+		return false
+	}
+
+	if es.WorkingDirectory != other.WorkingDirectory {
+		return false
+	}
+
+	if !stdslices.Equal(es.Args, other.Args) {
+		return false
+	}
+
+	if !stdslices.Equal(es.Env, other.Env) {
+		return false
+	}
+
+	if !stdslices.Equal(es.EnvFiles, other.EnvFiles) {
+		return false
+	}
+
+	if es.ExecutionType != other.ExecutionType {
+		return false
+	}
+
+	if es.AmbientEnvironment != other.AmbientEnvironment {
+		return false
+	}
+
+	if es.Stop != other.Stop {
+		return false
+	}
+
+	if len(es.HealthProbes) != len(other.HealthProbes) {
+		return false
+	}
+
+	for i, probe := range es.HealthProbes {
+		if !probe.Equal(other.HealthProbes[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	if es.ExecutablePath == "" {
+		errorList = append(errorList, field.Invalid(specPath.Child("executablePath"), es.ExecutablePath, "Executable path is required."))
+	}
+
+	invalidExecutionType := es.ExecutionType != "" && es.ExecutionType != ExecutionTypeProcess && es.ExecutionType != ExecutionTypeIDE
+	if invalidExecutionType {
+		errorList = append(errorList, field.Invalid(specPath.Child("executionType"), es.ExecutionType, "Execution type must be either Process or IDE."))
+	}
+
+	invalidAmbientEnvironmentBehavior := es.AmbientEnvironment.Behavior != "" &&
+		es.AmbientEnvironment.Behavior != EnvironmentBehaviorInherit &&
+		es.AmbientEnvironment.Behavior != EnvironmentBehaviorDoNotInherit
+	if invalidAmbientEnvironmentBehavior {
+		errorList = append(errorList, field.Invalid(specPath.Child("ambientEnvironment", "behavior"), es.AmbientEnvironment.Behavior, "Ambient environment behavior must be either Inherit or DoNotInherit."))
+	}
+
+	healthProbesPath := specPath.Child("healthProbes")
+	for i, probe := range es.HealthProbes {
+		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
+	}
+
+	return errorList
 }
 
 // ExecutableStatus describes the status of an Executable.
@@ -180,6 +271,11 @@ type ExecutableStatus struct {
 
 	// Health status of the Executable
 	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
+
+	// Results of running health probes (most reacent per probe)
+	// +listType:=map
+	// +listMapKey:=probeName
+	HealthProbeResults []HealthProbeResult `json:"healthProbeResults,omitempty"`
 }
 
 func (es ExecutableStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
@@ -245,11 +341,7 @@ func (e *Executable) NamespacedName() types.NamespacedName {
 func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if e.Spec.AmbientEnvironment.Behavior != "" &&
-		e.Spec.AmbientEnvironment.Behavior != EnvironmentBehaviorInherit &&
-		e.Spec.AmbientEnvironment.Behavior != EnvironmentBehaviorDoNotInherit {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "ambientEnvironment", "behavior"), e.Spec.AmbientEnvironment.Behavior, "Ambient environment behavior must be either Inherit or DoNotInherit."))
-	}
+	errorList = append(errorList, e.Spec.Validate(field.NewPath("spec"))...)
 
 	return errorList
 }
@@ -264,6 +356,16 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 
 	if oldExe.Spec.AmbientEnvironment.Behavior != e.Spec.AmbientEnvironment.Behavior {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "ambientEnvironment", "behavior"), "Cannot change ambient environment behavior once it is set."))
+	}
+
+	if len(oldExe.Spec.HealthProbes) != len(e.Spec.HealthProbes) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes"), "Health probes cannot be changed once an Executable is created."))
+	} else {
+		for i, probe := range oldExe.Spec.HealthProbes {
+			if !probe.Equal(e.Spec.HealthProbes[i]) {
+				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once an Executable is created."))
+			}
+		}
 	}
 
 	return errorList
