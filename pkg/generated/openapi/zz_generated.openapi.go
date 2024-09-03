@@ -21,6 +21,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":            schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret":             schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExec":                    schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecList":                schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec":                schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus":              schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel":                   schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
@@ -318,6 +322,269 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.Refe
 				Required: []string{"id"},
 			},
 		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerExec represents an exec command to run against a Container resource",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerExecList contains a list of ContainerExec instances",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerExec"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerExec", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerExecSpec defines an exec command to run against a Container resource",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The name of the Container resource to connect to",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"env": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Environment settings",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+					"envFiles": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Environment files to use to populate the environment for the command",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"workingDirectory": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Working directory in the container for the command",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"command": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Command to run in the container",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"args": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Arguments to pass to the command",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"containerName", "command"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerExecStatus describes the status of a ContainerExec command",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The current state of the command execution",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"startTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Time the command was started",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"finishTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Time the command finished running",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Exit code of the command",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"stdOutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of a temporary file that contains captured standard output data from the command",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stdErrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of a temporary file that contains captured standard error data from the command",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"effectiveEnv": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Effective values of environment variables, after all substitutions have been applied",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+									},
+								},
+							},
+						},
+					},
+					"effectiveArgs": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Effective values of arguments to be passed to the command, after all substitutions have been applied",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
 	}
 }
 

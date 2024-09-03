@@ -80,6 +80,9 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 					// Cancellation, so stop what we're doing
 					return
 				case <-timer.C:
+					if ctx.Err() != nil {
+						return
+					}
 					continue
 				}
 			}

@@ -26,7 +26,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/logs/containerlogs"
-	"github.com/microsoft/usvc-apiserver/internal/logs/exelogs"
+	"github.com/microsoft/usvc-apiserver/internal/logs/stdiologs"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
@@ -68,6 +68,7 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 			&apiv1.ContainerVolume{},
 			&apiv1.ContainerNetwork{},
 			&apiv1.ContainerNetworkConnection{},
+			&apiv1.ContainerExec{},
 			&apiv1.Service{},
 		},
 	}
@@ -268,11 +269,15 @@ func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apise
 
 	apiv1.ResourceLogStreamers.Store(
 		(&apiv1.Executable{}).GetGroupVersionResource(),
-		exelogs.LogStreamer(),
+		stdiologs.LogStreamer(),
 	)
 	apiv1.ResourceLogStreamers.Store(
 		(&apiv1.Container{}).GetGroupVersionResource(),
 		containerlogs.NewLogStreamer(log.WithName("container-logstreamer")),
+	)
+	apiv1.ResourceLogStreamers.Store(
+		(&apiv1.ContainerExec{}).GetGroupVersionResource(),
+		stdiologs.LogStreamer(),
 	)
 
 	return nil

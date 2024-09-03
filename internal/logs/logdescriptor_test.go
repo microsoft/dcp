@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -24,6 +26,8 @@ import (
 
 const (
 	timeWithMilliseconds = "15:04:05.000"
+	logReadRetryInterval = 400 * time.Millisecond
+	defaultTestTimeout   = 20 * time.Second
 )
 
 func TestLogFollowingDelayWithinBounds(t *testing.T) {
@@ -60,14 +64,11 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	buf := testutil.NewBufferWriter()
 	const numWrites = 8
 	const writeDelay = 4 * logReadRetryInterval / numWrites
-	watcherDone := make(chan struct{})
 
-	go func() {
-		watcherErr := WatchLogs(ctx, stdOutPath, buf, WatchLogOptions{Follow: true})
-		require.NoError(t, watcherErr)
-		ld.LogConsumerStopped()
-		close(watcherDone)
-	}()
+	stdOutFile, stdOutErr := io.OpenFile(stdOutPath, os.O_RDONLY, 0)
+	require.NoError(t, stdOutErr)
+
+	follow := io.NewFollowWriter(ctx, stdOutFile, buf)
 
 	var logWriteTimes []time.Time
 	for i := 0; i < numWrites; i++ {
@@ -89,7 +90,8 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 
 	stdoutWriter.Close()
 	cancel() // Stop the watcher
-	<-watcherDone
+	<-follow.Done()
+	ld.LogConsumerStopped()
 
 	// Each write should be captured after no more that the sum of:
 	// - logReadRetryInterval (how long we wait before checking if log file has new data)

@@ -253,6 +253,16 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		return fmt.Errorf("failed to initialize Container reconciler: %w", err)
 	}
 
+	containerExecR := controllers.NewContainerExecReconciler(
+		ctx,
+		mgr.GetClient(),
+		ctrl.Log.WithName("ContainerExecReconciler"),
+		containerOrchestrator,
+	)
+	if err = containerExecR.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
+	}
+
 	volumeR := controllers.NewVolumeReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("VolumeReconciler"),

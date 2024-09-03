@@ -135,6 +135,28 @@ type RunContainerOptions struct {
 	apiv1.ContainerSpec
 }
 
+type ExecContainerOptions struct {
+	// The container (name/id) to execute the command in
+	Container string
+
+	// The working directory for the command
+	WorkingDirectory string
+
+	// The environment variables to set
+	Env []apiv1.EnvVar
+
+	// Environment files to use to populate the environment for the command
+	EnvFiles []string
+
+	// The command to run
+	Command string
+
+	// The arguments to pass to the command
+	Args []string
+
+	StreamCommandOptions
+}
+
 type StreamContainerLogsOptions struct {
 	// Follow the logs vs. just returning the current logs at the time the command was run
 	Follow bool
@@ -176,6 +198,9 @@ type ContainerOrchestrator interface {
 
 	// Starts the container. If successful, the ID of the container is returned.
 	RunContainer(ctx context.Context, options RunContainerOptions) (string, error)
+
+	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
+	ExecContainer(ctx context.Context, options ExecContainerOptions) (<-chan int32, error)
 
 	// Inspects containers identified by given list of IDs or names.
 	InspectContainers(ctx context.Context, containers []string) ([]InspectedContainer, error)

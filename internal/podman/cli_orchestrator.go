@@ -387,6 +387,55 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 	return asId(outBuf)
 }
 
+func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	args := []string{"exec"}
+
+	if options.WorkingDirectory != "" {
+		args = append(args, "--workdir", options.WorkingDirectory)
+	}
+
+	for _, envVar := range options.Env {
+		eVal := fmt.Sprintf("%s=%s", envVar.Name, envVar.Value)
+		args = append(args, "-e", eVal)
+	}
+
+	for _, envFile := range options.EnvFiles {
+		args = append(args, "--env-file", envFile)
+	}
+
+	args = append(args, options.Container)
+	args = append(args, options.Command)
+	if len(options.Args) > 0 {
+		args = append(args, options.Args...)
+	}
+
+	cmd := makePodmanCommand(args...)
+
+	cmd.Stdout = options.StdOutStream
+	cmd.Stderr = options.StdErrStream
+
+	exitCh := make(chan int32)
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		// We only care about the exit code, not the error. The only scenario where we should get an error
+		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
+		if !errors.Is(err, context.Canceled) {
+			pco.log.Error(err, "unexpected error during container exec command", "Command", cmd.String())
+		}
+		exitCh <- exitCode
+		close(exitCh)
+	}
+
+	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
+	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	if err != nil {
+		close(exitCh)
+		return nil, errors.Join(err, fmt.Errorf("failed to start Podman command '%s'", "ExecContainer"))
+	}
+	startWaitForProcessExit()
+
+	return exitCh, nil
+}
+
 func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
@@ -473,14 +522,14 @@ func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMe
 	return pco.containerEvtWatcher.Watch(sink)
 }
 
-func (dco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
+func (pco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
 	args := []string{"container", "logs"}
 	args = options.Apply(args)
 	args = append(args, container)
 
 	cmd := makePodmanCommand(args...)
 
-	exitCh, err := dco.streamPodmanCommand(ctx, "CaptureContainerLogs", cmd, stdout, stderr)
+	exitCh, err := pco.streamPodmanCommand(ctx, "CaptureContainerLogs", cmd, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -489,14 +538,14 @@ func (dco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 		// Wait for the command to finish and clean up any resources
 		exitErr := <-exitCh
 		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
-			dco.log.Error(err, "capturing container logs failed", "Container", container)
+			pco.log.Error(err, "capturing container logs failed", "Container", container)
 		}
 
 		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
-			dco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
+			pco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
 		}
 		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
-			dco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
+			pco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
 		}
 	}()
 

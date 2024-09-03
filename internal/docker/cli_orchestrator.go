@@ -449,6 +449,55 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 	return asId(outBuf)
 }
 
+func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	args := []string{"exec"}
+
+	if options.WorkingDirectory != "" {
+		args = append(args, "--workdir", options.WorkingDirectory)
+	}
+
+	for _, envVar := range options.Env {
+		eVal := fmt.Sprintf("%s=%s", envVar.Name, envVar.Value)
+		args = append(args, "-e", eVal)
+	}
+
+	for _, envFile := range options.EnvFiles {
+		args = append(args, "--env-file", envFile)
+	}
+
+	args = append(args, options.Container)
+	args = append(args, options.Command)
+	if len(options.Args) > 0 {
+		args = append(args, options.Args...)
+	}
+
+	cmd := makeDockerCommand(args...)
+
+	cmd.Stdout = options.StdOutStream
+	cmd.Stderr = options.StdErrStream
+
+	exitCh := make(chan int32)
+	exitHandler := func(_ process.Pid_t, exitCode int32, err error) {
+		// We only care about the exit code, not the error. The only scenario where we should get an error
+		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
+		if !errors.Is(err, context.Canceled) {
+			dco.log.Error(err, "unexpected error during container exec command", "Command", cmd.String())
+		}
+		exitCh <- exitCode
+		close(exitCh)
+	}
+
+	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
+	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	if err != nil {
+		close(exitCh)
+		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "ExecContainer"))
+	}
+	startWaitForProcessExit()
+
+	return exitCh, nil
+}
+
 func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")

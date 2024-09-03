@@ -49,6 +49,7 @@ type TestContainerOrchestrator struct {
 	containers             map[string]*testContainer
 	startupLogs            map[string]containerStartupLogs
 	containersToFail       map[string]containerExit
+	execs                  map[string]*containerExec
 	containerEventsWatcher *containers.EventWatcher
 	networkEventsWatcher   *containers.EventWatcher
 	socketServer           *http.Server
@@ -66,6 +67,13 @@ type containerExit struct {
 type containerStartupLogs struct {
 	stdout []byte
 	stderr []byte
+}
+
+type containerExec struct {
+	stdout   io.Writer
+	stderr   io.Writer
+	exited   bool
+	exitChan chan int32
 }
 
 func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) (*TestContainerOrchestrator, error) {
@@ -93,6 +101,7 @@ func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) 
 		imageIds:         map[string]string{},
 		imageSecrets:     map[string]map[string]string{},
 		containers:       map[string]*testContainer{},
+		execs:            map[string]*containerExec{},
 		startupLogs:      map[string]containerStartupLogs{},
 		containersToFail: map[string]containerExit{},
 		mutex:            &sync.Mutex{},
@@ -929,6 +938,38 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 	return container.id, nil
 }
 
+func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	var foundContainer *testContainer
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			foundContainer = container
+		}
+	}
+
+	if foundContainer == nil {
+		return nil, containers.ErrNotFound
+	}
+
+	execKey := fmt.Sprintf("%s:%s", foundContainer.id, options.Command)
+	if _, found := to.execs[execKey]; found {
+		return nil, fmt.Errorf("container '%s' already has command '%s' running", foundContainer.id, options.Command)
+	}
+
+	exitCodeChan := make(chan int32, 1)
+
+	to.execs[fmt.Sprintf("%s:%s", foundContainer.id, options.Command)] = &containerExec{
+		stdout:   options.StdOutStream,
+		stderr:   options.StdErrStream,
+		exited:   false,
+		exitChan: exitCodeChan,
+	}
+
+	return exitCodeChan, nil
+}
+
 func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -978,6 +1019,14 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 	// Stop is a no-op if the container isn't running
 	if container.status != containers.ContainerStatusRunning {
 		return nil
+	}
+
+	for key, exec := range to.execs {
+		if !exec.exited && strings.HasPrefix(key, fmt.Sprintf("%s:", container.id)) {
+			// If the execution hasn't already been completed, signal that it should be stopped
+			exec.exitChan <- -1
+			close(exec.exitChan)
+		}
 	}
 
 	container.status = containers.ContainerStatusExited
@@ -1058,6 +1107,19 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 	}
 
 	delete(to.containers, container.id)
+
+	// Find all executions for the container
+	execsToRemove := []string{}
+	for key := range to.execs {
+		if strings.HasPrefix(key, fmt.Sprintf("%s:", container.id)) {
+			execsToRemove = append(execsToRemove, key)
+		}
+	}
+
+	// Remove all executions for the container
+	for _, execToRemove := range execsToRemove {
+		delete(to.execs, execToRemove)
+	}
 
 	// Notify listeners that we've removed the container
 	to.containerEventsWatcher.Notify(containers.EventMessage{
@@ -1148,6 +1210,44 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 	}
 
 	return containers.ErrNotFound
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Context, container string, command string, exitCode int32) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	matching := slices.Select(maps.Values(to.containers), func(tc *testContainer) bool { return tc.matches(container) })
+	if len(matching) == 0 {
+		return containers.ErrNotFound
+	}
+	if len(matching) > 1 {
+		return fmt.Errorf("multiple containers match the container name")
+	}
+
+	var matchingCommand *containerExec
+	for key, exec := range to.execs {
+		if key == fmt.Sprintf("%s:%s", matching[0].id, command) {
+			if matchingCommand != nil {
+				return fmt.Errorf("multiple commands match the command name")
+			}
+
+			matchingCommand = exec
+		}
+	}
+
+	if matchingCommand == nil {
+		return containers.ErrNotFound
+	}
+
+	if matchingCommand.exited {
+		return fmt.Errorf("command is not running; only running commands can emit logs")
+	}
+
+	matchingCommand.exitChan <- exitCode
+	close(matchingCommand.exitChan)
+	matchingCommand.exited = true
+
+	return nil
 }
 
 func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, containerNameOrId string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
@@ -1251,6 +1351,50 @@ func (to *TestContainerOrchestrator) SimulateContainerLogging(containerName stri
 		writer = tc.stdoutLog
 	case apiv1.LogStreamSourceStderr:
 		writer = tc.stderrLog
+	default:
+		return fmt.Errorf("only stdout and stderr log targets are supported")
+	}
+
+	_, writeErr := writer.Write(content)
+	return writeErr
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerExecCommandLogging(container string, command string, target apiv1.LogStreamSource, content []byte) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	matching := slices.Select(maps.Values(to.containers), func(tc *testContainer) bool { return tc.matches(container) })
+	if len(matching) == 0 {
+		return containers.ErrNotFound
+	}
+	if len(matching) > 1 {
+		return fmt.Errorf("multiple containers match the container name")
+	}
+
+	var matchingCommand *containerExec
+	for key, exec := range to.execs {
+		if key == fmt.Sprintf("%s:%s", matching[0].id, command) {
+			if matchingCommand != nil {
+				return fmt.Errorf("multiple commands match the command name")
+			}
+
+			matchingCommand = exec
+		}
+	}
+
+	if matchingCommand == nil {
+		return containers.ErrNotFound
+	}
+
+	if matchingCommand.exited {
+		return fmt.Errorf("command is not running; only running commands can emit logs")
+	}
+
+	var writer io.Writer
+	switch target {
+	case apiv1.LogStreamSourceStdout:
+		writer = matchingCommand.stdout
+	case apiv1.LogStreamSourceStderr:
+		writer = matchingCommand.stderr
 	default:
 		return fmt.Errorf("only stdout and stderr log targets are supported")
 	}

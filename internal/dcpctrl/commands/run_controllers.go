@@ -149,6 +149,17 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			return err
 		}
 
+		containerExecCtrl := controllers.NewContainerExecReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("ContainerExecReconciler"),
+			containerOrchestrator,
+		)
+		if err = containerExecCtrl.SetupWithManager(mgr); err != nil {
+			log.Error(err, "unable to set up ContainerExec controller")
+			return err
+		}
+
 		volumeCtrl := controllers.NewVolumeReconciler(
 			mgr.GetClient(),
 			log.WithName("VolumeReconciler"),

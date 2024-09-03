@@ -295,6 +295,16 @@ type Executable struct {
 	Status ExecutableStatus `json:"status,omitempty"`
 }
 
+// StdOutFile implements StdOutStreamableResource.
+func (e *Executable) GetStdOutFile() string {
+	return e.Status.StdOutFile
+}
+
+// StdErrFile implements StdOutStreamableResource.
+func (e *Executable) GetStdErrFile() string {
+	return e.Status.StdErrFile
+}
+
 func (e *Executable) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
@@ -463,3 +473,4 @@ var _ apiserver_resourcestrategy.Validater = (*Executable)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*Executable)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*Executable)(nil)
 var _ apiserver_resource.GenericSubResource = (*ExecutableLogResource)(nil)
+var _ StdIoStreamableResource = (*Executable)(nil)

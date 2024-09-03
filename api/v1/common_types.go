@@ -1,5 +1,10 @@
 package v1
 
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+)
+
 // EnvVar represents an environment variable present in a Container or Executable.
 // +k8s:openapi-gen=true
 type EnvVar struct {
@@ -13,3 +18,13 @@ type EnvVar struct {
 }
 
 const LogSubresourceName = "log"
+
+// +kubebuilder:object:generate=false
+type StdIoStreamableResource interface {
+	GetUID() types.UID
+	NamespacedName() types.NamespacedName
+	GetStdOutFile() string
+	GetStdErrFile() string
+	Done() bool
+	GetDeletionTimestamp() *metav1.Time
+}
