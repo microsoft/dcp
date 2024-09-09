@@ -359,9 +359,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 		connection := networkConnections.Items[i]
 		containerID := connection.Spec.ContainerID
 
-		networkStatus.connections[containerID] = true
-
-		found := slices.Contains(network.Status.ContainerIDs, containerID)
+		_, found := networkStatus.connections[containerID]
 
 		if found {
 			// Container is already connected to the network, do nothing
@@ -379,6 +377,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
 		} else {
+			networkStatus.connections[containerID] = true
 			log.Info("connected a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 		}
 	}

@@ -49,6 +49,7 @@ const (
 	groupVersionLabel                 = "com.microsoft.developer.usvc-dev.group-version"
 	nameLabel                         = "com.microsoft.developer.usvc-dev.name"
 	uidLabel                          = "com.microsoft.developer.usvc-dev.uid"
+	lifecycleKeyLabel                 = "com.microsoft.developer.usvc-dev.lifecycle-key"
 )
 
 var (
@@ -323,7 +324,7 @@ func ensureContainerBuildingState(
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
 		r.ensureContainerWatch(container, log)
 
-		r.buildImage(ctx, container, rcd, log)
+		r.buildImage(container, rcd, log)
 		change |= statusChanged
 	}
 
@@ -359,7 +360,7 @@ func ensureContainerStartingState(
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
 		r.ensureContainerWatch(container, log)
 
-		r.createContainer(ctx, container, rcd, log, noDelay)
+		r.createContainer(container, rcd, log, noDelay)
 		change |= statusChanged
 
 	} else if !rcd.startupAttempted {
@@ -367,7 +368,7 @@ func ensureContainerStartingState(
 
 		rcd.ensureStartupLogFiles(container, log)
 
-		r.createContainer(ctx, container, rcd, log, noDelay)
+		r.createContainer(container, rcd, log, noDelay)
 		change |= statusChanged
 
 	} else if isTransientTemplateError(rcd.startupError) {
@@ -377,7 +378,7 @@ func ensureContainerStartingState(
 		rcd.startAttemptFinishedAt = metav1.Time{}
 		rcd.containerName = ""
 
-		r.createContainer(ctx, container, rcd, log, startupRetryDelay)
+		r.createContainer(container, rcd, log, startupRetryDelay)
 		change |= statusChanged
 
 	} else if container.Spec.Networks != nil && rcd.hasValidContainerID() {
@@ -609,43 +610,34 @@ func ensureContainerStoppingState(
 
 // CONTAINER STARTUP HELPER METHODS
 
-func (r *ContainerReconciler) checkForExistingPersistentContainer(
+func (r *ContainerReconciler) removeExistingContainer(
 	ctx context.Context,
-	container *apiv1.Container,
-	rcd *runningContainerData,
-	containerName string,
+	id string,
 	log logr.Logger,
-) bool {
-	if container.Spec.Persistent {
-		inspected, err := r.findContainer(ctx, containerName)
-		if err == nil {
-			log.Info("found existing Container", "ContainerName", containerName, "ContainerID", inspected.Id)
-			placeholderID := rcd.containerID
-			rcd.updateFromInspectedContainer(inspected)
-			rcd.startAttemptFinishedAt = metav1.Now()
-			rcd.containerState = apiv1.ContainerStateRunning
-			r.runningContainers.UpdateChangingSecondKey(container.NamespacedName(), placeholderID, rcd.containerID, rcd)
-			return true
-		}
+) error {
+	log.V(1).Info("calling container orchestrator to stop the container...", "ContainerID", id)
+	_, stopErr := r.orchestrator.StopContainers(ctx, []string{id}, stopContainerTimeoutSeconds)
+	if stopErr != nil {
+		log.Error(stopErr, "could not stop the running container", "ContainerID", id)
+		return stopErr
 	}
 
-	return false
+	_, removeErr := r.orchestrator.RemoveContainers(ctx, []string{id}, true /*force*/)
+	if removeErr != nil {
+		// Log any unexpected error, but attempt to continue with creation of the new container
+		log.Error(removeErr, "could not remove the running container", "ContainerID", id)
+		return removeErr
+	}
+
+	return nil
 }
 
 // Schedules build of a container image. If Container is persistent, it will attempt to find and reuse an existing container.
 func (r *ContainerReconciler) buildImage(
-	ctx context.Context,
 	container *apiv1.Container,
 	rcd *runningContainerData,
 	log logr.Logger,
 ) {
-	containerName := strings.TrimSpace(container.Spec.ContainerName)
-
-	// Determine whether we need to check for an existing container
-	if r.checkForExistingPersistentContainer(ctx, container, rcd, containerName, log) {
-		return
-	}
-
 	log.V(1).Info("scheduling image build")
 
 	err := r.startupQueue.Enqueue(r.buildImageWithOrchestrator(container, rcd, log))
@@ -659,7 +651,6 @@ func (r *ContainerReconciler) buildImage(
 
 // Schedules creation of a container resource. If Container is persistent, it will attempt to find and reuse an existing container.
 func (r *ContainerReconciler) createContainer(
-	ctx context.Context,
 	container *apiv1.Container,
 	rcd *runningContainerData,
 	log logr.Logger,
@@ -668,33 +659,6 @@ func (r *ContainerReconciler) createContainer(
 	containerName := strings.TrimSpace(container.Spec.ContainerName)
 
 	rcd.startupAttempted = true
-
-	// Determine whether we need to check for an existing container
-	if r.checkForExistingPersistentContainer(ctx, container, rcd, containerName, log) {
-		return
-	}
-
-	for _, volume := range container.Spec.VolumeMounts {
-		if volume.Type == apiv1.BindMount {
-			_, err := os.Stat(volume.Source)
-			if errors.Is(err, os.ErrNotExist) {
-				err = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
-				if err != nil {
-					log.Error(err, "could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
-					rcd.containerState = apiv1.ContainerStateFailedToStart
-					rcd.startupError = err
-					rcd.startAttemptFinishedAt = metav1.Now()
-					return
-				}
-			} else if err != nil {
-				log.Error(err, "could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
-				rcd.containerState = apiv1.ContainerStateFailedToStart
-				rcd.startupError = err
-				rcd.startAttemptFinishedAt = metav1.Now()
-				return
-			}
-		}
-	}
 
 	log.V(1).Info("scheduling container start", "image", container.SpecifiedImageNameOrDefault())
 
@@ -801,8 +765,6 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		placeholderContainerID := rcd.containerID
 
 		err := func() error {
-			log.V(1).Info("starting container", "image", container.SpecifiedImageNameOrDefault())
-
 			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
 			if err != nil {
 				if isTransientTemplateError(err) {
@@ -824,6 +786,53 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 				return err
 			}
+
+			lifecycleKey := rcd.getLifecycleKey()
+
+			if container.Spec.Persistent {
+				// Check for an existing persistent container
+				inspected, inspectedErr := r.findContainer(startupCtx, containerName)
+				if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
+					log.Error(inspectedErr, "could not inspect existing container", "ContainerName", containerName)
+					return inspectedErr
+				}
+
+				if inspected != nil {
+					_, dcpManaged := inspected.Labels[dcpBuildLabel]
+					oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
+					if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
+						// We need to recreate this DCP managed container because the lifecycle key has changed
+						log.Info("found existing Container with different lifecycle key, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
+						if removeErr := r.removeExistingContainer(startupCtx, inspected.Id, log); removeErr != nil {
+							return removeErr
+						}
+					} else {
+						log.Info("found existing Container", "ContainerName", containerName, "ContainerID", inspected.Id)
+						rcd.updateFromInspectedContainer(inspected)
+						rcd.startAttemptFinishedAt = metav1.Now()
+						rcd.containerState = apiv1.ContainerStateRunning
+						return nil
+					}
+				}
+			}
+
+			for _, volume := range container.Spec.VolumeMounts {
+				if volume.Type == apiv1.BindMount {
+					_, volErr := os.Stat(volume.Source)
+					if errors.Is(volErr, os.ErrNotExist) {
+						volErr = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
+						if err != nil {
+							log.Error(volErr, "could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
+							return volErr
+						}
+					} else if volErr != nil {
+						log.Error(volErr, "could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
+						return volErr
+					}
+				}
+			}
+
+			log.V(1).Info("starting container", "image", container.SpecifiedImageNameOrDefault())
 
 			defaultNetwork := ""
 			if rcd.runSpec.Networks != nil {
@@ -847,6 +856,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				{
 					Key:   nameLabel,
 					Value: string(container.Name),
+				},
+				{
+					Key:   lifecycleKeyLabel,
+					Value: lifecycleKey,
 				},
 			}...)
 
@@ -883,6 +896,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			if rcd.runSpec.Networks == nil {
 				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID}, streamOptions)
+				rcd.startAttemptFinishedAt = metav1.Now()
 				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
@@ -900,12 +914,14 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				//
 				// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
 				// The Network controller takes care of connecting the container resournce to requested networks.
-				for i := range inspected.Networks {
-					network := inspected.Networks[i].Id
-					err = r.orchestrator.DisconnectNetwork(startupCtx, containers.DisconnectNetworkOptions{Network: network, Container: containerID, Force: true})
-					if err != nil {
-						log.Error(err, "could not detach network from the container", "ContainerID", containerID, "Network", network)
-						return err
+				if !container.Spec.Persistent {
+					for i := range inspected.Networks {
+						network := inspected.Networks[i].Id
+						err = r.orchestrator.DisconnectNetwork(startupCtx, containers.DisconnectNetworkOptions{Network: network, Container: containerID, Force: true})
+						if err != nil {
+							log.Error(err, "could not detach network from the container", "ContainerID", containerID, "Network", network)
+							return err
+						}
 					}
 				}
 			}
@@ -988,17 +1004,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	}
 
 	// We want to stop the container first to give it a chance to clean up
-	log.V(1).Info("calling container orchestrator to stop the container...", "ContainerID", containerID)
-	_, err := r.orchestrator.StopContainers(ctx, []string{containerID}, stopContainerTimeoutSeconds)
-	if err != nil {
-		log.Error(err, "could not stop the running container corresponding to Container object", "ContainerID", containerID)
-	}
-
-	log.V(1).Info("calling container orchestrator to remove the container...", "ContainerID", containerID)
-	_, err = r.orchestrator.RemoveContainers(ctx, []string{containerID}, true /*force*/)
-	if err != nil {
-		log.Error(err, "could not remove the running container corresponding to Container object", "ContainerID", containerID)
-	}
+	_ = r.removeExistingContainer(ctx, containerID, log)
 }
 
 // Removes all resources associated with the Container object, both DCP-managed, as well as orchestrator-managed,

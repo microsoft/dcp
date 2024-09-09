@@ -1293,6 +1293,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional key used to identify if an existing persistent container needs to be restarted. If not set, the controller will calculate a key based on a hash of specific fields in the ContainerSpec.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
@@ -1432,6 +1439,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 									},
 								},
 							},
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The lifecycle key from the spec or the value calculated by the controller",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},
