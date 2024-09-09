@@ -260,6 +260,23 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 	return nil
 }
 
+func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
+	if len(images) == 0 {
+		return nil, fmt.Errorf("must specify at least one image")
+	}
+
+	cmd := makePodmanCommand(append(
+		[]string{"image", "inspect", "--format", "{{json .}}"},
+		images...)...,
+	)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if err != nil {
+		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
+	}
+
+	return asObjects(outBuf, unmarshalImage)
+}
+
 func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
 	for _, mount := range options.VolumeMounts {
 		mountVal := fmt.Sprintf("type=%s,src=%s,target=%s", mount.Type, mount.Source, mount.Target)
@@ -892,6 +909,13 @@ func unmarshalVolume(pvi *podmanInspectedVolume, vol *containers.InspectedVolume
 	return nil
 }
 
+func unmarshalImage(pii *podmanInspectedImage, ic *containers.InspectedImage) error {
+	ic.Id = pii.Id
+	ic.Labels = pii.Config.Labels
+
+	return nil
+}
+
 func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedContainer) error {
 	ic.Id = pci.Id
 	ic.Name = pci.Name
@@ -936,6 +960,8 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 		)
 	}
 
+	ic.Labels = pci.Config.Labels
+
 	return nil
 }
 
@@ -967,6 +993,17 @@ type podmanInspectedVolume struct {
 	CreatedAt  time.Time         `json:"CreatedAt"`
 	Labels     map[string]string `json:"Labels,omitempty"`
 	Scope      string            `json:"Scope"`
+}
+
+// podmanInspectedImageXxx correspond to data returned by "podman image inspect" command.
+// The definition only includes data that we care about.
+type podmanInspectedImage struct {
+	Id     string                     `json:"Id"`
+	Config podmanInspectedImageConfig `json:"Config,omitempty"`
+}
+
+type podmanInspectedImageConfig struct {
+	Labels map[string]string `json:"Labels,omitempty"`
 }
 
 // podmanInspectedContainerXxx correspond to data returned by "podman container inspect" command.
@@ -1005,10 +1042,11 @@ func (pe *podmanEntrypoint) UnmarshalJSON(b []byte) error {
 }
 
 type podmanInspectedContainerConfig struct {
-	Image      string           `json:"Image,omitempty"`
-	Env        []string         `json:"Env,omitempty"`
-	Cmd        []string         `json:"Cmd,omitempty"`
-	Entrypoint podmanEntrypoint `json:"Entrypoint,omitempty"`
+	Image      string            `json:"Image,omitempty"`
+	Env        []string          `json:"Env,omitempty"`
+	Cmd        []string          `json:"Cmd,omitempty"`
+	Entrypoint podmanEntrypoint  `json:"Entrypoint,omitempty"`
+	Labels     map[string]string `json:"Labels,omitempty"`
 }
 
 type podmanInspectedContainerState struct {

@@ -210,6 +210,10 @@ type ContainerSpec struct {
 	// Health probe configuration for the Container
 	// +listType:=atomic
 	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
+
+	// Optional key used to identify if an existing persistent container needs to be restarted.
+	// If not set, the controller will calculate a key based on a hash of specific fields in the ContainerSpec.
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -309,6 +313,9 @@ type ContainerStatus struct {
 	// +listType:=map
 	// +listMapKey:=probeName
 	HealthProbeResults []HealthProbeResult `json:"healthProbeResults,omitempty"`
+
+	// The lifecycle key from the spec or the value calculated by the controller
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
 }
 
 func (cs ContainerStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {

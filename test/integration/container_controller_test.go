@@ -803,6 +803,134 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	require.Len(t, inspected, 1, "expected to find a single container")
 }
 
+func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-container-already-exists-same-lifecycle-key"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			LifecycleKey:  "testkey",
+		},
+	}
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: ctr.Spec.LifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID does not match existing value")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+}
+
+func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-container-already-exists-different-lifecycle-key"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			LifecycleKey:  "newtestkey",
+		},
+	}
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: "oldtestkey",
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	require.NotEqual(t, id, updatedCtr.Status.ContainerID, "container ID matches existing value with changed lifecycle key")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+}
+
 // Ensure a container instance is started when new Container object appears
 func TestContainerWithBuildContextInstanceStarts(t *testing.T) {
 	t.Parallel()
@@ -891,7 +1019,7 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 
-	require.False(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image build to be skipped")
+	require.True(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "image should still be built for persistent container")
 }
 
 func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {

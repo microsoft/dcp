@@ -353,6 +353,7 @@ type testContainer struct {
 	networks   []string
 	args       []string
 	env        map[string]string
+	labels     map[string]string
 	stdoutLog  *testutil.BufferWriter
 	stderrLog  *testutil.BufferWriter
 }
@@ -698,6 +699,20 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	return nil
 }
 
+func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	for _, image := range images {
+		if _, found := to.images[image]; !found {
+			return nil, containers.ErrNotFound
+		}
+	}
+
+	// TODO: Make image build data inspectable
+	return nil, nil
+}
+
 func (to *TestContainerOrchestrator) GetImageId(tag string) (string, bool) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -775,6 +790,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		ports:     map[string][]containers.InspectedContainerHostPortConfig{},
 		args:      options.Args,
 		env:       map[string]string{},
+		labels:    map[string]string{},
 		stdoutLog: testutil.NewBufferWriter(),
 		stderrLog: testutil.NewBufferWriter(),
 	}
@@ -802,6 +818,10 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		container.ports[fmt.Sprintf("%d/%s", port.ContainerPort, protocol)] = []containers.InspectedContainerHostPortConfig{
 			{HostIp: hostIP, HostPort: fmt.Sprintf("%d", hostPort)},
 		}
+	}
+
+	for _, label := range options.Labels {
+		container.labels[label.Key] = label.Value
 	}
 
 	to.containers[id.id] = &container
@@ -1155,6 +1175,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 					Ports:      container.ports,
 					Args:       container.args,
 					Env:        container.env,
+					Labels:     container.labels,
 				}
 
 				for _, networkName := range container.networks {

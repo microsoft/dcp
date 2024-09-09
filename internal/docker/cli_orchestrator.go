@@ -322,6 +322,23 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	return nil
 }
 
+func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
+	if len(images) == 0 {
+		return nil, fmt.Errorf("must specify at least one image")
+	}
+
+	cmd := makeDockerCommand(append(
+		[]string{"image", "inspect", "--format", "{{json .}}"},
+		images...)...,
+	)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if err != nil {
+		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
+	}
+
+	return asObjects(outBuf, unmarshalImage)
+}
+
 func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
 	for _, mount := range options.VolumeMounts {
 		mountVal := fmt.Sprintf("type=%s,src=%s,target=%s", mount.Type, mount.Source, mount.Target)
@@ -949,6 +966,23 @@ func unmarshalVolume(data []byte, vol *containers.InspectedVolume) error {
 	return json.Unmarshal(data, vol)
 }
 
+func unmarshalImage(data []byte, ic *containers.InspectedImage) error {
+	if data == nil {
+		return fmt.Errorf("the Docker command timed out without returning image data")
+	}
+
+	var dii dockerInspectedImage
+	err := json.Unmarshal(data, &dii)
+	if err != nil {
+		return err
+	}
+
+	ic.Id = dii.Id
+	ic.Labels = dii.Config.Labels
+
+	return nil
+}
+
 func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	if data == nil {
 		return fmt.Errorf("the Docker command timed out without returning container data")
@@ -991,10 +1025,14 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.Args = append(ic.Args, dci.Config.Cmd...)
 
 	for name, network := range dci.NetworkSettings.Networks {
+		networkId := network.NetworkID
+		if networkId == "" {
+			networkId = name
+		}
 		ic.Networks = append(
 			ic.Networks,
 			containers.InspectedContainerNetwork{
-				Id:         network.NetworkID,
+				Id:         networkId,
 				Name:       name,
 				IPAddress:  network.IPAddress,
 				Gateway:    network.Gateway,
@@ -1002,6 +1040,8 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 			},
 		)
 	}
+
+	ic.Labels = dci.Config.Labels
 
 	return nil
 }
@@ -1041,6 +1081,18 @@ type dockerInfo struct {
 	DockerRootDir string `json:"DockerRootDir,omitempty"`
 }
 
+// dockerInspectedImageXxx correspond to data returned by "docker image inspect" command.
+// The definition only includes data that we care about.
+// For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
+type dockerInspectedImage struct {
+	Id     string                     `json:"Id"`
+	Config dockerInspectedImageConfig `json:"Config,omitempty"`
+}
+
+type dockerInspectedImageConfig struct {
+	Labels map[string]string `json:"Labels,omitempty"`
+}
+
 // dockerInspectedContainerXxx correspond to data returned by "docker container inspect" command.
 // The definition only includes data that we care about.
 // For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
@@ -1054,10 +1106,11 @@ type dockerInspectedContainer struct {
 }
 
 type dockerInspectedContainerConfig struct {
-	Image      string   `json:"Image,omitempty"`
-	Env        []string `json:"Env,omitempty"`
-	Cmd        []string `json:"Cmd,omitempty"`
-	Entrypoint []string `json:"Entrypoint,omitempty"`
+	Image      string            `json:"Image,omitempty"`
+	Env        []string          `json:"Env,omitempty"`
+	Cmd        []string          `json:"Cmd,omitempty"`
+	Entrypoint []string          `json:"Entrypoint,omitempty"`
+	Labels     map[string]string `json:"Labels,omitempty"`
 }
 
 type dockerInspectedContainerState struct {

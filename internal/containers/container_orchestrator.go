@@ -56,6 +56,14 @@ type BuildImageOptions struct {
 	StreamCommandOptions
 }
 
+type InspectedImage struct {
+	// ID of the image
+	Id string `json:"Id"`
+
+	// Labels applied to the image
+	Labels map[string]string `json:"Labels,omitempty"`
+}
+
 type InspectedContainer struct {
 	// ID of the container
 	Id string `json:"Id"`
@@ -92,6 +100,9 @@ type InspectedContainer struct {
 
 	// Container networks
 	Networks []InspectedContainerNetwork `json:"Networks,omitempty"`
+
+	// Container labels
+	Labels map[string]string `json:"Labels,omitempty"`
 }
 
 type InspectedContainerNetwork struct {
@@ -189,6 +200,8 @@ type ContainerOrchestrator interface {
 
 	// Build a new container image. If successful, the ID of the image is returned.
 	BuildImage(ctx context.Context, options BuildImageOptions) error
+
+	InspectImages(ctx context.Context, images []string) ([]InspectedImage, error)
 
 	// Create (but do not start) a container. If successful, the ID of the container is returned.
 	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)
