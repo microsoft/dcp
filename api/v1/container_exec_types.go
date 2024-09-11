@@ -49,10 +49,10 @@ type ContainerExecStatus struct {
 	State ExecutableState `json:"state,omitempty"`
 
 	// Time the command was started
-	StartupTimestamp metav1.Time `json:"startTimestamp,omitempty"`
+	StartupTimestamp metav1.MicroTime `json:"startTimestamp,omitempty"`
 
 	// Time the command finished running
-	FinishTimestamp metav1.Time `json:"finishTimestamp,omitempty"`
+	FinishTimestamp metav1.MicroTime `json:"finishTimestamp,omitempty"`
 
 	// Exit code of the command
 	ExitCode *int32 `json:"exitCode,omitempty"`

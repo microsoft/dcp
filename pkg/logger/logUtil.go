@@ -25,7 +25,7 @@ func FriendlyTimestamp(ts time.Time) string {
 	}
 }
 
-func FriendlyMetav1Timestamp(ts metav1.Time) string {
+func FriendlyMetav1Timestamp(ts metav1.MicroTime) string {
 	return FriendlyTimestamp(ts.Time)
 }
 

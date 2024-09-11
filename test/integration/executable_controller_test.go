@@ -1327,11 +1327,15 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 
 		stateMatches := currentExe.Status.State == desiredStatus.State
 
-		// metav1.Time uses RFC 3339 format and truncates the time to seconds during serialization.
-		// This is why we only check that the desired and actual timestamp are within a second of each other.
-		hasStartupTimestamp := !currentExe.Status.StartupTimestamp.IsZero() && testutil.Within(currentExe.Status.StartupTimestamp.Time, desiredStatus.StartupTimestamp.Time, time.Second)
+		if !hasPID || !stateMatches {
+			return false, nil
+		}
 
-		hasFinishTimestamp := testutil.Within(currentExe.Status.FinishTimestamp.Time, desiredStatus.FinishTimestamp.Time, time.Second)
+		// metav1.MicroTime uses RFC 3339 format and truncates the time to microseconds during serialization.
+		// This is why we only check that the desired and actual timestamp are within two microseconds of each other.
+		hasStartupTimestamp := !currentExe.Status.StartupTimestamp.IsZero() && testutil.Within(currentExe.Status.StartupTimestamp.Time, desiredStatus.StartupTimestamp.Time, 2*time.Microsecond)
+
+		hasFinishTimestamp := testutil.Within(currentExe.Status.FinishTimestamp.Time, desiredStatus.FinishTimestamp.Time, 2*time.Microsecond)
 
 		hasStdOutFile := currentExe.Status.StdOutFile == desiredStatus.StdOutFile
 		hasStdErrFile := currentExe.Status.StdErrFile == desiredStatus.StdErrFile
@@ -1354,7 +1358,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 			},
 			performStartup: func(r *ctrl_testutil.TestIdeRun) {
 				r.PID = randomPid
-				desiredSuccessfulExeStatus.StartupTimestamp = metav1.NewTime(r.StartedAt)
+				desiredSuccessfulExeStatus.StartupTimestamp = metav1.NewMicroTime(r.StartedAt)
 				desiredSuccessfulExeStatus.DeepCopyInto(r.Status)
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
@@ -1376,9 +1380,9 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 			performStartup: func(r *ctrl_testutil.TestIdeRun) {
 				r.PID = process.UnknownPID
 				r.ID = controllers.UnknownRunID
-				desiredFailedExeStatus.StartupTimestamp = metav1.NewTime(r.StartedAt)
+				desiredFailedExeStatus.StartupTimestamp = metav1.NewMicroTime(r.StartedAt)
 				r.EndedAt = time.Now()
-				desiredFailedExeStatus.FinishTimestamp = metav1.NewTime(r.EndedAt)
+				desiredFailedExeStatus.FinishTimestamp = metav1.NewMicroTime(r.EndedAt)
 				desiredFailedExeStatus.DeepCopyInto(r.Status)
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {

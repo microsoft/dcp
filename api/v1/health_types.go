@@ -306,7 +306,7 @@ type HealthProbeResult struct {
 	Outcome HelthProbeOutcome `json:"outcome"`
 
 	// Timestamp for the result
-	Timestamp metav1.Time `json:"timestamp"`
+	Timestamp metav1.MicroTime `json:"timestamp"`
 
 	// Name of the probe to which this result corresponds
 	ProbeName string `json:"probeName"`

@@ -127,7 +127,7 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 		func(run *TestIdeRun) {
 			run.PID = pid
 			run.Status.State = apiv1.ExecutableStateRunning
-			run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
+			run.Status.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
 		},
 	)
 }
@@ -139,8 +139,8 @@ func (r *TestIdeRunner) SimulateFailedRunStart(exeName types.NamespacedName, sta
 			run.ID = controllers.UnknownRunID
 			run.PID = process.UnknownPID
 			run.Status.State = apiv1.ExecutableStateFailedToStart
-			run.Status.StartupTimestamp = metav1.NewTime(run.StartedAt)
-			run.Status.FinishTimestamp = metav1.Now()
+			run.Status.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
+			run.Status.FinishTimestamp = metav1.NowMicro()
 		},
 	)
 }

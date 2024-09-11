@@ -54,7 +54,7 @@ type ExecutableReplicaSetStatus struct {
 	FinishedReplicas int32 `json:"finishedReplicas"`
 
 	// Last time the replica set was scaled up or down by the controller
-	LastScaleTime metav1.Time `json:"lastScaleTime,omitempty"`
+	LastScaleTime metav1.MicroTime `json:"lastScaleTime,omitempty"`
 
 	// Health status of the replica set
 	HealthStatus HealthStatus `json:"healthStatus,omitempty"`

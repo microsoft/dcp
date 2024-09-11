@@ -26,5 +26,8 @@ type StdIoStreamableResource interface {
 	GetStdOutFile() string
 	GetStdErrFile() string
 	Done() bool
+
+	// This is set by Kubernetes with 1-second precision when the resource is deleted
+	// Hence we use metav1.Time here instead of metav1.MicroTime
 	GetDeletionTimestamp() *metav1.Time
 }

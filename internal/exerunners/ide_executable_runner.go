@@ -275,7 +275,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 		runID := controllers.RunID(rid)
 		log.V(1).Info("IDE run session started", "RunID", runID)
 		exeStatus.ExecutionID = string(runID)
-		exeStatus.StartupTimestamp = metav1.Now()
+		exeStatus.StartupTimestamp = metav1.NowMicro()
 
 		r.lock.Lock()
 		defer r.lock.Unlock()
@@ -296,7 +296,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		if rs.finished {
 			r.activeRuns.Delete(runID)
-			exeStatus.FinishTimestamp = metav1.Now()
+			exeStatus.FinishTimestamp = metav1.NowMicro()
 			exeStatus.State = apiv1.ExecutableStateFinished
 		} else {
 			exeStatus.State = apiv1.ExecutableStateRunning
@@ -308,7 +308,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	if workEnqueueErr != nil {
 		log.Error(workEnqueueErr, "could not enqueue ide executable start operation; workload is shutting down")
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
-		exe.Status.FinishTimestamp = metav1.Now()
+		exe.Status.FinishTimestamp = metav1.NowMicro()
 	} else {
 		log.V(1).Info("Executable is starting, waiting for OnStarted callback...")
 		exe.Status.State = apiv1.ExecutableStateStarting

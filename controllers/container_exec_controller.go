@@ -40,8 +40,8 @@ type runningContainerExecStatus struct {
 	stdErrFile string
 
 	exitCode         *int32
-	startupTimestamp metav1.Time
-	finishTimestamp  metav1.Time
+	startupTimestamp metav1.MicroTime
+	finishTimestamp  metav1.MicroTime
 
 	// Function to cancel the execution
 	cancel func()
@@ -160,7 +160,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 	if !container.Status.FinishTimestamp.IsZero() {
 		// The container finished running, we won't be able to run this job
 		r.Log.Info("container has already finished, can't start a new exec job", "Container", container.Name)
-		execStatus.finishTimestamp = metav1.Now()
+		execStatus.finishTimestamp = metav1.NowMicro()
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 		return updateContainerExecStatus(exec, execStatus)
 	}
@@ -179,7 +179,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 		}
 
 		log.Error(envErr, "could not compute effective environment for the ContainerExec job")
-		execStatus.finishTimestamp = metav1.Now()
+		execStatus.finishTimestamp = metav1.NowMicro()
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 		return updateContainerExecStatus(exec, execStatus)
 	}
@@ -192,7 +192,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 		}
 
 		log.Error(argsErr, "could not compute effective invocation arguments for the ContainerExec job")
-		execStatus.finishTimestamp = metav1.Now()
+		execStatus.finishTimestamp = metav1.NowMicro()
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 
 		return updateContainerExecStatus(exec, execStatus)
@@ -229,7 +229,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 		},
 	}
 
-	startupTime := metav1.Now()
+	startupTime := metav1.NowMicro()
 
 	execContext, execCancel := context.WithCancel(r.lifetimeCtx)
 
@@ -239,7 +239,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 		// We failed to start execution, so mark the status failed
 		log.Error(execErr, "failed to run ContainerExec job in container")
 		execStatus.state = apiv1.ExecutableStateFailedToStart
-		execStatus.finishTimestamp = metav1.Now()
+		execStatus.finishTimestamp = metav1.NowMicro()
 
 		return updateContainerExecStatus(exec, execStatus)
 	}
@@ -259,7 +259,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 				return
 			}
 
-			finishTimestamp := metav1.Now()
+			finishTimestamp := metav1.NowMicro()
 
 			execStatus.mutex.Lock()
 			defer execStatus.mutex.Unlock()

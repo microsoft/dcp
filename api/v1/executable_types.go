@@ -244,10 +244,10 @@ type ExecutableStatus struct {
 	State ExecutableState `json:"state"`
 
 	// Start (attempt) timestamp.
-	StartupTimestamp metav1.Time `json:"startupTimestamp,omitempty"`
+	StartupTimestamp metav1.MicroTime `json:"startupTimestamp,omitempty"`
 
 	// The time when the process/IDE session finished execution
-	FinishTimestamp metav1.Time `json:"finishTimestamp,omitempty"`
+	FinishTimestamp metav1.MicroTime `json:"finishTimestamp,omitempty"`
 
 	// Exit code of the process associated with the Executable.
 	// The value is equal to UnknownExitCode if the Executable was not started, is still running, or the exit code is not available.

@@ -521,13 +521,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref common.Refer
 					"startTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Time the command was started",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"finishTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Time the command finished running",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"exitCode": {
@@ -584,7 +584,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref common.Refer
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
@@ -1339,13 +1339,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 					"startupTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timestamp of the Container start attempt",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"finishTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timestamp when the Container was terminated last",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"startupStdOutFile": {
@@ -1452,7 +1452,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
@@ -2045,7 +2045,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref commo
 					"lastScaleTime": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Last time the replica set was scaled up or down by the controller",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"healthStatus": {
@@ -2060,7 +2060,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref commo
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
@@ -2207,13 +2207,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 					"startupTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Start (attempt) timestamp.",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"finishTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The time when the process/IDE session finished execution",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"exitCode": {
@@ -2292,7 +2292,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
@@ -2435,7 +2435,7 @@ func schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref common.Referen
 					"timestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timestamp for the result",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.Time"),
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
 					"probeName": {
@@ -2458,7 +2458,7 @@ func schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref common.Referen
 			},
 		},
 		Dependencies: []string{
-			"k8s.io/apimachinery/pkg/apis/meta/v1.Time"},
+			"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
