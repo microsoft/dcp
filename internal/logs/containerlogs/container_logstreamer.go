@@ -113,6 +113,11 @@ func (c *containerLogStreamer) StreamLogs(
 			return status, nil, nil
 		}
 
+		if ctr.Status.State == apiv1.ContainerStateStarting {
+			streamLog.V(1).Info("container is still starting, not ready to stream logs")
+			return status, nil, nil
+		}
+
 		// Standard stdout/stderr log streaming
 		logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
 		ld, stdOutWriter, stdErrWriter, newlyCreated, acquireErr := c.containerLogs.AcquireForResource(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
