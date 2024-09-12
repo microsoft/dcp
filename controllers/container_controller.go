@@ -375,7 +375,7 @@ func ensureContainerStartingState(
 		// Retry startup after transient error.
 
 		rcd.startupError = nil
-		rcd.startAttemptFinishedAt = metav1.Time{}
+		rcd.startAttemptFinishedAt = metav1.MicroTime{}
 		rcd.containerName = ""
 
 		r.createContainer(container, rcd, log, startupRetryDelay)
@@ -390,11 +390,11 @@ func ensureContainerStartingState(
 		case err != nil:
 			rcd.startupError = err
 			rcd.containerState = apiv1.ContainerStateFailedToStart
-			rcd.startAttemptFinishedAt = metav1.Now()
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
 		case started:
 			rcd.containerState = apiv1.ContainerStateRunning
-			rcd.startAttemptFinishedAt = metav1.Now()
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
 		default:
 			// We are waiting for the network connections to be established.
@@ -427,7 +427,7 @@ func ensureContainerFailedToStartState(
 	if !found {
 		// Can happen if the container was created with Spec.Stop = true
 		if container.Status.FinishTimestamp.IsZero() {
-			container.Status.FinishTimestamp = metav1.Now()
+			container.Status.FinishTimestamp = metav1.NowMicro()
 			change |= statusChanged
 		}
 	} else {
@@ -549,7 +549,7 @@ func ensureContainerUnknownState(
 		log.Error(fmt.Errorf("the state of the Container became undetermined"), "", "RequestedContainerState", desiredState)
 	}
 	if container.Status.FinishTimestamp.IsZero() {
-		container.Status.FinishTimestamp = metav1.Now()
+		container.Status.FinishTimestamp = metav1.NowMicro()
 		change |= statusChanged
 	}
 
@@ -645,7 +645,7 @@ func (r *ContainerReconciler) buildImage(
 		log.Error(err, "image was not built, possibly because the workload is shutting down")
 		rcd.containerState = apiv1.ContainerStateFailedToStart
 		rcd.startupError = err
-		rcd.startAttemptFinishedAt = metav1.Now()
+		rcd.startAttemptFinishedAt = metav1.NowMicro()
 	}
 }
 
@@ -668,7 +668,7 @@ func (r *ContainerReconciler) createContainer(
 			log.Error(err, "could not generate a unique container name")
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startupError = err
-			rcd.startAttemptFinishedAt = metav1.Now()
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			return
 		}
 
@@ -680,7 +680,7 @@ func (r *ContainerReconciler) createContainer(
 		log.Error(err, "container was not started, probably because the workload is shutting down")
 		rcd.containerState = apiv1.ContainerStateFailedToStart
 		rcd.startupError = err
-		rcd.startAttemptFinishedAt = metav1.Now()
+		rcd.startAttemptFinishedAt = metav1.NowMicro()
 	}
 }
 
@@ -743,7 +743,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 
 		if err != nil {
 			rcd.startupError = err
-			rcd.startAttemptFinishedAt = metav1.Now()
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 		}
 
@@ -809,7 +809,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					} else {
 						log.Info("found existing Container", "ContainerName", containerName, "ContainerID", inspected.Id)
 						rcd.updateFromInspectedContainer(inspected)
-						rcd.startAttemptFinishedAt = metav1.Now()
+						rcd.startAttemptFinishedAt = metav1.NowMicro()
 						rcd.containerState = apiv1.ContainerStateRunning
 						return nil
 					}
@@ -896,7 +896,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			if rcd.runSpec.Networks == nil {
 				_, err = r.orchestrator.StartContainers(startupCtx, []string{containerID}, streamOptions)
-				rcd.startAttemptFinishedAt = metav1.Now()
+				rcd.startAttemptFinishedAt = metav1.NowMicro()
 				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 				if err != nil {
 					log.Error(err, "could not start the container", "ContainerID", containerID)
@@ -931,7 +931,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 		if err != nil {
 			rcd.startupError = err
-			rcd.startAttemptFinishedAt = metav1.Now()
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
 
 			// Keep in "starting" state if the error is a transient error, otherwise initiate the transition to "failed to start".
 			if !isTransientTemplateError(err) {

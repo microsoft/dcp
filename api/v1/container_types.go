@@ -274,10 +274,10 @@ type ContainerStatus struct {
 	ContainerName string `json:"containerName,omitempty"`
 
 	// Timestamp of the Container start attempt
-	StartupTimestamp metav1.Time `json:"startupTimestamp,omitempty"`
+	StartupTimestamp metav1.MicroTime `json:"startupTimestamp,omitempty"`
 
 	// Timestamp when the Container was terminated last
-	FinishTimestamp metav1.Time `json:"finishTimestamp,omitempty"`
+	FinishTimestamp metav1.MicroTime `json:"finishTimestamp,omitempty"`
 
 	// The path of a temporary file that contains captured standard output data from the Container startup process.
 	StartupStdOutFile string `json:"startupStdOutFile,omitempty"`

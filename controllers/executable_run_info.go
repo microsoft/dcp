@@ -31,10 +31,10 @@ type runInfo struct {
 	exitCode *int32
 
 	// Timestamp when the run was started
-	startupTimestamp metav1.Time
+	startupTimestamp metav1.MicroTime
 
 	// Timestamp when the run was finished
-	finishTimestamp metav1.Time
+	finishTimestamp metav1.MicroTime
 
 	// Paths to captured standard output and standard error files
 	stdOutFile string
@@ -49,8 +49,8 @@ func NewRunInfo() *runInfo {
 		exeState:         "",
 		pid:              apiv1.UnknownPID,
 		exitCode:         apiv1.UnknownExitCode,
-		startupTimestamp: metav1.Time{},
-		finishTimestamp:  metav1.Time{},
+		startupTimestamp: metav1.MicroTime{},
+		finishTimestamp:  metav1.MicroTime{},
 	}
 }
 
@@ -141,13 +141,16 @@ func (ri *runInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) objectChange 
 	}
 
 	// We only overwrite timestamps if the Executable status has them as zero values
-	// to avoid round-tripping errors.
-	if !ri.startupTimestamp.IsZero() && status.StartupTimestamp.IsZero() {
+	// or if the run info indicates that the startup/finish happened earlier.
+	// The controller provides a default value for timestamps based on Executable state transitions,
+	// but a more accurate timestamp may come (asynchronously) from Executable runner via run info.
+
+	if !ri.startupTimestamp.IsZero() && (status.StartupTimestamp.IsZero() || ri.startupTimestamp.Before(&status.StartupTimestamp)) {
 		status.StartupTimestamp = ri.startupTimestamp
 		changed = statusChanged
 	}
 
-	if !ri.finishTimestamp.IsZero() && status.FinishTimestamp.IsZero() {
+	if !ri.finishTimestamp.IsZero() && (status.FinishTimestamp.IsZero() || ri.finishTimestamp.Before(&status.FinishTimestamp)) {
 		status.FinishTimestamp = ri.finishTimestamp
 		changed = statusChanged
 	}

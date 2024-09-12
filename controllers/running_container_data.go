@@ -116,7 +116,7 @@ type runningContainerData struct {
 	startupStderrLog atomic.Pointer[startupLog]
 
 	// The time the start attempt finished (successfully or not).
-	startAttemptFinishedAt metav1.Time
+	startAttemptFinishedAt metav1.MicroTime
 
 	// The map of ports reserved for services that the Container implements
 	reservedPorts map[types.NamespacedName]int32
@@ -361,7 +361,7 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 
 	if ctr.Status.FinishTimestamp.IsZero() {
 		if rcd.containerState == apiv1.ContainerStateExited {
-			ctr.Status.FinishTimestamp = metav1.Now()
+			ctr.Status.FinishTimestamp = metav1.NowMicro()
 			change |= statusChanged
 		} else if rcd.containerState == apiv1.ContainerStateFailedToStart && !rcd.startAttemptFinishedAt.IsZero() {
 			ctr.Status.FinishTimestamp = rcd.startAttemptFinishedAt

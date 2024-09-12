@@ -10,7 +10,7 @@ import (
 
 // Checks if the EqualValue() function works correctly for K8s timestamps.
 func TestEqualValueTimestamps(t *testing.T) {
-	var t1, t2 *metav1.Time
+	var t1, t2 *metav1.MicroTime
 	t1 = nil
 	t2 = nil
 

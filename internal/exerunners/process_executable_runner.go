@@ -89,7 +89,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 
 	if err != nil {
 		log.Error(err, "failed to start a process")
-		exe.Status.FinishTimestamp = metav1.Now()
+		exe.Status.FinishTimestamp = metav1.NowMicro()
 		exe.Status.State = apiv1.ExecutableStateFailedToStart
 	} else {
 		r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
@@ -100,7 +100,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		}
 		*exe.Status.PID = int64(pid)
 		exe.Status.State = apiv1.ExecutableStateRunning
-		exe.Status.StartupTimestamp = metav1.Now()
+		exe.Status.StartupTimestamp = metav1.NowMicro()
 
 		r.runWatcher(ctx, pid, log)
 

@@ -223,7 +223,7 @@ func (r *ExecutableReplicaSetReconciler) updateReplicaStatus(replicaSet *apiv1.E
 // Attempt to make the number of replicas match the desired state. Will perform scale up or down as appropriate.
 func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, replicaSet *apiv1.ExecutableReplicaSet, replicas []*apiv1.Executable, log logr.Logger) objectChange {
 	change := noChange
-	currentScaleTime := metav1.Now()
+	currentScaleTime := metav1.NowMicro()
 
 	rsData, found := r.runningReplicaSets.Load(replicaSet.NamespacedName())
 	if !found {

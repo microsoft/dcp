@@ -382,7 +382,7 @@ func (r *ExecutableReconciler) OnStartingCompleted(name types.NamespacedName, ru
 		exeStatus.State = apiv1.ExecutableStateFailedToStart
 
 		if exeStatus.FinishTimestamp.IsZero() {
-			exeStatus.FinishTimestamp = metav1.Now()
+			exeStatus.FinishTimestamp = metav1.NowMicro()
 		}
 	}
 
@@ -655,7 +655,7 @@ func setExecutableState(exe *apiv1.Executable, state apiv1.ExecutableState) obje
 
 		finalState := state == apiv1.ExecutableStateFinished || state == apiv1.ExecutableStateTerminated || state == apiv1.ExecutableStateFailedToStart
 		if finalState && exe.Status.FinishTimestamp.IsZero() {
-			exe.Status.FinishTimestamp = metav1.Now()
+			exe.Status.FinishTimestamp = metav1.NowMicro()
 		}
 	}
 
