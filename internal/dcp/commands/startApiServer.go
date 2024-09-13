@@ -18,13 +18,19 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
+const (
+	DCP_SHUTDOWN_TIMEOUT_SECONDS = "DCP_SHUTDOWN_TIMEOUT_SECONDS"
+)
+
 var (
-	rootDir    string
-	detach     bool
-	serverOnly bool
+	rootDir                string
+	detach                 bool
+	serverOnly             bool
+	defaultShutdownTimeout = 120 // Default shutdown timeout in seconds (2 minutes)
 )
 
 func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
@@ -141,7 +147,11 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 				//
 				// Don't use ctx here--it is already cancelled when this function is called,
 				// so using it would result in immediate failure.
-				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), 1*time.Minute)
+				shutdownTimeout, shutdownTimeoutProvided := osutil.EnvVarIntVal(DCP_SHUTDOWN_TIMEOUT_SECONDS)
+				if !shutdownTimeoutProvided {
+					shutdownTimeout = defaultShutdownTimeout
+				}
+				shutdownCtx, cancelShutdownCtx := context.WithTimeout(context.Background(), time.Duration(shutdownTimeout)*time.Second)
 				defer cancelShutdownCtx()
 				log.Info("Stopping the application...")
 				shutdownErr := appmgmt.ShutdownApp(shutdownCtx, log.WithName("shutdown").V(1))
