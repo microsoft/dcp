@@ -27,15 +27,17 @@ import (
 )
 
 var (
-	volumeNotFoundRegEx       = regexp.MustCompile(`(?i)no such volume`)
-	networkNotFoundRegEx      = regexp.MustCompile(`(?i)network (.*) not found`)
-	containerNotFoundRegEx    = regexp.MustCompile(`(?i)no such container`)
-	networkAlreadyExistsRegEx = regexp.MustCompile(`(?i)network with name (.*) already exists`)
+	volumeNotFoundRegEx        = regexp.MustCompile(`(?i)no such volume`)
+	networkNotFoundRegEx       = regexp.MustCompile(`(?i)network (.*) not found`)
+	containerNotFoundRegEx     = regexp.MustCompile(`(?i)no such container`)
+	networkAlreadyExistsRegEx  = regexp.MustCompile(`(?i)network with name (.*) already exists`)
+	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
 
 	newContainerNotFoundErrorMatch    = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch       = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
 	newNetworkNotFoundErrorMatch      = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
 	newNetworkAlreadyExistsErrorMatch = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
+	newNetworkPoolNotAvailableError   = containers.NewCliErrorMatch(networkSubnetPoolFullRegEx, errors.Join(containers.ErrCouldNotAllocate, fmt.Errorf("network subnet pool full")))
 
 	// We expect almost all Docker CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
@@ -647,7 +649,7 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
+		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1), newNetworkPoolNotAvailableError)
 	}
 	return asId(outBuf)
 }

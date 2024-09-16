@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	ErrNotFound      = errors.New("object not found")
-	ErrAlreadyExists = errors.New("object already exists")
+	ErrNotFound         = errors.New("object not found")
+	ErrAlreadyExists    = errors.New("object already exists")
+	ErrCouldNotAllocate = errors.New("object could not allocate required resources")
 )
 
 func (o StreamContainerLogsOptions) Apply(args []string) []string {

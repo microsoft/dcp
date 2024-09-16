@@ -270,8 +270,14 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		IPv6: network.Spec.IPv6,
 	}
 	networkID, err := r.orchestrator.CreateNetwork(ctx, createOptions)
-	if err != nil {
-		log.Error(err, "could not create a network")
+	if network.Spec.Persistent && errors.Is(err, ct.ErrAlreadyExists) {
+		log.V(1).Info("persistent network already exists, but initial inspection failed, retrying...", "Network", networkName)
+		return additionalReconciliationNeeded
+	} else if errors.Is(err, ct.ErrCouldNotAllocate) {
+		log.Error(err, "could not create the network as all available subnet ranges from the default pool are allocated, retrying...", "Network", networkName)
+		return additionalReconciliationNeeded
+	} else if err != nil {
+		log.Error(err, "could not create a network", "Network", networkName)
 		r.existingNetworks.Store(networkName, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateFailedToStart, message: err.Error()})
 		network.Status.State = apiv1.ContainerNetworkStateFailedToStart
 		network.Status.Message = err.Error()
