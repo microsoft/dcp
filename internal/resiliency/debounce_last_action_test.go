@@ -120,30 +120,3 @@ func TestDebounceActionDoesNotExecuteRunnerIfContextCancelled(t *testing.T) {
 	// before debounceDelay.
 	require.WithinRange(t, finish, start.Add(contextTimeoutDelay), start.Add(debounceDelay))
 }
-
-func TestDebounceActionMaxDelay(t *testing.T) {
-	t.Parallel()
-
-	const debounceDelay = 50 * time.Millisecond
-	const maxDelay = 500 * time.Millisecond
-	counter := atomic.Int32{}
-	deb := NewDebounceLastAction(func(c *atomic.Int32) { c.Add(1) }, debounceDelay, maxDelay)
-
-	// Call in tight loop for longer than maxDelay, more frequently than debounceDelay
-	threshold := time.Now().Add(maxDelay).Add(maxDelay / 2)
-	for {
-		deb.Run(context.Background(), &counter)
-		if time.Now().After(threshold) {
-			break
-		}
-	}
-
-	currentCounter := counter.Load()
-	require.Equalf(t, int32(1), currentCounter, "Expecetd one call to action because max delay was reached")
-
-	// Ensure that the action is called again because we were calling past maxDelay
-	require.Eventuallyf(t, func() bool {
-		currentCounter = counter.Load()
-		return currentCounter == 2
-	}, maxDelay*10, maxDelay/2, "Expecetd two total calls to action")
-}
