@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -98,6 +99,10 @@ type LogStorage struct {
 
 	// The watcher for the parent object kind
 	watcher watch.Interface
+
+	// Channel to signal when the log storage is being disposed
+	disposeCh chan struct{}
+	disposed  bool
 }
 
 func NewLogStorage(parentKindStorage registry_rest.StandardStorage, logStreamer ResourceLogStreamer) (*LogStorage, error) {
@@ -171,9 +176,31 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 	ls.watcher = watcher
 
 	go func() {
-		// Event loop
-		for evt := range watcher.ResultChan() {
-			ls.resourceEventHandler(evt, log)
+		timer := time.NewTimer(30 * time.Second)
+		for {
+			select {
+			case <-timer.C:
+				ls.mutex.Lock()
+
+				if !ls.disposed {
+					newWatcher, newWatchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
+					if newWatchErr != nil {
+						log.V(1).Info("failed to re-establish parent resource watcher", "Error", newWatchErr)
+					} else {
+						ls.watcher.Stop()
+						ls.watcher = newWatcher
+					}
+
+					timer.Reset(30 * time.Second)
+				}
+
+				ls.mutex.Unlock()
+			case <-ls.disposeCh:
+				timer.Stop()
+				return
+			case evt := <-ls.watcher.ResultChan():
+				ls.resourceEventHandler(evt, log)
+			}
 		}
 	}()
 
@@ -247,6 +274,9 @@ func (ls *LogStorage) New() runtime.Object {
 func (ls *LogStorage) Destroy() {
 	ls.mutex.Lock()
 	defer ls.mutex.Unlock()
+
+	close(ls.disposeCh)
+	ls.disposed = true
 
 	// Logs do not have independent storage/lifecycle, they will be deleted when the parent is deleted, but we do need to stop the watcher
 	if ls.watcher != nil {
