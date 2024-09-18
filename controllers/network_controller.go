@@ -379,7 +379,10 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 				Container: containerID,
 				Aliases:   connection.Spec.Aliases,
 			},
-		); err != nil {
+		); errors.Is(err, ct.ErrAlreadyExists) {
+			networkStatus.connections[containerID] = true
+			log.V(1).Info("container is already connected to the network", "Container", containerID, "Network", network.Status.NetworkName)
+		} else if err != nil {
 			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
 		} else {
