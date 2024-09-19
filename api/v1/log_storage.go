@@ -30,6 +30,7 @@ const (
 	ResourceStreamStatusStreaming ResourceStreamStatus = "streaming"
 	ResourceStreamStatusDone      ResourceStreamStatus = "done"
 	ResourceStreamStatusNotReady  ResourceStreamStatus = "not_ready"
+	watcherRestartInterval                             = 30 * time.Second
 )
 
 // ResourceLogStreamFactory is an entity that knows how to stream logs for a given resource.
@@ -176,7 +177,11 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 	ls.watcher = watcher
 
 	go func() {
-		timer := time.NewTimer(30 * time.Second)
+		// We've seen in tests scenarios where the watcher doesn't always return every event.
+		// This can lead to the log streamer never starting streaming for a given resource. To mitigate this,
+		// we are periodically restarting the watcher to ensure we don't miss any events (the watcher always
+		// emits the current state of resources when it starts).
+		timer := time.NewTimer(watcherRestartInterval)
 		for {
 			select {
 			case <-timer.C:
@@ -191,7 +196,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 						ls.watcher = newWatcher
 					}
 
-					timer.Reset(30 * time.Second)
+					timer.Reset(watcherRestartInterval)
 				}
 
 				ls.mutex.Unlock()
