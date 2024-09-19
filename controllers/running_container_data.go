@@ -76,6 +76,11 @@ func (sl *startupLog) Dispose() error {
 	return disposeErr
 }
 
+type containerNetworkConnectionKey struct {
+	Container types.NamespacedName
+	Network   types.NamespacedName
+}
+
 // Data that we keep, in memory, about running containers.
 type runningContainerData struct {
 	// The most recent state that we set on the Container object.
@@ -121,6 +126,8 @@ type runningContainerData struct {
 	// The map of ports reserved for services that the Container implements
 	reservedPorts map[types.NamespacedName]int32
 
+	networkConnections map[containerNetworkConnectionKey]bool
+
 	// The "run spec" that was used to start the container.
 	// This is initialized with a copy of the Container.Spec, but then updated (the Env and Args part, specifically)
 	// to include all value substitutions for environment variables and startup command arguments.
@@ -145,11 +152,12 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 	runSpec.Image = ctr.SpecifiedImageNameOrDefault()
 
 	return &runningContainerData{
-		containerState: apiv1.ContainerStatePending,
-		containerID:    placeholderID,
-		reservedPorts:  make(map[types.NamespacedName]int32),
-		runSpec:        runSpec,
-		exitCode:       apiv1.UnknownExitCode,
+		containerState:     apiv1.ContainerStatePending,
+		containerID:        placeholderID,
+		reservedPorts:      make(map[types.NamespacedName]int32),
+		networkConnections: make(map[containerNetworkConnectionKey]bool),
+		runSpec:            runSpec,
+		exitCode:           apiv1.UnknownExitCode,
 	}
 }
 
@@ -165,6 +173,7 @@ func (rcd *runningContainerData) clone() *runningContainerData {
 		stopAttemptInitiated:   rcd.stopAttemptInitiated,
 		startAttemptFinishedAt: rcd.startAttemptFinishedAt,
 		reservedPorts:          stdmaps.Clone(rcd.reservedPorts),
+		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
 		startupAttempted:       rcd.startupAttempted,
 	}
