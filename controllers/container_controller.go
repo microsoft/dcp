@@ -798,6 +798,12 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 						if removeErr := r.removeExistingContainer(startupCtx, inspected.Id, log); removeErr != nil {
 							return removeErr
 						}
+					} else if dcpManaged && inspected.Status != containers.ContainerStatusRunning {
+						// We need to recreate this DCP managed container because it is not running
+						log.Info("found existing Container that is not running, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "ContainerStatus", inspected.Status)
+						if removeErr := r.removeExistingContainer(startupCtx, inspected.Id, log); removeErr != nil {
+							return removeErr
+						}
 					} else {
 						log.Info("found existing Container", "ContainerName", containerName, "ContainerID", inspected.Id)
 						rcd.updateFromInspectedContainer(inspected)

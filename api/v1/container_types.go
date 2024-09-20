@@ -432,11 +432,6 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), e.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
 
-	// Validate that stop isn't set to true when mode is set to Create or Existing
-	if e.Spec.Persistent && e.Spec.Stop {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to true if persistent is true"))
-	}
-
 	if e.Spec.Persistent && e.Spec.ContainerName == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
 	}
@@ -484,11 +479,6 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	// Make sure Persistent isn't changed after the container is created
 	if oldContainer.Spec.Persistent != e.Spec.Persistent {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
-	}
-
-	// Ensure that we forbid attempting to stop persistent resources
-	if e.Spec.Persistent && e.Spec.Stop {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "stop"), e.NamespacedName().Name, "stop cannot be set to true if persistent is true"))
 	}
 
 	// Forbid changing labels after the resource is created
