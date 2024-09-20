@@ -202,9 +202,14 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOpti
 	}
 
 	options.ServingOptions.BindAddress = address
-	options.ServingOptions.BearerToken = kubeconfig.GetKubeconfigTokenFlagValue()
 
-	// If --secure-port and/or --token were not specified, figure them out from Kubeconfig file
+	configuredToken, _ := os.LookupEnv(kubeconfig.DCP_SECURE_TOKEN)
+	if configuredToken != "" {
+		// If a token was supplied, use it to secure the API server
+		options.ServingOptions.BearerToken = configuredToken
+	}
+
+	// If --secure-port and/or DCP_SECURE_TOKEN were not specified, figure them out from Kubeconfig file
 	havePort := networking.IsValidPort(options.ServingOptions.BindPort)
 	haveToken := options.ServingOptions.BearerToken != ""
 	if !havePort || !haveToken {
@@ -214,7 +219,7 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOpti
 
 		if !haveToken {
 			if token == "" || token == kubeconfig.PlaceholderToken {
-				// If --token isn't provided, the kubeconfig needs to include one.
+				// If DCP_SECURE_TOKEN isn't provided, the kubeconfig needs to include one.
 				return nil, fmt.Errorf("kubeconfig file is invalid; an auth token was expected, but no valid token was provided")
 			}
 

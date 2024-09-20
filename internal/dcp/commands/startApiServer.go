@@ -44,7 +44,6 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 
 	kubeconfig.EnsureKubeconfigFlag(startApiSrvCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
-	kubeconfig.EnsureKubeconfigTokenFlag(startApiSrvCmd.Flags())
 
 	startApiSrvCmd.Flags().StringVarP(&rootDir, "root-dir", "r", "", "If present, tells DCP to use specific directory as the application root directory. Defaults to current working directory.")
 	startApiSrvCmd.Flags().BoolVar(&detach, "detach", false, "If present, instructs DCP to fork itself as a detached process.")
@@ -168,9 +167,6 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 		invocationFlags := []string{"--kubeconfig", kconfig.Path(), "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg()}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
-		}
-		if kubeconfig.GetKubeconfigTokenFlagValue() != "" {
-			invocationFlags = append(invocationFlags, "--token", kubeconfig.GetKubeconfigTokenFlagValue())
 		}
 		err = bootstrap.DcpRun(ctx, rootDir, kconfig, allExtensions, invocationFlags, log, runEvtHandlers)
 

@@ -176,8 +176,9 @@ func GetKubeconfigFromFlags(fs *pflag.FlagSet, port int32, log logr.Logger) (*Ku
 		return nil, err
 	}
 
-	// If a token was not provided via --token flag, we need to generate one
-	generateToken := GetKubeconfigTokenFlagValue() == ""
+	// If a token was not provided via DCP_SECURE_TOKEN environment variable, we need to generate one
+	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
+	generateToken := !tokenFound || token == ""
 
 	return getKubeconfig(kubeconfigPath, port, true, generateToken, log)
 }

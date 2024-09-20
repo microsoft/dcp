@@ -3,7 +3,6 @@ package kubeconfig
 import (
 	goflag "flag"
 	"fmt"
-	"strings"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
@@ -11,13 +10,12 @@ import (
 )
 
 const (
-	PortFlagName  = "port"
-	TokenFlagName = "token"
+	PortFlagName     = "port"
+	DCP_SECURE_TOKEN = "DCP_SECURE_TOKEN"
 )
 
 var (
-	port  int32
-	token string
+	port int32
 )
 
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
@@ -50,19 +48,6 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 		fs.Int32Var(&port, PortFlagName, 0, "Use a specific port when scaffolding the Kubeconfig file. If not specified, a random port will be used.")
 		return fs.Lookup(PortFlagName)
 	}
-}
-
-func EnsureKubeconfigTokenFlag(fs *pflag.FlagSet) *pflag.Flag {
-	if p := fs.Lookup(TokenFlagName); p != nil {
-		return p
-	} else {
-		fs.StringVar(&token, TokenFlagName, "", "Use a specific token to secure the Kubernetes server. If not specified, a random token will be used.")
-		return fs.Lookup(TokenFlagName)
-	}
-}
-
-func GetKubeconfigTokenFlagValue() string {
-	return strings.TrimSpace(token)
 }
 
 func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {

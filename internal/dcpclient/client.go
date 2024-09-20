@@ -3,6 +3,7 @@ package dcpclient
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	clientgorest "k8s.io/client-go/rest"
@@ -105,8 +106,9 @@ func applyDcpOptions(config *clientgorest.Config) {
 	config.QPS = 1000
 	config.Burst = 2000
 
-	if kubeconfig.GetKubeconfigTokenFlagValue() != "" {
-		// If the token flag is set, use it to authenticate to the API server
-		config.BearerToken = kubeconfig.GetKubeconfigTokenFlagValue()
+	token, _ := os.LookupEnv(kubeconfig.DCP_SECURE_TOKEN)
+	if token != "" {
+		// If a token was supplied, use it to authenticate to the API server
+		config.BearerToken = token
 	}
 }

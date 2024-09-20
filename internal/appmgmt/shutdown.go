@@ -2,6 +2,7 @@ package appmgmt
 
 import (
 	"context"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -45,9 +46,10 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		return err
 	}
 
-	if kubeconfig.GetKubeconfigTokenFlagValue() != "" {
-		// If the token flag is set, use it to authenticate to the API server
-		clusterConfig.BearerToken = kubeconfig.GetKubeconfigTokenFlagValue()
+	token, _ := os.LookupEnv(kubeconfig.DCP_SECURE_TOKEN)
+	if token != "" {
+		// If a token was supplied, use it to authenticate to the API server
+		clusterConfig.BearerToken = token
 	}
 
 	dynamicClient, err := dynamic.NewForConfig(clusterConfig)

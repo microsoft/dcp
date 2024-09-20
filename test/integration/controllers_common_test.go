@@ -148,10 +148,10 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		"start-apiserver",
 		"--server-only",
 		"--kubeconfig", kubeconfigPath,
-		"--token", string(bearerToken),
 		"--test-container-log-source", containerOrchestrator.GetSocketFilePath(),
 		"--monitor", strconv.Itoa(os.Getpid()),
 	)
+	cmd.Env = []string{fmt.Sprintf("%s=%s", kubeconfig.DCP_SECURE_TOKEN, string(bearerToken))}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
