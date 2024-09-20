@@ -249,6 +249,7 @@ const (
 	EventActionDestroy      EventAction = "destroy"
 	EventActionDetach       EventAction = "detach"
 	EventActionDie          EventAction = "die"
+	EventActionDied         EventAction = "died" // Podman-specific - doesn't adhere to the standard event types
 	EventActionExecCreate   EventAction = "exec_create"
 	EventActionExecDetach   EventAction = "exec_detach"
 	EventActionExecStart    EventAction = "exec_start"

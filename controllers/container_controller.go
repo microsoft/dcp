@@ -1546,7 +1546,7 @@ func (r *ContainerReconciler) containerEventWorker(
 func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) {
 	switch em.Action {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
-	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune:
+	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionDied, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune:
 		containerID := em.Actor.ID
 		owner, _, running := r.runningContainers.FindBySecondKey(containerID)
 		if !running {
