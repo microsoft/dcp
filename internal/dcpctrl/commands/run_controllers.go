@@ -18,6 +18,7 @@ import (
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
+	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -119,11 +120,20 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		// If the IDE runner cannot be created, the details have been logged by the IDE Runner factory function.
 		// Executables can still be run, just not via IDE.
 
+		hpSet := health.NewHealthProbeSet(
+			ctx,
+			log.WithName("HealthProbeSet"),
+			map[apiv1.HealthProbeType]health.HealthProbeExecutor{
+				apiv1.HealthProbeTypeHttp: health.HealthProbeExecutorFunc(health.ExecuteHttpProbe),
+			},
+		)
+
 		exCtrl := controllers.NewExecutableReconciler(
 			ctx,
 			mgr.GetClient(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
+			hpSet,
 		)
 		if err = exCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Executable controller")

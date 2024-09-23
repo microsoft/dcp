@@ -41,7 +41,7 @@ func NewStartingState(status apiv1.ExecutableStatus) *startingState {
 type IdeExecutableRunner struct {
 	lock                *sync.Mutex
 	startupQueue        *resiliency.WorkQueue // Queue for starting IDE run sessions
-	activeRuns          syncmap.Map[controllers.RunID, *runState]
+	activeRuns          *syncmap.Map[controllers.RunID, *runState]
 	log                 logr.Logger
 	lifetimeCtx         context.Context // Lifetime context of the controller hosting this runner
 	connectionInfo      *ideConnectionInfo
@@ -57,7 +57,7 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 	r := &IdeExecutableRunner{
 		lock:           &sync.Mutex{},
 		startupQueue:   resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
-		activeRuns:     syncmap.Map[controllers.RunID, *runState]{},
+		activeRuns:     &syncmap.Map[controllers.RunID, *runState]{},
 		log:            log,
 		lifetimeCtx:    lifetimeCtx,
 		connectionInfo: connInfo,

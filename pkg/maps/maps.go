@@ -36,7 +36,7 @@ func Map[K comparable, V any, T any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, map
 
 // Maps a map to a slice. Note that iteration order over a map is not defined,
 // so make no assumptions about the order of the items in the resulting slice.
-func MapToSlice[K comparable, V any, T any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, mapping MF) []T {
+func MapToSlice[T any, K comparable, V any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, mapping MF) []T {
 	if len(m) == 0 {
 		return nil
 	}

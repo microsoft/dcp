@@ -334,3 +334,32 @@ func DiffFunc[T any, EF EqualFunc[T], S ~[]T](a, b S, equalFunc EF) S {
 
 	return diff
 }
+
+type KeyFunc[T any, K comparable] interface {
+	~func(T) K | ~func(*T) K
+}
+
+func GroupBy[S ~[]T, K comparable, KF KeyFunc[T, K], T any](ss S, keyFunc KF) map[K]S {
+	if len(ss) == 0 {
+		return nil
+	}
+
+	kf := func(s *T) K {
+		switch tkf := (any)(keyFunc).(type) {
+		case func(T) K:
+			return tkf(*s)
+		case func(*T) K:
+			return tkf(s)
+		default:
+			panic(fmt.Sprintf("GroupBy cannot understand key function type %T", keyFunc))
+		}
+	}
+
+	groups := make(map[K]S)
+	for _, s := range ss {
+		key := kf(&s)
+		groups[key] = append(groups[key], s)
+	}
+
+	return groups
+}

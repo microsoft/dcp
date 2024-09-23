@@ -22,6 +22,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/health"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -1964,8 +1965,289 @@ func TestExecutableHealthBasic(t *testing.T) {
 				hasExpectedHealthStatus := currentExe.Status.HealthStatus == tc.expectedHealthStatus
 				return hasFinishTimestamp && inExpectedState && hasExpectedHealthStatus, nil
 			})
+
+			t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+			err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+				return client.Delete(ctx, currentExe)
+			})
+			require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
 		})
 	}
+}
+
+// Ensure that Executable health status changes when health probe results change (single probe).
+func TestExecutableHealthSingleProbe(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	t.Logf("Setting up HTTP server for health probe responses...")
+	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
+
+	exeName := "test-executable-health-single-probe"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "healthz",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: probeUrl,
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval:     metav1.Duration{Duration: 500 * time.Millisecond},
+						InitialDelay: &metav1.Duration{Duration: 1 * time.Second},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running, but considered unhealthy...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		return running && unhealthy, nil
+	})
+	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Executable '%s'", exe.ObjectMeta.Name)
+	unhealthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
+	require.NotZero(t, unhealthyTimestamp, "Expected a valid timestamp for the unhealthy health probe result for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Changing health probe response to healthy...")
+	time.Sleep(10 * time.Millisecond) // Ensure the timestamp of the next health probe result is different
+	setProbeResponse(apiv1.HealthProbeOutcomeSuccess)
+
+	t.Logf("Ensure Executable '%s' is running and considered healthy...", exe.ObjectMeta.Name)
+	updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
+	})
+	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Executable '%s'", exe.ObjectMeta.Name)
+	healthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
+	require.NotZero(t, healthyTimestamp, "Expected a valid timestamp for the healthy health probe result for Executable '%s'", exe.ObjectMeta.Name)
+	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be equal or newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Changing health probe response back to to unhealthy...")
+	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
+
+	t.Logf("Ensure Executable '%s' is running and considered unhealthy again...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy, nil
+	})
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+}
+
+// Ensure that Executable health status changes when health probe results change (multiple probes).
+func TestExecutableHealthMultipleProbes(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	t.Logf("Setting up HTTP probe endpoints...")
+	probe1Url, setProbe1 := createTestHealthEndpoint(ctx)
+	probe2Url, setProbe2 := createTestHealthEndpoint(ctx)
+	setProbe1(apiv1.HealthProbeOutcomeSuccess)
+	setProbe2(apiv1.HealthProbeOutcomeSuccess)
+
+	exeName := "test-executable-health-multiple-probes"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "p1",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: probe1Url,
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
+					},
+				},
+				{
+					Name: "p2",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: probe2Url,
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval: metav1.Duration{Duration: 500 * time.Millisecond},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running and healthy...", exe.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		healthy := currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy
+		hasExpectedResults := healthy &&
+			health.VerifyHealthResults(map[string]apiv1.HealthProbeOutcome{
+				"p1": apiv1.HealthProbeOutcomeSuccess,
+				"p2": apiv1.HealthProbeOutcomeSuccess,
+			}, currentExe.Status.HealthProbeResults) == nil
+		return running && healthy && hasExpectedResults, nil
+	})
+
+	t.Logf("Changing health probe 1 response to unhealthy and verifying the Executable '%s' status changes accordingly...", exe.ObjectMeta.Name)
+	setProbe1(apiv1.HealthProbeOutcomeFailure)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		hasExpectedResults := unhealthy &&
+			health.VerifyHealthResults(map[string]apiv1.HealthProbeOutcome{
+				"p1": apiv1.HealthProbeOutcomeFailure,
+				"p2": apiv1.HealthProbeOutcomeSuccess,
+			}, currentExe.Status.HealthProbeResults) == nil
+		return unhealthy && hasExpectedResults, nil
+	})
+
+	t.Logf("Changing health probe 2 response to unhealthy and verifying the Executable '%s' status changes accordingly...", exe.ObjectMeta.Name)
+	setProbe2(apiv1.HealthProbeOutcomeFailure)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		hasExpectedResults := unhealthy &&
+			health.VerifyHealthResults(map[string]apiv1.HealthProbeOutcome{
+				"p1": apiv1.HealthProbeOutcomeFailure,
+				"p2": apiv1.HealthProbeOutcomeFailure,
+			}, currentExe.Status.HealthProbeResults) == nil
+		return unhealthy && hasExpectedResults, nil
+	})
+
+	t.Logf("Changing health probe 1 response back to healthy and verifying the Executable '%s' status changes accordingly...", exe.ObjectMeta.Name)
+	setProbe1(apiv1.HealthProbeOutcomeSuccess)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		hasExpectedResults := unhealthy &&
+			health.VerifyHealthResults(map[string]apiv1.HealthProbeOutcome{
+				"p1": apiv1.HealthProbeOutcomeSuccess,
+				"p2": apiv1.HealthProbeOutcomeFailure,
+			}, currentExe.Status.HealthProbeResults) == nil
+		return unhealthy && hasExpectedResults, nil
+	})
+
+	t.Logf("Changing health probe 2 response back to healthy and verifying the Executable '%s' becomes healthy...", exe.ObjectMeta.Name)
+	setProbe2(apiv1.HealthProbeOutcomeSuccess)
+	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		healthy := currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy
+		hasExpectedResults := healthy &&
+			health.VerifyHealthResults(map[string]apiv1.HealthProbeOutcome{
+				"p1": apiv1.HealthProbeOutcomeSuccess,
+				"p2": apiv1.HealthProbeOutcomeSuccess,
+			}, currentExe.Status.HealthProbeResults) == nil
+		return healthy && hasExpectedResults, nil
+	})
+
+	t.Logf("Executable '%s' is healthy and has the expected health probe results", exe.ObjectMeta.Name)
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+}
+
+// Ensure that a health probe with "until success" schedule type stops after the first successful probe execution.
+func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	t.Logf("Setting up HTTP server for health probe responses...")
+	probeUrl, setProbeResponse := createTestHealthEndpoint(ctx)
+
+	exeName := "test-executable-health-shedule-until-success"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/" + exeName,
+			HealthProbes: []apiv1.HealthProbe{
+				{
+					Name: "healthz",
+					Type: apiv1.HealthProbeTypeHttp,
+					HttpProbe: &apiv1.HttpProbe{
+						Url: probeUrl,
+					},
+					Schedule: apiv1.HealthProbeSchedule{
+						Interval: metav1.Duration{Duration: 100 * time.Millisecond},
+						Kind:     apiv1.HealthProbeScheduleUntilSuccess,
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exe.ObjectMeta.Name)
+	err := client.Create(ctx, exe.DeepCopy())
+	require.NoError(t, err, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Ensure Executable '%s' is running, but considered unhealthy...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		running := currentExe.Status.State == apiv1.ExecutableStateRunning
+		unhealthy := currentExe.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		return running && unhealthy, nil
+	})
+	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Executable '%s'", exe.ObjectMeta.Name)
+	unhealthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
+	require.NotZero(t, unhealthyTimestamp, "Expected a valid timestamp for the unhealthy health probe result for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Changing health probe response to healthy...")
+	time.Sleep(10 * time.Millisecond) // Ensure the timestamp of the next health probe result is different
+	setProbeResponse(apiv1.HealthProbeOutcomeSuccess)
+
+	t.Logf("Ensure Executable '%s' is running and considered healthy...", exe.ObjectMeta.Name)
+	updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
+	})
+	require.Len(t, updatedExe.Status.HealthProbeResults, 1, "Expected a single health probe result for Executable '%s'", exe.ObjectMeta.Name)
+	healthyTimestamp := updatedExe.Status.HealthProbeResults[0].Timestamp
+	require.NotZero(t, healthyTimestamp, "Expected a valid timestamp for the healthy health probe result for Executable '%s'", exe.ObjectMeta.Name)
+	require.True(t, healthyTimestamp.After(unhealthyTimestamp.Time), "Expected healthy health probe result to be equal or newer than the unhealthy one for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Changing health probe response back to to unhealthy (this should have NO effect on Executable health)...")
+	setProbeResponse(apiv1.HealthProbeOutcomeFailure)
+	// Sleep for a while to give the controller chance to execute the probe again (if it would)
+	time.Sleep(exe.Spec.HealthProbes[0].Schedule.Interval.Duration * 5)
+
+	t.Logf("Ensure Executable '%s' is still running and considered healthy...", exe.ObjectMeta.Name)
+	finalExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.HealthStatus == apiv1.HealthStatusHealthy, nil
+	})
+	resultDiff, _ := updatedExe.Status.HealthProbeResults[0].Diff(&finalExe.Status.HealthProbeResults[0])
+	require.Equalf(t, apiv1.DiffNone, resultDiff, "Expected the health probe result to remain the same for Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Deleting Executable '%s'...", exe.ObjectMeta.Name)
+	err = retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, err, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
 }
 
 func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, error) {

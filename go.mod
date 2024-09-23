@@ -7,6 +7,7 @@ toolchain go1.23.1
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/davidwartell/go-onecontext v1.0.1
+	github.com/emirpasic/gods v1.18.1
 	github.com/felixge/fgprof v0.9.4
 	github.com/go-logr/logr v1.4.1
 	github.com/go-logr/zapr v1.3.0

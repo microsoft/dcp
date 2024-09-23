@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	std_slices "slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,8 +36,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
+	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -212,6 +216,14 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	exeRunner := exerunners.NewProcessExecutableRunner(testProcessExecutor)
 	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
 
+	hpSet := health.NewHealthProbeSet(
+		ctx,
+		log.WithName("HealthProbeSet"),
+		map[apiv1.HealthProbeType]health.HealthProbeExecutor{
+			apiv1.HealthProbeTypeHttp: health.HealthProbeExecutorFunc(health.ExecuteHttpProbe),
+		},
+	)
+
 	execR := controllers.NewExecutableReconciler(
 		ctx,
 		mgr.GetClient(),
@@ -220,6 +232,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 			apiv1.ExecutionTypeProcess: exeRunner,
 			apiv1.ExecutionTypeIDE:     ideRunner,
 		},
+		hpSet,
 	)
 	if err = execR.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to initialize Executable reconciler: %w", err)
@@ -551,4 +564,40 @@ func waitForObjectLogs[T controllers.ObjectStruct, PT controllers.PObjectStruct[
 		}
 		return nil
 	}
+}
+
+// Starts a test HTTP server that can be used as a target for HTTP health probes.
+// Returns the server's address and a function to make the server respond as healthy or unhealthy.
+// By default the server responds with 500 Internal Server Error (unhealthy).
+func createTestHealthEndpoint(lifetimeCtx context.Context) (string, func(apiv1.HealthProbeOutcome)) {
+	enableHealthyResp := &atomic.Bool{}
+	enableHealthyResp.Store(true)
+	enableUnhealthyResp := &atomic.Bool{}
+	enableUnhealthyResp.Store(true)
+
+	setResponse := func(outcome apiv1.HealthProbeOutcome) {
+		switch outcome {
+		case apiv1.HealthProbeOutcomeSuccess:
+			enableUnhealthyResp.Store(false)
+			// No need to set enableHealtyResp to true, it's the last in the response list
+			// and its Active flag is always true.
+		case apiv1.HealthProbeOutcomeFailure:
+			enableUnhealthyResp.Store(true)
+		default:
+			panic(fmt.Sprintf("Unsupported health probe outcome: %s", outcome))
+		}
+	}
+
+	const urlPath = "/healthz"
+	probeUrl := internal_testutil.ServeHttp(lifetimeCtx, []internal_testutil.RouteSpec{
+		{
+			Pattern: urlPath,
+			Responses: []internal_testutil.ResponseSpec{
+				{StatusCode: http.StatusServiceUnavailable, Active: enableUnhealthyResp},
+				{StatusCode: http.StatusOK, Active: enableHealthyResp},
+			},
+		},
+	})
+
+	return probeUrl + urlPath, setResponse
 }

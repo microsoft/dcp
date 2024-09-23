@@ -6,6 +6,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
 
 type ContainerStatus string
@@ -232,7 +233,7 @@ type ContainerOrchestrator interface {
 
 	// Subscribes to events about container state changes
 	// When the subscription is cancelled, the channel will be closed
-	WatchContainers(sink chan<- EventMessage) (*EventSubscription, error)
+	WatchContainers(sink chan<- EventMessage) (*pubsub.Subscription[EventMessage], error)
 
 	ContainerLogSource
 	VolumeOrchestrator

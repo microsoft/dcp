@@ -1,8 +1,10 @@
 package v1
 
 import (
+	"fmt"
 	stdmaps "maps"
 	"net/url"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -183,6 +185,10 @@ func (hp HealthProbe) Equal(other HealthProbe) bool {
 	return true
 }
 
+func (hp HealthProbe) String() string {
+	return hp.Name + " (" + string(hp.Type) + ")"
+}
+
 // HttpHeader represents a single HTTP header to be included in an HTTP health probe.
 // +k8s:openapi-gen=true
 type HttpHeader struct {
@@ -291,19 +297,19 @@ func (ep *ExecutableProbe) Equal(other *ExecutableProbe) bool {
 	return ep.ExecutableTemplate.Equal(other.ExecutableTemplate)
 }
 
-type HelthProbeOutcome string
+type HealthProbeOutcome string
 
 const (
-	HealthProbeOutcomeSuccess HelthProbeOutcome = "Success"
-	HealthProbeOutcomeFailure HelthProbeOutcome = "Failure"
-	HealthProbeOutcomeUnknown HelthProbeOutcome = "Unknown"
+	HealthProbeOutcomeSuccess HealthProbeOutcome = "Success"
+	HealthProbeOutcomeFailure HealthProbeOutcome = "Failure"
+	HealthProbeOutcomeUnknown HealthProbeOutcome = "Unknown"
 )
 
 // HealthProbeResult represents the result of a single execution of a health probe.
 // +k8s:openapi-gen=true
 type HealthProbeResult struct {
 	// Outcome of the health probe
-	Outcome HelthProbeOutcome `json:"outcome"`
+	Outcome HealthProbeOutcome `json:"outcome"`
 
 	// Timestamp for the result
 	Timestamp metav1.MicroTime `json:"timestamp"`
@@ -314,4 +320,29 @@ type HealthProbeResult struct {
 	// Human-readable message describing the outcome
 	// +optional
 	Reason string `json:"reason,omitempty"`
+}
+
+func (hpr HealthProbeResult) String() string {
+	return fmt.Sprintf("%s -> %s (%s), Reason=%s", hpr.ProbeName, hpr.Outcome, hpr.Timestamp.Format(time.StampMilli), hpr.Reason)
+}
+
+type HealthProbeResultDiff int
+
+const (
+	DiffNone          HealthProbeResultDiff = 0
+	DiffTimestampOnly HealthProbeResultDiff = 1
+	Different         HealthProbeResultDiff = 2
+)
+
+func (hpr HealthProbeResult) Diff(other *HealthProbeResult) (HealthProbeResultDiff, time.Duration) {
+	timestampDiff := hpr.Timestamp.Time.Sub(other.Timestamp.Time)
+
+	switch {
+	case hpr.Outcome != other.Outcome, hpr.ProbeName != other.ProbeName, hpr.Reason != other.Reason:
+		return Different, timestampDiff
+	case timestampDiff != 0:
+		return DiffTimestampOnly, timestampDiff
+	default:
+		return DiffNone, 0
+	}
 }

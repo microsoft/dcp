@@ -272,7 +272,7 @@ func (rcd *runningContainerData) hasValidContainerID() bool {
 func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.InspectedContainer) {
 	rcd.containerID = inspected.Id
 	rcd.containerName = strings.TrimLeft(inspected.Name, "/")
-	rcd.runSpec.Env = maps.MapToSlice[string, string, apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
+	rcd.runSpec.Env = maps.MapToSlice[apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
 		return apiv1.EnvVar{Name: key, Value: value}
 	})
 	rcd.runSpec.Args = inspected.Args
@@ -348,7 +348,7 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 	})
 	if len(rawCurrentEnv) > 0 && !stdmaps.Equal(rawContainerEnv, rawCurrentEnv) {
 		rawContainerEnv = maps.Apply(rawContainerEnv, rawCurrentEnv)
-		ctr.Status.EffectiveEnv = maps.MapToSlice[string, string, apiv1.EnvVar](rawContainerEnv, func(k, v string) apiv1.EnvVar {
+		ctr.Status.EffectiveEnv = maps.MapToSlice[apiv1.EnvVar](rawContainerEnv, func(k, v string) apiv1.EnvVar {
 			return apiv1.EnvVar{Name: k, Value: v}
 		})
 		change |= statusChanged

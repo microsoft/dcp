@@ -125,7 +125,7 @@ type Proxy struct {
 	connectionTimeout           time.Duration
 	streamSeqNo                 uint32
 
-	udpStreams syncmap.Map[string, udpStream]
+	udpStreams *syncmap.Map[string, udpStream]
 
 	lifetimeCtx context.Context
 	log         logr.Logger
@@ -156,6 +156,8 @@ func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, l
 		configurationApplied:        concurrency.NewAutoResetEvent(false),
 		readWriteTimeout:            DefaultReadWriteTimeout,
 		connectionTimeout:           DefaultConnectionTimeout,
+
+		udpStreams: &syncmap.Map[string, udpStream]{},
 
 		lifetimeCtx: lifetimeCtx,
 		log:         log,

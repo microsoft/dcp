@@ -2,6 +2,8 @@ package slices
 
 import (
 	"fmt"
+	stdmaps "maps"
+	stdslices "slices"
 	"strings"
 	"testing"
 
@@ -9,6 +11,8 @@ import (
 )
 
 func TestIndex(t *testing.T) {
+	t.Parallel()
+
 	data := []string{"alpha1", "alpha2", "bravo1", "bravo2"}
 
 	// Index of first element
@@ -32,6 +36,8 @@ func TestIndex(t *testing.T) {
 }
 
 func TestContains(t *testing.T) {
+	t.Parallel()
+
 	data := []string{"alpha1", "alpha2", "bravo1", "bravo2"}
 
 	// Contains first element
@@ -55,6 +61,8 @@ func TestContains(t *testing.T) {
 }
 
 func TestSeqIndex(t *testing.T) {
+	t.Parallel()
+
 	data := []string{"alpha1", "alpha2", "bravo1", "bravo2"}
 
 	// Empty slice does not start with anything
@@ -111,6 +119,8 @@ func TestSeqIndex(t *testing.T) {
 }
 
 func TestMap(t *testing.T) {
+	t.Parallel()
+
 	// Mapping empty slice should return empty result
 	var s []string
 	result := Map[string, string](s, func(s string) string { return s })
@@ -141,6 +151,8 @@ func TestMap(t *testing.T) {
 var concurrency = []uint16{MaxConcurrency, 1, 2, 4}
 
 func TestMapConcurrent(t *testing.T) {
+	t.Parallel()
+
 	for _, c := range concurrency {
 		t.Run(fmt.Sprintf("concurrency=%d", c), func(t *testing.T) {
 			// Mapping empty slice should return empty result
@@ -173,6 +185,8 @@ func TestMapConcurrent(t *testing.T) {
 }
 
 func TestSelect(t *testing.T) {
+	t.Parallel()
+
 	// Filtering empty data set should return empty result
 	var data []string
 	result := Select(data, func(s string) bool { return true })
@@ -213,6 +227,8 @@ func TestSelect(t *testing.T) {
 }
 
 func TestLenIf(t *testing.T) {
+	t.Parallel()
+
 	// Counting empty data set should return empty result
 	var data []string
 	result := LenIf(data, func(s string) bool { return true })
@@ -252,6 +268,8 @@ func TestLenIf(t *testing.T) {
 }
 
 func TestAny(t *testing.T) {
+	t.Parallel()
+
 	// Any with empty data set should return false
 	var data []string
 	result := Any(data, func(s string) bool { return true })
@@ -291,6 +309,8 @@ func TestAny(t *testing.T) {
 }
 
 func TestIndexFunc(t *testing.T) {
+	t.Parallel()
+
 	// IndexOf with empty data set should return -1
 	var data []string
 	result := IndexFunc(data, func(s string) bool { return true })
@@ -331,6 +351,8 @@ func TestIndexFunc(t *testing.T) {
 }
 
 func TestNonEmpty(t *testing.T) {
+	t.Parallel()
+
 	// NonEmpty with slices of strings
 	require.Empty(t, NonEmpty[string]([]string{}))
 	require.EqualValues(t,
@@ -346,6 +368,8 @@ func TestNonEmpty(t *testing.T) {
 }
 
 func TestDiff(t *testing.T) {
+	t.Parallel()
+
 	// Difference between two empty slices should be empty
 	aMinusB, bMinusA := Diff([]string{}, []string{})
 	require.Empty(t, aMinusB)
@@ -383,6 +407,8 @@ func TestDiff(t *testing.T) {
 }
 
 func TestDiffFunc(t *testing.T) {
+	t.Parallel()
+
 	type point2d struct {
 		x int
 		y int
@@ -412,4 +438,68 @@ func TestDiffFunc(t *testing.T) {
 
 	// First slice and second slice have some elements in common
 	require.EqualValues(t, []point2d{{5, 6}, {7, 8}}, DiffFunc([]point2d{{5, 6}, {7, 8}, {1, 2}}, []point2d{{1, 2}, {3, 4}}, samePoint))
+}
+
+func TestGroupBy(t *testing.T) {
+	t.Parallel()
+
+	type record struct {
+		id, val string
+	}
+
+	sortedValues := func(m map[string][]record, id string) []string {
+		retval := Map[record, string](m[id], func(r record) string { return r.val })
+		stdslices.Sort(retval)
+		return retval
+	}
+	sortedKeys := func(m map[string][]record) []string {
+		retval := stdslices.Collect(stdmaps.Keys(m))
+		stdslices.Sort(retval)
+		return retval
+	}
+
+	// Grouping empty slice should return empty result
+	require.Empty(t, GroupBy[[]record, string](nil, func(r record) string { return r.id }))
+	require.Empty(t, GroupBy[[]record, string]([]record{}, func(r record) string { return r.id }))
+
+	// Group with one key
+	data := []record{
+		{"a", "alpha1"},
+		{"a", "alpha2"},
+	}
+	result := GroupBy[[]record, string](data, func(r record) string { return r.id })
+	require.Len(t, result, 1)
+	require.EqualValues(t, []string{"a"}, sortedKeys(result))
+	require.EqualValues(t, []string{"alpha1", "alpha2"}, sortedValues(result, "a"))
+
+	// Group with multiple keys
+	data = []record{
+		{"a", "alpha1"},
+		{"b", "bravo1"},
+		{"a", "alpha2"},
+		{"c", "charlie1"},
+		{"b", "bravo2"},
+	}
+	result = GroupBy[[]record, string](data, func(r record) string { return r.id })
+	require.Len(t, result, 3)
+	require.EqualValues(t, []string{"a", "b", "c"}, sortedKeys(result))
+	require.EqualValues(t, []string{"alpha1", "alpha2"}, sortedValues(result, "a"))
+	require.EqualValues(t, []string{"bravo1", "bravo2"}, sortedValues(result, "b"))
+	require.EqualValues(t, []string{"charlie1"}, sortedValues(result, "c"))
+
+	// Group with duplicate records
+	data = []record{
+		{"a", "alpha1"},
+		{"b", "bravo1"},
+		{"c", "charlie1"},
+		{"a", "alpha1"},
+		{"c", "charlie1"},
+		{"b", "bravo2"},
+	}
+	result = GroupBy[[]record, string](data, func(r record) string { return r.id })
+	require.Len(t, result, 3)
+	require.EqualValues(t, []string{"a", "b", "c"}, sortedKeys(result))
+	require.EqualValues(t, []string{"alpha1", "alpha1"}, Map[record, string](result["a"], func(r record) string { return r.val }))
+	require.EqualValues(t, []string{"bravo1", "bravo2"}, Map[record, string](result["b"], func(r record) string { return r.val }))
+	require.EqualValues(t, []string{"charlie1", "charlie1"}, Map[record, string](result["c"], func(r record) string { return r.val }))
 }

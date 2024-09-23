@@ -29,6 +29,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -56,12 +57,12 @@ type NetworkReconciler struct {
 	// Channel used to trigger reconciliation when underlying networks change
 	notifyNetworkChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
 	// Network events subscription
-	networkEvtSub *ct.EventSubscription
+	networkEvtSub *pubsub.Subscription[ct.EventMessage]
 	// Channel to receive network change events
 	networkEvtCh         *chanx.UnboundedChan[ct.EventMessage]
 	networkEvtWorkerStop chan struct{}
 	// Count of existing Container resources
-	watchingResources syncmap.Map[types.UID, bool]
+	watchingResources *syncmap.Map[types.UID, bool]
 	// Debouncer used to schedule reconciliation. Extra data is the running network ID whose state changed.
 	debouncer *reconcilerDebouncer[string]
 	// Lock to protect the reconciler data that requires synchronized access
@@ -85,7 +86,7 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		networkEvtCh:         nil,
 		networkEvtWorkerStop: nil,
 		debouncer:            newReconcilerDebouncer[string](),
-		watchingResources:    syncmap.Map[types.UID, bool]{},
+		watchingResources:    &syncmap.Map[types.UID, bool]{},
 		lock:                 &sync.Mutex{},
 		lifetimeCtx:          lifetimeCtx,
 		Log:                  log,
@@ -491,7 +492,11 @@ func (r *NetworkReconciler) releaseNetworkWatch(network *apiv1.ContainerNetwork,
 func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}, eventCh <-chan ct.EventMessage) {
 	for {
 		select {
-		case em := <-eventCh:
+		case em, isOpen := <-eventCh:
+			if !isOpen {
+				return
+			}
+
 			if em.Source != ct.EventSourceNetwork {
 				continue
 			}
@@ -550,7 +555,7 @@ func (r *NetworkReconciler) cancelNetworkWatch() {
 		r.networkEvtWorkerStop = nil
 	}
 	if r.networkEvtSub != nil {
-		_ = r.networkEvtSub.Cancel()
+		r.networkEvtSub.Cancel()
 		r.networkEvtSub = nil
 	}
 }

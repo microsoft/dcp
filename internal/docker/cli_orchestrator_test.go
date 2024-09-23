@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -195,8 +196,7 @@ func TestReportsContainerEvents(t *testing.T) {
 	require.Equal(t, ct.EventSourceContainer, evtMsg.Source)
 	require.Equal(t, "e14fec", evtMsg.Actor.ID)
 
-	err = sub.Cancel()
-	require.NoError(t, err)
+	sub.Cancel()
 	requireChanClosed(t, evtC, "The events channel should be closed when subscription is cancelled")
 }
 
@@ -228,8 +228,7 @@ func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cancel first subscription, but keep the second
-	err = sub.Cancel()
-	require.NoError(t, err)
+	sub.Cancel()
 	requireChanClosed(t, evtC, "The events channel should be closed when first subscription is cancelled")
 
 	// Write another event
@@ -242,8 +241,7 @@ func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 	_, err = waitForEvent(ctx, evtC2)
 	require.NoError(t, err)
 
-	err = sub2.Cancel()
-	require.NoError(t, err)
+	sub2.Cancel()
 	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
 }
 
@@ -262,8 +260,7 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 	// A suubscription should trigger "docker events" execution
 	waitForDockerEventsExecution(t, ctx, pe, nil)
 
-	err := sub.Cancel()
-	require.NoError(t, err)
+	sub.Cancel()
 	requireChanClosed(t, evtC, "The events channel should be closed when the subscription is cancelled")
 
 	pe.ClearHistory()
@@ -272,12 +269,10 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 	waitForDockerEventsExecution(t, ctx, pe, nil)
 	sub2, evtC2 := subscribe(t, ctx, dco)
 
-	err = sub.Cancel()
-	require.NoError(t, err)
+	sub.Cancel()
 	requireChanClosed(t, evtC, "The events channel should be closed when the first subscription is cancelled")
 
-	err = sub2.Cancel()
-	require.NoError(t, err)
+	sub2.Cancel()
 	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
 }
 
@@ -309,7 +304,7 @@ func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessag
 	}
 }
 
-func subscribe(t *testing.T, ctx context.Context, dco ct.ContainerOrchestrator) (*ct.EventSubscription, <-chan ct.EventMessage) {
+func subscribe(t *testing.T, ctx context.Context, dco ct.ContainerOrchestrator) (*pubsub.Subscription[ct.EventMessage], <-chan ct.EventMessage) {
 	const initialEventChannelCapacity = 5
 	evtC := chanx.NewUnboundedChan[ct.EventMessage](ctx, initialEventChannelCapacity)
 	sub, err := dco.WatchContainers(evtC.In)

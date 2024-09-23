@@ -422,10 +422,7 @@ func TestContainerDeletion(t *testing.T) {
 	ctrEventCh := chanx.NewUnboundedChan[containers.EventMessage](ctx, 2)
 	ctrEventSub, watchErr := containerOrchestrator.WatchContainers(ctrEventCh.In)
 	require.NoError(t, watchErr, "could not subscribe to container events")
-	defer func() {
-		cancelErr := ctrEventSub.Cancel()
-		require.NoError(t, cancelErr, "could not cancel the container event subscription")
-	}()
+	defer ctrEventSub.Cancel()
 
 	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
 	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {

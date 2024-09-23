@@ -48,8 +48,8 @@ func NewContextReader(ctx context.Context, r io.Reader, leverageReadCloser bool)
 func (cr *ContextReader) doWork() {
 	for {
 		select {
-		case buf := <-cr.incoming:
-			if cr.ctx.Err() != nil {
+		case buf, isOpen := <-cr.incoming:
+			if cr.ctx.Err() != nil || !isOpen {
 				return
 			}
 

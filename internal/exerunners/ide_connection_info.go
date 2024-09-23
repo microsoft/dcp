@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/gorilla/websocket"
+	netutil "k8s.io/apimachinery/pkg/util/net"
 
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -59,7 +60,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 
 	client := http.Client{}
 	wsDialer := websocket.Dialer{
-		Proxy:            http.ProxyFromEnvironment,
+		Proxy:            netutil.NewProxierWithNoProxyCIDR(http.ProxyFromEnvironment),
 		HandshakeTimeout: defaultIdeEndpointRequestTimeout,
 	}
 	httpScheme := "http"

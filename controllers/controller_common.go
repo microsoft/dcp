@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,6 +37,11 @@ const (
 	conflictRequeueDelay          = 100 * time.Millisecond
 	reconciliationDebounceDelay   = 500 * time.Millisecond
 	reconciliationMaxDelay        = 5 * time.Second
+
+	// If the health probe result is different by timestamp only, we do not write it to the status
+	// unless the existing result is older than this value.
+	// This helps avoid updating the status very frequently if an object has health probes with tight intervals.
+	maxStaleHealthProbeResultAge = 15 * time.Second
 )
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
@@ -106,26 +110,6 @@ type PObjectStruct[T ObjectStruct] interface {
 type PCopyableObjectStruct[T ObjectStruct] interface {
 	DeepCopyable[T]
 	PObjectStruct[T]
-}
-
-type NamespacedNameWithKind struct {
-	types.NamespacedName
-	Kind schema.GroupVersionKind
-}
-
-type NamespacedNameWithKindAndUid struct {
-	NamespacedNameWithKind
-	Uid types.UID
-}
-
-func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
-	return NamespacedNameWithKind{
-		NamespacedName: types.NamespacedName{
-			Namespace: obj.GetNamespace(),
-			Name:      obj.GetName(),
-		},
-		Kind: obj.GetObjectKind().GroupVersionKind(),
-	}
 }
 
 func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](

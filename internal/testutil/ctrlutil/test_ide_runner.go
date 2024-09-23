@@ -44,14 +44,14 @@ func (r *TestIdeRun) Finished() bool {
 
 type TestIdeRunner struct {
 	nextRunID   int32
-	Runs        syncmap.Map[types.NamespacedName, *TestIdeRun]
+	Runs        *syncmap.Map[types.NamespacedName, *TestIdeRun]
 	m           *sync.RWMutex
 	lifetimeCtx context.Context
 }
 
 func NewTestIdeRunner(lifetimeCtx context.Context) *TestIdeRunner {
 	return &TestIdeRunner{
-		Runs:        syncmap.Map[types.NamespacedName, *TestIdeRun]{},
+		Runs:        &syncmap.Map[types.NamespacedName, *TestIdeRun]{},
 		m:           &sync.RWMutex{},
 		lifetimeCtx: lifetimeCtx,
 	}

@@ -56,3 +56,16 @@ func FriendlyStringMap(m map[string]string) string {
 	b.WriteString("}")
 	return b.String()
 }
+
+func FriendlyStringSlice(s []string) string {
+	var b strings.Builder
+	var sep string = ""
+	b.WriteString("[")
+	for _, v := range s {
+		b.WriteString(sep)
+		b.WriteString(fmt.Sprintf("'%s'", FriendlyString(v)))
+		sep = ", "
+	}
+	b.WriteString("]")
+	return b.String()
+}

@@ -95,7 +95,12 @@ func DcpRun(
 				log.Error(err, "Terminating...")
 				return errors.Join(err, shutdownHost())
 
-			case msg := <-lifecycleMsgs:
+			case msg, isOpen := <-lifecycleMsgs:
+				if !isOpen {
+					lifecycleMsgs = nil
+					continue
+				}
+
 				if msg.Err != nil {
 					log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
 					// Let the user decide whether to continue or not, do not break the loop yet.

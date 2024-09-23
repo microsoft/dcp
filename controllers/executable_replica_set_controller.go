@@ -38,8 +38,8 @@ type ExecutableReplicaSetReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	runningReplicaSets  syncmap.Map[types.NamespacedName, executableReplicaSetData]
-	replicaCounters     syncmap.Map[types.NamespacedName, *atomic.Int32]
+	runningReplicaSets  *syncmap.Map[types.NamespacedName, executableReplicaSetData]
+	replicaCounters     *syncmap.Map[types.NamespacedName, *atomic.Int32]
 }
 
 const (
@@ -65,8 +65,8 @@ var (
 func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logger) *ExecutableReplicaSetReconciler {
 	r := ExecutableReplicaSetReconciler{
 		Client:             client,
-		runningReplicaSets: syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
-		replicaCounters:    syncmap.Map[types.NamespacedName, *atomic.Int32]{},
+		runningReplicaSets: &syncmap.Map[types.NamespacedName, executableReplicaSetData]{},
+		replicaCounters:    &syncmap.Map[types.NamespacedName, *atomic.Int32]{},
 		Log:                log,
 	}
 

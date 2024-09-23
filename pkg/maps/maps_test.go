@@ -43,7 +43,7 @@ func TestMap(t *testing.T) {
 func TestMapToSlice(t *testing.T) {
 	// Mapping empty map returns empty result
 	var m map[int]string
-	result := MapToSlice[int, string, string](m, func(i int, s string) string { return s })
+	result := MapToSlice[string](m, func(i int, s string) string { return s })
 	require.Empty(t, result)
 
 	m = map[int]string{
@@ -57,7 +57,7 @@ func TestMapToSlice(t *testing.T) {
 		"CHARLIE",
 	}
 	// Mapping with a function that operates on values only
-	result = MapToSlice[int, string, string](m, strings.ToUpper)
+	result = MapToSlice[string](m, strings.ToUpper)
 	sort.Strings(result)
 	require.Equal(t, expected, result)
 
@@ -67,7 +67,7 @@ func TestMapToSlice(t *testing.T) {
 		"BRAVO-2",
 		"CHARLIE-3",
 	}
-	actual := MapToSlice[int, string, string](m, func(k int, v string) string {
+	actual := MapToSlice[string](m, func(k int, v string) string {
 		return fmt.Sprintf("%s-%d", strings.ToUpper(v), k)
 	})
 	sort.Strings(actual)

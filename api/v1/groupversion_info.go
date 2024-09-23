@@ -37,7 +37,7 @@ var (
 	CleanupResources = []*WeightedResource{}
 
 	// A registry of resource log streaming implementations
-	ResourceLogStreamers = syncmap.Map[schema.GroupVersionResource, ResourceLogStreamer]{}
+	ResourceLogStreamers = &syncmap.Map[schema.GroupVersionResource, ResourceLogStreamer]{}
 )
 
 var (

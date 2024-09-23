@@ -29,6 +29,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -95,9 +96,9 @@ type ContainerReconciler struct {
 	startupQueue *resiliency.WorkQueue
 
 	// Container events subscription
-	containerEvtSub *containers.EventSubscription
+	containerEvtSub *pubsub.Subscription[containers.EventMessage]
 	// Network events subscription
-	networkEvtSub *containers.EventSubscription
+	networkEvtSub *pubsub.Subscription[containers.EventMessage]
 	// Channel to receive container change events
 	containerEvtCh *chanx.UnboundedChan[containers.EventMessage]
 	// Channel to receive network change events
@@ -109,7 +110,7 @@ type ContainerReconciler struct {
 	debouncer *reconcilerDebouncer[string]
 
 	// Count of existing Container resources
-	watchingResources syncmap.Map[types.UID, bool]
+	watchingResources *syncmap.Map[types.UID, bool]
 
 	// Lock to protect the reconciler data that requires synchronized access
 	lock *sync.Mutex
@@ -131,7 +132,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		networkEvtCh:           nil,
 		containerEvtWorkerStop: nil,
 		debouncer:              newReconcilerDebouncer[string](),
-		watchingResources:      syncmap.Map[types.UID, bool]{},
+		watchingResources:      &syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
 		lifetimeCtx:            lifetimeCtx,
 		Log:                    log,
@@ -1508,11 +1509,11 @@ func (r *ContainerReconciler) cancelContainerWatch() {
 		r.containerEvtWorkerStop = nil
 	}
 	if r.containerEvtSub != nil {
-		_ = r.containerEvtSub.Cancel()
+		r.containerEvtSub.Cancel()
 		r.containerEvtSub = nil
 	}
 	if r.networkEvtSub != nil {
-		_ = r.networkEvtSub.Cancel()
+		r.networkEvtSub.Cancel()
 		r.networkEvtSub = nil
 	}
 }
@@ -1524,13 +1525,23 @@ func (r *ContainerReconciler) containerEventWorker(
 ) {
 	for {
 		select {
-		case cem := <-containerEvtCh:
+		case cem, isOpen := <-containerEvtCh:
+			if !isOpen {
+				containerEvtCh = nil
+				continue
+			}
+
 			if cem.Source != containers.EventSourceContainer {
 				continue
 			}
 
 			r.processContainerEvent(cem)
-		case nem := <-networkEvtCh:
+		case nem, isOpen := <-networkEvtCh:
+			if !isOpen {
+				networkEvtCh = nil
+				continue
+			}
+
 			if nem.Source != containers.EventSourceNetwork {
 				continue
 			}

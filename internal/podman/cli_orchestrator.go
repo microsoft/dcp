@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
 
 var (
@@ -55,10 +56,10 @@ type PodmanCliOrchestrator struct {
 	executor process.Executor
 
 	// Event watcher for container events
-	containerEvtWatcher *containers.EventWatcher
+	containerEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
 
 	// Event watcher for network events
-	networkEvtWatcher *containers.EventWatcher
+	networkEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
 }
 
 func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
@@ -67,8 +68,8 @@ func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) contai
 		executor: executor,
 	}
 
-	pco.containerEvtWatcher = containers.NewEventWatcher(pco, pco.doWatchContainers, log)
-	pco.networkEvtWatcher = containers.NewEventWatcher(pco, pco.doWatchNetworks, log)
+	pco.containerEvtWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](pco.doWatchContainers, context.Background())
+	pco.networkEvtWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](pco.doWatchNetworks, context.Background())
 
 	return pco
 }
@@ -537,8 +538,9 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	return removed, containers.ExpectCliStrings(outBuf, names)
 }
 
-func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
-	return pco.containerEvtWatcher.Watch(sink)
+func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
+	sub := pco.containerEvtWatcher.Subscribe(sink)
+	return sub, nil
 }
 
 func (pco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
@@ -571,8 +573,9 @@ func (pco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	return nil
 }
 
-func (pco *PodmanCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
-	return pco.networkEvtWatcher.Watch(sink)
+func (pco *PodmanCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
+	sub := pco.networkEvtWatcher.Subscribe(sink)
+	return sub, nil
 }
 
 func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
@@ -669,7 +672,7 @@ func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
 	return "podman"
 }
 
-func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
+func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=container", "--format", "json"}
 	cmd := makePodmanCommand(args...)
 
@@ -691,7 +694,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 			if unmarshalErr != nil {
 				pco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", scanner.Text())
 			} else {
-				pco.containerEvtWatcher.Notify((&evtMessage).ToEventMessage())
+				ss.Notify((&evtMessage).ToEventMessage())
 			}
 		}
 
@@ -726,7 +729,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 	}
 }
 
-func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
+func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=network", "--format", "json"}
 	cmd := makePodmanCommand(args...)
 
@@ -749,7 +752,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 			if unmarshalErr != nil {
 				pco.log.Error(unmarshalErr, "network event data could not be parsed", "EventData", evtData)
 			} else {
-				pco.networkEvtWatcher.Notify(evtMessage)
+				ss.Notify(evtMessage)
 			}
 		}
 

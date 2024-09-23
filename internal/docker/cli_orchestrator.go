@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
 
 var (
@@ -57,10 +58,10 @@ type DockerCliOrchestrator struct {
 	executor process.Executor
 
 	// Event watcher for container events
-	containerEvtWatcher *containers.EventWatcher
+	containerEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
 
 	// Event watcher for network events
-	networkEvtWatcher *containers.EventWatcher
+	networkEvtWatcher *pubsub.SubscriptionSet[containers.EventMessage]
 }
 
 func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator {
@@ -69,8 +70,8 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 		executor: executor,
 	}
 
-	dco.containerEvtWatcher = containers.NewEventWatcher(dco, dco.doWatchContainers, log)
-	dco.networkEvtWatcher = containers.NewEventWatcher(dco, dco.doWatchNetworks, log)
+	dco.containerEvtWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](dco.doWatchContainers, context.Background())
+	dco.networkEvtWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](dco.doWatchNetworks, context.Background())
 
 	return dco
 }
@@ -601,8 +602,9 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	return removed, containers.ExpectCliStrings(outBuf, names)
 }
 
-func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
-	return dco.containerEvtWatcher.Watch(sink)
+func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
+	sub := dco.containerEvtWatcher.Subscribe(sink)
+	return sub, nil
 }
 
 func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
@@ -635,8 +637,9 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 	return nil
 }
 
-func (dco *DockerCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
-	return dco.networkEvtWatcher.Watch(sink)
+func (dco *DockerCliOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
+	sub := dco.networkEvtWatcher.Subscribe(sink)
+	return sub, nil
 }
 
 func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
@@ -733,7 +736,7 @@ func (dco *DockerCliOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
-func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) {
+func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(args...)
 
@@ -756,7 +759,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 			if unmarshalErr != nil {
 				dco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", evtData)
 			} else {
-				dco.containerEvtWatcher.Notify(evtMessage)
+				ss.Notify(evtMessage)
 			}
 		}
 
@@ -791,7 +794,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context) 
 	}
 }
 
-func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
+func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=network", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(args...)
 
@@ -813,7 +816,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context) {
 			if unmarshalErr != nil {
 				dco.log.Error(unmarshalErr, "network event data could not be parsed", "EventData", scanner.Text())
 			} else {
-				dco.networkEvtWatcher.Notify(evtMessage)
+				ss.Notify(evtMessage)
 			}
 		}
 

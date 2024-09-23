@@ -3,6 +3,8 @@ package containers
 import (
 	"context"
 	"time"
+
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
 
 type CreateNetworkOptions struct {
@@ -117,7 +119,7 @@ type NetworkOrchestrator interface {
 
 	// Subscribes to events about network state changes
 	// When the subscription is cancelled, the channel will be closed
-	WatchNetworks(sink chan<- EventMessage) (*EventSubscription, error)
+	WatchNetworks(sink chan<- EventMessage) (*pubsub.Subscription[EventMessage], error)
 
 	// Get default (bridge-type) network name
 	DefaultNetworkName() string

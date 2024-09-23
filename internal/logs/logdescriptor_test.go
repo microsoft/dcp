@@ -13,13 +13,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zapcore"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -36,12 +34,8 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
-	log := logger.New("test")
-	log.SetLevel(zapcore.ErrorLevel)
-	if testing.Verbose() {
-		log.SetLevel(zapcore.DebugLevel)
-	}
-	lds := NewLogDescriptorSet(ctx, testutil.TestTempRoot(), log.Logger)
+	log := testutil.NewLogForTesting("log-following-delay-within-bounds")
+	lds := NewLogDescriptorSet(ctx, testutil.TestTempRoot(), log)
 	uid, err := randdata.MakeRandomString(8)
 	require.NoError(t, err)
 

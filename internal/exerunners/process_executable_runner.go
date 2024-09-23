@@ -41,13 +41,13 @@ func newProcessRunState(stdOutFile *os.File, stdErrFile *os.File) *processRunSta
 
 type ProcessExecutableRunner struct {
 	pe               process.Executor
-	runningProcesses syncmap.Map[controllers.RunID, *processRunState]
+	runningProcesses *syncmap.Map[controllers.RunID, *processRunState]
 }
 
 func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 	return &ProcessExecutableRunner{
 		pe:               pe,
-		runningProcesses: syncmap.Map[controllers.RunID, *processRunState]{},
+		runningProcesses: &syncmap.Map[controllers.RunID, *processRunState]{},
 	}
 }
 

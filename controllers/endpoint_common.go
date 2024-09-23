@@ -24,10 +24,10 @@ const (
 	workloadOwnerKey          = ".metadata.owner"
 )
 
-var workloadEndpointCache syncmap.Map[ServiceWorkloadEndpointKey, bool] = syncmap.Map[ServiceWorkloadEndpointKey, bool]{}
+var workloadEndpointCache *syncmap.Map[ServiceWorkloadEndpointKey, bool] = &syncmap.Map[ServiceWorkloadEndpointKey, bool]{}
 
 type ServiceWorkloadEndpointKey struct {
-	NamespacedNameWithKind
+	apiv1.NamespacedNameWithKind
 	ServiceName string
 }
 
@@ -59,7 +59,7 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 	for _, serviceProducer := range serviceProducers {
 		// Check if we have already created an Endpoint for this workload.
 		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
+			NamespacedNameWithKind: apiv1.GetNamespacedNameWithKind(owner),
 			ServiceName:            serviceProducer.ServiceName,
 		}
 		hasEndpoint := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
@@ -137,7 +137,7 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner dcpM
 		}
 
 		sweKey := ServiceWorkloadEndpointKey{
-			NamespacedNameWithKind: GetNamespacedNameWithKind(owner),
+			NamespacedNameWithKind: apiv1.GetNamespacedNameWithKind(owner),
 			ServiceName:            endpoint.Spec.ServiceName,
 		}
 

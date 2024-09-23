@@ -21,6 +21,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -50,8 +51,8 @@ type TestContainerOrchestrator struct {
 	startupLogs            map[string]containerStartupLogs
 	containersToFail       map[string]containerExit
 	execs                  map[string]*containerExec
-	containerEventsWatcher *containers.EventWatcher
-	networkEventsWatcher   *containers.EventWatcher
+	containerEventsWatcher *pubsub.SubscriptionSet[containers.EventMessage]
+	networkEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
 	socketServer           *http.Server
 	socketFilePath         string
 	mutex                  *sync.Mutex
@@ -109,8 +110,8 @@ func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) 
 		log:              log,
 	}
 
-	to.containerEventsWatcher = containers.NewEventWatcher(to, to.doWatchContainers, log)
-	to.networkEventsWatcher = containers.NewEventWatcher(to, to.doWatchNetworks, log)
+	to.containerEventsWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](to.doWatchContainers, lifetimeCtx)
+	to.networkEventsWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](to.doWatchNetworks, lifetimeCtx)
 
 	err := setupSocketListener(to)
 
@@ -288,10 +289,10 @@ func (to *TestContainerOrchestrator) SimulateContainerStartupLogs(name string, s
 	to.startupLogs[name] = containerStartupLogs{stdout: stdout, stderr: stderr}
 }
 
-func (to *TestContainerOrchestrator) doWatchContainers(watcherCtx context.Context) {
+func (to *TestContainerOrchestrator) doWatchContainers(_ context.Context, _ *pubsub.SubscriptionSet[containers.EventMessage]) {
 }
 
-func (to *TestContainerOrchestrator) doWatchNetworks(watcherCtx context.Context) {
+func (to *TestContainerOrchestrator) doWatchNetworks(_ context.Context, _ *pubsub.SubscriptionSet[containers.EventMessage]) {
 }
 
 func (to *TestContainerOrchestrator) getRandomName() (string, error) {
@@ -435,11 +436,12 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, volumes
 	return result, nil
 }
 
-func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
+func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
-	return to.networkEventsWatcher.Watch(sink)
+	sub := to.networkEventsWatcher.Subscribe(sink)
+	return sub, nil
 }
 
 func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
@@ -737,11 +739,12 @@ func (to *TestContainerOrchestrator) HasImage(tag string) bool {
 	return found
 }
 
-func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*containers.EventSubscription, error) {
+func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
-	return to.containerEventsWatcher.Watch(sink)
+	sub := to.containerEventsWatcher.Subscribe(sink)
+	return sub, nil
 }
 
 func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
