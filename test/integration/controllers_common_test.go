@@ -62,6 +62,12 @@ var (
 
 const (
 	pollImmediately = true // Don't wait before polling for the first time
+
+	// Set to true to enable tests that require access to all network interfaces and try to open ports
+	// that are accessible to requests originating from outside of the machine.
+	// This is disabled by default because on Windows it causes a security prompt every time the tests are run.
+	DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = "DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES"
+	skippingAllNetworkInterfacesTests      = "Skipping test requiring access to all network interfaces and ability to create externally-accessible endpoints"
 )
 
 func TestMain(m *testing.M) {
@@ -431,10 +437,11 @@ func waitObjectDeleted[T controllers.ObjectStruct, PT controllers.PObjectStruct[
 	}
 }
 
-func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) {
-	_ = waitObjectAssumesState(t, ctx, svc.NamespacedName(), func(svc *apiv1.Service) (bool, error) {
+func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) *apiv1.Service {
+	updatedSvc := waitObjectAssumesState(t, ctx, svc.NamespacedName(), func(svc *apiv1.Service) (bool, error) {
 		return svc.Status.State == apiv1.ServiceStateReady, nil
 	})
+	return updatedSvc
 }
 
 func retryOnConflict[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](ctx context.Context, name types.NamespacedName, action func(context.Context, PT) error) error {

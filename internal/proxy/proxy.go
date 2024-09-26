@@ -174,7 +174,7 @@ func (p *Proxy) Start() error {
 	}
 
 	if p.ListenAddress == "" {
-		p.ListenAddress = "localhost"
+		p.ListenAddress = networking.Localhost
 	}
 
 	lc := net.ListenConfig{}
@@ -185,8 +185,9 @@ func (p *Proxy) Start() error {
 			return err
 		}
 
-		p.EffectiveAddress = networking.IpToString(tcpListener.Addr().(*net.TCPAddr).IP)
-		p.EffectivePort = int32(tcpListener.Addr().(*net.TCPAddr).Port)
+		tcpAddr := tcpListener.Addr().(*net.TCPAddr)
+		p.EffectiveAddress = networking.IpToString(tcpAddr.IP)
+		p.EffectivePort = int32(tcpAddr.Port)
 
 		go p.runTCP(tcpListener)
 	} else if p.mode == apiv1.UDP {
@@ -196,8 +197,9 @@ func (p *Proxy) Start() error {
 			return err
 		}
 
-		p.EffectiveAddress = networking.IpToString(udpListener.LocalAddr().(*net.UDPAddr).IP)
-		p.EffectivePort = int32(udpListener.LocalAddr().(*net.UDPAddr).Port)
+		udpAddr := udpListener.LocalAddr().(*net.UDPAddr)
+		p.EffectiveAddress = networking.IpToString(udpAddr.IP)
+		p.EffectivePort = int32(udpAddr.Port)
 
 		go p.runUDP(udpListener)
 	}

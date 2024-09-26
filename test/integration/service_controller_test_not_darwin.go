@@ -5,6 +5,7 @@ package integration_test
 import (
 	"testing"
 
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ func TestServiceRandomIPv4Address(t *testing.T) {
 
 	t.Log("Check if Service has random IPv4 address...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
-		addressCorrect := s.Status.EffectiveAddress != "127.0.0.1" && s.Status.EffectiveAddress != ""
+		addressCorrect := s.Status.EffectiveAddress != networking.Ipv4LocalhostDefaultAddress && s.Status.EffectiveAddress != ""
 		portCorrect := s.Status.EffectivePort > 0
 		return addressCorrect && portCorrect, nil
 	})

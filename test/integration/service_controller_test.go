@@ -10,6 +10,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
@@ -59,7 +60,7 @@ func TestServiceBecomesReady(t *testing.T) {
 		Spec: apiv1.EndpointSpec{
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
-			Address:          "127.0.0.1",
+			Address:          networking.IPv4LocalhostDefaultAddress,
 			Port:             1234,
 		},
 	}
@@ -286,7 +287,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 	defer cancel()
 
 	const testName = "test-service-consumable-after-late-port-allocation"
-	const svcAddress = "127.0.0.1"
+	const svcAddress = networking.IPv4LocalhostDefaultAddress
 	const endpointPort = 49902
 
 	svc := apiv1.Service{
@@ -463,7 +464,7 @@ func TestServiceIPv6Address(t *testing.T) {
 	t.Log("Check if Service has IPv6 address...")
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
 		addressCorrect := s.Status.EffectiveAddress == "[::1]"
-		portCorrect := s.Status.EffectivePort > 0
+		portCorrect := networking.IsValidPort(int(s.Status.EffectivePort))
 		return addressCorrect && portCorrect, nil
 	})
 	t.Log("Service has IPv6 address.")
@@ -517,7 +518,7 @@ func TestServiceProxyless(t *testing.T) {
 	require.NoError(t, err, "Container %s was not started as expected", container.ObjectMeta.Name)
 
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
-		addressCorrect := s.Status.EffectiveAddress == "127.0.0.1" // The default address for Proxyless containers
+		addressCorrect := s.Status.EffectiveAddress == networking.IPv4LocalhostDefaultAddress // The default address for Proxyless containers
 		portCorrect := s.Status.EffectivePort == 56791
 		return addressCorrect && portCorrect, nil
 	})
@@ -549,7 +550,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 		Spec: apiv1.EndpointSpec{
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
-			Address:          "localhost",
+			Address:          networking.Localhost,
 			Port:             56792,
 		},
 	}
@@ -562,7 +563,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 		Spec: apiv1.EndpointSpec{
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
-			Address:          "localhost",
+			Address:          networking.Localhost,
 			Port:             56793,
 		},
 	}
@@ -575,7 +576,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 		Spec: apiv1.EndpointSpec{
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
-			Address:          "localhost",
+			Address:          networking.Localhost,
 			Port:             56794,
 		},
 	}
@@ -660,5 +661,81 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 		endpointNamespaceCorrect := s.Status.ProxylessEndpointNamespace == endpoint3.ObjectMeta.Namespace
 		endpointNameCorrect := s.Status.ProxylessEndpointName == endpoint3.ObjectMeta.Name
 		return addressCorrect && portCorrect && endpointNamespaceCorrect && endpointNameCorrect, nil
+	})
+}
+
+func TestServiceAllAddressesIPv4(t *testing.T) {
+	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES) {
+		t.Skip(skippingAllNetworkInterfacesTests)
+		return
+	}
+
+	if !nettest.SupportsIPv4() {
+		t.Skip("Skipping test because IPv4 is not supported by the test environment")
+		return
+	}
+
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-service-all-addresses-ipv4",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  networking.IPv4AllInterfaceAddress,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	t.Log("Check if Service obtained specific IPv4 address for client use...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := networking.IsIPv4(s.Status.EffectiveAddress) && s.Status.EffectiveAddress != networking.IPv4AllInterfaceAddress
+		portCorrect := networking.IsValidPort(int(s.Status.EffectivePort))
+		return addressCorrect && portCorrect, nil
+	})
+}
+
+func TestServiceAllAddressesIPv6(t *testing.T) {
+	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES) {
+		t.Skip(skippingAllNetworkInterfacesTests)
+		return
+	}
+
+	if !nettest.SupportsIPv6() {
+		t.Skip("Skipping test because IPv6 is not supported by the test environment")
+		return
+	}
+
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-service-all-addresses-ipv6",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  networking.IPv6AllInterfaceAddress,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service")
+
+	t.Log("Check if Service obtained specific IPv6 address for client use...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		addressCorrect := networking.IsIPv6(s.Status.EffectiveAddress) && s.Status.EffectiveAddress != networking.IPv6AllInterfaceAddress
+		portCorrect := networking.IsValidPort(int(s.Status.EffectivePort))
+		return addressCorrect && portCorrect, nil
 	})
 }

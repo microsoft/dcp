@@ -333,6 +333,16 @@ test-ci: lint test-prereqs ## Runs tests in a way appropriate for CI pipeline, w
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 
+.PHONY: test-extended
+test-extended: test-prereqs ## Run all tests, including tests that require special environment setup
+ifeq ($(detected_OS),windows)
+	$$env:DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = "true"; $(GO_BIN) test ./... -count 1; $$env:DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = $$null;
+else ifeq ($(CGO_ENABLED),1)
+	DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES="true" $(GO_BIN) test ./... -count 1 -race
+else
+	DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES="true" $(GO_BIN) test ./... -count 1
+endif
+
 ## Development and test support targets
 
 ${OUTPUT_BIN}:

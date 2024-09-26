@@ -178,10 +178,20 @@ func portForServingFromExecutable(
 		if serviceName != sp.ServiceNamespacedName() {
 			continue
 		}
+
 		if sp.Port != 0 {
 			// The service producer annotation specifies the desired port, so we do not have to reserve anything,
 			// and we do not need to report it via reservedPorts.
-			return sp.Port, nil
+			if networking.IsValidPort(int(sp.Port)) {
+				return sp.Port, nil
+			} else {
+				return 0, fmt.Errorf(
+					"port %d specified in service producer annotation for service '%s' on object '%s' is invalid",
+					sp.Port,
+					serviceName,
+					exe.NamespacedName().String(),
+				)
+			}
 		}
 
 		if port, found := reservedPorts[serviceName]; found {
@@ -284,7 +294,7 @@ func addressForServing(serviceNamespacedName string, obj dcpModelObject, service
 		if sp.Address != "" {
 			return sp.Address, nil
 		} else {
-			return "localhost", nil
+			return networking.Localhost, nil
 		}
 	}
 
