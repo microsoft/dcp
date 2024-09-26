@@ -35,6 +35,7 @@ type runState struct {
 	pid                  process.Pid_t
 	finished             bool
 	exitCode             *int32
+	exitCh               chan struct{}
 	stdOut               *usvc_io.BufferedWrappingWriter
 	stdErr               *usvc_io.BufferedWrappingWriter
 	changeNotifyDebounce *resiliency.DebounceLastAction[runChangedNotifyArg]
@@ -47,6 +48,7 @@ func NewRunState() *runState {
 		handlerWG:            &sync.WaitGroup{},
 		finished:             false,
 		exitCode:             apiv1.UnknownExitCode,
+		exitCh:               make(chan struct{}),
 		stdOut:               usvc_io.NewBufferedWrappingWriter(),
 		stdErr:               usvc_io.NewBufferedWrappingWriter(),
 		changeNotifyDebounce: resiliency.NewDebounceLastAction[runChangedNotifyArg](notifyRunChanged, runChangedDebounceDelay, runChangedMaxDelay),

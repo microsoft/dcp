@@ -34,13 +34,14 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 	}
 
 	waitResultCh, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+
 	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
-		// We already initiated the stop for this process, just wait for that to complete
+		// Wait for the process to exit, including io to flush.
 		<-waitEndedCh
 		return nil
 	}
 
-	if (opts & optTrySignal) != 0 {
+	if (opts & optTrySignal) == optTrySignal {
 		// Give the process a chance to gracefully exit.
 		// There is no established standard for what signals are used for graceful shutdown,
 		// but SIGTERM and SIGQUIT are commonly used.
@@ -54,13 +55,16 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 		}
 	}
 
-	err = proc.Kill()
-	if err == nil || errors.Is(err, os.ErrProcessDone) {
+	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, opts, waitResultCh)
+	switch {
+	case err == nil:
 		e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
 		return nil
-	} else {
+	case !errors.Is(err, context.DeadlineExceeded):
 		return err
 	}
+
+	return nil
 }
 
 const signalAndWaitTimeout = 10 * time.Second

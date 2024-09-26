@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -231,6 +232,12 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	const runSessionCouldNotBeStopped = "run session could not be stopped: "
 
+	runState, found := r.activeRuns.Load(runID)
+	if !found {
+		r.log.Info("Attempted to stop IDE run session which was not found", "RunID", runID)
+		return nil
+	}
+
 	req, reqCancel, err := r.makeRequest(ideRunSessionResourcePath+"/"+string(runID), http.MethodDelete, nil)
 	if err != nil {
 		return fmt.Errorf(runSessionCouldNotBeStopped+"failed to create request: %w", err)
@@ -245,7 +252,18 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 
 	if resp.StatusCode == http.StatusOK {
 		r.log.V(1).Info("IDE run session stopped", "RunID", runID)
-		return nil
+		// Wrap in a function to make it easier to ensure context cancel is called
+		return func() error {
+			// Wait up to 10 seconds for the IDE to send confirmation that the run session has been terminated (and stdio closed)
+			ideExitCtx, ideExitCancel := context.WithTimeout(ctx, 10*time.Second)
+			defer ideExitCancel()
+			select {
+			case <-ideExitCtx.Done():
+				return fmt.Errorf("timeout waiting for IDE to confirm run session termination: %w", ideExitCtx.Err())
+			case <-runState.exitCh:
+				return nil
+			}
+		}()
 	}
 
 	if resp.StatusCode == http.StatusNoContent {
@@ -329,18 +347,15 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	var runState *runState
-	if exitCode != apiv1.UnknownExitCode {
-		runState = r.fetchRunStateForDeletion(runID)
-		runState.finished = true
-		runState.CloseOutputWriters()
-	} else {
-		runState = r.ensureRunState(runID)
-	}
-
+	runState := r.fetchRunStateForDeletion(runID)
 	runState.runID = runID
 	runState.pid = stn.PID
 	runState.exitCode = exitCode
+	runState.CloseOutputWriters()
+	if !runState.finished {
+		close(runState.exitCh)
+	}
+	runState.finished = true
 	runState.NotifyRunCompletedAsync(r.lock)
 }
 
