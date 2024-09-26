@@ -29,6 +29,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/internal/version"
@@ -1310,8 +1311,10 @@ func (r *ContainerReconciler) createEndpoint(
 		return nil, err
 	}
 
-	if hostAddress == "" || hostAddress == "0.0.0.0" {
-		hostAddress = "127.0.0.1"
+	if hostAddress == "" || hostAddress == networking.IPv4AllInterfaceAddress {
+		hostAddress = networking.IPv4LocalhostDefaultAddress
+	} else if hostAddress == networking.IPv6AllInterfaceAddress {
+		hostAddress = networking.IPv6LocalhostDefaultAddress
 	}
 
 	// Otherwise, create a new Endpoint object.

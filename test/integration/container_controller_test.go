@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -193,7 +194,7 @@ func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports 
 
 		hostIP := port.HostIP
 		if hostIP == "" {
-			hostIP = "127.0.0.1"
+			hostIP = networking.IPv4LocalhostDefaultAddress
 		}
 		require.Equal(t, hostIP, mappings[0].HostIp, "expected the host IP to be %s", hostIP)
 	}
@@ -689,7 +690,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
 	require.Equal(t, ServiceIPAddr, inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
 	validatePorts(t, inspected, []apiv1.ContainerPort{
-		{ContainerPort: ContainerPort, HostIP: "127.0.0.1"},
+		{ContainerPort: ContainerPort, HostIP: networking.IPv4LocalhostDefaultAddress},
 	})
 
 	t.Logf("Ensure the Status.EffectiveEnv for Container '%s' contains the injected address information...", ctr.ObjectMeta.Name)

@@ -21,6 +21,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -815,7 +816,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 
 		hostIP := port.HostIP
 		if hostIP == "" {
-			hostIP = "127.0.0.1"
+			hostIP = networking.IPv4LocalhostDefaultAddress
 		}
 
 		container.ports[fmt.Sprintf("%d/%s", port.ContainerPort, protocol)] = []containers.InspectedContainerHostPortConfig{
@@ -1186,9 +1187,9 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 					inspectedContainer.Networks = append(inspectedContainer.Networks, containers.InspectedContainerNetwork{
 						Id:         network.id,
 						Name:       network.name,
-						IPAddress:  "127.0.0.1",
+						IPAddress:  networking.IPv4LocalhostDefaultAddress,
 						MacAddress: "00:00:00:00:00:00",
-						Gateway:    "127.0.0.1",
+						Gateway:    networking.IPv4LocalhostDefaultAddress,
 					})
 				}
 

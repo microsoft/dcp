@@ -405,69 +405,58 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 
 	var portAllocationErr error = nil
 
-	if requestedServiceAddress == "localhost" {
-		// Bind to all applicable IPs (IPv4 and IPv6) for the proxy address
+	ips, err := networking.GetPreferredHostIps(requestedServiceAddress)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("there is no available network interface for requested service address: %s", requestedServiceAddress)
+	}
 
-		ips, err := networking.GetLocalhostIps()
-		if err != nil {
-			return nil, err
+	// We will try to use the same port for all addresses if possible.
+	const invalidPort int32 = 0
+	var lastPort int32 = invalidPort
+	usingSamePort := true
+
+	for _, ip := range ips {
+		proxyInstanceAddress := networking.IpToString(ip)
+
+		if lastPort == invalidPort {
+			lastPort, err = getProxyPort(proxyInstanceAddress)
+			if err != nil {
+				lastPort = invalidPort
+				portAllocationErr = errors.Join(portAllocationErr, err)
+				continue
+			}
 		}
 
-		// We will try to use the same port for all addresses if possible.
-		const invalidPort int32 = 0
-		var lastPort int32 = invalidPort
-		usingSamePort := true
+		var proxyPort int32
 
-		for _, ip := range ips {
-			proxyInstanceAddress := networking.IpToString(ip)
-
-			if lastPort == invalidPort {
-				lastPort, err = getProxyPort(proxyInstanceAddress)
-				if err != nil {
-					lastPort = invalidPort
-					portAllocationErr = errors.Join(portAllocationErr, err)
-					continue
-				}
+		if usingSamePort {
+			proxyPort = lastPort
+			err = networking.CheckPortAvailable(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, log)
+			if err != nil {
+				usingSamePort = false
+				log.Info("could not use the same port for all addresses associated with requested service address, service will be reachable only using specific IP address",
+					"AttemptedCommonPort", lastPort,
+					"RequestedServiceAddress", requestedServiceAddress,
+				)
 			}
-
-			var proxyPort int32
-
-			if usingSamePort {
-				proxyPort = lastPort
-				err = networking.CheckPortAvailable(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, log)
-				if err != nil {
-					usingSamePort = false
-					log.Info("could not use the same port for all addresses associated with 'localhost', service will be reachable only using specific IP address", "AttemptedCommonPort", lastPort)
-				}
-			}
-
-			if !usingSamePort {
-				proxyPort, err = getProxyPort(proxyInstanceAddress)
-				if err != nil {
-					portAllocationErr = errors.Join(portAllocationErr, err)
-					continue
-				}
-			}
-
-			proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
-			proxies = append(proxies, proxyInstanceData{
-				proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
-				stopProxy: cancelFunc,
-			})
 		}
-	} else {
-		// Bind to just the proxy address
 
-		proxyPort, err := getProxyPort(requestedServiceAddress)
-		if err != nil {
-			portAllocationErr = err
-		} else {
-			proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
-			proxies = append(proxies, proxyInstanceData{
-				proxy:     proxy.NewProxy(svc.Spec.Protocol, requestedServiceAddress, proxyPort, proxyCtx, proxyLog),
-				stopProxy: cancelFunc,
-			})
+		if !usingSamePort {
+			proxyPort, err = getProxyPort(proxyInstanceAddress)
+			if err != nil {
+				portAllocationErr = errors.Join(portAllocationErr, err)
+				continue
+			}
 		}
+
+		proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
+		proxies = append(proxies, proxyInstanceData{
+			proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
+			stopProxy: cancelFunc,
+		})
 	}
 
 	return proxies, portAllocationErr
@@ -512,15 +501,19 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		return "", 0
 	}
 
-	// We might bind to multiple addresses if the address specified by the service spec is "localhost".
-	// But we can (and should) still report the effective address as "localhost"
+	// We might bind to multiple addresses if the address specified by the service spec
+	// is one of the pseudo-addresses (e.g. "localhost", "0.0.0.0.", or "[::]").
+
+	// For "localhost" we can (and should) still report the effective address as "localhost"
 	// if the port used by all addresses is the same.
-	portsInUse := make(map[int32]bool)
-	for _, pd := range eligibleProxies {
-		portsInUse[getProxyPort(pd.proxy)] = true
-	}
-	if requestedServiceAddress == "localhost" && len(portsInUse) == 1 {
-		return "localhost", getProxyPort(eligibleProxies[0].proxy)
+	if requestedServiceAddress == networking.Localhost {
+		portsInUse := make(map[int32]bool)
+		for _, pd := range eligibleProxies {
+			portsInUse[getProxyPort(pd.proxy)] = true
+		}
+		if len(portsInUse) == 1 {
+			return networking.Localhost, getProxyPort(eligibleProxies[0].proxy)
+		}
 	}
 
 	var isPreferredAddress func(string) bool
@@ -553,12 +546,12 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 
 	if requestedServiceAddress == "" {
 		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
-			requestedServiceAddress = "localhost"
+			requestedServiceAddress = networking.Localhost
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
-			requestedServiceAddress = "127.0.0.1"
+			requestedServiceAddress = networking.IPv4LocalhostDefaultAddress
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
 			// Use the standard LookupIP implementation because we want to specifically limit to IPv4 addresses
-			ips, err := net.LookupIP("localhost")
+			ips, err := net.LookupIP(networking.Localhost)
 			if err != nil {
 				return "", fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
 			}
@@ -573,7 +566,7 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 			}
 			requestedServiceAddress = networking.IpToString(ips[rand.Intn(len(ips))])
 		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
-			requestedServiceAddress = "[::1]"
+			requestedServiceAddress = networking.IPv6LocalhostDefaultAddress
 		} else {
 			return "", fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
 		}

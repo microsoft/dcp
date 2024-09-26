@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -439,7 +440,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 		},
 		Spec: apiv1.ServiceSpec{
 			Protocol: apiv1.TCP,
-			Address:  "127.0.0.1",
+			Address:  networking.IPv4LocalhostDefaultAddress,
 			Port:     13762,
 		},
 	}
@@ -456,7 +457,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 		},
 		Spec: apiv1.ServiceSpec{
 			Protocol: apiv1.TCP,
-			Address:  "127.0.0.1",
+			Address:  networking.IPv4LocalhostDefaultAddress,
 			Port:     13763,
 		},
 	}

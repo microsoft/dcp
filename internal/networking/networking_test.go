@@ -49,8 +49,8 @@ func TestGetFreePort(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			port1, err1 := GetFreePort(tc.protocol, "localhost", log)
-			port2, err2 := GetFreePort(tc.protocol, "localhost", log)
+			port1, err1 := GetFreePort(tc.protocol, Localhost, log)
+			port2, err2 := GetFreePort(tc.protocol, Localhost, log)
 
 			require.NoError(t, err1, "error1: %v", err1)
 			require.NoError(t, err2, "error2: %v", err2)
@@ -69,7 +69,7 @@ func TestCanGetFreePortForAllLocalIPs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ips, err := LookupIP("localhost")
+			ips, err := LookupIP(Localhost)
 			require.NoError(t, err, "Could not get IP addresses for localhost")
 
 			for _, ip := range ips {
@@ -91,7 +91,7 @@ func TestCheckPortAvailable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ips, ipLookupErr := LookupIP("localhost")
+			ips, ipLookupErr := LookupIP(Localhost)
 			require.NoError(t, ipLookupErr, "Could not get IP addresses for localhost")
 
 			wg := sync.WaitGroup{}

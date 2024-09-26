@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
 
@@ -368,7 +369,7 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 			// Bind to 127.0.0.1 for extra security, not to 0.0.0.0 (all interfaces, making it accessible from the outside)
 			// IPv6 is not well supported with container networking, so we assume IPv4. We'll need to revisit this logic
 			// if we start getting requests to support IPv6 container networking.
-			portVal = fmt.Sprintf("127.0.0.1:%s", portVal)
+			portVal = fmt.Sprintf("%s:%s", networking.IPv4LocalhostDefaultAddress, portVal)
 		}
 
 		if port.Protocol != "" {

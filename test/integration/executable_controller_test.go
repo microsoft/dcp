@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/nettest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	wait "k8s.io/apimachinery/pkg/util/wait"
@@ -23,6 +24,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/health"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -1139,6 +1141,180 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 
 	expectedEnvVar2 := fmt.Sprintf("EXE_SPEC_EXECUTABLE_PATH=%s", updatedExe.Spec.ExecutablePath)
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar2), "The Executable effective environment does not contain expected EXE_SPEC_EXECUTABLE_PATH. The effective environment is %v", effectiveEnv)
+}
+
+// Verify that Services, clients and servers can use "all-interface" addresses in their configurations.
+func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
+	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES) {
+		t.Skip(skippingAllNetworkInterfacesTests)
+		return
+	}
+
+	type testcase struct {
+		name                     string
+		address                  string // The requested address for the Service and service_producer
+		endpointEffectiveAddress string // The expected effective address for the Endpoint
+		canRunOnThisMachine      func() bool
+		isUsableAddress          func(string) bool
+	}
+
+	testcases := []testcase{
+		{
+			name:                     "IPv4",
+			address:                  networking.IPv4AllInterfaceAddress,
+			endpointEffectiveAddress: networking.IPv4LocalhostDefaultAddress,
+			canRunOnThisMachine:      nettest.SupportsIPv4,
+			isUsableAddress: func(addr string) bool {
+				return networking.IsIPv4(addr) && addr != networking.IPv4AllInterfaceAddress
+			},
+		},
+		{
+			name:                     "IPv6",
+			address:                  networking.IPv6AllInterfaceAddress,
+			endpointEffectiveAddress: networking.IPv6LocalhostDefaultAddress,
+			canRunOnThisMachine:      nettest.SupportsIPv6,
+			isUsableAddress: func(addr string) bool {
+				return networking.IsIPv6(addr) && addr != networking.IPv4AllInterfaceAddress
+			},
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.canRunOnThisMachine() {
+				t.Skipf("Skipping test becaue the test environment does not support %s", tc.name)
+				return
+			}
+
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			svc := apiv1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-executable-using-all-interface-address-svc-" + tc.name,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ServiceSpec{
+					Protocol: apiv1.TCP,
+					Address:  tc.address,
+				},
+			}
+
+			t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+			err := client.Create(ctx, &svc)
+			require.NoError(t, err, "Could not create the Service")
+
+			t.Logf("Verify Service '%s' obtained valid address for client use...", svc.ObjectMeta.Name)
+			waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+				addressCorrect := tc.isUsableAddress(s.Status.EffectiveAddress)
+				portCorrect := networking.IsValidPort(int(s.Status.EffectivePort))
+				return addressCorrect && portCorrect, nil
+			})
+
+			exe := apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "test-executable-using-all-interface-address-exe-" + tc.name,
+					Namespace:   metav1.NamespaceNone,
+					Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s", "address":"%s"}]`, svc.ObjectMeta.Name, tc.address)},
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/test-executable-using-all-interface-address-exe-" + tc.name,
+					Env: []apiv1.EnvVar{
+						{
+							Name:  "LISTENING_PORT",
+							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
+						},
+						{
+							Name:  "LISTENING_ADDRESS",
+							Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
+						},
+					},
+				},
+			}
+
+			t.Logf("Creating Executable '%s' that is producing the Service '%s'...", exe.ObjectMeta.Name, svc.ObjectMeta.Name)
+			err = client.Create(ctx, &exe)
+			require.NoError(t, err, "Could not create the Executable")
+
+			t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+			_, err = ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+			require.NoError(t, err, "Process could not be started")
+
+			t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
+			updatedSvc := waitServiceReady(t, ctx, &svc)
+
+			t.Logf("Ensure that Service '%s' effective address and port are usable...", svc.ObjectMeta.Name)
+			require.True(t, tc.isUsableAddress(updatedSvc.Status.EffectiveAddress), "The Service '%s' effective address (%s) is not usable", svc.ObjectMeta.Name, updatedSvc.Status.EffectiveAddress)
+			require.True(t, networking.IsValidPort(int(updatedSvc.Status.EffectivePort)), "The Service '%s' effective port (%d) is not valid", svc.ObjectMeta.Name, updatedSvc.Status.EffectivePort)
+
+			t.Logf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
+			executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+				forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+				controllerOwner := metav1.GetControllerOf(e)
+				hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+				return forCorrectService && hasOwner, nil
+			})
+			require.True(t, tc.isUsableAddress(executableEndpoint.Spec.Address), "The address used by the Endpoint associated with the Executable '%s' (%s) is not usable", exe.ObjectMeta.Name, executableEndpoint.Spec.Address)
+			require.True(t, networking.IsValidPort(int(executableEndpoint.Spec.Port)), "The port used by the Endpoint associated with the Executable '%s' (%d) is not valid", exe.ObjectMeta.Name, executableEndpoint.Spec.Port)
+
+			t.Logf("Ensure that port and address for serving the Service %s from Executable %s are correct...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
+			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+				return len(currentExe.Status.EffectiveEnv) > 0, nil
+			})
+			envVars := maps.SliceToMap(updatedExe.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) { return ev.Name, ev.Value })
+			svcPort, svcPortErr := strconv.Atoi(envVars["LISTENING_PORT"])
+			require.NoError(t, svcPortErr, "The listening port used by the Executable '%s' (%s) is not a valid integer", exe.ObjectMeta.Name, envVars["LISTENING_PORT"])
+			require.True(t, networking.IsValidPort(svcPort), "The port used by the Executable '%s' (%s) is not valid", exe.ObjectMeta.Name, svcPort)
+			svcAddress, hasSvcAddress := envVars["LISTENING_ADDRESS"]
+			require.True(t, hasSvcAddress, "The Executable '%s' does not have the expected environment variable 'LISTENING_ADDRESS'", exe.ObjectMeta.Name)
+			require.Equal(t, tc.address, svcAddress, "The address the Executable '%s' uses to listen for request should be the 'all-intervace' address", exe.ObjectMeta.Name)
+
+			t.Logf("Ensure that clients can connect to the Service '%s'...", svc.ObjectMeta.Name)
+			clientExe := apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-executable-using-all-interface-address-client-" + tc.name,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "path/to/test-executable-using-all-interface-address-client-" + tc.name,
+					Env: []apiv1.EnvVar{
+						{
+							Name:  "SVC_PORT",
+							Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
+						},
+						{
+							Name:  "SVC_ADDRESS",
+							Value: fmt.Sprintf(`{{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
+						},
+					},
+				},
+			}
+
+			t.Logf("Creating Executable '%s' that is a client for the Service '%s'...", clientExe.ObjectMeta.Name, svc.ObjectMeta.Name)
+			err = client.Create(ctx, &clientExe)
+			require.NoError(t, err, "Could not create the client Executable")
+
+			t.Logf("Ensure client Executable '%s' is running...", clientExe.ObjectMeta.Name)
+			_, err = ensureProcessRunning(ctx, clientExe.Spec.ExecutablePath)
+			require.NoError(t, err, "Client Executable '%s' could not be started", clientExe.ObjectMeta.Name)
+
+			t.Logf("Ensure that the client Executable '%s' can connect to the Service '%s'...", clientExe.ObjectMeta.Name, svc.ObjectMeta.Name)
+			updatedClientExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&clientExe), func(currentExe *apiv1.Executable) (bool, error) {
+				return len(currentExe.Status.EffectiveEnv) > 0, nil
+			})
+			clientEnvVars := maps.SliceToMap(updatedClientExe.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) { return ev.Name, ev.Value })
+			svcPort, svcPortErr = strconv.Atoi(clientEnvVars["SVC_PORT"])
+			require.NoError(t, svcPortErr, "The listening port used by the client Executable '%s' (%s) is not a valid integer", clientExe.ObjectMeta.Name, clientEnvVars["SVC_PORT"])
+			require.Equal(t, updatedSvc.Status.EffectivePort, int32(svcPort), "The port used by the client Executable '%s' to cnnect to service %s is not the same as service effective port", clientExe.ObjectMeta.Name, svc.ObjectMeta.Name)
+			svcAddress, hasSvcAddress = clientEnvVars["SVC_ADDRESS"]
+			require.True(t, hasSvcAddress, "The client Executable '%s' does not have the expected environment variable 'SVC_ADDRESS'", clientExe.ObjectMeta.Name)
+			require.Equal(t, updatedSvc.Status.EffectiveAddress, svcAddress, "The address used by the client Executable '%s' to connect to service %s is not the same as service effective address", clientExe.ObjectMeta.Name, svc.ObjectMeta.Name)
+
+		})
+	}
 }
 
 // Verify that envrioment variables are handled according to OS conventions:

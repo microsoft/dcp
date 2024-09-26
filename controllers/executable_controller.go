@@ -28,6 +28,7 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 
 	"github.com/microsoft/usvc-apiserver/internal/health"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -580,13 +581,21 @@ func (r *ExecutableReconciler) createEndpoint(
 		return nil, err
 	}
 
-	if serviceProducer.Port == 0 {
+	if !networking.IsValidPort(int(serviceProducer.Port)) {
 		return nil, fmt.Errorf("%s: missing information about the port to expose the service", serviceProducerIsInvalid)
 	}
 
 	address := serviceProducer.Address
-	if address == "" {
-		address = "localhost"
+	switch address {
+	case "":
+		address = networking.Localhost
+	case networking.IPv4AllInterfaceAddress:
+		// The client/proxy cannot really reach the Executable through this address (it is "use all available interfaces" address),
+		// but we can choose whatever available address we want, IPv4 localhost in particular.
+		address = networking.IPv4LocalhostDefaultAddress
+	case networking.IPv6AllInterfaceAddress:
+		// Similar to the IPv4 case, we choose the IPv6 localhost address.
+		address = networking.IPv6LocalhostDefaultAddress
 	}
 
 	// Otherwise, create a new Endpoint object.

@@ -32,6 +32,16 @@ const (
 	IpVersionPreferenceNone IpVersionPreference = "None"
 	IpVersionPreference4    IpVersionPreference = "IPv4"
 	IpVersionPreference6    IpVersionPreference = "IPv6"
+
+	Localhost                   = "localhost"
+	IPv4LocalhostDefaultAddress = "127.0.0.1"
+	IPv6LocalhostDefaultAddress = "[::1]"
+	IPv4AllInterfaceAddress     = "0.0.0.0" // Equivalent to net.IPv4zero
+	IPv6AllInterfaceAddress     = "[::]"    // Equivalent to net.IPv6zero
+
+	// Use a relatively short timeout for network operations such as IP lookup or socket open
+	// because we are only interested in local addresses and ports, so the operation should be fast.
+	NetworkOpTimeout = 2 * time.Second
 )
 
 var (
@@ -40,10 +50,12 @@ var (
 	packageMruPortFile    *mruPortFile
 	programInstanceID     string
 	ipVersionPreference   IpVersionPreference
+	getAllLocalIpsOnce    func() ([]net.IP, error)
 )
 
 func init() {
 	portFileLock = &sync.Mutex{}
+	getAllLocalIpsOnce = sync.OnceValues(getAllLocalIps)
 
 	idBytes, err := randdata.MakeRandomString(instanceIdLength)
 	if err != nil {
@@ -72,19 +84,99 @@ func init() {
 
 // Wrap the standard net.LookupIP method to filter for supported IP address types
 func LookupIP(host string) ([]net.IP, error) {
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return nil, err
+	var validIps []net.IP
+
+	// The LookupIP method will not resolve 0.0.0.0 or [::] to a set of specific interface addresses, so we need to do it "manually".
+	switch host {
+	case IPv4AllInterfaceAddress:
+		allLocalIps, localIpsErr := getAllLocalIpsOnce()
+		if localIpsErr != nil {
+			return nil, localIpsErr
+		}
+		validIps = slices.Select(allLocalIps, IsValidIPv4)
+
+	case IPv6AllInterfaceAddress:
+		allLocalIps, localIpsErr := getAllLocalIpsOnce()
+		if localIpsErr != nil {
+			return nil, localIpsErr
+		}
+		validIps = slices.Select(allLocalIps, IsValidIPv6)
+
+	default:
+		host = ToStandaloneAddress(host) // LookupIP does not like brackets around IPv6 addresses
+		ctx, cancel := context.WithTimeout(context.Background(), NetworkOpTimeout)
+		defer cancel()
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+
+		validIps = slices.Select(ips, IsValidIP)
 	}
 
-	return slices.Select(ips, IsValidIP), nil
+	return validIps, nil
+}
+
+func getAllLocalIps() ([]net.IP, error) {
+	ifaces, ifaceErr := net.Interfaces()
+	if ifaceErr != nil {
+		return nil, ifaceErr
+	}
+
+	var candidateIps []net.IP
+
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue // Very unlikely to fail if net.Interfaces() succeeded
+		}
+
+		for _, addr := range addrs {
+			switch ipaddr := addr.(type) {
+			case *net.IPNet:
+				if IsValidIP(ipaddr.IP) {
+					candidateIps = append(candidateIps, ipaddr.IP)
+				}
+			case *net.IPAddr:
+				if IsValidIP(ipaddr.IP) {
+					candidateIps = append(candidateIps, ipaddr.IP)
+				}
+			}
+		}
+	}
+
+	// Make sure these addresses are usable by trying to bind to them
+	var verifiedIps []net.IP
+	for _, ip := range candidateIps {
+		lc := net.ListenConfig{}
+		ctx, cancel := context.WithTimeout(context.Background(), NetworkOpTimeout)
+		listener, listenerErr := lc.Listen(ctx, "tcp", AddressAndPort(IpToString(ip), 0))
+		cancel()
+		if listenerErr == nil {
+			listener.Close()
+			verifiedIps = append(verifiedIps, ip)
+		}
+	}
+
+	// If we bind to all interfaces, prefer the routable, non-loopback addresses,
+	// then non-routable, non-loopback addresses, and finally loopback addresses.
+	allLocalIps := append(
+		slices.Select(verifiedIps, func(ip net.IP) bool { return !ip.IsLoopback() && !ip.IsLinkLocalUnicast() }),
+		slices.Select(verifiedIps, func(ip net.IP) bool { return !ip.IsLoopback() && ip.IsLinkLocalUnicast() })...,
+	)
+	allLocalIps = append(allLocalIps, slices.Select(verifiedIps, net.IP.IsLoopback)...)
+	return allLocalIps, nil
 }
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
 // Even if this method is called twice in a row, it should not return the same port.
 func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error) {
 	if address == "" {
-		address = "localhost"
+		address = Localhost
 	}
 
 	portFileLock.Lock()
@@ -167,7 +259,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 
 func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
 	if address == "" {
-		address = "localhost"
+		address = Localhost
 	}
 
 	portFileLock.Lock()
@@ -224,11 +316,24 @@ func IpToString(ip net.IP) string {
 }
 
 func IsIPv4(address string) bool {
-	return IsValidIPv4(net.ParseIP(address))
+	return IsValidIPv4(net.ParseIP(ToStandaloneAddress(address)))
 }
 
 func IsIPv6(address string) bool {
-	return IsValidIPv6(net.ParseIP(address))
+	return IsValidIPv6(net.ParseIP(ToStandaloneAddress(address)))
+}
+
+// Removes the brackets from an IPv6 address if they are present.
+//
+// Note: in most cases an IPv6 address needs to be enclosed in brackets for disambiguation
+// (e.g. inside URLs, whenever a port number follows). This is why inside DCP we mostly stick
+// to bracketed IPv6 addresses. But certain APIs require a standalone address, i.e. without brackets.
+func ToStandaloneAddress(address string) string {
+	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
+		return address[1 : len(address)-1]
+	} else {
+		return address
+	}
 }
 
 func IsValidPort(port int) bool {
@@ -236,7 +341,9 @@ func IsValidPort(port int) bool {
 }
 
 func IsValidIP(ip net.IP) bool {
-	return IsValidIPv4(ip) || IsValidIPv6(ip)
+	return (IsValidIPv4(ip) || IsValidIPv6(ip)) &&
+		!ip.Equal(net.IPv4zero) && !ip.Equal(net.IPv6zero) &&
+		!ip.Equal(net.IPv4bcast) && !ip.IsMulticast()
 }
 
 func IsValidIPv4(ip net.IP) bool {
@@ -367,15 +474,23 @@ func ensurePackageMruPortFile(log logr.Logger) error {
 	return err
 }
 
-func GetLocalhostIps() ([]net.IP, error) {
-	// The "localhost" hostname resolves to all loopback addresses on the machine. For dual-stack machines (very common)
+func GetPreferredHostIps(host string) ([]net.IP, error) {
+	// Some host names are pseudo-addresses that resolve to multiple IP addresses.
+	// For example, "localhost"  hostname resolves to all loopback addresses on the machine. For dual-stack machines (very common)
 	// it will contain both IPv4 and IPv6 addresses. However, different programming languages and libraries may
 	// "choose" different addresses to try first (e.g. some might prefer IPv4 vs IPv6).
-	// The result can be long connection delays. To avoid that we prefer to use specific IP addresses in configuration.
+	// The result can be long connection delays.
+	// A similar problem can occur with "0.0.0.0" address. That is good for listening
+	// (it causes to listen on all available network interfaces), but it is not something that a client can use to talk to a server.
+	// To avoid these problems we resolve host names/IPs specified in object Spec/annotaions,
+	// and use specific IP addresses for configuring proxies and clients, as necessary.
 
-	ips, err := LookupIP("localhost")
-	if err != nil || len(ips) == 0 {
-		return nil, fmt.Errorf("could not obtain IP address(es) for 'localhost': %w", err)
+	ips, err := LookupIP(host)
+	if err != nil {
+		return nil, fmt.Errorf("could not obtain IP address(es) for '%s': %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("could not obtain IP address(es) for '%s' (no valid addresses found)", host)
 	}
 
 	// Account for IP version user preference if possble

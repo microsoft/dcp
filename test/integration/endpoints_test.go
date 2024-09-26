@@ -10,6 +10,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +38,7 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
 		return e.Spec.ServiceName == "MyExeApp" &&
-			e.Spec.Address == "127.0.0.1" &&
+			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
 			e.Spec.Port == 5001, nil
 	})
 	t.Log("Found Endpoint with correct spec")
@@ -86,7 +87,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	t.Log("Check if Endpoint created...")
 	waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
 		return e.Spec.ServiceName == "MyContainerApp" &&
-			e.Spec.Address == "127.0.0.1" &&
+			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
 			e.Spec.Port == 8080, nil
 	})
 	t.Log("Found Endpoint with correct spec")
@@ -139,7 +140,7 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		return e.Spec.ServiceName == testName && e.Spec.Address == "127.0.0.1" && e.Spec.Port == 5001, nil
+		return e.Spec.ServiceName == testName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 5001, nil
 	})
 	t.Log("Found Endpoint with correct spec")
 
@@ -188,7 +189,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		return e.Spec.ServiceName == testName && e.Spec.Address == "127.0.0.1" && e.Spec.Port == 8080, nil
+		return e.Spec.ServiceName == testName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 8080, nil
 	})
 	t.Log("Found Endpoint with correct spec")
 

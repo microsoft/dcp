@@ -343,7 +343,7 @@ func generateCertificates(ip net.IP) (*certificateData, error) {
 }
 
 func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log logr.Logger) (*clientcmd_api.Config, *certificateData, error) {
-	ips, err := networking.GetLocalhostIps()
+	ips, err := networking.GetPreferredHostIps(networking.Localhost)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
 	}

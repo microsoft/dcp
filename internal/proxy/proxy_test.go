@@ -50,7 +50,7 @@ func TestTCPModeProxy(t *testing.T) {
 	// Feed the config to the proxy
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
-			{Address: "127.0.0.1", Port: int32(port)},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
 		},
 	}
 	err := proxy.Configure(config)
@@ -79,7 +79,7 @@ func TestTCPConfigurationChange(t *testing.T) {
 	// Feed config to the proxy, targeting the first server
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
-			{Address: "127.0.0.1", Port: int32(port1)},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port1)},
 		},
 	}
 	err := proxy.Configure(config)
@@ -91,7 +91,7 @@ func TestTCPConfigurationChange(t *testing.T) {
 	// Change configuration to target second server
 	config = ProxyConfig{
 		Endpoints: []Endpoint{
-			{Address: "127.0.0.1", Port: int32(port2)},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port2)},
 		},
 	}
 	err = proxy.Configure(config)
@@ -123,11 +123,11 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	require.NoError(t, err)
 
 	// Configure the proxy
-	port, err := networking.GetFreePort(apiv1.TCP, "127.0.0.1", log)
+	port, err := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, err)
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
-			{Address: "127.0.0.1", Port: int32(port)},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
 		},
 	}
 	err = proxy.Configure(config)
@@ -170,7 +170,7 @@ func TestUDPModeProxy(t *testing.T) {
 	// Feed the config to the proxy
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
-			{Address: "127.0.0.1", Port: int32(port)},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
 		},
 	}
 	err := proxy.Configure(config)
@@ -197,17 +197,17 @@ func TestUDPTwoEndpoints(t *testing.T) {
 	// Feed the config to the proxy
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
-			{Address: "127.0.0.1", Port: int32(port)},
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
 		},
 	}
 	err := proxy.Configure(config)
 	require.NoError(t, err)
 
 	// Set up two clients
-	clientConn1, err := net.ListenPacket("udp", "127.0.0.1:")
+	clientConn1, err := net.ListenPacket("udp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, 0))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn1)
-	clientConn2, err := net.ListenPacket("udp", "127.0.0.1:")
+	clientConn2, err := net.ListenPacket("udp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, 0))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn2)
 
@@ -229,7 +229,7 @@ func TestRandomEndpointSelection(t *testing.T) {
 	const tries = 20
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	proxy := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
+	proxy := NewProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 	defer cancelFunc()
 
@@ -266,7 +266,7 @@ func TestRandomEndpointSelection(t *testing.T) {
 const autoAllocatePort = 0
 
 func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
-	serverListener, err := net.Listen("tcp", networking.AddressAndPort("127.0.0.1", port))
+	serverListener, err := net.Listen("tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, port))
 	require.NoError(t, err)
 	require.NotNil(t, serverListener)
 	effectivePort := serverListener.Addr().(*net.TCPAddr).Port
@@ -276,12 +276,12 @@ func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
 
 func setupTcpProxy(t *testing.T, ctx context.Context) *Proxy {
 	// For debugging you can replace logr.Discard() with "log" and set DCP_DIAGNOSTICS_LOG_LEVEL=debug
-	proxy := NewProxy(apiv1.TCP, "127.0.0.1", 0, ctx, logr.Discard())
+	proxy := NewProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
 	require.NoError(t, err)
-	require.Equal(t, "127.0.0.1", proxy.EffectiveAddress)
+	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress)
 	require.Greater(t, proxy.EffectivePort, int32(0))
 	return proxy
 }
@@ -313,7 +313,7 @@ func verifiyProxiedTcpConnection(t *testing.T, proxy *Proxy, server net.Listener
 }
 
 func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
-	serverConn, err := net.ListenPacket("udp", networking.AddressAndPort("127.0.0.1", port))
+	serverConn, err := net.ListenPacket("udp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, port))
 	require.NoError(t, err)
 	require.NotNil(t, serverConn)
 	effectivePort := serverConn.LocalAddr().(*net.UDPAddr).Port
@@ -322,19 +322,19 @@ func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
 }
 
 func setupUdpProxy(t *testing.T, ctx context.Context) *Proxy {
-	proxy := NewProxy(apiv1.UDP, "127.0.0.1", 0, ctx, logr.Discard())
+	proxy := NewProxy(apiv1.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
 	require.NoError(t, err)
-	require.Equal(t, "127.0.0.1", proxy.EffectiveAddress)
+	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress)
 	require.Greater(t, proxy.EffectivePort, int32(0))
 	return proxy
 }
 
 func verifyProxiedUdpConnection(t *testing.T, proxy *Proxy, serverConn net.PacketConn) {
 	// Set up a client
-	clientConn, err := net.ListenPacket("udp", "127.0.0.1:")
+	clientConn, err := net.ListenPacket("udp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, 0))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn)
 
