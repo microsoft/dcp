@@ -33,14 +33,12 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 	_, waitEnded, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {
 		err = proc.Kill()
-		if err == nil || errors.Is(err, os.ErrProcessDone) {
-			return nil
-		} else {
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
 		}
-	} else {
-		// We already initiated the stop for this process, just wait for that to complete
-		<-waitEnded
-		return nil
 	}
+
+	// Ensure wait has ended so that we know stdio is complete
+	<-waitEnded
+	return nil
 }
