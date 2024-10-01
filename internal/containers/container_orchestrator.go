@@ -49,12 +49,17 @@ type StreamCommandOptions struct {
 	StdErrStream io.Writer
 }
 
+type TimeoutOption struct {
+	Timeout time.Duration
+}
+
 type BuildImageOptions struct {
 	IidFile string
 
 	*apiv1.ContainerBuildContext
 
 	StreamCommandOptions
+	TimeoutOption
 }
 
 type InspectedImage struct {
@@ -131,6 +136,7 @@ type CreateContainerOptions struct {
 	Network string
 
 	StreamCommandOptions
+	TimeoutOption
 
 	apiv1.ContainerSpec
 }
@@ -143,6 +149,7 @@ type RunContainerOptions struct {
 	Network string
 
 	StreamCommandOptions
+	TimeoutOption
 
 	apiv1.ContainerSpec
 }

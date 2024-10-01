@@ -46,6 +46,10 @@ var (
 	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
 	ordinaryPodmanCommandTimeout = 30 * time.Second
 
+	defaultBuildImageTimeout      = 10 * time.Minute
+	defaultCreateContainerTimeout = 10 * time.Minute
+	defaultRunContainerTimeout    = 10 * time.Minute
+
 	// Cache and synchronization control for checking runtime status
 	cachedStatus            *containers.ContainerRuntimeStatus
 	checkStatusSyncCh       = concurrency.NewSyncChannel()
@@ -313,7 +317,10 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 
 	// Building an image can take a long time to finish, particularly if any base images are not available locally.
 	// Use a much longer timeout than for other commands.
-	_, _, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
+	if options.Timeout == 0 {
+		options.Timeout = defaultBuildImageTimeout
+	}
+	_, _, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return err
 	}
@@ -421,7 +428,11 @@ func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options c
 
 	// Create container can take a long time to finish if the image is not available locally.
 	// Use a much longer timeout than for other commands.
-	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
+	if options.Timeout == 0 {
+		options.Timeout = defaultCreateContainerTimeout
+	}
+
+	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
@@ -458,7 +469,11 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 
 	// The run container command can take a long time to finish if the image is not available locally.
 	// So we use much longer timeout than for other commands.
-	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, 10*time.Minute)
+	if options.Timeout == 0 {
+		options.Timeout = defaultRunContainerTimeout
+	}
+
+	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
 		return "", err
 	}
