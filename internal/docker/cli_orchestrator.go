@@ -54,9 +54,11 @@ var (
 	defaultRunContainerTimeout    = 10 * time.Minute
 
 	// Cache and synchronization control for checking runtime cachedStatus
-	cachedStatus            *containers.ContainerRuntimeStatus
-	checkStatusSyncCh       = concurrency.NewSyncChannel()
-	updateStatus            *sync.RWMutex
+	cachedStatus *containers.ContainerRuntimeStatus
+	// Ensure that only one goroutine is checking the status at a time
+	checkStatusSyncCh = concurrency.NewSyncChannel()
+	// Mutex to control read/write access to the cached status
+	updateStatus            = &sync.RWMutex{}
 	backgroundStatusUpdates atomic.Int32
 )
 

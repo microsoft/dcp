@@ -58,7 +58,7 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 			case !availableRuntime.status.Running && supportedRuntime.status.Running:
 				// Prefer a runtime that is running over one that isn't
 				availableRuntime = supportedRuntime
-			case supportedRuntime.orchestrator.IsDefault() && supportedRuntime.status == availableRuntime.status:
+			case supportedRuntime.orchestrator.IsDefault() && supportedRuntime.status.Installed == availableRuntime.status.Installed && supportedRuntime.status.Running == availableRuntime.status.Running:
 				// Prefer the default runtime
 				availableRuntime = supportedRuntime
 			}

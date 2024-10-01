@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,9 +51,12 @@ var (
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
 
-	// Cache and synchronization control for checking runtime status
-	cachedStatus            *containers.ContainerRuntimeStatus
-	checkStatusSyncCh       = concurrency.NewSyncChannel()
+	// Cache and synchronization control for checking runtime cachedStatus
+	cachedStatus *containers.ContainerRuntimeStatus
+	// Ensure that only one goroutine is checking the status at a time
+	checkStatusSyncCh = concurrency.NewSyncChannel()
+	// Mutex to control read/write access to the cached status
+	updateStatus            = &sync.RWMutex{}
 	backgroundStatusUpdates atomic.Int32
 )
 
@@ -93,43 +97,14 @@ func (*PodmanCliOrchestrator) ContainerHost() string {
 	return "host.containers.internal"
 }
 
-// Check the status of the Podman runtime in the background until the context is canceled.
-func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
-	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
-		return
-	}
-
-	go func() {
-		timer := time.NewTimer(0)
-		timer.Stop()
-		for {
-			// Only one goroutine should be checking the status at a time
-			if checkStatusSyncCh.TryLock() {
-				newStatus := pco.getStatus(ctx)
-
-				// Update the cached status
-				cachedStatus = &newStatus
-				checkStatusSyncCh.Unlock()
-			}
-
-			// Wait for 5 seconds before checking again
-			timer.Reset(5 * time.Second)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-				continue
-			}
-		}
-	}()
-}
-
 func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
 	// A cached status is already available, return it
+	updateStatus.RLock()
 	if cachedStatus != nil && !ignoreCache {
+		updateStatus.RUnlock()
 		return *cachedStatus
 	}
+	updateStatus.RUnlock()
 
 	if !ignoreCache {
 		// For cached results, only one goroutine should be checking the status at a time
@@ -145,16 +120,54 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache b
 		defer checkStatusSyncCh.Unlock()
 	}
 
+	updateStatus.RLock()
 	// Check again if the status is available in the cache
 	if cachedStatus != nil && !ignoreCache {
+		updateStatus.RUnlock()
 		return *cachedStatus
 	}
+	updateStatus.RUnlock()
 
 	newStatus := pco.getStatus(ctx)
+	updateStatus.Lock()
 	// Update the cached status
 	cachedStatus = &newStatus
+	updateStatus.Unlock()
 
 	return newStatus
+}
+
+// Check the status of the Podman runtime in the background until the context is canceled.
+func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
+	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+		return
+	}
+
+	go func() {
+		timer := time.NewTimer(0)
+		timer.Stop()
+		for {
+			// Only one goroutine should be checking the status at a time
+			if checkStatusSyncCh.TryLock() {
+				newStatus := pco.getStatus(ctx)
+
+				updateStatus.Lock()
+				// Update the cached status
+				cachedStatus = &newStatus
+				updateStatus.Unlock()
+			}
+
+			// Wait for 5 seconds before checking again
+			timer.Reset(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				continue
+			}
+		}
+	}()
 }
 
 func (pco *PodmanCliOrchestrator) getStatus(ctx context.Context) containers.ContainerRuntimeStatus {
