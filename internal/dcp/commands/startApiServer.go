@@ -62,12 +62,6 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
 
-		processExecutor := process.NewOSExecutor(log)
-		if err := container_flags.EnsureValidRuntimeFlagArgValue(ctx, log, processExecutor); err != nil {
-			log.Error(err, "invalid container runtime")
-			return err
-		}
-
 		if detach {
 			args := make([]string, 0, len(os.Args)-2)
 
@@ -83,7 +77,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 
 			if !hasContainerRuntimeFlag {
-				args = append(args, container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg())
+				args = append(args, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
 			}
 
 			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)
@@ -164,7 +158,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kconfig.Path(), "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), container_flags.GetRuntimeFlagArg()}
+		invocationFlags := []string{"--kubeconfig", kconfig.Path(), "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue())}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}

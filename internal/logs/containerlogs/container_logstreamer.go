@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
+	"github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -332,7 +333,7 @@ func (c *containerLogStreamer) ensureContainerLogSource(requestCtx context.Conte
 
 	cls := container_flags.TryGetTestContainerLogSource(hostLifetimeCtx, c.log.WithName("TestContainerLogSource"))
 	if cls == nil {
-		co, err := container_flags.GetContainerOrchestrator(hostLifetimeCtx, c.log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), pe)
+		co, err := runtimes.FindAvailableContainerRuntime(requestCtx, c.log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagValue()), pe)
 		if err != nil {
 			return nil, err
 		}

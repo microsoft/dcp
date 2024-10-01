@@ -364,8 +364,19 @@ func getID() string {
 	return uuid.New().String()
 }
 
+func (*TestContainerOrchestrator) IsDefault() bool {
+	return true
+}
+
+func (*TestContainerOrchestrator) Name() string {
+	return "test"
+}
+
 func (*TestContainerOrchestrator) ContainerHost() string {
 	return "host.test.internal"
+}
+
+func (to *TestContainerOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
 }
 
 func (to *TestContainerOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {

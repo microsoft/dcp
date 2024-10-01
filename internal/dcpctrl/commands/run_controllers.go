@@ -16,6 +16,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/controllers"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
+	"github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
@@ -106,10 +107,13 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		processExecutor := process.NewOSExecutor(log)
-		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagArg()), processExecutor)
+		containerOrchestrator, orchestratorErr := runtimes.FindAvailableContainerRuntime(ctx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagValue()), processExecutor)
 		if orchestratorErr != nil {
 			return orchestratorErr
 		}
+		// Start watching the status of the container orchestrator in the background
+		containerOrchestrator.EnsureBackgroundStatusUpdates(ctx)
+
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 		exeRunners[apiv1.ExecutionTypeProcess] = processRunner

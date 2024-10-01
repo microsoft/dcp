@@ -118,6 +118,8 @@ type ContainerReconciler struct {
 
 	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
 	lifetimeCtx context.Context
+
+	orchestratorHealthy bool
 }
 
 func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *ContainerReconciler {
@@ -208,6 +210,18 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
+	if !r.orchestratorHealthy {
+		status := r.orchestrator.CheckStatus(ctx, false /* use cached status */)
+		if status.IsHealthy() {
+			r.orchestratorHealthy = true
+		}
+	}
+
+	if !r.orchestratorHealthy {
+		log.Info("container runtime is not healthy, retrying reconciliation later...")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
 	// Check for deletion first; it trumps all other types of state changes.
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() && r.canBeDeleted(&container) {
 		change = r.handleDeletionRequest(ctx, &container, log)
@@ -217,8 +231,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	result, err := saveChanges(r, ctx, &container, patch, change, nil, log)
-	return result, err
+	return saveChanges(r, ctx, &container, patch, change, nil, log)
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {

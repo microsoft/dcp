@@ -10,6 +10,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
+	container_runtimes "github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -63,7 +64,8 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		defer cancel()
 
 		processExecutor := process.NewOSExecutor(log)
-		containerOrchestrator, orchestratorErr := container_flags.GetContainerOrchestrator(ctx, log, processExecutor)
+
+		containerOrchestrator, orchestratorErr := container_runtimes.FindAvailableContainerRuntime(ctx, log, processExecutor)
 		var status containers.ContainerRuntimeStatus
 		containerHost := ""
 		if orchestratorErr != nil {
@@ -80,7 +82,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		info := information{
 			VersionOutput: version.Version(),
 			Containers: containerRuntime{
-				Runtime:   container_flags.GetRuntimeFlagArg(),
+				Runtime:   containerOrchestrator.Name(),
 				HostName:  containerHost,
 				Installed: status.Installed,
 				Running:   status.Running,
