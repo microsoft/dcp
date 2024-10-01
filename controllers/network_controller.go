@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,6 +38,8 @@ import (
 const (
 	networkEventChanInitialCapacity = 20
 	NetworkResourceNameField        = ".metadata.networkResourceName"
+
+	networkInspectionTimeout = 6 * time.Second
 )
 
 type runningNetworkStatus struct {
@@ -50,7 +53,7 @@ type NetworkReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	orchestrator        ct.NetworkOrchestrator
+	orchestrator        ct.ContainerOrchestrator
 
 	existingNetworks *maps.SynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus]
 
@@ -76,7 +79,7 @@ var (
 	networkFinalizer string = fmt.Sprintf("%s/network-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.NetworkOrchestrator) *NetworkReconciler {
+func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.ContainerOrchestrator) *NetworkReconciler {
 	r := NetworkReconciler{
 		Client:               client,
 		orchestrator:         orchestrator,
@@ -154,7 +157,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted")
 
-		err = r.deleteNetwork(ctx, &network, log)
+		err = r.deleteNetwork(ctx, &network)
 		if err != nil {
 			// deleteNetwork() logged the error already
 			change = additionalReconciliationNeeded
@@ -183,24 +186,16 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return result, err
 }
 
-func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) error {
+func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.ContainerNetwork) error {
 	if network.Spec.Persistent {
 		return nil
 	}
 
-	networkId, networkStatus, found := r.existingNetworks.FindBySecondKey(network.NamespacedName())
+	_, networkStatus, found := r.existingNetworks.FindBySecondKey(network.NamespacedName())
 	if found && networkStatus.state == apiv1.ContainerNetworkStateRunning {
-		removed, err := r.orchestrator.RemoveNetworks(ctx, ct.RemoveNetworksOptions{Networks: []string{networkStatus.id}, Force: true})
+		err := removeNetwork(ctx, r.orchestrator, networkStatus.id)
 		if err != nil {
-			if err != ct.ErrNotFound {
-				log.Error(err, "could not remove a container network")
-				return err
-			} else {
-				return nil // If the network is not there, that's the desired state.
-			}
-		} else if len(removed) != 1 || removed[0] != networkId {
-			log.Error(fmt.Errorf("unexpected response received from container network removal request. Number of networks removed: %d", len(removed)), "")
-			// .. but it did not fail, so assume the network was removed.
+			return err
 		}
 	}
 
@@ -242,17 +237,19 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 
 	if network.Spec.Persistent {
 		// We need to check for an existing network before we create one
-		networks, err := r.orchestrator.InspectNetworks(ctx, ct.InspectNetworksOptions{Networks: []string{networkName}})
+		// This check needs to be fast, so we are going to do just at most one retry
+		b := backoff.WithMaxRetries(exponentialBackoff(networkInspectionTimeout), 1)
+		existing, err := inspectNetwork(ctx, r.orchestrator, networkName, b)
 		if err == nil {
 			// We found an existing network
-			r.existingNetworks.Store(networks[0].Id, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: networks[0].Id})
-			network.Status.ID = networks[0].Id
+			r.existingNetworks.Store(existing.Id, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: existing.Id})
+			network.Status.ID = existing.Id
 			network.Status.State = apiv1.ContainerNetworkStateRunning
-			network.Status.NetworkName = networks[0].Name
-			network.Status.Driver = networks[0].Driver
-			network.Status.IPv6 = networks[0].IPv6
-			network.Status.Subnets = networks[0].Subnets
-			network.Status.Gateways = networks[0].Gateways
+			network.Status.NetworkName = existing.Name
+			network.Status.Driver = existing.Driver
+			network.Status.IPv6 = existing.IPv6
+			network.Status.Subnets = existing.Subnets
+			network.Status.Gateways = existing.Gateways
 			return statusChanged
 		}
 	}
@@ -270,7 +267,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		Name: networkName,
 		IPv6: network.Spec.IPv6,
 	}
-	networkID, err := r.orchestrator.CreateNetwork(ctx, createOptions)
+	cnet, err := createNetwork(ctx, r.orchestrator, createOptions)
 	if network.Spec.Persistent && errors.Is(err, ct.ErrAlreadyExists) {
 		log.V(1).Info("persistent network already exists, but initial inspection failed, retrying...", "Network", networkName)
 		return additionalReconciliationNeeded
@@ -287,26 +284,17 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 
 	log.Info("network created", "Network", networkName)
 
-	r.existingNetworks.Store(networkID, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: networkID})
+	r.existingNetworks.Store(cnet.Id, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: cnet.Id})
 
-	change := statusChanged
-	network.Status.ID = networkID
+	network.Status.ID = cnet.Id
 	network.Status.State = apiv1.ContainerNetworkStateRunning
+	network.Status.NetworkName = cnet.Name
+	network.Status.Driver = cnet.Driver
+	network.Status.IPv6 = cnet.IPv6
+	network.Status.Subnets = cnet.Subnets
+	network.Status.Gateways = cnet.Gateways
 
-	networks, err := r.orchestrator.InspectNetworks(ctx, ct.InspectNetworksOptions{Networks: []string{networkID}})
-	if err != nil {
-		log.Error(err, "network created, but inspect failed, scheduling another reconciliation")
-		change |= additionalReconciliationNeeded
-	} else {
-		log.V(1).Info("retrieved network information")
-		network.Status.NetworkName = networks[0].Name
-		network.Status.Driver = networks[0].Driver
-		network.Status.IPv6 = networks[0].IPv6
-		network.Status.Subnets = networks[0].Subnets
-		network.Status.Gateways = networks[0].Gateways
-	}
-
-	return change
+	return statusChanged
 }
 
 func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv1.ContainerNetwork, networkStatus runningNetworkStatus, log logr.Logger) objectChange {
@@ -347,8 +335,9 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
-		if err := r.orchestrator.DisconnectNetwork(
+		if err := disconnectNetwork(
 			ctx,
+			r.orchestrator,
 			ct.DisconnectNetworkOptions{
 				Network:   network.Status.ID,
 				Container: containerID,
@@ -373,17 +362,12 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
-		if err := r.orchestrator.ConnectNetwork(
-			ctx,
-			ct.ConnectNetworkOptions{
-				Network:   network.Status.ID,
-				Container: containerID,
-				Aliases:   connection.Spec.Aliases,
-			},
-		); errors.Is(err, ct.ErrAlreadyExists) {
-			networkStatus.connections[containerID] = true
-			log.V(1).Info("container is already connected to the network", "Container", containerID, "Network", network.Status.NetworkName)
-		} else if err != nil {
+		err := connectNetwork(ctx, r.orchestrator, ct.ConnectNetworkOptions{
+			Network:   network.Status.ID,
+			Container: containerID,
+			Aliases:   connection.Spec.Aliases,
+		})
+		if err != nil {
 			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
 		} else {
@@ -398,7 +382,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 }
 
 func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) objectChange {
-	networks, err := r.orchestrator.InspectNetworks(ctx, ct.InspectNetworksOptions{Networks: []string{network.Status.ID}})
+	cnet, err := inspectNetwork(ctx, r.orchestrator, network.Status.ID, nil)
 	if errors.Is(err, ct.ErrNotFound) {
 		network.Status.State = apiv1.ContainerNetworkStateRemoved
 		r.existingNetworks.Update(network.Status.ID, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRemoved})
@@ -411,28 +395,28 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 
 	change := noChange
 
-	if network.Status.NetworkName != networks[0].Name {
-		network.Status.NetworkName = networks[0].Name
+	if network.Status.NetworkName != cnet.Name {
+		network.Status.NetworkName = cnet.Name
 		change |= statusChanged
 	}
-	if network.Status.Driver != networks[0].Driver {
-		network.Status.Driver = networks[0].Driver
+	if network.Status.Driver != cnet.Driver {
+		network.Status.Driver = cnet.Driver
 		change |= statusChanged
 	}
-	if network.Status.IPv6 != networks[0].IPv6 {
-		network.Status.IPv6 = networks[0].IPv6
+	if network.Status.IPv6 != cnet.IPv6 {
+		network.Status.IPv6 = cnet.IPv6
 		change |= statusChanged
 	}
-	if !slices.Equal(network.Status.Subnets, networks[0].Subnets) {
-		network.Status.Subnets = networks[0].Subnets
+	if !slices.Equal(network.Status.Subnets, cnet.Subnets) {
+		network.Status.Subnets = cnet.Subnets
 		change |= statusChanged
 	}
-	if !slices.Equal(network.Status.Gateways, networks[0].Gateways) {
-		network.Status.Gateways = networks[0].Gateways
+	if !slices.Equal(network.Status.Gateways, cnet.Gateways) {
+		network.Status.Gateways = cnet.Gateways
 		change |= statusChanged
 	}
-	if !slices.Equal(network.Status.ContainerIDs, networks[0].ContainerIDs) {
-		network.Status.ContainerIDs = networks[0].ContainerIDs
+	if !slices.Equal(network.Status.ContainerIDs, cnet.ContainerIDs) {
+		network.Status.ContainerIDs = cnet.ContainerIDs
 		change |= statusChanged
 	}
 

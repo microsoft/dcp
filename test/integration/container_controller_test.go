@@ -1494,6 +1494,8 @@ func TestContainerHealthBasic(t *testing.T) {
 			expectedHealthStatus:   apiv1.HealthStatusUnhealthy,
 		},
 		{
+			// Note: this test case will take about 30 seconds to complete because the controller
+			// will repeatedly re-try to start the container before finally giving up.
 			description:            "startup-failure",
 			containerName:          "container-health-basic-startup-failure",
 			simulateStartupFailure: true,
