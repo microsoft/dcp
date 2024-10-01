@@ -28,6 +28,15 @@ func (sc *syncChannel) Lock(ctx context.Context) error {
 	return nil
 }
 
+func (sc *syncChannel) TryLock() bool {
+	select {
+	case sc.ch <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
 func (sc *syncChannel) Unlock() {
 	// Non-blocking for caller
 	select {

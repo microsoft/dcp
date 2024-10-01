@@ -29,7 +29,7 @@ type ContainerRuntimeStatus struct {
 	Error     string
 }
 
-func (crs ContainerRuntimeStatus) IsRunning() bool {
+func (crs ContainerRuntimeStatus) IsHealthy() bool {
 	return crs.Installed && crs.Running
 }
 
@@ -193,8 +193,17 @@ type ContainerLogSource interface {
 
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
+	// Is this the default orchestrator?
+	IsDefault() bool
+
+	// Get the name of the runtime
+	Name() string
+
 	// Get the container machine host name for the runtime
 	ContainerHost() string
+
+	// Start running background checks for the runtime status
+	EnsureBackgroundStatusUpdates(ctx context.Context)
 
 	// Check the runtime status
 	CheckStatus(ctx context.Context, ignoreCache bool) ContainerRuntimeStatus

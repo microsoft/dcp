@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -46,8 +47,9 @@ var (
 	ordinaryPodmanCommandTimeout = 30 * time.Second
 
 	// Cache and synchronization control for checking runtime status
-	status *containers.ContainerRuntimeStatus
-	syncCh = concurrency.NewSyncChannel()
+	cachedStatus            *containers.ContainerRuntimeStatus
+	checkStatusSyncCh       = concurrency.NewSyncChannel()
+	backgroundStatusUpdates atomic.Int32
 )
 
 type PodmanCliOrchestrator struct {
@@ -75,26 +77,83 @@ func NewPodmanCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return pco
 }
 
+func (*PodmanCliOrchestrator) IsDefault() bool {
+	return false
+}
+
+func (*PodmanCliOrchestrator) Name() string {
+	return "podman"
+}
+
 func (*PodmanCliOrchestrator) ContainerHost() string {
 	return "host.containers.internal"
 }
 
-func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
-	if syncErr := syncCh.Lock(ctx); syncErr != nil {
-		// Timed out, assume Podman is not responsive and unavailable
-		return containers.ContainerRuntimeStatus{
-			Installed: false,
-			Running:   false,
-			Error:     "Timed out while checking Podman status; Podman CLI is not responsive.",
+// Check the status of the Podman runtime in the background until the context is canceled.
+func (pco *PodmanCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
+	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+		return
+	}
+
+	go func() {
+		timer := time.NewTimer(0)
+		timer.Stop()
+		for {
+			// Only one goroutine should be checking the status at a time
+			if checkStatusSyncCh.TryLock() {
+				newStatus := pco.getStatus(ctx)
+
+				// Update the cached status
+				cachedStatus = &newStatus
+				checkStatusSyncCh.Unlock()
+			}
+
+			// Wait for 5 seconds before checking again
+			timer.Reset(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				continue
+			}
 		}
+	}()
+}
+
+func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
+	// A cached status is already available, return it
+	if cachedStatus != nil && !ignoreCache {
+		return *cachedStatus
 	}
 
-	defer syncCh.Unlock()
+	if !ignoreCache {
+		// For cached results, only one goroutine should be checking the status at a time
+		if syncErr := checkStatusSyncCh.Lock(ctx); syncErr != nil {
+			// Timed out, assume Podman is not responsive and unavailable
+			return containers.ContainerRuntimeStatus{
+				Installed: false,
+				Running:   false,
+				Error:     "Timed out while checking Podman status; Podman CLI is not responsive.",
+			}
+		}
 
-	if status != nil && !ignoreCache {
-		return *status
+		defer checkStatusSyncCh.Unlock()
 	}
 
+	// Check again if the status is available in the cache
+	if cachedStatus != nil && !ignoreCache {
+		return *cachedStatus
+	}
+
+	newStatus := pco.getStatus(ctx)
+	// Update the cached status
+	cachedStatus = &newStatus
+
+	return newStatus
+}
+
+func (pco *PodmanCliOrchestrator) getStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	cmd := makePodmanCommand("container", "ls", "--last", "1", "--quiet")
 	_, stdErr, err := pco.runBufferedPodmanCommand(ctx, "Info", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 
@@ -105,7 +164,7 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache b
 		}
 
 		// Couldn't find the Podman CLI, so it's not installed
-		status = &containers.ContainerRuntimeStatus{
+		return containers.ContainerRuntimeStatus{
 			Installed: false,
 			Running:   false,
 			Error:     err.Error(),
@@ -124,20 +183,18 @@ func (pco *PodmanCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache b
 		}
 
 		// Error response from the Podman command, assume runtime isn't available
-		status = &containers.ContainerRuntimeStatus{
+		return containers.ContainerRuntimeStatus{
 			Installed: true,
 			Running:   false,
 			Error:     stdErrString,
 		}
-	} else {
-		// Info command returned successfully, assume runtime is ready
-		status = &containers.ContainerRuntimeStatus{
-			Installed: true,
-			Running:   true,
-		}
 	}
 
-	return *status
+	// Info command returned successfully, assume runtime is ready
+	return containers.ContainerRuntimeStatus{
+		Installed: true,
+		Running:   true,
+	}
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {

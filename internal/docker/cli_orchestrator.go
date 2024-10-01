@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -47,9 +49,11 @@ var (
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
 
-	// Cache and synchronization control for checking runtime status
-	status *containers.ContainerRuntimeStatus
-	syncCh = concurrency.NewSyncChannel()
+	// Cache and synchronization control for checking runtime cachedStatus
+	cachedStatus            *containers.ContainerRuntimeStatus
+	checkStatusSyncCh       = concurrency.NewSyncChannel()
+	updateStatus            *sync.RWMutex
+	backgroundStatusUpdates atomic.Int32
 )
 
 type DockerCliOrchestrator struct {
@@ -77,26 +81,95 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 	return dco
 }
 
+func (*DockerCliOrchestrator) IsDefault() bool {
+	return true
+}
+
+func (*DockerCliOrchestrator) Name() string {
+	return "docker"
+}
+
 func (*DockerCliOrchestrator) ContainerHost() string {
 	return "host.docker.internal"
 }
 
 func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache bool) containers.ContainerRuntimeStatus {
-	if syncErr := syncCh.Lock(ctx); syncErr != nil {
-		// Timed out, assume Docker is not responsive and unavailable
-		return containers.ContainerRuntimeStatus{
-			Installed: false,
-			Running:   false,
-			Error:     "Timed out while checking Docker status; Docker CLI is not responsive.",
+	// A cached status is already available, return it
+	updateStatus.RLock()
+	if cachedStatus != nil && !ignoreCache {
+		updateStatus.RUnlock()
+		return *cachedStatus
+	}
+	updateStatus.RUnlock()
+
+	if !ignoreCache {
+		// For cached results, only one goroutine should be checking the status at a time
+		if syncErr := checkStatusSyncCh.Lock(ctx); syncErr != nil {
+			// Timed out, assume Docker is not responsive and unavailable
+			return containers.ContainerRuntimeStatus{
+				Installed: false,
+				Running:   false,
+				Error:     "Timed out while checking Docker status; Docker CLI is not responsive.",
+			}
 		}
+
+		defer checkStatusSyncCh.Unlock()
 	}
 
-	defer syncCh.Unlock()
+	updateStatus.RLock()
+	// Check again if the status is available in the cache
+	if cachedStatus != nil && !ignoreCache {
+		updateStatus.RUnlock()
+		return *cachedStatus
+	}
+	updateStatus.RUnlock()
 
-	if status != nil && !ignoreCache {
-		return *status
+	newStatus := dco.getStatus(ctx)
+
+	updateStatus.Lock()
+	// Update the cached status
+	cachedStatus = &newStatus
+	updateStatus.Unlock()
+
+	return newStatus
+}
+
+// Check the status of the Docker runtime in the background until the context is canceled.
+func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Context) {
+	if !backgroundStatusUpdates.CompareAndSwap(0, 1) {
+		return
 	}
 
+	go func() {
+		timer := time.NewTimer(0)
+		timer.Stop()
+		for {
+			// Only one goroutine should be checking the status at a time
+			if checkStatusSyncCh.TryLock() {
+				newStatus := dco.getStatus(ctx)
+
+				updateStatus.Lock()
+				// Update the cached status
+				cachedStatus = &newStatus
+				updateStatus.Unlock()
+
+				checkStatusSyncCh.Unlock()
+			}
+
+			// Wait for 5 seconds before checking again
+			timer.Reset(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				continue
+			}
+		}
+	}()
+}
+
+func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.ContainerRuntimeStatus {
 	// Check the status of the Docker runtime
 	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
 	go func() {
@@ -189,13 +262,12 @@ func (dco *DockerCliOrchestrator) CheckStatus(ctx context.Context, ignoreCache b
 	}()
 
 	newStatus := <-statusCh
-	status = &newStatus
 	isDocker := <-isDockerCh
 
-	if status.Installed && status.Running && !isDocker {
-		status.Installed = false
-		status.Running = false
-		status.Error = "docker command appears to be aliased to a different container runtime"
+	if newStatus.Installed && newStatus.Running && !isDocker {
+		newStatus.Installed = false
+		newStatus.Running = false
+		newStatus.Error = "docker command appears to be aliased to a different container runtime"
 	}
 
 	return newStatus
