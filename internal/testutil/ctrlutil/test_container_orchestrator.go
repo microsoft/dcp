@@ -557,20 +557,29 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 			if network.matches(name) {
 				found = true
 
-				runningContainers := slices.Select(network.containers, func(containerId string) bool {
-					return to.containers[containerId].status == containers.ContainerStatusRunning
-				})
+				var runningContainers []containers.InspectedNetworkContainer
+
+				for _, id := range network.containers {
+					if container, containerFound := to.containers[id]; containerFound {
+						if container.status == containers.ContainerStatusRunning {
+							runningContainers = append(runningContainers, containers.InspectedNetworkContainer{
+								Id:   id,
+								Name: to.containers[id].name,
+							})
+						}
+					}
+				}
 
 				result = append(result, containers.InspectedNetwork{
-					Id:           network.id,
-					Name:         network.name,
-					Driver:       network.driver,
-					IPv6:         network.ipv6,
-					Gateways:     network.gateways,
-					Subnets:      network.subnets,
-					ContainerIDs: runningContainers,
-					Labels:       map[string]string{},
-					CreatedAt:    time.Now().UTC(),
+					Id:         network.id,
+					Name:       network.name,
+					Driver:     network.driver,
+					IPv6:       network.ipv6,
+					Gateways:   network.gateways,
+					Subnets:    network.subnets,
+					Containers: runningContainers,
+					Labels:     map[string]string{},
+					CreatedAt:  time.Now().UTC(),
 				})
 			}
 		}

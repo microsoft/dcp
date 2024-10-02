@@ -70,10 +70,18 @@ type InspectedNetwork struct {
 	Gateways []string
 
 	// IDs of connected containers
-	ContainerIDs []string
+	Containers []InspectedNetworkContainer
 
 	// Time the network was created
 	CreatedAt time.Time
+}
+
+type InspectedNetworkContainer struct {
+	// ID of the container
+	Id string
+
+	// Name of the container
+	Name string
 }
 
 type InspectNetworks interface {

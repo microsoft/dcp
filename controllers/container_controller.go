@@ -787,7 +787,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			if container.Spec.Persistent {
 				// Check for an existing persistent container
-				inspected, inspectedErr := inspectContainer(startupCtx, r.orchestrator, containerName)
+				inspected, inspectedErr := inspectContainerIfExists(startupCtx, r.orchestrator, containerName)
 				if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
 					log.Error(inspectedErr, "could not inspect existing container", "ContainerName", containerName)
 					return inspectedErr

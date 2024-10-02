@@ -1168,7 +1168,10 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 		net.Gateways = append(net.Gateways, dcn.Ipam.Config[i].Gateway)
 	}
 	for id := range dcn.Containers {
-		net.ContainerIDs = append(net.ContainerIDs, id)
+		net.Containers = append(net.Containers, containers.InspectedNetworkContainer{
+			Id:   id,
+			Name: dcn.Containers[id].Name,
+		})
 	}
 
 	return nil
@@ -1230,18 +1233,22 @@ type dockerInspectedContainerNetworkSettingsNetwork struct {
 }
 
 type dockerInspectedNetwork struct {
-	Id         string                     `json:"Id"`
-	Name       string                     `json:"Name"`
-	Created    time.Time                  `json:"Created"`
-	Scope      string                     `json:"Scope"`
-	Driver     string                     `json:"Driver"`
-	EnableIPv6 bool                       `json:"EnableIPv6"`
-	Internal   bool                       `json:"Internal"`
-	Attachable bool                       `json:"Attachable"`
-	Ingress    bool                       `json:"Ingress"`
-	Ipam       dockerInspectedNetworkIpam `json:"IPAM"`
-	Labels     map[string]string          `json:"Labels"`
-	Containers map[string]struct{}        `json:"Containers"`
+	Id         string                                     `json:"Id"`
+	Name       string                                     `json:"Name"`
+	Created    time.Time                                  `json:"Created"`
+	Scope      string                                     `json:"Scope"`
+	Driver     string                                     `json:"Driver"`
+	EnableIPv6 bool                                       `json:"EnableIPv6"`
+	Internal   bool                                       `json:"Internal"`
+	Attachable bool                                       `json:"Attachable"`
+	Ingress    bool                                       `json:"Ingress"`
+	Ipam       dockerInspectedNetworkIpam                 `json:"IPAM"`
+	Labels     map[string]string                          `json:"Labels"`
+	Containers map[string]dockerInspectedNetworkContainer `json:"Containers"`
+}
+
+type dockerInspectedNetworkContainer struct {
+	Name string `json:"Name"`
 }
 
 type dockerInspectedNetworkIpam struct {

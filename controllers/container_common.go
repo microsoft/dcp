@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,6 +81,24 @@ func inspectContainer(findContext context.Context, o containers.ContainerOrchest
 	})
 }
 
+func inspectContainerIfExists(findContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
+	b := exponentialBackoff(containerInspectionTimeout)
+	return resiliency.RetryGet(findContext, b, func() (*containers.InspectedContainer, error) {
+		inspectedCtrs, err := o.InspectContainers(findContext, []string{containerID})
+		if errors.Is(err, containers.ErrNotFound) {
+			return nil, resiliency.Permanent(containers.ErrNotFound)
+		} else if err != nil {
+			return nil, err
+		}
+
+		if len(inspectedCtrs) == 0 {
+			return nil, resiliency.Permanent(containers.ErrNotFound)
+		}
+
+		return &inspectedCtrs[0], nil
+	})
+}
+
 func verifyContainerState(
 	ctx context.Context,
 	o containers.ContainerOrchestrator,
@@ -87,6 +106,24 @@ func verifyContainerState(
 	isInState func(*containers.InspectedContainer) error,
 ) (*containers.InspectedContainer, error) {
 	inspected, inspectErr := inspectContainer(ctx, o, containerID)
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+
+	if err := isInState(inspected); err != nil {
+		return inspected, err
+	} else {
+		return inspected, nil
+	}
+}
+
+func verifyNetworkState(
+	ctx context.Context,
+	o containers.ContainerOrchestrator,
+	network string,
+	isInState func(*containers.InspectedNetwork) error,
+) (*containers.InspectedNetwork, error) {
+	inspected, inspectErr := inspectNetwork(ctx, o, network)
 	if inspectErr != nil {
 		return nil, inspectErr
 	}
@@ -249,16 +286,15 @@ func disconnectNetwork(ctx context.Context, o containers.ContainerOrchestrator, 
 		return o.DisconnectNetwork(ctx, opts)
 	}
 
-	verify := func(ctx context.Context) (any, error) {
-		_, err := verifyContainerState(ctx, o, opts.Container, func(i *containers.InspectedContainer) error {
-			for _, n := range i.Networks {
-				if n.Id == opts.Network {
-					return fmt.Errorf("container %s is still connected to network %s", opts.Container, opts.Network)
-				}
+	verify := func(ctx context.Context) (*containers.InspectedNetwork, error) {
+		return verifyNetworkState(ctx, o, opts.Network, func(i *containers.InspectedNetwork) error {
+			if !slices.ContainsFunc(i.Containers, func(c containers.InspectedNetworkContainer) bool {
+				return c.Name == opts.Container || strings.HasPrefix(c.Id, opts.Container)
+			}) {
+				return nil
 			}
-			return nil
+			return fmt.Errorf("container %s is still connected to network %s", opts.Container, opts.Network)
 		})
-		return nil, err
 	}
 
 	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
@@ -270,34 +306,49 @@ func connectNetwork(ctx context.Context, o containers.ContainerOrchestrator, opt
 		return o.ConnectNetwork(ctx, opts)
 	}
 
-	verify := func(ctx context.Context) (any, error) {
-		_, err := verifyContainerState(ctx, o, opts.Container, func(i *containers.InspectedContainer) error {
-			for _, n := range i.Networks {
-				if n.Id == opts.Network {
-					return nil // Container is connected to the network as expected
-				}
+	verify := func(ctx context.Context) (*containers.InspectedNetwork, error) {
+		return verifyNetworkState(ctx, o, opts.Network, func(i *containers.InspectedNetwork) error {
+			if slices.ContainsFunc(i.Containers, func(c containers.InspectedNetworkContainer) bool {
+				return c.Name == opts.Container || strings.HasPrefix(c.Id, opts.Container)
+			}) {
+				return nil
 			}
 			return fmt.Errorf("container %s is not connected to network %s", opts.Container, opts.Network)
 		})
-		return nil, err
 	}
 
 	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
 	return err
 }
 
-func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, networkID string, b backoff.BackOff) (*containers.InspectedNetwork, error) {
-	if b == nil {
-		b = exponentialBackoff(networkInspectionTimeout)
-	}
+func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, network string) (*containers.InspectedNetwork, error) {
+	b := exponentialBackoff(networkInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedNetwork, error) {
-		networks, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+		networks, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{network}})
 		if err != nil {
 			return nil, err
 		}
 		if len(networks) == 0 {
 			return nil, containers.ErrNotFound
 		}
+		return &networks[0], nil
+	})
+}
+
+func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestrator, network string) (*containers.InspectedNetwork, error) {
+	b := exponentialBackoff(networkInspectionTimeout)
+	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedNetwork, error) {
+		networks, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{network}})
+		if errors.Is(err, containers.ErrNotFound) {
+			return nil, resiliency.Permanent(containers.ErrNotFound)
+		} else if err != nil {
+			return nil, err
+		}
+
+		if len(networks) == 0 {
+			return nil, resiliency.Permanent(containers.ErrNotFound)
+		}
+
 		return &networks[0], nil
 	})
 }
@@ -316,7 +367,7 @@ func createNetwork(ctx context.Context, o containers.NetworkOrchestrator, opts c
 	}
 
 	verify := func(ctx context.Context) (*containers.InspectedNetwork, error) {
-		return inspectNetwork(ctx, o, opts.Name, nil)
+		return inspectNetwork(ctx, o, opts.Name)
 	}
 
 	inspected, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)

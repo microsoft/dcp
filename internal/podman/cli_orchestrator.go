@@ -1071,7 +1071,10 @@ func unmarshalNetwork(pcn *podmanInspectedNetwork, net *containers.InspectedNetw
 		net.Gateways = append(net.Gateways, pcn.Subnets[i].Gateway)
 	}
 	for id := range pcn.Containers {
-		net.ContainerIDs = append(net.ContainerIDs, id)
+		net.Containers = append(net.Containers, containers.InspectedNetworkContainer{
+			Id:   id,
+			Name: pcn.Containers[id].Name,
+		})
 	}
 
 	return nil
@@ -1160,16 +1163,20 @@ type podmanInspectedContainerNetworkSettingsNetwork struct {
 }
 
 type podmanInspectedNetwork struct {
-	Id         string                         `json:"id"`
-	Name       string                         `json:"name"`
-	Created    time.Time                      `json:"created"`
-	Driver     string                         `json:"driver"`
-	EnableIPv6 bool                           `json:"ipv6_enabled"`
-	Internal   bool                           `json:"internal"`
-	DnsEnabled bool                           `json:"dns_enabled"`
-	Subnets    []podmanInspectedNetworkSubnet `json:"subnets"`
-	Labels     map[string]string              `json:"labels,omitempty"`
-	Containers map[string]struct{}            `json:"Containers"`
+	Id         string                                     `json:"id"`
+	Name       string                                     `json:"name"`
+	Created    time.Time                                  `json:"created"`
+	Driver     string                                     `json:"driver"`
+	EnableIPv6 bool                                       `json:"ipv6_enabled"`
+	Internal   bool                                       `json:"internal"`
+	DnsEnabled bool                                       `json:"dns_enabled"`
+	Subnets    []podmanInspectedNetworkSubnet             `json:"subnets"`
+	Labels     map[string]string                          `json:"labels,omitempty"`
+	Containers map[string]podmanInspectedNetworkContainer `json:"Containers"`
+}
+
+type podmanInspectedNetworkContainer struct {
+	Name string `json:"name"`
 }
 
 type podmanInspectedNetworkSubnet struct {

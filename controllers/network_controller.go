@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
+	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/smallnest/chanx"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -176,9 +176,9 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	reconciliationDelay := additionalReconciliationDelay
 	if (change & additionalReconciliationNeeded) == 0 {
-		// Schedule followup reconciliation on a random delay between 10 to 20 seconds (to avoid stampedes).
+		// Schedule followup reconciliation on a random delay between 5 to 10 seconds (to avoid stampedes).
 		// The goal is to enable periodic reconciliation polling.
-		reconciliationDelay = time.Duration(rand.Intn(10)+10) * time.Second
+		reconciliationDelay = time.Duration(rand.Intn(5)+5) * time.Second
 		change |= additionalReconciliationNeeded
 	}
 
@@ -236,10 +236,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
 
 	if network.Spec.Persistent {
-		// We need to check for an existing network before we create one
-		// This check needs to be fast, so we are going to do just at most one retry
-		b := backoff.WithMaxRetries(exponentialBackoff(networkInspectionTimeout), 1)
-		existing, err := inspectNetwork(ctx, r.orchestrator, networkName, b)
+		existing, err := inspectNetworkIfExists(ctx, r.orchestrator, networkName)
 		if err == nil {
 			// We found an existing network
 			r.existingNetworks.Store(existing.Id, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRunning, id: existing.Id})
@@ -382,7 +379,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 }
 
 func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) objectChange {
-	cnet, err := inspectNetwork(ctx, r.orchestrator, network.Status.ID, nil)
+	cnet, err := inspectNetwork(ctx, r.orchestrator, network.Status.ID)
 	if errors.Is(err, ct.ErrNotFound) {
 		network.Status.State = apiv1.ContainerNetworkStateRemoved
 		r.existingNetworks.Update(network.Status.ID, network.NamespacedName(), runningNetworkStatus{state: apiv1.ContainerNetworkStateRemoved})
@@ -415,8 +412,12 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 		network.Status.Gateways = cnet.Gateways
 		change |= statusChanged
 	}
-	if !slices.Equal(network.Status.ContainerIDs, cnet.ContainerIDs) {
-		network.Status.ContainerIDs = cnet.ContainerIDs
+	// Get the list of container IDs connected to the network
+	newContainerIds := usvc_slices.Map[ct.InspectedNetworkContainer, string](cnet.Containers, func(c ct.InspectedNetworkContainer) string {
+		return c.Id
+	})
+	if !slices.Equal(network.Status.ContainerIDs, newContainerIds) {
+		network.Status.ContainerIDs = newContainerIds
 		change |= statusChanged
 	}
 
