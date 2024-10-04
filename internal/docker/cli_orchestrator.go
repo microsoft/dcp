@@ -37,6 +37,7 @@ var (
 	networkAlreadyExistsRegEx  = regexp.MustCompile(`(?i)network with name (.*) already exists`)
 	endpointAlreadyExistsRegEx = regexp.MustCompile(`(?i)endpoint with (.*) already exists in network`)
 	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
+	dockerNotRunningRegEx      = regexp.MustCompile(`(?i)error during connect:`)
 
 	newContainerNotFoundErrorMatch     = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch        = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
@@ -44,6 +45,7 @@ var (
 	newNetworkAlreadyExistsErrorMatch  = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
 	newEndpointAlreadyExistsErrorMatch = containers.NewCliErrorMatch(endpointAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
 	newNetworkPoolNotAvailableError    = containers.NewCliErrorMatch(networkSubnetPoolFullRegEx, errors.Join(containers.ErrCouldNotAllocate, fmt.Errorf("network subnet pool full")))
+	newDockerNotRunningError           = containers.NewCliErrorMatch(dockerNotRunningRegEx, errors.Join(containers.ErrRuntimeNotHealthy, fmt.Errorf("docker runtime is not healthy")))
 
 	// We expect almost all Docker CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
@@ -300,7 +302,7 @@ func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
 
 	return asObjects(outBuf, unmarshalVolume)
@@ -315,7 +317,7 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -420,7 +422,7 @@ func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, images []st
 	)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
 	}
 
 	return asObjects(outBuf, unmarshalImage)
@@ -621,7 +623,7 @@ func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names [
 	)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
 
 	return asObjects(outBuf, unmarshalContainer)
@@ -638,7 +640,7 @@ func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, container
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StartContainers", cmd, streamOptions.StdOutStream, streamOptions.StdErrStream, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -662,7 +664,7 @@ func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []st
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StopContainers", cmd, nil, nil, timeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -684,7 +686,7 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -744,7 +746,7 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1), newNetworkPoolNotAvailableError)
+		return "", normalizeCliErrors(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1), newNetworkPoolNotAvailableError)
 	}
 	return asId(outBuf)
 }
@@ -763,7 +765,7 @@ func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -782,7 +784,7 @@ func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
 
 	return asObjects(outBuf, unmarshalNetwork)
@@ -800,7 +802,7 @@ func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	cmd := makeDockerCommand(args...)
 	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newEndpointAlreadyExistsErrorMatch)
+		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newEndpointAlreadyExistsErrorMatch)
 	}
 	return nil
 }
@@ -817,7 +819,7 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	cmd := makeDockerCommand(args...)
 	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "DisconnectNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
+		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
 	return nil
 }
@@ -1258,6 +1260,11 @@ type dockerInspectedNetworkIpam struct {
 type dockerInspectedNetworkIpamConfig struct {
 	Subnet  string `json:"Subnet,omitempty"`
 	Gateway string `json:"Gateway,omitempty"`
+}
+
+func normalizeCliErrors(originalErr error, errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
+	errorMatches = append(errorMatches, newDockerNotRunningError)
+	return containers.NormalizeCliError(originalErr, errBuf, errorMatches...)
 }
 
 var _ containers.VolumeOrchestrator = (*DockerCliOrchestrator)(nil)

@@ -9,30 +9,30 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
-type errorMatch struct {
+type ErrorMatch struct {
 	regex              *regexp.Regexp
 	err                error
 	maxObjectsAffected int
 }
 
-func NewCliErrorMatch(regex *regexp.Regexp, err ...error) errorMatch {
+func NewCliErrorMatch(regex *regexp.Regexp, err ...error) ErrorMatch {
 	realErr := ErrNotFound
 	if len(err) > 0 {
 		realErr = err[0]
 	}
-	return errorMatch{
+	return ErrorMatch{
 		regex:              regex,
 		err:                realErr,
 		maxObjectsAffected: 1,
 	}
 }
 
-func (em errorMatch) MaxObjects(maxObjects int) errorMatch {
+func (em ErrorMatch) MaxObjects(maxObjects int) ErrorMatch {
 	em.maxObjectsAffected = maxObjects
 	return em
 }
 
-func NormalizeCliError(originalError error, errBuf *bytes.Buffer, errorMatches ...errorMatch) error {
+func NormalizeCliError(originalError error, errBuf *bytes.Buffer, errorMatches ...ErrorMatch) error {
 	if originalError == nil {
 		return nil
 	}

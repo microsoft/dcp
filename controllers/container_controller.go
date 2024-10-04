@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -222,7 +223,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if !r.orchestratorHealthy {
 		log.Info("container runtime is not healthy, retrying reconciliation later...")
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5) + 5)}, nil
 	}
 
 	// Check for deletion first; it trumps all other types of state changes.

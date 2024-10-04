@@ -36,12 +36,14 @@ var (
 	containerNotFoundRegEx        = regexp.MustCompile(`(?i)no such container`)
 	networkAlreadyExistsRegEx     = regexp.MustCompile(`(?i)network with name (.*) already exists`)
 	containerAlreadyAttachedRegEx = regexp.MustCompile(`(?i)container (.*) is already connected to network`)
+	unableToConnectRegEx          = regexp.MustCompile(`(?i)unable to connect to Podman socket:`)
 
 	newContainerNotFoundErrorMatch        = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch           = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
 	newNetworkNotFoundErrorMatch          = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
 	newNetworkAlreadyExistsErrorMatch     = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
 	newContainerAlreadyAttachedErrorMatch = containers.NewCliErrorMatch(containerAlreadyAttachedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
+	newPodmanNotRunningErrorMatch         = containers.NewCliErrorMatch(unableToConnectRegEx, errors.Join(containers.ErrRuntimeNotHealthy, fmt.Errorf("podman runtime is not healthy")))
 
 	// We expect almost all Podman CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
@@ -235,7 +237,7 @@ func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, volumes []
 
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
 
 	return asObjects(outBuf, unmarshalVolume)
@@ -250,7 +252,7 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -352,7 +354,7 @@ func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, images []st
 	)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
 	}
 
 	return asObjects(outBuf, unmarshalImage)
@@ -553,7 +555,7 @@ func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names [
 	)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
 
 	return asObjects(outBuf, unmarshalContainer)
@@ -570,7 +572,7 @@ func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, container
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StartContainers", cmd, streamOptions.StdOutStream, streamOptions.StdErrStream, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -594,7 +596,7 @@ func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, names []st
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StopContainers", cmd, nil, nil, timeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -616,7 +618,7 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -676,7 +678,7 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return "", containers.NormalizeCliError(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
+		return "", normalizeCliErrors(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
 	}
 	return asId(outBuf)
 }
@@ -695,7 +697,7 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
@@ -714,7 +716,7 @@ func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, containers.NormalizeCliError(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
 	}
 
 	return asObjects(outBuf, unmarshalNetwork)
@@ -732,7 +734,7 @@ func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newContainerAlreadyAttachedErrorMatch)
+		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newContainerAlreadyAttachedErrorMatch)
 	}
 	return nil
 }
@@ -749,7 +751,7 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "DisconnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return containers.NormalizeCliError(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
+		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
 	return nil
 }
@@ -1218,6 +1220,11 @@ func (pem *podmanEventMessage) ToEventMessage() containers.EventMessage {
 		},
 		Attributes: make(map[string]string),
 	}
+}
+
+func normalizeCliErrors(originalErr error, errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
+	errorMatches = append(errorMatches, newPodmanNotRunningErrorMatch)
+	return containers.NormalizeCliError(originalErr, errBuf, errorMatches...)
 }
 
 var _ containers.VolumeOrchestrator = (*PodmanCliOrchestrator)(nil)

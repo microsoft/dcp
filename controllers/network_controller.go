@@ -73,6 +73,8 @@ type NetworkReconciler struct {
 
 	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
 	lifetimeCtx context.Context
+
+	orchestratorHealthy bool
 }
 
 var (
@@ -153,6 +155,19 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+
+	if !r.orchestratorHealthy {
+		status := r.orchestrator.CheckStatus(ctx, false /* use cached status */)
+		if status.IsHealthy() {
+			r.orchestratorHealthy = true
+		}
+	}
+
+	if !r.orchestratorHealthy {
+		log.Info("container runtime is not healthy, retrying reconciliation later...")
+		// Retry after five to ten seconds
+		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5) + 5)}, nil
+	}
 
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted")
@@ -270,6 +285,9 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		return additionalReconciliationNeeded
 	} else if errors.Is(err, ct.ErrCouldNotAllocate) {
 		log.Error(err, "could not create the network as all available subnet ranges from the default pool are allocated, retrying...", "Network", networkName)
+		return additionalReconciliationNeeded
+	} else if errors.Is(err, ct.ErrRuntimeNotHealthy) {
+		log.Error(err, "could not create the network as the container runtime is not healthy, retrying...", "Network", networkName)
 		return additionalReconciliationNeeded
 	} else if err != nil {
 		log.Error(err, "could not create a network", "Network", networkName)
