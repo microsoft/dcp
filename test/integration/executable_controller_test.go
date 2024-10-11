@@ -1535,8 +1535,12 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 			},
 			performStartup: func(r *ctrl_testutil.TestIdeRun) {
 				r.PID = randomPid
+
 				desiredSuccessfulExeStatus.StartupTimestamp = metav1.NewMicroTime(r.StartedAt)
-				desiredSuccessfulExeStatus.DeepCopyInto(r.Status)
+
+				r.RunInfo.Lock()
+				defer r.RunInfo.Unlock()
+				desiredSuccessfulExeStatus.DeepCopyInto(r.RunInfo.ExecutableStatus)
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
 				return verifyExeStatus(currentExe, &desiredSuccessfulExeStatus)
@@ -1560,7 +1564,10 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 				desiredFailedExeStatus.StartupTimestamp = metav1.NewMicroTime(r.StartedAt)
 				r.EndedAt = time.Now()
 				desiredFailedExeStatus.FinishTimestamp = metav1.NewMicroTime(r.EndedAt)
-				desiredFailedExeStatus.DeepCopyInto(r.Status)
+
+				r.RunInfo.Lock()
+				defer r.RunInfo.Unlock()
+				desiredFailedExeStatus.DeepCopyInto(r.RunInfo.ExecutableStatus)
 			},
 			verifyExe: func(currentExe *apiv1.Executable) (bool, error) {
 				return verifyExeStatus(currentExe, &desiredFailedExeStatus)

@@ -13,18 +13,20 @@ import (
 	"time"
 )
 
-func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) error {
+func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-chan struct{}, error) {
 	osPid, err := PidT_ToInt(pid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	proc, err := os.FindProcess(osPid)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
-			return fmt.Errorf("could not find process %d: %w", pid, err)
+			return nil, fmt.Errorf("could not find process %d: %w", pid, err)
 		} else {
-			return nil
+			exitChan := make(chan struct{})
+			close(exitChan)
+			return exitChan, nil
 		}
 	}
 
@@ -35,36 +37,37 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 
 	waitResultCh, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 
-	if !shouldStopProcess && (opts&optIsResponsibleForStopping) == 0 {
-		// Wait for the process to exit, including io to flush.
-		<-waitEndedCh
-		return nil
+	if opts&optWaitForStdio == 0 {
+		waitEndedCh = make(chan struct{})
+		close(waitEndedCh)
 	}
 
-	if (opts & optTrySignal) == optTrySignal {
-		// Give the process a chance to gracefully exit.
-		// There is no established standard for what signals are used for graceful shutdown,
-		// but SIGTERM and SIGQUIT are commonly used.
-		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts, waitResultCh)
+	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {
+		if (opts & optTrySignal) == optTrySignal {
+			// Give the process a chance to gracefully exit.
+			// There is no established standard for what signals are used for graceful shutdown,
+			// but SIGTERM and SIGQUIT are commonly used.
+			err = e.signalAndWaitForExit(proc, syscall.SIGTERM, opts, waitResultCh)
+			switch {
+			case err == nil:
+				e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
+				return waitEndedCh, nil
+			case !errors.Is(err, context.DeadlineExceeded):
+				return nil, err
+			}
+		}
+
+		err = e.signalAndWaitForExit(proc, syscall.SIGKILL, opts, waitResultCh)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
-			return nil
-		case !errors.Is(err, context.DeadlineExceeded):
-			return err
+			e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
+			return waitEndedCh, nil
+		default:
+			return nil, err
 		}
 	}
 
-	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, opts, waitResultCh)
-	switch {
-	case err == nil:
-		e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
-		return nil
-	case !errors.Is(err, context.DeadlineExceeded):
-		return err
-	}
-
-	return nil
+	return waitEndedCh, nil
 }
 
 const signalAndWaitTimeout = 10 * time.Second

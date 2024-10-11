@@ -51,8 +51,8 @@ func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 	}
 }
 
-func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
-	cmd := makeCommand(exe)
+func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
+	cmd := makeCommand(exe, runInfo)
 	log.Info("starting process...", "executable", cmd.Path)
 	log.V(1).Info("process settings",
 		"executable", cmd.Path,
@@ -65,7 +65,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		log.Error(err, "failed to create temporary file for capturing process standard output data")
 	} else {
 		cmd.Stdout = usvc_io.NewTimestampWriter(stdOutFile)
-		exe.Status.StdOutFile = stdOutFile.Name()
+		runInfo.StdOutFile = stdOutFile.Name()
 	}
 
 	stdErrFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
@@ -73,7 +73,7 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 		log.Error(err, "failed to create temporary file for capturing process standard error data")
 	} else {
 		cmd.Stderr = usvc_io.NewTimestampWriter(stdErrFile)
-		exe.Status.StdErrFile = stdErrFile.Name()
+		runInfo.StdErrFile = stdErrFile.Name()
 	}
 
 	var processExitHandler process.ProcessExitHandler = nil
@@ -89,22 +89,21 @@ func (r *ProcessExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Execu
 
 	if err != nil {
 		log.Error(err, "failed to start a process")
-		exe.Status.FinishTimestamp = metav1.NowMicro()
-		exe.Status.State = apiv1.ExecutableStateFailedToStart
+		runInfo.SetState(apiv1.ExecutableStateFailedToStart)
 	} else {
 		r.runningProcesses.Store(pidToRunID(pid), newProcessRunState(stdOutFile, stdErrFile))
 		log.Info("process started", "executable", cmd.Path, "PID", pid)
-		exe.Status.ExecutionID = pidToExecutionID(pid)
-		if exe.Status.PID == apiv1.UnknownPID {
-			exe.Status.PID = new(int64)
+		runInfo.ExecutionID = pidToExecutionID(pid)
+		if runInfo.PID == apiv1.UnknownPID {
+			runInfo.PID = new(int64)
 		}
-		*exe.Status.PID = int64(pid)
-		exe.Status.State = apiv1.ExecutableStateRunning
-		exe.Status.StartupTimestamp = metav1.NowMicro()
+		*runInfo.PID = int64(pid)
+		runInfo.SetState(apiv1.ExecutableStateRunning)
+		runInfo.StartupTimestamp = metav1.NowMicro()
 
 		r.runWatcher(ctx, pid, log)
 
-		runChangeHandler.OnStartingCompleted(exe.NamespacedName(), pidToRunID(pid), exe.Status, startWaitForProcessExit)
+		runChangeHandler.OnStartingCompleted(exe.NamespacedName(), pidToRunID(pid), runInfo, startWaitForProcessExit)
 	}
 
 	return err
@@ -158,11 +157,11 @@ func (r *ProcessExecutableRunner) runWatcher(ctx context.Context, pid process.Pi
 	}
 }
 
-func makeCommand(exe *apiv1.Executable) *exec.Cmd {
+func makeCommand(exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo) *exec.Cmd {
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
+	cmd.Args = append([]string{exe.Spec.ExecutablePath}, runInfo.EffectiveArgs...)
 
-	cmd.Env = slices.Map[apiv1.EnvVar, string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
+	cmd.Env = slices.Map[apiv1.EnvVar, string](runInfo.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
 	cmd.Dir = exe.Spec.WorkingDirectory
 

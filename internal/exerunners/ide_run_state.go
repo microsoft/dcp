@@ -1,23 +1,15 @@
 package exerunners
 
 import (
-	"context"
 	"io"
 	"sync"
-	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
-)
-
-const (
-	runChangedDebounceDelay = 50 * time.Millisecond
-	runChangedMaxDelay      = 1 * time.Second
 )
 
 type runChangedNotifyArg struct {
@@ -27,31 +19,29 @@ type runChangedNotifyArg struct {
 }
 
 type runState struct {
-	name                 types.NamespacedName
-	runID                controllers.RunID
-	sessionURL           string // The URL of the run session resource in the IDE
-	changeHandler        controllers.RunChangeHandler
-	handlerWG            *sync.WaitGroup
-	pid                  process.Pid_t
-	finished             bool
-	exitCode             *int32
-	exitCh               chan struct{}
-	stdOut               *usvc_io.BufferedWrappingWriter
-	stdErr               *usvc_io.BufferedWrappingWriter
-	changeNotifyDebounce *resiliency.DebounceLastAction[runChangedNotifyArg]
+	name          types.NamespacedName
+	runID         controllers.RunID
+	sessionURL    string // The URL of the run session resource in the IDE
+	changeHandler controllers.RunChangeHandler
+	handlerWG     *sync.WaitGroup
+	pid           process.Pid_t
+	finished      bool
+	exitCode      *int32
+	exitCh        chan struct{}
+	stdOut        *usvc_io.BufferedWrappingWriter
+	stdErr        *usvc_io.BufferedWrappingWriter
 }
 
 func NewRunState() *runState {
 	rs := &runState{
-		runID:                "",
-		changeHandler:        nil,
-		handlerWG:            &sync.WaitGroup{},
-		finished:             false,
-		exitCode:             apiv1.UnknownExitCode,
-		exitCh:               make(chan struct{}),
-		stdOut:               usvc_io.NewBufferedWrappingWriter(),
-		stdErr:               usvc_io.NewBufferedWrappingWriter(),
-		changeNotifyDebounce: resiliency.NewDebounceLastAction[runChangedNotifyArg](notifyRunChanged, runChangedDebounceDelay, runChangedMaxDelay),
+		runID:         "",
+		changeHandler: nil,
+		handlerWG:     &sync.WaitGroup{},
+		finished:      false,
+		exitCode:      apiv1.UnknownExitCode,
+		exitCh:        make(chan struct{}),
+		stdOut:        usvc_io.NewBufferedWrappingWriter(),
+		stdErr:        usvc_io.NewBufferedWrappingWriter(),
 	}
 
 	// Two things need to happen before the completion handler is called:
@@ -89,19 +79,23 @@ func notifyRunChanged(arg runChangedNotifyArg) {
 }
 
 func (rs *runState) NotifyRunChangedAsync(locker sync.Locker) {
-	rs.changeNotifyDebounce.Run(context.Background(), runChangedNotifyArg{
-		rs:         rs,
-		locker:     locker,
-		notifyType: notificationTypeProcessRestarted,
-	})
+	go func() {
+		notifyRunChanged(runChangedNotifyArg{
+			rs:         rs,
+			locker:     locker,
+			notifyType: notificationTypeProcessRestarted,
+		})
+	}()
 }
 
 func (rs *runState) NotifyRunCompletedAsync(locker sync.Locker) {
-	rs.changeNotifyDebounce.Run(context.Background(), runChangedNotifyArg{
-		rs:         rs,
-		locker:     locker,
-		notifyType: notificationTypeSessionTerminated,
-	})
+	go func() {
+		notifyRunChanged(runChangedNotifyArg{
+			rs:         rs,
+			locker:     locker,
+			notifyType: notificationTypeSessionTerminated,
+		})
+	}()
 }
 
 func (rs *runState) IncreaseCompletionCallReadiness() {

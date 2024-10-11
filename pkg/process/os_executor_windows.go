@@ -8,18 +8,20 @@ import (
 	"os"
 )
 
-func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) error {
+func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-chan struct{}, error) {
 	osPid, err := PidT_ToInt(pid)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	proc, err := os.FindProcess(osPid)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
-			return fmt.Errorf("could not find process %d: %w", pid, err)
+			return nil, fmt.Errorf("could not find process %d: %w", pid, err)
 		} else {
-			return nil
+			exitChan := make(chan struct{})
+			close(exitChan)
+			return exitChan, nil
 		}
 	}
 
@@ -30,15 +32,22 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) erro
 		return waitErr
 	}
 
-	_, waitEnded, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	_, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+
+	if opts&optWaitForStdio == 0 {
+		waitEndedCh = make(chan struct{})
+		close(waitEndedCh)
+	}
+
 	if shouldStopProcess || (opts&optIsResponsibleForStopping) != 0 {
+		e.log.V(1).Info("sending SIGKILL to process", "pid", pid)
 		err = proc.Kill()
 		if err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return err
+			return nil, err
 		}
 	}
 
-	// Ensure wait has ended so that we know stdio is complete
-	<-waitEnded
-	return nil
+	e.log.V(1).Info("waiting for process to stop", "pid", pid)
+
+	return waitEndedCh, nil
 }

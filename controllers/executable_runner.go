@@ -26,6 +26,7 @@ type ExecutableRunner interface {
 	StartRun(
 		ctx context.Context,
 		exe *apiv1.Executable,
+		runInfo *ExecutableRunInfo,
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
 	) error
@@ -48,5 +49,5 @@ type RunChangeHandler interface {
 	OnRunCompleted(runID RunID, exitCode *int32, err error)
 
 	// Called when a run has started and wants to register its RunID with the handler.
-	OnStartingCompleted(name types.NamespacedName, runID RunID, exeStatus apiv1.ExecutableStatus, startWaitForRunCompletion func())
+	OnStartingCompleted(name types.NamespacedName, runID RunID, runInfo *ExecutableRunInfo, startWaitForRunCompletion func())
 }

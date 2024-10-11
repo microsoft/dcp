@@ -56,6 +56,34 @@ const (
 	ExecutableStateUnknown ExecutableState = "Unknown"
 )
 
+func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
+	switch es {
+	case ExecutableStateEmpty:
+		return newState == ExecutableStateStarting ||
+			newState == ExecutableStateRunning ||
+			newState == ExecutableStateTerminated ||
+			newState == ExecutableStateFailedToStart
+	case ExecutableStateStarting:
+		return newState == ExecutableStateRunning || newState == ExecutableStateFailedToStart
+	case ExecutableStateRunning:
+		return newState == ExecutableStateTerminated || newState == ExecutableStateFinished
+	case ExecutableStateTerminated:
+		return false
+	case ExecutableStateFailedToStart:
+		return false
+	case ExecutableStateFinished:
+		return false
+	case ExecutableStateUnknown:
+		return false
+	default:
+		return false
+	}
+}
+
+func (es ExecutableState) IsTerminal() bool {
+	return es == ExecutableStateTerminated || es == ExecutableStateFailedToStart || es == ExecutableStateFinished || es == ExecutableStateUnknown
+}
+
 // A valid exit code of a process is a non-negative number. We use UnknownExitCode to indicate that we have not obtained the exit code yet.
 var UnknownExitCode *int32 = nil
 

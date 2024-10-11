@@ -69,7 +69,7 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 	return r, nil
 }
 
-func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
+func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
 	const runSessionCouldNotBeStarted = "run session could not be started: "
 
 	if runChangeHandler == nil {
@@ -84,12 +84,14 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	namespacedName := exe.NamespacedName()
-
-	exeStatus := exe.Status.DeepCopy()
+	namespacedName := runInfo.NamespacedName()
 
 	workEnqueueErr := r.startupQueue.Enqueue(func(_ context.Context) {
 		var stdOutFile, stdErrFile *os.File
+
+		// Lock the run info to prevent changes while we are starting the run session.
+		runInfo.Lock()
+		defer runInfo.Unlock()
 
 		reportStartupFailure := func() {
 			r.lock.Lock()
@@ -97,20 +99,20 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 			if stdOutFile != nil {
 				_ = stdOutFile.Close()
-				_ = os.Remove(exeStatus.StdOutFile)
-				exeStatus.StdOutFile = ""
+				_ = os.Remove(runInfo.StdOutFile)
+				runInfo.StdOutFile = ""
 			}
 			if stdErrFile != nil {
 				_ = stdErrFile.Close()
-				_ = os.Remove(exeStatus.StdErrFile)
-				exeStatus.StdErrFile = ""
+				_ = os.Remove(runInfo.StdErrFile)
+				runInfo.StdErrFile = ""
 			}
 
 			// Using UnknownRunID will cause the controller to assume that the Executable startup failed.
-			runChangeHandler.OnStartingCompleted(namespacedName, controllers.UnknownRunID, *exeStatus, func() {})
+			runChangeHandler.OnStartingCompleted(namespacedName, controllers.UnknownRunID, runInfo, func() {})
 		}
 
-		req, reqCancel, err := r.prepareRunRequest(exe)
+		req, reqCancel, err := r.prepareRunRequest(exe, runInfo)
 		if err != nil {
 			log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
 			reportStartupFailure()
@@ -126,7 +128,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			log.Error(err, "failed to create temporary file for capturing standard output data")
 			stdOutFile = nil
 		} else {
-			exeStatus.StdOutFile = stdOutFile.Name()
+			runInfo.StdOutFile = stdOutFile.Name()
 		}
 
 		stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
@@ -134,7 +136,7 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 			log.Error(err, "failed to create temporary file for capturing standard error data")
 			stdErrFile = nil
 		} else {
-			exeStatus.StdErrFile = stdErrFile.Name()
+			runInfo.StdErrFile = stdErrFile.Name()
 		}
 
 		if rawRequest, dumpRequestErr := httputil.DumpRequest(req, true); dumpRequestErr == nil {
@@ -186,8 +188,8 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		runID := controllers.RunID(rid)
 		log.V(1).Info("IDE run session started", "RunID", runID)
-		exeStatus.ExecutionID = string(runID)
-		exeStatus.StartupTimestamp = metav1.NowMicro()
+		runInfo.ExecutionID = string(runID)
+		runInfo.StartupTimestamp = metav1.NowMicro()
 
 		r.lock.Lock()
 		defer r.lock.Unlock()
@@ -208,22 +210,20 @@ func (r *IdeExecutableRunner) StartRun(ctx context.Context, exe *apiv1.Executabl
 
 		if rs.finished {
 			r.activeRuns.Delete(runID)
-			exeStatus.FinishTimestamp = metav1.NowMicro()
-			exeStatus.State = apiv1.ExecutableStateFinished
+			runInfo.SetState(apiv1.ExecutableStateFinished)
 		} else {
-			exeStatus.State = apiv1.ExecutableStateRunning
+			runInfo.SetState(apiv1.ExecutableStateRunning)
 		}
 
-		runChangeHandler.OnStartingCompleted(namespacedName, runID, *exeStatus, startWaitForRunCompletion)
+		runChangeHandler.OnStartingCompleted(namespacedName, runID, runInfo, startWaitForRunCompletion)
 	})
 
 	if workEnqueueErr != nil {
 		log.Error(workEnqueueErr, "could not enqueue ide executable start operation; workload is shutting down")
-		exe.Status.State = apiv1.ExecutableStateFailedToStart
-		exe.Status.FinishTimestamp = metav1.NowMicro()
+		runInfo.SetState(apiv1.ExecutableStateFailedToStart)
 	} else {
 		log.V(1).Info("Executable is starting, waiting for OnStarted callback...")
-		exe.Status.State = apiv1.ExecutableStateStarting
+		runInfo.SetState(apiv1.ExecutableStateStarting)
 	}
 
 	return nil
@@ -275,12 +275,12 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, parseResponseBody(respBody))
 }
 
-func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, context.CancelFunc, error) {
+func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo) (*http.Request, context.CancelFunc, error) {
 	var isrBody []byte
 	var bodyErr error
 
 	if equalOrNewer(r.connectionInfo.apiVersion, version20240303) {
-		isrBody, bodyErr = r.prepareRunRequestV1(exe)
+		isrBody, bodyErr = r.prepareRunRequestV1(exe, runInfo)
 		if bodyErr != nil {
 			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
 		}
@@ -295,7 +295,7 @@ func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Re
 	return req, reqCancel, nil
 }
 
-func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte, error) {
+func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo) ([]byte, error) {
 	if exe.Annotations[launchConfigurationsAnnotation] != "" {
 		launchConfigsRaw := exe.Annotations[launchConfigurationsAnnotation]
 		var launchConfigs json.RawMessage
@@ -306,8 +306,8 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 
 		isr := ideRunSessionRequestV1{
 			LaunchConfigurations: json.RawMessage(launchConfigs),
-			Env:                  exe.Status.EffectiveEnv,
-			Args:                 exe.Status.EffectiveArgs,
+			Env:                  runInfo.EffectiveEnv,
+			Args:                 runInfo.EffectiveArgs,
 		}
 
 		isrBody, marshalErr := json.Marshal(isr)

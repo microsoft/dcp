@@ -216,9 +216,10 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) er
 	e.log.V(1).Info("stopping process tree", "root", pid, "tree", tree)
 
 	// If the root process cannot be stopped, don't bother with the rest of the tree.
-	err = e.stopSingleProcess(pid, opts|optNotFoundIsError|optTrySignal)
-	if err != nil {
-		return err
+	procEndedCh, stopErr := e.stopSingleProcess(pid, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+	if stopErr != nil {
+		e.log.Error(stopErr, "could not stop root process", "root", pid)
+		return stopErr
 	}
 
 	tree = tree[1:] // We have processed the root
@@ -227,12 +228,15 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) er
 	}
 
 	childStoppingErrors := slices.MapConcurrent[Pid_t, error](tree, func(id Pid_t) error {
-		return e.stopSingleProcess(id, opts)
+		_, childStopErr := e.stopSingleProcess(id, opts)
+		return childStopErr
 	}, slices.MaxConcurrency)
 	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
 	if len(childStoppingErrors) > 0 {
 		return fmt.Errorf("some children processes could not be stopped: %w", errors.Join(childStoppingErrors...))
 	}
+
+	<-procEndedCh
 
 	return nil
 }
@@ -243,9 +247,10 @@ const (
 	optNone            processStoppingOpts = 0
 	optNotFoundIsError processStoppingOpts = 0x1
 	optTrySignal       processStoppingOpts = 0x2
+	optWaitForStdio    processStoppingOpts = 0x4
 
 	// The caller is responsible for stopping the process, disregard "shouldStopProcess" value returned by tryStartWaiting().
-	optIsResponsibleForStopping processStoppingOpts = 0x4
+	optIsResponsibleForStopping processStoppingOpts = 0x8
 )
 
 var _ Executor = (*OSExecutor)(nil)

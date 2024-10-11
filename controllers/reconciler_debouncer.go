@@ -44,7 +44,7 @@ func newReconcilerDebouncer[ReconcileInput any]() *reconcilerDebouncer[Reconcile
 }
 
 func objectDebounceFactory[ReconcileInput any](trigger reconcileTrigger[ReconcileInput], debounceDelay, maxDelay time.Duration) *objectDebounce[ReconcileInput] {
-	debounce := resiliency.NewDebounceLastAction[reconcileTriggerInput[ReconcileInput]](trigger, debounceDelay, maxDelay)
+	debounce := resiliency.NewDebounceLastAction(trigger, debounceDelay, maxDelay)
 	return (*objectDebounce[ReconcileInput])(debounce)
 }
 
@@ -57,7 +57,7 @@ func (rd *reconcilerDebouncer[ReconcileInput]) OnReconcile(name types.Namespaced
 // Tries to trigger reconciliation for an object identified by name, after appropriate debouncing.
 func (rd *reconcilerDebouncer[ReconcileInput]) ReconciliationNeeded(ctx context.Context, name types.NamespacedName, ri ReconcileInput, trigger reconcileTrigger[ReconcileInput]) {
 	debounce, _ := rd.debounceMap.LoadOrStoreNew(name, func() *objectDebounce[ReconcileInput] {
-		return objectDebounceFactory[ReconcileInput](trigger, rd.debounceDelay, rd.maxDelay)
+		return objectDebounceFactory(trigger, rd.debounceDelay, rd.maxDelay)
 	})
 
 	input := reconcileTriggerInput[ReconcileInput]{
