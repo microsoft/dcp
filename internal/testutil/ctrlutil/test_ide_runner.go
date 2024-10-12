@@ -24,7 +24,7 @@ const AutoStartExecutableAnnotation = "test.usvc-dev.developer.microsoft.com/aut
 type TestIdeRun struct {
 	ID                   controllers.RunID
 	Exe                  *apiv1.Executable
-	Status               *apiv1.ExecutableStatus
+	RunInfo              *controllers.ExecutableRunInfo
 	StartWaitingCalled   bool
 	startWaitingChan     chan struct{}
 	StartedAt            time.Time
@@ -57,7 +57,7 @@ func NewTestIdeRunner(lifetimeCtx context.Context) *TestIdeRunner {
 	}
 }
 
-func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
+func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runInfo *controllers.ExecutableRunInfo, runChangeHandler controllers.RunChangeHandler, log logr.Logger) error {
 	r.m.Lock()
 	defer r.m.Unlock()
 
@@ -65,13 +65,13 @@ func (r *TestIdeRunner) StartRun(_ context.Context, exe *apiv1.Executable, runCh
 
 	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 
-	exe.Status.State = apiv1.ExecutableStateStarting
-	exe.Status.ExecutionID = string(runID)
+	runInfo.State = apiv1.ExecutableStateStarting
+	runInfo.ExecutionID = string(runID)
 
 	run := &TestIdeRun{
 		ID:        runID,
 		Exe:       exe,
-		Status:    exe.Status.DeepCopy(),
+		RunInfo:   runInfo,
 		StartedAt: time.Now(),
 		StartWaitingCallback: func() {
 			r.m.Lock()
@@ -125,9 +125,12 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
+			run.RunInfo.Lock()
+			defer run.RunInfo.Unlock()
+
 			run.PID = pid
-			run.Status.State = apiv1.ExecutableStateRunning
-			run.Status.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
+			run.RunInfo.SetState(apiv1.ExecutableStateRunning)
+			run.RunInfo.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
 		},
 	)
 }
@@ -136,11 +139,13 @@ func (r *TestIdeRunner) SimulateFailedRunStart(exeName types.NamespacedName, sta
 	return r.SimulateRunStart(
 		func(objName types.NamespacedName, run *TestIdeRun) bool { return objName == exeName },
 		func(run *TestIdeRun) {
+			run.RunInfo.Lock()
+			defer run.RunInfo.Unlock()
+
 			run.ID = controllers.UnknownRunID
 			run.PID = process.UnknownPID
-			run.Status.State = apiv1.ExecutableStateFailedToStart
-			run.Status.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
-			run.Status.FinishTimestamp = metav1.NowMicro()
+			run.RunInfo.SetState(apiv1.ExecutableStateFailedToStart)
+			run.RunInfo.StartupTimestamp = metav1.NewMicroTime(run.StartedAt)
 		},
 	)
 }
@@ -158,7 +163,10 @@ func (r *TestIdeRunner) SimulateRunStart(
 		// Make sure OnStartingCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), run.ID, *run.Status, run.StartWaitingCallback)
+			run.RunInfo.Lock()
+			defer run.RunInfo.Unlock()
+
+			run.ChangeHandler.OnStartingCompleted(run.Exe.NamespacedName(), run.ID, run.RunInfo, run.StartWaitingCallback)
 
 			close(done)
 		}()
@@ -204,19 +212,11 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	}
 
 	if run.ChangeHandler != nil {
-		done := make(chan struct{}) // Make sure OnRunCompleted is called before we return and let the test proceed.
 		go func() {
 			ec := new(int32)
 			*ec = exitCode
-			select {
-			case <-r.lifetimeCtx.Done():
-				return
-			case <-run.startWaitingChan:
-				run.ChangeHandler.OnRunCompleted(runID, ec, nil)
-			}
-			close(done)
+			run.ChangeHandler.OnRunCompleted(runID, ec, nil)
 		}()
-		<-done
 	}
 
 	return nil
