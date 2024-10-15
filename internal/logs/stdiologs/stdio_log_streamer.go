@@ -75,6 +75,8 @@ func (sls stdIoLogStreamer) StreamLogs(
 	}
 
 	if !opts.Follow {
+		defer src.Close()
+
 		_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
 		if copyErr != nil {
 			log.Error(copyErr, "failed to copy log file to destination")
@@ -117,22 +119,29 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 	defer sls.lock.Unlock()
 
 	if evt.Type == watch.Modified {
-		if resource.Done() {
+		if !resource.GetDeletionTimestamp().IsZero() {
+			followWriters, found := sls.activeStreams.Load(resource.GetUID())
+			if found {
+				for _, followWriter := range followWriters {
+					followWriter.Cancel()
+				}
+
+				sls.activeStreams.Delete(resource.GetUID())
+			}
+		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
 			if logs, found := sls.activeStreams.Load(resource.GetUID()); found {
 				log.V(1).Info("stopping follow logs for resource", "Kind", evt.Object.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "StreamCount", len(logs))
 				for i := range logs {
 					logs[i].StopFollow()
 				}
-
-				sls.activeStreams.Delete(resource.GetUID())
 			}
 		}
 	} else if evt.Type == watch.Deleted {
 		followWriters, found := sls.activeStreams.Load(resource.GetUID())
 		if found {
 			for _, followWriter := range followWriters {
-				followWriter.StopFollow()
+				followWriter.Cancel()
 			}
 
 			sls.activeStreams.Delete(resource.GetUID())

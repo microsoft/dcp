@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -473,7 +475,7 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 	if runID != "" && !exe.Done() {
 		r.stopExecutable(ctx, exe, runInfo, log)
 		removeEndpointsForWorkload(r, ctx, exe, log)
-		r.deleteOutputFiles(exe, log)
+		r.deleteOutputFiles(ctx, exe, log)
 	}
 
 	// We are about to terminate the run. Since the run is not allowed to complete normally,
@@ -482,22 +484,42 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 	r.runs.DeleteByFirstKey(exe.NamespacedName())
 }
 
-func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
+func (r *ExecutableReconciler) deleteOutputFiles(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
 	// Do not bother updating the Executable object--this method is called when the object is being deleted.
 
 	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
 		return
 	}
 
+	stdOutCtx, stdOutCtxCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer stdOutCtxCancel()
+
 	if exe.Status.StdOutFile != "" {
-		if err := os.Remove(exe.Status.StdOutFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Error(err, "could not remove process's standard output file", "path", exe.Status.StdOutFile)
+		// Retry stdout cleanup as we may be waiting on a log streaming process to close
+		if removeErr := resiliency.RetryExponential(stdOutCtx, func() error {
+			if err := os.Remove(exe.Status.StdOutFile); err != nil && errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else {
+				return err
+			}
+		}); removeErr != nil {
+			log.Error(removeErr, "could not remove process's standard output file", "path", exe.Status.StdOutFile)
 		}
 	}
 
+	stdErrCtx, stdErrCtxCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer stdErrCtxCancel()
+
 	if exe.Status.StdErrFile != "" {
-		if err := os.Remove(exe.Status.StdErrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Error(err, "could not remove process's standard error file", "path", exe.Status.StdErrFile)
+		// Retry stderr cleanup as we may be waiting on a log streaming process to close
+		if removeErr := resiliency.RetryExponential(stdErrCtx, func() error {
+			if err := os.Remove(exe.Status.StdErrFile); err != nil && errors.Is(err, os.ErrNotExist) {
+				return nil
+			} else {
+				return err
+			}
+		}); removeErr != nil {
+			log.Error(removeErr, "could not remove process's standard error file", "path", exe.Status.StdErrFile)
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -228,8 +229,14 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) er
 	}
 
 	childStoppingErrors := slices.MapConcurrent[Pid_t, error](tree, func(id Pid_t) error {
-		_, childStopErr := e.stopSingleProcess(id, opts)
-		return childStopErr
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
+		return resiliency.RetryExponential(ctx, func() error {
+			_, childStopErr := e.stopSingleProcess(id, opts)
+			return childStopErr
+		})
 	}, slices.MaxConcurrency)
 	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
 	if len(childStoppingErrors) > 0 {

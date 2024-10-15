@@ -25,7 +25,6 @@ func TestFollowWriterFollowEmptyFile(t *testing.T) {
 	t.Parallel()
 
 	tmpReader, tmpWriter := usvc_io.NewBufferedPipe()
-	t.Cleanup(func() { _ = tmpReader.Close() })
 
 	buf := testutil.NewBufferWriter()
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
@@ -48,7 +47,6 @@ func TestFollowWriterFollowWholeFile(t *testing.T) {
 
 	const content = "hello\nworld\n"
 	tmpReader, tmpWriter := usvc_io.NewBufferedPipe()
-	t.Cleanup(func() { _ = tmpReader.Close() })
 	n, tmpWriteErr := tmpWriter.Write([]byte(content))
 	require.NoError(t, tmpWriteErr)
 	require.Equal(t, len(content), n)
@@ -81,7 +79,6 @@ func TestFollowWriterFollowGetsAllData(t *testing.T) {
 
 	for try := 0; try < len(content)+1; try++ {
 		tmpReader, tmpWriter := usvc_io.NewBufferedPipe()
-		t.Cleanup(func() { _ = tmpReader.Close() })
 
 		tryCtx, cancel := context.WithCancel(testCtx)
 		buf := testutil.NewBufferWriter()
@@ -120,7 +117,6 @@ func TestFollowWriterStopsFollowingFile(t *testing.T) {
 	t.Parallel()
 
 	tmpReader, tmpWriter := usvc_io.NewBufferedPipe()
-	t.Cleanup(func() { _ = tmpReader.Close() })
 	require.NoError(t, tmpWriter.Close())
 
 	buf := testutil.NewBufferWriter()
@@ -144,7 +140,6 @@ func TestFollowWriterNoFollowWholeFile(t *testing.T) {
 	require.NoError(t, tmpWriteErr)
 	require.Equal(t, len(content), n)
 	require.NoError(t, tmpWriter.Close())
-	t.Cleanup(func() { _ = tmpReader.Close() })
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()

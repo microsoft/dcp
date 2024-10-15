@@ -1458,7 +1458,9 @@ func TestContainerLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Logf("Ensure log stream ends when Container '%s' is deleted...", updatedCtr.ObjectMeta.Name)
 	gotLine := scanner.Scan()
 	require.False(t, gotLine, "Unexpectedly read a line from log stream for Container '%s' after it was deleted", updatedCtr.ObjectMeta.Name)
-	require.NoError(t, scanner.Err(), "The log stream for Container '%s' did not end gracefully", updatedCtr.ObjectMeta.Name)
+	if scanner.Err() != nil {
+		require.ErrorContains(t, scanner.Err(), "response body closed", "The log stream for Container '%s' was not closed as expected")
+	}
 }
 
 // Ensure that the Container health status changes according to its state (no health probes).
