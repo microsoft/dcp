@@ -235,6 +235,9 @@ const (
 	// Pending is the initial Container state. No attempt has been made to run the container yet.
 	ContainerStatePending ContainerState = "Pending"
 
+	// ContainerStateRuntimeUnhealthy indicates that the container start is blocked because the runtime isn't healthy, but will resume once the runtime is started.
+	ContainerStateRuntimeUnhealthy ContainerState = "RuntimeUnhealthy"
+
 	// Building is an optional state that indicates the container is in the process of being built.
 	ContainerStateBuilding ContainerState = "Building"
 

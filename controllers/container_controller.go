@@ -62,16 +62,17 @@ var (
 	containerFinalizer string = fmt.Sprintf("%s/container-reconciler", apiv1.GroupVersion.Group)
 
 	containerStateInitializers = map[apiv1.ContainerState]containerStateInitializerFunc{
-		apiv1.ContainerStateEmpty:         handleNewContainer,
-		apiv1.ContainerStatePending:       handleNewContainer,
-		apiv1.ContainerStateBuilding:      ensureContainerBuildingState,
-		apiv1.ContainerStateStarting:      ensureContainerStartingState,
-		apiv1.ContainerStateFailedToStart: ensureContainerFailedToStartState,
-		apiv1.ContainerStateRunning:       updateContainerData,
-		apiv1.ContainerStatePaused:        updateContainerData,
-		apiv1.ContainerStateExited:        ensureContainerExitedState,
-		apiv1.ContainerStateUnknown:       ensureContainerUnknownState,
-		apiv1.ContainerStateStopping:      ensureContainerStoppingState,
+		apiv1.ContainerStateEmpty:            handleNewContainer,
+		apiv1.ContainerStatePending:          handleNewContainer,
+		apiv1.ContainerStateRuntimeUnhealthy: handleNewContainer,
+		apiv1.ContainerStateBuilding:         ensureContainerBuildingState,
+		apiv1.ContainerStateStarting:         ensureContainerStartingState,
+		apiv1.ContainerStateFailedToStart:    ensureContainerFailedToStartState,
+		apiv1.ContainerStateRunning:          updateContainerData,
+		apiv1.ContainerStatePaused:           updateContainerData,
+		apiv1.ContainerStateExited:           ensureContainerExitedState,
+		apiv1.ContainerStateUnknown:          ensureContainerUnknownState,
+		apiv1.ContainerStateStopping:         ensureContainerStoppingState,
 	}
 )
 
@@ -122,8 +123,6 @@ type ContainerReconciler struct {
 
 	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
 	lifetimeCtx context.Context
-
-	orchestratorHealthy bool
 }
 
 func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *ContainerReconciler {
@@ -214,18 +213,6 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
-	if !r.orchestratorHealthy {
-		status := r.orchestrator.CheckStatus(ctx, false /* use cached status */)
-		if status.IsHealthy() {
-			r.orchestratorHealthy = true
-		}
-	}
-
-	if !r.orchestratorHealthy {
-		log.Info("container runtime is not healthy, retrying reconciliation later...")
-		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5) + 5)}, nil
-	}
-
 	// Check for deletion first; it trumps all other types of state changes.
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() && r.canBeDeleted(&container) {
 		change = r.handleDeletionRequest(ctx, &container, log)
@@ -235,7 +222,14 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	return saveChanges(r, ctx, &container, patch, change, nil, log)
+	reconciliationDelay := additionalReconciliationDelay
+	if container.Status.State == apiv1.ContainerStateRuntimeUnhealthy && (change&additionalReconciliationNeeded) == 0 {
+		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
+		reconciliationDelay = time.Duration(rand.Intn(5)+5) * time.Second
+		change |= additionalReconciliationNeeded
+	}
+
+	return saveChangesWithCustomReconciliationDelay(r.Client, ctx, &container, patch, change, reconciliationDelay, nil, log)
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
@@ -293,8 +287,8 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 }
 
 func handleNewContainer(
-	_ context.Context,
-	_ *ContainerReconciler,
+	ctx context.Context,
+	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
 	_ logr.Logger,
@@ -303,8 +297,16 @@ func handleNewContainer(
 
 	if container.Spec.Stop {
 		// The container was started with a desired state of stopped, don't attempt to start it.
-		change = setContainerState(container, apiv1.ContainerStateFailedToStart)
-	} else if container.Spec.Build != nil {
+		return setContainerState(container, apiv1.ContainerStateFailedToStart)
+	}
+
+	status := r.orchestrator.CheckStatus(ctx, false /* use cached status */)
+	if !status.IsHealthy() {
+		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
+		return setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
+	}
+
+	if container.Spec.Build != nil {
 		// Container has a build context, so need to build it first.
 		change = setContainerState(container, apiv1.ContainerStateBuilding)
 	} else {
@@ -1570,7 +1572,7 @@ func getDefaultContainerHealthStatus(ctr *apiv1.Container, state apiv1.Container
 		return apiv1.HealthStatusCaution
 	case apiv1.ContainerStateRunning:
 		return apiv1.HealthStatusHealthy
-	case apiv1.ContainerStateFailedToStart:
+	case apiv1.ContainerStateFailedToStart, apiv1.ContainerStateRuntimeUnhealthy:
 		return apiv1.HealthStatusUnhealthy
 	case apiv1.ContainerStateExited:
 		if ctr.Status.ExitCode == apiv1.UnknownExitCode || *ctr.Status.ExitCode == 0 {

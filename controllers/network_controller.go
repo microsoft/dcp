@@ -164,9 +164,9 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if !r.orchestratorHealthy {
-		log.Info("container runtime is not healthy, retrying reconciliation later...")
+		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
 		// Retry after five to ten seconds
-		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5) + 5)}, nil
+		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5)+5) * time.Second}, nil
 	}
 
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
