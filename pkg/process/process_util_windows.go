@@ -17,7 +17,7 @@ func DecoupleFromParent(cmd *exec.Cmd) {
 
 // Use separate console group to force the child process completely outside its parent's process group
 func ForkFromParent(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE, HideWindow: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_CONSOLE | windows.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
 }
 
 func FindProcess(pid Pid_t) (*os.Process, error) {
