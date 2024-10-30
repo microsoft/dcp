@@ -33,9 +33,15 @@ func NewSubscription[NotificationT any](owner *SubscriptionSet[NotificationT], s
 
 func (es *Subscription[NotificationT]) Cancel() {
 	es.lock.Lock()
+
+	handle := es.Handle
+	if handle != InvalidHandle {
+		// Make sure onSubscriptionCancelled is called after the subscription lock is released.
+		defer es.owner.onSubscriptionCancelled(handle)
+	}
 	defer es.lock.Unlock()
-	if es.Handle != InvalidHandle {
-		es.owner.onSubscriptionCancelled(es.Handle)
+
+	if handle != InvalidHandle {
 		es.Handle = InvalidHandle
 		close(es.sink)
 		es.sink = nil

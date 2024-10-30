@@ -614,7 +614,6 @@ func (clr *ContainerLogResource) GetStorageProvider(
 
 func init() {
 	SchemeBuilder.Register(&Container{}, &ContainerList{})
-	SetCleanupPriority(&Container{}, 100)
 }
 
 // Ensure types support interfaces expected by our API server

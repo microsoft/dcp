@@ -265,7 +265,6 @@ func (celr *ContainerExecLogResource) GetStorageProvider(
 
 func init() {
 	SchemeBuilder.Register(&ContainerExec{}, &ContainerExecList{})
-	SetCleanupPriority(&ContainerExec{}, 100)
 }
 
 // Ensure types support interfaces expected by our API server

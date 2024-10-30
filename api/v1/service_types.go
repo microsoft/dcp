@@ -190,7 +190,6 @@ func (svcl *ServiceList) GetItems() []ctrl_client.Object {
 
 func init() {
 	SchemeBuilder.Register(&Service{}, &ServiceList{})
-	SetCleanupPriority(&Service{}, 100)
 }
 
 // Ensure types support interfaces expected by our API server

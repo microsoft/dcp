@@ -249,7 +249,7 @@ func (hps *HealthProbeSet) runProbeScheduler(schedulerCtx context.Context) {
 
 			pd, haveData := hps.peekNextProbeToExecute()
 			if haveData {
-				waitDuration := pd.nextExecutionTime.Sub(time.Now())
+				waitDuration := time.Until(pd.nextExecutionTime)
 				if waitDuration < minScheduleInterval {
 					waitDuration = minScheduleInterval
 				}

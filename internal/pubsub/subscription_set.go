@@ -67,9 +67,10 @@ func (ss *SubscriptionSet[NotificationT]) Subscribe(sink chan<- NotificationT) *
 
 func (ss *SubscriptionSet[NotificationT]) Notify(n NotificationT) {
 	ss.mutex.Lock()
-	defer ss.mutex.Unlock()
+	currentSubs := maps.Values(ss.subscriptions)
+	ss.mutex.Unlock()
 
-	for _, sub := range ss.subscriptions {
+	for _, sub := range currentSubs {
 		sub.Notify(n)
 	}
 }
