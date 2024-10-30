@@ -487,7 +487,6 @@ func (elr *ExecutableLogResource) GetStorageProvider(
 
 func init() {
 	SchemeBuilder.Register(&Executable{}, &ExecutableList{})
-	SetCleanupPriority(&Executable{}, 100)
 }
 
 // Ensure types support interfaces expected by our API server

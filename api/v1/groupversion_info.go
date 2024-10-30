@@ -65,3 +65,25 @@ func SetCleanupPriority(obj resource.Object, weight uint) {
 
 	CleanupResources = slices.Insert(CleanupResources, index, weightedResource)
 }
+
+func init() {
+	// ContainerExec types are cleaned up before any other container-related resources.
+	SetCleanupPriority(&ContainerExec{}, 100)
+
+	// ExecutableReplicaSets are cleaned up before other Executable-related resources.
+	SetCleanupPriority(&ExecutableReplicaSet{}, 100)
+
+	// Containers are cleaned up after ContainerExec objects.
+	SetCleanupPriority(&Container{}, 200)
+
+	// Non-replicated executables are cleaned up together with Containers and after ExecutableReplicaSets.
+	SetCleanupPriority(&Executable{}, 200)
+
+	// Most ContainerNetworkConnections will be cleaned up when Containers that own them are deleted.
+	// The remaining orphans can be deleded at low priority.
+	SetCleanupPriority(&ContainerNetworkConnection{}, 500)
+
+	// ContainerNetworks and Services are cleaned up last.
+	SetCleanupPriority(&ContainerNetwork{}, 1000)
+	SetCleanupPriority(&Service{}, 1000)
+}

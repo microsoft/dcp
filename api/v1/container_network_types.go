@@ -192,7 +192,6 @@ func (cnl *ContainerNetworkList) GetItems() []ctrl_client.Object {
 
 func init() {
 	SchemeBuilder.Register(&ContainerNetwork{}, &ContainerNetworkList{})
-	SetCleanupPriority(&ContainerNetwork{}, 150)
 }
 
 // Ensure types support interfaces expected by our API server
