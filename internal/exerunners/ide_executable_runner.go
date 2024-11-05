@@ -175,7 +175,7 @@ func (r *IdeExecutableRunner) doStartRun(
 	resp, err = r.connectionInfo.GetClient().Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Error(err, fmt.Sprintf("timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", defaultIdeEndpointRequestTimeout.Seconds()))
+			log.Error(err, fmt.Sprintf("timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", ideEndpointRequestTimeout.Seconds()))
 		} else {
 			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
 		}

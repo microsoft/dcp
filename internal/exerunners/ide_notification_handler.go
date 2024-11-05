@@ -17,6 +17,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 type ideNotificationHandlerState uint32
@@ -27,13 +28,16 @@ const (
 	handlerStateConnected  ideNotificationHandlerState = 0x4
 	handlerStateDisposed   ideNotificationHandlerState = 0x8
 	handlerStateAny        ideNotificationHandlerState = 0xFFFFFFFF
+)
 
+var (
 	// Timeout for operations on the WebSocket connection to the IDE notification endpoint.
-	operationTimeout = 20 * time.Second
+	ideNotificationEndpointTimeout = 20 * time.Second
 
 	// The period for sending ping messages to detect stale IDE notification connections.
-	// Must be smaller than operationTimeout.
+	// Must be smaller than ideNotificationEndpointTimeout.
 	// This is also the period in which we will detect lifetime context cancellation and shut down the handler.
+	// If the pingPeriod is zero, no pings will be sent.
 	pingPeriod = 5 * time.Second
 )
 
@@ -273,7 +277,7 @@ func (nh *ideNotificationHandler) receiveNotifications() {
 		closeConnAndReconnect(err)
 	}
 
-	setupErr := nh.notifySocket.SetReadDeadline(time.Now().Add(operationTimeout))
+	setupErr := nh.notifySocket.SetReadDeadline(time.Now().Add(ideNotificationEndpointTimeout))
 	if setupErr != nil {
 		reportErrorAndReconnect(setupErr, "failed to set read deadline on IDE run session notification endpoint, recycling connection...")
 		return
@@ -281,7 +285,7 @@ func (nh *ideNotificationHandler) receiveNotifications() {
 
 	nh.notifySocket.SetPongHandler(func(string) error {
 		// If we receive a pong response to our ping, it means the connection is alive, so we can extend the operation (read) deadline.
-		deadline := time.Now().Add(operationTimeout)
+		deadline := time.Now().Add(ideNotificationEndpointTimeout)
 		if connCtx.Err() != nil {
 			// We are being asked to end the connection. Set the deadline to now to force a timeout and exit the message reading loop.
 			deadline = time.Now()
@@ -311,7 +315,7 @@ func (nh *ideNotificationHandler) receiveNotifications() {
 		}
 
 		// We received a message successfully and we are not asked to reconnect, so we can reset the read deadline.
-		deadlineResetErr := nh.notifySocket.SetReadDeadline(time.Now().Add(operationTimeout))
+		deadlineResetErr := nh.notifySocket.SetReadDeadline(time.Now().Add(ideNotificationEndpointTimeout))
 		if deadlineResetErr != nil {
 			reportErrorAndReconnect(deadlineResetErr, "failed to reset read deadline on IDE run session notification endpoint, recycling connection...")
 			return
@@ -373,6 +377,11 @@ func (nh *ideNotificationHandler) receiveNotifications() {
 }
 
 func (nh *ideNotificationHandler) doPinging(connCtx context.Context, conn *websocket.Conn) {
+	if pingPeriod == 0 {
+		nh.log.V(1).Info("IDE notification keepalive is disabled")
+		return
+	}
+
 	pingTimer := time.NewTimer(0)
 
 	for {
@@ -406,4 +415,16 @@ func isTimeout(err error) bool {
 	}
 
 	return false
+}
+
+func init() {
+	ideNotificationTimeoutOverride, found := osutil.EnvVarIntVal(DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS)
+	if found && ideNotificationTimeoutOverride > 0 {
+		ideNotificationEndpointTimeout = time.Duration(ideNotificationTimeoutOverride) * time.Second
+	}
+
+	pingPeriodOverride, found := osutil.EnvVarIntVal(DCP_IDE_NOTIFICATION_KEEPALIVE_SECONDS)
+	if found && pingPeriodOverride >= 0 {
+		pingPeriod = time.Duration(pingPeriodOverride) * time.Second
+	}
 }

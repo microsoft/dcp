@@ -61,7 +61,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	client := http.Client{}
 	wsDialer := websocket.Dialer{
 		Proxy:            netutil.NewProxierWithNoProxyCIDR(http.ProxyFromEnvironment),
-		HandshakeTimeout: defaultIdeEndpointRequestTimeout,
+		HandshakeTimeout: ideEndpointRequestTimeout,
 	}
 	httpScheme := "http"
 	webSocketScheme := "ws"
@@ -158,7 +158,7 @@ func (connInfo *ideConnectionInfo) MakeIdeRequest(
 	} else {
 		url = fmt.Sprintf("%s://localhost:%s%s", connInfo.httpScheme, connInfo.portStr, requestPath)
 	}
-	reqCtx, reqCtxCancel := context.WithTimeout(parentCtx, defaultIdeEndpointRequestTimeout)
+	reqCtx, reqCtxCancel := context.WithTimeout(parentCtx, ideEndpointRequestTimeout)
 
 	req, reqCreationErr := http.NewRequestWithContext(reqCtx, httpMethod, url, body)
 	if reqCreationErr != nil {

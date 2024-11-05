@@ -119,12 +119,14 @@ const (
 	queryParamApiVersion            = "api-version"
 	instanceIdHeader                = "Microsoft-Developer-DCP-Instance-ID"
 
-	DCP_IDE_REQUEST_TIMEOUT_SECONDS = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
-	DCP_INSTANCE_ID_PREFIX          = "DCP_INSTANCE_ID_PREFIX"
+	DCP_IDE_REQUEST_TIMEOUT_SECONDS        = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
+	DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS   = "DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS"
+	DCP_IDE_NOTIFICATION_KEEPALIVE_SECONDS = "DCP_IDE_NOTIFICATION_KEEPALIVE_SECONDS"
+	DCP_INSTANCE_ID_PREFIX                 = "DCP_INSTANCE_ID_PREFIX"
 )
 
 var (
-	defaultIdeEndpointRequestTimeout = 120 * time.Second
+	ideEndpointRequestTimeout = 120 * time.Second
 )
 
 func equalOrNewer(currentVersion, baselineVersion apiVersion) bool {
@@ -140,8 +142,8 @@ func equalOrNewer(currentVersion, baselineVersion apiVersion) bool {
 }
 
 func init() {
-	ideRequestTimeout, found := osutil.EnvVarIntVal(DCP_IDE_REQUEST_TIMEOUT_SECONDS)
-	if found && ideRequestTimeout > 0 {
-		defaultIdeEndpointRequestTimeout = time.Duration(ideRequestTimeout) * time.Second
+	ideRequestTimeoutOverride, found := osutil.EnvVarIntVal(DCP_IDE_REQUEST_TIMEOUT_SECONDS)
+	if found && ideRequestTimeoutOverride > 0 {
+		ideEndpointRequestTimeout = time.Duration(ideRequestTimeoutOverride) * time.Second
 	}
 }
