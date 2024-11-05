@@ -129,18 +129,23 @@ type ContainerBuildContext struct {
 	Dockerfile string `json:"dockerfile,omitempty"`
 
 	// Additional tags to apply to the image
+	// +listType=set
 	Tags []string `json:"tags,omitempty"`
 
 	// Additional --build-arg values to pass to the build command
+	// +listType=atomic
 	Args []EnvVar `json:"args,omitempty"`
 
 	// Build time secrets to be passed in to the builder via --secret
+	// +listType=atomic
 	Secrets []ContainerBuildSecret `json:"secrets,omitempty"`
 
 	// Optional: The name of the build stage to use for the build
 	Stage string `json:"stage,omitempty"`
 
 	// Labels to apply to the built image
+	// +listType=map
+	// +listMapKey=key
 	Labels []ContainerLabel `json:"labels,omitempty"`
 }
 
@@ -168,15 +173,20 @@ type ContainerSpec struct {
 	ContainerName string `json:"containerName,omitempty"`
 
 	// Consumed volume information
+	// +listType=atomic
 	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 
 	// Exposed ports
+	// +listType=atomic
 	Ports []ContainerPort `json:"ports,omitempty"`
 
 	// Environment settings
+	// +listType=map
+	// +listMapKey=name
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate Container environment during startup.
+	// +listType=set
 	EnvFiles []string `json:"envFiles,omitempty"`
 
 	// Container restart policy
@@ -186,6 +196,7 @@ type ContainerSpec struct {
 	Command string `json:"command,omitempty"`
 
 	// Arguments to pass to the command
+	// +listType=atomic
 	Args []string `json:"args,omitempty"`
 
 	// Should the controller attempt to stop the container?
@@ -194,21 +205,23 @@ type ContainerSpec struct {
 
 	// ContaineNetworks resources the container should be attached to. If omitted or nil, the container will
 	// be attached to the default network and the controller will not manage network connections.
-	// +listType:=atomic
+	// +listType=atomic
 	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`
 
 	// Should this container be created and persisted between DCP runs?
 	Persistent bool `json:"persistent,omitempty"`
 
 	// Additional arguments to pass to the container run command
-	// +listType:=atomic
+	// +listType=atomic
 	RunArgs []string `json:"runArgs,omitempty"`
 
 	// Labels to apply to the container
+	// +listType=map
+	// +listMapKey=key
 	Labels []ContainerLabel `json:"labels,omitempty"`
 
 	// Health probe configuration for the Container
-	// +listType:=atomic
+	// +listType=atomic
 	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
 
 	// Optional key used to identify if an existing persistent container needs to be restarted.
@@ -222,7 +235,7 @@ type ContainerNetworkConnectionConfig struct {
 	Name string `json:"name"`
 
 	// Aliases of the container on the network
-	// +listType:=atomic
+	// +listType=atomic
 	Aliases []string `json:"aliases,omitempty"`
 }
 
@@ -298,23 +311,24 @@ type ContainerStatus struct {
 	Message string `json:"message,omitempty"`
 
 	// Effective values of environment variables, after all substitutions are applied.
-	// +listType:=map
-	// +listMapKey:=name
+	// +listType=map
+	// +listMapKey=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Container, after all substitutions are applied.
-	// +listType:=atomic
+	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 
 	// List of ContainerNetworks the Container is connected to
+	// +listType=set
 	Networks []string `json:"networks,omitempty"`
 
 	// Health status of the Container
 	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
 
 	// Results of running health probes (most reacent per probe)
-	// +listType:=map
-	// +listMapKey:=probeName
+	// +listType=map
+	// +listMapKey=probeName
 	HealthProbeResults []HealthProbeResult `json:"healthProbeResults,omitempty"`
 
 	// The lifecycle key from the spec or the value calculated by the controller

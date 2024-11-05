@@ -27,9 +27,12 @@ type ContainerExecSpec struct {
 	ContainerName string `json:"containerName"`
 
 	// Environment settings
+	// +listType=map
+	// +listMapKey=name
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate the environment for the command
+	// +listType=set
 	EnvFiles []string `json:"envFiles,omitempty"`
 
 	// Working directory in the container for the command
@@ -39,6 +42,7 @@ type ContainerExecSpec struct {
 	Command string `json:"command"`
 
 	// Arguments to pass to the command
+	// +listType=atomic
 	Args []string `json:"args,omitempty"`
 }
 
@@ -49,7 +53,7 @@ type ContainerExecStatus struct {
 	State ExecutableState `json:"state,omitempty"`
 
 	// Time the command was started
-	StartupTimestamp metav1.MicroTime `json:"startTimestamp,omitempty"`
+	StartupTimestamp metav1.MicroTime `json:"startupTimestamp,omitempty"`
 
 	// Time the command finished running
 	FinishTimestamp metav1.MicroTime `json:"finishTimestamp,omitempty"`
@@ -64,12 +68,12 @@ type ContainerExecStatus struct {
 	StdErrFile string `json:"stdErrFile,omitempty"`
 
 	// Effective values of environment variables, after all substitutions have been applied
-	// +listType:=map
-	// +listMapKey:=name
+	// +listType=map
+	// +listMapKey=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of arguments to be passed to the command, after all substitutions have been applied
-	// +listType:=atomic
+	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 }
 

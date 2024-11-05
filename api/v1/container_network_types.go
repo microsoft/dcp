@@ -65,12 +65,15 @@ type ContainerNetworkStatus struct {
 	IPv6 bool `json:"ipv6,omitempty"`
 
 	// Subnets allocated to the network (if any)
+	// +listType=set
 	Subnets []string `json:"subnets,omitempty"`
 
 	// Gateways allocated to the network (if any)
+	// +listType=set
 	Gateways []string `json:"gateways,omitempty"`
 
 	// The list of container IDs connected to the network
+	// +listType=set
 	ContainerIDs []string `json:"containerIds,omitempty"`
 }
 

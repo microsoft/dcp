@@ -152,16 +152,16 @@ type ExecutableSpec struct {
 	WorkingDirectory string `json:"workingDirectory,omitempty"`
 
 	// Launch arguments to be passed to the Executable
-	// +listType:=atomic
+	// +listType=atomic
 	Args []string `json:"args,omitempty"`
 
 	// Environment variables to be set for the Executable
-	// +listType:=map
-	// +listMapKey:=name
+	// +listType=map
+	// +listMapKey=name
 	Env []EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate Executable environment during startup.
-	// +listType:=atomic
+	// +listType=set
 	EnvFiles []string `json:"envFiles,omitempty"`
 
 	// The execution type for the Executable.
@@ -176,7 +176,7 @@ type ExecutableSpec struct {
 	Stop bool `json:"stop,omitempty"`
 
 	// Health probe configuration for the Executable
-	// +listType:=atomic
+	// +listType=atomic
 	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
 }
 
@@ -289,20 +289,20 @@ type ExecutableStatus struct {
 	StdErrFile string `json:"stdErrFile,omitempty"`
 
 	// Effective values of environment variables, after all substitutions are applied.
-	// +listType:=map
-	// +listMapKey:=name
+	// +listType=map
+	// +listMapKey=name
 	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.
-	// +listType:=atomic
+	// +listType=atomic
 	EffectiveArgs []string `json:"effectiveArgs,omitempty"`
 
 	// Health status of the Executable
 	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
 
 	// Results of running health probes (most reacent per probe)
-	// +listType:=map
-	// +listMapKey:=probeName
+	// +listType=map
+	// +listMapKey=probeName
 	HealthProbeResults []HealthProbeResult `json:"healthProbeResults,omitempty"`
 }
 

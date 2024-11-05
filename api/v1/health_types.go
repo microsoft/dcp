@@ -208,6 +208,8 @@ type HttpProbe struct {
 
 	// Headers to include in the HTTP request
 	// +optional
+	// +listType=map
+	// +listMapKey=name
 	Headers []HttpHeader `json:"headers,omitempty"`
 }
 

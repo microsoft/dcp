@@ -97,11 +97,10 @@ GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.61.0
-CONTROLLER_TOOLS_VERSION ?= v0.15.0
-CODE_GENERATOR_VERSION ?= v0.30.0
-GOVERSIONINFO_VERSION ?= v1.4.0
+CONTROLLER_TOOLS_VERSION ?= v0.16.5
+GOVERSIONINFO_VERSION ?= v1.4.1
 GO_LICENSES_VERSION = v1.6.0
-OPENAPI_GENERATOR_VERSION = v0.29.4
+OPENAPI_GENERATOR_VERSION = v0.0.0-20241009091222-67ed5848f094
 
 # DCP Version information
 VERSION ?= dev
@@ -156,12 +155,14 @@ $(repo_dir)/api/v1/zz_generated.deepcopy.go : $(TYPE_SOURCES) controller-gen
 
 define run-openapi-gen
 $(OPENAPI_GEN) \
-	--input-dirs github.com/microsoft/usvc-apiserver/api/v1 \
-	--input-dirs "k8s.io/apimachinery/pkg/apis/meta/v1,k8s.io/apimachinery/pkg/runtime,k8s.io/apimachinery/pkg/version" \
-	--output-package pkg/generated/openapi \
-	--output-file-base zz_generated.openapi \
+	--output-pkg pkg/generated/openapi \
+	--output-file pkg/generated/openapi/zz_generated.openapi.go \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
-	--output-base "$(repo_dir)" $(OPENAPI_GEN_OPTS)
+	--output-dir "$(repo_dir)" \
+	--report-filename - \
+	$(OPENAPI_GEN_OPTS) \
+	github.com/microsoft/usvc-apiserver/api/v1 \
+	k8s.io/apimachinery/pkg/apis/meta/v1 k8s.io/apimachinery/pkg/runtime k8s.io/apimachinery/pkg/version
 endef
 
 .PHONY: generate-openapi
@@ -208,9 +209,9 @@ endif
 openapi-gen: $(OPENAPI_GEN)
 $(OPENAPI_GEN): | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION); $$env:GOBIN = $$null; }
+	if (-not (Test-Path "$(OPENAPI_GEN)")) { $$env:GOBIN = "$(TOOL_BIN)"; $$env:GOOS = ""; $$env:GOARCH = ""; $(GO_BIN) install k8s.io/kube-openapi/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION); $$env:GOBIN = $$null; }
 else
-	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install k8s.io/code-generator/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION)
+	[[ -s $(OPENAPI_GEN) ]] || GOBIN=$(TOOL_BIN) GOOS="" GOARCH="" $(GO_BIN) install k8s.io/kube-openapi/cmd/openapi-gen@$(OPENAPI_GENERATOR_VERSION)
 endif
 
 .PHONY: goversioninfo-gen

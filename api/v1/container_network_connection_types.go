@@ -25,9 +25,10 @@ type ContainerNetworkConnectionSpec struct {
 	ContainerNetworkName string `json:"containerNetworkName"`
 
 	// The ID of the container (container orchestrator resource ID) to connect to the ContainerNetwork
-	ContainerID string `json:"containerId"`
+	ContainerID string `json:"containerID"`
 
 	// The optional list of custom aliases for the container on the ContainerNetwork
+	// +listType=set
 	Aliases []string `json:"aliases,omitempty"`
 }
 
