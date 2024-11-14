@@ -91,3 +91,32 @@ func Retry(ctx context.Context, b backoff.BackOff, operation func() error) error
 func Permanent(err error) error {
 	return backoff.Permanent(err)
 }
+
+// Joins multiple errors into a single error, accounting for permanent errors.
+func Join(errs ...error) error {
+
+	// The reason why this is necessary and standard library errors.Join() is not sufficient
+	// is because if some of passed errors are permanent errors, the errors.As(errs, &PermanentError)
+	// (a check that the backoff library uses to stop the retry loop)
+	// will unwrap the first permanent error in the chain and return it as the result of the whole attempt.
+	// This leads to information loss because other errors in the chain are forgotten.
+
+	isPermanent := false
+	var retval error
+
+	for _, err := range errs {
+		var permanent *backoff.PermanentError
+		if errors.As(err, &permanent) {
+			isPermanent = true
+			retval = errors.Join(retval, permanent.Err)
+		} else {
+			retval = errors.Join(retval, err)
+		}
+	}
+
+	if isPermanent {
+		retval = backoff.Permanent(retval)
+	}
+
+	return retval
+}

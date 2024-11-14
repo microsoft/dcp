@@ -14,7 +14,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func TestContainerConnectsToExistingNetwork(t *testing.T) {
+func TestContainerNetworkConnectsToExisting(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -63,7 +63,7 @@ func TestContainerConnectsToExistingNetwork(t *testing.T) {
 	require.True(t, found)
 }
 
-func TestContainerConnectedNetworkChanges(t *testing.T) {
+func TestContainerNetworkChanges(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -167,7 +167,7 @@ func TestContainerConnectedNetworkChanges(t *testing.T) {
 	})
 }
 
-func TestContainerDoesNotStartUntilNetworkExists(t *testing.T) {
+func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()

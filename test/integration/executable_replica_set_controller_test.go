@@ -577,8 +577,11 @@ func TestExecutableReplicaSetHealthStatus(t *testing.T) {
 	require.NoError(t, getExeErr, "Failed to retrieve owned Executable replicas")
 
 	stopExecutableProcess := func(exe *apiv1.Executable) {
-		require.NotEmpty(t, exe.Status.ExecutionID, "Executable does not have an execution ID")
-		pid64, parseErr := strconv.ParseInt(exe.Status.ExecutionID, 10, 32)
+		updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(updatedExe *apiv1.Executable) (bool, error) {
+			return updatedExe.Status.State == apiv1.ExecutableStateRunning, nil
+		})
+		require.NotEmpty(t, updatedExe.Status.ExecutionID, "Executable does not have an execution ID")
+		pid64, parseErr := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
 		require.NoError(t, parseErr, "Failed to parse PID from Executable status")
 		pid, convertErr := process.Int64ToPidT(pid64)
 		require.NoError(t, convertErr)

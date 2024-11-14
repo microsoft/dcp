@@ -58,7 +58,7 @@ func callWithRetryAndVerification[RT any](
 
 		res, verifyErr := verify(callContext)
 		if verifyErr != nil {
-			return *new(RT), errors.Join(verifyErr, actionErr)
+			return *new(RT), resiliency.Join(verifyErr, actionErr)
 		}
 
 		return res, nil
@@ -269,9 +269,14 @@ func startContainer(
 
 	verify := func(ctx context.Context) (*containers.InspectedContainer, error) {
 		return verifyContainerState(ctx, o, containerID, func(i *containers.InspectedContainer) error {
-			if i.Status == containers.ContainerStatusRunning {
+			switch i.Status {
+			case containers.ContainerStatusRunning:
 				return nil
-			} else {
+
+			case containers.ContainerStatusExited, containers.ContainerStatusDead:
+				return resiliency.Permanent(fmt.Errorf("container %s start failed (current state is '%s')", containerID, i.Status))
+
+			default:
 				return fmt.Errorf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusRunning)
 			}
 		})
