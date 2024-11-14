@@ -1514,9 +1514,9 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 
 		// metav1.MicroTime uses RFC 3339 format and truncates the time to microseconds during serialization.
 		// This is why we only check that the desired and actual timestamp are within two microseconds of each other.
-		hasStartupTimestamp := !currentExe.Status.StartupTimestamp.IsZero() && testutil.Within(currentExe.Status.StartupTimestamp.Time, desiredStatus.StartupTimestamp.Time, 2*time.Microsecond)
+		hasStartupTimestamp := !currentExe.Status.StartupTimestamp.IsZero() && osutil.Within(currentExe.Status.StartupTimestamp.Time, desiredStatus.StartupTimestamp.Time, 2*time.Microsecond)
 
-		hasFinishTimestamp := testutil.Within(currentExe.Status.FinishTimestamp.Time, desiredStatus.FinishTimestamp.Time, 2*time.Microsecond)
+		hasFinishTimestamp := osutil.Within(currentExe.Status.FinishTimestamp.Time, desiredStatus.FinishTimestamp.Time, 2*time.Microsecond)
 
 		hasStdOutFile := currentExe.Status.StdOutFile == desiredStatus.StdOutFile
 		hasStdErrFile := currentExe.Status.StdErrFile == desiredStatus.StdErrFile
@@ -1973,7 +1973,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		Source:     "stdout",
 		Timestamps: true,
 	}
-	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(testutil.RFC3339MiliTimestampRegex + " " + "Standard output log line 1")}, nil)
+	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(osutil.RFC3339MiliTimestampRegex + " " + "Standard output log line 1")}, nil)
 	require.NoError(t, err)
 
 	opts = apiv1.LogOptions{
@@ -1981,7 +1981,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		Source:     "stderr",
 		Timestamps: true,
 	}
-	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(testutil.RFC3339MiliTimestampRegex + " " + "Standard error log line 1")}, nil)
+	err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte(osutil.RFC3339MiliTimestampRegex + " " + "Standard error log line 1")}, nil)
 	require.NoError(t, err)
 }
 

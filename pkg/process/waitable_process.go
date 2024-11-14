@@ -7,29 +7,33 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/tklauser/ps"
 )
 
 const (
 	defaultWaitPollInterval = time.Second * 2
 )
 
-type waitable_process struct {
+type WaitableProcess struct {
 	WaitPollInterval time.Duration
 	process          *os.Process
+	processStartTime time.Time
 	err              error
 	waitChan         chan struct{}
 	waitLock         sync.Mutex
 }
 
-func FindWaitableProcess(pid Pid_t) (*waitable_process, error) {
-	foundProcess, err := FindProcess(pid)
+func FindWaitableProcess(pid Pid_t, processStartTime time.Time) (*WaitableProcess, error) {
+	foundProcess, err := FindProcess(pid, processStartTime)
 	if err != nil {
 		return nil, err
 	}
 
-	dcpProcess := &waitable_process{
+	dcpProcess := &WaitableProcess{
 		WaitPollInterval: defaultWaitPollInterval,
 		process:          foundProcess,
+		processStartTime: processStartTime,
 		err:              nil,
 		waitLock:         sync.Mutex{},
 	}
@@ -37,7 +41,7 @@ func FindWaitableProcess(pid Pid_t) (*waitable_process, error) {
 	return dcpProcess, nil
 }
 
-func (p *waitable_process) pollingWait(ctx context.Context) {
+func (p *WaitableProcess) pollingWait(ctx context.Context) {
 	// Only setup a single wait loop per-process instance
 	p.waitLock.Lock()
 	defer p.waitLock.Unlock()
@@ -66,7 +70,7 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 							panic(pidConversionErr)
 						}
 
-						_, pollErr := FindProcess(pid)
+						_, pollErr := FindProcess(pid, p.processStartTime)
 						// We couldn't find the PID, so the process has exited
 						if pollErr != nil {
 							p.err = nil
@@ -87,7 +91,7 @@ func (p *waitable_process) pollingWait(ctx context.Context) {
 	}
 }
 
-func (p *waitable_process) Wait(ctx context.Context) error {
+func (p *WaitableProcess) Wait(ctx context.Context) error {
 	p.pollingWait(ctx)
 
 	select {
@@ -98,10 +102,18 @@ func (p *waitable_process) Wait(ctx context.Context) error {
 	}
 }
 
-func (p *waitable_process) Signal(signal syscall.Signal) error {
+func (p *WaitableProcess) Signal(signal syscall.Signal) error {
 	return p.process.Signal(signal)
 }
 
-func (p *waitable_process) Kill() error {
+func (p *WaitableProcess) Kill() error {
 	return p.process.Kill()
+}
+
+func (p *WaitableProcess) StartTime() (time.Time, error) {
+	procInfo, err := ps.FindProcess(p.process.Pid)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return procInfo.CreationTime(), nil
 }

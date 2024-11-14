@@ -13,13 +13,8 @@ import (
 	"time"
 )
 
-func (e *OSExecutor) stopSingleProcess(pid Pid_t, opts processStoppingOpts) (<-chan struct{}, error) {
-	osPid, err := PidT_ToInt(pid)
-	if err != nil {
-		return nil, err
-	}
-
-	proc, err := os.FindProcess(osPid)
+func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
+	proc, err := FindProcess(pid, processStartTime)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
 			return nil, fmt.Errorf("could not find process %d: %w", pid, err)

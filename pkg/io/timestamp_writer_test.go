@@ -27,7 +27,7 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
 			},
 		},
 		{
@@ -38,9 +38,9 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
 			},
 		},
 		{
@@ -51,9 +51,9 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("bar")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " foo"),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " bar"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " foo"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " bar"),
 			},
 		},
 		{
@@ -64,9 +64,9 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " foo"),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " bar"),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " foo"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " bar"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
 			},
 		},
 		{
@@ -78,10 +78,10 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("bar")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " foo"),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " bar"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " foo"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " bar"),
 			},
 		},
 		{
@@ -94,10 +94,10 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("... line 2 end")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + ` line 1 start\.\.\.`),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + ` line 1 start\.\.\.`),
 				regexp.MustCompile(`\.\.\. line 1 end`),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + ` line 2 start\.\.\.`),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + ` line 2 start\.\.\.`),
 				regexp.MustCompile(`\.\.\. line 2 end`),
 			},
 		},
@@ -111,11 +111,11 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				append(append(osutil.WithNewline([]byte("line 5")), osutil.WithNewline([]byte(""))...), osutil.WithNewline([]byte("line 6"))...),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " line 1" + newlineRegex + testutil.RFC3339MiliTimestampRegex + " line 2"),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " " + newlineRegex + testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " " + newlineRegex + testutil.RFC3339MiliTimestampRegex + " line 3"),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " line 4" + newlineRegex + testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " line 5" + newlineRegex + testutil.RFC3339MiliTimestampRegex + " " + newlineRegex + testutil.RFC3339MiliTimestampRegex + " line 6"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " line 1" + newlineRegex + osutil.RFC3339MiliTimestampRegex + " line 2"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " " + newlineRegex + osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " " + newlineRegex + osutil.RFC3339MiliTimestampRegex + " line 3"),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " line 4" + newlineRegex + osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " line 5" + newlineRegex + osutil.RFC3339MiliTimestampRegex + " " + newlineRegex + osutil.RFC3339MiliTimestampRegex + " line 6"),
 			},
 		},
 		{
@@ -128,9 +128,9 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 				osutil.WithNewline([]byte("...line 3 end")),
 			},
 			expectedLines: []*regexp.Regexp{
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " line 1" + newlineRegex + testutil.RFC3339MiliTimestampRegex + ` line 2 start\.\.\.`),
-				regexp.MustCompile(`\.\.\.line 2 end` + newlineRegex + testutil.RFC3339MiliTimestampRegex),
-				regexp.MustCompile(testutil.RFC3339MiliTimestampRegex + " " + newlineRegex + testutil.RFC3339MiliTimestampRegex + ` line 3 start\.\.\.`),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " line 1" + newlineRegex + osutil.RFC3339MiliTimestampRegex + ` line 2 start\.\.\.`),
+				regexp.MustCompile(`\.\.\.line 2 end` + newlineRegex + osutil.RFC3339MiliTimestampRegex),
+				regexp.MustCompile(osutil.RFC3339MiliTimestampRegex + " " + newlineRegex + osutil.RFC3339MiliTimestampRegex + ` line 3 start\.\.\.`),
 				regexp.MustCompile(`line 3 continued\.\.\.`),
 				regexp.MustCompile(`\.\.\.line 3 end`),
 			},

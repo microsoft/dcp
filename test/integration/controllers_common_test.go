@@ -189,7 +189,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	})
 
 	pe := process.NewOSExecutor(log)
-	_, startWaitForProcessExit, dcpStartErr := pe.StartProcess(dcpCtx, cmd, apiserverExitHandler)
+	_, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(dcpCtx, cmd, apiserverExitHandler)
 	if dcpStartErr != nil {
 		_ = os.Remove(kubeconfigPath)
 		return fmt.Errorf("failed to start the API server process: %w", dcpStartErr)

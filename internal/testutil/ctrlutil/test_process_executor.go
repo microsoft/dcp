@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/stretchr/testify/require"
@@ -140,20 +141,21 @@ func NewTestProcessExecutor(lifetimeCtx context.Context) *TestProcessExecutor {
 	}
 }
 
-func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler process.ProcessExitHandler) (process.Pid_t, func(), error) {
+func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler process.ProcessExitHandler) (process.Pid_t, time.Time, func(), error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
 	pid, err := process.Int64ToPidT(pid64)
 	if err != nil {
-		return process.UnknownPID, nil, err
+		return process.UnknownPID, time.Time{}, nil, err
 	}
 
 	e.m.Lock()
 	defer e.m.Unlock()
 
+	startTimestamp := time.Now()
 	pe := ProcessExecution{
 		Cmd:                cmd,
 		PID:                pid,
-		StartedAt:          time.Now(),
+		StartedAt:          startTimestamp,
 		ExitHandler:        handler,
 		StartWaitingCalled: false,
 	}
@@ -189,11 +191,11 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		for _, ae := range e.AutoExecutions {
 			if ae.Condition.Matches(&pe) {
 				if ae.StartupError != nil {
-					return process.UnknownPID, func() {}, ae.StartupError
+					return process.UnknownPID, time.Time{}, func() {}, ae.StartupError
 				} else {
 					go func(ae AutoExecution) {
 						exitCode := ae.RunCommand(&pe)
-						stopProcessErr := e.stopProcessImpl(pid, exitCode)
+						stopProcessErr := e.stopProcessImpl(pid, startTimestamp, exitCode)
 						if stopProcessErr != nil {
 							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, stopProcessErr))
 						}
@@ -204,17 +206,17 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		}
 	}
 
-	return pid, startWaitingForExit, nil
+	return pid, startTimestamp, startWaitingForExit, nil
 }
 
 // Called by the controller (via Executor interface)
-func (e *TestProcessExecutor) StopProcess(pid process.Pid_t) error {
-	return e.stopProcessImpl(pid, KilledProcessExitCode)
+func (e *TestProcessExecutor) StopProcess(pid process.Pid_t, processStartTime time.Time) error {
+	return e.stopProcessImpl(pid, processStartTime, KilledProcessExitCode)
 }
 
 // Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
-	err := e.stopProcessImpl(pid, exitCode)
+	err := e.stopProcessImpl(pid, time.Time{}, exitCode)
 	if err != nil {
 		require.Failf(t, "invalid PID (test issue)", err.Error())
 	}
@@ -303,7 +305,7 @@ func (e *TestProcessExecutor) findByPid(pid process.Pid_t) int {
 	return NotFound
 }
 
-func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, exitCode int32) error {
+func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTime time.Time, exitCode int32) error {
 	e.m.Lock()
 	defer e.m.Unlock()
 
@@ -311,6 +313,17 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, exitCode int32)
 	if i == NotFound {
 		return fmt.Errorf("no process with PID %d found", pid)
 	}
+
+	if !processStartTime.IsZero() {
+		if !osutil.Within(processStartTime, e.Executions[i].StartedAt, process.ProcessStartTimestampMaximumDifference) {
+			return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
+				pid,
+				processStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+				e.Executions[i].StartedAt.Format(osutil.RFC3339MiliTimestampFormat),
+			)
+		}
+	}
+
 	pe := e.Executions[i]
 	pe.ExitCode = exitCode
 	pe.EndedAt = time.Now()

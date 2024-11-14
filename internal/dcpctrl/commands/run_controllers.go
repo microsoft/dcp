@@ -94,7 +94,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 			log.Error(err, "failed to capture startup profile")
 		}
 
-		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
+		ctx := cmds.TryGetMonitorContext(cmd.Context(), log.WithName("monitor"))
 
 		_, err = kubeconfig.RequireKubeconfigFlagValue(cmd.Flags())
 		if err != nil {

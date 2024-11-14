@@ -15,12 +15,12 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
-	github.com/mitchellh/go-ps v1.0.0
 	github.com/smallnest/chanx v1.2.0
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.9.0
 	github.com/tilt-dev/tilt-apiserver v0.13.1
+	github.com/tklauser/ps v0.0.3
 	go.opentelemetry.io/otel v1.31.0
 	go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.31.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.31.0

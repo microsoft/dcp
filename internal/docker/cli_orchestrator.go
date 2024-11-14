@@ -26,6 +26,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
@@ -83,8 +84,8 @@ func NewDockerCliOrchestrator(log logr.Logger, executor process.Executor) contai
 		executor: executor,
 	}
 
-	dco.containerEvtWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](dco.doWatchContainers, context.Background())
-	dco.networkEvtWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](dco.doWatchNetworks, context.Background())
+	dco.containerEvtWatcher = pubsub.NewSubscriptionSet(dco.doWatchContainers, context.Background())
+	dco.networkEvtWatcher = pubsub.NewSubscriptionSet(dco.doWatchNetworks, context.Background())
 
 	return dco
 }
@@ -602,7 +603,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "ExecContainer"))
@@ -706,7 +707,7 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 
 	cmd := makeDockerCommand(args...)
 
-	exitCh, err := dco.streamDockerCommand(ctx, "CaptureContainerLogs", cmd, stdout, stderr)
+	exitCh, err := dco.streamDockerCommand(ctx, "CaptureContainerLogs", cmd, stdout, stderr, streamCommandOptionUseWatcher)
 	if err != nil {
 		return err
 	}
@@ -866,11 +867,13 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh)
 	if err != nil {
 		dco.log.Error(err, "could not execute 'docker events' command; container events unavailable")
 		return
 	}
+
+	dcpproc.RunWatcher(watcherCtx, dco.executor, pid, startTime, dco.log)
 
 	startWaitForProcessExit()
 
@@ -923,11 +926,13 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh)
 	if err != nil {
 		dco.log.Error(err, "could not execute 'docker events' command; network events unavailable")
 		return
 	}
+
+	dcpproc.RunWatcher(watcherCtx, dco.executor, pid, startTime, dco.log)
 
 	startWaitForProcessExit()
 
@@ -943,7 +948,21 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	}
 }
 
-func (dco *DockerCliOrchestrator) streamDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, stdOutWriter io.Writer, stdErrWriter io.Writer) (<-chan error, error) {
+type streamDockerCommandOption uint32
+
+const (
+	streamCommandOptionNone       streamDockerCommandOption = 0
+	streamCommandOptionUseWatcher streamDockerCommandOption = 1
+)
+
+func (dco *DockerCliOrchestrator) streamDockerCommand(
+	ctx context.Context,
+	commandName string,
+	cmd *exec.Cmd,
+	stdOutWriter io.Writer,
+	stdErrWriter io.Writer,
+	opts streamDockerCommandOption,
+) (<-chan error, error) {
 	cmd.Stdout = stdOutWriter
 	cmd.Stderr = stdErrWriter
 
@@ -960,11 +979,16 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(ctx context.Context, comma
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", commandName))
 	}
+
+	if opts&streamCommandOptionUseWatcher != 0 {
+		dcpproc.RunWatcher(ctx, dco.executor, pid, startTime, dco.log)
+	}
+
 	startWaitForProcessExit()
 
 	return exitCh, nil
@@ -988,7 +1012,7 @@ func (dco *DockerCliOrchestrator) runBufferedDockerCommand(ctx context.Context, 
 		stdErrWriter = errBuf
 	}
 
-	exitCh, err := dco.streamDockerCommand(effectiveCtx, commandName, cmd, stdOutWriter, stdErrWriter)
+	exitCh, err := dco.streamDockerCommand(effectiveCtx, commandName, cmd, stdOutWriter, stdErrWriter, streamCommandOptionNone)
 	if err == nil {
 		// If we successfully started running, wait for the command to finish
 		exitErr := <-exitCh

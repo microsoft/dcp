@@ -1144,7 +1144,7 @@ func TestContainerLogsNonFollow(t *testing.T) {
 					expected = stderrLine
 				}
 				if opts.Timestamps {
-					expected = bytes.Join([][]byte{[]byte(testutil.RFC3339MiliTimestampRegex), []byte(" "), expected}, nil)
+					expected = bytes.Join([][]byte{[]byte(osutil.RFC3339MiliTimestampRegex), []byte(" "), expected}, nil)
 				}
 				waitErr := waitForObjectLogs(ctx, &ctr, opts, [][]byte{expected}, nil)
 				require.NoError(t, waitErr, "Could not capture startup logs for Container '%s' (with options %s)", ctr.ObjectMeta.Name, opts.String())
@@ -1323,7 +1323,7 @@ func TestContainerStartupLogs(t *testing.T) {
 		}
 		if opts.Timestamps {
 			for i, line := range expected {
-				expected[i] = bytes.Join([][]byte{[]byte(testutil.RFC3339MiliTimestampRegex), []byte(" "), line}, nil)
+				expected[i] = bytes.Join([][]byte{[]byte(osutil.RFC3339MiliTimestampRegex), []byte(" "), line}, nil)
 			}
 		}
 		waitErr := waitForObjectLogs(ctx, updatedCtr, opts, expected, nil)

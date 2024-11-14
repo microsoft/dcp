@@ -3,7 +3,6 @@
 package process
 
 import (
-	"os"
 	"os/exec"
 	"syscall"
 	"unsafe"
@@ -32,27 +31,15 @@ func ForkFromParent(cmd *exec.Cmd) {
 	}
 }
 
-func FindProcess(pid Pid_t) (*os.Process, error) {
-	osPid, err := PidT_ToInt(pid)
-	if err != nil {
-		return nil, err
-	}
-
-	process, err := os.FindProcess(osPid)
-	if err != nil {
-		return nil, err
-	}
-
-	return process, nil
-}
-
 func canBreakAwayFromJob() (bool, error) {
 	// Check if the process can break away from the job
 	jobObject, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return false, err
 	}
-	defer windows.CloseHandle(jobObject)
+	defer func() {
+		_ = windows.CloseHandle(jobObject)
+	}()
 
 	var jobInformation windows.JOBOBJECT_BASIC_LIMIT_INFORMATION
 	err = windows.QueryInformationJobObject(jobObject, windows.JobObjectBasicLimitInformation, uintptr(unsafe.Pointer(&jobInformation)), uint32(unsafe.Sizeof(jobInformation)), nil)

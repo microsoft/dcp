@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"os/exec"
+	"time"
 )
 
 const (
@@ -20,11 +21,14 @@ type Pid_t int64
 type Executor interface {
 	// Starts the process described by given command instance.
 	// When the passed context is cancelled, the process is automatically terminated.
-	// Returns the process PID and a function that enables process exit notifications delivered to the exit handler.
-	StartProcess(ctx context.Context, cmd *exec.Cmd, exitHandler ProcessExitHandler) (pid Pid_t, startWaitForProcessExit func(), err error)
+	// Returns the process PID, process start time, and a function that enables process exit notifications
+	// delivered to the exit handler.
+	StartProcess(ctx context.Context, cmd *exec.Cmd, exitHandler ProcessExitHandler) (pid Pid_t, startTime time.Time, startWaitForProcessExit func(), err error)
 
 	// Stops the process with a given PID.
-	StopProcess(pid Pid_t) error
+	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped.
+	// (to protect against stopping a wrong process, if the PID was reused).
+	StopProcess(pid Pid_t, processStartTime time.Time) error
 }
 
 type ProcessExitHandler interface {

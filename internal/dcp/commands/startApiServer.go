@@ -60,7 +60,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		log := log.WithName("start-apiserver")
 
-		ctx := cmds.Monitor(cmd.Context(), log.WithName("monitor"))
+		ctx := cmds.TryGetMonitorContext(cmd.Context(), log.WithName("monitor"))
 
 		if detach {
 			args := make([]string, 0, len(os.Args)-2)

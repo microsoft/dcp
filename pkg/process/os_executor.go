@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/tklauser/ps"
+
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -57,15 +59,24 @@ func NewOSExecutor(log logr.Logger) Executor {
 	}
 }
 
-func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler ProcessExitHandler) (Pid_t, func(), error) {
+func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler ProcessExitHandler) (Pid_t, time.Time, func(), error) {
 	if err := cmd.Start(); err != nil {
-		return UnknownPID, nil, err
+		return UnknownPID, time.Time{}, nil, err
 	}
+	processStartTime := time.Now()
 
 	osPid := cmd.Process.Pid
 	pid, err := IntToPidT(osPid)
 	if err != nil {
-		return UnknownPID, nil, err
+		return UnknownPID, time.Time{}, nil, err
+	}
+
+	psProcess, psProcessErr := ps.FindProcess(osPid)
+	if psProcessErr != nil {
+		e.log.Error(psProcessErr, "could not find process startup time", "PID", osPid)
+	} else {
+		// This is what the OS process startup timestamp is, so it is the most accurate value we can get.
+		processStartTime = psProcess.CreationTime()
 	}
 
 	// Get the wait result channel, but do not actually start waiting
@@ -90,7 +101,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 
 			if shouldStopProcess {
 				// CONSIDER: having an option to specify whether to shut down the process when the context expires.
-				stopProcessErr = e.stopProcessInternal(pid, optIsResponsibleForStopping)
+				stopProcessErr = e.stopProcessInternal(pid, processStartTime, optIsResponsibleForStopping)
 				if stopProcessErr != nil {
 					if handler != nil {
 						// Let the caller know that the process did not stopp upon context expiration
@@ -115,7 +126,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 		_, _, _ = e.tryStartWaiting(pid, cmd, waitReasonMonitoring)
 	}
 
-	return pid, startWaitingForProcessExit, nil
+	return pid, processStartTime, startWaitingForProcessExit, nil
 }
 
 // Atomically starts waiting on the passed waitable if noting is already waiting in association with the process
@@ -204,11 +215,11 @@ func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
 }
 
-func (e *OSExecutor) StopProcess(pid Pid_t) error {
-	return e.stopProcessInternal(pid, optNone)
+func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
+	return e.stopProcessInternal(pid, processStartTime, optNone)
 }
 
-func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) error {
+func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
 	tree, err := GetProcessTree(pid)
 	if err != nil {
 		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
@@ -217,7 +228,7 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) er
 	e.log.V(1).Info("stopping process tree", "root", pid, "tree", tree)
 
 	// If the root process cannot be stopped, don't bother with the rest of the tree.
-	procEndedCh, stopErr := e.stopSingleProcess(pid, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+	procEndedCh, stopErr := e.stopSingleProcess(pid, processStartTime, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
 	if stopErr != nil {
 		e.log.Error(stopErr, "could not stop root process", "root", pid)
 		return stopErr
@@ -232,7 +243,7 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, opts processStoppingOpts) er
 		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
 		const childStopTimeout = 2 * time.Second
 		return resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
-			_, childStopErr := e.stopSingleProcess(id, opts)
+			_, childStopErr := e.stopSingleProcess(id, time.Time{}, opts)
 			return childStopErr
 		})
 	}, slices.MaxConcurrency)

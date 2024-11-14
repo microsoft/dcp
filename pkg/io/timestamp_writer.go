@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"io"
 	"time"
-)
 
-const (
-	timestampFormat = "2006-01-02T15:04:05.000Z07:00" // RFC3339 with milliseconds, fixed width
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 // TimestampWriter is an io.WriteCloser that wraps another writer and appends timestamps before the first content
@@ -42,7 +40,7 @@ func (tw *timestampWriter) Write(p []byte) (int, error) {
 
 	for _, b := range p {
 		if tw.needsTimestamp {
-			if _, err := tw.buffer.WriteString(time.Now().UTC().Format(timestampFormat) + " "); err != nil {
+			if _, err := tw.buffer.WriteString(time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat) + " "); err != nil {
 				return 0, err
 			}
 			tw.needsTimestamp = false

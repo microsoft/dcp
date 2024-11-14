@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -54,11 +55,11 @@ func GetProcessExecutor(ctx context.Context) process.Executor {
 
 type dummyProcessExecutor struct{}
 
-func (*dummyProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, exitHandler process.ProcessExitHandler) (pid process.Pid_t, startWaitForProcessExit func(), err error) {
-	return process.UnknownPID, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
+func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler) (process.Pid_t, time.Time, func(), error) {
+	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
 }
 
-func (*dummyProcessExecutor) StopProcess(pid process.Pid_t) error {
+func (*dummyProcessExecutor) StopProcess(_ process.Pid_t, _ time.Time) error {
 	return fmt.Errorf("there is no process executor configured, no processes can be stopped")
 }
 

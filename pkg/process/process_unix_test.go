@@ -17,8 +17,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 // Tests that processes that ignore SIGTERM can still be terminated.
@@ -47,10 +47,10 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 
 	executor := NewOSExecutor(log)
 	start := time.Now()
-	err = executor.StopProcess(pid)
+	err = executor.StopProcess(pid, time.Time{})
 	require.NoError(t, err)
 	elapsed := time.Since(start)
-	elapsedStr := testutil.FormatDuration(elapsed)
+	elapsedStr := osutil.FormatDuration(elapsed)
 	if elapsed > delay {
 		// It is expected that the process will not exit immediately, because it will ignore SIGTERM.
 		// It should not take more than `signalAndWaitTimeout` though.
