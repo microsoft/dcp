@@ -14,6 +14,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -136,19 +137,17 @@ func (c *TestContainerOrchestratorClient) getLogStream(
 		requestLog.Error(reqErr, "could not get logs for container")
 		return reqErr
 	}
-	defer func() {
-		closeErr := resp.Body.Close()
-		if closeErr != nil {
-			requestLog.Error(closeErr, "could not close container log request response body")
-		}
-	}()
 	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
 		reqErr = fmt.Errorf("request for container logs failed %d %s", resp.StatusCode, resp.Status)
 		requestLog.Error(reqErr, "could not get logs for container")
 		return reqErr
 	}
 
-	written, copyErr := c.copyStream(ctx, requestLog, sink, resp.Body)
+	copyContext, copyContextCancel := context.WithCancel(ctx)
+	defer copyContextCancel()
+	bodyReader := usvc_io.NewContextReader(copyContext, resp.Body, true /* leverageReadCloser */)
+	written, copyErr := c.copyStream(copyContext, requestLog, sink, bodyReader)
 	if copyErr == nil {
 		requestLog.V(1).Info("container log stream has been successfully copied")
 		return nil
@@ -175,9 +174,6 @@ func (c *TestContainerOrchestratorClient) copyStream(
 	buf := make([]byte, 8*1024) // 8 kB should be plenty for our test logs
 
 	for {
-		// This simple check does not really guarantee that we cancel the stream copy as soon as the context is done,
-		// (read/write ops below are blocking), but since TestContainerOrchestratorClient is only used for tests,
-		// this is good enough.
 		if ctx.Err() != nil {
 			requestLog.V(1).Info("log stream context has been cancelled")
 			return totalWritten, ctx.Err()

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -129,7 +130,8 @@ func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner dcpM
 	}
 
 	for _, endpoint := range childEndpoints.Items {
-		if err := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil {
+		err := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
+		if err != nil && !apierrors.IsNotFound(err) {
 			log.Error(err, "could not delete Endpoint object",
 				"Endpoint", endpoint.NamespacedName().String(),
 				"Workload", owner.NamespacedName().String(),

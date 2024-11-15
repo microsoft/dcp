@@ -382,8 +382,10 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 	require.NoError(t, err, "Failed to retrieve owned Executable replicas")
 
 	t.Log("Ensure first Executable is started...")
-	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ownedExes[0]), func(exe *apiv1.Executable) (bool, error) {
-		return !exe.Status.StartupTimestamp.IsZero(), nil
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ownedExes[0]), func(updatedExe *apiv1.Executable) (bool, error) {
+		isRunning := updatedExe.Status.State == apiv1.ExecutableStateRunning
+		hasExecutionID := len(updatedExe.Status.ExecutionID) > 0
+		return isRunning && hasExecutionID, nil
 	})
 
 	t.Log("Stopping first Executable...")
@@ -578,9 +580,10 @@ func TestExecutableReplicaSetHealthStatus(t *testing.T) {
 
 	stopExecutableProcess := func(exe *apiv1.Executable) {
 		updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(updatedExe *apiv1.Executable) (bool, error) {
-			return updatedExe.Status.State == apiv1.ExecutableStateRunning, nil
+			isRunning := updatedExe.Status.State == apiv1.ExecutableStateRunning
+			hasExecutionID := len(updatedExe.Status.ExecutionID) > 0
+			return isRunning && hasExecutionID, nil
 		})
-		require.NotEmpty(t, updatedExe.Status.ExecutionID, "Executable does not have an execution ID")
 		pid64, parseErr := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
 		require.NoError(t, parseErr, "Failed to parse PID from Executable status")
 		pid, convertErr := process.Int64ToPidT(pid64)
