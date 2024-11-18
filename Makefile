@@ -284,9 +284,9 @@ clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and a
 lint: golangci-lint ## Runs the linter
 # On Windows we use the global golangci-lint binary.
 ifeq ($(detected_OS),windows)
-	golangci-lint run --timeout 5m
+	golangci-lint run --timeout 10m
 else
-	$(GOLANGCI_LINT) run --timeout 5m
+	$(GOLANGCI_LINT) run --timeout 10m
 endif
 
 .PHONY: install
