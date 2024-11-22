@@ -83,9 +83,7 @@ func TestMain(m *testing.M) {
 
 	networking.EnableStrictMruPortHandling(log.Logger)
 
-	ctx, cancel := context.WithCancel(
-		context.WithValue(context.Background(), controllers.ServiceReconcilerProxyHandling, controllers.DoNotStartProxies),
-	)
+	ctx, cancel := context.WithCancel(context.Background())
 	apiServerExited := concurrency.NewAutoResetEvent(false)
 	stopTestEnvironment := func() {
 		cancel()
@@ -304,7 +302,11 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ServiceReconciler"),
-		testProcessExecutor,
+		controllers.ServiceReconcilerConfig{
+			ProcessExecutor:               testProcessExecutor,
+			CreateProxy:                   ctrl_testutil.NewTestProxy,
+			AdditionalReconciliationDelay: 200 * time.Millisecond,
+		},
 	)
 	if err = serviceR.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("failed to initialize Service reconciler: %w", err)

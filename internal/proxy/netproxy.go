@@ -47,59 +47,6 @@ const (
 
 var errInvalidWrite = errors.New("invalid write operation")
 
-type ProxyConfig struct {
-	Endpoints []Endpoint
-}
-
-func (pc *ProxyConfig) Clone() ProxyConfig {
-	endpoints := make([]Endpoint, len(pc.Endpoints))
-	copy(endpoints, pc.Endpoints)
-	return ProxyConfig{Endpoints: endpoints}
-}
-
-func (pc *ProxyConfig) String() string {
-	var b bytes.Buffer
-	b.WriteString("[")
-	for i, endpoint := range pc.Endpoints {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(networking.AddressAndPort(endpoint.Address, endpoint.Port))
-	}
-	b.WriteString("]")
-	return b.String()
-}
-
-type Endpoint struct {
-	Address string `yaml:"address"`
-	Port    int32  `yaml:"port"`
-}
-
-type ProxyState uint32
-
-const (
-	ProxyStateInitial  ProxyState = 0x1
-	ProxyStateRunning  ProxyState = 0x2
-	ProxyStateFailed   ProxyState = 0x4
-	ProxyStateFinished ProxyState = 0x8
-	ProxyStateAny      ProxyState = 0xFFFFFFFF
-)
-
-func (s ProxyState) String() string {
-	switch s {
-	case ProxyStateInitial:
-		return "Initial"
-	case ProxyStateRunning:
-		return "Running"
-	case ProxyStateFailed:
-		return "Failed"
-	case ProxyStateFinished:
-		return "Finished"
-	default:
-		return "Unknown"
-	}
-}
-
 // A "UDP stream" binds the client with the Endpoint that is serving it.
 // Packets sent by the client will be forwarded to the Endpoint using dedicated PacketConn conection.
 // Packets received from that PacketConn will be sent back to the client.
@@ -111,13 +58,15 @@ type udpStream struct {
 	cancel     context.CancelFunc                    // The function to cancel the stream context.
 }
 
-type Proxy struct {
+// netProxy is an in-process implementation of the Proxy interface that uses
+// the standard library's net package to proxy TCP and UDP connections.
+type netProxy struct {
 	mode          apiv1.PortProtocol
-	ListenAddress string
-	ListenPort    int32
+	listenAddress string
+	listenPort    int32
 
-	EffectiveAddress string
-	EffectivePort    int32
+	effectiveAddress string
+	effectivePort    int32
 
 	endpointConfigLoadedChannel *chanx.UnboundedChan[ProxyConfig]
 	configurationApplied        *concurrency.AutoResetEvent
@@ -133,24 +82,19 @@ type Proxy struct {
 	lock        sync.Locker
 }
 
-// Creates a reverse proxy instance.
-//
-// After Start() method is called, the proxy will listen on the specified address and port
-// (which cannot be changed after the proxy is created), and forward incoming connections
-// to the endpoints specified by the configuration (supplied via Configure() method).
-// The proxy will stop when the lifetime context is cancelled.
-//
-// If the address is empty, the proxy will listen on localhost. The effectiveAddress field will contain the actual listened-on IPv4 or IPv6 address.
-// If the port is 0, the proxy will listen on a random port. The effectivePort field will contain the actual listened-on port.
-func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *Proxy {
+func NewRuntimeProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) Proxy {
+	return newNetProxy(mode, listenAddress, listenPort, lifetimeCtx, log)
+}
+
+func newNetProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *netProxy {
 	if mode != apiv1.TCP && mode != apiv1.UDP {
 		panic(fmt.Errorf("unsupported proxy mode: %s", mode))
 	}
 
-	p := Proxy{
+	p := netProxy{
 		mode:          mode,
-		ListenAddress: listenAddress,
-		ListenPort:    listenPort,
+		listenAddress: listenAddress,
+		listenPort:    listenPort,
 
 		endpointConfigLoadedChannel: chanx.NewUnboundedChan[ProxyConfig](lifetimeCtx, 1),
 		configurationApplied:        concurrency.NewAutoResetEvent(false),
@@ -168,38 +112,59 @@ func NewProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, l
 	return &p
 }
 
-func (p *Proxy) Start() error {
+func (p *netProxy) ListenAddress() string {
+	return p.listenAddress
+}
+
+func (p *netProxy) ListenPort() int32 {
+	return p.listenPort
+}
+
+func (p *netProxy) EffectiveAddress() string {
+	return p.effectiveAddress
+}
+
+func (p *netProxy) EffectivePort() int32 {
+	return p.effectivePort
+}
+
+func (p *netProxy) Start() error {
+	if p.lifetimeCtx.Err() != nil {
+		_ = p.setState(ProxyStateAny, ProxyStateFinished)
+		return fmt.Errorf("proxy cannot be started: lifetime context expired: %w", p.lifetimeCtx.Err())
+	}
+
 	if err := p.setState(ProxyStateInitial, ProxyStateRunning); err != nil {
 		return fmt.Errorf("proxy cannot be started: %w", err)
 	}
 
-	if p.ListenAddress == "" {
-		p.ListenAddress = networking.Localhost
+	if p.listenAddress == "" {
+		p.listenAddress = networking.Localhost
 	}
 
 	lc := net.ListenConfig{}
 	if p.mode == apiv1.TCP {
-		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", networking.AddressAndPort(p.ListenAddress, p.ListenPort))
+		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
 			return err
 		}
 
 		tcpAddr := tcpListener.Addr().(*net.TCPAddr)
-		p.EffectiveAddress = networking.IpToString(tcpAddr.IP)
-		p.EffectivePort = int32(tcpAddr.Port)
+		p.effectiveAddress = networking.IpToString(tcpAddr.IP)
+		p.effectivePort = int32(tcpAddr.Port)
 
 		go p.runTCP(tcpListener)
 	} else if p.mode == apiv1.UDP {
-		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", networking.AddressAndPort(p.ListenAddress, p.ListenPort))
+		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
 			return err
 		}
 
 		udpAddr := udpListener.LocalAddr().(*net.UDPAddr)
-		p.EffectiveAddress = networking.IpToString(udpAddr.IP)
-		p.EffectivePort = int32(udpAddr.Port)
+		p.effectiveAddress = networking.IpToString(udpAddr.IP)
+		p.effectivePort = int32(udpAddr.Port)
 
 		go p.runUDP(udpListener)
 	}
@@ -207,7 +172,7 @@ func (p *Proxy) Start() error {
 	return nil
 }
 
-func (p *Proxy) Configure(newConfig ProxyConfig) error {
+func (p *netProxy) Configure(newConfig ProxyConfig) error {
 	state := p.State()
 	if state == ProxyStateFailed {
 		return fmt.Errorf("proxy cannot be configured in Failed state")
@@ -228,13 +193,13 @@ func (p *Proxy) Configure(newConfig ProxyConfig) error {
 	return nil
 }
 
-func (p *Proxy) State() ProxyState {
+func (p *netProxy) State() ProxyState {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	return p.state
 }
 
-func (p *Proxy) setState(expectedState, newState ProxyState) error {
+func (p *netProxy) setState(expectedState, newState ProxyState) error {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	if p.state == newState {
@@ -248,7 +213,7 @@ func (p *Proxy) setState(expectedState, newState ProxyState) error {
 	return fmt.Errorf("proxy cannot be set to state %s (current state %s)", newState.String(), p.state.String())
 }
 
-func (p *Proxy) stop(listener io.Closer) {
+func (p *netProxy) stop(listener io.Closer) {
 	const errMsg = "Error stopping proxy"
 	// This Close call will stop TCP Accept / UDP ReadFrom calls, which will ultimately cause the runTCP / runUDP functions to exit
 	if err := listener.Close(); err != nil {
@@ -258,7 +223,7 @@ func (p *Proxy) stop(listener io.Closer) {
 	_ = p.setState(ProxyStateAny, ProxyStateFinished)
 }
 
-func (p *Proxy) runTCP(tcpListener net.Listener) {
+func (p *netProxy) runTCP(tcpListener net.Listener) {
 	var parkedConnections []net.Conn
 
 	defer func() {
@@ -331,7 +296,7 @@ func (p *Proxy) runTCP(tcpListener net.Listener) {
 
 var errTcpDialFailed = errors.New("Could not establish TCP connection to endpoint")
 
-func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn) {
+func (p *netProxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn) {
 	err := resiliency.RetryExponential(p.lifetimeCtx, func() error {
 		streamErr := p.startTCPStream(incoming, &currentConfig)
 		if errors.Is(streamErr, errTcpDialFailed) {
@@ -348,7 +313,7 @@ func (p *Proxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn
 	}
 }
 
-func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
+func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 	if p.lifetimeCtx.Err() != nil {
 		_ = incoming.Close()
 		return nil
@@ -411,7 +376,7 @@ func (p *Proxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 // or the passed context is cancelled. The passed context corresponds to the lifetime of the (bi-directional) stream,
 // so if either half of the stream is done/encounters an error, the other half will be stopped.
 // When copying is done, the passed WaitGroup is decremented.
-func (p *Proxy) copyStream(
+func (p *netProxy) copyStream(
 	streamID string,
 	streamCtx context.Context,
 	streamCtxCancel context.CancelFunc,
@@ -470,7 +435,7 @@ type DeadlineWriter interface {
 	SetWriteDeadline(t time.Time) error
 }
 
-func (p *Proxy) runUDP(udpListener net.PacketConn) {
+func (p *netProxy) runUDP(udpListener net.PacketConn) {
 	defer p.configurationApplied.SetAndFreeze() // Make sure that Configure() calls return after the proxy has stopped
 	defer p.stop(udpListener)
 	defer p.shutdownAllUDPStreams()
@@ -521,14 +486,14 @@ func (p *Proxy) runUDP(udpListener net.PacketConn) {
 	}
 }
 
-func (p *Proxy) shutdownAllUDPStreams() {
+func (p *netProxy) shutdownAllUDPStreams() {
 	p.udpStreams.Range(func(clientAddr string, stream udpStream) bool {
 		p.shutdownUDPStream(stream.clientAddr)
 		return true
 	})
 }
 
-func (p *Proxy) shutdownInactiveUDPStreams() {
+func (p *netProxy) shutdownInactiveUDPStreams() {
 	p.udpStreams.Range(func(clientAddr string, stream udpStream) bool {
 		lastUsed := stream.lastUsed.Load()
 		if time.Since(lastUsed) > UdpStreamInactivityTimeout {
@@ -538,7 +503,7 @@ func (p *Proxy) shutdownInactiveUDPStreams() {
 	})
 }
 
-func (p *Proxy) shutdownUDPStream(clientAddr net.Addr) {
+func (p *netProxy) shutdownUDPStream(clientAddr net.Addr) {
 	stream, loaded := p.udpStreams.LoadAndDelete(clientAddr.String())
 	if !loaded {
 		return
@@ -550,7 +515,7 @@ func (p *Proxy) shutdownUDPStream(clientAddr net.Addr) {
 	}
 }
 
-func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn, config ProxyConfig) bool {
+func (p *netProxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn, config ProxyConfig) bool {
 	endpoint, err := chooseEndpoint(&config)
 	if err != nil {
 		// No endpoints yet
@@ -564,7 +529,7 @@ func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn,
 
 	lc := net.ListenConfig{}
 	ctx, cancel := context.WithCancel(p.lifetimeCtx)
-	streamListener, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("%s:", p.ListenAddress))
+	streamListener, err := lc.ListenPacket(ctx, "udp", fmt.Sprintf("%s:", p.listenAddress))
 	if err != nil {
 		p.log.Error(err, "Could not create an endpoint listener for client", "ClientAddr", stream.clientAddr.String())
 		cancel()
@@ -581,7 +546,7 @@ func (p *Proxy) tryStartingUDPStream(stream udpStream, proxyConn net.PacketConn,
 	return true
 }
 
-func (p *Proxy) tryStartExistingUDPStreams(config ProxyConfig, proxyConn net.PacketConn) {
+func (p *netProxy) tryStartExistingUDPStreams(config ProxyConfig, proxyConn net.PacketConn) {
 	p.udpStreams.Range(func(clientAddr string, stream udpStream) bool {
 		if stream.ctx == nil {
 			// Stream is not running, try starting it
@@ -591,7 +556,7 @@ func (p *Proxy) tryStartExistingUDPStreams(config ProxyConfig, proxyConn net.Pac
 	})
 }
 
-func (p *Proxy) getPacketQueue(clientAddr net.Addr, proxyConn net.PacketConn, config ProxyConfig) *queue.ConcurrentBoundedQueue[[]byte] {
+func (p *netProxy) getPacketQueue(clientAddr net.Addr, proxyConn net.PacketConn, config ProxyConfig) *queue.ConcurrentBoundedQueue[[]byte] {
 	stream, loaded := p.udpStreams.LoadOrStoreNew(clientAddr.String(), func() udpStream {
 		return udpStream{
 			clientAddr: clientAddr,
@@ -614,7 +579,7 @@ func (p *Proxy) getPacketQueue(clientAddr net.Addr, proxyConn net.PacketConn, co
 	return stream.packets
 }
 
-func (p *Proxy) streamClientPackets(
+func (p *netProxy) streamClientPackets(
 	stream udpStream,
 	streamListener net.PacketConn,
 	endpointAddr *net.UDPAddr,
@@ -663,7 +628,7 @@ func (p *Proxy) streamClientPackets(
 	}
 }
 
-func (p *Proxy) streamEndpointPackets(
+func (p *netProxy) streamEndpointPackets(
 	stream udpStream,
 	streamListener net.PacketConn,
 	proxyConn net.PacketConn,
@@ -734,3 +699,5 @@ func getStreamDescription(streamID string, incoming, outgoing net.Conn) string {
 		outgoing.RemoteAddr().String(),
 	)
 }
+
+var _ Proxy = &netProxy{}

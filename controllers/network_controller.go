@@ -190,7 +190,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	reconciliationDelay := additionalReconciliationDelay
+	reconciliationDelay := defaultAdditionalReconciliationDelay
 	if (change & additionalReconciliationNeeded) == 0 {
 		// Schedule followup reconciliation on a random delay between 5 to 10 seconds (to avoid stampedes).
 		// The goal is to enable periodic reconciliation polling.

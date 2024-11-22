@@ -8,13 +8,17 @@ import (
 	"github.com/cenkalti/backoff/v4"
 )
 
+func defaultExponentialBackoff() *backoff.ExponentialBackOff {
+	return backoff.NewExponentialBackOff(backoff.WithMaxInterval(10*time.Second), backoff.WithMaxElapsedTime(2*time.Minute))
+}
+
 // Try calling factory function with exponential back-off until a value is successfully created or timeout is reached.
 // Try calling factory function with exponential back-off until either:
 // - a value is successfully created, or
 // - a permanent error occurs, or
 // - passed context is cancelled.
 func RetryGetExponential[T any](ctx context.Context, factory func() (T, error)) (T, error) {
-	return RetryGet(ctx, backoff.NewExponentialBackOff(), factory)
+	return RetryGet(ctx, defaultExponentialBackoff(), factory)
 }
 
 // Try calling factory function with given backoff policy until a value is successfully created or timeout is reached.
@@ -48,7 +52,7 @@ func RetryGet[T any](ctx context.Context, b backoff.BackOff, factory func() (T, 
 // - a permanent error occurs, or
 // - passed context is cancelled.
 func RetryExponential(ctx context.Context, operation func() error) error {
-	return Retry(ctx, backoff.NewExponentialBackOff(), operation)
+	return Retry(ctx, defaultExponentialBackoff(), operation)
 }
 
 // Try calling operation function with exponential back-off until it succeeds or timeout is reached.
@@ -60,7 +64,7 @@ func RetryExponential(ctx context.Context, operation func() error) error {
 func RetryExponentialWithTimeout(ctx context.Context, timeout time.Duration, operation func() error) error {
 	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, timeout)
 	defer cancelTimeoutCtx()
-	return Retry(timeoutCtx, backoff.NewExponentialBackOff(), operation)
+	return Retry(timeoutCtx, defaultExponentialBackoff(), operation)
 }
 
 // Try calling operation function with exponential back-off until it succeeds,

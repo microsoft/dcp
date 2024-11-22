@@ -231,8 +231,8 @@ func portForServingFromContainer(
 	serviceNamespacedName string,
 	ctr *apiv1.Container,
 	servicesProduced []ServiceProducer,
-	client ctrl_client.Client,
-	ctx context.Context,
+	_ ctrl_client.Client,
+	_ context.Context,
 ) (int32, error) {
 	var serviceName = asNamespacedName(serviceNamespacedName, ctr.GetObjectMeta().Namespace)
 

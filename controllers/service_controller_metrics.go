@@ -49,7 +49,7 @@ func serviceCounters(ctx context.Context, service *apiv1.Service, addend int64) 
 	switch service.Spec.AddressAllocationMode {
 	case apiv1.AddressAllocationModeLocalhost:
 		localhostAllocationModeCounter.Add(ctx, addend)
-		stackCounters(ctx, service, addend)
+		stackCounters(ctx, addend)
 	case apiv1.AddressAllocationModeIPv4ZeroOne:
 		ipv4ZeroOneAllocationModeCounter.Add(ctx, addend)
 		ipv4OnlyCounter.Add(ctx, addend)
@@ -71,7 +71,7 @@ func serviceCounters(ctx context.Context, service *apiv1.Service, addend int64) 
 	}
 }
 
-func stackCounters(ctx context.Context, service *apiv1.Service, addend int64) {
+func stackCounters(ctx context.Context, addend int64) {
 	// Localhost can be both IPv4 and IPv6, check to see if the machine supports IPv6
 	supportsIPv4 := nettest.SupportsIPv4()
 	supportsIPv6 := nettest.SupportsIPv6()

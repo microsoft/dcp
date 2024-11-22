@@ -33,10 +33,10 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	additionalReconciliationDelay = 2 * time.Second
-	conflictRequeueDelay          = 100 * time.Millisecond
-	reconciliationDebounceDelay   = 500 * time.Millisecond
-	reconciliationMaxDelay        = 5 * time.Second
+	defaultAdditionalReconciliationDelay = 2 * time.Second
+	conflictRequeueDelay                 = 100 * time.Millisecond
+	reconciliationDebounceDelay          = 500 * time.Millisecond
+	reconciliationMaxDelay               = 5 * time.Second
 
 	// If the health probe result is different by timestamp only, we do not write it to the status
 	// unless the existing result is older than this value.
@@ -127,7 +127,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 		obj,
 		patch,
 		change,
-		additionalReconciliationDelay,
+		defaultAdditionalReconciliationDelay,
 		onSuccessfulSave,
 		log,
 	)

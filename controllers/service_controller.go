@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/smallnest/chanx"
@@ -38,26 +40,33 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
-type ProxyHandlingOptionValue string
-
-const (
-	// Used by tests to disable starting the proxy (proxies are created, but not started)
-	ServiceReconcilerProxyHandling = ControllerContextOption("ServiceReconcilerProxyHandling")
-	DoNotStartProxies              = ProxyHandlingOptionValue("do-not-start-proxies")
-)
-
 type proxyInstanceData struct {
-	proxy     *proxy.Proxy
+	proxy     proxy.Proxy
 	stopProxy context.CancelFunc
+}
+
+type serviceData struct {
+	proxies       []proxyInstanceData
+	startAttempts uint32
+}
+
+// Stores ServiceReconciler dependencies and configuration that often varies
+// between normal execution and testing.
+type ServiceReconcilerConfig struct {
+	ProcessExecutor               process.Executor
+	CreateProxy                   proxy.ProxyFactory
+	AdditionalReconciliationDelay time.Duration
 }
 
 type ServiceReconciler struct {
 	ctrl_client.Client
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	ProcessExecutor     process.Executor
-	ProxyConfigDir      string
-	proxyData           *syncmap.Map[types.NamespacedName, []proxyInstanceData]
+	Log                           logr.Logger
+	reconciliationSeqNo           uint32
+	ProcessExecutor               process.Executor
+	ProxyConfigDir                string
+	serviceInfo                   *syncmap.Map[types.NamespacedName, *serviceData]
+	createProxy                   proxy.ProxyFactory
+	additionalReconciliationDelay time.Duration
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
@@ -67,21 +76,50 @@ type ServiceReconciler struct {
 	tracer trace.Tracer
 }
 
+const (
+	// With the default additional reconciliation delay of 2 seconds, this results in 30 seconds
+	// of the ServiceReconciler attempting to start the service (proxies) before giving up.
+	// A typical failure is associated with port conflict, which may be transient.
+	MaxServiceStartAttempts = 15
+)
+
 var (
 	serviceFinalizer string = fmt.Sprintf("%s/service-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewServiceReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, processExecutor process.Executor) *ServiceReconciler {
+func NewServiceReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	log logr.Logger,
+	config ServiceReconcilerConfig,
+) *ServiceReconciler {
+	if config.ProcessExecutor == nil {
+		panic("ProcessExecutor is required")
+	}
+
 	r := ServiceReconciler{
 		Client:                client,
-		ProcessExecutor:       processExecutor,
+		ProcessExecutor:       config.ProcessExecutor,
 		ProxyConfigDir:        filepath.Join(usvc_io.DcpTempDir(), "usvc-servicecontroller-serviceconfig"),
-		proxyData:             &syncmap.Map[types.NamespacedName, []proxyInstanceData]{},
+		serviceInfo:           &syncmap.Map[types.NamespacedName, *serviceData]{},
 		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
 		lifetimeCtx:           lifetimeCtx,
 		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 		Log:                   log,
 	}
+
+	if config.CreateProxy == nil {
+		r.createProxy = proxy.NewRuntimeProxy
+	} else {
+		r.createProxy = config.CreateProxy
+	}
+
+	if config.AdditionalReconciliationDelay != 0 {
+		r.additionalReconciliationDelay = config.AdditionalReconciliationDelay
+	} else {
+		r.additionalReconciliationDelay = defaultAdditionalReconciliationDelay
+	}
+
 	return &r
 }
 
@@ -137,7 +175,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("the Service object does not exist yet or was deleted")
-			r.stopAllProxies(req.NamespacedName, log)
+			r.stopService(req.NamespacedName, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
@@ -154,7 +192,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	if svc.DeletionTimestamp != nil && !svc.DeletionTimestamp.IsZero() {
 		log.V(1).Info("Service object is being deleted")
-		r.stopAllProxies(svc.NamespacedName(), log)
+		r.stopService(svc.NamespacedName(), log)
 		change = deleteFinalizer(&svc, serviceFinalizer, log)
 		serviceCounters(ctx, &svc, -1) // Service is being deleted
 	} else {
@@ -167,21 +205,28 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := saveChanges(r.Client, ctx, &svc, patch, change, nil, log)
+	result, err := saveChangesWithCustomReconciliationDelay(
+		r.Client,
+		ctx,
+		&svc,
+		patch,
+		change,
+		r.additionalReconciliationDelay,
+		nil,
+		log,
+	)
 	return result, err
 }
 
-func (r *ServiceReconciler) stopAllProxies(svcName types.NamespacedName, log logr.Logger) {
-	if proxyData, ok := r.proxyData.LoadAndDelete(svcName); ok && len(proxyData) > 0 {
-		log.V(1).Info("stopping all proxies...")
-		for _, data := range proxyData {
-			data.stopProxy()
-		}
+func (r *ServiceReconciler) stopService(svcName types.NamespacedName, log logr.Logger) {
+	serviceData, found := r.serviceInfo.LoadAndDelete(svcName)
+	if !found || len(serviceData.proxies) == 0 {
+		return
 	}
+	stopProxies(serviceData.proxies, log)
 }
 
 func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Context, svc *apiv1.Service, log logr.Logger) objectChange {
-	oldPid := svc.Status.ProxyProcessPid
 	oldState := svc.Status.State
 	oldEffectiveAddress := svc.Status.EffectiveAddress
 	oldEffectivePort := svc.Status.EffectivePort
@@ -192,13 +237,15 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 	change := noChange
 
-	serviceEndpoints, err := r.getServiceEndpoints(ctx, svc, log)
-	if err != nil {
+	serviceEndpoints, serviceEndpointsErr := r.getServiceEndpoints(ctx, svc, log)
+	if serviceEndpointsErr != nil {
+		// Service endpoint retrieval is just a read from K8s API server, if it fails, we will retry indefinitely,
+		// it does not count as a service (proxy) startup attempt.
 		return additionalReconciliationNeeded
 	}
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless {
-		// If using Proxyless allocation mode
+		// Using Proxyless allocation mode
 		if len(serviceEndpoints.Items) == 0 {
 			// No Endpoints are available. Empty out the proxyless Endpoint namespace and name, and effective address and port.
 			svc.Status.State = apiv1.ServiceStateNotReady
@@ -234,51 +281,48 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 			}
 		}
 	} else {
-		// Else using a regular allocation mode which will use a proxy
+		// Using regular allocation mode with proxies
 
 		svc.Status.State = apiv1.ServiceStateNotReady
 
-		err = r.startProxyIfNeeded(ctx, svc, log)
-		if err != nil {
-			log.Error(err, "could not start the proxy")
-			return noChange
-		} else {
-			serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
-			if !found {
-				// Should never happen if startProxyIfNeeded() succeeded
-				log.Error(errors.New("proxy data not found"), "could not configure the proxy")
-				change |= additionalReconciliationNeeded
+		psd, proxyStartErr := r.startProxyIfNeeded(ctx, svc, log)
+		if proxyStartErr != nil {
+			if psd.startAttempts >= MaxServiceStartAttempts {
+				log.Error(proxyStartErr, "could not start the proxy")
+				if oldState != apiv1.ServiceStateNotReady {
+					return statusChanged
+				} else {
+					return noChange
+				}
 			} else {
-				if len(serviceEndpoints.Items) > 0 {
-					svc.Status.State = apiv1.ServiceStateReady
-				}
-
-				config := proxy.ProxyConfig{
-					Endpoints: []proxy.Endpoint{},
-				}
-
-				for _, endpoint := range serviceEndpoints.Items {
-					config.Endpoints = append(config.Endpoints, proxy.Endpoint{
-						Address: endpoint.Spec.Address,
-						Port:    endpoint.Spec.Port,
-					})
-				}
-
-				for _, proxyInstanceData := range serviceProxyData {
-					err = proxyInstanceData.proxy.Configure(config)
-					if err != nil {
-						log.Error(err, "could not configure the proxy")
-					}
-				}
+				log.V(1).Info("could not start the proxy, will retry", "Attempt", psd.startAttempts, "Error", proxyStartErr.Error())
+				return additionalReconciliationNeeded
 			}
 		}
-	}
 
-	if svc.Status.ProxyProcessPid != oldPid {
-		if svc.Status.ProxyProcessPid != apiv1.UnknownPID {
-			log.V(1).Info(fmt.Sprintf("proxy process has been started for service %s (PID %d)", svc.NamespacedName(), *svc.Status.ProxyProcessPid))
+		if len(serviceEndpoints.Items) > 0 {
+			svc.Status.ProxyProcessPid = new(int64)
+			*svc.Status.ProxyProcessPid = int64(os.Getpid())
+			svc.Status.State = apiv1.ServiceStateReady
 		}
-		change |= statusChanged
+
+		config := proxy.ProxyConfig{
+			Endpoints: []proxy.Endpoint{},
+		}
+
+		for _, endpoint := range serviceEndpoints.Items {
+			config.Endpoints = append(config.Endpoints, proxy.Endpoint{
+				Address: endpoint.Spec.Address,
+				Port:    endpoint.Spec.Port,
+			})
+		}
+
+		for _, proxyInstanceData := range psd.proxies {
+			configErr := proxyInstanceData.proxy.Configure(config)
+			if configErr != nil {
+				log.Error(configErr, "could not configure the proxy")
+			}
+		}
 	}
 
 	if svc.Status.State != oldState {
@@ -324,52 +368,54 @@ func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.
 	}
 }
 
-// startProxyIfNeeded starts a proxy process if needed for the given service.
-// It returns the error if any.
-func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.Service, log logr.Logger) error {
-	requestedServiceAddress, err := getRequestedServiceAddress(svc)
-	if err != nil {
-		return err
+// startProxyIfNeeded() starts all necessary proxies for the given service.
+// No matter if an error occurs, a *serviceData is returned that is used for storing proxy information
+// and count startup attempts for the service. The service data is stored in ServiceReconciler.serviceInfo
+// before the method returns.
+func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Service, log logr.Logger) (*serviceData, error) {
+	psd, found := r.serviceInfo.Load(svc.NamespacedName())
+	if !found {
+		psd = &serviceData{}
 	}
 
-	serviceProxyData, found := r.proxyData.Load(svc.NamespacedName())
-	if found {
-		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(serviceProxyData, requestedServiceAddress)
-		return nil
+	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc)
+
+	if found && requestedAddressErr == nil && len(psd.proxies) > 0 {
+		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(psd.proxies, requestedServiceAddress)
+		return psd, nil
 	}
 
 	// Reset the overall status for the service
 	svc.Status.ProxyProcessPid = apiv1.UnknownPID
 	svc.Status.EffectiveAddress = ""
 	svc.Status.EffectivePort = 0
+	stopProxies(psd.proxies, log)
+	psd.proxies = nil
+	psd.startAttempts += 1
+	defer r.serviceInfo.Store(svc.NamespacedName(), psd)
+
+	if requestedAddressErr != nil {
+		return psd, requestedAddressErr
+	}
 
 	proxies, portAllocationErr := r.getProxyData(svc, requestedServiceAddress, log)
-
-	stopAllProxies := func() {
-		for _, proxyInstanceData := range proxies {
-			proxyInstanceData.stopProxy()
-		}
-	}
-
 	if portAllocationErr != nil {
-		stopAllProxies()
-		return fmt.Errorf("could not create the proxy for the service: %w", portAllocationErr)
+		stopProxies(proxies, log)
+		return psd, fmt.Errorf("could not create the proxy for the service: port allocation failed: %w", portAllocationErr)
 	}
 
-	if !r.noProxyStartOption() {
-		for _, proxyInstanceData := range proxies {
-			err = proxyInstanceData.proxy.Start()
-			if err != nil {
-				stopAllProxies()
-				return fmt.Errorf("could not start the proxy for the service: %w", err)
-			} else {
-				log.V(1).Info("service proxy started",
-					"ProxyListenAddress", proxyInstanceData.proxy.ListenAddress,
-					"ProxyListenPort", proxyInstanceData.proxy.ListenPort,
-					"ProxyEffectiveAddress", proxyInstanceData.proxy.EffectiveAddress,
-					"ProxyEffectivePort", proxyInstanceData.proxy.EffectivePort,
-				)
-			}
+	for _, proxyInstanceData := range proxies {
+		startErr := proxyInstanceData.proxy.Start()
+		if startErr != nil {
+			stopProxies(proxies, log)
+			return psd, fmt.Errorf("could not start the proxy for the service: %w", startErr)
+		} else {
+			log.V(1).Info("service proxy started",
+				"ProxyListenAddress", proxyInstanceData.proxy.ListenAddress(),
+				"ProxyListenPort", proxyInstanceData.proxy.ListenPort(),
+				"ProxyEffectiveAddress", proxyInstanceData.proxy.EffectiveAddress(),
+				"ProxyEffectivePort", proxyInstanceData.proxy.EffectivePort(),
+			)
 		}
 	}
 
@@ -379,9 +425,8 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 		"EffectivePort", svc.Status.EffectivePort,
 	)
 
-	r.proxyData.Store(svc.NamespacedName(), proxies)
-
-	return nil
+	psd.proxies = proxies
+	return psd, nil
 }
 
 // Allocates (but does not start) proxy instances for the given service.
@@ -454,7 +499,7 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 
 		proxyCtx, cancelFunc := context.WithCancel(r.lifetimeCtx)
 		proxies = append(proxies, proxyInstanceData{
-			proxy:     proxy.NewProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
+			proxy:     r.createProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
 			stopProxy: cancelFunc,
 		})
 	}
@@ -462,40 +507,13 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 	return proxies, portAllocationErr
 }
 
-func (r *ServiceReconciler) noProxyStartOption() bool {
-	if v := r.lifetimeCtx.Value(ServiceReconcilerProxyHandling); v != nil {
-		if ph, ok := v.(ProxyHandlingOptionValue); ok && ph == DoNotStartProxies {
-			return true
-		}
-	}
-
-	return false
-}
-
 func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceData, requestedServiceAddress string) (string, int32) {
 	if len(proxies) == 0 {
 		return "", 0
 	}
 
-	var getProxyAddress func(*proxy.Proxy) string
-	var getProxyPort func(*proxy.Proxy) int32
-	var isEligibleProxy func(*proxy.Proxy) bool
-
-	if r.noProxyStartOption() {
-		// This happens only when the reconciler is running under test harness (integration tests).
-		// Since the proxy is not actually started, we are going to report the proxy listen address/port
-		// (from proxy initialization data) as the effective address/port.
-		getProxyAddress = func(p *proxy.Proxy) string { return p.ListenAddress }
-		getProxyPort = func(p *proxy.Proxy) int32 { return p.ListenPort }
-		isEligibleProxy = func(p *proxy.Proxy) bool { return true }
-	} else {
-		getProxyAddress = func(p *proxy.Proxy) string { return p.EffectiveAddress }
-		getProxyPort = func(p *proxy.Proxy) int32 { return p.EffectivePort }
-		isEligibleProxy = func(p *proxy.Proxy) bool { return p.State() == proxy.ProxyStateRunning }
-	}
-
 	eligibleProxies := slices.Select(proxies, func(pd proxyInstanceData) bool {
-		return isEligibleProxy(pd.proxy)
+		return pd.proxy.State() == proxy.ProxyStateRunning
 	})
 	if len(eligibleProxies) == 0 {
 		return "", 0
@@ -509,10 +527,10 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 	if requestedServiceAddress == networking.Localhost {
 		portsInUse := make(map[int32]bool)
 		for _, pd := range eligibleProxies {
-			portsInUse[getProxyPort(pd.proxy)] = true
+			portsInUse[pd.proxy.EffectivePort()] = true
 		}
 		if len(portsInUse) == 1 {
-			return networking.Localhost, getProxyPort(eligibleProxies[0].proxy)
+			return networking.Localhost, eligibleProxies[0].proxy.EffectivePort()
 		}
 	}
 
@@ -528,17 +546,17 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		isPreferredAddress = networking.IsIPv4
 	}
 	preferredProxies := slices.Select(eligibleProxies, func(pd proxyInstanceData) bool {
-		return isPreferredAddress(getProxyAddress(pd.proxy))
+		return isPreferredAddress(pd.proxy.EffectiveAddress())
 	})
 
-	var sourceProxy *proxy.Proxy
+	var sourceProxy proxy.Proxy
 	if len(preferredProxies) > 0 {
 		sourceProxy = preferredProxies[0].proxy
 	} else {
 		sourceProxy = eligibleProxies[0].proxy
 	}
 
-	return getProxyAddress(sourceProxy), getProxyPort(sourceProxy)
+	return sourceProxy.EffectiveAddress(), sourceProxy.EffectivePort()
 }
 
 func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
@@ -573,4 +591,13 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 	}
 
 	return requestedServiceAddress, nil
+}
+
+func stopProxies(proxies []proxyInstanceData, log logr.Logger) {
+	if len(proxies) > 0 {
+		log.V(1).Info("stopping all proxies...")
+		for _, proxyInstanceData := range proxies {
+			proxyInstanceData.stopProxy()
+		}
+	}
 }

@@ -1,12 +1,16 @@
 {
-    "languageSettings": [
-       {
-            "languageId": "markdown",
-            "enabled": true
-       },
-       {
-            "languageId": "go",
-            "enabled": false
-       }
+    "language": "en",
+    "useGitignore": true,
+    "dictionaries": [
+        "en_US",
+        "go",
+        "softwareTerms"
+    ],
+    "includeRegExpList": [
+         "CStyleComment"
+    ],
+    "ignoreWords": [
+        "finalizer",
+        "debouncer"
     ]
 }

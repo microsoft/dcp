@@ -33,7 +33,7 @@ func TestInvalidProxyMode(t *testing.T) {
 	t.Parallel()
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	require.Panics(t, func() { NewProxy("tcp", "", 0, ctx, logr.Discard()) })
+	require.Panics(t, func() { newNetProxy("tcp", "", 0, ctx, logr.Discard()) })
 }
 
 func TestTCPModeProxy(t *testing.T) {
@@ -115,7 +115,7 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	proxy.connectionTimeout = 500 * time.Millisecond
 
 	// Write some data to the proxy
-	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress, proxy.EffectivePort))
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn)
 	msg := []byte("This is amazing!")
@@ -229,7 +229,7 @@ func TestRandomEndpointSelection(t *testing.T) {
 	const tries = 20
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	proxy := NewProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 	defer cancelFunc()
 
@@ -274,21 +274,21 @@ func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
 	return serverListener, effectivePort
 }
 
-func setupTcpProxy(t *testing.T, ctx context.Context) *Proxy {
+func setupTcpProxy(t *testing.T, ctx context.Context) *netProxy {
 	// For debugging you can replace logr.Discard() with "log" and set DCP_DIAGNOSTICS_LOG_LEVEL=debug
-	proxy := NewProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
 	require.NoError(t, err)
-	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress)
-	require.Greater(t, proxy.EffectivePort, int32(0))
+	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress())
+	require.Greater(t, proxy.EffectivePort(), int32(0))
 	return proxy
 }
 
-func verifiyProxiedTcpConnection(t *testing.T, proxy *Proxy, server net.Listener) {
+func verifiyProxiedTcpConnection(t *testing.T, proxy *netProxy, server net.Listener) {
 	// Set up a client
-	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress, proxy.EffectivePort))
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
 	require.NoError(t, err)
 	require.NotNil(t, clientConn)
 
@@ -321,18 +321,18 @@ func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
 	return serverConn, effectivePort
 }
 
-func setupUdpProxy(t *testing.T, ctx context.Context) *Proxy {
-	proxy := NewProxy(apiv1.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+func setupUdpProxy(t *testing.T, ctx context.Context) *netProxy {
+	proxy := newNetProxy(apiv1.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
 	require.NoError(t, err)
-	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress)
-	require.Greater(t, proxy.EffectivePort, int32(0))
+	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress())
+	require.Greater(t, proxy.EffectivePort(), int32(0))
 	return proxy
 }
 
-func verifyProxiedUdpConnection(t *testing.T, proxy *Proxy, serverConn net.PacketConn) {
+func verifyProxiedUdpConnection(t *testing.T, proxy *netProxy, serverConn net.PacketConn) {
 	// Set up a client
 	clientConn, err := net.ListenPacket("udp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, 0))
 	require.NoError(t, err)
@@ -346,13 +346,13 @@ func verifyProxiedUdpConnection(t *testing.T, proxy *Proxy, serverConn net.Packe
 
 func verifyUDPPacketFlow(
 	t *testing.T,
-	proxy *Proxy,
+	proxy *netProxy,
 	serverConn net.PacketConn,
 	clientConn net.PacketConn,
 ) {
 	// Have the client send a message
 	msg := []byte(testutil.GetRandLetters(t, 6))
-	n, err := clientConn.WriteTo(msg, &net.UDPAddr{IP: net.ParseIP(proxy.EffectiveAddress), Port: int(proxy.EffectivePort)})
+	n, err := clientConn.WriteTo(msg, &net.UDPAddr{IP: net.ParseIP(proxy.EffectiveAddress()), Port: int(proxy.EffectivePort())})
 	require.NoError(t, err)
 	require.Equal(t, len(msg), n)
 
@@ -377,7 +377,7 @@ func verifyUDPPacketFlow(
 	n, proxyAddr, err := clientConn.ReadFrom(buffer)
 	require.NoError(t, err)
 	require.Equal(t, len(msg), n)
-	require.Equal(t, proxy.EffectiveAddress, proxyAddr.(*net.UDPAddr).IP.String())
-	require.Equal(t, proxy.EffectivePort, int32(proxyAddr.(*net.UDPAddr).Port))
+	require.Equal(t, proxy.EffectiveAddress(), proxyAddr.(*net.UDPAddr).IP.String())
+	require.Equal(t, proxy.EffectivePort(), int32(proxyAddr.(*net.UDPAddr).Port))
 	require.True(t, bytes.Equal(buffer, msg), "Response message received by the client ('%s') is not the same as the message sent by the server ('%s')", string(buffer), string(msg))
 }

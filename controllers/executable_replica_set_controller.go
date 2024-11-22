@@ -329,7 +329,7 @@ func (r *ExecutableReplicaSetReconciler) deleteReplicas(ctx context.Context, rep
 // Changes to Executables "owned" by a given ExecutableReplicaSet will also trigger our reconciler loop,
 // allowing us to respond to changes to both the ExecutableReplicaSet as well as its child Executables.
 func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-	reconciliationDelay := additionalReconciliationDelay
+	reconciliationDelay := defaultAdditionalReconciliationDelay
 
 	log := r.Log.WithValues("ExecutableReplicaSet", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
 

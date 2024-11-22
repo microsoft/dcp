@@ -3,11 +3,13 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"testing"
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -16,12 +18,33 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/nettest"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	// Unique ports for tests that require them
+	pBecomesReady int32 = 30500 + iota
+	pBecomesReadyEndpoint
+	pBecomesReadyMultipleReplicasProcess
+	pBecomesReadyMultipleReplicasIde
+	pDelayedCreationExe
+	pDelayedCreationContainer
+	pDelayedCreationService
+	pConsumableAfterLatePortAllocation
+	pProxyless
+	pProxylessMultipleEndpoints1
+	pProxylessMultipleEndpoints2
+	pProxylessMultipleEndpoints3
+	pRetriesProxyStart
+	pRetriesProxyStartEndpoint
+	pReadyAfterTransientProxyFailure
+	pReadyAfterTransientProxyFailureEndpoint
 )
 
 func TestServiceBecomesReady(t *testing.T) {
 	proxyAddress := "127.5.6.7"
-	proxyPort := int32(5678)
+	proxyPort := pBecomesReady
 
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -61,7 +84,7 @@ func TestServiceBecomesReady(t *testing.T) {
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
 			Address:          networking.IPv4LocalhostDefaultAddress,
-			Port:             1234,
+			Port:             pBecomesReadyEndpoint,
 		},
 	}
 
@@ -98,7 +121,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 				Spec: apiv1.ServiceSpec{
 					Protocol: apiv1.TCP,
 					Address:  "127.32.15.120",
-					Port:     19825,
+					Port:     pBecomesReadyMultipleReplicasProcess,
 				},
 			},
 			ers: &apiv1.ExecutableReplicaSet{
@@ -135,7 +158,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 				Spec: apiv1.ServiceSpec{
 					Protocol: apiv1.TCP,
 					Address:  "127.32.15.121",
-					Port:     19826,
+					Port:     pBecomesReadyMultipleReplicasIde,
 				},
 			},
 			ers: &apiv1.ExecutableReplicaSet{
@@ -210,7 +233,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "test-service-delayed-creation",
 			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":56789}]`, svcName)},
+			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{ "serviceName":"%s", "address":"127.0.0.1", "port":%d }]`, svcName, pDelayedCreationExe)},
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "path/to/test-service-delayed-creation",
@@ -236,7 +259,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 			Ports: []apiv1.ContainerPort{
 				{
 					ContainerPort: 80,
-					HostPort:      56790,
+					HostPort:      pDelayedCreationContainer,
 				},
 			},
 		},
@@ -258,7 +281,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 		Spec: apiv1.ServiceSpec{
 			Protocol: apiv1.TCP,
 			Address:  "127.10.10.134",
-			Port:     57003,
+			Port:     pDelayedCreationService,
 		},
 	}
 
@@ -288,7 +311,6 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 
 	const testName = "test-service-consumable-after-late-port-allocation"
 	const svcAddress = networking.IPv4LocalhostDefaultAddress
-	const endpointPort = 49902
 
 	svc := apiv1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -366,7 +388,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
 			Address:          svcAddress,
-			Port:             endpointPort,
+			Port:             pConsumableAfterLatePortAllocation,
 		},
 	}
 
@@ -377,7 +399,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 	t.Logf("Ensure Service '%s' assumed Ready state...", svc.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
 		correctState := s.Status.State == apiv1.ServiceStateReady
-		portCorrect := s.Status.EffectivePort == endpointPort
+		portCorrect := s.Status.EffectivePort == pConsumableAfterLatePortAllocation
 		return correctState && portCorrect, nil
 	})
 
@@ -386,7 +408,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 	require.NoError(t, err, "Container '%s' was not started as expected", ctr.ObjectMeta.Name)
 
 	t.Logf("Ensure Executable '%s' is running and has the Service port injected...", exe.ObjectMeta.Name)
-	expectedEnvVar := fmt.Sprintf("PORT=%d", endpointPort)
+	expectedEnvVar := fmt.Sprintf("PORT=%d", pConsumableAfterLatePortAllocation)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		effectiveEnv := slices.Map[apiv1.EnvVar, string](currentExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
@@ -499,7 +521,7 @@ func TestServiceProxyless(t *testing.T) {
 			Ports: []apiv1.ContainerPort{
 				{
 					ContainerPort: 80,
-					HostPort:      56791,
+					HostPort:      pProxyless,
 				},
 			},
 		},
@@ -519,7 +541,7 @@ func TestServiceProxyless(t *testing.T) {
 
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
 		addressCorrect := s.Status.EffectiveAddress == networking.IPv4LocalhostDefaultAddress // The default address for Proxyless containers
-		portCorrect := s.Status.EffectivePort == 56791
+		portCorrect := s.Status.EffectivePort == pProxyless
 		return addressCorrect && portCorrect, nil
 	})
 }
@@ -551,7 +573,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
 			Address:          networking.Localhost,
-			Port:             56792,
+			Port:             pProxylessMultipleEndpoints1,
 		},
 	}
 
@@ -564,7 +586,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
 			Address:          networking.Localhost,
-			Port:             56793,
+			Port:             pProxylessMultipleEndpoints2,
 		},
 	}
 
@@ -577,7 +599,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 			ServiceNamespace: svc.ObjectMeta.Namespace,
 			ServiceName:      svc.ObjectMeta.Name,
 			Address:          networking.Localhost,
-			Port:             56794,
+			Port:             pProxylessMultipleEndpoints3,
 		},
 	}
 
@@ -738,4 +760,104 @@ func TestServiceAllAddressesIPv6(t *testing.T) {
 		portCorrect := networking.IsValidPort(int(s.Status.EffectivePort))
 		return addressCorrect && portCorrect, nil
 	})
+}
+
+// Ensure that the Service controller retries starting the proxy.
+// If the proxy fails to start despite multiple atttempts, the service should remain
+// in the NotReady state.
+func TestServiceRetriesProxyStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svcName := "test-service-retries-proxy-start"
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  networking.Localhost,
+			Port:     pRetriesProxyStart,
+		},
+	}
+
+	// The proxy will never start for the pRetriesProxyStart port.
+	ctrl_testutil.InjectProxyStartFailures(pRetriesProxyStart, math.MaxUint32)
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service '%s'", svc.ObjectMeta.Name)
+
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		sf, found := ctrl_testutil.GetStartFailureData(pRetriesProxyStart)
+		require.True(t, found)
+		return sf.Attempts >= controllers.MaxServiceStartAttempts, nil
+	})
+	require.NoError(t, err, "Service should make at least %d attempts to start", controllers.MaxServiceStartAttempts)
+
+	t.Logf("Ensure Service '%s' failed to start and is in NotReady state...", svc.ObjectMeta.Name)
+	_ = waitObjectAssumesState(t, ctx, svc.NamespacedName(), func(svc *apiv1.Service) (bool, error) {
+		return svc.Status.State == apiv1.ServiceStateNotReady, nil
+	})
+	t.Logf("Service '%s' is in NotReady state.", svc.ObjectMeta.Name)
+}
+
+// Ensure that the Service gets to Ready state even if the proxy fails to start initially.
+func TestServiceGetsReadyAfterTransientProxyFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svcName := "test-service-ready-after-transient-proxy-failure"
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  networking.Localhost,
+			Port:     pReadyAfterTransientProxyFailure,
+		},
+	}
+
+	const failureCount = 5
+	require.Less(t, failureCount, controllers.MaxServiceStartAttempts)
+	ctrl_testutil.InjectProxyStartFailures(pReadyAfterTransientProxyFailure, failureCount)
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service '%s'", svc.ObjectMeta.Name)
+
+	t.Logf("Ensure Service '%s' makes expected number of attempts to start the proxy...", svc.ObjectMeta.Name)
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		sf, found := ctrl_testutil.GetStartFailureData(pReadyAfterTransientProxyFailure)
+		require.True(t, found)
+		return sf.Attempts >= failureCount, nil
+	})
+	require.NoError(t, err, "Service should make at least %d attempts to start", failureCount)
+
+	endpoint := apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName + "-endpoint",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceNamespace: svc.ObjectMeta.Namespace,
+			ServiceName:      svc.ObjectMeta.Name,
+			Address:          networking.Localhost,
+			Port:             pReadyAfterTransientProxyFailureEndpoint,
+		},
+	}
+
+	t.Logf("Creating Endpoint '%s'", endpoint.ObjectMeta.Name)
+	err = client.Create(ctx, &endpoint)
+	require.NoError(t, err, "Could not create Endpoint '%s", endpoint.ObjectMeta.Name)
+
+	t.Logf("Ensure Service '%s' is in Ready state...", svc.ObjectMeta.Name)
+	_ = waitServiceReady(t, ctx, &svc)
 }

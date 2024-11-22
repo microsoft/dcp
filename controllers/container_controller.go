@@ -150,7 +150,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 }
 
 func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Setup a client side index to allow quickly finding all ContainerNetworkConnections owned by a Continer.
+	// Setup a client side index to allow quickly finding all ContainerNetworkConnections owned by a Container.
 	// Behind the scenes this is using listers and informers to keep an index on an internal cache owned by
 	// the Manager up to date.
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.ContainerNetworkConnection{}, ownerKey, func(rawObj ctrl_client.Object) []string {
@@ -222,7 +222,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	reconciliationDelay := additionalReconciliationDelay
+	reconciliationDelay := defaultAdditionalReconciliationDelay
 	if container.Status.State == apiv1.ContainerStateRuntimeUnhealthy && (change&additionalReconciliationNeeded) == 0 {
 		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
 		reconciliationDelay = time.Duration(rand.Intn(5)+5) * time.Second
@@ -249,11 +249,11 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 	return change
 }
 
-// STATE INITIALIZER FUNCIONS
+// STATE INITIALIZER FUNCTIONS
 
 func (r *ContainerReconciler) canBeDeleted(container *apiv1.Container) bool {
-	// Note: if the Container object is being deleted, but the correspoinding container is in the process of starting or stopping,
-	// we need the container startup/shutdown to finish, before attemptin to delete the Container object.
+	// Note: if the Container object is being deleted, but the corresponding container is in the process of starting or stopping,
+	// we need the container startup/shutdown to finish, before attempting to delete the Container object.
 	// Otherwise we will be left with a dangling container that no one owns.
 	//
 	// Also if the container is running or paused, we need to stop it first.
@@ -280,7 +280,7 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 
 	// Note that we are not going to make any other changes to the Container object.
 	// It is being deleted, and any changes not only will be lost,
-	// but may trigger addtional reconciliations that are not needed.
+	// but may trigger additional reconciliations that are not needed.
 
 	change := deleteFinalizer(container, containerFinalizer, log)
 	return change
@@ -342,7 +342,7 @@ func ensureContainerBuildingState(
 	}
 
 	// The attempt to build the container is generally asynchronous, but it may fail or succeed immediately.
-	// The former could be due to some non-trainsient error from the container orchestrator.
+	// The former could be due to some non-transient error from the container orchestrator.
 	// The latter could be because we are dealing with a persistent Container and we found a matching, existing container resource.
 	// Either way, even if we are just waiting for the container to build, the Status of the Container object may be stale.
 	// It might be just a caching issue, but it also might be because of a write conflict during last update,
@@ -416,7 +416,7 @@ func ensureContainerStartingState(
 	}
 
 	// The attempt to start the container is generally asynchronous, but it may fail or succeed immediately.
-	// The former could be due to some non-trainsient error from the container orchestrator.
+	// The former could be due to some non-transient error from the container orchestrator.
 	// The latter could be because we are dealing with a persistent Container and we found a matching, existing container resource.
 	// Either way, even if we are just waiting for the container to start, the Status of the Container object may be stale.
 	// It might be just a caching issue, but it also might be because of a write conflict during last update,
@@ -462,7 +462,7 @@ func updateContainerData(
 
 	containerID, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
 	if !found {
-		// Should never happen--the runningContaienrs map should have the data about the Container object.
+		// Should never happen--the runningContainers map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
 		return ensureContainerUnknownState(ctx, r, container, desiredState, log)
 	}
@@ -522,7 +522,7 @@ func ensureContainerExitedState(ctx context.Context,
 
 	containerID, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
 	if !found {
-		// Should never happen--the runningContaienrs map should have the data about the Container object.
+		// Should never happen--the runningContainers map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
 		return ensureContainerUnknownState(ctx, r, container, desiredState, log)
 	}
@@ -577,7 +577,7 @@ func ensureContainerUnknownState(
 	r.cleanupDcpContainerResources(ctx, container, log)
 	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
 	if !found {
-		// Should never happen--the runningContaienrs map should have the data about the Container object.
+		// Should never happen--the runningContainers map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
 	} else {
 		rcd.containerState = apiv1.ContainerStateUnknown
@@ -598,7 +598,7 @@ func ensureContainerStoppingState(
 
 	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
 	if !found {
-		// Should never happen--the runningContaienrs map should have the data about the Container object.
+		// Should never happen--the runningContainers map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
 		return ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
 	}
@@ -826,7 +826,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					_, volErr := os.Stat(volume.Source)
 					if errors.Is(volErr, os.ErrNotExist) {
 						volErr = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
-						if err != nil {
+						if volErr != nil {
 							log.Error(volErr, "could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
 							return volErr
 						}
@@ -902,13 +902,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				rcd.containerState = apiv1.ContainerStateRunning
 			} else {
 				// If a container resource is created without a network, it cannot be connected to a network later (orchestrator limitation).
-				// So for Containers that request attaching to custom networks via Spec, we create the corresponding ocontainer resource
+				// So for Containers that request attaching to custom networks via Spec, we create the corresponding container resource
 				// attached to default network(s) (usually one: "bridge" for Docker or "podman" for Podman).
 				// Here we detach it from the default network(s). Then we leave the Container object in "starting" state,
 				// and save the changes.
 				//
 				// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
-				// The Network controller takes care of connecting the container resournce to requested networks.
+				// The Network controller takes care of connecting the container resource to requested networks.
 				if !container.Spec.Persistent {
 					for i := range inspected.Networks {
 						networkID := inspected.Networks[i].Id
