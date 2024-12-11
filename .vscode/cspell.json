@@ -10,9 +10,10 @@
          "CStyleComment"
     ],
     "ignoreWords": [
-        "finalizer",
+        "finalizer", "finalizers",
         "debouncer",
         "unbuffered",
-        "interruptible"
+        "interruptible",
+        "waitable"
     ]
 }

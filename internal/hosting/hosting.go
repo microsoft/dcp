@@ -106,7 +106,7 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 				}
 			}()
 
-			err := host.runService(ctx, service, messages)
+			err := host.runService(ctx, service)
 			messages <- LifecycleMessage{ServiceName: service.Name(), Err: err}
 		}()
 	}
@@ -161,7 +161,7 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 	return nil
 }
 
-func (host *Host) runService(ctx context.Context, service Service, messages chan<- LifecycleMessage) error {
+func (host *Host) runService(ctx context.Context, service Service) error {
 	err := service.Run(ctx)
 
 	// Suppress a cancellation-related error. That's a graceful exit.

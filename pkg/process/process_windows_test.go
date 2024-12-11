@@ -24,7 +24,7 @@ const (
 	STILL_ACTIVE = 259
 )
 
-func ensureAllStopped(t *testing.T, pids []Pid_t, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, processes []ProcessTreeItem, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -33,16 +33,16 @@ func ensureAllStopped(t *testing.T, pids []Pid_t, timeout time.Duration) {
 		100*time.Millisecond,
 		true, // Don't wait before polling for the first time
 		func(_ context.Context) (bool, error) {
-			noStopped := slices.LenIf(pids, isStopped)
-			return noStopped == len(pids), nil
+			noStopped := slices.LenIf(processes, isStopped)
+			return noStopped == len(processes), nil
 		},
 	)
 
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pid Pid_t) bool {
-	osPid, err := PidT_ToUint32(pid)
+func isStopped(pp ProcessTreeItem) bool {
+	osPid, err := PidT_ToUint32(pp.Pid)
 	if err != nil {
 		// Invalid PID value, so there is no process with such ID
 		return true

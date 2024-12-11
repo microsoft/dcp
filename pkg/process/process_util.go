@@ -13,16 +13,27 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
+type ProcessTreeItem struct {
+	Pid          Pid_t
+	CreationTime time.Time
+}
+
+func getIDs(items []ProcessTreeItem) []Pid_t {
+	return slices.Map[ProcessTreeItem, Pid_t](items, func(item ProcessTreeItem) Pid_t {
+		return item.Pid
+	})
+}
+
 // Returns the list of ID for a given process and its children
 // The list is ordered starting with the root of the hierarchy, then the children, then the grandchildren etc.
-func GetProcessTree(pid Pid_t) ([]Pid_t, error) {
+func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
 	procs, err := ps.Processes()
 	if err != nil {
 		return nil, err
 	}
 
-	tree := []Pid_t{}
-	next := []Pid_t{pid}
+	tree := []ProcessTreeItem{}
+	next := []ProcessTreeItem{rootP}
 
 	for len(next) > 0 {
 		current := next[0]
@@ -34,15 +45,18 @@ func GetProcessTree(pid Pid_t) ([]Pid_t, error) {
 			if ppidErr != nil {
 				panic(ppidErr)
 			}
-			return ppid == current
+			return ppid == current.Pid
 		})
 
-		next = append(next, slices.Map[ps.Process, Pid_t](children, func(p ps.Process) Pid_t {
+		next = append(next, slices.Map[ps.Process, ProcessTreeItem](children, func(p ps.Process) ProcessTreeItem {
 			processPID, pidConversionErr := IntToPidT(p.PID())
 			if pidConversionErr != nil {
 				panic(pidConversionErr)
 			}
-			return processPID
+			return ProcessTreeItem{
+				Pid:          processPID,
+				CreationTime: p.CreationTime(),
+			}
 		})...)
 	}
 

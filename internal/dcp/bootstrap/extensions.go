@@ -46,7 +46,7 @@ var (
 		"dcpctrl": {
 			Name:         "DCP controller host",
 			Id:           "dcpctrl",
-			Capabilities: []extensions.ExtensionCapability{extensions.ControllerCapability},
+			Capabilities: []extensions.ExtensionCapability{extensions.ControllerCapability, extensions.ProcessMonitorCapability},
 		},
 	}
 )
@@ -77,7 +77,7 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 			}
 
 			// The following will interrogate each extension serially. If we have a lot of extensions,
-			// we may want to parallelise this (e.g. using MapConcurrent()).
+			// we may want to parallelize this (e.g. using MapConcurrent()).
 
 			isExe := false
 			if runtime.GOOS == "windows" {
@@ -107,7 +107,7 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 func getExtensionCapabilities(ctx context.Context, path string, log logr.Logger) (DcpExtension, error) {
 	processExecutor := process.NewOSExecutor(log.WithName("extensions"))
 	if expandedPath, err := filepath.EvalSymlinks(path); err == nil {
-		// We will just do the get-capabilites call (slow path) if EvalSymlinks() fails.
+		// We will just do the get-capabilities call (slow path) if EvalSymlinks() fails.
 		exeName := filepath.Base(expandedPath)
 		ext := filepath.Ext(exeName)
 		if ext != "" && len(ext) < len(exeName) {

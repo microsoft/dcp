@@ -2,6 +2,8 @@ package process
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os/exec"
 	"time"
 )
@@ -12,6 +14,10 @@ const (
 
 	// Unknown PID code is used when replica is not started (or fails to start)
 	UnknownPID Pid_t = -1
+)
+
+var (
+	ErrTimedOutWaitingForProcessToStop = errors.New("timed out waiting for process to stop")
 )
 
 // Pid_t is a type used to represent process IDs.
@@ -45,3 +51,18 @@ type ProcessExitHandlerFunc func(Pid_t, int32, error)
 func (f ProcessExitHandlerFunc) OnProcessExited(pid Pid_t, exitCode int32, err error) {
 	f(pid, exitCode, err)
 }
+
+type ErrProcessNotFound struct {
+	Pid   Pid_t
+	Inner error
+}
+
+func (e ErrProcessNotFound) Error() string {
+	if e.Inner == nil {
+		return fmt.Sprintf("process %d not found", e.Pid)
+	} else {
+		return fmt.Sprintf("process %d not found: %v", e.Pid, e.Inner.Error())
+	}
+}
+
+var _ error = ErrProcessNotFound{}

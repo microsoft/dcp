@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -131,7 +130,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			BeforeApiSrvShutdown: func() error {
 				// If we are in server-only mode (no standard controllers) such as when running tests,
 				// there is high likelihood that we won't be able to delete all the application resources,
-				// becasue no one will be able to complete the resource-related cleanup and remove all finalizers from the resources.
+				// because no one will be able to complete the resource-related cleanup and remove all finalizers from the resources.
 				if serverOnly {
 					return nil
 				}
@@ -158,7 +157,10 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{"--kubeconfig", kconfig.Path(), "--monitor", strconv.Itoa(os.Getpid()), container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue())}
+		invocationFlags := []string{
+			"--kubeconfig", kconfig.Path(),
+			container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()),
+		}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}

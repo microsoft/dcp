@@ -3,10 +3,13 @@ package bootstrap
 import (
 	"os"
 	"os/exec"
+	"strconv"
 
 	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
+	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string, invocationFlags []string, log logr.Logger) (*hosting.CommandService, error) {
@@ -15,6 +18,10 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 		allArgs = append(allArgs, command)
 	}
 	allArgs = append(allArgs, invocationFlags...)
+	isProcessMonitor := slices.Contains(ext.Capabilities, extensions.ProcessMonitorCapability)
+	if isProcessMonitor {
+		allArgs = append(allArgs, "--monitor", strconv.Itoa(os.Getpid()))
+	}
 	cmd := exec.Command(ext.Path, allArgs...)
 	cmd.Env = os.Environ() // Use DCP CLI environment
 	cmd.Dir = appRootDir
@@ -27,5 +34,9 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	// before terminating the API server.
 	process.DecoupleFromParent(cmd)
 
-	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor(log), hosting.CommandServiceRunOptionShowStderr, log), nil
+	hostingOpts := hosting.CommandServiceRunOptionShowStderr
+	if isProcessMonitor {
+		hostingOpts |= hosting.CommandServiceRunOptionDontTerminate
+	}
+	return hosting.NewCommandService(ext.Name, cmd, process.NewOSExecutor(log), hostingOpts, log), nil
 }

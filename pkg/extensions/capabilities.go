@@ -12,9 +12,19 @@ import (
 type ExtensionCapability string
 
 const (
-	ControllerCapability       ExtensionCapability = "controller"
+	// The extension is a controller host.
+	ControllerCapability ExtensionCapability = "controller"
+
+	// The extension is a workload renderer.
 	WorkloadRendererCapability ExtensionCapability = "workload-renderer"
-	ApiServerCapability        ExtensionCapability = "api-server"
+
+	// The extension is the API server (there can be only one).
+	ApiServerCapability ExtensionCapability = "api-server"
+
+	// The extension accepts --monitor flag for parent process monitoring.
+	// This implies it should not be terminated when DCP is shutting down; it will exit on its own when DCP process exist.
+	// This allows it to perform a graceful shutdown.
+	ProcessMonitorCapability ExtensionCapability = "process-monitor"
 )
 
 type ExtensionCapabilities struct {

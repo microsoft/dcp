@@ -3,7 +3,6 @@
 package process
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -13,11 +12,16 @@ import (
 	"time"
 )
 
+const (
+	// The timeout for sending a signal and waiting for the process to exit.
+	signalAndWaitTimeout = 6 * time.Second
+)
+
 func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
 	proc, err := FindProcess(pid, processStartTime)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
-			return nil, fmt.Errorf("could not find process %d: %w", pid, err)
+			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
@@ -47,11 +51,14 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		case err == nil:
 			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
 			return waitEndedCh, nil
-		case !errors.Is(err, context.DeadlineExceeded):
+		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
+		default:
+			e.log.V(1).Info("process did not stop upon SIGTERM", "pid", pid)
 		}
 	}
 
+	e.log.V(1).Info("sending SIGKILL to process...", "pid", pid)
 	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, waitResultCh)
 	if err != nil {
 		return nil, err
@@ -60,8 +67,6 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 	e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
 	return waitEndedCh, nil
 }
-
-const signalAndWaitTimeout = 10 * time.Second
 
 // Sends a given signal to a process and waits for it to exit.
 // If the process does not exit within 10 seconds, the function returns context.DeadlineExceeded.
@@ -73,9 +78,6 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 	case err != nil:
 		return fmt.Errorf("could not send signal %s to process %d: %w", sig.String(), proc.Pid, err)
 	}
-
-	timeoutCtx, cancelTimeout := context.WithTimeout(context.Background(), signalAndWaitTimeout)
-	defer cancelTimeout()
 
 	select {
 
@@ -97,7 +99,7 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 
 		return fmt.Errorf("could not wait for process %d to exit: %w", proc.Pid, err)
 
-	case <-timeoutCtx.Done():
-		return context.DeadlineExceeded
+	case <-time.After(signalAndWaitTimeout):
+		return ErrTimedOutWaitingForProcessToStop
 	}
 }

@@ -15,7 +15,8 @@ import (
 type CommandServiceRunOptions uint32
 
 const (
-	CommandServiceRunOptionShowStderr CommandServiceRunOptions = 0x1
+	CommandServiceRunOptionShowStderr    CommandServiceRunOptions = 0x1
+	CommandServiceRunOptionDontTerminate CommandServiceRunOptions = 0x2
 )
 
 // CommandService is a Service that runs an external command.
@@ -53,18 +54,48 @@ func (s *CommandService) Run(ctx context.Context) error {
 		reader, writer := usvc_io.NewBufferedPipe()
 		s.cmd.Stderr = writer
 		defer writer.Close() // Ensure the following goroutine exits
+
 		go func() {
 			scanner := bufio.NewScanner(reader)
 			for scanner.Scan() {
+				// Do not check for- and bail out if the context is cancelled here--we want to capture all output
+				// from the command. The scanner will end automatically when the process ends and the writer is closed.
 				line := scanner.Text()
 				fmt.Fprintln(os.Stderr, line)
 			}
 		}()
 	}
 
-	code, err := process.RunToCompletion(ctx, s.executor, s.cmd)
-	s.exitCode = code
-	return err
+	runCtx := ctx
+	if (s.options & CommandServiceRunOptionDontTerminate) != 0 {
+		runCtx = context.Background()
+	}
+
+	pic := make(chan process.ProcessExitInfo, 1)
+	peh := process.NewChannelProcessExitHandler(pic)
+
+	_, _, startWaitForProcessExit, startErr := s.executor.StartProcess(runCtx, s.cmd, peh)
+	if startErr != nil {
+		return startErr
+	}
+
+	startWaitForProcessExit()
+
+	if (s.options & CommandServiceRunOptionDontTerminate) != 0 {
+		select {
+		case exitInfo := <-pic:
+			s.exitCode = exitInfo.ExitCode
+			return exitInfo.Err
+		case <-ctx.Done():
+			return nil
+		}
+	} else {
+		// Context cancel will force the process to exit, so we only need to wait for the latter
+		// (and capture the result).
+		exitInfo := <-pic
+		s.exitCode = exitInfo.ExitCode
+		return exitInfo.Err
+	}
 }
 
 var _ Service = (*CommandService)(nil)

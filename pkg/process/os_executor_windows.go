@@ -4,7 +4,6 @@ package process
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"time"
 )
@@ -13,7 +12,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 	proc, err := FindProcess(pid, processStartTime)
 	if err != nil {
 		if (opts & optNotFoundIsError) != 0 {
-			return nil, fmt.Errorf("could not find process %d: %w", pid, err)
+			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
@@ -39,8 +38,6 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 			return nil, err
 		}
 	}
-
-	e.log.V(1).Info("waiting for process to stop", "pid", pid)
 
 	return waitEndedCh, nil
 }

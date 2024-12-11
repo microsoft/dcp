@@ -12,6 +12,7 @@ import (
 	"github.com/tklauser/ps"
 
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -22,6 +23,11 @@ const (
 	waitReasonNone       waitReason = 0x0
 	waitReasonMonitoring waitReason = 0x1
 	waitReasonStopping   waitReason = 0x2
+
+	// Timeout for getting a confirmation that the child process has exited (return of a wait() call).
+	// Must be greater that 2 * signalAndWaitTimeout, because in worst case we might send up to two signals
+	// and then time out checking if the process exited.
+	waitForProcessExitTimeout = 15 * time.Second
 )
 
 type waitResult struct {
@@ -104,7 +110,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 				stopProcessErr = e.stopProcessInternal(pid, processStartTime, optIsResponsibleForStopping)
 				if stopProcessErr != nil {
 					if handler != nil {
-						// Let the caller know that the process did not stopp upon context expiration
+						// Let the caller know that the process did not stop upon context expiration
 						handler.OnProcessExited(pid, UnknownExitCode, errors.Join(stopProcessErr, ctx.Err()))
 					}
 
@@ -137,7 +143,9 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 // is "stopping the process", and thus IT is the caller that must stop the process.
 func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) (<-chan waitResult, chan struct{}, bool) {
 	doWait := func(ws *waitState) {
+		e.log.V(1).Info("starting waiting for process to exit", "pid", pid)
 		err := ws.waitable.Wait()
+		e.log.V(1).Info("process wait ended", "pid", pid, "Error", logger.FriendlyErrorString(err))
 
 		e.acquireLock()
 		defer e.releaseLock()
@@ -220,41 +228,82 @@ func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
 }
 
 func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
-	tree, err := GetProcessTree(pid)
+	tree, err := GetProcessTree(ProcessTreeItem{pid, processStartTime})
 	if err != nil {
 		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
 	}
 
-	e.log.V(1).Info("stopping process tree", "root", pid, "tree", tree)
+	e.log.V(1).Info("stopping process tree", "root", pid, "tree", getIDs(tree))
 
-	// If the root process cannot be stopped, don't bother with the rest of the tree.
 	procEndedCh, stopErr := e.stopSingleProcess(pid, processStartTime, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
-	if stopErr != nil {
+	if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+		// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
 		e.log.Error(stopErr, "could not stop root process", "root", pid)
 		return stopErr
 	}
 
-	tree = tree[1:] // We have processed the root
-	if len(tree) == 0 {
-		return nil
+	waitForRootProcessToEnd := func() error {
+		if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+			// Do not bother waiting for the confirmation of root process exit, it probably is not going to happen
+			// if a timeout occurred already...
+			e.log.V(1).Info("timed out waiting for root process to stop", "root", pid)
+			return ErrTimedOutWaitingForProcessToStop
+		}
+
+		select {
+		case <-procEndedCh:
+			e.log.V(1).Info("root process has stopped", "root", pid)
+			return nil
+
+		case <-time.After(waitForProcessExitTimeout):
+			e.log.Error(ErrTimedOutWaitingForProcessToStop, "did not get confirmation that the root process has stopped before timeout elapsed", "root", pid)
+			return ErrTimedOutWaitingForProcessToStop
+		}
 	}
 
-	childStoppingErrors := slices.MapConcurrent[Pid_t, error](tree, func(id Pid_t) error {
+	tree = tree[1:] // We have processed the root
+	if len(tree) == 0 {
+		e.log.V(1).Info("the root process has no children", "root", pid)
+		return waitForRootProcessToEnd()
+	}
+
+	e.log.V(1).Info("make sure children of the root processes are gone...", "root", pid, "children", getIDs(tree))
+	childStoppingErrors := slices.MapConcurrent[ProcessTreeItem, error](tree, func(p ProcessTreeItem) error {
 		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
 		const childStopTimeout = 2 * time.Second
+
 		return resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
-			_, childStopErr := e.stopSingleProcess(id, time.Time{}, opts)
+			e.log.V(1).Info("stopping child process...", "child", p.Pid, "root", pid)
+
+			_, childStopErr := e.stopSingleProcess(p.Pid, p.CreationTime, opts&^optNotFoundIsError)
+			if childStopErr != nil {
+				e.log.Error(childStopErr, "could not stop child process", "child", p.Pid, "root", pid)
+			} else {
+				e.log.V(1).Info("child process has stopped (or is gone)", "child", p.Pid, "root", pid)
+			}
+
 			return childStopErr
 		})
 	}, slices.MaxConcurrency)
+
 	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
 	if len(childStoppingErrors) > 0 {
-		return fmt.Errorf("some children processes could not be stopped: %w", errors.Join(childStoppingErrors...))
+		e.log.V(1).Error(errors.Join(childStoppingErrors...), "some child processes could not be stopped", "root", pid)
+	} else {
+		e.log.V(1).Info("all child processes have stopped", "root", pid)
 	}
 
-	<-procEndedCh
+	// Depending on how (grand)children are launched, the os.exec.Cmd.Wait() API may not return until
+	// all grandchildren have exited, so we want to try to kill all these grandchildren BEFORE waiting
+	// for the root process to exit.
+	// And even this is not 100% reliable because
+	//     a. some grandchildren may exit, leaving the great-grandchildren orphaned
+	//     b. we have a time-of-check vs time-of-use problem  with the process tree, which is a snapshot,
+	//        and may be out-of-date for processes spawn children vigorously,
+	// So that is why the following wait operation employs a timeout.
+	rootWaitErr := waitForRootProcessToEnd()
 
-	return nil
+	return errors.Join(append([]error{rootWaitErr}, childStoppingErrors...)...)
 }
 
 type processStoppingOpts uint16

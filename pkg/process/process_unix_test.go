@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tklauser/ps"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	"testing"
@@ -41,9 +42,12 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 
 	pid, err := IntToPidT(cmd.Process.Pid)
 	require.NoError(t, err)
+	pp, ppErr := ps.FindProcess(cmd.Process.Pid)
+	require.NoError(t, ppErr)
+	rootP := ProcessTreeItem{pid, pp.CreationTime()}
 
 	// Only one process should be running, so the "tree" size is 1.
-	ensureProcessTree(t, pid, 1, 5*time.Second)
+	ensureProcessTree(t, rootP, 1, 5*time.Second)
 
 	executor := NewOSExecutor(log)
 	start := time.Now()
@@ -56,10 +60,10 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		// It should not take more than `signalAndWaitTimeout` though.
 		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
-	ensureAllStopped(t, []Pid_t{pid}, 5*time.Second)
+	ensureAllStopped(t, []ProcessTreeItem{rootP}, 5*time.Second)
 }
 
-func ensureAllStopped(t *testing.T, pids []Pid_t, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, processes []ProcessTreeItem, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -68,18 +72,18 @@ func ensureAllStopped(t *testing.T, pids []Pid_t, timeout time.Duration) {
 		100*time.Millisecond,
 		true, // Don't wait before polling for the first time
 		func(_ context.Context) (bool, error) {
-			noStopped := slices.LenIf(pids, isStopped)
-			return noStopped == len(pids), nil
+			noStopped := slices.LenIf(processes, isStopped)
+			return noStopped == len(processes), nil
 		},
 	)
 
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pid Pid_t) bool {
+func isStopped(pp ProcessTreeItem) bool {
 	// On Unix-like systems FindProcess() always succeeds, so it is not a reliable way of checking
 	// if the process is still running.
-	osPid, err := PidT_ToInt(pid)
+	osPid, err := PidT_ToInt(pp.Pid)
 	if err != nil {
 		panic(err)
 	}

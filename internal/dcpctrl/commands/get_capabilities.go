@@ -14,6 +14,7 @@ func NewGetCapabilitiesCommand(logger logger.Logger) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return extensions.WriteCapabiltiesDoc(cmd.OutOrStdout(), "DCP controller host", "dcpctrl", []extensions.ExtensionCapability{
 				extensions.ControllerCapability,
+				extensions.ProcessMonitorCapability,
 			})
 		},
 		Args: cobra.NoArgs,
