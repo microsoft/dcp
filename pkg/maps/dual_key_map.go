@@ -64,7 +64,7 @@ func (m *DualKeyMap[K1, K2, V]) UpdateChangingFirstKey(k1 K1, newk1 K1, k2 K2, v
 	return true
 }
 
-// UpdateChangingSecondKey() is like Update(), execpt it will make the entry available using a new second key value.
+// UpdateChangingSecondKey() is like Update(), except it will make the entry available using a new second key value.
 func (m *DualKeyMap[K1, K2, V]) UpdateChangingSecondKey(k1 K1, k2 K2, newk2 K2, val V) bool {
 	_, found := m.firstMap[k1]
 	if !found {

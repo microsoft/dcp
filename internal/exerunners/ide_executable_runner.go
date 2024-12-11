@@ -47,7 +47,7 @@ func NewStartingState(status apiv1.ExecutableStatus) *startingState {
 type IdeExecutableRunner struct {
 	lock                *sync.Mutex
 	startupQueue        *resiliency.WorkQueue // Queue for starting IDE run sessions
-	activeRuns          *syncmap.Map[controllers.RunID, *runState]
+	activeRuns          *syncmap.Map[controllers.RunID, *runData]
 	log                 logr.Logger
 	lifetimeCtx         context.Context // Lifetime context of the controller hosting this runner
 	connectionInfo      *ideConnectionInfo
@@ -63,7 +63,7 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 	r := &IdeExecutableRunner{
 		lock:           &sync.Mutex{},
 		startupQueue:   resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
-		activeRuns:     &syncmap.Map[controllers.RunID, *runState]{},
+		activeRuns:     &syncmap.Map[controllers.RunID, *runData]{},
 		log:            log,
 		lifetimeCtx:    lifetimeCtx,
 		connectionInfo: connInfo,
@@ -118,10 +118,16 @@ func (r *IdeExecutableRunner) doStartRun(
 ) {
 	var stdOutFile, stdErrFile *os.File
 	namespacedName := exe.NamespacedName()
+	runInfo.RunID = controllers.UnknownRunID
 
-	reportStartupFailure := func() {
+	reportRunCompletion := func(exeState apiv1.ExecutableState) {
 		r.lock.Lock()
 		defer r.lock.Unlock()
+
+		now := metav1.NowMicro()
+		runInfo.StartupTimestamp = now
+		runInfo.FinishTimestamp = now
+		runInfo.ExeState = exeState
 
 		if stdOutFile != nil {
 			_ = stdOutFile.Close()
@@ -134,14 +140,13 @@ func (r *IdeExecutableRunner) doStartRun(
 			runInfo.StdErrFile = ""
 		}
 
-		// Using UnknownRunID will cause the controller to assume that the Executable startup failed.
-		runChangeHandler.OnStartupCompleted(namespacedName, controllers.UnknownRunID, runInfo, func() {})
+		runChangeHandler.OnStartupCompleted(namespacedName, runInfo, func() {})
 	}
 
 	req, reqCancel, err := r.prepareRunRequest(exe)
 	if err != nil {
 		log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
-		reportStartupFailure()
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
 		return
 	}
 	defer reqCancel()
@@ -180,7 +185,7 @@ func (r *IdeExecutableRunner) doStartRun(
 			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
 		}
 
-		reportStartupFailure()
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
 		return
 	}
 	defer resp.Body.Close()
@@ -197,52 +202,66 @@ func (r *IdeExecutableRunner) doStartRun(
 			"Status", resp.Status,
 			"Body", parseResponseBody(respBody),
 		)
-		reportStartupFailure() // The IDE refused to run this Executable
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart) // The IDE refused to run this Executable
 		return
 	}
 
 	sessionURL := resp.Header.Get("Location")
 	if sessionURL == "" {
-		reportStartupFailure()
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
 		return
 	}
+
 	var rid string
 	rid, err = getLastUrlPathSegment(sessionURL)
 	if err != nil {
-		reportStartupFailure()
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart)
+		return
 	}
 
-	runID := controllers.RunID(rid)
-	log.V(1).Info("IDE run session started", "RunID", runID)
-	runInfo.ExecutionID = string(runID)
-	runInfo.StartupTimestamp = metav1.NowMicro()
-
 	r.lock.Lock()
-	defer r.lock.Unlock()
 
-	rs := r.ensureRunState(runID)
-	rs.name = namespacedName
-	rs.sessionURL = sessionURL
-	defer rs.IncreaseCompletionCallReadiness()
-	err = rs.SetOutputWriters(stdOutFile, stdErrFile)
+	runID := controllers.RunID(rid)
+	rd := r.ensureRunData(runID)
+	rd.runID = runID
+	if rd.state == runStateFailedToStart || rd.state == runStateCompleted {
+		// We are not going to use the change handler for this run, but we might need to process some notifications about it,
+		// so we do not want to block on the change handler wait group.
+		rd.DisableChangeHandlerReadiness()
+
+		r.activeRuns.Delete(runID)
+		r.lock.Unlock()
+
+		if rd.state == runStateFailedToStart {
+			runInfo.ExeState = apiv1.ExecutableStateFailedToStart
+		} else {
+			runInfo.ExeState = apiv1.ExecutableStateFinished
+		}
+		reportRunCompletion(runInfo.ExeState)
+
+		return
+	}
+
+	rd.name = namespacedName
+	rd.sessionURL = sessionURL
+	defer rd.IncreaseChangeHandlerReadiness()
+	err = rd.SetOutputWriters(stdOutFile, stdErrFile)
 	if err != nil {
 		log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
 	}
-
-	rs.changeHandler = runChangeHandler
+	rd.changeHandler = runChangeHandler
 	startWaitForRunCompletion := func() {
-		rs.IncreaseCompletionCallReadiness()
+		rd.IncreaseChangeHandlerReadiness()
 	}
+	rd.startRunMethodCompleted = true
 
-	if rs.finished {
-		r.activeRuns.Delete(runID)
-		runInfo.FinishTimestamp = metav1.NowMicro()
-		runInfo.ExeState = apiv1.ExecutableStateFinished
-	} else {
-		runInfo.ExeState = apiv1.ExecutableStateRunning
-	}
+	r.lock.Unlock()
 
-	runChangeHandler.OnStartupCompleted(namespacedName, runID, runInfo, startWaitForRunCompletion)
+	log.V(1).Info("IDE run session started", "RunID", runID)
+	runInfo.RunID = runID
+	runInfo.StartupTimestamp = metav1.NowMicro()
+	runInfo.ExeState = apiv1.ExecutableStateRunning
+	runChangeHandler.OnStartupCompleted(namespacedName, runInfo, startWaitForRunCompletion)
 }
 
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -344,11 +363,14 @@ func (r *IdeExecutableRunner) HandleSessionChange(pcn ideRunSessionProcessChange
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	runState := r.ensureRunState(runID)
-	runState.runID = runID
-	runState.pid = pcn.PID
+	rd := r.ensureRunData(runID)
+	rd.runID = runID
+	rd.pid = pcn.PID
+	if rd.state == runStateNotStarted {
+		rd.state = runStateRunning
+	}
 
-	runState.NotifyRunChangedAsync(r.lock)
+	rd.NotifyRunChangedAsync(r.lock)
 }
 
 func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminatedNotification) {
@@ -363,22 +385,32 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	runState := r.fetchRunStateForDeletion(runID)
-	runState.runID = runID
-	runState.pid = stn.PID
-	runState.exitCode = exitCode
-	runState.CloseOutputWriters()
-	if !runState.finished {
-		close(runState.exitCh)
+	rd := r.ensureRunData(runID)
+	if rd.startRunMethodCompleted {
+		// This is the last time we will hear about this run session, so we can delete it from the active runs map.
+		// If startRunCompleted is false, this notification indicates "failed at startup" run and we need to keep its data
+		// in the active runs till the StartRun() method has a chance to process (and delete) it.
+		r.activeRuns.Delete(runID)
 	}
-	runState.finished = true
-	runState.NotifyRunCompletedAsync(r.lock)
+	rd.runID = runID
+	rd.pid = stn.PID
+	rd.exitCode = exitCode
+	rd.CloseOutputWriters()
+	switch rd.state {
+	case runStateNotStarted:
+		rd.state = runStateFailedToStart
+		close(rd.exitCh)
+	case runStateRunning:
+		rd.state = runStateCompleted
+		close(rd.exitCh)
+	}
+	rd.NotifyRunCompletedAsync(r.lock)
 }
 
 func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {
 	runID := controllers.RunID(nsl.SessionID)
 
-	runState := r.ensureRunState(runID)
+	runState := r.ensureRunData(runID)
 	var err error
 	msg := osutil.WithNewline([]byte(nsl.LogMessage))
 	if nsl.IsStdErr {
@@ -392,27 +424,13 @@ func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {
 	}
 }
 
-func (r *IdeExecutableRunner) ensureRunState(runID controllers.RunID) *runState {
-	// Notifications for a particular run may arrive befeore the call to create a run session returns.
+func (r *IdeExecutableRunner) ensureRunData(runID controllers.RunID) *runData {
+	// Notifications for a particular run may arrive before the call to create a run session returns.
 	// That is why we use LoadOrStoreNew in places where we want to ensure that we have a runState for a given run ID.
-	rs, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runState {
-		return NewRunState(r.lifetimeCtx)
+	rd, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runData {
+		return NewRunData(r.lifetimeCtx)
 	})
-	return rs
-}
-
-func (r *IdeExecutableRunner) fetchRunStateForDeletion(runID controllers.RunID) *runState {
-	runState, found := r.activeRuns.LoadAndDelete(runID)
-	if !found {
-		// If the project has issues, we might receive a very early notification about run session termination,
-		// where that notification is the first piece of information we receive about the run session.
-		// If that is the case we need to create a run state for the run session so that we can store the exit code and run status.
-		// This means this run state will never be removed from activeRuns, but this should happen rarely and it does consume very little memory.
-		// If this proves to be an issue, consider adding a TTL to the run state and scavenge on a timer.
-		runState = NewRunState(r.lifetimeCtx)
-		r.activeRuns.Store(runID, runState)
-	}
-	return runState
+	return rd
 }
 
 func (r *IdeExecutableRunner) makeRequest(

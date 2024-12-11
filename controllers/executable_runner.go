@@ -57,11 +57,11 @@ type RunChangeHandler interface {
 
 	// Called when startup has been completed for a run.
 	// The name parameter contains the name of the Executable that was started (or attempted to start).
-	// If the startup fails, the runID will be UnknownRunID, otherwise the runID will be the ID of the started run.
-	// The supplied runInfo object contains the updated information about the run.
-	// The caller must call the startWaitForRunCompletion function to receive notification about the run's completion
-	// (OnRunCompleted method call will be delayed till startWaitForRunCompletion is called).
+	// The supplied runInfo object will be filled with the updated information about the run.
 	//
-	// Note: in case of syncrhonous startup, this method will be called before ExecutableRunner.StartRun() returns.
-	OnStartupCompleted(name types.NamespacedName, runID RunID, startedRunInfo *ExecutableRunInfo, startWaitForRunCompletion func())
+	// The caller must call the startWaitForRunCompletion function to receive further notifications about the run.
+	// For example, OnRunCompleted method call will be delayed till startWaitForRunCompletion is called.
+	//
+	// In case of synchronous startup, this method will be called before ExecutableRunner.StartRun() returns.
+	OnStartupCompleted(name types.NamespacedName, startedRunInfo *ExecutableRunInfo, startWaitForRunCompletion func())
 }

@@ -98,7 +98,7 @@ func (r *ProcessExecutableRunner) StartRun(
 		stdErrFile: stdErrFile,
 	})
 
-	runInfo.ExecutionID = pidToExecutionID(pid)
+	runInfo.RunID = pidToRunID(pid)
 	if runInfo.Pid == apiv1.UnknownPID {
 		runInfo.Pid = new(int64)
 	}
@@ -106,7 +106,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	runInfo.ExeState = apiv1.ExecutableStateRunning
 	runInfo.StartupTimestamp = metav1.NewMicroTime(startTime)
 
-	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), pidToRunID(pid), runInfo, startWaitForProcessExit)
+	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), runInfo, startWaitForProcessExit)
 
 	return nil
 }
@@ -181,10 +181,6 @@ func runIdToPID(runID controllers.RunID) process.Pid_t {
 		return process.UnknownPID
 	}
 	return pid
-}
-
-func pidToExecutionID(pid process.Pid_t) string {
-	return strconv.FormatInt(int64(pid), 10)
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)

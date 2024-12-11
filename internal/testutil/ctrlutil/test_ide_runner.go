@@ -67,7 +67,7 @@ func (r *TestIdeRunner) StartRun(
 	runID := controllers.RunID("run_" + strconv.Itoa(int(atomic.AddInt32(&r.nextRunID, 1))))
 
 	startingRunInfo.ExeState = apiv1.ExecutableStateStarting
-	startingRunInfo.ExecutionID = string(runID)
+	startingRunInfo.RunID = runID
 
 	run := &TestIdeRun{
 		ID:      runID,
@@ -127,6 +127,7 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 		func(run *TestIdeRun) {
 			run.RunInfo.Pid = new(int64)
 			*run.RunInfo.Pid = int64(pid)
+			run.RunInfo.RunID = runID
 			run.RunInfo.ExeState = apiv1.ExecutableStateRunning
 			run.RunInfo.StartupTimestamp = metav1.NowMicro()
 		},
@@ -159,7 +160,7 @@ func (r *TestIdeRunner) SimulateRunStart(
 		// Make sure OnStartupCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), run.ID, run.RunInfo.DeepCopy(), run.StartWaitingCallback)
+			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), run.RunInfo.DeepCopy(), run.StartWaitingCallback)
 
 			close(done)
 		}()

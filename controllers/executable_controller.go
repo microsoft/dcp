@@ -71,8 +71,8 @@ type ExecutableReconciler struct {
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 
-	// Debouncer used to schedule reconciliations. Extra data carried is the finished run ID.
-	debouncer *reconcilerDebouncer[RunID]
+	// Debouncer used to schedule reconciliations. No extra data is needed for the debouncer.
+	debouncer *reconcilerDebouncer[struct{}]
 
 	// Reconciler lifetime context, used to cancel operations during reconciler shutdown
 	lifetimeCtx context.Context
@@ -97,7 +97,7 @@ func NewExecutableReconciler(
 		hpSet:             healthProbeSet,
 		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
 		notifyRunChanged:  concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		debouncer:         newReconcilerDebouncer[RunID](),
+		debouncer:         newReconcilerDebouncer[struct{}](),
 		lifetimeCtx:       lifetimeCtx,
 		Log:               log,
 	}
@@ -187,11 +187,11 @@ func (r *ExecutableReconciler) manageExecutable(ctx context.Context, exe *apiv1.
 	_, runInfo, found := r.runs.FindByFirstKey(exe.NamespacedName())
 	if found {
 		// In-memory run info is not subject to issues related to caching
-		// and failure to update Executable Status due to conflicst, so it takes precedence.
+		// and failure to update Executable Status due to conflict, so it takes precedence.
 		targetExecutableState = runInfo.ExeState
 	}
 
-	// Even if Exesutable.State == targetExecutableState, we still want to run the initializer
+	// Even if Executable.State == targetExecutableState, we still want to run the initializer
 	// to ensure that Executable.Status is up to date and that the real-world resources
 	// associated with Executable object are up to date.
 	initializer := getStateInitializer(executableStateInitializers, targetExecutableState, log)
@@ -364,11 +364,11 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	}
 
 	switch startingRunInfo.ExeState {
-	case apiv1.ExecutableStateRunning:
+	case apiv1.ExecutableStateRunning, apiv1.ExecutableStateFailedToStart, apiv1.ExecutableStateFinished:
 		// This was a synchronous startup, OnStartupCompleted() has been called already and queued the update of the runs map.
 		// Endpoints will be created during next reconciliation loop, no need to call ensureEndpointsForWorkload() here.
 
-		r.setExecutableState(exe, apiv1.ExecutableStateRunning) // Make sure health status is updated.
+		r.setExecutableState(exe, startingRunInfo.ExeState) // Make sure health status is updated.
 
 	case apiv1.ExecutableStateStarting:
 		r.runs.Store(exe.NamespacedName(), getStartingRunID(exe.NamespacedName()), startingRunInfo)
@@ -398,7 +398,7 @@ func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode *int32, err 
 }
 
 // Handle notification about main process change or run completion for an Executable run.
-// This function runs outside of the reconcilation loop, so we just memorize the PID and process exit code
+// This function runs outside of the reconciliation loop, so we just memorize the PID and process exit code
 // (if available) in the run status map, and not attempt to modify any Executable object data.
 func (r *ExecutableReconciler) processRunChangeNotification(
 	runID RunID,
@@ -444,36 +444,21 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 		_ = runs.Update(name, runID, newRunInfo)
 	})
 
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, name, runID, r.scheduleExecutableReconciliation)
+	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, name, struct{}{}, r.scheduleExecutableReconciliation)
 }
 
-// Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stabe state such as running or finished.
+// Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stable state such as running or finished.
 func (r *ExecutableReconciler) OnStartupCompleted(
 	exeName types.NamespacedName,
-	runID RunID,
 	startedRunInfo *ExecutableRunInfo,
 	startWaitForRunCompletion func(),
 ) {
-	startupSucceeded := runID != UnknownRunID
-
-	if startupSucceeded {
-		r.Log.V(1).Info("Executable completed startup",
-			"Executable", exeName.String(),
-			"RunID", runID,
-			"NewState", startedRunInfo.ExeState,
-			"NewExitCode", startedRunInfo.ExitCode,
-		)
-	} else {
-		// If we couldn't successfully reach a running state, update the starting cache so that it can be
-		// reported during the next reconciliation loop
-		r.Log.V(1).Info("Executable failed to reach valid running state", "Executable", exeName.String())
-
-		// The runner should have set the following properties, but just in case, ensure they are set properly.
-		startedRunInfo.ExeState = apiv1.ExecutableStateFailedToStart
-		if startedRunInfo.FinishTimestamp.IsZero() {
-			startedRunInfo.FinishTimestamp = metav1.NowMicro()
-		}
-	}
+	r.Log.V(1).Info("Executable completed startup",
+		"Executable", exeName.String(),
+		"RunID", startedRunInfo.RunID,
+		"NewState", startedRunInfo.ExeState,
+		"NewExitCode", startedRunInfo.ExitCode,
+	)
 
 	// OnStartingCompleted might be invoked asynchronously. To avoid race conditions,
 	//  we always queue updates to the runs map and run them as part of reconciliation function.
@@ -483,24 +468,32 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 			// Should never happen
 			r.Log.Error(fmt.Errorf("could not find starting run data after Executable start attempt"),
 				"Executable", exeName.String(),
-				"RunID", runID,
+				"RunID", startedRunInfo.RunID,
 				"NewState", startedRunInfo.ExeState,
 				"NewExitCode", startedRunInfo.ExitCode,
 			)
-		} else {
-			ri.UpdateFrom(startedRunInfo, r.Log)
-			_ = runs.UpdateChangingSecondKey(exeName, startingRunID, runID, ri)
-			if startupSucceeded {
-				startWaitForRunCompletion()
-			}
+			return
+		}
+
+		ri.UpdateFrom(startedRunInfo, r.Log)
+
+		// Both keys in the runs map must be unique; if the startup failed and the run ID is not available,
+		// keep the placeholder run ID derived from Executable name.
+		effectiveRunID := startingRunID
+		if startedRunInfo.RunID != UnknownRunID {
+			effectiveRunID = startedRunInfo.RunID
+		}
+		_ = runs.UpdateChangingSecondKey(exeName, startingRunID, effectiveRunID, ri)
+		if startedRunInfo.ExeState == apiv1.ExecutableStateRunning {
+			startWaitForRunCompletion()
 		}
 	})
 
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, runID, r.scheduleExecutableReconciliation)
+	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, struct{}{}, r.scheduleExecutableReconciliation)
 }
 
 // Stops the underlying Executable run, if any.
-// The Execuatable data update related to stopped run is handled by the caller.
+// The Executable data update related to stopped run is handled by the caller.
 func (r *ExecutableReconciler) stopExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
 	var runID RunID = RunID(exe.Status.ExecutionID)
 	if runID == "" || exe.Done() {
@@ -587,7 +580,7 @@ func (r *ExecutableReconciler) deleteOutputFiles(ctx context.Context, exe *apiv1
 	}
 }
 
-func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTriggerInput[RunID]) {
+func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTriggerInput[struct{}]) {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Executable{
 			ObjectMeta: metav1.ObjectMeta{
@@ -767,7 +760,7 @@ func (r *ExecutableReconciler) handleHealthProbeResults(lifetimeCtx context.Cont
 				// so it is very unlikely any Executable health probes will go orphaned long-term.
 				// It might look like it would be a good idea to call DisableProbes() here "just in case"
 				// (DisableProbes() is idempotent), but it is not, for two reasons:
-				// 1. handleHealthProbeResults() runs asynchronosuly compared to the main reconciliation loop,
+				// 1. handleHealthProbeResults() runs asynchronously compared to the main reconciliation loop,
 				//    and calling DisableProbes() here might put us in a race condition with an Executable
 				//    that is deleted and quickly re-created, a common .NET Aspire scenario.
 				// 2. We cannot use deferred ops to avoid the race because we do not have a valid runInfo at this point.
@@ -785,7 +778,7 @@ func (r *ExecutableReconciler) handleHealthProbeResults(lifetimeCtx context.Cont
 				_ = runs.Update(exeName, runID, newRunInfo)
 			})
 
-			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, runID, r.scheduleExecutableReconciliation)
+			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, struct{}{}, r.scheduleExecutableReconciliation)
 		}
 	}
 }

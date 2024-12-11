@@ -25,8 +25,8 @@ type ExecutableRunInfo struct {
 	// Process ID of the process that runs the Executable
 	Pid *int64
 
-	// Execution ID for the Executable (see ExecutableStatus for details)
-	ExecutionID string
+	// Run ID for the Executable
+	RunID RunID
 
 	// Exit code of the Executable process
 	ExitCode *int32
@@ -88,10 +88,10 @@ func (ri *ExecutableRunInfo) UpdateFrom(updated *ExecutableRunInfo, log logr.Log
 		ri.Pid = apiv1.UnknownPID
 	}
 
-	if updated.ExecutionID != "" {
-		ri.ExecutionID = updated.ExecutionID
+	if updated.RunID != "" {
+		ri.RunID = updated.RunID
 	} else if updated.ExeState.IsTerminal() {
-		ri.ExecutionID = ""
+		ri.RunID = ""
 	}
 
 	if updated.ExitCode != apiv1.UnknownExitCode {
@@ -137,7 +137,7 @@ func (ri *ExecutableRunInfo) DeepCopy() *ExecutableRunInfo {
 		retval.Pid = new(int64)
 		*retval.Pid = *ri.Pid
 	}
-	retval.ExecutionID = ri.ExecutionID
+	retval.RunID = ri.RunID
 	if ri.ExitCode != apiv1.UnknownExitCode {
 		retval.ExitCode = new(int32)
 		*retval.ExitCode = *ri.ExitCode
@@ -172,8 +172,8 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 		changed = statusChanged
 	}
 
-	if ri.ExecutionID != "" && status.ExecutionID != ri.ExecutionID {
-		status.ExecutionID = ri.ExecutionID
+	if ri.RunID != "" && status.ExecutionID != string(ri.RunID) {
+		status.ExecutionID = string(ri.RunID)
 		changed = statusChanged
 	}
 
@@ -249,7 +249,7 @@ func (ri *ExecutableRunInfo) String() string {
 		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s}",
 		ri.ExeState,
 		logger.IntPtrValToString(ri.Pid),
-		logger.FriendlyString(ri.ExecutionID),
+		logger.FriendlyString(string(ri.RunID)),
 		logger.IntPtrValToString(ri.ExitCode),
 		logger.FriendlyMetav1Timestamp(ri.StartupTimestamp),
 		logger.FriendlyMetav1Timestamp(ri.FinishTimestamp),
@@ -272,8 +272,8 @@ func DiffString(r1, r2 *ExecutableRunInfo) string {
 		sb.WriteString(fmt.Sprintf("pid=%s->%s, ", logger.IntPtrValToString(r1.Pid), logger.IntPtrValToString(r2.Pid)))
 	}
 
-	if r1.ExecutionID != r2.ExecutionID {
-		sb.WriteString(fmt.Sprintf("executionID=%s->%s, ", logger.FriendlyString(r1.ExecutionID), logger.FriendlyString(r2.ExecutionID)))
+	if r1.RunID != r2.RunID {
+		sb.WriteString(fmt.Sprintf("executionID=%s->%s, ", logger.FriendlyString(string(r1.RunID)), logger.FriendlyString(string(r2.RunID))))
 	}
 
 	if !pointers.EqualValue(r1.ExitCode, r2.ExitCode) {

@@ -64,7 +64,7 @@ func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
 			newState == ExecutableStateTerminated ||
 			newState == ExecutableStateFailedToStart
 	case ExecutableStateStarting:
-		return newState == ExecutableStateRunning || newState == ExecutableStateFailedToStart
+		return newState == ExecutableStateRunning || newState == ExecutableStateFailedToStart || newState == ExecutableStateFinished
 	case ExecutableStateRunning:
 		return newState == ExecutableStateTerminated || newState == ExecutableStateFinished
 	case ExecutableStateTerminated:
