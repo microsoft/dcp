@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallnest/chanx"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/go-logr/logr/testr"
@@ -16,6 +15,7 @@ import (
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -305,8 +305,8 @@ func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessag
 }
 
 func subscribe(t *testing.T, ctx context.Context, dco ct.ContainerOrchestrator) (*pubsub.Subscription[ct.EventMessage], <-chan ct.EventMessage) {
-	const initialEventChannelCapacity = 5
-	evtC := chanx.NewUnboundedChan[ct.EventMessage](ctx, initialEventChannelCapacity)
+	const eventChannelBuffer = 5
+	evtC := concurrency.NewUnboundedChanBuffered[ct.EventMessage](ctx, eventChannelBuffer, eventChannelBuffer)
 	sub, err := dco.WatchContainers(evtC.In)
 	require.NoError(t, err)
 	return sub, evtC.Out

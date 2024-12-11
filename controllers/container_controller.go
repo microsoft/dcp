@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/smallnest/chanx"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,6 +31,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/internal/version"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -40,8 +40,8 @@ import (
 )
 
 const (
-	containerEventChanInitialCapacity = 20
-	MaxParallelContainerStarts        = 6
+	containerEventChanBuffer   = 20 // Container events tend to come in bursts, so we can help a bit with buffering
+	MaxParallelContainerStarts = 6
 
 	startupRetryDelay = 1 * time.Second
 	noDelay           = 0 * time.Second
@@ -89,7 +89,7 @@ type ContainerReconciler struct {
 	orchestrator        containers.ContainerOrchestrator
 
 	// Channel used to trigger reconciliation when underlying containers change
-	notifyContainerChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
+	notifyContainerChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 
 	// A map that stores information about containers (the real things run by the container orchestrator).
 	// It is searchable by Container object name (first key) or container ID (second key).
@@ -106,9 +106,9 @@ type ContainerReconciler struct {
 	// Network events subscription
 	networkEvtSub *pubsub.Subscription[containers.EventMessage]
 	// Channel to receive container change events
-	containerEvtCh *chanx.UnboundedChan[containers.EventMessage]
+	containerEvtCh *concurrency.UnboundedChan[containers.EventMessage]
 	// Channel to receive network change events
-	networkEvtCh *chanx.UnboundedChan[containers.EventMessage]
+	networkEvtCh *concurrency.UnboundedChan[containers.EventMessage]
 	// Channel to stop the event worker
 	containerEvtWorkerStop chan struct{}
 
@@ -129,7 +129,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 	r := ContainerReconciler{
 		Client:                 client,
 		orchestrator:           orchestrator,
-		notifyContainerChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		notifyContainerChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		runningContainers:      maps.NewSynchronizedDualKeyMap[types.NamespacedName, string, *runningContainerData](),
 		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, MaxParallelContainerStarts),
 		containerEvtSub:        nil,
@@ -1420,8 +1420,16 @@ func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, l
 		return // We're already watching container events, nothing to do
 	}
 
-	r.containerEvtCh = chanx.NewUnboundedChan[containers.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
-	r.networkEvtCh = chanx.NewUnboundedChan[containers.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
+	r.containerEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
+		r.lifetimeCtx,
+		containerEventChanBuffer,
+		containerEventChanBuffer,
+	)
+	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
+		r.lifetimeCtx,
+		containerEventChanBuffer,
+		containerEventChanBuffer,
+	)
 
 	r.containerEvtWorkerStop = make(chan struct{})
 	go r.containerEventWorker(r.containerEvtWorkerStop, r.containerEvtCh.Out, r.networkEvtCh.Out)

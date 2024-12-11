@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
-	"github.com/smallnest/chanx"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -26,6 +25,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -60,7 +60,7 @@ type ContainerExecReconciler struct {
 	executions syncmap.Map[types.UID, *runningContainerExecStatus]
 
 	// Channel used to trigger reconciliation when underlying execution completes
-	notifyExecChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
+	notifyExecChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 	// Debouncer used to schedule reconciliation. Extra data is the running ContainerExec ID whose state changed.
 	debouncer *reconcilerDebouncer[string]
 
@@ -78,7 +78,7 @@ func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.
 		Log:               log,
 		orchestrator:      orchestrator,
 		executions:        syncmap.Map[types.UID, *runningContainerExecStatus]{},
-		notifyExecChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		notifyExecChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		debouncer:         newReconcilerDebouncer[string](),
 		lifetimeCtx:       lifetimeCtx,
 	}

@@ -14,8 +14,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/smallnest/chanx"
+
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -32,7 +31,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
@@ -59,11 +60,11 @@ type NetworkReconciler struct {
 	existingNetworks *maps.SynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus]
 
 	// Channel used to trigger reconciliation when underlying networks change
-	notifyNetworkChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
+	notifyNetworkChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 	// Network events subscription
 	networkEvtSub *pubsub.Subscription[ct.EventMessage]
 	// Channel to receive network change events
-	networkEvtCh         *chanx.UnboundedChan[ct.EventMessage]
+	networkEvtCh         *concurrency.UnboundedChan[ct.EventMessage]
 	networkEvtWorkerStop chan struct{}
 	// Count of existing Container resources
 	watchingResources *syncmap.Map[types.UID, bool]
@@ -87,7 +88,7 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		Client:               client,
 		orchestrator:         orchestrator,
 		existingNetworks:     maps.NewSynchronizedDualKeyMap[string, types.NamespacedName, runningNetworkStatus](),
-		notifyNetworkChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		notifyNetworkChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		networkEvtSub:        nil,
 		networkEvtCh:         nil,
 		networkEvtWorkerStop: nil,
@@ -457,7 +458,11 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 		return // We are already watching container events
 	}
 
-	r.networkEvtCh = chanx.NewUnboundedChan[ct.EventMessage](r.lifetimeCtx, containerEventChanInitialCapacity)
+	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[ct.EventMessage](
+		r.lifetimeCtx,
+		containerEventChanBuffer,
+		containerEventChanBuffer,
+	)
 
 	r.networkEvtWorkerStop = make(chan struct{})
 	go r.networkEventWorker(r.networkEvtWorkerStop, r.networkEvtCh.Out)

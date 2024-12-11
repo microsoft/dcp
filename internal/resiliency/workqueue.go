@@ -5,7 +5,7 @@ import (
 	"math"
 	"runtime"
 
-	"github.com/smallnest/chanx"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 )
 
 const DefaultConcurrency uint8 = 0
@@ -14,7 +14,7 @@ type WorkQueueItem = func(ctx context.Context)
 
 // WorkQueue runs work concurrently, but limits the number of concurrent executions.
 type WorkQueue struct {
-	incoming    *chanx.UnboundedChan[WorkQueueItem]
+	incoming    *concurrency.UnboundedChan[WorkQueueItem]
 	limiter     chan struct{}
 	lifetimeCtx context.Context
 }
@@ -25,9 +25,11 @@ func NewWorkQueue(lifetimeCtx context.Context, maxConcurrency uint8) *WorkQueue 
 	}
 
 	wq := WorkQueue{
-		// The maxConcurrency parameter used here indicates the initial size of the incoming work channel;
-		// the channel itself is unbonunded.
-		incoming: chanx.NewUnboundedChan[WorkQueueItem](lifetimeCtx, int(maxConcurrency)),
+		incoming: concurrency.NewUnboundedChanBuffered[WorkQueueItem](
+			lifetimeCtx,
+			int(maxConcurrency),
+			int(maxConcurrency),
+		),
 
 		limiter:     make(chan struct{}, maxConcurrency),
 		lifetimeCtx: lifetimeCtx,

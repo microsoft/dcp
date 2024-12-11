@@ -11,7 +11,11 @@ import (
 )
 
 // Minimum size of the queue buffer. Must be a power of 2.
-const minSize = 8
+const (
+	minSize      = 8
+	growthFactor = 2
+	shrinkFactor = 4
+)
 
 type ConcurrentBoundedQueue[T any] struct {
 	head     int
@@ -81,7 +85,7 @@ func (q *ConcurrentBoundedQueue[T]) Dequeue() (T, bool) {
 	q.len--
 
 	bufSize := len(q.buf)
-	if bufSize > minSize && q.len == bufSize/4 {
+	if q.len*growthFactor >= minSize && q.len <= bufSize/shrinkFactor {
 		// Shrink the buffer
 		q.resize()
 	}
@@ -98,7 +102,7 @@ func (q *ConcurrentBoundedQueue[T]) next(i int) int {
 }
 
 func (q *ConcurrentBoundedQueue[T]) resize() {
-	newSize := q.len * 2
+	newSize := q.len * growthFactor
 	newBuf := make([]T, newSize)
 	if q.tail > q.head {
 		copy(newBuf, q.buf[q.head:q.tail])

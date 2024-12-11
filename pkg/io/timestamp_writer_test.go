@@ -141,6 +141,8 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+
 			sink := testutil.NewBufferWriter()
 			tw := usvc_io.NewTimestampWriter(sink)
 

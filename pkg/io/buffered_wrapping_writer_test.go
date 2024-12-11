@@ -10,6 +10,8 @@ import (
 )
 
 func TestTargetWriterSetImmediately(t *testing.T) {
+	t.Parallel()
+
 	bww := usvc_io.NewBufferedWrappingWriter()
 	target := &bytes.Buffer{}
 	err := bww.SetTarget(target)
@@ -22,6 +24,8 @@ func TestTargetWriterSetImmediately(t *testing.T) {
 }
 
 func TestTargetWriterSetAfterWrite(t *testing.T) {
+	t.Parallel()
+
 	bww := usvc_io.NewBufferedWrappingWriter()
 
 	content := "alpha"
@@ -36,6 +40,8 @@ func TestTargetWriterSetAfterWrite(t *testing.T) {
 }
 
 func TestWriterUsableAfterTargetSet(t *testing.T) {
+	t.Parallel()
+
 	bww := usvc_io.NewBufferedWrappingWriter()
 
 	content1 := "alpha"

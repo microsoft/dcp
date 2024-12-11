@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/smallnest/chanx"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
@@ -58,7 +58,7 @@ type ResourceWatcherEvent struct {
 // Based on watch.Interface
 // +kubebuilder:object:generate=false
 type resourceWatcher struct {
-	resultChan       *chanx.UnboundedChan[ResourceWatcherEvent]
+	resultChan       *concurrency.UnboundedChan[ResourceWatcherEvent]
 	resultChanCtx    context.Context
 	resultChanCancel context.CancelFunc
 	onStop           func()
@@ -111,7 +111,7 @@ func newResourceWatcher() *resourceWatcher {
 	return &resourceWatcher{
 		resultChanCtx:    resultChanCtx,
 		resultChanCancel: resultChanCancel,
-		resultChan:       chanx.NewUnboundedChan[ResourceWatcherEvent](resultChanCtx, 1),
+		resultChan:       concurrency.NewUnboundedChan[ResourceWatcherEvent](resultChanCtx),
 		stopped:          false,
 		mutex:            &sync.Mutex{},
 	}

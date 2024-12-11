@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/smallnest/chanx"
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -420,7 +419,7 @@ func TestContainerDeletion(t *testing.T) {
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	// Subscribe to container events to verify that the container is deleted gracefully
-	ctrEventCh := chanx.NewUnboundedChan[containers.EventMessage](ctx, 2)
+	ctrEventCh := concurrency.NewUnboundedChanBuffered[containers.EventMessage](ctx, 2, 2)
 	ctrEventSub, watchErr := containerOrchestrator.WatchContainers(ctrEventCh.In)
 	require.NoError(t, watchErr, "could not subscribe to container events")
 	defer ctrEventSub.Cancel()

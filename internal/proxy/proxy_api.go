@@ -5,6 +5,9 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -15,6 +18,22 @@ import (
 type Endpoint struct {
 	Address string `yaml:"address"`
 	Port    int32  `yaml:"port"`
+}
+
+type DeadlineReader interface {
+	io.Reader
+	SetReadDeadline(t time.Time) error
+}
+
+type DeadlineWriter interface {
+	io.Writer
+	SetWriteDeadline(t time.Time) error
+}
+
+type DeadlineReaderWriter interface {
+	DeadlineReader
+	DeadlineWriter
+	SetDeadline(t time.Time) error
 }
 
 type ProxyState uint32
@@ -93,3 +112,36 @@ type ProxyFactory func(
 	lifetimeCtx context.Context,
 	log logr.Logger,
 ) Proxy
+
+var ErrWriteQueueFull = errors.New("write queue is full")
+
+// ProxyConn defines an interface a network connection wrapper that helps the proxy
+// use a network connection in a goroutine-safe, asynchronous way. All operations are goroutine-safe, except for Run().
+//
+// ProxyConn does not do any network connection management (e.g. dialing, closing),
+// It only reads and writes data to the connection, and sets read/write deadlines.
+type ProxyConn interface {
+	// Queues a write of the given data to the connection.
+	// The error returned (if any) indicates the failure to queue the write.
+	// The actual write operation may fail asynchronously, and the error will be reported via Result().
+	// If the returned error is ErrWriteQueueFull, the client should wait a bit and retry.
+	QueueWrite(data []byte) error
+
+	// Returns the channel that lets the client check whether the run loop has finished.
+	Done() <-chan struct{}
+
+	// Returns the connection-terminating result, if available.
+	// Typically it is either an I/O error (e.g. the other side closed the connection,
+	// represented by io.EOF), or the context associated with the connection was cancelled.
+	Result() *NetworkStreamResult
+
+	// Runs the connection's main loop (for reading and writing data).
+	// The goroutine that calls Run() is the only goroutine that interacts with the underlying net.TCPConn connection.
+	// The connections always work in pairs, and the main loop will stop when either connection fails or is closed by the client.
+	Run(ProxyConn)
+
+	// Stops reading data from the connection, but writes any pending data to the connection,
+	// then stops the main loop.
+	// DrainAndStop() is a blocking operation that is goroutine-safe and idempotent.
+	DrainAndStop()
+}

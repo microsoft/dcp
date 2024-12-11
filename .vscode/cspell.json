@@ -11,6 +11,8 @@
     ],
     "ignoreWords": [
         "finalizer",
-        "debouncer"
+        "debouncer",
+        "unbuffered",
+        "interruptible"
     ]
 }

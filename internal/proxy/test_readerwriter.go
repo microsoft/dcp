@@ -3,6 +3,7 @@
 package proxy
 
 import (
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -15,7 +16,9 @@ type ioResult struct {
 	err error
 }
 
-// testReaderWriter is an implementation of DeadlineReader/DeadlineWriter that returns predefined values
+var testErrRepeatForever = errors.New("test error response returned forever")
+
+// testReaderWriter is an implementation of DeadlineReaderWriter that returns predefined values
 // from Read()/Write() calls. It is used for testing.
 type testReaderWriter struct {
 	lock            *sync.Mutex
@@ -43,7 +46,9 @@ func (trw *testReaderWriter) Read(p []byte) (n int, err error) {
 	}
 
 	result := trw.readResults[trw.nextReadResult]
-	trw.nextReadResult++
+	if !errors.Is(result.err, testErrRepeatForever) {
+		trw.nextReadResult++
+	}
 
 	toWrite := result.n
 	if toWrite > len(p) {
@@ -66,7 +71,9 @@ func (trw *testReaderWriter) Write(p []byte) (n int, err error) {
 	}
 
 	result := trw.writeResults[trw.nextWriteResult]
-	trw.nextWriteResult++
+	if !errors.Is(result.err, testErrRepeatForever) {
+		trw.nextWriteResult++
+	}
 
 	return result.n, result.err
 }
@@ -79,5 +86,8 @@ func (trw *testReaderWriter) SetWriteDeadline(_ time.Time) error {
 	return nil
 }
 
-var _ DeadlineReader = &testReaderWriter{}
-var _ DeadlineWriter = &testReaderWriter{}
+func (trw *testReaderWriter) SetDeadline(_ time.Time) error {
+	return nil
+}
+
+var _ DeadlineReaderWriter = &testReaderWriter{}

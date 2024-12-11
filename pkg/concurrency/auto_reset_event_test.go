@@ -72,14 +72,17 @@ func TestFreezeEvent(t *testing.T) {
 
 	event := NewAutoResetEvent(false)
 	ensureEventNotSet(t, event)
+	require.False(t, event.Frozen())
 
 	event.SetAndFreeze()
 	ensureEventSet(t, event)
 	ensureEventSet(t, event)
+	require.True(t, event.Frozen())
 
 	// Can call SetAndFreeze() multiple times.
 	require.NotPanics(t, event.SetAndFreeze)
 	ensureEventSet(t, event)
+	require.True(t, event.Frozen())
 
 	require.Panics(t, func() { event.Set() })
 	require.Panics(t, func() { event.Clear() })

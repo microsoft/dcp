@@ -12,7 +12,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
-	"github.com/smallnest/chanx"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,6 +23,7 @@ import (
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 
 	"github.com/microsoft/usvc-apiserver/internal/health"
@@ -66,10 +66,10 @@ type ExecutableReconciler struct {
 	hpSet *health.HealthProbeSet
 
 	// Channel used to receive health probe results.
-	healthProbeCh *chanx.UnboundedChan[health.HealthProbeReport]
+	healthProbeCh *concurrency.UnboundedChan[health.HealthProbeReport]
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
-	notifyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
+	notifyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 
 	// Debouncer used to schedule reconciliations. Extra data carried is the finished run ID.
 	debouncer *reconcilerDebouncer[RunID]
@@ -95,8 +95,8 @@ func NewExecutableReconciler(
 		ExecutableRunners: executableRunners,
 		runs:              maps.NewSynchronizedDualKeyMap[types.NamespacedName, RunID, *ExecutableRunInfo](),
 		hpSet:             healthProbeSet,
-		healthProbeCh:     chanx.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx, 1),
-		notifyRunChanged:  chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
+		notifyRunChanged:  concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		debouncer:         newReconcilerDebouncer[RunID](),
 		lifetimeCtx:       lifetimeCtx,
 		Log:               log,

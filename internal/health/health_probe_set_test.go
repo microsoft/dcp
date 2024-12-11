@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/smallnest/chanx"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -49,13 +49,13 @@ func TestHealthProbeSetMultipleSubscribers(t *testing.T) {
 	lock := &sync.Mutex{}
 
 	// Subscriptions for health probe results
-	exeSub1Sink := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	exeSub1Sink := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, exeSub1Sink.Out, &reports, "exe1Sub", lock)
-	exeSub2Sink := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	exeSub2Sink := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, exeSub2Sink.Out, &reports, "exe2Sub", lock)
-	containerSub1Sink := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	containerSub1Sink := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, containerSub1Sink.Out, &reports, "containerSub1", lock)
-	containerSub2Sink := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	containerSub2Sink := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, containerSub2Sink.Out, &reports, "containerSub2", lock)
 
 	exeSub1, exeSub1Err := hps.Subscribe(exeSub1Sink.In, executableKind)
@@ -141,7 +141,7 @@ func TestHealthProbeSetEnableDisable(t *testing.T) {
 	lock := &sync.Mutex{}
 
 	// Start capturing health reports
-	reportsChan := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	reportsChan := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock)
 	sub, subErr := hps.Subscribe(reportsChan.In, executableKind)
 	require.NoError(t, subErr)
@@ -220,7 +220,7 @@ func TestHealthProbeSetNoStarvation(t *testing.T) {
 	lock := &sync.Mutex{}
 
 	// Start capturing health reports
-	reportsChan := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	reportsChan := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock)
 	sub, subErr := hps.Subscribe(reportsChan.In, executableKind)
 	require.NoError(t, subErr)
@@ -279,7 +279,7 @@ func TestHealthProbeSetContextCancellation(t *testing.T) {
 	lock := &sync.Mutex{}
 
 	// Start capturing health reports
-	reportsChan := chanx.NewUnboundedChan[HealthProbeReport](ctx, 1)
+	reportsChan := concurrency.NewUnboundedChan[HealthProbeReport](ctx)
 	go storeResults(ctx, reportsChan.Out, &reports, "sub", lock) // Deliberately using text context, not HealthPorbeSet context
 	sub, subErr := hps.Subscribe(reportsChan.In, executableKind)
 	require.NoError(t, subErr)

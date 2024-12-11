@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/smallnest/chanx"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/net/nettest"
@@ -33,6 +32,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -69,7 +69,7 @@ type ServiceReconciler struct {
 	additionalReconciliationDelay time.Duration
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
-	notifyProxyRunChanged *chanx.UnboundedChan[ctrl_event.GenericEvent]
+	notifyProxyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 
 	lifetimeCtx context.Context
 
@@ -102,7 +102,7 @@ func NewServiceReconciler(
 		ProcessExecutor:       config.ProcessExecutor,
 		ProxyConfigDir:        filepath.Join(usvc_io.DcpTempDir(), "usvc-servicecontroller-serviceconfig"),
 		serviceInfo:           &syncmap.Map[types.NamespacedName, *serviceData]{},
-		notifyProxyRunChanged: chanx.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx, 1),
+		notifyProxyRunChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		lifetimeCtx:           lifetimeCtx,
 		tracer:                telemetry.GetTelemetrySystem().TracerProvider.Tracer("service-controller"),
 		Log:                   log,
