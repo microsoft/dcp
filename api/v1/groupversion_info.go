@@ -6,10 +6,6 @@
 package v1
 
 import (
-	"slices"
-	"sync"
-
-	"github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 
@@ -17,9 +13,11 @@ import (
 )
 
 // +k8s:deepcopy-gen=false
-type WeightedResource struct {
-	Object resource.Object
-	Weight uint
+type CleanupResource struct {
+	GVR schema.GroupVersionResource
+
+	// Specifies what other resource kinds need to be cleaned up first before the given resource can be cleaned up.
+	CleanUpAfter []schema.GroupVersionResource
 }
 
 var (
@@ -33,57 +31,41 @@ var (
 	AddToScheme = SchemeBuilder.AddToScheme
 
 	// Track the resources that need to be automatically cleaned up at shutdown
-	// Uses weighting to cleanup resources in batches
-	CleanupResources = []*WeightedResource{}
+	CleanupResources = []*CleanupResource{
+		{
+			GVR: (&ContainerExec{}).GetGroupVersionResource(),
+		},
+		{
+			GVR: (&ExecutableReplicaSet{}).GetGroupVersionResource(),
+		},
+		{
+			GVR: (&Service{}).GetGroupVersionResource(),
+		},
+		{
+			GVR: (&Container{}).GetGroupVersionResource(),
+			CleanUpAfter: []schema.GroupVersionResource{
+				(&ContainerExec{}).GetGroupVersionResource(),
+			},
+		},
+		{
+			GVR:          (&Executable{}).GetGroupVersionResource(),
+			CleanUpAfter: []schema.GroupVersionResource{(&ExecutableReplicaSet{}).GetGroupVersionResource()},
+		},
+		{
+			GVR: (&ContainerNetworkConnection{}).GetGroupVersionResource(),
+			CleanUpAfter: []schema.GroupVersionResource{
+				(&Container{}).GetGroupVersionResource(), // Remove orphaned ContainerNetworkConnections after all Containers are deleted
+			},
+		},
+		{
+			GVR: (&ContainerNetwork{}).GetGroupVersionResource(),
+			CleanUpAfter: []schema.GroupVersionResource{
+				(&Container{}).GetGroupVersionResource(),
+				(&ContainerNetworkConnection{}).GetGroupVersionResource(),
+			},
+		},
+	}
 
 	// A registry of resource log streaming implementations
 	ResourceLogStreamers = &syncmap.Map[schema.GroupVersionResource, ResourceLogStreamer]{}
 )
-
-var (
-	resourceMutex = sync.Mutex{}
-)
-
-func SetCleanupPriority(obj resource.Object, weight uint) {
-	weightedResource := &WeightedResource{
-		Object: obj,
-		Weight: weight,
-	}
-
-	resourceMutex.Lock()
-	defer resourceMutex.Unlock()
-
-	index, _ := slices.BinarySearchFunc(CleanupResources, weightedResource, func(a *WeightedResource, b *WeightedResource) int {
-		if a.Weight < b.Weight {
-			return -1
-		} else if a.Weight > b.Weight {
-			return 1
-		} else {
-			return 0
-		}
-	})
-
-	CleanupResources = slices.Insert(CleanupResources, index, weightedResource)
-}
-
-func init() {
-	// ContainerExec types are cleaned up before any other container-related resources.
-	SetCleanupPriority(&ContainerExec{}, 100)
-
-	// ExecutableReplicaSets are cleaned up before other Executable-related resources.
-	SetCleanupPriority(&ExecutableReplicaSet{}, 100)
-
-	// Containers are cleaned up after ContainerExec objects.
-	SetCleanupPriority(&Container{}, 200)
-
-	// Non-replicated executables are cleaned up together with Containers and after ExecutableReplicaSets.
-	SetCleanupPriority(&Executable{}, 200)
-
-	// Most ContainerNetworkConnections will be cleaned up when Containers that own them are deleted.
-	// The remaining orphans can be deleded at low priority.
-	SetCleanupPriority(&ContainerNetworkConnection{}, 500)
-
-	// ContainerNetworks and Services are cleaned up last.
-	SetCleanupPriority(&ContainerNetwork{}, 1000)
-	SetCleanupPriority(&Service{}, 1000)
-}

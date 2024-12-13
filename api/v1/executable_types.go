@@ -473,7 +473,7 @@ func (elr *ExecutableLogResource) GetStorageProvider(
 
 		logStreamFactory, found := ResourceLogStreamers.Load(obj.GetGroupVersionResource())
 		if !found {
-			return nil, fmt.Errorf("log stream factory not found for resource %s", obj.GetGroupVersionResource().String())
+			return nil, fmt.Errorf("log stream factory not found for resource '%s'", obj.GetGroupVersionResource().String())
 		}
 
 		logStorage, err := NewLogStorage(exeStorage, logStreamFactory)
