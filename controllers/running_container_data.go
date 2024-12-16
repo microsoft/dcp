@@ -104,6 +104,9 @@ type runningContainerData struct {
 	// The exit code (if available) from the container.
 	exitCode *int32
 
+	// The most recent time the container finished running (either exited or failed to start).
+	finishTimestamp metav1.MicroTime
+
 	// Tracks whether startup has been attempted for the container
 	startupAttempted bool
 
@@ -288,6 +291,10 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 		rcd.containerState = apiv1.ContainerStateStopping
 	case ct.ContainerStatusExited, ct.ContainerStatusDead:
 		rcd.containerState = apiv1.ContainerStateExited
+	}
+
+	rcd.finishTimestamp = metav1.NewMicroTime(inspected.FinishedAt)
+	if !rcd.finishTimestamp.IsZero() {
 		rcd.exitCode = new(int32)
 		*rcd.exitCode = inspected.ExitCode
 	}
@@ -309,7 +316,9 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 	if rcd.exitCode != apiv1.UnknownExitCode {
 		if ctr.Status.ExitCode == apiv1.UnknownExitCode {
 			ctr.Status.ExitCode = new(int32)
+			change |= statusChanged
 		}
+
 		if *ctr.Status.ExitCode != *rcd.exitCode {
 			*ctr.Status.ExitCode = *rcd.exitCode
 			change |= statusChanged
@@ -368,14 +377,12 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		change |= statusChanged
 	}
 
-	if ctr.Status.FinishTimestamp.IsZero() {
-		if rcd.containerState == apiv1.ContainerStateExited {
-			ctr.Status.FinishTimestamp = metav1.NowMicro()
-			change |= statusChanged
-		} else if rcd.containerState == apiv1.ContainerStateFailedToStart && !rcd.startAttemptFinishedAt.IsZero() {
-			ctr.Status.FinishTimestamp = rcd.startAttemptFinishedAt
-			change |= statusChanged
-		}
+	if !rcd.finishTimestamp.IsZero() && (ctr.Status.FinishTimestamp.IsZero() || ctr.Status.FinishTimestamp.Before(&rcd.finishTimestamp)) {
+		ctr.Status.FinishTimestamp = rcd.finishTimestamp
+		change |= statusChanged
+	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && !rcd.startAttemptFinishedAt.IsZero() {
+		ctr.Status.FinishTimestamp = rcd.startAttemptFinishedAt
+		change |= statusChanged
 	}
 
 	return change

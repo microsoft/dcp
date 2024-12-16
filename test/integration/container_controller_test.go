@@ -497,8 +497,8 @@ func TestContainerRestart(t *testing.T) {
 	require.NoError(t, err, "could not simulate container exit")
 
 	t.Log("Ensure container state is 'stopped'...")
-	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
-		statusUpdated := c.Status.State == apiv1.ContainerStateExited
+	updatedCtr = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		statusUpdated := c.Status.State == apiv1.ContainerStateExited && c.Status.ExitCode != apiv1.UnknownExitCode && *c.Status.ExitCode == 0
 		return statusUpdated, nil
 	})
 
@@ -507,6 +507,19 @@ func TestContainerRestart(t *testing.T) {
 
 	t.Log("Ensure container state is 'running'...")
 	_, _ = ensureContainerRunning(t, ctx, &ctr)
+
+	originalFinishedAt := updatedCtr.Status.FinishTimestamp
+
+	err = containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, -1)
+	require.NoError(t, err, "could not simulate container exit")
+
+	t.Log("Ensure container state is 'stopped'...")
+	updatedCtr = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		statusUpdated := c.Status.State == apiv1.ContainerStateExited && c.Status.ExitCode != apiv1.UnknownExitCode && *c.Status.ExitCode == -1
+		return statusUpdated, nil
+	})
+
+	require.True(t, originalFinishedAt.Before(&updatedCtr.Status.FinishTimestamp))
 }
 
 func TestContainerMultipleServingPortsInjected(t *testing.T) {

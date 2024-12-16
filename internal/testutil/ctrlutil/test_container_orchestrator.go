@@ -1235,6 +1235,11 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 
 	for _, container := range to.containers {
 		if container.matches(name) {
+			if container.status == containers.ContainerStatusExited {
+				// Container is already stopped
+				return nil
+			}
+
 			container.status = containers.ContainerStatusExited
 			container.exitCode = exitCode
 			container.finishedAt = time.Now().UTC()

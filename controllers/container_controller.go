@@ -1036,7 +1036,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 	}
 
 	// Check to see if we are connected to all the ContainerNetworks listed in the Container object spec
-	if len(connected) != len(*container.Spec.Networks) && !container.Spec.Stop && container.Status.FinishTimestamp.IsZero() && container.DeletionTimestamp.IsZero() {
+	if len(connected) != len(*container.Spec.Networks) && !container.Spec.Stop && container.DeletionTimestamp.IsZero() {
 		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.containerID, "Expected", len(*container.Spec.Networks), "Connected", len(connected))
 		return false, nil
 	}
@@ -1124,8 +1124,8 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		return []*apiv1.ContainerNetwork{}, err
 	}
 
-	if container.Spec.Networks == nil || container.Spec.Stop || !container.Status.FinishTimestamp.IsZero() || !container.DeletionTimestamp.IsZero() {
-		// If no networks are defined, stop has been requested, or the FinishTimestamp is set for the container, or the container is being deleted, delete all connections
+	if container.Spec.Networks == nil || container.Spec.Stop || !container.DeletionTimestamp.IsZero() {
+		// If no networks are defined, stop has been requested, or the container is being deleted, delete all connections
 		var err error
 		for i := range childNetworkConnections.Items {
 			if deleteErr := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
