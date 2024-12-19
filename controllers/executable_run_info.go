@@ -99,13 +99,8 @@ func (ri *ExecutableRunInfo) UpdateFrom(updated *ExecutableRunInfo, log logr.Log
 		*ri.ExitCode = *updated.ExitCode
 	}
 
-	if !updated.StartupTimestamp.IsZero() && (ri.StartupTimestamp.IsZero() || updated.StartupTimestamp.Before(&ri.StartupTimestamp)) {
-		ri.StartupTimestamp = updated.StartupTimestamp
-	}
-
-	if !updated.FinishTimestamp.IsZero() && (ri.FinishTimestamp.IsZero() || updated.FinishTimestamp.Before(&ri.FinishTimestamp)) {
-		ri.FinishTimestamp = updated.FinishTimestamp
-	}
+	setTimestampIfAfterOrUnknown(updated.StartupTimestamp, &ri.StartupTimestamp)
+	setTimestampIfAfterOrUnknown(updated.FinishTimestamp, &ri.FinishTimestamp)
 
 	if updated.StdOutFile != "" {
 		ri.StdOutFile = updated.StdOutFile
@@ -186,15 +181,13 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	// We only overwrite timestamps if the Executable status has them as zero values
 	// or if the run info indicates that the startup/finish happened earlier.
 	// The controller provides a default value for timestamps based on Executable state transitions,
-	// but a more accurate timestamp may come (asynchronously) from Executable runner via run info.
+	// but a more accurate (earlier) timestamp may come (asynchronously) from Executable runner via run info.
 
-	if !ri.StartupTimestamp.IsZero() && (status.StartupTimestamp.IsZero() || ri.StartupTimestamp.Before(&status.StartupTimestamp)) {
-		status.StartupTimestamp = ri.StartupTimestamp
+	if setTimestampIfAfterOrUnknown(ri.StartupTimestamp, &status.StartupTimestamp) {
 		changed = statusChanged
 	}
 
-	if !ri.FinishTimestamp.IsZero() && (status.FinishTimestamp.IsZero() || ri.FinishTimestamp.Before(&status.FinishTimestamp)) {
-		status.FinishTimestamp = ri.FinishTimestamp
+	if setTimestampIfAfterOrUnknown(ri.FinishTimestamp, &status.FinishTimestamp) {
 		changed = statusChanged
 	}
 

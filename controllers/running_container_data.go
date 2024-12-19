@@ -368,8 +368,6 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		change |= statusChanged
 	}
 
-	// We overwrite timestamps only if they are not already set, to avoid problems with rounding errors.
-
 	if ctr.Status.StartupTimestamp.IsZero() && !rcd.startAttemptFinishedAt.IsZero() {
 		ctr.Status.StartupTimestamp = rcd.startAttemptFinishedAt
 		// Set the lifecycle key once the container has started
@@ -377,11 +375,9 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		change |= statusChanged
 	}
 
-	if !rcd.finishTimestamp.IsZero() && (ctr.Status.FinishTimestamp.IsZero() || ctr.Status.FinishTimestamp.Before(&rcd.finishTimestamp)) {
-		ctr.Status.FinishTimestamp = rcd.finishTimestamp
+	if setTimestampIfBeforeOrUnknown(rcd.finishTimestamp, &ctr.Status.FinishTimestamp) {
 		change |= statusChanged
-	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && !rcd.startAttemptFinishedAt.IsZero() {
-		ctr.Status.FinishTimestamp = rcd.startAttemptFinishedAt
+	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && setTimestampIfBeforeOrUnknown(rcd.startAttemptFinishedAt, &ctr.Status.FinishTimestamp) {
 		change |= statusChanged
 	}
 
@@ -393,7 +389,7 @@ func (rcd *runningContainerData) getLifecycleKey() string {
 		return rcd.runSpec.LifecycleKey
 	}
 
-	// Concatinate fields that can necessitate recreating a container if changed
+	// Concatenate fields that can necessitate recreating a container if changed
 	configString := fmt.Sprintf(
 		"%s%v%v%v%v%s%s%v",
 		rcd.runSpec.Image, // Use the evaluated image name (which could be an image ID if a build context is specified)

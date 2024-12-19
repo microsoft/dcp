@@ -146,3 +146,33 @@ func Apply[K comparable, V any, M ~map[K]V](m1 M, m2 M) M {
 	}
 	return retval
 }
+
+func HasExactValue[K comparable, V comparable, M ~map[K]V](m M, key K, expected V) bool {
+	if len(m) == 0 {
+		return false
+	}
+
+	v, found := m[key]
+	if !found {
+		return false
+	}
+
+	return v == expected
+}
+
+func TryGetValidValue[K comparable, V any, M ~map[K]V](m M, key K, validate func(V) bool) (V, bool) {
+	if len(m) == 0 {
+		return *new(V), false
+	}
+
+	v, found := m[key]
+	if !found {
+		return *new(V), false
+	}
+
+	if !validate(v) {
+		return *new(V), false
+	}
+
+	return v, true
+}

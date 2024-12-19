@@ -251,7 +251,7 @@ type PObjectWithStatusStruct[T ObjectStruct] interface {
 }
 
 // A function invoked from the reconciliation loop when an object reaches a particular state.
-// The responsibilty of the state initializer is threefold:
+// The responsibility of the state initializer is threefold:
 // 1. Set the object's to the desired state (usually by modifying its Status).
 // 2. Update the in-memory data structures that track the object's state (data owned by the reconciler).
 // 3. Make necessary changes to the real-world resources that the object represents.
@@ -279,4 +279,40 @@ func getStateInitializer[
 	}
 
 	panic("the state handler map has no empty state handler")
+}
+
+// metav1.MicroTime it is subject to rounding errors when it is serialized, deserialized, and initialized from time.Time.
+// We consider a timestamp to be "different" from another one if it is off by more than 2 microseconds.
+const timestampEpsilon = 2 * time.Microsecond
+
+// Sets "target" timestamp to "source" timestamp if "target" is before "source"
+// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+// Returns true if the target timestamp was updated.
+func setTimestampIfBeforeOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+	if source.IsZero() {
+		return false
+	}
+
+	if target.IsZero() || target.Add(timestampEpsilon).Before(source.Time) {
+		*target = source
+		return true
+	} else {
+		return false
+	}
+}
+
+// Sets "target" timestamp to "source" timestamp if "target" is after "source"
+// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+// Returns true if the target timestamp was updated.
+func setTimestampIfAfterOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+	if source.IsZero() {
+		return false
+	}
+
+	if target.IsZero() || source.Add(timestampEpsilon).Before(target.Time) {
+		*target = source
+		return true
+	} else {
+		return false
+	}
 }

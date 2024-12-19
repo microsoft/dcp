@@ -742,6 +742,10 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 		args = append(args, "--ipv6")
 	}
 
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+
 	args = append(args, options.Name)
 
 	cmd := makeDockerCommand(args...)
@@ -823,6 +827,16 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
 	return nil
+}
+
+func (dco *DockerCliOrchestrator) ListNetworks(ctx context.Context) ([]containers.ListedNetwork, error) {
+	cmd := makeDockerCommand("network", "ls", "--format", "{{json .}}")
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "ListNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if err != nil {
+		return nil, normalizeCliErrors(err, errBuf)
+	}
+
+	return asObjects(outBuf, unmarshalListedNetwork)
 }
 
 func (dco *DockerCliOrchestrator) DefaultNetworkName() string {
@@ -1042,7 +1056,7 @@ func makeDockerCommand(args ...string) *exec.Cmd {
 	return cmd
 }
 
-// Docker CLI returns JSON lines for most output, so split the lines before unmarshalling.
+// Docker CLI returns JSON lines for most output, so split the lines before unmarshaling.
 func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T, error) {
 	if b == nil {
 		return nil, fmt.Errorf("the Docker command timed out without returning any data")
@@ -1284,6 +1298,84 @@ type dockerInspectedNetworkIpam struct {
 type dockerInspectedNetworkIpamConfig struct {
 	Subnet  string `json:"Subnet,omitempty"`
 	Gateway string `json:"Gateway,omitempty"`
+}
+
+// Docker is using a nonstandard time format for network creation time,
+// so we need to use a custom type to unmarshal it correctly.
+type DockerListedNetworkTimestamp time.Time
+
+const dockerListedNetworkTimestampLayout = "2006-01-02 15:04:05.999999999 -0700 UTC"
+
+func (dlt DockerListedNetworkTimestamp) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Time(dlt).Format(dockerListedNetworkTimestampLayout))
+}
+
+func (dlt *DockerListedNetworkTimestamp) UnmarshalJSON(b []byte) error {
+	// GO json library leaves the quotes surrounding the value as part of the input to this method, so we need to remove them... :-/
+	if len(b) < 2 || b[0] != '"' || b[len(b)-1] != '"' {
+		return fmt.Errorf("invalid timestamp format: %s", string(b))
+	}
+	b = b[1 : len(b)-1]
+
+	t, err := time.Parse(dockerListedNetworkTimestampLayout, string(b))
+	if err != nil {
+		return err
+	}
+	*dlt = DockerListedNetworkTimestamp(t)
+	return nil
+}
+
+type dockerListedNetwork struct {
+	CreatedAt DockerListedNetworkTimestamp `json:"CreatedAt,omitempty"`
+	Driver    string                       `json:"Driver,omitempty"`
+	ID        string                       `json:"ID"`
+	IPv6      string                       `json:"IPv6,omitempty"`
+	Internal  string                       `json:"Internal,omitempty"`
+	Labels    string                       `json:"Labels,omitempty"`
+	Name      string                       `json:"Name"`
+}
+
+func unmarshalListedNetwork(data []byte, net *containers.ListedNetwork) error {
+	if data == nil {
+		return fmt.Errorf("the Docker command timed out without returning network data")
+	}
+
+	var dln dockerListedNetwork
+	err := json.Unmarshal(data, &dln)
+	if err != nil {
+		return err
+	}
+
+	net.Created = time.Time(dln.CreatedAt)
+	net.Driver = dln.Driver
+	net.ID = dln.ID
+	if dln.IPv6 == "true" {
+		net.IPv6 = true
+	} else {
+		net.IPv6 = false
+	}
+	if dln.Internal == "true" {
+		net.Internal = true
+	} else {
+		net.Internal = false
+	}
+
+	labels := make(map[string]string)
+	labelStrs := strings.Split(dln.Labels, ",")
+	for _, labelStr := range labelStrs {
+		if len(labelStr) < 3 {
+			continue // Expect "key=value"
+		}
+		kv := strings.SplitN(labelStr, "=", 2)
+		if len(kv) == 2 && len(kv[0]) > 0 && len(kv[1]) > 0 {
+			labels[kv[0]] = kv[1]
+		}
+	}
+	net.Labels = labels
+
+	net.Name = dln.Name
+
+	return nil
 }
 
 func normalizeCliErrors(originalErr error, errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {

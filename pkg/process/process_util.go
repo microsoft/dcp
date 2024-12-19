@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/tklauser/ps"
@@ -17,6 +19,10 @@ type ProcessTreeItem struct {
 	Pid          Pid_t
 	CreationTime time.Time
 }
+
+var (
+	This func() (ProcessTreeItem, error)
+)
 
 func getIDs(items []ProcessTreeItem) []Pid_t {
 	return slices.Map[ProcessTreeItem, Pid_t](items, func(item ProcessTreeItem) Pid_t {
@@ -110,6 +116,8 @@ func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int3
 // We serialize timestamps with millisecond precision, so a maximum couple of milliseconds of difference works well.
 const ProcessStartTimestampMaximumDifference = 2 * time.Millisecond
 
+// Returns the process with the given PID. If the expectedStartTime is not zero,
+// the process start time is checked to match the expected start time.
 func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
 	osPid, err := PidT_ToInt(pid)
 	if err != nil {
@@ -122,17 +130,14 @@ func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
 		return nil, findErr
 	}
 
-	if !expectedStartTime.IsZero() {
+	if !HasExpectedStartTime(psProcess, expectedStartTime) {
 		actualStartTime := psProcess.CreationTime()
-
-		if !osutil.Within(expectedStartTime, actualStartTime, ProcessStartTimestampMaximumDifference) {
-			return nil, fmt.Errorf(
-				"process start time mismatch, pid might have been reused: pid %d, expected start time %s, actual start time %s",
-				pid,
-				expectedStartTime.Format(osutil.RFC3339MiliTimestampFormat),
-				actualStartTime.Format(osutil.RFC3339MiliTimestampFormat),
-			)
-		}
+		return nil, fmt.Errorf(
+			"process start time mismatch, pid might have been reused: pid %d, expected start time %s, actual start time %s",
+			pid,
+			expectedStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+			actualStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+		)
 	}
 
 	process, err := os.FindProcess(osPid)
@@ -157,4 +162,46 @@ func PidT_ToInt(val Pid_t) (int, error) {
 
 func PidT_ToUint32(val Pid_t) (uint32, error) {
 	return convertPid[Pid_t, uint32](val)
+}
+
+func StringToPidT(val string) (Pid_t, error) {
+	i64val, i64ParseErr := strconv.ParseInt(val, 10, 64)
+	if i64ParseErr != nil {
+		return UnknownPID, i64ParseErr
+	}
+
+	return convertPid[int64, Pid_t](i64val)
+}
+
+func HasExpectedStartTime(psProcess ps.Process, expectedStartTime time.Time) bool {
+	if expectedStartTime.IsZero() {
+		return true
+	} else {
+		return osutil.Within(expectedStartTime, psProcess.CreationTime(), ProcessStartTimestampMaximumDifference)
+	}
+}
+
+func init() {
+	This = sync.OnceValues(func() (ProcessTreeItem, error) {
+		retval := ProcessTreeItem{
+			Pid:          UnknownPID,
+			CreationTime: time.Time{},
+		}
+
+		osPid := os.Getpid()
+		pid, conversionErr := IntToPidT(osPid)
+		if conversionErr != nil {
+			return retval, conversionErr
+		}
+
+		pp, findProcessErr := ps.FindProcess(osPid)
+		if findProcessErr != nil {
+			return retval, findProcessErr
+		}
+
+		retval.Pid = pid
+		retval.CreationTime = pp.CreationTime()
+
+		return retval, nil
+	})
 }

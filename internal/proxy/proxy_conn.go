@@ -89,19 +89,20 @@ func (c *netProxyConn) QueueWrite(data []byte) error {
 		return nil
 	}
 
-	if c.shutdownEvent.Frozen() {
-		return ErrConnectionClosed
-	}
-
 	if c.writeChan.BufLen() > MaxOutstandingWrites {
 		return ErrWriteQueueFull
+	}
+
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	if c.shutdownEvent.Frozen() {
+		return ErrConnectionClosed
 	}
 
 	c.writeChan.In <- data
 
 	// Interrupt the read operation (if in progress).
-	c.lock.Lock()
-	defer c.lock.Unlock()
 	c.writeItems.Add(1)
 	deadlineErr := c.conn.SetReadDeadline(time.Now())
 
@@ -126,6 +127,8 @@ func (c *netProxyConn) Run(other ProxyConn) {
 	nsr := &NetworkStreamResult{}
 	writes := c.writeChan.Out
 	closeWriteInOnce := sync.OnceFunc(func() {
+		c.lock.Lock()
+		defer c.lock.Unlock()
 		c.shutdownEvent.SetAndFreeze()
 		close(c.writeChan.In)
 	})
