@@ -272,18 +272,24 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 		// Retry stopping the child process as we occasionally see transient "Access Denied" errors.
 		const childStopTimeout = 2 * time.Second
 
-		return resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
+		retryErr := resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
 			e.log.V(1).Info("stopping child process...", "child", p.Pid, "root", pid)
 
 			_, childStopErr := e.stopSingleProcess(p.Pid, p.CreationTime, opts&^optNotFoundIsError)
 			if childStopErr != nil {
-				e.log.Error(childStopErr, "could not stop child process", "child", p.Pid, "root", pid)
+				e.log.V(1).Info("error stopping child process", "child", p.Pid, "root", pid, "error", childStopErr.Error())
 			} else {
 				e.log.V(1).Info("child process has stopped (or is gone)", "child", p.Pid, "root", pid)
 			}
 
 			return childStopErr
 		})
+
+		if retryErr != nil {
+			e.log.Error(err, "could not stop child process", "child", p.Pid, "root", pid)
+		}
+		return retryErr
+
 	}, slices.MaxConcurrency)
 
 	childStoppingErrors = slices.Select(childStoppingErrors, func(e error) bool { return e != nil })
