@@ -674,6 +674,10 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 		args = append(args, "--ipv6")
 	}
 
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+
 	args = append(args, options.Name)
 
 	cmd := makePodmanCommand(args...)
@@ -755,6 +759,19 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
 	}
 	return nil
+}
+
+func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context) ([]containers.ListedNetwork, error) {
+	args := []string{"network", "ls", "--format", "json"}
+
+	cmd := makePodmanCommand(args...)
+
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if err != nil {
+		return nil, normalizeCliErrors(err, errBuf)
+	}
+
+	return asObjects(outBuf, unmarshalListedNetwork)
 }
 
 func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
@@ -1208,6 +1225,28 @@ type podmanInspectedNetworkContainer struct {
 type podmanInspectedNetworkSubnet struct {
 	Subnet  string `json:"subnet,omitempty"`
 	Gateway string `json:"gateway,omitempty"`
+}
+
+type podmanListedNetwork struct {
+	Name     string            `json:"name"`
+	Id       string            `json:"id"`
+	Driver   string            `json:"driver,omitempty"`
+	Created  time.Time         `json:"created,omitempty"`
+	IPv6     bool              `json:"ipv6_enabled,omitempty"`
+	Internal bool              `json:"internal,omitempty"`
+	Labels   map[string]string `json:"labels,omitempty"`
+}
+
+func unmarshalListedNetwork(pln *podmanListedNetwork, net *containers.ListedNetwork) error {
+	net.Name = pln.Name
+	net.ID = pln.Id
+	net.Driver = pln.Driver
+	net.Created = pln.Created
+	net.IPv6 = pln.IPv6
+	net.Internal = pln.Internal
+	net.Labels = pln.Labels
+
+	return nil
 }
 
 type podmanEventMessage struct {

@@ -18,6 +18,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 // Container orchestrators, especially Docker, can be flakey (report errors that are not real problems).
@@ -358,6 +359,20 @@ func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestra
 	})
 }
 
+func inspectManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networks []string) ([]containers.InspectedNetwork, error) {
+	b := exponentialBackoff(networkInspectionTimeout)
+	return resiliency.RetryGet(ctx, b, func() ([]containers.InspectedNetwork, error) {
+		return o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: networks})
+	})
+}
+
+func listNetworks(ctx context.Context, o containers.NetworkOrchestrator) ([]containers.ListedNetwork, error) {
+	b := exponentialBackoff(networkInspectionTimeout)
+	return resiliency.RetryGet(ctx, b, func() ([]containers.ListedNetwork, error) {
+		return o.ListNetworks(ctx)
+	})
+}
+
 func createNetwork(ctx context.Context, o containers.NetworkOrchestrator, opts containers.CreateNetworkOptions) (*containers.InspectedNetwork, error) {
 	action := func(ctx context.Context) error {
 		_, err := o.CreateNetwork(ctx, opts)
@@ -397,6 +412,40 @@ func removeNetwork(ctx context.Context, o containers.NetworkOrchestrator, networ
 			return nil, inspectErr
 		} else {
 			return nil, fmt.Errorf("network %s still exists", networkID)
+		}
+	}
+
+	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
+	return err
+}
+
+func removeManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networkIDs []string) error {
+	if len(networkIDs) == 0 {
+		return nil
+	}
+
+	action := func(ctx context.Context) error {
+		_, err := o.RemoveNetworks(ctx, containers.RemoveNetworksOptions{Networks: networkIDs, Force: true})
+		return err
+	}
+
+	verify := func(ctx context.Context) (any, error) {
+		networks, listErr := o.ListNetworks(ctx)
+
+		if listErr != nil {
+			return nil, listErr
+		}
+
+		existingNetworkIds := usvc_slices.Map[containers.ListedNetwork, string](networks, func(n containers.ListedNetwork) string {
+			return n.ID
+		})
+
+		deleted, _ := usvc_slices.Diff(networkIDs, existingNetworkIds)
+		if len(deleted) == len(networkIDs) {
+			return nil, nil
+		} else {
+			remaining, _ := usvc_slices.Diff(networkIDs, deleted)
+			return nil, fmt.Errorf("some networks still exist: %v", remaining)
 		}
 	}
 

@@ -16,6 +16,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -257,7 +259,7 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 
 	sub, evtC := subscribe(t, ctx, dco)
 
-	// A suubscription should trigger "docker events" execution
+	// A subscription should trigger "docker events" execution
 	waitForDockerEventsExecution(t, ctx, pe, nil)
 
 	sub.Cancel()
@@ -274,6 +276,32 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 
 	sub2.Cancel()
 	requireChanClosed(t, evtC2, "The events channel should be closed when the second subscription is cancelled")
+}
+
+func TestUnmarshalListedNetworks(t *testing.T) {
+	t.Parallel()
+
+	listedNetworksText := []byte(
+		`{ "CreatedAt": "2024-12-18 16:46:32.448140173 +0000 UTC", "Driver": "bridge", "ID": "6fa4fe834c76", "IPv6": "false", "Internal": "false", "Labels": "", "Name": "bridge", "Scope": "local" }` +
+			"\n" +
+			`{ "CreatedAt": "2024-12-18 16:55:25.971924863 +0000 UTC", "Driver": "bridge", "ID": "f2eaba83b5d3", "IPv6": "false", "Internal": "false", "Labels": "com.microsoft.developer.usvc-dev.creatorProcessId=31740,com.microsoft.developer.usvc-dev.creatorProcessStartTime=2024-12-18T08:54:45.161-08:00,com.microsoft.developer.usvc-dev.persistent=false", "Name": "default-aspire-network-3fovqi40qk","Scope": "local"}`,
+	)
+	var buf bytes.Buffer
+	buf.Write(listedNetworksText)
+
+	nets, err := asObjects(&buf, unmarshalListedNetwork)
+	require.NoError(t, err)
+	require.Len(t, nets, 2)
+
+	require.Equal(t, "6fa4fe834c76", nets[0].ID)
+	require.Len(t, nets[0].Labels, 0)
+
+	require.Equal(t, "f2eaba83b5d3", nets[1].ID)
+	require.Len(t, nets[1].Labels, 3)
+	require.True(t, maps.HasExactValue(nets[1].Labels, "com.microsoft.developer.usvc-dev.persistent", "false"))
+
+	_, timestampErr := time.Parse(osutil.RFC3339MiliTimestampFormat, nets[1].Labels["com.microsoft.developer.usvc-dev.creatorProcessStartTime"])
+	require.NoError(t, timestampErr)
 }
 
 func waitForDockerEventsExecution(t *testing.T, ctx context.Context, executor *ctrl_testutil.TestProcessExecutor, cond func(exec *ctrl_testutil.ProcessExecution) bool) ctrl_testutil.ProcessExecution {

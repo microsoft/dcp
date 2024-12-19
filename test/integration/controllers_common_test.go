@@ -127,7 +127,11 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 	}
 
 	var orchestratorErr error
-	containerOrchestrator, orchestratorErr = ctrl_testutil.NewTestContainerOrchestrator(ctx, ctrl.Log.WithName("TestContainerOrchestrator"))
+	containerOrchestrator, orchestratorErr = ctrl_testutil.NewTestContainerOrchestrator(
+		ctx,
+		ctrl.Log.WithName("TestContainerOrchestrator"),
+		ctrl_testutil.TcoOptionEnableSocketListener,
+	)
 	if orchestratorErr != nil {
 		return fmt.Errorf("failed to create test container orchestrator: %w", orchestratorErr)
 	}

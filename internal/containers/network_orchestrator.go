@@ -13,6 +13,9 @@ type CreateNetworkOptions struct {
 
 	// Is IPv6 enabled
 	IPv6 bool
+
+	// Labels to apply to the network
+	Labels map[string]string
 }
 
 type CreateNetwork interface {
@@ -118,12 +121,40 @@ type DisconnectNetwork interface {
 	DisconnectNetwork(ctx context.Context, options DisconnectNetworkOptions) error
 }
 
+type ListedNetwork struct {
+	// Creation timestamp for the network
+	Created time.Time
+
+	// Driver that created the network
+	Driver string
+
+	// Network ID
+	ID string
+
+	// True if IPv6 is enabled on the network
+	IPv6 bool
+
+	// True if the network is a built-in network
+	Internal bool
+
+	// Labels applied to the network
+	Labels map[string]string
+
+	// Name of the network
+	Name string
+}
+
+type ListNetworks interface {
+	ListNetworks(ctx context.Context) ([]ListedNetwork, error)
+}
+
 type NetworkOrchestrator interface {
 	CreateNetwork
 	RemoveNetworks
 	InspectNetworks
 	ConnectNetwork
 	DisconnectNetwork
+	ListNetworks
 
 	// Subscribes to events about network state changes
 	// When the subscription is cancelled, the channel will be closed

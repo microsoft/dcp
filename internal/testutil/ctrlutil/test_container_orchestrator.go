@@ -78,7 +78,24 @@ type containerExec struct {
 	exitChan chan int32
 }
 
-func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) (*TestContainerOrchestrator, error) {
+type TestContainerOrchestratorOption uint32
+
+const (
+	TcoOptionNone TestContainerOrchestratorOption = 0
+
+	// Enables communication with the test container orchestrator via a Unix domain socket.
+	// Used for tests that involve calls to API server to fetch container logs (the API server is a different process
+	// from the the one that runs the container controller and the test container orchestrator).
+	TcoOptionEnableSocketListener = 0x01
+)
+
+func NewTestContainerOrchestrator(
+	lifetimeCtx context.Context,
+	log logr.Logger,
+	opts TestContainerOrchestratorOption,
+) (*TestContainerOrchestrator, error) {
+	now := time.Now()
+
 	to := &TestContainerOrchestrator{
 		randomNameLength: 20,
 		volumes:          map[string]containerVolume{},
@@ -87,16 +104,19 @@ func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) 
 				withId:    newId("bridge"),
 				driver:    "bridge",
 				isDefault: true,
+				created:   now,
 			},
 			"host": {
 				withId:    newId("host"),
 				driver:    "host",
 				isDefault: true,
+				created:   now,
 			},
 			"none": {
 				withId:    newId("none"),
 				driver:    "none",
 				isDefault: true,
+				created:   now,
 			},
 		},
 		images:           map[string]bool{},
@@ -111,10 +131,13 @@ func NewTestContainerOrchestrator(lifetimeCtx context.Context, log logr.Logger) 
 		log:              log,
 	}
 
-	to.containerEventsWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](to.doWatchContainers, lifetimeCtx)
-	to.networkEventsWatcher = pubsub.NewSubscriptionSet[containers.EventMessage](to.doWatchNetworks, lifetimeCtx)
+	to.containerEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchContainers, lifetimeCtx)
+	to.networkEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchNetworks, lifetimeCtx)
 
-	err := setupSocketListener(to)
+	var err error
+	if opts&TcoOptionEnableSocketListener != 0 {
+		err = setupSocketListener(to)
+	}
 
 	return to, err
 }
@@ -341,6 +364,8 @@ type containerNetwork struct {
 	subnets    []string
 	containers []string
 	isDefault  bool
+	created    time.Time
+	labels     map[string]string
 }
 
 type testContainer struct {
@@ -481,6 +506,8 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		gateways:   []string{},
 		subnets:    []string{},
 		containers: []string{},
+		created:    time.Now(),
+		labels:     options.Labels,
 	}
 
 	// Notify listeners that we've created the network
@@ -579,7 +606,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 					Subnets:    network.subnets,
 					Containers: runningContainers,
 					Labels:     map[string]string{},
-					CreatedAt:  time.Now().UTC(),
+					CreatedAt:  network.created,
 				})
 			}
 		}
@@ -682,6 +709,30 @@ func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, opti
 	return nil
 }
 
+func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context) ([]containers.ListedNetwork, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	return slices.Map[*containerNetwork, containers.ListedNetwork](
+		maps.Values(to.networks),
+		func(network *containerNetwork) containers.ListedNetwork {
+			return containers.ListedNetwork{
+				Created:  network.created,
+				Driver:   network.driver,
+				ID:       network.id,
+				IPv6:     network.ipv6,
+				Internal: false,
+				Labels:   network.labels,
+				Name:     network.name,
+			}
+		},
+	), nil
+}
+
 func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
@@ -772,23 +823,29 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
-	container, err := to.doCreateContainer(ctx, options.Name, options.ContainerSpec)
+	container, err := to.doCreateContainer(ctx, options)
 	if err != nil {
 		return "", err
 	}
 
-	if err = to.doConnectNetwork(ctx, to.networks["bridge"], container); err != nil {
+	effectiveNetwork := options.Network
+	if effectiveNetwork == "" {
+		effectiveNetwork = to.DefaultNetworkName()
+	}
+
+	if err = to.doConnectNetwork(ctx, to.networks[effectiveNetwork], container); err != nil {
 		return container.id, err
 	}
 
 	return container.id, nil
 }
 
-func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name string, options apiv1.ContainerSpec) (*testContainer, error) {
+func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, options containers.CreateContainerOptions) (*testContainer, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
+	name := options.Name
 	if name != "" {
 		for _, existing := range to.containers {
 			if existing.name == name {
@@ -810,7 +867,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, name
 		image:     options.Image,
 		createdAt: time.Now().UTC(),
 		status:    containers.ContainerStatusCreated,
-		networks:  []string{"bridge"},
+		networks:  []string{},
 		ports:     map[string][]containers.InspectedContainerHostPortConfig{},
 		args:      options.Args,
 		env:       map[string]string{},
@@ -970,9 +1027,19 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
-	container, err := to.doCreateContainer(ctx, options.Name, options.ContainerSpec)
+	var cco containers.CreateContainerOptions = containers.CreateContainerOptions(options)
+	container, err := to.doCreateContainer(ctx, cco)
 	if err != nil {
 		return "", err
+	}
+
+	effectiveNetwork := options.Network
+	if effectiveNetwork == "" {
+		effectiveNetwork = to.DefaultNetworkName()
+	}
+
+	if err = to.doConnectNetwork(ctx, to.networks[effectiveNetwork], container); err != nil {
+		return container.id, err
 	}
 
 	if _, err = to.doStartContainer(ctx, container, options.StreamCommandOptions); err != nil {

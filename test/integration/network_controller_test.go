@@ -4,15 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
+	"time"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
-	"github.com/stretchr/testify/require"
+	"github.com/tklauser/ps"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/stretchr/testify/require"
+
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 func TestCreateNetworkInstance(t *testing.T) {
@@ -168,6 +180,97 @@ func TestRemovePersistentNetworkInstance(t *testing.T) {
 	require.Len(t, inspected, 1, "expected to find a single network")
 }
 
+func TestUnusedNetworkHarvesting(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	log := ctrl.Log.WithName("TestUnusedNetworkHarvesting")
+	co, coErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, coErr, "could not create a test container orchestrator")
+	defer require.NoError(t, co.Close())
+
+	procNonExistent := nonExistentProcess(t)
+
+	const prefix = "unused-network-harvesting-"
+
+	// Network with no DCP labels (should be preserved)
+	const netNoLabels = prefix + "no-labels"
+	_, netCreateErr := co.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: netNoLabels})
+	require.NoError(t, netCreateErr)
+
+	// Persistent DCP network (should be preserved)
+	const netPersistent = prefix + "persistent"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: netPersistent,
+		Labels: map[string]string{
+			controllers.PersistentNetworkLabel:       "true",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+
+	procThis, procThisErr := process.This()
+	require.NoError(t, procThisErr)
+
+	// Network that is used by existing process (should be preserved)
+	const netUsedByExisting = prefix + "used-by-existing"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: netUsedByExisting,
+		Labels: map[string]string{
+			controllers.PersistentNetworkLabel:       "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
+			controllers.CreatorProcessStartTimeLabel: procThis.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+
+	// Network that has containers attached to it (should be preserved)
+	const netWithContainers = prefix + "with-containers"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: netWithContainers,
+		Labels: map[string]string{
+			controllers.PersistentNetworkLabel:       "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+	_, containerCreateErr := co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "container-1",
+		Network: netWithContainers,
+	})
+	require.NoError(t, containerCreateErr)
+	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
+		Name:    prefix + "container-2",
+		Network: netWithContainers,
+	})
+	require.NoError(t, containerCreateErr)
+
+	// Network that should be removed
+	const netToRemove = prefix + "to-remove"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: netToRemove,
+		Labels: map[string]string{
+			controllers.PersistentNetworkLabel:       "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+
+	harvestErr := controllers.DoHarvestUnusedNetworks(ctx, co, log)
+	require.NoError(t, harvestErr, "could not harvest unused networks")
+
+	remaining, listNetworksErr := co.ListNetworks(ctx)
+	require.NoError(t, listNetworksErr, "could not list networks")
+	remainingNames := slices.Map[containers.ListedNetwork, string](remaining, func(n containers.ListedNetwork) string {
+		return n.Name
+	})
+	require.ElementsMatch(t, []string{netNoLabels, netPersistent, netUsedByExisting, netWithContainers, co.DefaultNetworkName(), "host", "none"}, remainingNames, "unexpected networks remaining")
+}
+
 func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.ContainerNetwork) *apiv1.ContainerNetwork {
 	updatedNet := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(network), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
 		if currentNet.Status.State == apiv1.ContainerNetworkStateFailedToStart {
@@ -182,4 +285,31 @@ func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.Cont
 	require.Len(t, inspectedNetworks, 1, "expected to find a single network")
 
 	return updatedNet
+}
+
+func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
+	pps, ppsErr := ps.Processes()
+	require.NoError(t, ppsErr, "could not list processes")
+	pids := slices.Map[ps.Process, process.Pid_t](pps, func(pp ps.Process) process.Pid_t {
+		pid, pidErr := process.IntToPidT(pp.PID())
+		require.NoError(t, pidErr)
+		return pid
+	})
+
+	for {
+		const PID_OFFSET = 1000
+		i, randErr := randdata.MakeRandomInt64(math.MaxUint32 - PID_OFFSET)
+		require.NoError(t, randErr)
+		i += PID_OFFSET
+
+		candidate, candidateErr := process.Int64ToPidT(i)
+		require.NoError(t, candidateErr)
+
+		if !slices.Contains(pids, candidate) {
+			return process.ProcessTreeItem{
+				Pid:          candidate,
+				CreationTime: time.Now().Add(-time.Minute),
+			}
+		}
+	}
 }
