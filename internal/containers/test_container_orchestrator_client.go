@@ -1,4 +1,4 @@
-package ctrlutil
+package containers
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -50,7 +49,7 @@ func (c *TestContainerOrchestratorClient) CaptureContainerLogs(
 	container string,
 	stdout io.WriteCloser,
 	stderr io.WriteCloser,
-	options containers.StreamContainerLogsOptions,
+	options StreamContainerLogsOptions,
 ) error {
 	containerId := strings.TrimSpace(container)
 	if containerId == "" {
@@ -90,7 +89,7 @@ func (c *TestContainerOrchestratorClient) CaptureContainerLogs(
 func (c *TestContainerOrchestratorClient) getLogStream(
 	ctx context.Context,
 	container string,
-	options containers.StreamContainerLogsOptions,
+	options StreamContainerLogsOptions,
 	sink io.WriteCloser,
 	source apiv1.LogStreamSource,
 ) error {
@@ -118,7 +117,7 @@ func (c *TestContainerOrchestratorClient) getLogStream(
 		Scheme: "http",
 		Host:   "unix", // Does not really matter
 	}
-	url.Path = fmt.Sprintf(containerLogsHttpPath, container)
+	url.Path = fmt.Sprintf(ContainerLogsHttpPath, container)
 	query := url.Query()
 	query.Set("source", string(source))
 	query.Set("follow", fmt.Sprintf("%t", options.Follow))
@@ -221,4 +220,4 @@ func (c *TestContainerOrchestratorClient) copyStream(
 	}
 }
 
-var _ containers.ContainerLogSource = (*TestContainerOrchestratorClient)(nil)
+var _ ContainerLogSource = (*TestContainerOrchestratorClient)(nil)

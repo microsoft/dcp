@@ -67,9 +67,10 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		log.Error(err, "failed to capture shutdown profile")
 	}
 
+	// Using shorter timeout for the client to keep the shutdown process fail time as short as possible.
 	dcpclient, err := dcpclient.NewClient(shutdownCtx, 5*time.Second)
 	if err != nil {
-		log.Error(err, "could not get dcpclient")
+		log.Error(err, "could not get the client for the API server")
 		return err
 	}
 

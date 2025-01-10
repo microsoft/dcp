@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+const (
+	ContainerLogsHttpPath string = "/apis/usvc-dev.developer.microsoft.com/v1/containers/%s/log"
+)
+
 var (
 	ErrNotFound          = errors.New("object not found")
 	ErrAlreadyExists     = errors.New("object already exists")

@@ -1,9 +1,12 @@
-package ctrlutil
+package testutil
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path"
 	"strings"
@@ -12,10 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/stretchr/testify/require"
 )
 
 type ProcessExecution struct {
@@ -145,6 +150,29 @@ func NewTestProcessExecutor(lifetimeCtx context.Context) *TestProcessExecutor {
 	}
 }
 
+func (e *TestProcessExecutor) Close() error {
+	e.m.Lock()
+	defer e.m.Unlock()
+
+	var closeErrors error
+
+	closeStoringError := func(w io.Writer) {
+		if closer, ok := w.(io.Closer); ok {
+			err := closer.Close()
+			if err != nil && !errors.Is(err, os.ErrClosed) {
+				closeErrors = errors.Join(closeErrors, err)
+			}
+		}
+	}
+
+	for _, pe := range e.Executions {
+		closeStoringError(pe.Cmd.Stdout)
+		closeStoringError(pe.Cmd.Stderr)
+	}
+
+	return closeErrors
+}
+
 func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler process.ProcessExitHandler) (process.Pid_t, time.Time, func(), error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
 	pid, err := process.Int64ToPidT(pid64)
@@ -166,10 +194,10 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 
 	// For testing purposes make sure that stdout and stderr are always captured.
 	if cmd.Stdout == nil {
-		cmd.Stdout = new(bytes.Buffer)
+		cmd.Stdout = usvc_io.NopWriteCloser(new(bytes.Buffer))
 	}
 	if cmd.Stderr == nil {
-		cmd.Stderr = new(bytes.Buffer)
+		cmd.Stderr = usvc_io.NopWriteCloser(new(bytes.Buffer))
 	}
 	if handler != nil {
 		pe.startWaitingChan = make(chan struct{})
@@ -353,6 +381,14 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 	pe.ExitCode = exitCode
 	pe.EndedAt = time.Now()
 	e.Executions[i] = pe
+
+	if closer, ok := pe.Cmd.Stdout.(io.Closer); ok {
+		_ = closer.Close()
+	}
+	if closer, ok := pe.Cmd.Stderr.(io.Closer); ok {
+		_ = closer.Close()
+	}
+
 	if pe.ExitHandler != nil {
 		go func() {
 			select {

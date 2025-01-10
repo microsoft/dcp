@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 )
 
 const TestContainerLogSourceFlagName = "test-container-log-source"
@@ -58,5 +57,5 @@ func TryGetTestContainerLogSource(lifetimeCtx context.Context, log logr.Logger) 
 		return nil
 	}
 
-	return ctrlutil.NewTestContainerOrchestratorClient(lifetimeCtx, log, testContainerLogSourceFlagValue.SocketFilePath)
+	return containers.NewTestContainerOrchestratorClient(lifetimeCtx, log, testContainerLogSourceFlagValue.SocketFilePath)
 }

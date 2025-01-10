@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -140,17 +141,13 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 	}
 
 	if found {
-		var stdOutErr error
-		if runState.stdOutFile != nil {
-			stdOutErr = runState.stdOutFile.Close()
+		for _, f := range []io.Closer{runState.stdOutFile, runState.stdErrFile} {
+			if f != nil {
+				if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+					stopErr = errors.Join(stopErr, err)
+				}
+			}
 		}
-
-		var stdErrErr error
-		if runState.stdErrFile != nil {
-			stdErrErr = runState.stdErrFile.Close()
-		}
-
-		stopErr = errors.Join(stopErr, stdOutErr, stdErrErr)
 	}
 
 	return stopErr

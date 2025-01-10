@@ -1,6 +1,6 @@
 //go:build windows
 
-package process
+package process_test
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -24,7 +25,7 @@ const (
 	STILL_ACTIVE = 259
 )
 
-func ensureAllStopped(t *testing.T, processes []ProcessTreeItem, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, processes []process.ProcessTreeItem, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -41,8 +42,8 @@ func ensureAllStopped(t *testing.T, processes []ProcessTreeItem, timeout time.Du
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pp ProcessTreeItem) bool {
-	osPid, err := PidT_ToUint32(pp.Pid)
+func isStopped(pp process.ProcessTreeItem) bool {
+	osPid, err := process.PidT_ToUint32(pp.Pid)
 	if err != nil {
 		// Invalid PID value, so there is no process with such ID
 		return true

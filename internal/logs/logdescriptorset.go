@@ -77,7 +77,7 @@ func (lds *LogDescriptorSet) Dispose() error {
 }
 
 // Acquires a log descriptor for the given resource UID. If the descriptor does not exist, it is created.
-// Apart from the log desciptor, the function returns the stdOut and stdErr writers which are used
+// Apart from the log descriptor, the function returns the stdOut and stdErr writers which are used
 // for log capturing and log reading.
 //
 // The returned bool indicates whether the descriptor was created.

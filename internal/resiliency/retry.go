@@ -9,7 +9,11 @@ import (
 )
 
 func defaultExponentialBackoff() *backoff.ExponentialBackOff {
-	return backoff.NewExponentialBackOff(backoff.WithMaxInterval(10*time.Second), backoff.WithMaxElapsedTime(2*time.Minute))
+	return backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(200*time.Millisecond),
+		backoff.WithMaxInterval(10*time.Second),
+		backoff.WithMaxElapsedTime(2*time.Minute),
+	)
 }
 
 // Try calling factory function with exponential back-off until a value is successfully created or timeout is reached.

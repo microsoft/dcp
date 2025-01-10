@@ -16,6 +16,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 )
 
+const (
+	DefaultServerConnectTimeout = 15 * time.Second
+)
+
 // NewClient() returns new client for the DCP API server.
 //
 // The standard controller runtime client factory function does dynamic discovery at startup.
@@ -29,7 +33,7 @@ func NewClient(ctx context.Context, timeout time.Duration) (ctrl_client.Client, 
 	if err != nil {
 		return nil, fmt.Errorf("could not configure the client for the API server: %w", err)
 	}
-	applyDcpOptions(config)
+	ApplyDcpOptions(config)
 
 	scheme := NewScheme()
 
@@ -57,14 +61,10 @@ func NewClient(ctx context.Context, timeout time.Duration) (ctrl_client.Client, 
 }
 
 // NewClientFromConfig() returns new client for the DCP API server, using the provided configuration object.
-//
 // The standard controller runtime client factory function does dynamic discovery at startup.
 // If the API server is not already running, it will fail with error immediately.
 // NewClientFromConfig() will re-try client creation, with exponential back-off, until the time out is reached.
-func NewClientFromKubeconfigFile(ctx context.Context, timeout time.Duration, config *clientgorest.Config) (ctrl_client.Client, error) {
-	timeoutCtx, cancelTimeoutCtx := context.WithTimeout(ctx, timeout)
-	defer cancelTimeoutCtx()
-
+func NewClientFromConfig(timeoutCtx context.Context, config *clientgorest.Config) (ctrl_client.Client, error) {
 	scheme := NewScheme()
 
 	client, err := resiliency.RetryGetExponential(timeoutCtx, func() (ctrl_client.Client, error) {
@@ -76,7 +76,7 @@ func NewClientFromKubeconfigFile(ctx context.Context, timeout time.Duration, con
 
 	_, err = resiliency.RetryGetExponential(timeoutCtx, func() (bool, error) {
 		var exeList apiv1.ExecutableList
-		listErr := client.List(ctx, &exeList, &ctrl_client.ListOptions{Limit: 1})
+		listErr := client.List(timeoutCtx, &exeList, &ctrl_client.ListOptions{Limit: 1})
 		if listErr != nil {
 			return false, listErr
 		}
@@ -91,16 +91,18 @@ func NewClientFromKubeconfigFile(ctx context.Context, timeout time.Duration, con
 }
 
 // Creates a new Kubernetes client configuration from a kubeconfig file.
-func NewConfigFromKubeconfigFile(kubeconfigPath string) (*clientgorest.Config, error) {
-	config, configErr := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+func NewConfigFromKubeconfigFile(timeoutCtx context.Context, kubeconfigPath string) (*clientgorest.Config, error) {
+	config, configErr := resiliency.RetryGetExponential(timeoutCtx, func() (*clientgorest.Config, error) {
+		return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+	})
 	if configErr != nil {
 		return nil, configErr
 	}
-	applyDcpOptions(config)
+	ApplyDcpOptions(config)
 	return config, nil
 }
 
-func applyDcpOptions(config *clientgorest.Config) {
+func ApplyDcpOptions(config *clientgorest.Config) {
 	// Do not throttle the client (we only deal with a handful of clients at most)
 	// unless the rate of requests becomes insane.
 	config.QPS = 1000

@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -24,25 +23,24 @@ func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
-// Returns a context that will be cancelled when the monitored process exits.
+// Starts monitoring a process with a given PID and (optional) start time.
+// Returns a context that will be cancelled when the monitored process exits, or if the returned cancellation function is called.
+// The returned context (and the cancellation function) is valid even if an error occurs (e.g. the process cannot be found),
+// but it will be already cancelled in that case.
 func MonitorPid(
 	ctx context.Context,
 	pid process.Pid_t,
 	expectedProcessStartTime time.Time,
 	pollInterval uint8,
 	logger logr.Logger,
-) (context.Context, error) {
-	if pid == process.UnknownPID {
-		return ctx, fmt.Errorf("no PID to monitor")
-	}
-
+) (context.Context, context.CancelFunc, error) {
 	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
 
 	monitorProc, monitorProcErr := process.FindWaitableProcess(pid, expectedProcessStartTime)
 	if monitorProcErr != nil {
 		logger.Error(monitorProcErr, "error finding process", "pid", pid)
 		monitorCtxCancel()
-		return monitorCtx, monitorProcErr
+		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}
 
 	if pollInterval > 0 {
@@ -62,21 +60,33 @@ func MonitorPid(
 		}
 	}()
 
-	return monitorCtx, nil
+	return monitorCtx, monitorCtxCancel, nil
 }
 
-func TryGetMonitorContext(ctx context.Context, logger logr.Logger) context.Context {
+// Returns a context (derived from the passed parent context) that will be cancelled when
+// the process specified by the monitor flags (--monitor and --monitor-start-time) exits .
+// If the flags are not present at startup, the returned context is just a regular cancellable context
+// with no additional semantics.
+// If an error occurs (e.g. the process cannot be found, or the monitor flag values are invalid),
+// the context is still returned, but it will be cancelled immediately.
+func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (context.Context, context.CancelFunc) {
+	if monitorPid == process.UnknownPID {
+		// Suppress linter complaining about cancellation function not being used
+		// nolint:govet
+		return context.WithCancel(ctx) // No process to monitor
+	}
+
 	processStartTime, startTimeErr := ParseProcessStartTime(monitorPrcessStartTimeStr)
 	if startTimeErr != nil {
 		logger.Error(startTimeErr, "error parsing monitor start time, process to monitor could not be verified")
 		monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
 		monitorCtxCancel()
-		return monitorCtx
+		return monitorCtx, monitorCtxCancel
 	}
 
 	// Ignore errors as they're logged by MonitorPid and we always return a valid context
-	monitorCtx, _ := MonitorPid(ctx, monitorPid, processStartTime, monitorInterval, logger)
-	return monitorCtx
+	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, monitorPid, processStartTime, monitorInterval, logger)
+	return monitorCtx, monitorCtxCancel
 }
 
 func ParseProcessStartTime(timeStr string) (time.Time, error) {

@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
@@ -240,8 +241,8 @@ func TestExecutableStopState(t *testing.T) {
 			},
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
-					killedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
-						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
+					killedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *internal_testutil.ProcessExecution) bool {
+						return pe.Finished() && pe.ExitCode == internal_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
 				}
@@ -271,7 +272,7 @@ func TestExecutableStopState(t *testing.T) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
 						return run.Finished() &&
 							run.RunInfo.ExitCode != nil &&
-							*run.RunInfo.ExitCode == ctrl_testutil.KilledProcessExitCode
+							*run.RunInfo.ExitCode == internal_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -355,8 +356,8 @@ func TestExecutableDeletion(t *testing.T) {
 			},
 			verifyRunEnded: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
 				processKilled := func(_ context.Context) (bool, error) {
-					killedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
-						return pe.Finished() && pe.ExitCode == ctrl_testutil.KilledProcessExitCode
+					killedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *internal_testutil.ProcessExecution) bool {
+						return pe.Finished() && pe.ExitCode == internal_testutil.KilledProcessExitCode
 					})
 					return len(killedProcesses) == 1, nil
 				}
@@ -386,7 +387,7 @@ func TestExecutableDeletion(t *testing.T) {
 					endedRuns := ideRunner.FindAll(exe.Spec.ExecutablePath, func(run ctrl_testutil.TestIdeRun) bool {
 						return run.Finished() &&
 							run.RunInfo.ExitCode != nil &&
-							*run.RunInfo.ExitCode == ctrl_testutil.KilledProcessExitCode
+							*run.RunInfo.ExitCode == internal_testutil.KilledProcessExitCode
 					})
 					return len(endedRuns) == 1, nil
 				}
@@ -451,13 +452,13 @@ func TestExecutableStartupFailureProcess(t *testing.T) {
 	}
 
 	t.Logf("Preparing run for Executable '%s'... (should fail)", exe.ObjectMeta.Name)
-	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
 		StartupError: fmt.Errorf("simulated startup failure for Executable '%s'", exe.ObjectMeta.Name),
 	})
-	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
@@ -1666,11 +1667,11 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 				},
 			}
 
-			testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-				Condition: ctrl_testutil.ProcessSearchCriteria{
+			testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{
 					Command: []string{exe.Spec.ExecutablePath},
 				},
-				RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+				RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 					_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
 					require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exe.ObjectMeta.Name)
 					_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
@@ -1680,7 +1681,7 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 					return 0
 				},
 			})
-			defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+			defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 				Command: []string{exe.Spec.ExecutablePath},
 			})
 
@@ -1785,11 +1786,11 @@ func TestExecutableLogsFollow(t *testing.T) {
 				},
 			}
 
-			testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-				Condition: ctrl_testutil.ProcessSearchCriteria{
+			testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{
 					Command: []string{exe.Spec.ExecutablePath},
 				},
-				RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+				RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 					<-tc.startWriting.Wait()
 
 					for i, line := range lines {
@@ -1801,7 +1802,7 @@ func TestExecutableLogsFollow(t *testing.T) {
 					return 0
 				},
 			})
-			defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+			defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 				Command: []string{exe.Spec.ExecutablePath},
 			})
 
@@ -1870,11 +1871,11 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 	linesLock := &sync.Mutex{}
 	writeLine := concurrency.NewAutoResetEvent(false)
 
-	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			for i, line := range lines {
 				<-writeLine.Wait()
 				linesLock.Lock()
@@ -1886,7 +1887,7 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 			return 0
 		},
 	})
-	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
@@ -1942,11 +1943,11 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 		},
 	}
 
-	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
 			require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exe.ObjectMeta.Name)
 			_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
@@ -1954,7 +1955,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 			return 0
 		},
 	})
-	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
@@ -2005,11 +2006,11 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	finishExecution := concurrency.NewAutoResetEvent(false)
 	defer finishExecution.Set()
 
-	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-		Condition: ctrl_testutil.ProcessSearchCriteria{
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
 			require.NoError(t, stdoutErr, "Could not write first line to stdout of Executable '%s'", exe.ObjectMeta.Name)
 			_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 2")))
@@ -2019,7 +2020,7 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 			return 0
 		},
 	})
-	defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	})
 
@@ -2116,13 +2117,13 @@ func TestExecutableHealthBasic(t *testing.T) {
 
 			if tc.simulateStartupFailure {
 				t.Logf("Simulating Executable '%s' startup failure...", exe.ObjectMeta.Name)
-				testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
-					Condition: ctrl_testutil.ProcessSearchCriteria{
+				testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+					Condition: internal_testutil.ProcessSearchCriteria{
 						Command: []string{exe.Spec.ExecutablePath},
 					},
 					StartupError: fmt.Errorf("simulated statup failure for Executable '%s'", exe.ObjectMeta.Name),
 				})
-				defer testProcessExecutor.RemoveAutoExecution(ctrl_testutil.ProcessSearchCriteria{
+				defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 					Command: []string{exe.Spec.ExecutablePath},
 				})
 			}
@@ -2463,13 +2464,13 @@ func TestExecutableDeleteParallel(t *testing.T) {
 	endExecution := concurrency.NewAutoResetEvent(false)
 	defer endExecution.SetAndFreeze()
 
-	psc := ctrl_testutil.ProcessSearchCriteria{
+	psc := internal_testutil.ProcessSearchCriteria{
 		// With  Executables using relative path, the match will happen if the command contains the prefix
 		Command: []string{exeNamePrefix},
 	}
-	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: psc,
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			<-endExecution.Wait()
 			return 0
 		},
@@ -2531,12 +2532,12 @@ func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
 		},
 	}
 
-	psc := ctrl_testutil.ProcessSearchCriteria{
+	psc := internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
 	}
-	testProcessExecutor.InstallAutoExecution(ctrl_testutil.AutoExecution{
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: psc,
-		RunCommand: func(pe *ctrl_testutil.ProcessExecution) int32 {
+		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			return 0 // Is not going to be used really, because of StopError
 		},
 		StopError: fmt.Errorf("simulated stop failure for Executable '%s'", exe.ObjectMeta.Name),
@@ -2570,7 +2571,7 @@ func ensureProcessRunning(ctx context.Context, cmdPath string) (process.Pid_t, e
 	pid := process.UnknownPID
 
 	processStarted := func(_ context.Context) (bool, error) {
-		runningProcessesWithPath := testProcessExecutor.FindAll([]string{cmdPath}, "", func(pe *ctrl_testutil.ProcessExecution) bool {
+		runningProcessesWithPath := testProcessExecutor.FindAll([]string{cmdPath}, "", func(pe *internal_testutil.ProcessExecution) bool {
 			return pe.Running()
 		})
 

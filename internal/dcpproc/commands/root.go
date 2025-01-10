@@ -62,7 +62,8 @@ func monitorProcess(log logger.Logger) func(cmd *cobra.Command, args []string) e
 			return childProcessStartTimeErr
 		}
 
-		monitorCtx, dcpMonitorErr := cmds.MonitorPid(cmd.Context(), dcpMonitorPid, dcpProcessStartTime, monitorInterval, log)
+		monitorCtx, monitorCtxCancel, dcpMonitorErr := cmds.MonitorPid(cmd.Context(), dcpMonitorPid, dcpProcessStartTime, monitorInterval, log)
+		defer monitorCtxCancel()
 		if dcpMonitorErr != nil {
 			if errors.Is(dcpMonitorErr, os.ErrProcessDone) {
 				// If the monitor process is already terminated, stop the service immediately
@@ -81,7 +82,8 @@ func monitorProcess(log logger.Logger) func(cmd *cobra.Command, args []string) e
 			}
 		}
 
-		childProcessCtx, childMonitorErr := cmds.MonitorPid(cmd.Context(), childMonitorPid, childProcessStartTime, monitorInterval, log)
+		childProcessCtx, childProcessCtxCancel, childMonitorErr := cmds.MonitorPid(cmd.Context(), childMonitorPid, childProcessStartTime, monitorInterval, log)
+		defer childProcessCtxCancel()
 		if childMonitorErr != nil {
 			log.Error(childMonitorErr, "child service process could not be monitored", "PID", childMonitorPid)
 			return childMonitorErr

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package process
+package process_test
 
 import (
 	"context"
@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -40,16 +41,16 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	pid, err := IntToPidT(cmd.Process.Pid)
+	pid, err := process.IntToPidT(cmd.Process.Pid)
 	require.NoError(t, err)
 	pp, ppErr := ps.FindProcess(cmd.Process.Pid)
 	require.NoError(t, ppErr)
-	rootP := ProcessTreeItem{pid, pp.CreationTime()}
+	rootP := process.ProcessTreeItem{pid, pp.CreationTime()}
 
 	// Only one process should be running, so the "tree" size is 1.
 	ensureProcessTree(t, rootP, 1, 5*time.Second)
 
-	executor := NewOSExecutor(log)
+	executor := process.NewOSExecutor(log)
 	start := time.Now()
 	err = executor.StopProcess(pid, time.Time{})
 	require.NoError(t, err)
@@ -60,10 +61,10 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		// It should not take more than `signalAndWaitTimeout` though.
 		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
-	ensureAllStopped(t, []ProcessTreeItem{rootP}, 5*time.Second)
+	ensureAllStopped(t, []process.ProcessTreeItem{rootP}, 5*time.Second)
 }
 
-func ensureAllStopped(t *testing.T, processes []ProcessTreeItem, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, processes []process.ProcessTreeItem, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -80,10 +81,10 @@ func ensureAllStopped(t *testing.T, processes []ProcessTreeItem, timeout time.Du
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pp ProcessTreeItem) bool {
+func isStopped(pp process.ProcessTreeItem) bool {
 	// On Unix-like systems FindProcess() always succeeds, so it is not a reliable way of checking
 	// if the process is still running.
-	osPid, err := PidT_ToInt(pp.Pid)
+	osPid, err := process.PidT_ToInt(pp.Pid)
 	if err != nil {
 		panic(err)
 	}

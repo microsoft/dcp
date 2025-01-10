@@ -3,8 +3,6 @@ package commands
 import (
 	"context"
 	"fmt"
-	"os"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
@@ -44,7 +42,7 @@ func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 }
 
 func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, error) {
-	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, 15*time.Second)
+	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, dcpclient.DefaultServerConnectTimeout)
 	defer cancelRetryCtx()
 
 	scheme := dcpclient.NewScheme()
@@ -53,11 +51,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	// Do some retries with exponential back-off before giving up
 	mgr, err := resiliency.RetryGetExponential(retryCtx, func() (ctrl_manager.Manager, error) {
 		config := ctrlruntime.GetConfigOrDie()
-		token, _ := os.LookupEnv(kubeconfig.DCP_SECURE_TOKEN)
-		if token != "" {
-			// If a token was supplied, use it to authenticate to the API server
-			config.BearerToken = token
-		}
+		dcpclient.ApplyDcpOptions(config)
 		ctrlMgrOpts := controllers.NewControllerManagerOptions(ctx, scheme, log)
 		return ctrlruntime.NewManager(config, ctrlMgrOpts)
 	})
@@ -84,40 +78,41 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	return mgr, nil
 }
 
-func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) error {
+func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		// ctlrruntime.SetLogger() was already called by main()
-		log := logger.WithName("dcpctrl")
+		// Proper name was set and ctlrruntime.SetLogger() was already called by main()
+		log := rootLogger.Logger
 
 		err := perftrace.CaptureStartupProfileIfRequested(cmd.Context(), log)
 		if err != nil {
 			log.Error(err, "failed to capture startup profile")
 		}
 
-		ctx := cmds.TryGetMonitorContext(cmd.Context(), log.WithName("monitor"))
+		ctrlCtx, ctrlCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log)
+		defer ctrlCtxCancel()
 
 		_, err = kubeconfig.RequireKubeconfigFlagValue(cmd.Flags())
 		if err != nil {
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}
 
-		mgr, err := getManager(ctx, log.V(1))
+		mgr, err := getManager(ctrlCtx, log.V(1))
 		if err != nil {
 			return fmt.Errorf("failed to initialize the controller manager: %w", err)
 		}
 
 		processExecutor := process.NewOSExecutor(log)
-		containerOrchestrator, orchestratorErr := runtimes.FindAvailableContainerRuntime(ctx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagValue()), processExecutor)
+		containerOrchestrator, orchestratorErr := runtimes.FindAvailableContainerRuntime(ctrlCtx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagValue()), processExecutor)
 		if orchestratorErr != nil {
 			return orchestratorErr
 		}
 		// Start watching the status of the container orchestrator in the background
-		containerOrchestrator.EnsureBackgroundStatusUpdates(ctx)
+		containerOrchestrator.EnsureBackgroundStatusUpdates(ctrlCtx)
 
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 		exeRunners[apiv1.ExecutionTypeProcess] = processRunner
-		ideRunner, err := exerunners.NewIdeExecutableRunner(ctx, log.WithName("IdeExecutableRunner"))
+		ideRunner, err := exerunners.NewIdeExecutableRunner(ctrlCtx, log.WithName("IdeExecutableRunner"))
 		if err == nil {
 			exeRunners[apiv1.ExecutionTypeIDE] = ideRunner
 		}
@@ -125,7 +120,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		// Executables can still be run, just not via IDE.
 
 		hpSet := health.NewHealthProbeSet(
-			ctx,
+			ctrlCtx,
 			log.WithName("HealthProbeSet"),
 			map[apiv1.HealthProbeType]health.HealthProbeExecutor{
 				apiv1.HealthProbeTypeHttp: health.HealthProbeExecutorFunc(health.ExecuteHttpProbe),
@@ -133,7 +128,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		)
 
 		exCtrl := controllers.NewExecutableReconciler(
-			ctx,
+			ctrlCtx,
 			mgr.GetClient(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
@@ -154,7 +149,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		containerCtrl := controllers.NewContainerReconciler(
-			ctx,
+			ctrlCtx,
 			mgr.GetClient(),
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
@@ -165,7 +160,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		containerExecCtrl := controllers.NewContainerExecReconciler(
-			ctx,
+			ctrlCtx,
 			mgr.GetClient(),
 			log.WithName("ContainerExecReconciler"),
 			containerOrchestrator,
@@ -186,7 +181,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		networkCtrl := controllers.NewNetworkReconciler(
-			ctx,
+			ctrlCtx,
 			mgr.GetClient(),
 			log.WithName("NetworkReconciler"),
 			containerOrchestrator,
@@ -197,7 +192,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		serviceCtrl := controllers.NewServiceReconciler(
-			ctx,
+			ctrlCtx,
 			mgr.GetClient(),
 			log.WithName("ServiceReconciler"),
 			controllers.ServiceReconcilerConfig{
@@ -215,7 +210,7 @@ func runControllers(logger logger.Logger) func(cmd *cobra.Command, _ []string) e
 		}
 
 		log.Info("starting controller manager")
-		err = mgr.Start(ctx)
+		err = mgr.Start(ctrlCtx)
 		if err != nil {
 			log.Error(err, "contoller manager failed")
 			return err

@@ -14,7 +14,7 @@ import (
 
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -24,7 +24,7 @@ import (
 const (
 	actionTimeout   = 5 * time.Second
 	actionPoll      = 200 * time.Millisecond
-	pollImmediately = true // Dont't wait before polling for the first time
+	pollImmediately = true // Don't wait before polling for the first time
 )
 
 func TestExpectStringsSingleLine(t *testing.T) {
@@ -165,7 +165,8 @@ func TestReportsContainerEvents(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
-	pe := ctrl_testutil.NewTestProcessExecutor(ctx)
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	defer require.NoError(t, pe.Close())
 	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
@@ -208,7 +209,8 @@ func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
-	pe := ctrl_testutil.NewTestProcessExecutor(ctx)
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	defer require.NoError(t, pe.Close())
 	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
@@ -254,7 +256,8 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
-	pe := ctrl_testutil.NewTestProcessExecutor(ctx)
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	defer require.NoError(t, pe.Close())
 	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
@@ -304,8 +307,13 @@ func TestUnmarshalListedNetworks(t *testing.T) {
 	require.NoError(t, timestampErr)
 }
 
-func waitForDockerEventsExecution(t *testing.T, ctx context.Context, executor *ctrl_testutil.TestProcessExecutor, cond func(exec *ctrl_testutil.ProcessExecution) bool) ctrl_testutil.ProcessExecution {
-	pe, err := ctrl_testutil.WaitForCommand(executor, ctx, []string{"docker", "events"}, "", cond)
+func waitForDockerEventsExecution(
+	t *testing.T,
+	ctx context.Context,
+	executor *internal_testutil.TestProcessExecutor,
+	cond func(exec *internal_testutil.ProcessExecution) bool,
+) internal_testutil.ProcessExecution {
+	pe, err := internal_testutil.WaitForCommand(executor, ctx, []string{"docker", "events"}, "", cond)
 	require.NoError(t, err)
 	return pe
 }

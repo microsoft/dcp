@@ -9,13 +9,16 @@ import (
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 const AutoStartExecutableAnnotation = "test.usvc-dev.developer.microsoft.com/auto-start-executable"
@@ -118,7 +121,7 @@ func (r *TestIdeRunner) StartRun(
 }
 
 func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ logr.Logger) error {
-	return r.doStopRun(runID, KilledProcessExitCode)
+	return r.doStopRun(runID, internal_testutil.KilledProcessExitCode)
 }
 
 func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid process.Pid_t) error {

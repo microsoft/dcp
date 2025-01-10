@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 
@@ -16,7 +17,7 @@ import (
 
 type DcpRunEventHandlers struct {
 	AfterApiSrvStart     func() error
-	BeforeApiSrvShutdown func() error
+	BeforeApiSrvShutdown func(apiserver.ApiServerShutdownResourceCleanup) error
 }
 
 // DcpRun() starts the API server and controllers and waits for the signal to terminate them.
@@ -37,6 +38,8 @@ func DcpRun(
 	})
 
 	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), kconfig, log)
+	runCtx, runCtxCancel := context.WithCancel(ctx)
+	defer runCtxCancel()
 
 	hostedServices := []hosting.Service{}
 	for _, controller := range controllers {
@@ -53,7 +56,13 @@ func DcpRun(
 		Logger:   log.WithName("dcp-host"),
 	}
 
-	apiServerShutdown, apiServerErr := apiServer.Run(hostCtx)
+	var requestedResourceCleanup atomic.Value
+	requestedResourceCleanup.Store(apiserver.ApiServerResourceCleanupFull) // By default we do full cleanup on shutdown.
+
+	apiServerShutdown, apiServerErr := apiServer.Run(hostCtx, func(cleanup apiserver.ApiServerShutdownResourceCleanup) {
+		requestedResourceCleanup.Store(cleanup)
+		runCtxCancel()
+	})
 	if apiServerErr != nil {
 		cancelHostCtx()
 		return apiServerErr
@@ -85,7 +94,7 @@ func DcpRun(
 	err = func() error {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
 				// We are being asked to shut down.
 				log.Info("Shutting down...")
 				return nil
@@ -114,8 +123,10 @@ func DcpRun(
 	}
 
 	if evtHandlers.BeforeApiSrvShutdown != nil {
-		log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.")
-		if err = evtHandlers.BeforeApiSrvShutdown(); err != nil {
+		resourceCleanup := requestedResourceCleanup.Load().(apiserver.ApiServerShutdownResourceCleanup)
+		log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.", "ResourceCleanup", resourceCleanup)
+
+		if err = evtHandlers.BeforeApiSrvShutdown(resourceCleanup); err != nil {
 			log.Error(err, "BeforeApiSrvShutdown event handler failed.")
 			return errors.Join(err, shutdownHost())
 		}

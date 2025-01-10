@@ -4,6 +4,7 @@ package apiserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,15 +15,17 @@ import (
 	"github.com/spf13/pflag"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/dynamiccertificates"
 	kubeserverfilters "k8s.io/apiserver/pkg/server/filters"
+	clientgorest "k8s.io/client-go/rest"
 
-	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
-	serverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
-	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
-	"github.com/tilt-dev/tilt-apiserver/pkg/server/start"
+	tiltapiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
+	tiltserverbuilder "github.com/tilt-dev/tilt-apiserver/pkg/server/builder"
+	tiltresource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
+	tiltstart "github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/logs/containerlogs"
@@ -47,10 +50,10 @@ type ApiServer struct {
 	config       *kubeconfig.Kubeconfig
 	logger       logr.Logger
 	runCompleted bool
-	builder      *serverbuilder.Server
-	options      *start.TiltServerOptions
+	builder      *tiltserverbuilder.Server
+	options      *tiltstart.TiltServerOptions
 	// Types that have data stored in the API server.
-	persistentDcpTypes []apiserver_resource.Object
+	persistentDcpTypes []tiltresource.Object
 }
 
 func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger) *ApiServer {
@@ -59,8 +62,8 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 		config:       config,
 		logger:       logger,
 		runCompleted: false,
-		builder:      serverbuilder.NewServerBuilder(),
-		persistentDcpTypes: []apiserver_resource.Object{
+		builder:      tiltserverbuilder.NewServerBuilder(),
+		persistentDcpTypes: []tiltresource.Object{
 			&apiv1.Executable{},
 			&apiv1.Endpoint{},
 			&apiv1.ExecutableReplicaSet{},
@@ -79,7 +82,7 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 
 	// Types that must be recognizable by the API server, but are not persisted
 	// (they are used for request processing only).
-	var additionalDcpTypes = []apiserver_resource.Object{
+	var additionalDcpTypes = []tiltresource.Object{
 		&apiv1.LogOptions{},
 		&apiv1.LogStreamer{},
 	}
@@ -95,7 +98,7 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 	return apiServer
 }
 
-func (s *ApiServer) Options() (*start.TiltServerOptions, error) {
+func (s *ApiServer) Options() (*tiltstart.TiltServerOptions, error) {
 	if s.options != nil {
 		return s.options, nil
 	}
@@ -110,7 +113,15 @@ func (s *ApiServer) Name() string {
 	return s.name
 }
 
-func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
+// Runs the API server.
+//
+// The passed runCtx is used to control the lifecycle of the API server. When that context is cancelled,
+// the API server should terminate all requests in progress and shut down gracefully.
+//
+// shutdownRequested is a function that can be called to indicate that the API server was requested to shut down.
+// It should NOT be assumed that this is a cancellation function for the runCtx (cancellation of the runCtx will happen
+// shortly after, but ASYNCHRONOUSLY to the call to shutdownRequested).
+func (s *ApiServer) Run(runCtx context.Context, shutdownRequested func(ApiServerShutdownResourceCleanup)) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
 	log.Info("Starting API server...")
@@ -142,23 +153,23 @@ func (s *ApiServer) Run(ctx context.Context) (<-chan struct{}, error) {
 		config.GenericConfig.MinRequestTimeout = watchTimeout
 	}
 
-	addDcpHttpHandlers(config, ctx, log)
+	addDcpHttpHandlers(config, runCtx, log)
 
 	err = configureForLogServing(config, s.persistentDcpTypes, log)
 	if err != nil {
 		return nil, err
 	}
 
-	completedConfig := config.Complete()
-	stoppedCh, err := options.RunTiltServerFromConfig(completedConfig, ctx)
+	// Save the kubeconfig file so that clients can use it to connect to the API server.
+	err = s.config.Save()
 	if err != nil {
-		log.Error(err, "API server execution error")
 		return nil, err
 	}
 
-	// Save the kubeconfig if we haven't yet
-	err = s.config.EnsureExists()
+	completedConfig := config.Complete()
+	stoppedCh, err := runServerFromCompletedConfig(completedConfig, runCtx, shutdownRequested, log)
 	if err != nil {
+		log.Error(err, "API server execution error")
 		return nil, err
 	}
 
@@ -173,10 +184,14 @@ func (s *ApiServer) Dispose() error {
 		allErrors = errors.Join(allErrors, rls.Dispose())
 		return true // Continue iteration
 	})
+
+	// Remove the kubeconfig file (best effort)
+	_ = os.Remove(s.config.Path())
+
 	return allErrors
 }
 
-func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOptions, error) {
+func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServerOptions, error) {
 	options, err := s.Options()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)
@@ -256,7 +271,7 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*start.TiltServerOpti
 // Configures various API serving options so that requests for logs are handled correctly,
 // including body and options serialization/deserialization and marking long requests
 // as long-running, so they do not time out prematurely.
-func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apiserver_resource.Object, log logr.Logger) error {
+func configureForLogServing(config *tiltapiserver.Config, persistentDcpTypes []tiltresource.Object, log logr.Logger) error {
 	// The following is necessary for the API server to correctly deserialize log request parameters into LogOptions instance.
 	// (the scheme in ExtraConfig contains DCP type definitions, including LogOptions).
 	disableOpenApiForLogsSubresource(config.GenericConfig, persistentDcpTypes)
@@ -290,14 +305,14 @@ func configureForLogServing(config *apiserver.Config, persistentDcpTypes []apise
 
 // By default the API server expects that subresources have a structure, but logs do not have any,
 // they are just a stream of text. We need to tell the API server that OpenAPI definitions are not available for logs.
-func disableOpenApiForLogsSubresource(config *kubeapiserver.RecommendedConfig, objects []apiserver_resource.Object) {
-	objectsWithLogs := slices.Select(objects, func(o apiserver_resource.Object) bool {
-		owgs, hasSubresource := o.(apiserver_resource.ObjectWithGenericSubResource)
+func disableOpenApiForLogsSubresource(config *kubeapiserver.RecommendedConfig, objects []tiltresource.Object) {
+	objectsWithLogs := slices.Select(objects, func(o tiltresource.Object) bool {
+		owgs, hasSubresource := o.(tiltresource.ObjectWithGenericSubResource)
 		if !hasSubresource {
 			return false
 		}
 
-		hasLogs := slices.Any(owgs.GenericSubResources(), func(sr apiserver_resource.GenericSubResource) bool {
+		hasLogs := slices.Any(owgs.GenericSubResources(), func(sr tiltresource.GenericSubResource) bool {
 			return sr.Name() == apiv1.LogSubresourceName
 		})
 		return hasLogs
@@ -315,11 +330,78 @@ func disableOpenApiForLogsSubresource(config *kubeapiserver.RecommendedConfig, o
 	}
 }
 
-func addDcpHttpHandlers(config *apiserver.Config, ctx context.Context, log logr.Logger) {
+func addDcpHttpHandlers(config *tiltapiserver.Config, ctx context.Context, log logr.Logger) {
 	originalChainBuilder := config.GenericConfig.BuildHandlerChainFunc
 	config.GenericConfig.BuildHandlerChainFunc = func(handler http.Handler, c *kubeapiserver.Config) http.Handler {
 		handler = originalChainBuilder(handler, c)
 		handler = withDcpContextValues(handler, ctx, log)
 		return handler
 	}
+}
+
+func runServerFromCompletedConfig(
+	config tiltapiserver.CompletedConfig,
+	ctx context.Context,
+	shutdownRequested func(ApiServerShutdownResourceCleanup),
+	log logr.Logger,
+) (<-chan struct{}, error) {
+	server, err := config.New()
+	if err != nil {
+		return nil, err
+	}
+
+	adminHandler := NewAdminHttpHandler(shutdownRequested, log)
+	server.GenericAPIServer.Handler.NonGoRestfulMux.HandlePrefix(AdminPathPrefix, adminHandler)
+
+	server.GenericAPIServer.AddPostStartHookOrDie("start-tilt-server-informers", func(context kubeapiserver.PostStartHookContext) error {
+		if config.GenericConfig.SharedInformerFactory != nil {
+			// (must use deprecated StopCh because the SharedInformerFactory API requires a stop channel, and not a Context)
+			// nolint:staticcheck
+			config.GenericConfig.SharedInformerFactory.Start(context.StopCh)
+		}
+		return nil
+	})
+
+	prepared := server.GenericAPIServer.PrepareRun()
+	serving := config.ExtraConfig.ServingInfo
+
+	tlsConfig, err := tiltstart.TLSConfig(ctx, serving)
+	if err != nil {
+		return nil, err
+	}
+
+	stopCh := ctx.Done()
+	stoppedCh, _, err := kubeapiserver.RunServer(&http.Server{
+		Addr:           serving.Listener.Addr().String(),
+		Handler:        prepared.Handler,
+		MaxHeaderBytes: 1 << 20,
+		TLSConfig:      tlsConfig,
+	}, serving.Listener, prepared.ShutdownTimeout, stopCh)
+	if err != nil {
+		return nil, err
+	}
+
+	server.GenericAPIServer.RunPostStartHooks(ctx)
+
+	return stoppedCh, nil
+}
+
+func RequestApiServerShutdown(ctx context.Context, restClient *clientgorest.RESTClient) error {
+	stopRequestData := ApiServerExecutionData{
+		Status:                  ApiServerStopping,
+		ShutdownResourceCleanup: ApiServerResourceCleanupNone,
+	}
+	bodyBytes, err := json.Marshal(stopRequestData)
+	if err != nil {
+		return fmt.Errorf("failed to serialize API server shutdown request: %w", err)
+	}
+
+	res := restClient.Patch(types.MergePatchType).
+		RequestURI(AdminPathPrefix + ExecutionDocument).
+		Body(bodyBytes).
+		Do(ctx)
+	if res.Error() != nil {
+		return fmt.Errorf("API server shutdown request failed: %w", res.Error())
+	}
+	return nil
 }

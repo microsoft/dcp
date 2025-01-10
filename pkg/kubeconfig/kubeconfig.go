@@ -89,36 +89,39 @@ func (k *Kubeconfig) Path() string {
 }
 
 // Write the kubeconfig data if it doesn't exist. Will not update an existing kubeconfig.
-func (k *Kubeconfig) EnsureExists() error {
+func (k *Kubeconfig) Save() error {
 	info, err := os.Stat(k.path)
 
-	if err != nil {
-		if !errors.Is(err, iofs.ErrNotExist) {
-			return err
-		}
+	if err != nil && !errors.Is(err, iofs.ErrNotExist) {
+		return err
+	}
 
-		// The file doesn't exist, write it out
-		contents, contentErr := clientcmd.Write(*k.Config)
-		if contentErr != nil {
-			return fmt.Errorf("could not write Kubeconfig file: %w", contentErr)
-		}
-
-		// Write file to a temporary file first, then rename the file to the final name.
-		// This avoids failures related to file locking and clients reading partially-written file.
-		suffix, suffixErr := randdata.MakeRandomString(6)
-		if suffixErr != nil {
-			return fmt.Errorf("could not generate random suffix for new kubeconfig file: %w", suffixErr)
-		}
-
-		if writeErr := usvc_io.WriteFile(k.path+string(suffix), contents, osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
-			return fmt.Errorf("could not write Kubeconfig file: %w", writeErr)
-		}
-
-		if renameErr := os.Rename(k.path+string(suffix), k.path); renameErr != nil {
-			return fmt.Errorf("could not rename temporary Kubeconfig file to final location: %w", renameErr)
-		}
-	} else if info.IsDir() {
+	if err == nil && info.IsDir() {
 		return fmt.Errorf("specified kubeconfig ('%s') is a directory", k.path)
+	}
+
+	if err == nil && info.Size() > 0 {
+		return fmt.Errorf("kubeconfig file already exists at '%s'", k.path)
+	}
+
+	contents, contentErr := clientcmd.Write(*k.Config)
+	if contentErr != nil {
+		return fmt.Errorf("could not write Kubeconfig file: %w", contentErr)
+	}
+
+	// Write file to a temporary file first, then rename the file to the final name.
+	// This avoids failures related to file locking and clients reading partially-written file.
+	suffix, suffixErr := randdata.MakeRandomString(6)
+	if suffixErr != nil {
+		return fmt.Errorf("could not generate random suffix for new kubeconfig file: %w", suffixErr)
+	}
+
+	if writeErr := usvc_io.WriteFile(k.path+string(suffix), contents, osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
+		return fmt.Errorf("could not write Kubeconfig file: %w", writeErr)
+	}
+
+	if renameErr := os.Rename(k.path+string(suffix), k.path); renameErr != nil {
+		return fmt.Errorf("could not rename temporary Kubeconfig file to final location: %w", renameErr)
 	}
 
 	return nil
@@ -163,58 +166,6 @@ func (k *Kubeconfig) GetData() (net.IP, int, string, *certificateData, error) {
 	// We are going to take the first resolved address, because Kubernetes API server does not support
 	// binding to multiple addresses and we have no extra information to prefer one over another.
 	return ips[0], port, user.Token, k.certificateData, nil
-}
-
-// Returns path to Kubeconfig file to be used for configuring to the DCP API server,
-// and by clients (to connect to the API server).
-// If the --kubeconfig parameter is passed, the returned value will be the parameter value.
-// If the --kubeconfig parameter is missing, the default location (~/.dcp/kubeconfig) will be checked,
-// and if the kubeconfig file is not there, it will be created.
-func GetKubeconfigFromFlags(fs *pflag.FlagSet, port int32, log logr.Logger) (*Kubeconfig, error) {
-	kubeconfigPath, err := getKubeConfigPath(fs)
-	if err != nil {
-		return nil, err
-	}
-
-	// If a token was not provided via DCP_SECURE_TOKEN environment variable, we need to generate one
-	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
-	generateToken := !tokenFound || token == ""
-
-	return getKubeconfig(kubeconfigPath, port, true, generateToken, log)
-}
-
-// Validates and returns path to Kubeconfig file to be used for connecting to the DCP API server by clients.
-// If the --kubeconfig parameter is passed, ensures that it specifies an existing file.
-// If the --kubeconfig parameter is missing, ensures that a kubeconfig exists at the default location (~/.dcp/kubeconfig).
-// Returns an error if the kubeconfig file does not already exist.
-func RequireKubeconfigFileFromFlags(fs *pflag.FlagSet, port int32) (string, error) {
-	kubeconfigPath, err := getKubeConfigPath(fs)
-	if err != nil {
-		return "", err
-	}
-
-	info, err := os.Stat(kubeconfigPath)
-	if err != nil && errors.Is(err, iofs.ErrNotExist) {
-		return "", fmt.Errorf("kubeconfig file does not exist at '%s'", kubeconfigPath)
-	} else if err != nil {
-		return "", fmt.Errorf("error retrieving kubeconfig file '%s': %w", kubeconfigPath, err)
-	} else if info.IsDir() {
-		return "", fmt.Errorf("specified kubeconfig ('%s') is a directory", kubeconfigPath)
-	}
-
-	return kubeconfigPath, nil
-}
-
-// Creates the kubeconfig file using given path as necessary.
-// This function is primarily intended for use in tests; other code should use EnsureKubeconfigFileFromFlags() instead.
-func EnsureKubeconfigFile(kubeconfigPath string, log logr.Logger) error {
-	k, err := getKubeconfig(kubeconfigPath, 0, false, true, log)
-	if err != nil {
-		return err
-	}
-
-	err = k.EnsureExists()
-	return err
 }
 
 // Get the path to the kubeconfig from the flag data.

@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"flag"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -12,6 +13,9 @@ import (
 func NewLogForTesting(name string) logr.Logger {
 	log := logger.New(name)
 	log.SetLevel(zapcore.ErrorLevel)
+	if !flag.Parsed() {
+		flag.Parse() // Needed to test if verbose flag was present.
+	}
 	if testing.Verbose() {
 		log.SetLevel(zapcore.DebugLevel)
 	}

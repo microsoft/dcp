@@ -50,3 +50,5 @@ func (pw *paragraphWriter) Close() error {
 func (pw *paragraphWriter) NewParagraph() {
 	pw.newParagraph = true
 }
+
+var _ io.WriteCloser = (*paragraphWriter)(nil)

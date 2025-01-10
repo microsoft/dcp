@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
@@ -59,7 +60,8 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		log := log.WithName("start-apiserver")
 
-		ctx := cmds.TryGetMonitorContext(cmd.Context(), log.WithName("monitor"))
+		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log.WithName("monitor"))
+		defer apiServerCtxCancel()
 
 		if detach {
 			args := make([]string, 0, len(os.Args)-2)
@@ -101,7 +103,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 
-		err := perftrace.CaptureStartupProfileIfRequested(ctx, log)
+		err := perftrace.CaptureStartupProfileIfRequested(apiServerCtx, log)
 		if err != nil {
 			log.Error(err, "failed to capture startup profile")
 		}
@@ -113,25 +115,25 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		kconfig, err := kubeconfig.GetKubeconfigFlagValue(cmd.Flags(), log)
+		kconfig, err := kubeconfig.EnsureKubeconfigData(cmd.Flags(), log)
 		if err != nil {
 			return err
 		}
 
 		var allExtensions []bootstrap.DcpExtension
 		if !serverOnly {
-			allExtensions, err = bootstrap.GetExtensions(ctx, log)
+			allExtensions, err = bootstrap.GetExtensions(apiServerCtx, log)
 			if err != nil {
 				return err
 			}
 		}
 
 		runEvtHandlers := bootstrap.DcpRunEventHandlers{
-			BeforeApiSrvShutdown: func() error {
+			BeforeApiSrvShutdown: func(requestedResourceCleanup apiserver.ApiServerShutdownResourceCleanup) error {
 				// If we are in server-only mode (no standard controllers) such as when running tests,
-				// there is high likelihood that we won't be able to delete all the application resources,
-				// because no one will be able to complete the resource-related cleanup and remove all finalizers from the resources.
-				if serverOnly {
+				// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
+				// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
+				if serverOnly || requestedResourceCleanup != apiserver.ApiServerResourceCleanupFull {
 					return nil
 				}
 
@@ -164,7 +166,16 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
-		err = bootstrap.DcpRun(ctx, rootDir, kconfig, allExtensions, invocationFlags, log, runEvtHandlers)
+
+		err = bootstrap.DcpRun(
+			apiServerCtx,
+			rootDir,
+			kconfig,
+			allExtensions,
+			invocationFlags,
+			log,
+			runEvtHandlers,
+		)
 
 		return err
 	}

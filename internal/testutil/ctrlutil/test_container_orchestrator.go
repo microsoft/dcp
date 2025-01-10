@@ -38,7 +38,6 @@ var (
 
 const (
 	TestEventActionStopWithoutRemove containers.EventAction = "stop_without_remove"
-	containerLogsHttpPath            string                 = "/apis/usvc-dev.developer.microsoft.com/v1/containers/%s/log"
 )
 
 type TestContainerOrchestrator struct {
@@ -72,8 +71,8 @@ type containerStartupLogs struct {
 }
 
 type containerExec struct {
-	stdout   io.Writer
-	stderr   io.Writer
+	stdout   io.WriteCloser
+	stderr   io.WriteCloser
 	exited   bool
 	exitChan chan int32
 }
@@ -160,7 +159,7 @@ func setupSocketListener(to *TestContainerOrchestrator) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(
 		// Use template URL, enabling http.Request.PathValue method
-		fmt.Sprintf("GET "+containerLogsHttpPath, "{containerId}"),
+		fmt.Sprintf("GET "+containers.ContainerLogsHttpPath, "{containerId}"),
 		func(w http.ResponseWriter, r *http.Request) { to.handleLogRequest(w, r) },
 	)
 	to.socketServer = &http.Server{Handler: mux}
@@ -269,18 +268,16 @@ func (to *TestContainerOrchestrator) Close() error {
 
 	var allCloseErrors error = nil
 
-	for _, container := range to.containers {
-		stopErr := to.doStopContainer(to.lifetimeCtx, container, stopAndRemove)
-		allCloseErrors = errors.Join(allCloseErrors, stopErr)
-	}
-
 	if to.socketServer != nil {
 		allCloseErrors = errors.Join(allCloseErrors, to.socketServer.Close())
 		to.socketServer = nil
 	}
 
 	if len(to.socketFilePath) > 0 {
-		allCloseErrors = errors.Join(allCloseErrors, os.Remove(to.socketFilePath))
+		removeErr := os.Remove(to.socketFilePath)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			allCloseErrors = errors.Join(allCloseErrors, os.Remove(to.socketFilePath))
+		}
 		to.socketFilePath = ""
 	}
 
@@ -1136,6 +1133,8 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 		if !exec.exited && strings.HasPrefix(key, fmt.Sprintf("%s:", container.id)) {
 			// If the execution hasn't already been completed, signal that it should be stopped
 			exec.exitChan <- -1
+			_ = exec.stdout.Close()
+			_ = exec.stderr.Close()
 			close(exec.exitChan)
 		}
 	}
@@ -1362,6 +1361,8 @@ func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Conte
 
 	matchingCommand.exitChan <- exitCode
 	close(matchingCommand.exitChan)
+	_ = matchingCommand.stdout.Close()
+	_ = matchingCommand.stderr.Close()
 	matchingCommand.exited = true
 
 	return nil

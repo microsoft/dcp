@@ -1,8 +1,11 @@
 package kubeconfig
 
 import (
+	"errors"
 	goflag "flag"
 	"fmt"
+	"io/fs"
+	"os"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
@@ -50,47 +53,77 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 	}
 }
 
+// Ensures that the kubeconfig flag exist and points to a non-empty file.
+// Returns the value of the flag, i.e. path to that file.
 func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
-		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
+		return "", fmt.Errorf("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
 	if port < 0 || port > 65535 {
 		return "", fmt.Errorf("invalid port number: %d", port)
 	}
 
-	kubeconfigPath, err := RequireKubeconfigFileFromFlags(flags, port)
-	if err != nil {
-		return "", fmt.Errorf("unable to ensure existence of a Kubeconfig file: %w", err)
+	kubeconfigPath, statErr := getKubeConfigPath(flags)
+	if statErr != nil {
+		return "", statErr
 	}
 
-	err = f.Value.Set(kubeconfigPath)
-	if err != nil {
-		return "", fmt.Errorf("unable to set kubeconfig flag value: %w", err)
+	info, statErr := os.Stat(kubeconfigPath)
+	if statErr != nil && errors.Is(statErr, fs.ErrNotExist) {
+		return "", fmt.Errorf("kubeconfig file does not exist at '%s'", kubeconfigPath)
+	} else if statErr != nil {
+		return "", fmt.Errorf("error retrieving kubeconfig file '%s': %w", kubeconfigPath, statErr)
+	} else if info.IsDir() {
+		return "", fmt.Errorf("specified kubeconfig ('%s') is a directory", kubeconfigPath)
+	} else if info.Size() == 0 {
+		return "", fmt.Errorf("kubeconfig file is empty: '%s'", kubeconfigPath)
+	}
+
+	flagSetErr := f.Value.Set(kubeconfigPath)
+	if flagSetErr != nil {
+		return "", fmt.Errorf("unable to set kubeconfig flag value: %w", flagSetErr)
 	}
 
 	return kubeconfigPath, nil
 }
 
-func GetKubeconfigFlagValue(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
+// Creates API server addressing and authentication data that will go into the kubeconfig file.
+// The kubeconfig flag value, if empty upon invocation, will be set to preferred path of the kubeconfig file.
+// Does NOT create the kubeconfig file itself (see Kubeconfig.Save() for that).
+func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
-		panic("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
+		return nil, fmt.Errorf("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
 	if port < 0 || port > 65535 {
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
-	k, err := GetKubeconfigFromFlags(flags, port, log)
-	if err != nil {
-		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", err)
+	kubeconfigPath, pathErr := getKubeConfigPath(flags)
+	if pathErr != nil {
+		return nil, pathErr
 	}
 
-	err = f.Value.Set(k.Path())
-	if err != nil {
-		return nil, fmt.Errorf("unable to set kubeconfig flag value: %w", err)
+	info, statErr := os.Stat(kubeconfigPath)
+	if statErr == nil && !info.IsDir() && info.Size() > 0 {
+		return nil, fmt.Errorf("kubeconfig file already exists at '%s'", kubeconfigPath)
+	}
+
+	// If a token was not provided via DCP_SECURE_TOKEN environment variable, we need to generate one
+	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
+	generateToken := !tokenFound || token == ""
+
+	k, kErr := getKubeconfig(kubeconfigPath, port, true /* use certificate */, generateToken, log)
+	if kErr != nil {
+		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
+	}
+
+	flagSetErr := f.Value.Set(k.Path())
+	if flagSetErr != nil {
+		return nil, fmt.Errorf("unable to set kubeconfig flag value: %w", flagSetErr)
 	}
 
 	return k, nil

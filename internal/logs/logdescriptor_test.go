@@ -35,11 +35,11 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	defer cancel()
 
 	log := testutil.NewLogForTesting("log-following-delay-within-bounds")
-	lds := NewLogDescriptorSet(ctx, testutil.TestTempRoot(), log)
+	lds := NewLogDescriptorSet(ctx, testutil.TestTempDir(), log)
 	uid, err := randdata.MakeRandomString(8)
 	require.NoError(t, err)
 
-	ld, stdoutWriter, _, created, err := lds.AcquireForResource(ctx, cancel,
+	ld, stdoutWriter, stdErrWriter, created, err := lds.AcquireForResource(ctx, cancel,
 		types.NamespacedName{
 			Namespace: metav1.NamespaceNone,
 			Name:      "test-log-following-delay-within-bounds",
@@ -48,11 +48,23 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.True(t, created)
-	defer lds.ReleaseForResource(types.UID(uid))
 
-	stdOutPath, _, err := ld.LogConsumerStarting()
+	stdOutPath, stdErrPath, err := ld.LogConsumerStarting()
 	require.NoError(t, err)
-	defer ld.LogConsumerStopped()
+
+	defer func() {
+		ld.LogConsumerStopped()
+		_ = stdoutWriter.Close()
+		_ = stdErrWriter.Close()
+
+		// The LogDescriptorSet normally removes the log files in the background, but in the test scenario this file might be left behind,
+		// since the cleanup goroutine will be terminated when the test ends. So we remove the files manually.
+		// LogDescriptorSet.Dispose() is resilient to that.
+		_ = os.Remove(stdOutPath)
+		_ = os.Remove(stdErrPath)
+
+		lds.ReleaseForResource(types.UID(uid))
+	}()
 
 	// Make 8 writes at the span of 4 * logReadRetryInterval.
 	buf := testutil.NewBufferWriter()
@@ -82,10 +94,8 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	stdoutWriter.Close()
 	cancel() // Stop the watcher
 	<-follow.Done()
-	ld.LogConsumerStopped()
 
 	// Each write should be captured after no more that the sum of:
 	// - logReadRetryInterval (how long we wait before checking if log file has new data)

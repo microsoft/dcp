@@ -43,10 +43,10 @@ type InspectedContainerHostPortConfig struct {
 // Common options for commands that support streamed output
 type StreamCommandOptions struct {
 	// Stream to write stdout to
-	StdOutStream io.Writer
+	StdOutStream io.WriteCloser
 
 	// Stream to write stderr to
-	StdErrStream io.Writer
+	StdErrStream io.WriteCloser
 }
 
 type TimeoutOption struct {

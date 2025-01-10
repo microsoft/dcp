@@ -20,7 +20,15 @@ const (
 func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
 	proc, err := FindProcess(pid, processStartTime)
 	if err != nil {
-		if (opts & optNotFoundIsError) != 0 {
+		e.acquireLock()
+		alreadyEnded := false
+		ws, found := e.procsWaiting[pid]
+		if found {
+			alreadyEnded = !ws.waitEnded.IsZero()
+		}
+		e.releaseLock()
+
+		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
 			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil

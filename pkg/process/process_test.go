@@ -1,4 +1,4 @@
-package process
+package process_test
 
 import (
 	"bytes"
@@ -20,9 +20,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
-	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/process"
+
+	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -36,21 +38,21 @@ func TestRunCompleted(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor(log)
+	executor := process.NewOSExecutor(log)
 	testCtx, cancel := testutil.GetTestContext(t, 10*time.Second)
 	defer cancel()
 
-	exitInfoChan := make(chan ProcessExitInfo, 1)
+	exitInfoChan := make(chan process.ProcessExitInfo, 1)
 
 	go func() {
 		// The command will wait for 300 ms and then exit with code 12.
 		cmd := exec.Command("./delay", "-d", "300ms", "-e", "12")
 		cmd.Dir = delayToolDir
-		exitCode, runErr := RunToCompletion(testCtx, executor, cmd)
-		exitInfoChan <- ProcessExitInfo{
+		exitCode, runErr := process.RunToCompletion(testCtx, executor, cmd)
+		exitInfoChan <- process.ProcessExitInfo{
 			ExitCode: exitCode,
 			Err:      runErr,
-			PID:      UnknownPID,
+			PID:      process.UnknownPID,
 		}
 	}()
 
@@ -70,7 +72,7 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor(log)
+	executor := process.NewOSExecutor(log)
 
 	// Start the process, but use a context that expires within 500 ms.
 	// If it takes more than 2 seconds to receive a notification that the process has exited,
@@ -83,7 +85,7 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	ctx, cancelFn := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancelFn()
 
-	_, err = RunToCompletion(ctx, executor, cmd)
+	_, err = process.RunToCompletion(ctx, executor, cmd)
 
 	elapsed := time.Since(start)
 	elapsedStr := osutil.FormatDuration(elapsed)
@@ -100,7 +102,7 @@ func TestRunWithTimeout(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor(log)
+	executor := process.NewOSExecutor(log)
 
 	// Command returns on its own after 5 seconds. This prevents the test from hanging
 	// or leaving processes running after the test is done.
@@ -110,7 +112,7 @@ func TestRunWithTimeout(t *testing.T) {
 	runCallEndedCh := make(chan struct{})
 
 	go func() {
-		_, _ = RunWithTimeout(ctx, executor, cmd)
+		_, _ = process.RunWithTimeout(ctx, executor, cmd)
 		runCallEndedCh <- struct{}{}
 	}()
 
@@ -137,14 +139,14 @@ func TestRunCancelled(t *testing.T) {
 	delayToolDir, err := getDelayToolDir()
 	require.NoError(t, err)
 
-	executor := NewOSExecutor(log)
+	executor := process.NewOSExecutor(log)
 
 	// Command returns on its own after 20 seconds. This prevents the test from hanging.
-	exitInfoChan := make(chan ProcessExitInfo, 2)
+	exitInfoChan := make(chan process.ProcessExitInfo, 2)
 	cmd := exec.Command("./delay", "-d", "20s")
 	cmd.Dir = delayToolDir
-	var onProcessExited ProcessExitHandlerFunc = func(pid Pid_t, exitCode int32, err error) {
-		exitInfoChan <- ProcessExitInfo{
+	var onProcessExited process.ProcessExitHandlerFunc = func(pid process.Pid_t, exitCode int32, err error) {
+		exitInfoChan <- process.ProcessExitInfo{
 			ExitCode: exitCode,
 			Err:      err,
 			PID:      pid,
@@ -155,7 +157,7 @@ func TestRunCancelled(t *testing.T) {
 
 	go func() {
 		_, _, startWaitForExit, processStartErr := executor.StartProcess(ctx, cmd, onProcessExited)
-		startupNotification := NewProcessExitInfo()
+		startupNotification := process.NewProcessExitInfo()
 		if processStartErr != nil {
 			startupNotification.Err = processStartErr
 			exitInfoChan <- startupNotification
@@ -186,37 +188,37 @@ func TestRunCancelled(t *testing.T) {
 func TestChildrenTerminated(t *testing.T) {
 	type testcase struct {
 		description    string
-		processStartFn func(t *testing.T, cmd *exec.Cmd, e Executor) ProcessTreeItem
+		processStartFn func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem
 	}
 
 	testcases := []testcase{
-		{"external start", func(t *testing.T, cmd *exec.Cmd, _ Executor) ProcessTreeItem {
+		{"external start", func(t *testing.T, cmd *exec.Cmd, _ process.Executor) process.ProcessTreeItem {
 			err := cmd.Start()
 			require.NoError(t, err, "could not start the 'delay' test program")
-			pid, err := IntToPidT(cmd.Process.Pid)
+			pid, err := process.IntToPidT(cmd.Process.Pid)
 			require.NoError(t, err)
 			pp, ppErr := ps.FindProcess(cmd.Process.Pid)
 			require.NoError(t, ppErr)
-			return ProcessTreeItem{pid, pp.CreationTime()}
+			return process.ProcessTreeItem{pid, pp.CreationTime()}
 		}},
-		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e Executor) ProcessTreeItem {
+		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, _, err := e.StartProcess(context.Background(), cmd, nil)
 			require.NoError(t, err, "could not start the 'delay' test program")
-			intPid, intPidErr := PidT_ToInt(pid)
+			intPid, intPidErr := process.PidT_ToInt(pid)
 			require.NoError(t, intPidErr)
 			pp, ppErr := ps.FindProcess(intPid)
 			require.NoError(t, ppErr)
-			return ProcessTreeItem{pid, pp.CreationTime()}
+			return process.ProcessTreeItem{pid, pp.CreationTime()}
 		}},
-		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e Executor) ProcessTreeItem {
+		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			startWaitForProcessExit()
-			intPid, intPidErr := PidT_ToInt(pid)
+			intPid, intPidErr := process.PidT_ToInt(pid)
 			require.NoError(t, intPidErr)
 			pp, ppErr := ps.FindProcess(intPid)
 			require.NoError(t, ppErr)
-			return ProcessTreeItem{pid, pp.CreationTime()}
+			return process.ProcessTreeItem{pid, pp.CreationTime()}
 		}},
 	}
 
@@ -226,7 +228,7 @@ func TestChildrenTerminated(t *testing.T) {
 	require.NoError(t, toolLaunchErr)
 
 	// Using a shared executor to make sure that process stopping works no matter how it was started.
-	executor := NewOSExecutor(log)
+	executor := process.NewOSExecutor(log)
 
 	for _, tc := range testcases {
 		tc := tc // capture range variable for use in a goroutine
@@ -247,7 +249,7 @@ func TestChildrenTerminated(t *testing.T) {
 
 			ensureProcessTree(t, rootP, expectedProcessTreeSize, 10*time.Second)
 
-			processTree, err := GetProcessTree(rootP)
+			processTree, err := process.GetProcessTree(rootP)
 			require.NoError(t, err)
 
 			err = executor.StopProcess(rootP.Pid, rootP.CreationTime)
@@ -273,14 +275,14 @@ func TestWatchCatchesProcessExit(t *testing.T) {
 	// that turn into zombies.
 	cmd := exec.CommandContext(ctx, "./delay", "--delay=10s", "--child-spec=2,1")
 	cmd.Dir = delayToolDir
-	DecoupleFromParent(cmd)
+	process.DecoupleFromParent(cmd)
 	err := cmd.Start()
 	require.NoError(t, err)
 
-	pid, err := IntToPidT(cmd.Process.Pid)
+	pid, err := process.IntToPidT(cmd.Process.Pid)
 	require.NoError(t, err)
 
-	delayProc, err := FindWaitableProcess(pid, time.Time{})
+	delayProc, err := process.FindWaitableProcess(pid, time.Time{})
 	require.NoError(t, err)
 
 	err = delayProc.Wait(ctx)
@@ -301,14 +303,14 @@ func TestContextCancelsWatch(t *testing.T) {
 	// that turn into zombies.
 	cmd := exec.CommandContext(testCtx, "./delay", "--delay=20s", "--child-spec=2,1")
 	cmd.Dir = delayToolDir
-	DecoupleFromParent(cmd)
+	process.DecoupleFromParent(cmd)
 	err := cmd.Start()
 
 	require.NoError(t, err, "command should start without error")
 
-	pid, err := IntToPidT(cmd.Process.Pid)
+	pid, err := process.IntToPidT(cmd.Process.Pid)
 	require.NoError(t, err)
-	delayProc, err := FindWaitableProcess(pid, time.Time{})
+	delayProc, err := process.FindWaitableProcess(pid, time.Time{})
 	require.NoError(t, err, "find process should succeed without error")
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second*5)
@@ -359,11 +361,11 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "command should start without error")
 
-	parentPid, parentPidErr := IntToPidT(parentCmd.Process.Pid)
+	parentPid, parentPidErr := process.IntToPidT(parentCmd.Process.Pid)
 	require.NoError(t, parentPidErr)
 	parentPp, parentPpErr := ps.FindProcess(int(parentPid))
 	require.NoError(t, parentPpErr)
-	ensureProcessTree(t, ProcessTreeItem{parentPid, parentPp.CreationTime()}, 1, 5*time.Second)
+	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentPp.CreationTime()}, 1, 5*time.Second)
 	parentProcInfo, parentProcInfoErr := ps.FindProcess(int(parentPid))
 	require.NoError(t, parentProcInfoErr)
 
@@ -372,11 +374,11 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	childrenCmdErr := childrenCmd.Start()
 	require.NoError(t, childrenCmdErr, "command should start without error")
 
-	pid, pidErr := IntToPidT(childrenCmd.Process.Pid)
+	pid, pidErr := process.IntToPidT(childrenCmd.Process.Pid)
 	require.NoError(t, pidErr)
 	childPp, childPpErr := ps.FindProcess(int(pid))
 	require.NoError(t, childPpErr)
-	ensureProcessTree(t, ProcessTreeItem{pid, childPp.CreationTime()}, 3, 10*time.Second)
+	ensureProcessTree(t, process.ProcessTreeItem{pid, childPp.CreationTime()}, 3, 10*time.Second)
 	childProcInfo, childProcInfoErr := ps.FindProcess(int(pid))
 	require.NoError(t, childProcInfoErr)
 
@@ -392,7 +394,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	require.NoError(t, dcpProcCmdErr, "command should start without error")
 
 	// Give enough time for the monitor process to start before killing the parent process
-	<-time.After(1 * time.Second)
+	<-time.After(5 * time.Second)
 
 	killErr := parentCmd.Process.Kill()
 	require.NoError(t, killErr)
@@ -429,11 +431,11 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 		_ = parentCmd.Wait()
 	}()
 
-	parentPid, parentPidErr := IntToPidT(parentCmd.Process.Pid)
+	parentPid, parentPidErr := process.IntToPidT(parentCmd.Process.Pid)
 	require.NoError(t, parentPidErr)
 	parentPp, parentPpErr := ps.FindProcess(int(parentPid))
 	require.NoError(t, parentPpErr)
-	ensureProcessTree(t, ProcessTreeItem{parentPid, parentPp.CreationTime()}, 1, 5*time.Second)
+	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentPp.CreationTime()}, 1, 5*time.Second)
 	parentProcInfo, parentProcInfoErr := ps.FindProcess(int(parentPid))
 	require.NoError(t, parentProcInfoErr)
 
@@ -446,11 +448,11 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 		_ = childCmd.Wait()
 	}()
 
-	childPid, childPidErr := IntToPidT(childCmd.Process.Pid)
+	childPid, childPidErr := process.IntToPidT(childCmd.Process.Pid)
 	require.NoError(t, childPidErr)
 	childPp, childPpErr := ps.FindProcess(childCmd.Process.Pid)
 	require.NoError(t, childPpErr)
-	ensureProcessTree(t, ProcessTreeItem{childPid, childPp.CreationTime()}, 1, 5*time.Second)
+	ensureProcessTree(t, process.ProcessTreeItem{childPid, childPp.CreationTime()}, 1, 5*time.Second)
 	childProcInfo, childProcInfoErr := ps.FindProcess(int(childPid))
 	require.NoError(t, childProcInfoErr)
 
@@ -530,7 +532,7 @@ func getDcpProcExecutablePath() (string, error) {
 	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
 }
 
-func ensureProcessTree(t *testing.T, rootP ProcessTreeItem, expectedSize int, timeout time.Duration) {
+func ensureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize int, timeout time.Duration) {
 	processesStartedCtx, processesStartedCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer processesStartedCancelFn()
 
@@ -540,7 +542,7 @@ func ensureProcessTree(t *testing.T, rootP ProcessTreeItem, expectedSize int, ti
 		100*time.Millisecond,
 		true, // Don't wait before polling for the first time
 		func(_ context.Context) (bool, error) {
-			processTree, err := GetProcessTree(rootP)
+			processTree, err := process.GetProcessTree(rootP)
 			if err != nil {
 				return false, err
 			}

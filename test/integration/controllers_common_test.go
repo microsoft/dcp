@@ -5,27 +5,19 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	std_slices "slices"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
-	"go.uber.org/zap/zapcore"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgorest "k8s.io/client-go/rest"
@@ -34,7 +26,6 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
@@ -44,16 +35,12 @@ import (
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 var (
-	testProcessExecutor   *ctrl_testutil.TestProcessExecutor
+	testProcessExecutor   *internal_testutil.TestProcessExecutor
 	ideRunner             *ctrl_testutil.TestIdeRunner
 	client                ctrl_client.Client
 	restClient            *clientgorest.RESTClient
@@ -71,167 +58,89 @@ const (
 )
 
 func TestMain(m *testing.M) {
-	log := logger.New("test")
-	log.SetLevel(zapcore.ErrorLevel)
-	if !flag.Parsed() {
-		flag.Parse() // Needed to test if verbose flag was present.
-	}
-	if testing.Verbose() {
-		log.SetLevel(zapcore.DebugLevel)
-	}
-	ctrl.SetLogger(log.Logger)
+	log := testutil.NewLogForTesting("IntegrationTests")
+	ctrl.SetLogger(log)
 
-	networking.EnableStrictMruPortHandling(log.Logger)
+	sessionDir, sessionDirErr := testutil.CreateTestSessionDir()
+	if sessionDirErr != nil {
+		log.Error(sessionDirErr, "Failed to create test session directory")
+		// But we will run the tests anyway, because the session directory is not strictly necessary.
+	} else {
+		os.Setenv(usvc_io.DCP_SESSION_FOLDER, sessionDir)
+	}
+
+	networking.EnableStrictMruPortHandling(log)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	apiServerExited := concurrency.NewAutoResetEvent(false)
-	stopTestEnvironment := func() {
+
+	serverInfo, envStartErr := startTestEnvironment(ctx, log)
+	if envStartErr != nil {
 		cancel()
-
-		// Wait for the API server to exit and cleanups to be done, but with a couple seconds timeout.
-		select {
-		case <-apiServerExited.Wait():
-		case <-time.After(2 * time.Second):
-		}
+		_ = os.RemoveAll(sessionDir) // Best effort
+		panic(envStartErr)
 	}
-
-	err := startTestEnvironment(ctx, log.Logger, apiServerExited)
-	if err != nil {
-		stopTestEnvironment()
-		panic(err)
-	}
+	client = serverInfo.Client
+	restClient = serverInfo.RestClient
+	containerOrchestrator = serverInfo.ContainerOrchestrator
 
 	var code int = 0
 	defer func() {
-		stopTestEnvironment()
+		cancel()
+
+		// Wait for the API server cleanup to complete. This is mostly about deleting temporary files,
+		// so should be relatively quick.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+
+		// Try a few times because it may not succeed immediately (e.g. AV software may be scanning the folder).
+		sessionDirRemoveErr := resiliency.RetryExponentialWithTimeout(context.Background(), 5*time.Second, func() error {
+			return os.RemoveAll(sessionDir)
+		})
+		if sessionDirRemoveErr != nil {
+			log.Error(sessionDirRemoveErr, "Failed to remove test session directory")
+		}
+
 		os.Exit(code)
 	}()
+
 	code = m.Run()
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
-// Returns the DCP API server process ID or an error.
-func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExited *concurrency.AutoResetEvent) error {
-	dcpPath, dcpPathErr := getDcpExecutablePath()
-	if dcpPathErr != nil {
-		return fmt.Errorf("failed to find the DCP executable: %w", dcpPathErr)
+func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.ApiServerInfo, error) {
+	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, log)
+	if serverErr != nil {
+		return nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
-	suffix, randErr := randdata.MakeRandomString(8)
-	if randErr != nil {
-		return fmt.Errorf("failed to generate random string for kubeconfig file suffix: %w", randErr)
-	}
-	kubeconfigPath := filepath.Join(testutil.TestTempRoot(), fmt.Sprintf("kubeconfig-test-%s", suffix))
-	if kubeconfigErr := kubeconfig.EnsureKubeconfigFile(kubeconfigPath, log); kubeconfigErr != nil {
-		return kubeconfigErr
-	}
-
-	var orchestratorErr error
-	containerOrchestrator, orchestratorErr = ctrl_testutil.NewTestContainerOrchestrator(
-		ctx,
-		ctrl.Log.WithName("TestContainerOrchestrator"),
-		ctrl_testutil.TcoOptionEnableSocketListener,
-	)
-	if orchestratorErr != nil {
-		return fmt.Errorf("failed to create test container orchestrator: %w", orchestratorErr)
-	}
-
-	// We are going to stop the API server only after all the controller manager is done.
-	// This avoids a bunch of shutdown errors from the manager.
-	dcpCtx, stopDcp := context.WithCancel(context.Background())
+	testProcessExecutor = internal_testutil.NewTestProcessExecutor(ctx)
+	exeRunner := exerunners.NewProcessExecutableRunner(testProcessExecutor)
+	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
 	managerDone := concurrency.NewAutoResetEvent(true)
+
 	_ = context.AfterFunc(ctx, func() {
+		// We are going to stop the API server only after all the controller manager is done.
+		// This avoids a bunch of shutdown errors from the manager.
 		<-managerDone.Wait()
-		stopDcp()
-		containerOrchestrator.Close()
-	})
 
-	const authTokenLength = 32
-	bearerToken, err := randdata.MakeRandomString(authTokenLength)
-	if err != nil {
-		return fmt.Errorf("could not generate authentication token for the DCP API server: %w", err)
-	}
-
-	// Do not use exec.CommandContext() because on Unix-like OSes it will kill the process DEAD
-	// immediately after the context is cancelled, preventing dcp from cleaning up properly.
-	cmd := exec.Command(dcpPath,
-		"start-apiserver",
-		"--server-only",
-		"--kubeconfig", kubeconfigPath,
-		"--test-container-log-source", containerOrchestrator.GetSocketFilePath(),
-		"--monitor", strconv.Itoa(os.Getpid()),
-	)
-	env := append(os.Environ(), fmt.Sprintf("%s=%s", kubeconfig.DCP_SECURE_TOKEN, string(bearerToken)))
-	env = addToEnvIfPresent(env,
-		logger.DCP_DIAGNOSTICS_LOG_FOLDER,
-		logger.DCP_DIAGNOSTICS_LOG_LEVEL,
-		logger.DCP_LOG_SOCKET,
-	)
-	cmd.Env = env
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	apiserverExitHandler := process.ProcessExitHandlerFunc(func(_ process.Pid_t, exitCode int32, err error) {
-		if errors.Is(err, context.Canceled) {
-			// Expected, this is how we cancel the API server process.
-		} else if err != nil {
-			log.Error(err, "API server process could not be tracked")
-		} else if exitCode != 0 && exitCode != process.UnknownExitCode {
-			log.Error(fmt.Errorf("API server process exited with non-zero exit code: %d", exitCode), "",
-				"Stdout", stdout.String(),
-				"Stderr", stderr.String())
+		tpeCloseErr := testProcessExecutor.Close()
+		if tpeCloseErr != nil {
+			log.Error(tpeCloseErr, "Failed to close the test process executor")
 		}
-		_ = os.Remove(kubeconfigPath) // Best effort
-		onApiServerExited.Set()
+
+		serverInfo.Dispose()
 	})
 
-	pe := process.NewOSExecutor(log)
-	_, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(dcpCtx, cmd, apiserverExitHandler)
-	if dcpStartErr != nil {
-		_ = os.Remove(kubeconfigPath)
-		return fmt.Errorf("failed to start the API server process: %w", dcpStartErr)
-	}
-	startWaitForProcessExit()
-
-	clientConfig, clientConfigErr := dcpclient.NewConfigFromKubeconfigFile(kubeconfigPath)
-	if clientConfigErr != nil {
-		return fmt.Errorf("failed to build client-go config: %w", clientConfigErr)
-	}
-
-	// Use a pre-generated bearer token for the API server.
-	clientConfig.BearerToken = string(bearerToken)
-
-	// Using generous timeout because AzDO pipeline machines can be very slow at times.
-	var clientErr error
-	client, clientErr = dcpclient.NewClientFromKubeconfigFile(ctx, 60*time.Second, clientConfig)
-	if clientErr != nil {
-		return fmt.Errorf("failed to create controller-runtime client: %w", clientErr)
-	}
-
-	restClientConfig := clientgorest.CopyConfig(clientConfig)
-	restClientConfig.GroupVersion = &apiv1.GroupVersion
-	restClientConfig.NegotiatedSerializer = serializer.NewCodecFactory(dcpclient.NewScheme())
-	restClientConfig.APIPath = "/apis"
-	var restClientErr error
-	restClient, restClientErr = clientgorest.RESTClientFor(restClientConfig)
-	if restClientErr != nil {
-		return fmt.Errorf("failed to create raw (client-go REST) Kubernetes client: %w", restClientErr)
-	}
-
-	opts := controllers.NewControllerManagerOptions(ctx, client.Scheme(), log)
-	mgr, err := ctrl.NewManager(clientConfig, opts)
+	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
+	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
 	if err != nil {
-		return fmt.Errorf("failed to initialize controller manager: %w", err)
+		return nil, fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
-
-	testProcessExecutor = ctrl_testutil.NewTestProcessExecutor(ctx)
-	exeRunner := exerunners.NewProcessExecutableRunner(testProcessExecutor)
-	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
 
 	hpSet := health.NewHealthProbeSet(
 		ctx,
@@ -252,7 +161,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		hpSet,
 	)
 	if err = execR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize Executable reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
 	}
 
 	execrsR := controllers.NewExecutableReplicaSetReconciler(
@@ -260,46 +169,46 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		ctrl.Log.WithName("ExecutableReplicaSetReconciler"),
 	)
 	if err = execrsR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
 	}
 
 	networkR := controllers.NewNetworkReconciler(
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("NetworkReconciler"),
-		containerOrchestrator,
+		serverInfo.ContainerOrchestrator,
 	)
 	if err = networkR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize Network reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
 	}
 
 	containerR := controllers.NewContainerReconciler(
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerReconciler"),
-		containerOrchestrator,
+		serverInfo.ContainerOrchestrator,
 	)
 	if err = containerR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize Container reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
 	}
 
 	containerExecR := controllers.NewContainerExecReconciler(
 		ctx,
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerExecReconciler"),
-		containerOrchestrator,
+		serverInfo.ContainerOrchestrator,
 	)
 	if err = containerExecR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
 	}
 
 	volumeR := controllers.NewVolumeReconciler(
 		mgr.GetClient(),
 		ctrl.Log.WithName("VolumeReconciler"),
-		containerOrchestrator,
+		serverInfo.ContainerOrchestrator,
 	)
 	if err = volumeR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
 	}
 
 	serviceR := controllers.NewServiceReconciler(
@@ -313,11 +222,11 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		},
 	)
 	if err = serviceR.SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize Service reconciler: %w", err)
+		return nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
 	}
 
 	if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
-		return fmt.Errorf("failed to initialize Endpoint index: %w", err)
+		return nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
 	}
 
 	// Starts the controller manager and all the associated controllers
@@ -327,51 +236,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger, onApiServerExite
 		managerDone.Set()
 	}()
 
-	return nil
-}
-
-func getDcpExecutablePath() (string, error) {
-	dcpExeName := "dcp"
-	if runtime.GOOS == "windows" {
-		dcpExeName += ".exe"
-	}
-
-	outputBin, found := os.LookupEnv("OUTPUT_BIN")
-	if found {
-		dcpPath := filepath.Join(outputBin, dcpExeName)
-		file, err := os.Stat(dcpPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to find the DCP executable: %w", err)
-		}
-		if file.IsDir() {
-			return "", fmt.Errorf("the expected path to DCP executable is a directory: %s", dcpPath)
-		}
-		return dcpPath, nil
-	}
-
-	tail := []string{dcppaths.DcpBinDir, dcpExeName}
-	rootFolder, err := testutil.FindRootFor(testutil.FileTarget, tail...)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
-}
-
-func addToEnvIfPresent(env []string, vars ...string) []string {
-	retval := env
-
-	for _, varName := range vars {
-		value, found := os.LookupEnv(varName)
-		if found {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				retval = append(retval, fmt.Sprintf("%s=%s", varName, value))
-			}
-		}
-	}
-
-	return retval
+	return serverInfo, nil
 }
 
 // unexpectedObjectStateError can be used to provide additional context when an object is not in the expected state.

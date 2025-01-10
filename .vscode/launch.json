@@ -15,6 +15,7 @@
                 "start-apiserver",
                 "--server-only",
                 "-v=1",
+                "--kubeconfig=${workspaceFolder}/kubeconfig.dev"
             ],
             "windows": {
                 "program": "${workspaceFolder}/bin/dcp.exe"
@@ -30,7 +31,8 @@
             "program": "${workspaceFolder}/bin/ext/dcpctrl",
             "args": [
                 "run-controllers",
-                "-v=1"
+                "-v=1",
+                "--kubeconfig=${workspaceFolder}/kubeconfig.dev"
             ],
             "windows": {
                 "program": "${workspaceFolder}/bin/ext/dcpctrl.exe"
@@ -46,7 +48,8 @@
             "program": "${workspaceFolder}/bin/dcp",
             "args": [
                 "start-apiserver",
-                "-v=1"
+                "-v=1",
+                "--kubeconfig=${workspaceFolder}/kubeconfig.dev"
             ],
             "windows": {
                 "program": "${workspaceFolder}/bin/dcp.exe"

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -172,14 +171,3 @@ func TestFollowWriterAtomicValueOkForErrors(t *testing.T) {
 	require.True(t, isError, "expected the value returned by Load to be an error")
 	require.ErrorIs(t, err, expected, "expected the error to be successfully stored")
 }
-
-type nopWriteCloser struct{}
-
-func (nopWriteCloser) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-func (nopWriteCloser) Close() error {
-	return nil
-}
-
-var _ io.WriteCloser = nopWriteCloser{}

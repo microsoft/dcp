@@ -1008,20 +1008,31 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(
 	return exitCh, nil
 }
 
-func (dco *DockerCliOrchestrator) runBufferedDockerCommand(ctx context.Context, commandName string, cmd *exec.Cmd, stdOutWriter io.Writer, stdErrWriter io.Writer, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+func (dco *DockerCliOrchestrator) runBufferedDockerCommand(
+	ctx context.Context,
+	commandName string,
+	cmd *exec.Cmd,
+	stdOutWriteCloser io.WriteCloser,
+	stdErrWriteCloser io.WriteCloser,
+	timeout time.Duration,
+) (*bytes.Buffer, *bytes.Buffer, error) {
 	effectiveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	outBuf := new(bytes.Buffer)
-	if stdOutWriter != nil {
-		stdOutWriter = io.MultiWriter(stdOutWriter, outBuf)
+	var stdOutWriter io.Writer
+	if stdOutWriteCloser != nil {
+		defer func() { _ = stdOutWriteCloser.Close() }()
+		stdOutWriter = io.MultiWriter(stdOutWriteCloser, outBuf)
 	} else {
 		stdOutWriter = outBuf
 	}
 
 	errBuf := new(bytes.Buffer)
-	if stdErrWriter != nil {
-		stdErrWriter = io.MultiWriter(stdErrWriter, errBuf)
+	var stdErrWriter io.Writer
+	if stdErrWriteCloser != nil {
+		defer func() { _ = stdErrWriteCloser.Close() }()
+		stdErrWriter = io.MultiWriter(stdErrWriteCloser, errBuf)
 	} else {
 		stdErrWriter = errBuf
 	}
