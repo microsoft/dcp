@@ -10,7 +10,6 @@ import (
 	"os"
 	stdslices "slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
@@ -22,6 +21,7 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
 // A structure representing startup log file with an associated ParagraphWriter.
@@ -111,6 +111,9 @@ type runningContainerData struct {
 	// Tracks whether startup has been attempted for the container
 	startupAttempted bool
 
+	// The time the start attempt finished (successfully or not).
+	startAttemptFinishedAt metav1.MicroTime
+
 	// Standard output content from startup commands will be saved to this log and read back when DCP clients request them.
 	// Typically the file is filled during Container startup and then cleaned up when DCP is shut down,
 	// or when the Container is deleted. There is a small chance
@@ -121,9 +124,6 @@ type runningContainerData struct {
 	// Standard error content from startup commands will be saved to this log.
 	startupStderrLog *startupLog
 
-	// The time the start attempt finished (successfully or not).
-	startAttemptFinishedAt metav1.MicroTime
-
 	// The map of ports reserved for services that the Container implements
 	reservedPorts map[types.NamespacedName]int32
 
@@ -133,9 +133,6 @@ type runningContainerData struct {
 	// This is initialized with a copy of the Container.Spec, but then updated (the Env and Args part, specifically)
 	// to include all value substitutions for environment variables and startup command arguments.
 	runSpec *apiv1.ContainerSpec
-
-	// A lock for the instance data
-	lock *sync.Mutex
 }
 
 const placeholderContainerIdPrefix = "__placeholder-"
@@ -162,58 +159,117 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 		networkConnections: make(map[containerNetworkConnectionKey]bool),
 		runSpec:            runSpec,
 		exitCode:           apiv1.UnknownExitCode,
-		lock:               &sync.Mutex{},
 	}
 }
 
 // Returns another instance of runningContainerData with the same data.
 // The copy is safe to update independently of the original EXCEPT for the startup log pointers,
 // which are shared between the original and the copy.
-func (rcd *runningContainerData) clone() *runningContainerData {
+func (rcd *runningContainerData) Clone() *runningContainerData {
 	clone := runningContainerData{
 		containerState:         rcd.containerState,
 		startupError:           rcd.startupError,
 		containerID:            rcd.containerID,
 		containerName:          rcd.containerName,
 		stopAttemptInitiated:   rcd.stopAttemptInitiated,
+		finishTimestamp:        rcd.finishTimestamp,
+		startupAttempted:       rcd.startupAttempted,
 		startAttemptFinishedAt: rcd.startAttemptFinishedAt,
+		startupStdoutLog:       rcd.startupStdoutLog,
+		startupStderrLog:       rcd.startupStderrLog,
 		reservedPorts:          stdmaps.Clone(rcd.reservedPorts),
 		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
-		startupAttempted:       rcd.startupAttempted,
-		lock:                   &sync.Mutex{},
 	}
 
 	if rcd.exitCode != nil {
-		clone.exitCode = new(int32)
-		*clone.exitCode = *rcd.exitCode
+		pointers.SetValue(&clone.exitCode, rcd.exitCode)
 	}
-	clone.startupStderrLog = rcd.startupStderrLog
-	clone.startupStdoutLog = rcd.startupStdoutLog
 
 	return &clone
 }
 
-// runningContainerData is a structure that is accessed by controller methods and various event handlers.
-// These might be running in different goroutines, so we need to ensure that the data is accessed in a thread-safe manner.
-// The rules of the road are:
-//  1. Data in the runningContainerData structure can only be read or written between calls to acquire() and release().
-//     This also applies to calling any methods on the runningContainerData structure--acquire() the instance first.
-//  2. Do NOT exit any method before calling release() on the runningContainerData instance you have acquired.
-//  3. When calling other methods, if the method does not accept runningContainerData as a parameter, ALWAYS release() first.
-//  4. When calling other methods that do take runningContainerData as a parameter, choose one of the following options:
-//     a. give the method a copy of the runningContainerData to operate on via clone() and have the method apply the changes
-//     to the original instance via deferred operations,
-//     b. pass the original instance and MAKE SURE that the method does not try to acquire()
-//     the same runningContainerData instance again (for simple methods that complete quickly),
-//     c. release() and have the method acquire() the runningContainerData instance itself
-//     (for complex methods that call into container orchestrator etc).
-func (rcd *runningContainerData) acquire() {
-	rcd.lock.Lock()
-}
+func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
+	if other == nil {
+		return false
+	}
 
-func (rcd *runningContainerData) release() {
-	rcd.lock.Unlock()
+	updated := false
+
+	if rcd.containerState != other.containerState {
+		rcd.containerState = other.containerState
+		updated = true
+	}
+
+	if rcd.startupError != other.startupError {
+		// Note: this is strict equality comparison (same error type and instance).
+		// Two different instances of the same type of error will be considered "different",
+		// as will be "untyped nil error" vs "typed nil error".
+		rcd.startupError = other.startupError
+		updated = true
+	}
+
+	if rcd.containerID != other.containerID {
+		rcd.containerID = other.containerID
+		updated = true
+	}
+
+	if rcd.containerName != other.containerName {
+		rcd.containerName = other.containerName
+		updated = true
+	}
+
+	if rcd.stopAttemptInitiated != other.stopAttemptInitiated {
+		rcd.stopAttemptInitiated = other.stopAttemptInitiated
+		updated = true
+	}
+
+	if !pointers.EqualValue(rcd.exitCode, other.exitCode) {
+		pointers.SetValue(&rcd.exitCode, other.exitCode)
+		updated = true
+	}
+
+	if !rcd.finishTimestamp.Equal(&other.finishTimestamp) {
+		rcd.finishTimestamp = other.finishTimestamp
+		updated = true
+	}
+
+	if rcd.startupAttempted != other.startupAttempted {
+		rcd.startupAttempted = other.startupAttempted
+		updated = true
+	}
+
+	if !rcd.startAttemptFinishedAt.Equal(&other.startAttemptFinishedAt) {
+		rcd.startAttemptFinishedAt = other.startAttemptFinishedAt
+		updated = true
+	}
+
+	if rcd.startupStdoutLog != other.startupStdoutLog {
+		rcd.startupStdoutLog = other.startupStdoutLog
+		updated = true
+	}
+
+	if rcd.startupStderrLog != other.startupStderrLog {
+		rcd.startupStderrLog = other.startupStderrLog
+		updated = true
+	}
+
+	if !stdmaps.Equal(rcd.reservedPorts, other.reservedPorts) {
+		rcd.reservedPorts = stdmaps.Clone(other.reservedPorts)
+		updated = true
+	}
+
+	if !stdmaps.Equal(rcd.networkConnections, other.networkConnections) {
+		rcd.networkConnections = stdmaps.Clone(other.networkConnections)
+		updated = true
+	}
+
+	if !rcd.runSpec.Equal(other.runSpec) {
+		rcd.runSpec = other.runSpec.DeepCopy()
+		updated = true
+	}
+
+	return updated
 }
 
 func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log logr.Logger) {
@@ -315,8 +371,7 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 
 	rcd.finishTimestamp = metav1.NewMicroTime(inspected.FinishedAt)
 	if !rcd.finishTimestamp.IsZero() {
-		rcd.exitCode = new(int32)
-		*rcd.exitCode = inspected.ExitCode
+		pointers.SetValue(&rcd.exitCode, &inspected.ExitCode)
 	}
 }
 
@@ -333,16 +388,9 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 		change |= statusChanged
 	}
 
-	if rcd.exitCode != apiv1.UnknownExitCode {
-		if ctr.Status.ExitCode == apiv1.UnknownExitCode {
-			ctr.Status.ExitCode = new(int32)
-			change |= statusChanged
-		}
-
-		if *ctr.Status.ExitCode != *rcd.exitCode {
-			*ctr.Status.ExitCode = *rcd.exitCode
-			change |= statusChanged
-		}
+	if !pointers.EqualValue(rcd.exitCode, ctr.Status.ExitCode) {
+		pointers.SetValue(&ctr.Status.ExitCode, rcd.exitCode)
+		change |= statusChanged
 	}
 
 	if rcd.containerState == apiv1.ContainerStateFailedToStart && rcd.startupError != nil {
@@ -424,3 +472,6 @@ func (rcd *runningContainerData) getLifecycleKey() string {
 
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(configString)))
 }
+
+var _ Cloner[*runningContainerData] = (*runningContainerData)(nil)
+var _ UpdateableFrom[*runningContainerData] = (*runningContainerData)(nil)

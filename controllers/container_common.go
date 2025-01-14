@@ -278,7 +278,11 @@ func startContainer(
 				return resiliency.Permanent(fmt.Errorf("container %s start failed (current state is '%s')", containerID, i.Status))
 
 			default:
-				return fmt.Errorf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusRunning)
+				errMsg := fmt.Sprintf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusRunning)
+				if i.Error != "" {
+					errMsg += fmt.Sprintf(", error: %s", i.Error)
+				}
+				return errors.New(errMsg)
 			}
 		})
 	}

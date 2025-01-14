@@ -35,6 +35,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -301,8 +302,8 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		}
 
 		if len(serviceEndpoints.Items) > 0 {
-			svc.Status.ProxyProcessPid = new(int64)
-			*svc.Status.ProxyProcessPid = int64(os.Getpid())
+			myPid := int64(os.Getpid())
+			pointers.SetValue(&svc.Status.ProxyProcessPid, &myPid)
 			svc.Status.State = apiv1.ServiceStateReady
 		}
 

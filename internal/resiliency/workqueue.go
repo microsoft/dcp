@@ -38,6 +38,10 @@ func NewWorkQueue(lifetimeCtx context.Context, maxConcurrency uint8) *WorkQueue 
 	return &wq
 }
 
+// Queues a work item to be executed. If the lifetime context is done, returns an error.
+// The enqueue operation involves an (unbounded) channel write, so it may block, but for a very short time.
+// On the other hand, the channel write acts as a memory barrier, so any writes to the work queue item parameters
+// will be completed by the time the work item is executed.
 func (wq *WorkQueue) Enqueue(work WorkQueueItem) error {
 	if wq.lifetimeCtx.Err() != nil {
 		return wq.lifetimeCtx.Err()

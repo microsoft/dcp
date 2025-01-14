@@ -58,7 +58,7 @@ type HealthProbeSchedule struct {
 	InitialDelay *metav1.Duration `json:"initialDelay,omitempty"`
 }
 
-func (hps HealthProbeSchedule) Validate(schedulePath *field.Path) field.ErrorList {
+func (hps *HealthProbeSchedule) Validate(schedulePath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	if hps.Kind != HealthProbeScheduleContinuous && hps.Kind != HealthProbeScheduleUntilSuccess && hps.Kind != "" {
@@ -80,7 +80,7 @@ func (hps HealthProbeSchedule) Validate(schedulePath *field.Path) field.ErrorLis
 	return errorList
 }
 
-func (hps HealthProbeSchedule) Equal(other HealthProbeSchedule) bool {
+func (hps *HealthProbeSchedule) Equal(other *HealthProbeSchedule) bool {
 	if hps.Kind != other.Kind {
 		return false
 	}
@@ -130,7 +130,7 @@ type HealthProbe struct {
 // Validate checks the health probe for correctness.
 // The probePath argument is used to construct the field path for any validation errors.
 // Returs a list of errors, or nil if the probe is valid.
-func (hp HealthProbe) Validate(probePath *field.Path) field.ErrorList {
+func (hp *HealthProbe) Validate(probePath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	if hp.Name == "" {
@@ -153,7 +153,7 @@ func (hp HealthProbe) Validate(probePath *field.Path) field.ErrorList {
 	return errorList
 }
 
-func (hp HealthProbe) Equal(other HealthProbe) bool {
+func (hp *HealthProbe) Equal(other *HealthProbe) bool {
 	if hp.Name != other.Name {
 		return false
 	}
@@ -174,7 +174,7 @@ func (hp HealthProbe) Equal(other HealthProbe) bool {
 		}
 	}
 
-	if !hp.Schedule.Equal(other.Schedule) {
+	if !hp.Schedule.Equal(&other.Schedule) {
 		return false
 	}
 

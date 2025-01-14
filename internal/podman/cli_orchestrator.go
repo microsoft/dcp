@@ -1070,6 +1070,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 	ic.FinishedAt = pci.State.FinishedAt
 	ic.Status = pci.State.Status
 	ic.ExitCode = pci.State.ExitCode
+	ic.Error = pci.State.Error
 
 	ic.Ports = make(containers.InspectedContainerPortMapping)
 	for portAndProtocol, portBindings := range pci.NetworkSettings.Ports {
@@ -1202,6 +1203,7 @@ type podmanInspectedContainerState struct {
 	StartedAt  time.Time                  `json:"StartedAt,omitempty"`
 	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
 	ExitCode   int32                      `json:"ExitCode,omitempty"`
+	Error      string                     `json:"Error,omitempty"`
 }
 
 type podmanInspectedContainerNetworkSettings struct {

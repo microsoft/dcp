@@ -6,7 +6,6 @@ import (
 	"fmt"
 	stdlib_maps "maps"
 	"strings"
-	"sync"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,9 +52,6 @@ type ExecutableRunInfo struct {
 
 	// True if Executable stop was initiated/queued.
 	stopAttemptInitiated bool
-
-	// Lock for the object
-	lock *sync.Mutex
 }
 
 func NewRunInfo() *ExecutableRunInfo {
@@ -66,107 +62,92 @@ func NewRunInfo() *ExecutableRunInfo {
 		StartupTimestamp:   metav1.MicroTime{},
 		FinishTimestamp:    metav1.MicroTime{},
 		healthProbeResults: make(map[string]apiv1.HealthProbeResult),
-		lock:               &sync.Mutex{},
 	}
-}
-
-// ExecutableRunInfo is a structure that is accessed by controller methods and various event handlers.
-// These might be running in different goroutines, so we need to ensure that the data is accessed in a thread-safe manner.
-// The rules of the road are:
-//  1. Data in the ExecutableRunInfo structure can only be read or written between calls to Acquire() and Release().
-//     This also applies to calling any methods on the ExecutableRunInfo structure--acquire() the instance first.
-//  2. Do NOT exit any method before calling Release() on the ExecutableRunInfo instance you have acquired.
-//  3. When calling other methods, if the method does not accept ExecutableRunInfo as a parameter, ALWAYS Release() first.
-//  4. When calling other methods that do take ExecutableRunInfo as a parameter, choose one of the following options:
-//     a. give the method a copy of the ExecutableRunInfo to operate on via DeepCopy() and have the method apply the changes
-//     to the original instance via deferred operations,
-//     b. pass the original instance and MAKE SURE that the method does not try to Acquire()
-//     the same ExecutableRunInfo instance again (for simple methods that complete quickly),
-//     c. Release() and have the method Acquire() the ExecutableRunInfo instance itself
-//     (for complex methods that call into container orchestrator etc).
-func (ri *ExecutableRunInfo) Acquire() {
-	ri.lock.Lock()
-}
-
-func (ri *ExecutableRunInfo) Release() {
-	ri.lock.Unlock()
 }
 
 // Updates the runInfo object from another instance that supplies new data about the run.
-// The object that is updated represents the "last known good" state of the run.
+// Returns true if any changes were made, false otherwise.
+//
+// The object that is updated may represent the "last known good" state of the run.
 // Since change notifications about real-world counterparts of the Executable object
 // come asynchronously and may come out of order, we do not take all updates blindly.
 // For example, we restrict the state transitions to only the valid ones.
-func (ri *ExecutableRunInfo) UpdateFrom(updated *ExecutableRunInfo, log logr.Logger) {
-	if updated == nil {
-		return
+func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
+	if other == nil {
+		return false
 	}
 
-	if ri.ExeState != updated.ExeState {
-		if ri.ExeState.CanUpdateTo(updated.ExeState) {
-			ri.ExeState = updated.ExeState
+	updated := false
+
+	if ri.ExeState != other.ExeState {
+		if ri.ExeState.CanUpdateTo(other.ExeState) {
+			ri.ExeState = other.ExeState
+			updated = true
 		} else {
-			log.V(1).Info("ignoring invalid Executable state transition", "CurrentRunInfo", ri.String(), "UpdatedRunInfo", updated.String())
-			return // Do not update other fields if the state transition is invalid
+			return false // Do not update other fields if the state transition is invalid
 		}
 	}
 
-	if updated.Pid != apiv1.UnknownPID {
-		ri.Pid = new(int64)
-		*ri.Pid = *updated.Pid
-	} else if updated.ExeState.IsTerminal() {
+	if other.Pid != apiv1.UnknownPID && !pointers.EqualValue(ri.Pid, other.Pid) {
+		pointers.SetValue(&ri.Pid, other.Pid)
+		updated = true
+	} else if other.ExeState.IsTerminal() && ri.Pid != apiv1.UnknownPID {
 		ri.Pid = apiv1.UnknownPID
+		updated = true
 	}
 
-	if updated.RunID != "" {
-		ri.RunID = updated.RunID
-	} else if updated.ExeState.IsTerminal() {
+	if other.RunID != "" && ri.RunID != other.RunID {
+		ri.RunID = other.RunID
+		updated = true
+	} else if other.ExeState.IsTerminal() && ri.RunID != "" {
 		ri.RunID = ""
+		updated = true
 	}
 
-	if updated.ExitCode != apiv1.UnknownExitCode {
-		ri.ExitCode = new(int32)
-		*ri.ExitCode = *updated.ExitCode
+	if other.ExitCode != apiv1.UnknownExitCode && !pointers.EqualValue(ri.ExitCode, other.ExitCode) {
+		pointers.SetValue(&ri.ExitCode, other.ExitCode)
+		updated = true
 	}
 
-	setTimestampIfAfterOrUnknown(updated.StartupTimestamp, &ri.StartupTimestamp)
-	setTimestampIfAfterOrUnknown(updated.FinishTimestamp, &ri.FinishTimestamp)
+	updated = setTimestampIfAfterOrUnknown(other.StartupTimestamp, &ri.StartupTimestamp) || updated
+	updated = setTimestampIfAfterOrUnknown(other.FinishTimestamp, &ri.FinishTimestamp) || updated
 
-	if updated.StdOutFile != "" {
-		ri.StdOutFile = updated.StdOutFile
+	if other.StdOutFile != "" && ri.StdOutFile != other.StdOutFile {
+		ri.StdOutFile = other.StdOutFile
+		updated = true
 	}
 
-	if updated.StdErrFile != "" {
-		ri.StdErrFile = updated.StdErrFile
+	if other.StdErrFile != "" && ri.StdErrFile != other.StdErrFile {
+		ri.StdErrFile = other.StdErrFile
+		updated = true
 	}
 
-	if len(updated.ReservedPorts) > 0 {
-		stdlib_maps.Insert(ri.ReservedPorts, stdlib_maps.All(updated.ReservedPorts))
+	if len(other.ReservedPorts) > 0 {
+		updated = maps.Insert(ri.ReservedPorts, stdlib_maps.All(other.ReservedPorts)) || updated
 	}
 
-	if len(updated.healthProbeResults) > 0 {
-		stdlib_maps.Insert(ri.healthProbeResults, stdlib_maps.All(updated.healthProbeResults))
+	if len(other.healthProbeResults) > 0 {
+		updated = maps.Insert(ri.healthProbeResults, stdlib_maps.All(other.healthProbeResults)) || updated
 	}
 
-	if updated.healthProbesEnabled != nil {
-		ri.healthProbesEnabled = new(bool)
-		*ri.healthProbesEnabled = *updated.healthProbesEnabled
+	if other.healthProbesEnabled != nil && !pointers.EqualValue(ri.healthProbesEnabled, other.healthProbesEnabled) {
+		pointers.SetValue(&ri.healthProbesEnabled, other.healthProbesEnabled)
+		updated = true
 	}
+
+	return updated
 }
 
-func (ri *ExecutableRunInfo) DeepCopy() *ExecutableRunInfo {
+func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	retval := ExecutableRunInfo{
 		ExeState: ri.ExeState,
-		lock:     &sync.Mutex{},
 	}
 	if ri.Pid != apiv1.UnknownPID {
-		retval.Pid = new(int64)
-		*retval.Pid = *ri.Pid
+		pointers.SetValue(&retval.Pid, ri.Pid)
 	}
 	retval.RunID = ri.RunID
 	if ri.ExitCode != apiv1.UnknownExitCode {
-		retval.ExitCode = new(int32)
-		*retval.ExitCode = *ri.ExitCode
+		pointers.SetValue(&retval.ExitCode, ri.ExitCode)
 	}
 	if len(ri.ReservedPorts) > 0 {
 		retval.ReservedPorts = stdlib_maps.Clone(ri.ReservedPorts)
@@ -194,8 +175,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	}
 
 	if ri.Pid != apiv1.UnknownPID && (status.PID == apiv1.UnknownPID || *status.PID != *ri.Pid) {
-		status.PID = new(int64)
-		*status.PID = *ri.Pid
+		pointers.SetValue(&status.PID, ri.Pid)
 		changed = statusChanged
 	}
 
@@ -205,8 +185,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	}
 
 	if ri.ExitCode != apiv1.UnknownExitCode && (status.ExitCode == nil || *status.ExitCode != *ri.ExitCode) {
-		status.ExitCode = new(int32)
-		*status.ExitCode = *ri.ExitCode
+		pointers.SetValue(&status.ExitCode, ri.ExitCode)
 		changed = statusChanged
 	}
 
@@ -343,3 +322,5 @@ func (ri *ExecutableRunInfo) healthProbesFriendlyString() string {
 }
 
 var _ fmt.Stringer = (*ExecutableRunInfo)(nil)
+var _ Cloner[*ExecutableRunInfo] = (*ExecutableRunInfo)(nil)
+var _ UpdateableFrom[*ExecutableRunInfo] = (*ExecutableRunInfo)(nil)

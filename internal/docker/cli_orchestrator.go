@@ -1150,6 +1150,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.FinishedAt = dci.State.FinishedAt
 	ic.Status = dci.State.Status
 	ic.ExitCode = dci.State.ExitCode
+	ic.Error = dci.State.Error
 
 	ic.Ports = make(containers.InspectedContainerPortMapping)
 	for portAndProtocol, portBindings := range dci.NetworkSettings.Ports {
@@ -1269,6 +1270,7 @@ type dockerInspectedContainerState struct {
 	StartedAt  time.Time                  `json:"StartedAt,omitempty"`
 	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
 	ExitCode   int32                      `json:"ExitCode,omitempty"`
+	Error      string                     `json:"Error,omitempty"`
 }
 
 type dockerInspectedContainerNetworkSettings struct {

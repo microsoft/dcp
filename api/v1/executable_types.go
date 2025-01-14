@@ -60,26 +60,35 @@ const (
 )
 
 func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
-	switch es {
-	case ExecutableStateEmpty:
+	// We live in imperfect world, and losing track of Executable state is always a possibility.
+	if newState == ExecutableStateUnknown {
+		return true
+	}
+
+	switch {
+	case es == ExecutableStateEmpty:
 		return newState == ExecutableStateStarting ||
 			newState == ExecutableStateRunning ||
 			newState == ExecutableStateTerminated ||
 			newState == ExecutableStateFailedToStart
-	case ExecutableStateStarting:
-		return newState == ExecutableStateRunning || newState == ExecutableStateFailedToStart || newState == ExecutableStateFinished
-	case ExecutableStateRunning:
-		return newState == ExecutableStateStopping || newState == ExecutableStateTerminated || newState == ExecutableStateFinished
-	case ExecutableStateStopping:
-		return newState == ExecutableStateTerminated || newState == ExecutableStateFinished
-	case ExecutableStateTerminated:
+
+	case es == ExecutableStateStarting:
+		return newState == ExecutableStateRunning ||
+			newState == ExecutableStateFailedToStart ||
+			newState == ExecutableStateFinished
+
+	case es == ExecutableStateRunning:
+		return newState == ExecutableStateStopping ||
+			newState == ExecutableStateTerminated ||
+			newState == ExecutableStateFinished
+
+	case es == ExecutableStateStopping:
+		return newState == ExecutableStateTerminated ||
+			newState == ExecutableStateFinished
+
+	case es.IsTerminal():
 		return false
-	case ExecutableStateFailedToStart:
-		return false
-	case ExecutableStateFinished:
-		return false
-	case ExecutableStateUnknown:
-		return false
+
 	default:
 		return false
 	}
@@ -223,7 +232,7 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 	}
 
 	for i, probe := range es.HealthProbes {
-		if !probe.Equal(other.HealthProbes[i]) {
+		if !probe.Equal(&other.HealthProbes[i]) {
 			return false
 		}
 	}
@@ -405,7 +414,7 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes"), "Health probes cannot be changed once an Executable is created."))
 	} else {
 		for i, probe := range oldExe.Spec.HealthProbes {
-			if !probe.Equal(e.Spec.HealthProbes[i]) {
+			if !probe.Equal(&e.Spec.HealthProbes[i]) {
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once an Executable is created."))
 			}
 		}

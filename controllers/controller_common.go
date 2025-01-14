@@ -241,7 +241,7 @@ type PReconcilerType[RT ReconcilerType] interface {
 	*RT
 	ctrl_client.Client
 }
-type ObjectStateType interface {
+type KubernetesObjectStateType interface {
 	~string
 }
 
@@ -259,14 +259,27 @@ type PObjectWithStatusStruct[T ObjectStruct] interface {
 type stateInitializerFunc[
 	O ObjectStruct, PO PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],
-	OS ObjectStateType,
-] func(context.Context, PR, PO, OS, logr.Logger) objectChange
+	OS KubernetesObjectStateType,
+	IMOS any, PIMOS PInMemoryObjectState[IMOS],
+] func(
+	context.Context, /* context for the reconciliation operation */
+	PR, /* reconciler instance */
+	PO, /* Kubernetes object to be reconciled */
+	OS, /* The desired state of the object. Useful if the same state initializer is used for multiple states */
+	PIMOS, /* The in-memory state of the object (additional data about the object stored in controller's ObjectStateMap). */
+	logr.Logger,
+) objectChange
 
 func getStateInitializer[
 	O ObjectStruct, PO PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],
-	OS ObjectStateType,
-](m map[OS]stateInitializerFunc[O, PO, R, PR, OS], state OS, log logr.Logger) stateInitializerFunc[O, PO, R, PR, OS] {
+	OS KubernetesObjectStateType,
+	IMOS any, PIMOS PInMemoryObjectState[IMOS],
+](
+	m map[OS]stateInitializerFunc[O, PO, R, PR, OS, IMOS, PIMOS],
+	state OS,
+	log logr.Logger,
+) stateInitializerFunc[O, PO, R, PR, OS, IMOS, PIMOS] {
 	handler, found := m[state]
 	if found {
 		return handler

@@ -132,7 +132,7 @@ func (hps *HealthProbeSet) EnableProbes(owner apiv1.NamespacedNameWithKind, prob
 			// The clients can call EnableProbes multiple times with the same owner.
 			// As long as the set of probes is the same, that's fine.
 
-			if !existingPD.probe.Equal(probe) {
+			if !existingPD.probe.Equal(pprobe) {
 				err = errors.Join(err, fmt.Errorf("probe %s for %s already exists with different definition: %s vs %s", probe.Name, owner.String(), probe.String(), existingPD.probe.String()))
 			} else {
 				hps.log.V(1).Info("Probe already exists for owner, ignoring", "Probe", probe.Name, "Owner", owner.String())

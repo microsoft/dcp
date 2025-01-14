@@ -94,7 +94,7 @@ func (r *IdeExecutableRunner) StartRun(
 	defer r.lock.Unlock()
 
 	workEnqueueErr := r.startupQueue.Enqueue(func(_ context.Context) {
-		r.doStartRun(ctx, exe, runInfo.DeepCopy(), runChangeHandler, log)
+		r.doStartRun(ctx, exe, runInfo.Clone(), runChangeHandler, log)
 	})
 
 	if workEnqueueErr != nil {
