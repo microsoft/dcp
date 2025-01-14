@@ -33,7 +33,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -80,7 +79,10 @@ type containerStateInitializerFunc = stateInitializerFunc[
 	apiv1.Container, *apiv1.Container,
 	ContainerReconciler, *ContainerReconciler,
 	apiv1.ContainerState,
+	runningContainerData, *runningContainerData,
 ]
+
+type runningContainersMap = ObjectStateMap[string, runningContainerData, *runningContainerData]
 
 type ContainerReconciler struct {
 	ctrl_client.Client
@@ -95,7 +97,7 @@ type ContainerReconciler struct {
 	// It is searchable by Container object name (first key) or container ID (second key).
 	// Usually both keys are valid, but when the container is starting, we do not have the real container ID yet,
 	// so we use a "placeholder" random string that is replaced by real container ID once we know the container outcome.
-	runningContainers *maps.SynchronizedDualKeyMap[types.NamespacedName, string, *runningContainerData]
+	runningContainers *runningContainersMap
 
 	// A WorkQueue used for building, starting and stopping containers,
 	// which are long-running operations that we do in parallel, with limited concurrency.
@@ -130,7 +132,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		Client:                 client,
 		orchestrator:           orchestrator,
 		notifyContainerChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		runningContainers:      maps.NewSynchronizedDualKeyMap[types.NamespacedName, string, *runningContainerData](),
+		runningContainers:      NewObjectStateMap[string, runningContainerData](),
 		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, MaxParallelContainerStarts),
 		containerEvtSub:        nil,
 		networkEvtSub:          nil,
@@ -234,52 +236,53 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
 	targetContainerState := container.Status.State
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if found {
+	_, rcd := r.runningContainers.BorrowByNamespacedName(container.NamespacedName())
+	if rcd != nil {
 		// In-memory container state is not subject to issues related to caching and
 		// status updates failed due to conflict, so it is fresher and has precedence.
-		rcd.acquire()
 		targetContainerState = rcd.containerState
-		rcd.release()
 	}
 
 	// Even if the new container state is (as it is usually the case) the same as the target state,
 	// we still want to run the state handler to ensure that the Container object Status,
 	// and the real-world resources associated with the Container object, are up to date.
 	initalizer := getStateInitializer(containerStateInitializers, targetContainerState, log)
-	change := initalizer(ctx, r, container, targetContainerState, log)
+	change := initalizer(ctx, r, container, targetContainerState, rcd, log)
+
+	if rcd != nil {
+		// UNDONE: should we handle runningContainerData deletion here?
+
+		r.runningContainers.Update(container.NamespacedName(), rcd.containerID, rcd)
+	}
+
 	return change
 }
 
 func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if found {
-		rcd.acquire()
-	}
+	_, rcd := r.runningContainers.BorrowByNamespacedName(container.NamespacedName())
 
 	var change objectChange
 
 	switch {
-	case !found:
+	case rcd == nil:
 		change = deleteFinalizer(container, containerFinalizer, log)
 
 	case rcd.containerState == apiv1.ContainerStateBuilding || rcd.containerState == apiv1.ContainerStateStarting || rcd.containerState == apiv1.ContainerStateStopping:
 		// Wait for Container to exit this transient state.
-		rcd.release()
 		change = r.manageContainer(ctx, container, log)
 
 	case (rcd.containerState == apiv1.ContainerStateRunning || rcd.containerState == apiv1.ContainerStatePaused) && !container.Spec.Persistent:
 		// Need to stop the container first.
 		rcd.containerState = apiv1.ContainerStateStopping
-		rcd.release()
 		stoppingInitializer := getStateInitializer(containerStateInitializers, apiv1.ContainerStateStopping, log)
-		change = stoppingInitializer(ctx, r, container, apiv1.ContainerStateStopping, log)
+		change = stoppingInitializer(ctx, r, container, apiv1.ContainerStateStopping, rcd, log)
+		r.runningContainers.Update(container.NamespacedName(), rcd.containerID, rcd)
 
 	default: // In initial or final state
-		rcd.release()
 		log.V(1).Info("Container object is being deleted...")
-		r.cleanupContainerResources(ctx, container, log)
+		r.cleanupContainerResources(ctx, container, rcd, log)
 		change = deleteFinalizer(container, containerFinalizer, log)
+		r.runningContainers.DeleteByNamespacedName(container.NamespacedName())
 	}
 
 	return change
@@ -292,6 +295,7 @@ func handleNewContainer(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
+	_ *runningContainerData,
 	_ logr.Logger,
 ) objectChange {
 	var change objectChange
@@ -323,23 +327,21 @@ func ensureContainerBuildingState(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, apiv1.ContainerStateBuilding)
 
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-
-	if !found {
+	if rcd == nil {
 		// This is a brand new Container and we need to build it.
 
 		rcd = newRunningContainerData(container)
-		rcd.acquire()
 		rcd.containerState = apiv1.ContainerStateBuilding
 		rcd.ensureStartupLogFiles(container, log)
 		r.ensureContainerWatch(container, log)
 
 		log.V(1).Info("scheduling image build")
-		err := r.startupQueue.Enqueue(r.buildImageWithOrchestrator(container, rcd.clone(), log))
+		err := r.startupQueue.Enqueue(r.buildImageWithOrchestrator(container, rcd.Clone(), log))
 		if err != nil {
 			log.Error(err, "image was not built, possibly because the workload is shutting down")
 			rcd.containerState = apiv1.ContainerStateFailedToStart
@@ -347,7 +349,6 @@ func ensureContainerBuildingState(
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 		}
 
-		rcd.release()
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
 		change |= statusChanged
 	}
@@ -359,8 +360,6 @@ func ensureContainerBuildingState(
 	// It might be just a caching issue, but it also might be because of a write conflict during last update,
 	// so we need to make sure it is what it should be.
 	// Bottom line we always want to apply the changes to the Container object.
-	rcd.acquire()
-	defer rcd.release()
 	change |= rcd.applyTo(container)
 
 	return change
@@ -371,26 +370,25 @@ func ensureContainerStartingState(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, apiv1.ContainerStateStarting)
 
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
-		rcd = newRunningContainerData(container)
-	}
-	rcd.acquire()
-
-	if !found {
+	if rcd == nil {
 		// This is brand new Container and we need to start it.
+		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateStarting
 		rcd.ensureStartupLogFiles(container, log)
-		containerID := rcd.containerID
 
-		r.runningContainers.Store(container.NamespacedName(), containerID, rcd)
+		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd.Clone())
 		r.ensureContainerWatch(container, log)
-
 		r.scheduleContainerCreation(container, rcd, log, noDelay)
+
+		// We need to update the runningContainers map with the new data here
+		// because the caller did not have a runningContainerData instance.
+		_ = r.runningContainers.Update(container.NamespacedName(), rcd.containerID, rcd)
+
 		change |= statusChanged
 
 	} else if !rcd.startupAttempted {
@@ -415,9 +413,7 @@ func ensureContainerStartingState(
 		// The second portion of startup sequence of a container with custom networks.
 		// Need to create ContainerNetworkConnection objects and start the container resource.
 
-		rcd.release()
 		started, err := r.handleInitialNetworkConnections(ctx, container, rcd, log)
-		rcd.acquire()
 
 		switch {
 		case err != nil:
@@ -443,7 +439,6 @@ func ensureContainerStartingState(
 	// so we need to make sure it is what it should be.
 	// Bottom line we always want to apply the changes to the Container object.
 	change |= rcd.applyTo(container)
-	rcd.release()
 
 	return change
 }
@@ -453,20 +448,18 @@ func ensureContainerFailedToStartState(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, apiv1.ContainerStateFailedToStart)
 
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
+	if rcd == nil {
 		// Can happen if the container was created with Spec.Stop = true
 		if container.Status.FinishTimestamp.IsZero() {
 			container.Status.FinishTimestamp = metav1.NowMicro()
 			change |= statusChanged
 		}
 	} else {
-		rcd.acquire()
-		defer rcd.release()
 		change |= rcd.applyTo(container)
 		rcd.closeStartupLogFiles(log)
 	}
@@ -480,22 +473,20 @@ func ensureContainerRunningState(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	desiredState apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, desiredState)
 
-	containerID, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
+	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
-		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-		return ensureContainerUnknownState(ctx, r, container, desiredState, log)
+		log.Error(fmt.Errorf("the data about the container resource is missing (current container state is '%s')", desiredState), "")
+		return ensureContainerUnknownState(ctx, r, container, desiredState, nil, log)
 	}
 
 	if container.Spec.Stop {
 		// Start the stopping sequence
-		rcd.acquire()
 		rcd.containerState = apiv1.ContainerStateStopping
-		rcd.release()
 		change |= setContainerState(container, apiv1.ContainerStateStopping)
 		return change
 	}
@@ -503,21 +494,19 @@ func ensureContainerRunningState(
 	if desiredState != apiv1.ContainerStateRunning {
 		removeEndpointsForWorkload(r, ctx, container, log)
 	} else {
-		rcd.acquire()
 		reservedPorts := rcd.reservedPorts
-		rcd.release()
 		ensureEndpointsForWorkload(ctx, r, container, reservedPorts, log)
 	}
 
-	log.V(1).Info("inspecting container resource...", "ContainerID", containerID)
-	inspected, err := inspectContainer(ctx, r.orchestrator, containerID)
+	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
+	inspected, err := inspectContainer(ctx, r.orchestrator, rcd.containerID)
 	if err != nil {
 		if errors.Is(err, containers.ErrNotFound) {
-			log.Info("container resource not found, assuming it was removed... ", "ContainerID", containerID)
-			return ensureContainerUnknownState(ctx, r, container, desiredState, log)
+			log.Info("container resource not found, assuming it was removed... ", "ContainerID", rcd.containerID)
+			return ensureContainerUnknownState(ctx, r, container, desiredState, rcd, log)
 		} else {
 			log.Info("container resource could not be inspected ",
-				"ContainerID", containerID,
+				"ContainerID", rcd.containerID,
 				"Error", err.Error(),
 			)
 			// Could be a transient error, so for know we keep the rest of the status as-is.
@@ -527,10 +516,8 @@ func ensureContainerRunningState(
 		}
 	}
 
-	rcd.acquire()
 	rcd.updateFromInspectedContainer(inspected)
 	change |= rcd.applyTo(container)
-	rcd.release()
 
 	if container.Spec.Networks != nil {
 		connectedNetworks, networkRelatedChange := r.handleRunningContainerNetworkConnections(ctx, container, inspected, rcd, log)
@@ -546,21 +533,19 @@ func ensureContainerRunningState(
 func ensureContainerExitedState(ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
-	desiredState apiv1.ContainerState,
+	_ apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, apiv1.ContainerStateExited)
 
-	containerID, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
+	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
-		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-		return ensureContainerUnknownState(ctx, r, container, desiredState, log)
+		log.Error(fmt.Errorf("the data about the container resource is missing (current container state is '%s')", apiv1.ContainerStateExited), "")
+		return ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateUnknown, nil, log)
 	}
 
-	rcd.acquire()
 	rcd.closeStartupLogFiles(log)
-	rcd.release()
 	removeEndpointsForWorkload(r, ctx, container, log)
 
 	if len(container.Status.Networks) > 0 {
@@ -568,20 +553,18 @@ func ensureContainerExitedState(ctx context.Context,
 		change |= statusChanged
 	}
 
-	log.V(1).Info("inspecting container resource...", "ContainerID", containerID)
-	inspected, err := inspectContainer(ctx, r.orchestrator, containerID)
+	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
+	inspected, err := inspectContainer(ctx, r.orchestrator, rcd.containerID)
 	if err != nil {
 		log.Info("container resource could not be inspected, might have been removed... ",
-			"ContainerID", containerID,
+			"ContainerID", rcd.containerID,
 			"Error", err.Error(),
 		)
 		return change // Best effort--skipping the rest.
 	}
 
-	rcd.acquire()
 	rcd.updateFromInspectedContainer(inspected)
 	change |= rcd.applyTo(container)
-	rcd.release()
 	return change
 }
 
@@ -589,12 +572,13 @@ func ensureContainerUnknownState(
 	ctx context.Context,
 	r *ContainerReconciler,
 	container *apiv1.Container,
-	desiredState apiv1.ContainerState,
+	_ apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, apiv1.ContainerStateUnknown)
 	if change != noChange {
-		log.Error(fmt.Errorf("the state of the Container became undetermined"), "", "OriginalContainerState", desiredState)
+		log.Error(fmt.Errorf("the state of the Container became undetermined"), "")
 	}
 	if container.Status.FinishTimestamp.IsZero() {
 		container.Status.FinishTimestamp = metav1.NowMicro()
@@ -610,13 +594,7 @@ func ensureContainerUnknownState(
 	// and do best-effort clean up of orchestrator-managed resources when the Container object is deleted,
 	// or when DCP is shutting down.
 	r.cleanupDcpContainerResources(ctx, container, log)
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
-		// Should never happen--the runningContainers map should have the data about the Container object.
-		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-	} else {
-		rcd.acquire()
-		defer rcd.release()
+	if rcd != nil {
 		rcd.containerState = apiv1.ContainerStateUnknown
 		rcd.closeStartupLogFiles(log)
 	}
@@ -629,36 +607,31 @@ func ensureContainerStoppingState(
 	r *ContainerReconciler,
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
+	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
 	change := setContainerState(container, apiv1.ContainerStateStopping)
 
-	_, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
+	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
-		log.Error(fmt.Errorf("the data about the container resource is missing"), "")
-		return ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
+		log.Error(fmt.Errorf("the data about the container resource is missing (current container state is '%s')", apiv1.ContainerStateStopping), "")
+		return ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateUnknown, nil, log)
 	}
 
-	rcd.acquire()
 	rcd.closeStartupLogFiles(log)
 
 	if !rcd.stopAttemptInitiated {
 		rcd.stopAttemptInitiated = true
-		rcdClone := rcd.clone()
-		rcd.release()
-		err := r.startupQueue.Enqueue(r.stopContainerFunc(container, rcdClone, log))
+		err := r.startupQueue.Enqueue(r.stopContainerFunc(container, rcd.Clone(), log))
 		if err != nil {
 			log.Error(err, "could not stop the container")
-			change |= ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateStopping, log)
+			change |= ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateUnknown, rcd, log)
 			return change
 		}
-		rcd.acquire()
 	}
 
 	change |= rcd.applyTo(container)
 
-	rcd.release()
 	removeEndpointsForWorkload(r, ctx, container, log)
 
 	return change
@@ -689,16 +662,15 @@ func (r *ContainerReconciler) removeExistingContainer(
 }
 
 // Schedules creation of a container resource. If Container is persistent, it will attempt to find and reuse an existing container.
-// Assumes that the caller has already acquired the runningContainerData.
 func (r *ContainerReconciler) scheduleContainerCreation(
 	container *apiv1.Container,
-	acquiredRCD *runningContainerData,
+	rcd *runningContainerData,
 	log logr.Logger,
 	delay time.Duration,
 ) {
 	containerName := strings.TrimSpace(container.Spec.ContainerName)
 
-	acquiredRCD.startupAttempted = true
+	rcd.startupAttempted = true
 
 	log.V(1).Info("scheduling container start", "image", container.SpecifiedImageNameOrDefault())
 
@@ -706,26 +678,27 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 		uniqueContainerName, _, err := MakeUniqueName(container.Name)
 		if err != nil {
 			log.Error(err, "could not generate a unique container name")
-			acquiredRCD.containerState = apiv1.ContainerStateFailedToStart
-			acquiredRCD.startupError = err
-			acquiredRCD.startAttemptFinishedAt = metav1.NowMicro()
+			rcd.containerState = apiv1.ContainerStateFailedToStart
+			rcd.startupError = err
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			return
 		}
 
 		containerName = uniqueContainerName
 	}
 
-	err := r.startupQueue.Enqueue(r.startContainerWithOrchestrator(container, acquiredRCD.clone(), containerName, log, delay))
+	err := r.startupQueue.Enqueue(r.startContainerWithOrchestrator(container, rcd.Clone(), containerName, log, delay))
 	if err != nil {
 		log.Error(err, "container was not started, probably because the workload is shutting down")
-		acquiredRCD.containerState = apiv1.ContainerStateFailedToStart
-		acquiredRCD.startupError = err
-		acquiredRCD.startAttemptFinishedAt = metav1.NowMicro()
+		rcd.containerState = apiv1.ContainerStateFailedToStart
+		rcd.startupError = err
+		rcd.startAttemptFinishedAt = metav1.NowMicro()
 	}
 }
 
 // Returns a function that builds the Container image.
-// The passed runningContainerData ia a working copy (clone); the function is free to modify it.
+// The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
+// The passed runningContainerData should be a clone independent from what is stored in the runningContainers map.
 func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(buildCtx context.Context) {
 		err := func() error {
@@ -773,18 +746,20 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 		}
 
-		containerID := rcd.containerID
-		containerObjectName := container.NamespacedName()
-		r.runningContainers.QueueDeferredOp(containerObjectName, func(runningContainers *maps.DualKeyMap[types.NamespacedName, string, *runningContainerData]) {
-			runningContainers.Update(containerObjectName, containerID, rcd)
-		})
-		r.scheduleContainerReconciliation(container.NamespacedName(), containerID)
+		r.runningContainers.QueueDeferredOp(
+			container.NamespacedName(),
+			func(containerObjectName types.NamespacedName, containerID string) {
+				r.runningContainers.Update(containerObjectName, containerID, rcd)
+			},
+		)
+		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
 	}
 }
 
 // Returns a function that attempts to start a container resource.
 // If Container is persistent, it will attempt to find and reuse an existing container.
-// The passed runningContainerData ia a working copy (clone); the function is free to modify it.
+// The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
+// The passed runningContainerData should be a clone independent from what is stored in the runningContainers map.
 func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Container, rcd *runningContainerData, containerName string, log logr.Logger, delay time.Duration) func(context.Context) {
 	return func(startupCtx context.Context) {
 		if delay > 0 {
@@ -964,11 +939,12 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 		}
 
-		containerID := rcd.containerID
-		containerObjectName := container.NamespacedName()
-		r.runningContainers.QueueDeferredOp(containerObjectName, func(runningContainers *maps.DualKeyMap[types.NamespacedName, string, *runningContainerData]) {
-			runningContainers.UpdateChangingSecondKey(containerObjectName, placeholderContainerID, containerID, rcd)
-		})
+		r.runningContainers.QueueDeferredOp(
+			container.NamespacedName(),
+			func(containerObjectName types.NamespacedName, containerID string) {
+				r.runningContainers.UpdateChangingStateKey(containerObjectName, placeholderContainerID, rcd.containerID, rcd)
+			},
+		)
 		r.scheduleContainerReconciliation(container.NamespacedName(), placeholderContainerID)
 	}
 }
@@ -976,7 +952,8 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 // CONTAINER STOP/SHUTDOWN HELPER METHODS
 
 // Returns a function that stops the container resource by calling the container orchestrator.
-// The passed runningContainerData ia a working copy (clone); the function is free to modify it.
+// The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
+// The passed runningContainerData should be a clone independent from what is stored in the runningContainers map.
 func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
 		log.V(1).Info("calling container orchestrator to stop the container...",
@@ -994,31 +971,21 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 			rcd.containerState = apiv1.ContainerStateExited
 		}
 
-		containerID := rcd.containerID
-		containerObjectName := container.NamespacedName()
-		r.runningContainers.QueueDeferredOp(containerObjectName, func(runningContainers *maps.DualKeyMap[types.NamespacedName, string, *runningContainerData]) {
-			runningContainers.Update(containerObjectName, containerID, rcd)
-		})
-		r.scheduleContainerReconciliation(container.NamespacedName(), containerID)
+		r.runningContainers.QueueDeferredOp(
+			container.NamespacedName(),
+			func(containerObjectName types.NamespacedName, containerID string) {
+				r.runningContainers.Update(containerObjectName, containerID, rcd)
+			},
+		)
+		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
 	}
 
 }
 
-func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) {
+func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
-	containerID, rcd, found := r.runningContainers.FindByFirstKey(container.NamespacedName())
-	if !found {
-		// We either never started the container, or we already attempted to remove the container
-		// and the current reconciliation call is just the cache catching up.
-		// Either way there is nothing to do.
-		log.V(1).Info("running container data is not available, nothing to remove...")
-		return
-	}
-
-	rcd.acquire()
-	defer rcd.release()
 	rcd.closeStartupLogFiles(log)
 	defer rcd.deleteStartupLogFiles(log)
 
@@ -1033,16 +1000,15 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	}
 
 	// We want to stop the container first to give it a chance to clean up
-	_ = r.removeExistingContainer(ctx, containerID, log)
+	_ = r.removeExistingContainer(ctx, rcd.containerID, log)
 }
 
 // Removes all resources associated with the Container object, both DCP-managed, as well as orchestrator-managed,
 // including the running container.
-func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, log logr.Logger) {
+func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) {
 	r.cleanupDcpContainerResources(ctx, container, log)
 	r.removeContainerNetworkConnections(ctx, container, log)
-	r.deleteContainer(ctx, container, log)
-	r.runningContainers.DeleteByFirstKey(container.NamespacedName())
+	r.deleteContainer(ctx, container, rcd, log)
 }
 
 // Removes any resources that DCP is managing for the running container.
@@ -1058,7 +1024,7 @@ func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, 
 // starts the container.
 // Returns a value indicating if the container has been started, and an error, if any.
 // The error should be treated as permanent startup failure.
-// Acquires/releases the runningContainerData as needed.
+// This method is executed as part of the reconciliation loop.
 func (r *ContainerReconciler) handleInitialNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
@@ -1076,10 +1042,8 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 		return false, nil
 	}
 
-	rcd.acquire()
 	containerID := rcd.containerID
 	startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-	rcd.release()
 	streamOptions := containers.StreamCommandOptions{
 		StdOutStream: startupStdoutWriter,
 		StdErrStream: startupStderrWriter,
@@ -1095,6 +1059,8 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 	return true, nil
 }
 
+// Connects the Container to networks as necessary, updating status.
+// This method is executed as part of the reconciliation loop.
 func (r *ContainerReconciler) handleRunningContainerNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
@@ -1150,7 +1116,7 @@ func (r *ContainerReconciler) removeContainerNetworkConnections(
 // expects to be connected to) against the networks a container is actually connected to. It returns a list of ContainerNetworks
 // the Container is connected to via a ContainerNetworkConnection. In addition, it creates or deletes ContainerNetworkConnection
 // entries based on the networks property of the Container.
-// Acquires/releases the runningContainerData as needed.
+// The method is executed as part of the reconciliation loop.
 func (r *ContainerReconciler) ensureContainerNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
@@ -1186,9 +1152,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		return []*apiv1.ContainerNetwork{}, err
 	}
 
-	rcd.acquire()
 	containerID := rcd.containerID
-	rcd.release()
 
 	if inspected == nil {
 		if containerID == "" {
@@ -1261,9 +1225,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			)
 		} else {
 			log.Info("Removed a ContainerNetworkConnection connection", "Container", containerID, "ContainerNetworkConnection", connection.NamespacedName().String())
-			rcd.acquire()
 			delete(rcd.networkConnections, networkConnectionKey)
-			rcd.release()
 		}
 	}
 
@@ -1278,9 +1240,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			Network:   namespacedNetworkName,
 		}
 
-		rcd.acquire()
 		_, found := rcd.networkConnections[networkConnectionKey]
-		rcd.release()
 		if found {
 			// We should have already created a ContainerNetworkConnection object, wait for it to show up in a subsequent reconciliation
 			continue
@@ -1330,9 +1290,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			)
 		} else {
 			log.Info("Added new ContainerNetworkConnection", "Container", containerID, "ContainerNetworkConnection", connection.NamespacedName().String())
-			rcd.acquire()
 			rcd.networkConnections[networkConnectionKey] = true
-			rcd.release()
 		}
 	}
 
@@ -1411,10 +1369,9 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 		return matchedPort.HostIP, matchedPort.HostPort, nil
 	}
 
-	// Need to inspect the container to find the port used by the service
-	// (auto-allocated by Docker).
-	_, rcd, rcdFound := r.runningContainers.FindByFirstKey(ctr.NamespacedName())
-	if !rcdFound || !rcd.hasValidContainerID() {
+	// Need to inspect the container to find the port used by the service (auto-allocated by Docker).
+	_, rcd := r.runningContainers.BorrowByNamespacedName(ctr.NamespacedName())
+	if rcd == nil || !rcd.hasValidContainerID() {
 		// Should never happen--this method should only be called for running container.
 		return "", 0, fmt.Errorf("running container data not found for Container '%s'", ctr.NamespacedName())
 	}
@@ -1570,8 +1527,8 @@ func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) 
 	// Any event that means the container has been started, stopped, or was removed, is interesting
 	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionDied, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune:
 		containerID := em.Actor.ID
-		owner, _, running := r.runningContainers.FindBySecondKey(containerID)
-		if !running {
+		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
+		if rcd == nil {
 			// We are not tracking this container
 			return
 		}
@@ -1593,8 +1550,8 @@ func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 			return
 		}
 
-		owner, _, running := r.runningContainers.FindBySecondKey(containerID)
-		if !running {
+		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
+		if rcd == nil {
 			// We are not tracking this container
 			return
 		}
@@ -1720,11 +1677,10 @@ func (r *ContainerReconciler) onShutdown() {
 	defer r.lock.Unlock()
 	r.cancelContainerWatch()
 
-	r.runningContainers.Range(func(_ types.NamespacedName, _ string, rcd *runningContainerData) bool {
-		rcd.acquire()
-		defer rcd.release()
+	r.runningContainers.Range(func(containerName types.NamespacedName, containerID string, rcd *runningContainerData) bool {
 		rcd.closeStartupLogFiles(r.Log)
 		rcd.deleteStartupLogFiles(r.Log)
+		_ = r.runningContainers.Update(containerName, containerID, rcd)
 		return true
 	})
 	r.runningContainers.Clear()

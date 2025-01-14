@@ -2,6 +2,7 @@ package maps
 
 import (
 	"fmt"
+	"iter"
 	stdlib_maps "maps"
 )
 
@@ -145,6 +146,23 @@ func Apply[K comparable, V any, M ~map[K]V](m1 M, m2 M) M {
 		retval[k] = v
 	}
 	return retval
+}
+
+// Adds key-value pairs from seq to m. If a key in seq already exists in m, its value will be overwritten.
+// Returns true if the map was modified, otherwise false.
+func Insert[K comparable, V comparable, M ~map[K]V](m M, seq iter.Seq2[K, V]) bool {
+	modified := false
+
+	for k, v := range seq {
+		if HasExactValue(m, k, v) {
+			continue
+		} else {
+			m[k] = v
+			modified = true
+		}
+	}
+
+	return modified
 }
 
 func HasExactValue[K comparable, V comparable, M ~map[K]V](m M, key K, expected V) bool {

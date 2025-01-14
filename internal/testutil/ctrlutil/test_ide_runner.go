@@ -16,6 +16,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -75,7 +76,7 @@ func (r *TestIdeRunner) StartRun(
 	run := &TestIdeRun{
 		ID:      runID,
 		Exe:     exe,
-		RunInfo: startingRunInfo.DeepCopy(),
+		RunInfo: startingRunInfo.Clone(),
 		StartWaitingCallback: func() {
 			r.m.Lock()
 			defer r.m.Unlock()
@@ -128,8 +129,7 @@ func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid 
 	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
-			run.RunInfo.Pid = new(int64)
-			*run.RunInfo.Pid = int64(pid)
+			pointers.SetValue(&run.RunInfo.Pid, (*int64)(&pid))
 			run.RunInfo.RunID = runID
 			run.RunInfo.ExeState = apiv1.ExecutableStateRunning
 			run.RunInfo.StartupTimestamp = metav1.NowMicro()
@@ -163,7 +163,7 @@ func (r *TestIdeRunner) SimulateRunStart(
 		// Make sure OnStartupCompleted is called before we return and let the test proceed.
 		done := make(chan struct{})
 		go func() {
-			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), run.RunInfo.DeepCopy(), run.StartWaitingCallback)
+			run.ChangeHandler.OnStartupCompleted(run.Exe.NamespacedName(), run.RunInfo.Clone(), run.StartWaitingCallback)
 
 			close(done)
 		}()
@@ -200,8 +200,7 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
 		func(run *TestIdeRun) {
 			run.RunInfo.FinishTimestamp = metav1.NowMicro()
-			run.RunInfo.ExitCode = new(int32)
-			*run.RunInfo.ExitCode = exitCode
+			pointers.SetValue(&run.RunInfo.ExitCode, (*int32)(&exitCode))
 		},
 	)
 

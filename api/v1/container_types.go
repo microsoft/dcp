@@ -21,6 +21,7 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
 var (
@@ -229,6 +230,94 @@ type ContainerSpec struct {
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 }
 
+func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
+	if cs == other {
+		return true
+	}
+
+	if cs == nil || other == nil {
+		return false
+	}
+
+	if cs.Image != other.Image {
+		return false
+	}
+
+	if !pointers.EqualValueFunc(cs.Build, other.Build, func(c1, c2 *ContainerBuildContext) bool {
+		return c1.Equal(c2)
+	}) {
+		return false
+	}
+
+	if cs.ContainerName != other.ContainerName {
+		return false
+	}
+
+	if !slices.Equal(cs.VolumeMounts, other.VolumeMounts) {
+		return false
+	}
+
+	if !slices.Equal(cs.Ports, other.Ports) {
+		return false
+	}
+
+	if !slices.Equal(cs.Env, other.Env) {
+		return false
+	}
+
+	if !slices.Equal(cs.EnvFiles, other.EnvFiles) {
+		return false
+	}
+
+	if cs.RestartPolicy != other.RestartPolicy {
+		return false
+	}
+
+	if cs.Command != other.Command {
+		return false
+	}
+
+	if !slices.Equal(cs.Args, other.Args) {
+		return false
+	}
+
+	if cs.Stop != other.Stop {
+		return false
+	}
+
+	if !pointers.EqualValueFunc(cs.Networks, other.Networks, func(c1, c2 *[]ContainerNetworkConnectionConfig) bool {
+		return slices.EqualFunc(*c1, *c2, func(cncc1, cncc2 ContainerNetworkConnectionConfig) bool {
+			return cncc1.Equal(&cncc2)
+		})
+	}) {
+		return false
+	}
+
+	if cs.Persistent != other.Persistent {
+		return false
+	}
+
+	if !slices.Equal(cs.RunArgs, other.RunArgs) {
+		return false
+	}
+
+	if !slices.Equal(cs.Labels, other.Labels) {
+		return false
+	}
+
+	if !slices.EqualFunc(cs.HealthProbes, other.HealthProbes, func(hp1, hp2 HealthProbe) bool {
+		return hp1.Equal(&hp2)
+	}) {
+		return false
+	}
+
+	if cs.LifecycleKey != other.LifecycleKey {
+		return false
+	}
+
+	return true
+}
+
 // +k8s:openapi-gen=true
 type ContainerNetworkConnectionConfig struct {
 	// Name of the network to connect to
@@ -237,6 +326,26 @@ type ContainerNetworkConnectionConfig struct {
 	// Aliases of the container on the network
 	// +listType=atomic
 	Aliases []string `json:"aliases,omitempty"`
+}
+
+func (cncc *ContainerNetworkConnectionConfig) Equal(other *ContainerNetworkConnectionConfig) bool {
+	if cncc == other {
+		return true
+	}
+
+	if cncc == nil || other == nil {
+		return false
+	}
+
+	if cncc.Name != other.Name {
+		return false
+	}
+
+	if !slices.Equal(cncc.Aliases, other.Aliases) {
+		return false
+	}
+
+	return true
 }
 
 type ContainerState string
@@ -507,7 +616,7 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes"), "Health probes cannot be changed once a Container is created."))
 	} else {
 		for i, probe := range oldContainer.Spec.HealthProbes {
-			if !probe.Equal(e.Spec.HealthProbes[i]) {
+			if !probe.Equal(&e.Spec.HealthProbes[i]) {
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once a Container is created."))
 			}
 		}
@@ -516,7 +625,7 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	return errorList
 }
 
-// Equivalnce check for ContainerBuildContex for use in validation
+// Equivalence check for ContainerBuildContex for use in validation
 func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
 	if c1 == c2 {
 		return true

@@ -92,6 +92,9 @@ type InspectedContainer struct {
 	// Container status
 	Status ContainerStatus `json:"Status,omitempty"`
 
+	// Error message (if any) that was reported when the container exited
+	Error string `json:"Error,omitempty"`
+
 	// Exit code
 	ExitCode int32 `json:"ExitCode,omitempty"`
 

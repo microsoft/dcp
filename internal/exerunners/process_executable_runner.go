@@ -17,6 +17,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -100,10 +101,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	})
 
 	runInfo.RunID = pidToRunID(pid)
-	if runInfo.Pid == apiv1.UnknownPID {
-		runInfo.Pid = new(int64)
-	}
-	*runInfo.Pid = int64(pid)
+	pointers.SetValue(&runInfo.Pid, (*int64)(&pid))
 	runInfo.ExeState = apiv1.ExecutableStateRunning
 	runInfo.StartupTimestamp = metav1.NewMicroTime(startTime)
 
