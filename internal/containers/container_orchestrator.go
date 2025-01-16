@@ -104,6 +104,9 @@ type InspectedContainer struct {
 	// Launch arguments
 	Args []string `json:"Args,omitempty"`
 
+	// Container volume/bind mounts
+	Mounts []apiv1.VolumeMount `json:"Mounts,omitempty"`
+
 	// Container ports
 	Ports InspectedContainerPortMapping `json:"Ports,omitempty"`
 

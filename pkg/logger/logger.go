@@ -89,7 +89,7 @@ func New(name string) Logger {
 	zapLogger := zap.New(zapcore.NewTee(cores...))
 
 	return Logger{
-		Logger:      zapr.NewLogger(zapLogger),
+		Logger:      zapr.NewLogger(zapLogger).WithName(name),
 		name:        name,
 		atomicLevel: consoleAtomicLevel,
 		flush: func() {

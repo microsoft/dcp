@@ -439,7 +439,8 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 	if ctr.Status.StartupTimestamp.IsZero() && !rcd.startAttemptFinishedAt.IsZero() {
 		ctr.Status.StartupTimestamp = rcd.startAttemptFinishedAt
 		// Set the lifecycle key once the container has started
-		ctr.Status.LifecycleKey = rcd.getLifecycleKey()
+		lifecycleKey, _ := rcd.getLifecycleKey()
+		ctr.Status.LifecycleKey = lifecycleKey
 		change |= statusChanged
 	}
 
@@ -452,9 +453,9 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 	return change
 }
 
-func (rcd *runningContainerData) getLifecycleKey() string {
+func (rcd *runningContainerData) getLifecycleKey() (string, bool) {
 	if rcd.runSpec.LifecycleKey != "" {
-		return rcd.runSpec.LifecycleKey
+		return rcd.runSpec.LifecycleKey, false
 	}
 
 	// Concatenate fields that can necessitate recreating a container if changed
@@ -470,7 +471,7 @@ func (rcd *runningContainerData) getLifecycleKey() string {
 		rcd.runSpec.Args, // This is the evaluated arguments, not the raw arguments
 	)
 
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(configString)))
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(configString))), true
 }
 
 var _ Cloner[*runningContainerData] = (*runningContainerData)(nil)
