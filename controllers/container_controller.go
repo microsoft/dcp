@@ -33,6 +33,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -54,7 +55,11 @@ const (
 	groupVersionLabel = "com.microsoft.developer.usvc-dev.group-version"
 	nameLabel         = "com.microsoft.developer.usvc-dev.name"
 	uidLabel          = "com.microsoft.developer.usvc-dev.uid"
+	persistentLabel   = "com.microsoft.developer.usvc-dev.persistent"
 	lifecycleKeyLabel = "com.microsoft.developer.usvc-dev.lifecycle-key"
+	envLabel          = "com.microsoft.developer.usvc-dev.env"
+	mountsLabel       = "com.microsoft.developer.usvc-dev.mountsLabel"
+	portsLabel        = "com.microsoft.developer.usvc-dev.ports"
 )
 
 var (
@@ -756,6 +761,137 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 	}
 }
 
+func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *containers.InspectedContainer) (mounts []string, ports []string, env []string, other []string) {
+	// For the default lifecycle key behavior, we want to provide diagnostic logging on what configurations seem to have changed
+	changeList := []string{}
+
+	// Calculate differences in the image name
+	if rcd.runSpec.Image != inspected.Image {
+		if rcd.runSpec.Build != nil {
+			changeList = append(changeList, "container was rebuilt due to Dockerfile or context changes")
+		} else {
+			changeList = append(changeList, fmt.Sprintf("container image name changed from %s to %s", inspected.Image, rcd.runSpec.Image))
+		}
+	}
+
+	// Track the set of changed mounts (added, modified, or removed)
+	changedMounts := map[string]bool{}
+
+	// Calculate differences between mounts
+	missingSpecMounts := slices.DiffFunc(rcd.runSpec.VolumeMounts, inspected.Mounts, func(a, b apiv1.VolumeMount) bool {
+		return a.Type == b.Type && a.Source == b.Source && a.Target == b.Target && a.ReadOnly == b.ReadOnly
+	})
+
+	for _, mount := range missingSpecMounts {
+		changedMounts[fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source)] = true
+	}
+
+	containerSpecMount := map[string]bool{}
+	if mountsLabelKeys, found := inspected.Labels[mountsLabel]; found && mountsLabelKeys != "" {
+		for _, mount := range strings.Split(mountsLabelKeys, "\n") {
+			containerSpecMount[mount] = true
+		}
+	}
+
+	for containerMount := range containerSpecMount {
+		if !slices.Any(rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) bool {
+			return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source) == containerMount
+		}) {
+			changedMounts[containerMount] = true
+		}
+	}
+
+	// Track the set of changed ports (added, modified, or removed)
+	changedPorts := map[string]bool{}
+
+	// Calculate differences between ports
+	for _, port := range rcd.runSpec.Ports {
+		protocol := "tcp"
+		if port.Protocol != "" {
+			protocol = strings.ToLower(string(port.Protocol))
+		}
+		containerBinding := fmt.Sprintf("%d/%s", port.ContainerPort, protocol)
+
+		hostIP := networking.IPv4LocalhostDefaultAddress
+		if port.HostIP != "" {
+			hostIP = port.HostIP
+		}
+
+		hostPort := fmt.Sprintf("%d", port.HostPort)
+
+		found := false
+		for inspectedContainerBinding, inspectedHostBinding := range inspected.Ports {
+			if containerBinding == inspectedContainerBinding {
+				if hostIP == inspectedHostBinding[0].HostIp && (port.HostPort == 0 || hostPort == inspectedHostBinding[0].HostPort) {
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			changedPorts[containerBinding] = true
+		}
+	}
+
+	containerSpecPort := map[string]bool{}
+	if portsLabelKeys, found := inspected.Labels[portsLabel]; found && portsLabelKeys != "" {
+		for _, port := range strings.Split(portsLabelKeys, "\n") {
+			containerSpecPort[port] = true
+		}
+	}
+
+	for portBinding := range containerSpecPort {
+		if !slices.Any(rcd.runSpec.Ports, func(port apiv1.ContainerPort) bool {
+			protocol := "tcp"
+			if port.Protocol != "" {
+				protocol = strings.ToLower(string(port.Protocol))
+			}
+			containerBinding := fmt.Sprintf("%d/%s", port.ContainerPort, protocol)
+
+			return containerBinding == portBinding
+		}) {
+			containerSpecPort[portBinding] = true
+		}
+	}
+
+	// Track the set of changed environment variables (added, modified, or removed)
+	changedEnv := map[string]bool{}
+
+	// Calculate differences between environment variables
+	specEnv := map[string]string{}
+	for _, env := range rcd.runSpec.Env {
+		specEnv[env.Name] = env.Value
+	}
+
+	containerSpecEnv := map[string]bool{}
+	if envLabelKeys, found := inspected.Labels[envLabel]; found && envLabelKeys != "" {
+		for _, env := range strings.Split(envLabelKeys, "\n") {
+			containerSpecEnv[env] = true
+		}
+	}
+
+	// Look for missing or modified environment
+	for k, v := range specEnv {
+		inspectedValue, found := inspected.Env[k]
+		if !found {
+			changedEnv[k] = true
+		} else if v != inspectedValue {
+			changedEnv[k] = true
+		}
+	}
+
+	// Look for environment that was removed between runs
+	for k := range containerSpecEnv {
+		_, found := specEnv[k]
+		if !found {
+			changedEnv[k] = true
+		}
+	}
+
+	return maps.Keys(changedMounts), maps.Keys(changedPorts), maps.Keys(changedEnv), changeList
+}
+
 // Returns a function that attempts to start a container resource.
 // If Container is persistent, it will attempt to find and reuse an existing container.
 // The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
@@ -791,7 +927,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				return err
 			}
 
-			lifecycleKey := rcd.getLifecycleKey()
+			lifecycleKey, hasDefaultLifecycleKey := rcd.getLifecycleKey()
 
 			if container.Spec.Persistent {
 				// Check for an existing persistent container
@@ -806,7 +942,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
 					if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
 						// We need to recreate this DCP managed container because the lifecycle key has changed
-						log.Info("found existing Container with different lifecycle key, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
+						if hasDefaultLifecycleKey {
+							mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
+							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
+						} else {
+							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
+						}
+
 						if removeErr := r.removeExistingContainer(startupCtx, inspected.Id, log); removeErr != nil {
 							return removeErr
 						}
@@ -871,7 +1013,42 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					Key:   lifecycleKeyLabel,
 					Value: lifecycleKey,
 				},
+				{
+					Key:   persistentLabel,
+					Value: fmt.Sprintf("%t", rcd.runSpec.Persistent),
+				},
 			}...)
+
+			if len(rcd.runSpec.Env) > 0 {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key: envLabel,
+					Value: strings.Join(slices.Map[apiv1.EnvVar, string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
+						return env.Name
+					}), "\n"),
+				})
+			}
+
+			if len(rcd.runSpec.Ports) > 0 {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key: portsLabel,
+					Value: strings.Join(slices.Map[apiv1.ContainerPort, string](rcd.runSpec.Ports, func(port apiv1.ContainerPort) string {
+						protocol := "tcp"
+						if port.Protocol != "" {
+							protocol = strings.ToLower(string(port.Protocol))
+						}
+						return fmt.Sprintf("%d/%s", port.ContainerPort, protocol)
+					}), "\n"),
+				})
+			}
+
+			if len(rcd.runSpec.VolumeMounts) > 0 {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key: mountsLabel,
+					Value: strings.Join(slices.Map[apiv1.VolumeMount, string](rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) string {
+						return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source)
+					}), "\n"),
+				})
+			}
 
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			streamOptions := containers.StreamCommandOptions{

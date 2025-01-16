@@ -1152,6 +1152,21 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.ExitCode = dci.State.ExitCode
 	ic.Error = dci.State.Error
 
+	ic.Mounts = make([]apiv1.VolumeMount, len(dci.Mounts))
+	for i, mount := range dci.Mounts {
+		source := mount.Source
+		if mount.Type == apiv1.NamedVolumeMount {
+			source = mount.Name
+		}
+
+		ic.Mounts[i] = apiv1.VolumeMount{
+			Type:     mount.Type,
+			Source:   source,
+			Target:   mount.Destination,
+			ReadOnly: !mount.ReadWrite,
+		}
+	}
+
 	ic.Ports = make(containers.InspectedContainerPortMapping)
 	for portAndProtocol, portBindings := range dci.NetworkSettings.Ports {
 		if len(portAndProtocol) == 0 || len(portBindings) == 0 {
@@ -1251,10 +1266,19 @@ type dockerInspectedImageConfig struct {
 type dockerInspectedContainer struct {
 	Id              string                                  `json:"Id"`
 	Name            string                                  `json:"Name,omitempty"`
+	Mounts          []dockerInspectedContainerMount         `json:"Mounts,omitempty"`
 	Config          dockerInspectedContainerConfig          `json:"Config,omitempty"`
 	Created         time.Time                               `json:"Created,omitempty"`
 	State           dockerInspectedContainerState           `json:"State,omitempty"`
 	NetworkSettings dockerInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
+}
+
+type dockerInspectedContainerMount struct {
+	Type        apiv1.VolumeMountType `json:"Type,omitempty"`
+	Name        string                `json:"Name,omitempty"`
+	Source      string                `json:"Source,omitempty"`
+	Destination string                `json:"Destination,omitempty"`
+	ReadWrite   bool                  `json:"RW,omitempty"`
 }
 
 type dockerInspectedContainerConfig struct {

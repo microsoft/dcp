@@ -1072,6 +1072,21 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 	ic.ExitCode = pci.State.ExitCode
 	ic.Error = pci.State.Error
 
+	ic.Mounts = make([]apiv1.VolumeMount, len(pci.Mounts))
+	for i, mount := range pci.Mounts {
+		source := mount.Source
+		if mount.Type == apiv1.NamedVolumeMount {
+			source = mount.Name
+		}
+
+		ic.Mounts[i] = apiv1.VolumeMount{
+			Type:     mount.Type,
+			Source:   source,
+			Target:   mount.Destination,
+			ReadOnly: !mount.ReadWrite,
+		}
+	}
+
 	ic.Ports = make(containers.InspectedContainerPortMapping)
 	for portAndProtocol, portBindings := range pci.NetworkSettings.Ports {
 		if len(portAndProtocol) == 0 || len(portBindings) == 0 {
@@ -1163,6 +1178,7 @@ type podmanInspectedContainer struct {
 	Config          podmanInspectedContainerConfig          `json:"Config,omitempty"`
 	Created         time.Time                               `json:"Created,omitempty"`
 	State           podmanInspectedContainerState           `json:"State,omitempty"`
+	Mounts          []podmanInspectedContainerMount         `json:"Mounts,omitempty"`
 	NetworkSettings podmanInspectedContainerNetworkSettings `json:"NetworkSettings,omitempty"`
 }
 
@@ -1204,6 +1220,14 @@ type podmanInspectedContainerState struct {
 	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
 	ExitCode   int32                      `json:"ExitCode,omitempty"`
 	Error      string                     `json:"Error,omitempty"`
+}
+
+type podmanInspectedContainerMount struct {
+	Type        apiv1.VolumeMountType `json:"Type,omitempty"`
+	Name        string                `json:"Name,omitempty"`
+	Source      string                `json:"Source,omitempty"`
+	Destination string                `json:"Destination,omitempty"`
+	ReadWrite   bool                  `json:"RW,omitempty"`
 }
 
 type podmanInspectedContainerNetworkSettings struct {
