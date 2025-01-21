@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -66,23 +67,9 @@ func NewOSExecutor(log logr.Logger) Executor {
 }
 
 func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler ProcessExitHandler) (Pid_t, time.Time, func(), error) {
-	if err := cmd.Start(); err != nil {
-		return UnknownPID, time.Time{}, nil, err
-	}
-	processStartTime := time.Now()
-
-	osPid := cmd.Process.Pid
-	pid, err := IntToPidT(osPid)
+	pid, processStartTime, err := e.startProcess(cmd)
 	if err != nil {
 		return UnknownPID, time.Time{}, nil, err
-	}
-
-	psProcess, psProcessErr := ps.FindProcess(osPid)
-	if psProcessErr != nil {
-		e.log.Error(psProcessErr, "could not find process startup time", "PID", osPid)
-	} else {
-		// This is what the OS process startup timestamp is, so it is the most accurate value we can get.
-		processStartTime = psProcess.CreationTime()
 	}
 
 	// Get the wait result channel, but do not actually start waiting
@@ -133,6 +120,52 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 	}
 
 	return pid, processStartTime, startWaitingForProcessExit, nil
+}
+
+func (e *OSExecutor) StartAndForget(cmd *exec.Cmd) (Pid_t, time.Time, error) {
+	pid, processStartTime, err := e.startProcess(cmd)
+	if err != nil {
+		return UnknownPID, time.Time{}, err
+	}
+
+	if cmd.Process == nil {
+		e.log.V(1).Info("process info is not available after successful start???",
+			"PID", pid,
+			"Command", cmd.Path,
+			"Args", cmd.Args,
+		)
+	} else {
+		// We have to wait (not cmd.Process.Release()) because if we don't, then if the child process exits
+		// before the parent process exist, the child becomes a zombie (on non-Windows platforms).
+		go func(p *os.Process) {
+			_, _ = p.Wait()
+		}(cmd.Process)
+	}
+
+	return pid, processStartTime, nil
+}
+
+func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
+	if err := cmd.Start(); err != nil {
+		return UnknownPID, time.Time{}, err
+	}
+	processStartTime := time.Now()
+
+	osPid := cmd.Process.Pid
+	pid, err := IntToPidT(osPid)
+	if err != nil {
+		return UnknownPID, time.Time{}, err
+	}
+
+	psProcess, psProcessErr := ps.FindProcess(osPid)
+	if psProcessErr != nil {
+		e.log.Error(psProcessErr, "could not find process startup time", "PID", osPid)
+	} else {
+		// This is what the OS process startup timestamp is, so it is the most accurate value we can get.
+		processStartTime = psProcess.CreationTime()
+	}
+
+	return pid, processStartTime, nil
 }
 
 // Atomically starts waiting on the passed waitable if noting is already waiting in association with the process

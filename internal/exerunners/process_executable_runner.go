@@ -92,7 +92,7 @@ func (r *ProcessExecutableRunner) StartRun(
 
 	log.Info("process started", "executable", cmd.Path, "PID", pid)
 
-	dcpproc.RunWatcher(ctx, r.pe, pid, startTime, log)
+	dcpproc.RunWatcher(r.pe, pid, startTime, log)
 
 	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
 		startTime:  startTime,
