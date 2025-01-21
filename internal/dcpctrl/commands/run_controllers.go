@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
@@ -23,6 +24,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+)
+
+const (
+	ControllerManagerShutdownTimeout = 60 * time.Second
 )
 
 func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
@@ -209,14 +214,42 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			return err
 		}
 
-		log.Info("starting controller manager")
-		err = mgr.Start(ctrlCtx)
-		if err != nil {
-			log.Error(err, "contoller manager failed")
-			return err
-		}
+		mgrRunResultCh := make(chan error, 1)
 
-		log.Info("controller manager shutting down...")
-		return nil
+		// Run the controller manager in a separate goroutine to ensure that the process running controllers
+		// can exit even if controller manager Start() method does NOT return in a timely manner
+		// after context cancellation (https://github.com/microsoft/usvc/issues/195).
+		go func() {
+			log.Info("starting controller manager")
+			var mgrRunErr error
+
+			defer func() {
+				panicErr := resiliency.MakePanicError(recover(), log)
+				if panicErr != nil {
+					// Already logged by MakePanicError()
+					mgrRunResultCh <- panicErr
+				} else if mgrRunErr != nil {
+					log.Error(mgrRunErr, "controller manager failed")
+					mgrRunResultCh <- mgrRunErr
+				} else {
+					log.Info("controller manager shutting down...")
+					mgrRunResultCh <- nil
+				}
+				close(mgrRunResultCh)
+			}()
+
+			mgrRunErr = mgr.Start(ctrlCtx)
+		}()
+
+		<-ctrlCtx.Done()
+
+		select {
+		case mgrRunErr := <-mgrRunResultCh:
+			return mgrRunErr
+		case <-time.After(ControllerManagerShutdownTimeout):
+			mgrShutdownErr := fmt.Errorf("controller manager did not shut down in a timely manner, exiting anyway...")
+			log.Error(mgrShutdownErr, "")
+			return mgrShutdownErr
+		}
 	}
 }
