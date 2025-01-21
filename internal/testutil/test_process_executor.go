@@ -219,21 +219,64 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		e.Executions[i] = updatedPE
 	}
 
+	if autoExecutionErr := e.maybeAutoExecute(&pe); autoExecutionErr != nil {
+		return process.UnknownPID, time.Time{}, nil, autoExecutionErr
+	}
+
+	return pid, startTimestamp, startWaitingForExit, nil
+}
+
+func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd) (process.Pid_t, time.Time, error) {
+	pid64 := atomic.AddInt64(&e.nextPID, 1)
+	pid, err := process.Int64ToPidT(pid64)
+	if err != nil {
+		return process.UnknownPID, time.Time{}, err
+	}
+
+	e.m.Lock()
+	defer e.m.Unlock()
+
+	startTimestamp := time.Now()
+	pe := ProcessExecution{
+		Cmd:                cmd,
+		PID:                pid,
+		StartedAt:          startTimestamp,
+		StartWaitingCalled: false,
+	}
+
+	// For testing purposes make sure that stdout and stderr are always captured.
+	if cmd.Stdout == nil {
+		cmd.Stdout = usvc_io.NopWriteCloser(new(bytes.Buffer))
+	}
+	if cmd.Stderr == nil {
+		cmd.Stderr = usvc_io.NopWriteCloser(new(bytes.Buffer))
+	}
+
+	e.Executions = append(e.Executions, pe)
+
+	if autoExecutionErr := e.maybeAutoExecute(&pe); autoExecutionErr != nil {
+		return process.UnknownPID, time.Time{}, autoExecutionErr
+	}
+
+	return pid, startTimestamp, nil
+}
+
+func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 	if len(e.AutoExecutions) > 0 {
 		for _, ae := range e.AutoExecutions {
-			if ae.Condition.Matches(&pe) {
+			if ae.Condition.Matches(pe) {
 				if ae.StartupError != nil {
-					return process.UnknownPID, time.Time{}, func() {}, ae.StartupError
+					return ae.StartupError
 				} else {
 					eeChan := make(chan struct{})
 					e.Executions[len(e.Executions)-1].ExecutionEnded = eeChan
 
 					go func() {
-						exitCode := ae.RunCommand(&pe)
+						exitCode := ae.RunCommand(pe)
 						close(eeChan)
-						stopProcessErr := e.stopProcessImpl(pid, startTimestamp, exitCode)
+						stopProcessErr := e.stopProcessImpl(pe.PID, pe.StartedAt, exitCode)
 						if stopProcessErr != nil && ae.StopError == nil {
-							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pid, stopProcessErr))
+							panic(fmt.Errorf("we should have an execution with PID=%d: %w", pe.PID, stopProcessErr))
 						}
 					}()
 					break
@@ -242,7 +285,7 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		}
 	}
 
-	return pid, startTimestamp, startWaitingForExit, nil
+	return nil
 }
 
 // Called by the controller (via Executor interface)

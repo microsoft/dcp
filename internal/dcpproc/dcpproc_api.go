@@ -1,7 +1,6 @@
 package dcpproc
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +22,6 @@ const (
 
 // Starts the process monitor for the given child process.
 func RunWatcher(
-	ctx context.Context,
 	pe process.Executor,
 	childPid process.Pid_t,
 	childStartTime time.Time,
@@ -64,7 +62,7 @@ func RunWatcher(
 		}
 
 		monitorCmd := exec.Command(procMonitorPath, monitorCmdArgs...)
-		_, _, _, monitorErr := pe.StartProcess(ctx, monitorCmd, nil)
+		_, _, monitorErr := pe.StartAndForget(monitorCmd)
 		if monitorErr != nil {
 			log.Error(monitorErr, "failed to start process monitor", "executable", procMonitorPath, "PID", childPid)
 		}
