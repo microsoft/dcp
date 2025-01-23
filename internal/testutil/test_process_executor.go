@@ -209,6 +209,9 @@ func (e *TestProcessExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, h
 		e.m.Lock()
 		defer e.m.Unlock()
 		i := e.findByPid(pid)
+		if i == NotFound {
+			return // This can happen if a test calls ClearHistory() before calling this function.
+		}
 		updatedPE := e.Executions[i]
 		if !updatedPE.StartWaitingCalled {
 			updatedPE.StartWaitingCalled = true
