@@ -57,48 +57,55 @@ func (c *containerLogStreamer) StreamLogs(
 	opts *apiv1.LogOptions,
 	streamLog logr.Logger,
 ) (apiv1.ResourceStreamStatus, <-chan struct{}, error) {
-	status := apiv1.ResourceStreamStatusNotReady
 	ctr, isContainer := obj.(*apiv1.Container)
 	if !isContainer {
-		return status, nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
+		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
 	}
 
 	deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
 	if deletionRequested {
-		return status, nil, apierrors.NewBadRequest("Container is being deleted")
+		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewBadRequest("Container is being deleted")
 	}
 
 	switch ctr.Status.State {
 	case apiv1.ContainerStateUnknown:
-		return status, nil, apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
+		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
 
-	case "", apiv1.ContainerStatePending:
+	case "", apiv1.ContainerStatePending, apiv1.ContainerStateRuntimeUnhealthy:
 		// We're not ready to start streaming logs for this container yet
 		streamLog.V(1).Info("container hasn't started running yet, not ready to stream logs")
-		return status, nil, nil
+		return apiv1.ResourceStreamStatusNotReady, nil, nil
 	}
 
-	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) && ctr.Status.StartupStdOutFile == "" {
-		// No startup stdout file, so nothing to stream
-		return apiv1.ResourceStreamStatusDone, nil, nil
+	startupLogsRequestedButNotAvailable :=
+		(opts.Source == string(apiv1.LogStreamSourceStartupStdout) && ctr.Status.StartupStdOutFile == "") ||
+			(opts.Source == string(apiv1.LogStreamSourceStartupStderr) && ctr.Status.StartupStdErrFile == "")
+	if startupLogsRequestedButNotAvailable {
+		if ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding {
+			streamLog.V(1).Info("startup logs are not yet available for building/starting container")
+			return apiv1.ResourceStreamStatusNotReady, nil, nil
+		} else {
+			streamLog.V(1).Info(fmt.Sprintf("we are not capturing %s logs for this container", string(opts.Source)), "ContainerState", ctr.Status.State)
+			return apiv1.ResourceStreamStatusDone, nil, nil
+		}
 	}
 
 	if opts.Source == string(apiv1.LogStreamSourceStartupStderr) && ctr.Status.StartupStdErrFile == "" {
-		// No startup stderr file, so nothing to stream
+		streamLog.V(1).Info(fmt.Sprintf("we are not capturing %s logs for this container", string(apiv1.LogStreamSourceStartupStderr)),
+			"ContainerState", ctr.Status.State,
+		)
 		return apiv1.ResourceStreamStatusDone, nil, nil
 	}
 
-	hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
-
 	cls, err := c.ensureDependencies(ctx)
 	if err != nil {
-		return status, nil, err
+		return apiv1.ResourceStreamStatusNotReady, nil, err
 	}
 
 	follow := opts.Follow
-
 	var logFilePath string
 	cleanup := func() {}
+
 	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) {
 		// Startup stdout log streaming
 		logFilePath = ctr.Status.StartupStdOutFile
@@ -111,20 +118,21 @@ func (c *containerLogStreamer) StreamLogs(
 		if ctr.Status.ContainerID == "" {
 			streamLog.V(1).Info("container has no container ID yet, not ready to stream logs")
 			// We're not ready to start streaming logs for this container yet
-			return status, nil, nil
+			return apiv1.ResourceStreamStatusNotReady, nil, nil
 		}
 
 		if ctr.Status.State == apiv1.ContainerStateStarting {
 			streamLog.V(1).Info("container is still starting, not ready to stream logs")
-			return status, nil, nil
+			return apiv1.ResourceStreamStatusNotReady, nil, nil
 		}
 
 		// Standard stdout/stderr log streaming
+		hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
 		logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
 		ld, stdOutWriter, stdErrWriter, newlyCreated, acquireErr := c.containerLogs.AcquireForResource(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
 		if acquireErr != nil {
-			streamLog.Error(err, "Failed to enable log capturing for Container")
-			return status, nil, apierrors.NewInternalError(acquireErr)
+			streamLog.Error(acquireErr, "Failed to enable log capturing for Container")
+			return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewInternalError(acquireErr)
 		}
 		// Ensure we cleanup resources after streaming
 		cleanup = ld.LogConsumerStopped
@@ -141,7 +149,7 @@ func (c *containerLogStreamer) StreamLogs(
 				if disposeErr != nil {
 					streamLog.V(1).Info("Failed to dispose log descriptor after failed log capture", "Error", disposeErr.Error())
 				}
-				return status, nil, apierrors.NewInternalError(logCaptureErr)
+				return apiv1.ResourceStreamStatusDone, nil, apierrors.NewInternalError(logCaptureErr)
 			}
 		}
 
@@ -149,7 +157,7 @@ func (c *containerLogStreamer) StreamLogs(
 		if startErr != nil {
 			// This can happen if the log descriptor is being disposed because the Container is being deleted
 			// We just report not found in this case
-			return status, nil, apierrors.NewNotFound(ctr.GetGroupVersionResource().GroupResource(), ctr.NamespacedName().Name)
+			return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewNotFound(ctr.GetGroupVersionResource().GroupResource(), ctr.NamespacedName().Name)
 		}
 
 		if opts.Source == string(apiv1.LogStreamSourceStdout) || opts.Source == "" {
@@ -161,13 +169,13 @@ func (c *containerLogStreamer) StreamLogs(
 
 	if logFilePath == "" {
 		streamLog.V(1).Info("container logs didn't start streaming")
-		return status, nil, nil
+		return apiv1.ResourceStreamStatusNotReady, nil, nil
 	}
 
 	src, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
 	if fileErr != nil {
 		cleanup()
-		return status, nil, fmt.Errorf("failed to open log file '%s': %w", logFilePath, fileErr)
+		return apiv1.ResourceStreamStatusNotReady, nil, fmt.Errorf("failed to open log file '%s': %w", logFilePath, fileErr)
 	}
 
 	if !follow {
@@ -175,46 +183,50 @@ func (c *containerLogStreamer) StreamLogs(
 		defer cleanup()
 		defer src.Close()
 
+		streamLog.V(1).Info("starting streaming logs to destination (non-follow mode)...")
+
 		_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
 		if copyErr != nil {
 			streamLog.Error(copyErr, "failed to copy log file to destination")
 		}
 
+		streamLog.V(1).Info("finished streaming logs to destination (non-follow mode)")
+
 		return apiv1.ResourceStreamStatusDone, nil, nil
-	}
+	} else {
+		// If we're following, use a follow writer to keep streaming until stopped
+		c.lock.Lock()
+		defer c.lock.Unlock()
 
-	// If we're following, use a follow writer to keep streaming until stopped
-	c.lock.Lock()
-	defer c.lock.Unlock()
+		followWriter := usvc_io.NewFollowWriter(ctx, usvc_io.NewTimestampAwareReader(src, opts.Timestamps), dest)
 
-	followWriter := usvc_io.NewFollowWriter(ctx, usvc_io.NewTimestampAwareReader(src, opts.Timestamps), dest)
-
-	switch opts.Source {
-	case string(apiv1.LogStreamSourceStartupStdout), string(apiv1.LogStreamSourceStartupStderr):
-		followWriters, _ := c.startupLogStreams.LoadOrStore(ctr.UID, []*usvc_io.FollowWriter{})
-		followWriters = append(followWriters, followWriter)
-		c.startupLogStreams.Store(ctr.UID, followWriters)
-	default:
-		followWriters, _ := c.stdioLogStreams.LoadOrStore(ctr.UID, []*usvc_io.FollowWriter{})
-		followWriters = append(followWriters, followWriter)
-		c.stdioLogStreams.Store(ctr.UID, followWriters)
-	}
-
-	// If we're following, we need to report that to the caller so they can wait for the goroutine to complete
-	go func() {
-		defer cleanup()
-		defer src.Close()
-
-		<-followWriter.Done()
-
-		streamLog.V(1).Info("log streamer completed", "Container", ctr.Status.ContainerID, "Source", opts.Source)
-
-		if followWriter.Err() != nil {
-			streamLog.Error(followWriter.Err(), "failed to stream logs for Container")
+		switch opts.Source {
+		case string(apiv1.LogStreamSourceStartupStdout), string(apiv1.LogStreamSourceStartupStderr):
+			followWriters, _ := c.startupLogStreams.LoadOrStore(ctr.UID, []*usvc_io.FollowWriter{})
+			followWriters = append(followWriters, followWriter)
+			c.startupLogStreams.Store(ctr.UID, followWriters)
+		default:
+			followWriters, _ := c.stdioLogStreams.LoadOrStore(ctr.UID, []*usvc_io.FollowWriter{})
+			followWriters = append(followWriters, followWriter)
+			c.stdioLogStreams.Store(ctr.UID, followWriters)
 		}
-	}()
 
-	return apiv1.ResourceStreamStatusStreaming, followWriter.Done(), nil
+		// If we're following, we need to report that to the caller so they can wait for the goroutine to complete
+		go func() {
+			defer cleanup()
+			defer src.Close()
+
+			streamLog.V(1).Info("starting streaming logs to destination (follow mode)...")
+			<-followWriter.Done()
+			streamLog.V(1).Info("finished streaming logs to destination (follow mode)")
+
+			if followWriter.Err() != nil {
+				streamLog.Error(followWriter.Err(), "failed to stream logs for Container")
+			}
+		}()
+
+		return apiv1.ResourceStreamStatusStreaming, followWriter.Done(), nil
+	}
 }
 
 // OnResourceUpdated implements v1.ResourceLogStreamer.

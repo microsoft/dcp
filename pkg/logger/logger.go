@@ -43,7 +43,7 @@ type Logger struct {
 
 // New logger implementation to handle logging to stdout/debug log
 func New(name string) Logger {
-	// Format console output to be human readible
+	// Format console output to be human readable
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	// Honor Windows line endings for logs if appropriate
@@ -64,9 +64,12 @@ func New(name string) Logger {
 			Timeout: 2 * time.Second,
 		}
 
-		if conn, err := dialer.DialContext(context.Background(), "unix", dcpLogSocket); err == nil {
+		conn, err := dialer.DialContext(context.Background(), "unix", dcpLogSocket)
+		if err == nil {
 			// If we're able to connect to the socket, use that for console formatted log output
 			consoleLog = zapcore.AddSync(conn)
+		} else {
+			fmt.Fprintf(os.Stderr, "the logs should have been written to a Unix domain socket '%s' but an error occcurred when trying to connect: %s\n", dcpLogSocket, err.Error())
 		}
 	}
 
