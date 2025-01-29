@@ -314,7 +314,7 @@ test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all pr
 
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
-test: TEST_OPTS = -coverprofile cover.out -count 1
+test: TEST_OPTS = -coverprofile cover.out -count 1 -parallel 32
 test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else

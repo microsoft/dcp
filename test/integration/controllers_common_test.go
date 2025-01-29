@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"regexp"
@@ -187,6 +188,10 @@ func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.
 		mgr.GetClient(),
 		ctrl.Log.WithName("ContainerReconciler"),
 		serverInfo.ContainerOrchestrator,
+		controllers.ContainerReconcilerConfig{
+			MaxParallelContainerStarts:      math.MaxUint8,
+			ContainerStartupTimeoutOverride: 2 * time.Second,
+		},
 	)
 	if err = containerR.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)

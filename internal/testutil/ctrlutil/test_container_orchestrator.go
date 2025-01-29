@@ -581,16 +581,14 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 			if network.matches(name) {
 				found = true
 
-				var runningContainers []containers.InspectedNetworkContainer
+				var connectedContainers []containers.InspectedNetworkContainer
 
 				for _, id := range network.containers {
-					if container, containerFound := to.containers[id]; containerFound {
-						if container.status == containers.ContainerStatusRunning {
-							runningContainers = append(runningContainers, containers.InspectedNetworkContainer{
-								Id:   id,
-								Name: to.containers[id].name,
-							})
-						}
+					if _, containerFound := to.containers[id]; containerFound {
+						connectedContainers = append(connectedContainers, containers.InspectedNetworkContainer{
+							Id:   id,
+							Name: to.containers[id].name,
+						})
 					}
 				}
 
@@ -601,7 +599,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 					IPv6:       network.ipv6,
 					Gateways:   network.gateways,
 					Subnets:    network.subnets,
-					Containers: runningContainers,
+					Containers: connectedContainers,
 					Labels:     map[string]string{},
 					CreatedAt:  network.created,
 				})
@@ -961,27 +959,14 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 		return "", streamIfPossible(ctx.Err())
 	}
 
-	for name, exit := range to.containersToFail {
-		if container.matches(name) || strings.HasPrefix(container.image, name) {
-			container.status = containers.ContainerStatusExited
-			container.startedAt = time.Now().UTC()
-			container.finishedAt = time.Now().UTC()
-			container.exitCode = exit.exitCode
-			container.stdoutLog.Close()
-			container.stderrLog.Close()
-
-			to.containerEventsWatcher.Notify(containers.EventMessage{
-				Source: containers.EventSourceContainer,
-				Action: containers.EventActionDie,
-				Actor:  containers.EventActor{ID: container.id},
-			})
-
-			return container.id, streamIfPossible(fmt.Errorf("container failed to start: %s", exit.stdErr))
-		}
+	if container.status != containers.ContainerStatusCreated && container.status != containers.ContainerStatusExited && container.status != containers.ContainerStatusPaused {
+		return "", streamIfPossible(fmt.Errorf("container is not in a state to be started"))
 	}
 
-	if container.status != containers.ContainerStatusCreated && container.status != containers.ContainerStatusExited {
-		return "", streamIfPossible(fmt.Errorf("container is not in a state to be started"))
+	for name, exit := range to.containersToFail {
+		if container.matches(name) || strings.HasPrefix(container.image, name) {
+			return container.id, streamIfPossible(fmt.Errorf("container failed to start: %s", exit.stdErr))
+		}
 	}
 
 	for name, containerStartupLogs := range to.startupLogs {
@@ -1212,7 +1197,7 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 		return "", ctx.Err()
 	}
 
-	if container.status != containers.ContainerStatusExited {
+	if container.status != containers.ContainerStatusExited && container.status != containers.ContainerStatusCreated && container.status != containers.ContainerStatusDead {
 		return "", fmt.Errorf("container is not in a state to be removed")
 	}
 

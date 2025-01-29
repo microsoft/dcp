@@ -157,7 +157,7 @@ func TestContainerStartupFailure(t *testing.T) {
 	}
 
 	// Cause the orchestrator to fail to create the container
-	errMsg := fmt.Sprintf("Container '%s' could not be run because it is just a test :-)", testName)
+	errMsg := fmt.Sprintf("Simulating Container '%s' startup failure...", testName)
 	containerOrchestrator.FailMatchingContainers(ctx, testName, 1, errMsg)
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -1564,4 +1564,97 @@ func TestContainerHealthBasic(t *testing.T) {
 			})
 		})
 	}
+}
+
+// Ensure the Container attached to specific network is cleaned up properly (including ContainerNetworkConnection)
+// even if the container fails to start.
+// This is an important .NET Aspire use case (which creates a separate network for every run).
+func TestContainerNetworkConnectedFailedStartup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-netconn-startfailed"
+	const imageName = testName + "-image"
+	const networkName = testName + "-network"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkName,
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	errMsg := fmt.Sprintf("Simulation Container '%s' startup failure...", testName)
+	containerOrchestrator.FailMatchingContainers(ctx, testName, 2, errMsg)
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+				{
+					Name: networkName,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	// This will take a while--the controller will try to start the container multiple times before giving up.
+	t.Logf("Ensure Container '%s' state is 'failed to start'...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		statusUpdated := c.Status.State == apiv1.ContainerStateFailedToStart
+		messageOK := strings.Contains(c.Status.Message, errMsg)
+		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		return statusUpdated && messageOK && unhealthy, nil
+	})
+
+	// Retrieve the Container object to get the ContainerID.
+	var updatedCtr apiv1.Container
+	err = client.Get(ctx, ctrl_client.ObjectKeyFromObject(&ctr), &updatedCtr)
+	require.NoError(t, err, "could not get updated Container object for container '%s'", ctr.ObjectMeta.Name)
+	require.NotEmptyf(t, updatedCtr.Status.ContainerID, "expected ContainerID to be set for container '%s'", ctr.ObjectMeta.Name)
+
+	// Even though the Container fails to start, it should still be connected to the target network.
+	t.Logf("Ensure Container '%s' is connected to ContainerNetwork '%s'...", ctr.ObjectMeta.Name, net.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return slices.Any(currentCtr.Status.Networks, func(n string) bool {
+			return updatedNetwork.NamespacedName().String() == n
+		}), nil
+	})
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		return slices.Any(currentNet.Status.ContainerIDs, func(id string) bool {
+			return string(updatedCtr.Status.ContainerID) == id
+		}), nil
+	})
+
+	// Delete the Container and verify the network connection is removed.
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "Container '%s' could not be deleted", ctr.ObjectMeta.Name)
+
+	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
+	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+
+	t.Logf("Ensure Container '%s' is disconnected from ContainerNetwork '%s'...", ctr.ObjectMeta.Name, net.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		return slices.All(currentNet.Status.ContainerIDs, func(id string) bool {
+			return string(updatedCtr.Status.ContainerID) != id
+		}), nil
+	})
 }

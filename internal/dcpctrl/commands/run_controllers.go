@@ -158,6 +158,9 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			mgr.GetClient(),
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
+			controllers.ContainerReconcilerConfig{
+				MaxParallelContainerStarts: controllers.DefaultMaxParallelContainerStarts,
+			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr); err != nil {
 			log.Error(err, "unable to set up Container controller")
