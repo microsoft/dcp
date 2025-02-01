@@ -31,16 +31,12 @@ const (
 	waitForProcessExitTimeout = 15 * time.Second
 )
 
-type waitResult struct {
-	waitErr error // The error returned by the wait function, if any
-}
-
 type waitState struct {
-	waitable     Waitable        // The waitable that is being waited on
-	waitEndedCh  chan struct{}   // A channel that gets closed when the wait ends
-	waitResultCh chan waitResult // A channel that delivers the result of the wait
-	waitEnded    time.Time       // The time when the wait function ended
-	reason       waitReason      // The reason why are waiting on the process
+	waitable    Waitable      // The waitable that is being waited on
+	waitEndedCh chan struct{} // A channel that gets closed when the wait ends
+	waitErr     error         // The result of the process wait. Not valid until waitEndedCh is closed.
+	waitEnded   time.Time     // The time when the wait function ended. Zero if the wait is still in progress.
+	reason      waitReason    // The reason why are waiting on the process
 }
 
 type Waitable interface {
@@ -74,22 +70,22 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	waitResultCh, _, _ := e.tryStartWaiting(pid, cmd, waitReasonNone)
+	ws, _ := e.tryStartWaiting(pid, cmd, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
 
 		select {
 
-		case wr := <-waitResultCh:
+		case <-ws.waitEndedCh:
 			// The process exited before the context expired.
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(wr.waitErr, cmd)
+				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
 				handler.OnProcessExited(pid, exitCode, errors.Join(ctx.Err(), execError))
 			}
 
 		case <-ctx.Done():
-			_, _, shouldStopProcess := e.tryStartWaiting(pid, cmd, waitReasonStopping)
+			_, shouldStopProcess := e.tryStartWaiting(pid, cmd, waitReasonStopping)
 			var stopProcessErr error = nil
 
 			if shouldStopProcess {
@@ -106,17 +102,17 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 				}
 			}
 
-			wr := <-waitResultCh
+			<-ws.waitEndedCh
 
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(wr.waitErr, cmd)
+				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
 				handler.OnProcessExited(pid, exitCode, errors.Join(stopProcessErr, execError, ctx.Err()))
 			}
 		}
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _, _ = e.tryStartWaiting(pid, cmd, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(pid, cmd, waitReasonMonitoring)
 	}
 
 	return pid, processStartTime, startWaitingForProcessExit, nil
@@ -171,10 +167,10 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 // Atomically starts waiting on the passed waitable if noting is already waiting in association with the process
 // identified by PID. If the process is already being waited on, the reason is updated.
 //
-// Returns the channel that can be used to retrieve the wait result, the channel that signals the wait ended,
-// and a boolean indicating whether the caller is the first one to indicate that the reason for the wait
-// is "stopping the process", and thus IT is the caller that must stop the process.
-func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) (<-chan waitResult, chan struct{}, bool) {
+// Returns the waitState object associated with the process, and a boolean indicating whether the caller
+// is the first one to indicate that the reason for the wait is "stopping the process",
+// and thus IT is the caller that must stop the process.
+func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) (*waitState, bool) {
 	doWait := func(ws *waitState) {
 		e.log.V(1).Info("starting waiting for process to exit", "pid", pid)
 		err := ws.waitable.Wait()
@@ -184,13 +180,7 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 		defer e.releaseLock()
 
 		ws.waitEnded = time.Now()
-
-		// There might be up to two different goroutines reading from the wait result channel:
-		// the one that was started by StartProcess() and the one that was started by StopProcess().
-		// We need to ensure that both of them are able get the result.
-		ws.waitResultCh <- waitResult{waitErr: err}
-		ws.waitResultCh <- waitResult{waitErr: err}
-		close(ws.waitResultCh)
+		ws.waitErr = err
 		close(ws.waitEndedCh)
 	}
 
@@ -204,7 +194,7 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 		if !ws.waitEnded.IsZero() {
 			// The process has already exited, and we captured the wait result, there is no need to start waiting again,
 			// or update anything.
-			return ws.waitResultCh, ws.waitEndedCh, false
+			return ws, false
 		}
 
 		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
@@ -215,10 +205,9 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 	} else {
 		callerShouldStopProcess = (reason & waitReasonStopping) != 0
 		ws = &waitState{
-			waitable:     waitable,
-			waitResultCh: make(chan waitResult, 2),
-			waitEndedCh:  make(chan struct{}),
-			reason:       reason,
+			waitable:    waitable,
+			waitEndedCh: make(chan struct{}),
+			reason:      reason,
 		}
 		e.procsWaiting[pid] = ws
 		if reason != waitReasonNone {
@@ -226,7 +215,7 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 		}
 	}
 
-	return ws.waitResultCh, ws.waitEndedCh, callerShouldStopProcess
+	return ws, callerShouldStopProcess
 }
 
 // Returns the process execution error and process exit code depending on the result of command wait call.
