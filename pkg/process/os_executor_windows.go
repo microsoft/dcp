@@ -33,8 +33,8 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		return waitErr
 	}
 
-	_, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
-
+	ws, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
 		waitEndedCh = makeClosedChan()
 	}

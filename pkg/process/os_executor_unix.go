@@ -40,8 +40,9 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		return waitErr
 	}
 
-	waitResultCh, waitEndedCh, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	ws, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
 
+	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
 		waitEndedCh = makeClosedChan()
 	}
@@ -54,7 +55,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		// Give the process a chance to gracefully exit.
 		// There is no established standard for what signals are used for graceful shutdown,
 		// but SIGTERM and SIGQUIT are commonly used.
-		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, waitResultCh)
+		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, ws)
 		switch {
 		case err == nil:
 			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
@@ -67,7 +68,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 	}
 
 	e.log.V(1).Info("sending SIGKILL to process...", "pid", pid)
-	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, waitResultCh)
+	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, ws)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +79,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 
 // Sends a given signal to a process and waits for it to exit.
 // If the process does not exit within 10 seconds, the function returns context.DeadlineExceeded.
-func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, waitResultCh <-chan waitResult) error {
+func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, ws *waitState) error {
 	err := proc.Signal(sig)
 	switch {
 	case errors.Is(err, os.ErrProcessDone):
@@ -89,8 +90,8 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 
 	select {
 
-	case wr := <-waitResultCh:
-		err = wr.waitErr
+	case <-ws.waitEndedCh:
+		err = ws.waitErr
 		var ee *exec.ExitError
 		if err == nil || errors.Is(err, os.ErrProcessDone) || errors.As(err, &ee) {
 			// These are all expected errors, the process exited successfully.
