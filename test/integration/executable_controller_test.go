@@ -2510,7 +2510,7 @@ func TestExecutableDeleteParallel(t *testing.T) {
 
 	t.Logf("Ensure all Executables are deleted...")
 	for _, exe := range exes {
-		waitObjectDeleted[apiv1.Executable](t, ctx, ctrl_client.ObjectKeyFromObject(exe))
+		ctrl_testutil.WaitObjectDeleted(t, ctx, client, exe)
 	}
 }
 

@@ -103,7 +103,13 @@ func (e *Endpoint) NamespacedName() types.NamespacedName {
 }
 
 func (e *Endpoint) Validate(ctx context.Context) field.ErrorList {
-	return nil
+	errorList := field.ErrorList{}
+
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
+	return errorList
 }
 
 // EndpointList contains a list of Endpoint instances

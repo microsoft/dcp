@@ -6,6 +6,9 @@
 package v1
 
 import (
+	"errors"
+	"sync/atomic"
+
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 
@@ -68,4 +71,8 @@ var (
 
 	// A registry of resource log streaming implementations
 	ResourceLogStreamers = &syncmap.Map[schema.GroupVersionResource, ResourceLogStreamer]{}
+
+	// Whether new resource creation is prohibited (because the API server is shutting down)
+	ResourceCreationProhibited    = &atomic.Bool{}
+	errResourceCreationProhibited = errors.New("new resources cannot be created because the API server is shutting down")
 )

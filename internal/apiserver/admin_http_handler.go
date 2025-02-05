@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/go-logr/logr"
 	"k8s.io/kube-openapi/pkg/validation/strfmt"
 	"k8s.io/kube-openapi/pkg/validation/validate"
+
+	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 )
 
 const (
@@ -22,13 +25,13 @@ const (
 
 type adminHttpHandler struct {
 	executionData   *ApiServerExecutionData
-	requestShutdown func(ApiServerShutdownResourceCleanup)
+	requestShutdown func(ApiServerResourceCleanup)
 	mux             *http.ServeMux
 	log             logr.Logger
 	lock            *sync.Mutex
 }
 
-func NewAdminHttpHandler(requestShutdown func(ApiServerShutdownResourceCleanup), log logr.Logger) http.Handler {
+func NewAdminHttpHandler(requestShutdown func(ApiServerResourceCleanup), log logr.Logger) http.Handler {
 	if requestShutdown == nil {
 		panic("requestShutdown must be provided")
 	}
@@ -109,8 +112,8 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var executionDataPatch ApiServerExecutionData
-	unmarshalErr := json.Unmarshal(body, &executionDataPatch)
+	var patch ApiServerExecutionData
+	unmarshalErr := json.Unmarshal(body, &patch)
 	if unmarshalErr != nil {
 		http.Error(w, "could not unmarshal execution patch request", http.StatusBadRequest)
 		return
@@ -119,41 +122,70 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 	// In general a JSON merge patch document does not have to conform to the schema of the document it is patching.
 	// (see https://datatracker.ietf.org/doc/html/rfc7396). But it the case of ApiServerExecutionData this is true.
 	// If it ever becomes false, we will need a separate schema to validate the patch.
-	validateErr := validate.AgainstSchema(&apiServerExecutionDataSpec, executionDataPatch, strfmt.Default)
+	validateErr := validate.AgainstSchema(&apiServerExecutionDataSpec, patch, strfmt.Default)
 	if validateErr != nil {
 		http.Error(w, "execution patch request does not conform to schema", http.StatusUnprocessableEntity)
 		return
 	}
 
-	if executionDataPatch.Status != ApiServerStopping {
-		http.Error(w, "execution patch request can only set status to stopping", http.StatusUnprocessableEntity)
+	if patch.Status != ApiServerStopping && patch.Status != ApiServerCleaningResources {
+		http.Error(w, "execution patch request can only set status to Stopping or CleaningResources", http.StatusUnprocessableEntity)
 		return
 	}
 
-	initiatedShutdown := false
 	h.lock.Lock()
+	oldStatus := h.executionData.Status
 
-	changingResourceCleanupDuringShutdown := executionDataPatch.ShutdownResourceCleanup != "" &&
-		executionDataPatch.ShutdownResourceCleanup != h.executionData.ShutdownResourceCleanup &&
-		h.executionData.Status == ApiServerStopping
-	if changingResourceCleanupDuringShutdown {
+	validRequestStatuses, found := validRequestStatusTransitions[h.executionData.Status]
+	if !found {
 		h.lock.Unlock()
-		http.Error(w, "execution patch request cannot change resource cleanup type when shutdown is in progress", http.StatusUnprocessableEntity)
+		http.Error(w, "the server reached final state", http.StatusServiceUnavailable)
+		return
+	}
+	if !slices.Contains(validRequestStatuses, patch.Status) {
+		h.lock.Unlock()
+		http.Error(w, "execution patch request cannot change status to the requested value", http.StatusUnprocessableEntity)
 		return
 	}
 
-	if h.executionData.Status == ApiServerRunning {
-		h.executionData.Status = ApiServerStopping
-		if executionDataPatch.ShutdownResourceCleanup != "" {
-			h.executionData.ShutdownResourceCleanup = executionDataPatch.ShutdownResourceCleanup
-		}
-		h.requestShutdown(h.executionData.ShutdownResourceCleanup)
-		initiatedShutdown = true
+	changingCleanupInProgress := patch.ShutdownResourceCleanup != "" &&
+		patch.ShutdownResourceCleanup != h.executionData.ShutdownResourceCleanup &&
+		(h.executionData.Status == ApiServerStopping || h.executionData.Status == ApiServerCleaningResources)
+	if changingCleanupInProgress {
+		h.lock.Unlock()
+		http.Error(w, "execution patch request cannot change resource cleanup type when cleanup is in progress", http.StatusUnprocessableEntity)
+		return
 	}
+
+	changedStatus := h.executionData.Status != patch.Status
+	if changedStatus {
+		h.log.Info("API server changed status", "OldStatus", oldStatus, "NewStatus", h.executionData.Status)
+	}
+	h.executionData.Status = patch.Status
+	if patch.ShutdownResourceCleanup.IsFull() {
+		h.executionData.ShutdownResourceCleanup = ApiServerResourceCleanupFull
+	} else {
+		h.executionData.ShutdownResourceCleanup = ApiServerResourceCleanupNone
+	}
+
+	if changedStatus && h.executionData.Status == ApiServerCleaningResources && h.executionData.ShutdownResourceCleanup.IsFull() {
+		go func() {
+			_ = appmgmt.CleanupAllResources(h.log)
+			h.lock.Lock()
+			defer h.lock.Unlock()
+
+			// Update the status to CleanupComplete, but only if we haven't started the shutdown in the meantime.
+			if h.executionData.Status == ApiServerCleaningResources {
+				h.executionData.Status = ApiServerCleanupComplete
+			}
+		}()
+	} else if changedStatus && h.executionData.Status == ApiServerStopping {
+		h.requestShutdown(h.executionData.ShutdownResourceCleanup)
+	}
+
 	h.lock.Unlock()
 
-	if initiatedShutdown {
-		h.log.Info("API server shutdown initiated")
+	if changedStatus {
 		w.WriteHeader(http.StatusCreated)
 	} else {
 		w.WriteHeader(http.StatusOK)

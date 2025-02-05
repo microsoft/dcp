@@ -13,6 +13,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -98,7 +99,7 @@ func TestVolumeDeletion(t *testing.T) {
 	require.NoError(t, err, "ContainerVolume object could not be deleted")
 
 	t.Logf("Ensure that ContainerVolume '%s' object really disappeared from the API server...", vol.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.ContainerVolume](t, ctx, ctrl_client.ObjectKeyFromObject(&vol))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &vol)
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, inspectionErr := containerOrchestrator.InspectVolumes(ctx, []string{testName})

@@ -17,7 +17,7 @@ import (
 
 type DcpRunEventHandlers struct {
 	AfterApiSrvStart     func() error
-	BeforeApiSrvShutdown func(apiserver.ApiServerShutdownResourceCleanup) error
+	BeforeApiSrvShutdown func(apiserver.ApiServerResourceCleanup) error
 }
 
 // DcpRun() starts the API server and controllers and waits for the signal to terminate them.
@@ -59,7 +59,7 @@ func DcpRun(
 	var requestedResourceCleanup atomic.Value
 	requestedResourceCleanup.Store(apiserver.ApiServerResourceCleanupFull) // By default we do full cleanup on shutdown.
 
-	apiServerShutdown, apiServerErr := apiServer.Run(hostCtx, func(cleanup apiserver.ApiServerShutdownResourceCleanup) {
+	apiServerShutdown, apiServerErr := apiServer.Run(hostCtx, func(cleanup apiserver.ApiServerResourceCleanup) {
 		requestedResourceCleanup.Store(cleanup)
 		runCtxCancel()
 	})
@@ -123,7 +123,7 @@ func DcpRun(
 	}
 
 	if evtHandlers.BeforeApiSrvShutdown != nil {
-		resourceCleanup := requestedResourceCleanup.Load().(apiserver.ApiServerShutdownResourceCleanup)
+		resourceCleanup := requestedResourceCleanup.Load().(apiserver.ApiServerResourceCleanup)
 		log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.", "ResourceCleanup", resourceCleanup)
 
 		if err = evtHandlers.BeforeApiSrvShutdown(resourceCleanup); err != nil {

@@ -141,6 +141,10 @@ func (cn *ContainerNetwork) NamespacedName() types.NamespacedName {
 func (cn *ContainerNetwork) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
 	if cn.Spec.Persistent && cn.Spec.NetworkName == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "networkName"), "networkName must be set to a value when persistent is true"))
 	}

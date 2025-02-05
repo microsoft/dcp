@@ -121,7 +121,7 @@ func (s *ApiServer) Name() string {
 // shutdownRequested is a function that can be called to indicate that the API server was requested to shut down.
 // It should NOT be assumed that this is a cancellation function for the runCtx (cancellation of the runCtx will happen
 // shortly after, but ASYNCHRONOUSLY to the call to shutdownRequested).
-func (s *ApiServer) Run(runCtx context.Context, shutdownRequested func(ApiServerShutdownResourceCleanup)) (<-chan struct{}, error) {
+func (s *ApiServer) Run(runCtx context.Context, shutdownRequested func(ApiServerResourceCleanup)) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
 	log.Info("Starting API server...")
@@ -342,7 +342,7 @@ func addDcpHttpHandlers(config *tiltapiserver.Config, ctx context.Context, log l
 func runServerFromCompletedConfig(
 	config tiltapiserver.CompletedConfig,
 	ctx context.Context,
-	shutdownRequested func(ApiServerShutdownResourceCleanup),
+	shutdownRequested func(ApiServerResourceCleanup),
 	log logr.Logger,
 ) (<-chan struct{}, error) {
 	server, err := config.New()
