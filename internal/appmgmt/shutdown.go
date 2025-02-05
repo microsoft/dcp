@@ -25,26 +25,39 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
-type shutdownResourceState uint
+var (
+	cleanupJob = concurrency.NewOneTimeJob[error]()
+)
+
+type cleanupResourceState uint
 
 const (
-	initial shutdownResourceState = iota
+	initial cleanupResourceState = iota
 	processing
 	done
 )
 
-type shutdownResource struct {
+const (
+	// It is called DCP_SHUTDOWN_TIMEOUT_SECONDS but strictly speaking it is a timeout for the resource cleanup process.
+	DCP_SHUTDOWN_TIMEOUT_SECONDS = "DCP_SHUTDOWN_TIMEOUT_SECONDS"
+
+	defaultCleanupTimeoutSeconds = 120 // Two minutes
+)
+
+type cleanupResourceDescriptor struct {
 	apiv1.CleanupResource
-	State        shutdownResourceState
+	State        cleanupResourceState
 	CleanupError error
 	WaitingFor   []schema.GroupVersionResource
 }
 
-func isReadyForCleanup(sr *shutdownResource) bool {
+func isReadyForCleanup(sr *cleanupResourceDescriptor) bool {
 	return sr.State == initial && len(sr.WaitingFor) == 0
 }
 
@@ -53,14 +66,45 @@ type resourceCleanupResult struct {
 	Error error
 }
 
-func ShutdownApp(ctx context.Context, log logr.Logger) error {
+func CleanupAllResources(log logr.Logger) (cleanupResult error) {
 	if len(apiv1.CleanupResources) <= 0 {
 		log.Info("No resources to delete")
-		return nil
+		cleanupResult = nil
+		return
 	}
 
-	shutdownCtx, shutdownCtxCancel := context.WithCancel(ctx)
+	if cleanupJob.TryTake() {
+		defer func() {
+			panicErr := resiliency.MakePanicError(recover(), log)
+			if panicErr != nil {
+				cleanupJob.Complete(panicErr)
+				cleanupResult = panicErr
+			} else {
+				cleanupJob.Complete(cleanupResult)
+			}
+		}()
+
+		cleanupResult = doCleanup(log.WithName("cleanup").V(1))
+	} else {
+		cleanupResult = cleanupJob.WaitResult()
+	}
+
+	return // Make compiler happy
+}
+
+func doCleanup(log logr.Logger) error {
+
+	cleanupTimeout, cleanupTimeoutProvided := osutil.EnvVarIntVal(DCP_SHUTDOWN_TIMEOUT_SECONDS)
+	if !cleanupTimeoutProvided {
+		cleanupTimeout = defaultCleanupTimeoutSeconds
+	}
+	shutdownCtx, shutdownCtxCancel := context.WithTimeout(context.Background(), time.Duration(cleanupTimeout)*time.Second)
 	defer shutdownCtxCancel()
+
+	log.Info("Cleaning up resources...")
+
+	// Disable new object creation once cleanup is started.
+	apiv1.ResourceCreationProhibited.Store(true)
 
 	err := perftrace.CaptureShutdownProfileIfRequested(shutdownCtx, log)
 	if err != nil {
@@ -92,9 +136,9 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		return err
 	}
 
-	shutdownResources := make([]*shutdownResource, len(apiv1.CleanupResources))
+	shutdownResources := make([]*cleanupResourceDescriptor, len(apiv1.CleanupResources))
 	for i, cr := range apiv1.CleanupResources {
-		shutdownResources[i] = &shutdownResource{
+		shutdownResources[i] = &cleanupResourceDescriptor{
 			CleanupResource: *cr,
 			State:           initial,
 			WaitingFor:      stdslices.Clone(cr.CleanUpAfter),
@@ -129,7 +173,7 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 	}
 
 	for len(readyForCleanup) > 0 || inProgress > 0 {
-		if ctx.Err() != nil {
+		if shutdownCtx.Err() != nil {
 			break // We have run out of time
 		}
 
@@ -150,10 +194,10 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		inProgress -= 1
 	}
 
-	notCleanedUp := slices.Select(shutdownResources, func(sr *shutdownResource) bool {
+	notCleanedUp := slices.Select(shutdownResources, func(sr *cleanupResourceDescriptor) bool {
 		return sr.State != done || sr.CleanupError != nil
 	})
-	cleanupErrors := slices.Map[*shutdownResource, error](notCleanedUp, func(sr *shutdownResource) error {
+	cleanupErrors := slices.Map[*cleanupResourceDescriptor, error](notCleanedUp, func(sr *cleanupResourceDescriptor) error {
 		switch {
 		case sr.CleanupError != nil:
 			return fmt.Errorf("Resource '%s' could not be cleaned up: %w", sr.GVR.String(), sr.CleanupError)
@@ -167,7 +211,13 @@ func ShutdownApp(ctx context.Context, log logr.Logger) error {
 		}
 	})
 
-	return resiliency.Join(append([]error{ctx.Err()}, cleanupErrors...)...)
+	retval := resiliency.Join(append([]error{shutdownCtx.Err()}, cleanupErrors...)...)
+	if retval != nil {
+		log.Error(retval, "Could not clean up all application resources")
+	} else {
+		log.Info("All application resources cleaned up")
+	}
+	return retval
 }
 
 func cleanupResource(

@@ -507,6 +507,10 @@ func (e *Container) NamespacedName() types.NamespacedName {
 func (e *Container) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
 	if e.Spec.Build == nil && e.Spec.Image == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
 	}

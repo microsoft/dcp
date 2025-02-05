@@ -78,7 +78,13 @@ func (cv *ContainerVolume) NamespacedName() types.NamespacedName {
 }
 
 func (cv *ContainerVolume) Validate(ctx context.Context) field.ErrorList {
-	return nil
+	errorList := field.ErrorList{}
+
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
+	return errorList
 }
 
 // ContainerVolumeList contains a list of ContainerVolume instances

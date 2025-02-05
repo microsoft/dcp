@@ -171,7 +171,7 @@ func TestRemovePersistentNetworkInstance(t *testing.T) {
 	})
 	require.NoError(t, err, "could not delete a ContainerNetwork object")
 
-	waitObjectDeleted[apiv1.ContainerNetwork](t, ctx, ctrl_client.ObjectKeyFromObject(&net))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
 
 	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
 		Networks: []string{updatedNet.Status.ID},

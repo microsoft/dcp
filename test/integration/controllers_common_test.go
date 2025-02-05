@@ -297,30 +297,6 @@ func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectSt
 	}
 }
 
-func waitObjectDeleted[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName) {
-	objectNotFound := func(ctx context.Context) (bool, error) {
-		if ctx.Err() != nil {
-			return false, ctx.Err()
-		}
-
-		var obj T = *new(T)
-		err := client.Get(ctx, name, PT(&obj))
-		if err != nil {
-			if apierrors.IsNotFound(err) {
-				return true, nil
-			} else {
-				return false, err
-			}
-		}
-		return false, nil
-	}
-
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, objectNotFound)
-	if err != nil {
-		t.Fatalf("Object '%s' was not deleted as expected: %v", name.Name, err)
-	}
-}
-
 func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) *apiv1.Service {
 	updatedSvc := waitObjectAssumesState(t, ctx, svc.NamespacedName(), func(svc *apiv1.Service) (bool, error) {
 		return svc.Status.State == apiv1.ServiceStateReady, nil

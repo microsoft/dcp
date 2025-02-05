@@ -16,7 +16,7 @@ var apiServerExecutionDataSpec = spec.Schema{
 				SchemaProps: spec.SchemaProps{
 					Description: "The current status of the API server.",
 					Type:        []string{"string"},
-					Enum:        []interface{}{"Running", "Stopping", "Stopped"},
+					Enum:        []interface{}{"Running", "Stopping", "CleaningResources", "CleanupComplete"},
 				},
 			},
 			"shutdownResourceCleanup": {
@@ -32,22 +32,41 @@ var apiServerExecutionDataSpec = spec.Schema{
 	},
 }
 
+// What status transitions are allowed in terms of what a PATCH request can do to the status field.
+// The "key" is the current API server state.
+// The "value" is a list of allowed states that the API server can transition to.
+var validRequestStatusTransitions = map[ApiServerExecutionStatus][]ApiServerExecutionStatus{
+	ApiServerRunning:           {ApiServerStopping, ApiServerCleaningResources},
+	ApiServerCleaningResources: {ApiServerStopping, ApiServerCleaningResources},
+	ApiServerStopping:          {ApiServerStopping},
+	ApiServerCleanupComplete:   {ApiServerStopping},
+}
+
 type ApiServerExecutionStatus string
 
 const (
-	ApiServerRunning  ApiServerExecutionStatus = "Running"
-	ApiServerStopping ApiServerExecutionStatus = "Stopping"
-	ApiServerStopped  ApiServerExecutionStatus = "Stopped"
+	ApiServerRunning           ApiServerExecutionStatus = "Running"
+	ApiServerCleaningResources ApiServerExecutionStatus = "CleaningResources"
+	ApiServerStopping          ApiServerExecutionStatus = "Stopping"
+	ApiServerCleanupComplete   ApiServerExecutionStatus = "CleanupComplete"
 )
 
-type ApiServerShutdownResourceCleanup string
+type ApiServerResourceCleanup string
 
 const (
-	ApiServerResourceCleanupNone ApiServerShutdownResourceCleanup = "None"
-	ApiServerResourceCleanupFull ApiServerShutdownResourceCleanup = "Full"
+	// Do not perform any cleanup.
+	ApiServerResourceCleanupNone ApiServerResourceCleanup = "None"
+
+	// Perform full resource cleanup (default).
+	ApiServerResourceCleanupFull ApiServerResourceCleanup = "Full"
 )
 
+func (rc ApiServerResourceCleanup) IsFull() bool {
+	// Default is full cleanup, so treat it as such if the value is not set.
+	return rc == ApiServerResourceCleanupFull || rc == ""
+}
+
 type ApiServerExecutionData struct {
-	Status                  ApiServerExecutionStatus         `json:"status"`
-	ShutdownResourceCleanup ApiServerShutdownResourceCleanup `json:"shutdownResourceCleanup,omitempty"`
+	Status                  ApiServerExecutionStatus `json:"status"`
+	ShutdownResourceCleanup ApiServerResourceCleanup `json:"shutdownResourceCleanup,omitempty"`
 }

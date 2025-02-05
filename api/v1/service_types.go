@@ -160,7 +160,13 @@ func (svc *Service) NamespacedName() types.NamespacedName {
 }
 
 func (svc *Service) Validate(ctx context.Context) field.ErrorList {
-	return nil
+	errorList := field.ErrorList{}
+
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
+	return errorList
 }
 
 // ServiceList contains a list of Service instances

@@ -387,7 +387,7 @@ func TestContainerStop(t *testing.T) {
 	require.NoError(t, err, "Container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.Error(t, err, "expected the container to be gone")
@@ -431,7 +431,7 @@ func TestContainerDeletion(t *testing.T) {
 	require.NoError(t, err, "Container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	t.Logf("Ensure that the Container '%s' is stopped and removed gracefully...", ctr.ObjectMeta.Name)
 	stopCount := 0
@@ -754,7 +754,7 @@ func TestPersistentContainerDeletion(t *testing.T) {
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
@@ -806,7 +806,7 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
@@ -870,7 +870,7 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
@@ -934,7 +934,7 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
@@ -1023,7 +1023,7 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	require.NoError(t, err, "container object could not be deleted")
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.NoError(t, err, "expected to find a container")
@@ -1649,7 +1649,7 @@ func TestContainerNetworkConnectedFailedStartup(t *testing.T) {
 	require.NoError(t, err, "Container '%s' could not be deleted", ctr.ObjectMeta.Name)
 
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&ctr))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
 	t.Logf("Ensure Container '%s' is disconnected from ContainerNetwork '%s'...", ctr.ObjectMeta.Name, net.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {

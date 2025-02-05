@@ -2,9 +2,12 @@ package apiserver_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +16,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
@@ -45,7 +51,7 @@ func TestReturnsExecutionData(t *testing.T) {
 	req := httptest.NewRequestWithContext(ctx, "GET", apiserver.AdminPathPrefix+apiserver.ExecutionDocument, nil)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerShutdownResourceCleanup) {}, testutil.NewLogForTesting("TestReturnsExecutionData"))
+	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerResourceCleanup) {}, testutil.NewLogForTesting(t.Name()))
 	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
@@ -62,7 +68,7 @@ func TestInvalidExecutionChanges(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerShutdownResourceCleanup) {}, testutil.NewLogForTesting("TestInvalidExecutionChanges"))
+	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerResourceCleanup) {}, testutil.NewLogForTesting(t.Name()))
 	var req *http.Request
 	var w *httptest.ResponseRecorder
 	var resp *http.Response
@@ -107,7 +113,7 @@ func TestInvalidExecutionChanges(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	// Request body is trying to set the status to invalid value (Running, Stopped, or some other invalid value)
-	for _, statusVal := range []string{"Running", "Stopped", "Invalid"} {
+	for _, statusVal := range []string{"Running", "Stopped", "CleanupComplete", "Invalid"} {
 		req = httptest.NewRequestWithContext(ctx, "PATCH", apiserver.AdminPathPrefix+apiserver.ExecutionDocument, nil)
 		req.Header.Set("Content-Type", "application/merge-patch+json")
 		req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"` + statusVal + `"}`))
@@ -138,7 +144,7 @@ func TestValidExecutionChanges(t *testing.T) {
 	defer cancel()
 
 	requestShutdownCalled := false
-	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerShutdownResourceCleanup) { requestShutdownCalled = true }, testutil.NewLogForTesting("TestInvalidExecutionChanges"))
+	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerResourceCleanup) { requestShutdownCalled = true }, testutil.NewLogForTesting(t.Name()))
 	var req *http.Request
 	var w *httptest.ResponseRecorder
 	var resp *http.Response
@@ -172,7 +178,7 @@ func TestCanSetResourceCleanupMode(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	requestedVsExpected := map[string]apiserver.ApiServerShutdownResourceCleanup{
+	requestedVsExpected := map[string]apiserver.ApiServerResourceCleanup{
 		"None": apiserver.ApiServerResourceCleanupNone,
 		"Full": apiserver.ApiServerResourceCleanupFull,
 		"":     apiserver.ApiServerResourceCleanupFull,
@@ -181,10 +187,10 @@ func TestCanSetResourceCleanupMode(t *testing.T) {
 	for requested, expected := range requestedVsExpected {
 		requestShutdownCalled := false
 		cleanupPerformed := apiserver.ApiServerResourceCleanupNone
-		handler := apiserver.NewAdminHttpHandler(func(cleanup apiserver.ApiServerShutdownResourceCleanup) {
+		handler := apiserver.NewAdminHttpHandler(func(cleanup apiserver.ApiServerResourceCleanup) {
 			requestShutdownCalled = true
 			cleanupPerformed = cleanup
-		}, testutil.NewLogForTesting("TestCanSetResourceCleanupMode"))
+		}, testutil.NewLogForTesting(t.Name()+requested))
 
 		req := httptest.NewRequestWithContext(ctx, "PATCH", apiserver.AdminPathPrefix+apiserver.ExecutionDocument, nil)
 		req.Header.Set("Content-Type", "application/merge-patch+json")
@@ -196,7 +202,7 @@ func TestCanSetResourceCleanupMode(t *testing.T) {
 		resp := w.Result()
 		require.Equal(t, http.StatusCreated, resp.StatusCode, "Expected status code 201 Created for resource cleanup mode '%s', but got %d", requested, resp.StatusCode)
 		require.True(t, requestShutdownCalled, "Expected requestShutdown to be called for resource cleanup mode '%s', but it was not", requested)
-		require.Equal(t, expected, cleanupPerformed, "Expected resource cleanup cleanup mode '%s' to be used, but got '%s'", expected, cleanupPerformed)
+		require.Equal(t, expected, cleanupPerformed, "Expected resource cleanup cleanup mode '%s' to be used for requested cleanup mode '%s', but got '%s'", expected, requested, cleanupPerformed)
 	}
 }
 
@@ -206,7 +212,7 @@ func TestCannotChangeExecutionWhenNotAuthenticated(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting("TestCannotChangeExecutionWhenNotAuthenticated"))
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		serverInfo.Dispose()
@@ -245,7 +251,7 @@ func TestCanStopApiServer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting("TestCanStopApiServer"))
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server
@@ -266,7 +272,7 @@ func TestCanStopApiServer(t *testing.T) {
 
 	client := getApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
-	require.NoError(t, respErr, "Failed to submit request for API server execution data")
+	require.NoError(t, respErr, "Failed to submit request to stop the API server")
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	select {
@@ -275,6 +281,131 @@ func TestCanStopApiServer(t *testing.T) {
 	case <-ctx.Done():
 		t.Errorf("API server did not exit within the expected time")
 	}
+}
+
+func TestCanRunCleanupWithoutStoppingApiServer(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
+	defer cancel()
+
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
+	require.NoError(t, startupErr, "Failed to start the API server")
+	defer func() {
+		// Still want to call this because disposal is not limited to stopping the API server
+		serverInfo.Dispose()
+
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-ctx.Done():
+		}
+	}()
+
+	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
+	req, reqCreationErr := http.NewRequestWithContext(ctx, "PATCH", adminDocUrl, nil)
+	require.NoError(t, reqCreationErr)
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
+	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
+
+	client := getApiServerClient(t, serverInfo)
+	resp, respErr := client.Do(req)
+	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	t.Logf("Waiting for API server to complete cleanup...")
+	waitErr := waitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
+	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
+
+	// Now try to stop the API server
+	t.Logf("Stopping the API server...")
+	req, reqCreationErr = http.NewRequestWithContext(ctx, "PATCH", adminDocUrl, nil)
+	require.NoError(t, reqCreationErr)
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"Stopping"}`))
+	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
+
+	resp, respErr = client.Do(req)
+	require.NoError(t, respErr, "Failed to submit request to stop the API server")
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	select {
+	case <-serverInfo.ApiServerExited.Wait():
+		t.Logf("API server exited as expected")
+	case <-ctx.Done():
+		t.Errorf("API server did not exit within the expected time")
+	}
+}
+
+func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
+	// 1. Start the API server
+	// 2. Create a new Executable object (make a note that we do not expect the Executable to actually run because we have no controllers)
+	// 4. Start the cleanup process and wait till it ends
+	// 5. Verify the Executable object was deleted
+	// 6. Try to create a new Executable object and verify the creation fails
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
+	defer cancel()
+
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
+	require.NoError(t, startupErr, "Failed to start the API server")
+	defer func() {
+		// Still want to call this because disposal is not limited to stopping the API server
+		serverInfo.Dispose()
+
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-ctx.Done():
+		}
+	}()
+
+	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-cannot-create-new-objects-after-cleanup-started-successful",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/executable-cannot-create-new-objects-after-cleanup-started-successful",
+		},
+	}
+	t.Logf("Creating Executable object '%s'...", exe.Name)
+	createErr := serverInfo.Client.Create(ctx, &exe)
+	require.NoError(t, createErr, "Failed to create Executable object")
+
+	t.Logf("Starting cleanup process...")
+	req, reqCreationErr := http.NewRequestWithContext(ctx, "PATCH", adminDocUrl, nil)
+	require.NoError(t, reqCreationErr)
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
+	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
+
+	client := getApiServerClient(t, serverInfo)
+	resp, respErr := client.Do(req)
+	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	t.Logf("Waiting for API server to complete cleanup...")
+	waitErr := waitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
+	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
+
+	t.Logf("Verifying Executable object was deleted...")
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &exe)
+
+	exe = apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-executable-cannot-create-new-objects-after-cleanup-started-expected-failure",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "path/to/executable-cannot-create-new-objects-after-cleanup-started-expected-failure",
+		},
+	}
+	t.Logf("Creating Executable object '%s'...", exe.Name)
+	createErr = serverInfo.Client.Create(ctx, &exe)
+	require.Error(t, createErr, "Executable creation should fail")
 }
 
 func getApiServerClient(t *testing.T, serverInfo *ctrl_testutil.ApiServerInfo) *http.Client {
@@ -296,4 +427,50 @@ func getApiServerClient(t *testing.T, serverInfo *ctrl_testutil.ApiServerInfo) *
 	}
 
 	return &client
+}
+
+func waitApiServerStatus(
+	ctx context.Context,
+	client *http.Client,
+	serverInfo *ctrl_testutil.ApiServerInfo,
+	expectedStatus apiserver.ApiServerExecutionStatus,
+) error {
+	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
+
+	waitErr := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true /* pollImmediately */, func(_ context.Context) (bool, error) {
+		req, reqCreationErr := http.NewRequestWithContext(ctx, "GET", adminDocUrl, nil)
+		if reqCreationErr != nil {
+			return false, reqCreationErr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
+
+		resp, respErr := client.Do(req)
+		if respErr != nil {
+			return false, respErr
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("Expected status code 200 OK, but got %d", resp.StatusCode)
+		}
+
+		body, bodyErr := io.ReadAll(resp.Body)
+		if bodyErr != nil {
+			return false, bodyErr
+		}
+
+		var execData apiserver.ApiServerExecutionData
+		unmarshalErr := json.Unmarshal(body, &execData)
+		if unmarshalErr != nil {
+			return false, unmarshalErr
+		}
+
+		if execData.Status == expectedStatus {
+			return true, nil
+		} else {
+			return false, nil
+		}
+	})
+
+	return waitErr
 }

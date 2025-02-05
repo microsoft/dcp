@@ -80,11 +80,14 @@ type ExecutableReplicaSet struct {
 
 // Validate implements resourcestrategy.Validater.
 func (ers *ExecutableReplicaSet) Validate(ctx context.Context) field.ErrorList {
-	// TODO: validate template spec. Additional check that Stop == false
 	errorList := ers.Spec.Template.Spec.Validate(field.NewPath("spec", "template", "spec"))
 
 	if ers.Spec.Template.Spec.Stop {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "template", "spec", "stop"), ers.Spec.Template.Spec.Stop, "replicas with Stop==true will never run"))
+	}
+
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
 	return errorList

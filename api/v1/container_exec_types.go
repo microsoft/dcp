@@ -157,6 +157,10 @@ func (ce *ContainerExec) NamespacedName() types.NamespacedName {
 func (ce *ContainerExec) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
+	if ResourceCreationProhibited.Load() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
 	if ce.Spec.Command == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "command"), "command must be set to a non-empty value"))
 	}

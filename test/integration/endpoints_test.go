@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -50,7 +51,7 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 	require.NoError(t, err, "Could not delete Executable")
 
 	t.Log("Check if Endpoint deleted...")
-	waitObjectDeleted[apiv1.Endpoint](t, ctx, ctrl_client.ObjectKeyFromObject(endpoint))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, endpoint)
 	t.Log("Endpoint deleted")
 }
 
@@ -99,14 +100,14 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	require.NoError(t, err, "Could not delete Container")
 
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", container.ObjectMeta.Name)
-	waitObjectDeleted[apiv1.Container](t, ctx, ctrl_client.ObjectKeyFromObject(&container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &container)
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
 
 	t.Log("Check if Endpoint deleted...")
-	waitObjectDeleted[apiv1.Endpoint](t, ctx, ctrl_client.ObjectKeyFromObject(&container))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &container)
 	t.Log("Endpoint deleted")
 }
 
@@ -152,7 +153,7 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 	})
 
 	t.Log("Check if corresponding Endpoint deleted...")
-	waitObjectDeleted[apiv1.Endpoint](t, ctx, ctrl_client.ObjectKeyFromObject(endpoint))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, endpoint)
 }
 
 func TestEndpointDeletedIfContainerStopped(t *testing.T) {
@@ -203,7 +204,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	})
 
 	t.Log("Check if corresponding Endpoint deleted...")
-	waitObjectDeleted[apiv1.Endpoint](t, ctx, ctrl_client.ObjectKeyFromObject(endpoint))
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, endpoint)
 }
 
 func waitEndpointExists(t *testing.T, ctx context.Context, selector func(*apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
