@@ -111,10 +111,13 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 		}
 
 		if err = r.Create(ctx, endpoint); err != nil {
-			log.Error(err, "could not persist Endpoint object",
-				"ServiceName", serviceProducer.ServiceName,
-				"Workload", owner.NamespacedName().String(),
-			)
+			// Do not log an error if resource cleanup has started.
+			if !apiv1.ResourceCreationProhibited.Load() {
+				log.Error(err, "could not persist Endpoint object",
+					"ServiceName", serviceProducer.ServiceName,
+					"Workload", owner.NamespacedName().String(),
+				)
+			}
 		}
 
 		log.V(1).Info("New Endpoint created", "Endpoint", endpoint, "ServiceName", serviceProducer.ServiceName)

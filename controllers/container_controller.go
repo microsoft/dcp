@@ -1550,10 +1550,13 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 
 		if err = r.Create(ctx, connection); err != nil {
-			log.Error(err, "could not persist ContainerNetworkConnection object",
-				"Container", container.NamespacedName().String(),
-				"Network", namespacedNetworkName.String(),
-			)
+			// Do not log an error if resource cleanup has started.
+			if !apiv1.ResourceCreationProhibited.Load() {
+				log.Error(err, "could not persist ContainerNetworkConnection object",
+					"Container", container.NamespacedName().String(),
+					"Network", namespacedNetworkName.String(),
+				)
+			}
 		} else {
 			log.Info("Added new ContainerNetworkConnection", "Container", containerID, "ContainerNetworkConnection", connection.NamespacedName().String())
 			rcd.networkConnections[networkConnectionKey] = true
