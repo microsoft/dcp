@@ -157,7 +157,7 @@ func TestValidExecutionChanges(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	resp = w.Result()
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 	require.True(t, requestShutdownCalled)
 
 	requestShutdownCalled = false
@@ -168,8 +168,19 @@ func TestValidExecutionChanges(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	resp = w.Result()
-	require.Equal(t, http.StatusOK, resp.StatusCode) // 200 OK not 201 Created
-	require.False(t, requestShutdownCalled)          // Not called again, since the shutdown is in progress
+	require.Equal(t, http.StatusNoContent, resp.StatusCode) // 204 NoContent not 202 Accepted
+	require.False(t, requestShutdownCalled)                 // Not called again, since the shutdown is in progress
+
+	// It is OK to request a cleanup after the shutdown has started
+	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	resp = w.Result()
+	require.Equal(t, http.StatusOK, resp.StatusCode) // 200 OK not 202 Accepted
+	respBody, bodyErr := io.ReadAll(resp.Body)
+	require.NoError(t, bodyErr)
+	require.JSONEq(t, `{"status":"Stopping", "shutdownResourceCleanup":"Full"}`, string(respBody), "The server should notify the client that it is already stopping")
 }
 
 func TestCanSetResourceCleanupMode(t *testing.T) {
@@ -200,7 +211,7 @@ func TestCanSetResourceCleanupMode(t *testing.T) {
 		handler.ServeHTTP(w, req)
 
 		resp := w.Result()
-		require.Equal(t, http.StatusCreated, resp.StatusCode, "Expected status code 201 Created for resource cleanup mode '%s', but got %d", requested, resp.StatusCode)
+		require.Equal(t, http.StatusAccepted, resp.StatusCode, "Expected status code 201 Created for resource cleanup mode '%s', but got %d", requested, resp.StatusCode)
 		require.True(t, requestShutdownCalled, "Expected requestShutdown to be called for resource cleanup mode '%s', but it was not", requested)
 		require.Equal(t, expected, cleanupPerformed, "Expected resource cleanup cleanup mode '%s' to be used for requested cleanup mode '%s', but got '%s'", expected, requested, cleanupPerformed)
 	}
@@ -273,7 +284,7 @@ func TestCanStopApiServer(t *testing.T) {
 	client := getApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to stop the API server")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	select {
 	case <-serverInfo.ApiServerExited.Wait():
@@ -311,23 +322,29 @@ func TestCanRunCleanupWithoutStoppingApiServer(t *testing.T) {
 	client := getApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	t.Logf("Waiting for API server to complete cleanup...")
 	waitErr := waitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
 	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
 
+	t.Logf("Trying to request cleanup again (should not cause an error)...")
+	// Previous request body is read and closed, need to set it again
+	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
+	resp, respErr = client.Do(req)
+	require.NoError(t, respErr, "Failed to submit request to start resource cleanup again")
+	require.Equal(t, http.StatusOK, resp.StatusCode) // 200 OK not 202 Accepted
+	body, bodyErr := io.ReadAll(resp.Body)
+	require.NoError(t, bodyErr)
+	require.JSONEq(t, `{"status":"CleanupComplete", "shutdownResourceCleanup":"Full"}`, string(body), "The server should notify the client that it already has cleaned up all resources")
+
 	// Now try to stop the API server
 	t.Logf("Stopping the API server...")
-	req, reqCreationErr = http.NewRequestWithContext(ctx, "PATCH", adminDocUrl, nil)
-	require.NoError(t, reqCreationErr)
-	req.Header.Set("Content-Type", "application/merge-patch+json")
 	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"Stopping"}`))
-	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
 
 	resp, respErr = client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to stop the API server")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	select {
 	case <-serverInfo.ApiServerExited.Wait():
@@ -385,7 +402,7 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	client := getApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
-	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	t.Logf("Waiting for API server to complete cleanup...")
 	waitErr := waitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
