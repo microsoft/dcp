@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"sync"
 
 	"github.com/go-logr/logr"
@@ -134,41 +133,46 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 	}
 
 	h.lock.Lock()
-	oldStatus := h.executionData.Status
 
-	validRequestStatuses, found := validRequestStatusTransitions[h.executionData.Status]
+	changingCleanupInProgressOrAfterCompleted := patch.ShutdownResourceCleanup != "" &&
+		patch.ShutdownResourceCleanup != h.executionData.ShutdownResourceCleanup &&
+		h.executionData.Status != ApiServerRunning
+	if changingCleanupInProgressOrAfterCompleted {
+		h.lock.Unlock()
+		http.Error(w, "execution patch request cannot change resource cleanup type when cleanup is in progress or already done", http.StatusUnprocessableEntity)
+		return
+	}
+
+	if h.executionData.Status == patch.Status {
+		h.lock.Unlock()
+		w.WriteHeader(http.StatusNoContent) // Nothing has changed, so we reply with NoContent.
+		return
+	}
+
+	newStatus, found := validRequestStatusTransitions[apiServerStatusTransition{h.executionData.Status, patch.Status}]
 	if !found {
 		h.lock.Unlock()
-		http.Error(w, "the server reached final state", http.StatusServiceUnavailable)
-		return
-	}
-	if !slices.Contains(validRequestStatuses, patch.Status) {
-		h.lock.Unlock()
-		http.Error(w, "execution patch request cannot change status to the requested value", http.StatusUnprocessableEntity)
-		return
-	}
-
-	changingCleanupInProgress := patch.ShutdownResourceCleanup != "" &&
-		patch.ShutdownResourceCleanup != h.executionData.ShutdownResourceCleanup &&
-		(h.executionData.Status == ApiServerStopping || h.executionData.Status == ApiServerCleaningResources)
-	if changingCleanupInProgress {
-		h.lock.Unlock()
-		http.Error(w, "execution patch request cannot change resource cleanup type when cleanup is in progress", http.StatusUnprocessableEntity)
+		http.Error(w,
+			fmt.Sprintf("the API server is in '%s' state and cannot transition to '%s' state", h.executionData.Status, patch.Status),
+			http.StatusUnprocessableEntity,
+		)
 		return
 	}
 
-	changedStatus := h.executionData.Status != patch.Status
+	oldStatus := h.executionData.Status
+	changedStatus := oldStatus != newStatus
+	h.executionData.Status = newStatus
 	if changedStatus {
-		h.log.Info("API server changed status", "OldStatus", oldStatus, "NewStatus", h.executionData.Status)
+		h.log.Info("API server changed status", "OldStatus", oldStatus, "NewStatus", newStatus)
 	}
-	h.executionData.Status = patch.Status
+
 	if patch.ShutdownResourceCleanup.IsFull() {
 		h.executionData.ShutdownResourceCleanup = ApiServerResourceCleanupFull
 	} else {
 		h.executionData.ShutdownResourceCleanup = ApiServerResourceCleanupNone
 	}
 
-	if changedStatus && h.executionData.Status == ApiServerCleaningResources && h.executionData.ShutdownResourceCleanup.IsFull() {
+	if changedStatus && newStatus == ApiServerCleaningResources && h.executionData.ShutdownResourceCleanup.IsFull() {
 		go func() {
 			_ = appmgmt.CleanupAllResources(h.log)
 			h.lock.Lock()
@@ -179,16 +183,27 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 				h.executionData.Status = ApiServerCleanupComplete
 			}
 		}()
-	} else if changedStatus && h.executionData.Status == ApiServerStopping {
+	} else if changedStatus && newStatus == ApiServerStopping {
 		h.requestShutdown(h.executionData.ShutdownResourceCleanup)
 	}
 
+	resp, err := json.Marshal(h.executionData)
 	h.lock.Unlock()
+	if err != nil {
+		// Should never happen
+		h.log.Error(err, "could not serialize API server execution data")
+		http.Error(w, "could not serialize API server execution data", http.StatusInternalServerError)
+	}
 
 	if changedStatus {
-		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(http.StatusAccepted) // Accepted means operation has been started
 	} else {
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusOK) // OK means operation is in progress or has already been completed
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, writeErr := w.Write(resp)
+	if writeErr != nil {
+		h.log.Error(writeErr, "could not write API server execution data")
 	}
 }
 

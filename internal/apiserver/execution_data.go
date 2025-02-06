@@ -32,14 +32,23 @@ var apiServerExecutionDataSpec = spec.Schema{
 	},
 }
 
+type apiServerStatusTransition struct {
+	From ApiServerExecutionStatus
+	To   ApiServerExecutionStatus
+}
+
 // What status transitions are allowed in terms of what a PATCH request can do to the status field.
-// The "key" is the current API server state.
-// The "value" is a list of allowed states that the API server can transition to.
-var validRequestStatusTransitions = map[ApiServerExecutionStatus][]ApiServerExecutionStatus{
-	ApiServerRunning:           {ApiServerStopping, ApiServerCleaningResources},
-	ApiServerCleaningResources: {ApiServerStopping, ApiServerCleaningResources},
-	ApiServerStopping:          {ApiServerStopping},
-	ApiServerCleanupComplete:   {ApiServerStopping},
+// The "key" is the requested transition (a tuple {FromStatus, ToStatus}).
+// The "value" is the final state.
+// For some transition request the final state is not the same as requested state.
+// This can happen if the current API server state is "further along" than the requested state.
+var validRequestStatusTransitions = map[apiServerStatusTransition]ApiServerExecutionStatus{
+	{ApiServerRunning, ApiServerStopping}:                  ApiServerStopping,
+	{ApiServerRunning, ApiServerCleaningResources}:         ApiServerCleaningResources,
+	{ApiServerCleaningResources, ApiServerStopping}:        ApiServerStopping,
+	{ApiServerStopping, ApiServerCleaningResources}:        ApiServerStopping,
+	{ApiServerCleanupComplete, ApiServerCleaningResources}: ApiServerCleanupComplete,
+	{ApiServerCleanupComplete, ApiServerStopping}:          ApiServerStopping,
 }
 
 type ApiServerExecutionStatus string
