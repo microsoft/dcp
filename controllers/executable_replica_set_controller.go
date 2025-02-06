@@ -284,8 +284,11 @@ func (r *ExecutableReplicaSetReconciler) scaleReplicas(ctx context.Context, repl
 				log.Error(exeSetupErr, "unable to create Executable")
 				change |= additionalReconciliationNeeded
 			} else if exeCreationErr := r.Create(ctx, exe); exeCreationErr != nil {
-				log.Error(exeCreationErr, "unable to create Executable", "exe", exe.NamespacedName())
-				change |= additionalReconciliationNeeded
+				// Do not log an error (nor request additional reconciliation) if resource cleanup has started.
+				if !apiv1.ResourceCreationProhibited.Load() {
+					log.Error(exeCreationErr, "unable to create Executable", "exe", exe.NamespacedName())
+					change |= additionalReconciliationNeeded
+				}
 			} else {
 				replicaSet.Status.LastScaleTime = currentScaleTime
 				rsData.actualReplicas++
