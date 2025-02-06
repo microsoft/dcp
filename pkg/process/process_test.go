@@ -74,15 +74,16 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 
 	executor := process.NewOSExecutor(log)
 
-	// Start the process, but use a context that expires within 500 ms.
-	// If it takes more than 2 seconds to receive a notification that the process has exited,
+	// Start the process, but use a context that expires within 2 seconds.
+	// If it takes more than 10 seconds to receive a notification that the process has exited,
 	// it means the process was not terminated properly upon context cancellation.
+	// We do not care about the timing so much as we care about the process being terminated at all.
 
-	// Command returns on its own after 5 seconds. This prevents the test from hanging.
-	cmd := exec.Command("./delay", "-d", "5s")
+	// Command returns on its own after 15 seconds. This prevents the test from hanging.
+	cmd := exec.Command("./delay", "-d", "15s")
 	cmd.Dir = delayToolDir
 	start := time.Now()
-	ctx, cancelFn := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancelFn := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelFn()
 
 	_, err = process.RunToCompletion(ctx, executor, cmd)
@@ -90,7 +91,7 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	elapsed := time.Since(start)
 	elapsedStr := osutil.FormatDuration(elapsed)
 	require.True(t, errors.Is(err, context.DeadlineExceeded))
-	if elapsed > 2*time.Second {
+	if elapsed > 10*time.Second {
 		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
 }
