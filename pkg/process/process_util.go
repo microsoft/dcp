@@ -181,6 +181,47 @@ func HasExpectedStartTime(psProcess ps.Process, expectedStartTime time.Time) boo
 	}
 }
 
+type Waitable interface {
+	Wait() error
+	Info() string
+}
+
+type waitableCmd struct {
+	*exec.Cmd
+}
+
+func (cmd waitableCmd) Info() string {
+	return fmt.Sprintf("Command %s", cmd.String())
+}
+
+type waitableLite struct {
+	wait func() error
+	info func() string
+}
+
+func (wl waitableLite) Info() string {
+	return wl.info()
+}
+
+func (wl waitableLite) Wait() error {
+	return wl.wait()
+}
+
+var _ Waitable = waitableCmd{}
+var _ Waitable = waitableLite{}
+
+func makeWaitable(pid Pid_t, proc *os.Process) Waitable {
+	return waitableLite{
+		wait: func() error {
+			_, waitErr := proc.Wait()
+			return waitErr
+		},
+		info: func() string {
+			return "(" + strconv.FormatInt(int64(pid), 10) + ")"
+		},
+	}
+}
+
 func init() {
 	This = sync.OnceValues(func() (ProcessTreeItem, error) {
 		retval := ProcessTreeItem{

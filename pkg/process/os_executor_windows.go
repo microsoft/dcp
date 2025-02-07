@@ -28,12 +28,9 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 
 	// Windows has no signals, and there is no universal way to "ask a process to stop",
 	// so we just kill the process, but before that, we need to check if we are not already waiting for the process.
-	var waitFunc WaitFunc = func() error {
-		_, waitErr := proc.Wait()
-		return waitErr
-	}
 
-	ws, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	waitable := makeWaitable(pid, proc)
+	ws, shouldStopProcess := e.tryStartWaiting(pid, waitable, waitReasonStopping)
 	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
 		waitEndedCh = makeClosedChan()

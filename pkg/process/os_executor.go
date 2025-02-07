@@ -39,15 +39,6 @@ type waitState struct {
 	reason      waitReason    // The reason why are waiting on the process
 }
 
-type Waitable interface {
-	Wait() error
-}
-type WaitFunc func() error
-
-func (f WaitFunc) Wait() error {
-	return f()
-}
-
 type OSExecutor struct {
 	procsWaiting map[Pid_t]*waitState
 	lock         sync.Locker
@@ -70,7 +61,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	ws, _ := e.tryStartWaiting(pid, cmd, waitReasonNone)
+	ws, _ := e.tryStartWaiting(pid, waitableCmd{cmd}, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
@@ -85,7 +76,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(pid, cmd, waitReasonStopping)
+			_, shouldStopProcess := e.tryStartWaiting(pid, waitableCmd{cmd}, waitReasonStopping)
 			var stopProcessErr error = nil
 
 			if shouldStopProcess {
@@ -112,7 +103,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _ = e.tryStartWaiting(pid, cmd, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(pid, waitableCmd{cmd}, waitReasonMonitoring)
 	}
 
 	return pid, processStartTime, startWaitingForProcessExit, nil
@@ -172,9 +163,9 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 // and thus IT is the caller that must stop the process.
 func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) (*waitState, bool) {
 	doWait := func(ws *waitState) {
-		e.log.V(1).Info("starting waiting for process to exit", "pid", pid)
+		e.log.V(1).Info("starting waiting for process to exit", "pid", pid, "cmd", waitable.Info())
 		err := ws.waitable.Wait()
-		e.log.V(1).Info("process wait ended", "pid", pid, "Error", logger.FriendlyErrorString(err))
+		e.log.V(1).Info("process wait ended", "pid", pid, "Error", logger.FriendlyErrorString(err), "cmd", waitable.Info())
 
 		e.acquireLock()
 		defer e.releaseLock()

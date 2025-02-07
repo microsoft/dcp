@@ -1040,12 +1040,17 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			for _, volume := range container.Spec.VolumeMounts {
 				if volume.Type == apiv1.BindMount {
-					isValid := filepath.IsAbs(volume.Source) && (runtime.GOOS == "windows" && !winNamedPipeRegex.MatchString(volume.Source))
+					isValid := filepath.IsAbs(volume.Source)
+					if runtime.GOOS == "windows" {
+						isValid = isValid && !winNamedPipeRegex.MatchString(volume.Source)
+
+					}
 					if !isValid {
 						// This seems to be an invalid bind mount or a named pipe, so don't try to create it
 						// May be a reference to a linux mount point on Windows
 						continue
 					}
+
 					_, volErr := os.Stat(volume.Source)
 					if errors.Is(volErr, os.ErrNotExist) {
 						volErr = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)

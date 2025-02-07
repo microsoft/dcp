@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/tklauser/ps"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 
@@ -28,9 +28,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
-var (
-	log = logger.New("process-tests").Logger
-)
+var log logr.Logger
+
+func TestMain(m *testing.M) {
+	log = testutil.NewLogForTesting("process-tests")
+	os.Exit(m.Run())
+}
 
 func TestRunCompleted(t *testing.T) {
 	t.Parallel()
@@ -552,5 +555,5 @@ func ensureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize
 		},
 	)
 
-	require.NoError(t, err, "expected number of 'delay' program instances not found (%d/%d)", processTreeLen, expectedSize)
+	require.NoError(t, err, "expected number of 'delay' program instances not found (expected %d, actual %d)", expectedSize, processTreeLen)
 }

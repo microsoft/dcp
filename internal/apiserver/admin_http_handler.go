@@ -183,8 +183,6 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 				h.executionData.Status = ApiServerCleanupComplete
 			}
 		}()
-	} else if changedStatus && newStatus == ApiServerStopping {
-		h.requestShutdown(h.executionData.ShutdownResourceCleanup)
 	}
 
 	resp, err := json.Marshal(h.executionData)
@@ -193,6 +191,7 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 		// Should never happen
 		h.log.Error(err, "could not serialize API server execution data")
 		http.Error(w, "could not serialize API server execution data", http.StatusInternalServerError)
+		return
 	}
 
 	if changedStatus {
@@ -204,6 +203,11 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 	_, writeErr := w.Write(resp)
 	if writeErr != nil {
 		h.log.Error(writeErr, "could not write API server execution data")
+	}
+
+	// Only request shutdown AFTER writing the response, so that we do not "cancel ourselves" in the middle of writing.
+	if changedStatus && newStatus == ApiServerStopping {
+		h.requestShutdown(h.executionData.ShutdownResourceCleanup)
 	}
 }
 

@@ -35,12 +35,8 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		}
 	}
 
-	var waitFunc WaitFunc = func() error {
-		_, waitErr := proc.Wait()
-		return waitErr
-	}
-
-	ws, shouldStopProcess := e.tryStartWaiting(pid, waitFunc, waitReasonStopping)
+	waitable := makeWaitable(pid, proc)
+	ws, shouldStopProcess := e.tryStartWaiting(pid, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
