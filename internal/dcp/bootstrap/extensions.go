@@ -60,14 +60,21 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 	extensions := []DcpExtension{}
 
 	for _, extDir := range extDirs {
-		err = filepath.Walk(extDir, func(path string, info os.FileInfo, err error) error {
+		// Evaluate symlinks for the directory
+		realExtDir, evalErr := filepath.EvalSymlinks(extDir)
+		if evalErr != nil {
+			log.Error(evalErr, "failed to evaluate symlinks for directory", "directory", extDir)
+			continue
+		}
+
+		err = filepath.Walk(realExtDir, func(path string, info os.FileInfo, err error) error {
 			// err means some path was discovered, but is not accessible
 			if err != nil {
 				return err
 			}
 
 			if info.IsDir() {
-				if path != extDir {
+				if path != realExtDir {
 					// We don't want to recurse into subdirectories
 					return filepath.SkipDir
 				} else {
