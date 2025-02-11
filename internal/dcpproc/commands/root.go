@@ -33,8 +33,9 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	with minimum remote dependencies and maximum ease of use.
 
 	dcpproc is a monitor process responsible for cleaning up orphaned service processes.`,
-		RunE:         monitorProcess(log),
-		SilenceUsage: true,
+		RunE:             monitorProcess(log),
+		SilenceUsage:     true,
+		PersistentPreRun: cmds.LogVersion(log, "Starting DCPPROC..."),
 	}
 
 	rootCmd.Flags().Int64VarP((*int64)(&dcpMonitorPid), "monitor", "m", int64(process.UnknownPID), "Tells DCPPROC to monitor the given PID (should be DCP). Will trigger cleanup of monitored service process if the watched process exits for any reason.")

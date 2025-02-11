@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -36,13 +37,39 @@ func getVersion(log logger.Logger) func(cmd *cobra.Command, args []string) error
 	return func(cmd *cobra.Command, args []string) error {
 		log := log.WithName("version")
 
-		if version, err := json.Marshal(version.Version()); err != nil {
+		versionStr, err := versionString()
+		if err != nil {
 			log.Error(err, "could not serialize version information")
 			return err
 		} else {
-			fmt.Println(string(version))
+			fmt.Println(string(versionStr))
+			return nil
+		}
+	}
+}
+
+func LogVersion(log logger.Logger, programStartMsg string) func(_ *cobra.Command, _ []string) {
+	return func(_ *cobra.Command, _ []string) {
+		versionString, err := versionString()
+		if err != nil {
+			versionString = fmt.Sprintf("unknown: %v", err)
 		}
 
-		return nil
+		launchPath, pathErr := os.Executable()
+		if pathErr != nil {
+			launchPath = os.Args[0]
+		}
+
+		args := os.Args[1:]
+
+		log.V(1).Info(programStartMsg, "exe", launchPath, "args", args, "version", versionString)
+	}
+}
+
+func versionString() (string, error) {
+	if version, err := json.Marshal(version.Version()); err != nil {
+		return "", err
+	} else {
+		return string(version), nil
 	}
 }
