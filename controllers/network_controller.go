@@ -234,7 +234,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted", "NetworkName", network.Status.NetworkName)
 
-		err = r.deleteNetwork(ctx, &network)
+		err = r.deleteNetwork(ctx, &network, log)
 		if err != nil {
 			// deleteNetwork() logged the error already
 			change = additionalReconciliationNeeded
@@ -263,14 +263,14 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return result, err
 }
 
-func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.ContainerNetwork) error {
+func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) error {
 	if network.Spec.Persistent {
 		return nil
 	}
 
 	_, networkState := r.existingNetworks.BorrowByNamespacedName(network.NamespacedName())
 	if networkState != nil && networkState.state == apiv1.ContainerNetworkStateRunning {
-		err := removeNetwork(ctx, r.orchestrator, networkState.id)
+		err := removeNetwork(ctx, r.orchestrator, networkState.id, log)
 		if err != nil {
 			return err
 		}
@@ -721,7 +721,7 @@ func DoHarvestUnusedNetworks(
 	log.V(1).Info("Removing unused container networks...", "Networks", unusedNetworkNames)
 	ususedNetworkIDs := usvc_slices.Map[ct.InspectedNetwork, string](unusedNetworks, func(n ct.InspectedNetwork) string { return n.Id })
 
-	removeErr := removeManyNetworks(ctx, co, ususedNetworkIDs)
+	removeErr := removeManyNetworks(ctx, co, ususedNetworkIDs, log)
 	if removeErr != nil {
 		log.Info("Could not remove unused container networks"+networksWillNotBeHarvested, "Error", removeErr)
 		return removeErr

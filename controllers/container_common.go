@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"github.com/go-logr/logr"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
@@ -437,9 +438,13 @@ func createNetwork(ctx context.Context, o containers.NetworkOrchestrator, opts c
 	return inspected, err
 }
 
-func removeNetwork(ctx context.Context, o containers.NetworkOrchestrator, networkID string) error {
+func removeNetwork(ctx context.Context, o containers.NetworkOrchestrator, networkID string, log logr.Logger) error {
 	action := func(ctx context.Context) error {
 		_, err := o.RemoveNetworks(ctx, containers.RemoveNetworksOptions{Networks: []string{networkID}, Force: true})
+		if err != nil {
+			// Network removal has been particularly problematic in the past, so we want extra logging.
+			log.V(1).Info("Container network could not be removed", "network", networkID, "error", err.Error())
+		}
 		return err
 	}
 
@@ -462,13 +467,17 @@ func removeNetwork(ctx context.Context, o containers.NetworkOrchestrator, networ
 	return err
 }
 
-func removeManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networkIDs []string) error {
+func removeManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networkIDs []string, log logr.Logger) error {
 	if len(networkIDs) == 0 {
 		return nil
 	}
 
 	action := func(ctx context.Context) error {
 		_, err := o.RemoveNetworks(ctx, containers.RemoveNetworksOptions{Networks: networkIDs, Force: true})
+		if err != nil {
+			// Network removal has been particularly problematic in the past, so we want extra logging.
+			log.V(1).Info("Some container networks could not be removed", "networks", networkIDs, "error", err.Error())
+		}
 		return err
 	}
 

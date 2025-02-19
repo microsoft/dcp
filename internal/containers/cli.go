@@ -53,9 +53,9 @@ func NormalizeCliError(originalError error, errBuf *bytes.Buffer, errorMatches .
 			return len(line) == 0 || errorMatches[i].regex.Match(line)
 		})
 
-		// We might have some empty lines, hence #lines >= #volumes
+		// We might have some empty lines, hence it is possible that #lines >= #(objects affected by the command)
 		if allMatch && len(lines) >= errorMatches[i].maxObjectsAffected {
-			// All errors were of "not found" type--safe to report ErrNotFound
+			// All errors matched, so we can return the error from the matcher
 			return errorMatches[i].err
 		}
 	}
