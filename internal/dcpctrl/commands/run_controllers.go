@@ -132,6 +132,8 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			},
 		)
 
+		const defaultControllerName = ""
+
 		exCtrl := controllers.NewExecutableReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
@@ -139,7 +141,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			exeRunners,
 			hpSet,
 		)
-		if err = exCtrl.SetupWithManager(mgr); err != nil {
+		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to set up Executable controller")
 			return err
 		}
@@ -148,7 +150,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			mgr.GetClient(),
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
-		if err = exReplicaSetCtrl.SetupWithManager(mgr); err != nil {
+		if err = exReplicaSetCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to set up ExecutableReplicaSet controller")
 			return err
 		}
@@ -162,7 +164,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 				MaxParallelContainerStarts: controllers.DefaultMaxParallelContainerStarts,
 			},
 		)
-		if err = containerCtrl.SetupWithManager(mgr); err != nil {
+		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to set up Container controller")
 			return err
 		}
@@ -173,7 +175,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			log.WithName("ContainerExecReconciler"),
 			containerOrchestrator,
 		)
-		if err = containerExecCtrl.SetupWithManager(mgr); err != nil {
+		if err = containerExecCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to set up ContainerExec controller")
 			return err
 		}
@@ -183,7 +185,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			log.WithName("VolumeReconciler"),
 			containerOrchestrator,
 		)
-		if err = volumeCtrl.SetupWithManager(mgr); err != nil {
+		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to set up ContainerVolume controller")
 			return err
 		}
@@ -194,7 +196,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			log.WithName("NetworkReconciler"),
 			containerOrchestrator,
 		)
-		if err = networkCtrl.SetupWithManager(mgr); err != nil {
+		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to setup a ContainerNetwork controller")
 			return err
 		}
@@ -207,7 +209,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 				ProcessExecutor: processExecutor,
 			},
 		)
-		if err = serviceCtrl.SetupWithManager(mgr); err != nil {
+		if err = serviceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to set up Service controller")
 			return err
 		}

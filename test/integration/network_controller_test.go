@@ -11,7 +11,6 @@ import (
 	"github.com/tklauser/ps"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/stretchr/testify/require"
@@ -185,7 +184,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	log := ctrl.Log.WithName("TestUnusedNetworkHarvesting")
+	log := testutil.NewLogForTesting(t.Name())
 	co, coErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
 	require.NoError(t, coErr, "could not create a test container orchestrator")
 	defer require.NoError(t, co.Close())

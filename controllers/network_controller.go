@@ -160,7 +160,7 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 	return &r
 }
 
-func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	// Setup a client side index to allow quickly finding all ContainerNetworkConnections referencing a specific ContainerNetwork.
 	// Behind the scenes this is using listers and informers to keep an index on an internal cache owned by
 	// the Manager up to date.
@@ -183,6 +183,7 @@ func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&apiv1.ContainerNetwork{}).
 		Watches(&apiv1.ContainerNetworkConnection{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNetwork), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(src).
+		Named(name).
 		Complete(r)
 }
 

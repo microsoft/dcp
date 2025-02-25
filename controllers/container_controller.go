@@ -169,7 +169,7 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 	return &r
 }
 
-func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	// Setup a client side index to allow quickly finding all ContainerNetworkConnections owned by a Container.
 	// Behind the scenes this is using listers and informers to keep an index on an internal cache owned by
 	// the Manager up to date.
@@ -198,6 +198,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&apiv1.Endpoint{}).
 		Owns(&apiv1.ContainerNetworkConnection{}).
 		WatchesRawSource(src).
+		Named(name).
 		Complete(r)
 }
 

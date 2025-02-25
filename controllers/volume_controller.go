@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
@@ -16,6 +15,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
 type VolumeReconciler struct {
@@ -38,9 +38,10 @@ func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrato
 	return &r
 }
 
-func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.ContainerVolume{}).
+		Named(name). // zero value is OK and will result in a default provided by controller-runtime
 		Complete(r)
 }
 
@@ -74,7 +75,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if vol.DeletionTimestamp != nil && !vol.DeletionTimestamp.IsZero() {
 		log.Info("ContainerVolume object is being deleted")
-		err = r.deleteVolume(ctx, vol.Spec.Name, log)
+		err = r.deleteVolume(ctx, &vol, log)
 		if err != nil {
 			// deleteVolume() logged the error already
 			change = additionalReconciliationNeeded
@@ -90,46 +91,32 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return result, saveErr
 }
 
-func (r *VolumeReconciler) deleteVolume(ctx context.Context, volumeName string, log logr.Logger) error {
-	const force = false
-
-	removed, err := r.orchestrator.RemoveVolumes(ctx, []string{volumeName}, force)
-	if err != nil {
-		if err != ct.ErrNotFound {
-			log.Error(err, "could not remove a container volume")
-			return err
-		} else {
-			return nil // If the volume is not there, that's the desired state.
-		}
-	} else if len(removed) != 1 || removed[0] != volumeName {
-		log.Error(fmt.Errorf("unexpected response received from container volume removal request. Number of volumes removed: %d", len(removed)), "")
-		// .. but it did not fail, so assume the volume was removed.
+func (r *VolumeReconciler) deleteVolume(ctx context.Context, vol *apiv1.ContainerVolume, log logr.Logger) error {
+	if pointers.TrueValue(vol.Spec.Persistent) {
+		return nil // Do not delete persistent volumes
+	}
+	err := removeVolume(ctx, r.orchestrator, vol.Spec.Name)
+	if err != nil && !errors.Is(err, ct.ErrNotFound) {
+		log.Error(err, "could not remove a container volume")
+		return err
 	}
 
+	log.V(1).Info("volume removed")
 	return nil
 }
 
 func (r *VolumeReconciler) ensureVolume(ctx context.Context, volumeName string, log logr.Logger) objectChange {
-	volumeName = strings.TrimSpace(volumeName)
-	if volumeName == "" {
-		log.Error(fmt.Errorf("specified volume name is empty"), "")
-
-		// Hopefully someone will notice the error and update the Spec.
-		// Once the Spec is changed, another reconciliation will kick in automatically.
-		return noChange
-	}
-
-	_, err := r.orchestrator.InspectVolumes(ctx, []string{volumeName})
-	if err == nil {
+	_, inspectErr := inspectContainerVolumeIfExists(ctx, r.orchestrator, volumeName)
+	if inspectErr == nil {
 		return noChange // Volume exists, nothing to do
-	} else if !errors.Is(err, ct.ErrNotFound) {
-		log.Error(err, "could not determine whether volume exists")
+	} else if !errors.Is(inspectErr, ct.ErrNotFound) {
+		log.Error(inspectErr, "could not determine whether volume exists")
 		return additionalReconciliationNeeded
 	}
 
-	err = r.orchestrator.CreateVolume(ctx, volumeName)
-	if err != nil {
-		log.Error(err, "could not create a volume")
+	_, createErr := createVolume(ctx, r.orchestrator, volumeName)
+	if createErr != nil {
+		log.Error(createErr, "could not create a volume")
 		return additionalReconciliationNeeded
 	}
 

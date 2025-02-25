@@ -129,12 +129,13 @@ func NewExecutableReconciler(
 	return &r
 }
 
-func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	src := ctrl_source.Channel(r.notifyRunChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Executable{}).
 		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(src).
+		Named(name).
 		Complete(r)
 }
 

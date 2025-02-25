@@ -22,6 +22,10 @@ import (
 	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
+const (
+	volumeInspectionTimeout = 6 * time.Second
+)
+
 // Container orchestrators, especially Docker, can be flakey (report errors that are not real problems).
 // See https://github.com/dotnet/aspire/issues/5109 for customer report that led us to start using retries when calling the orchestrator.
 
@@ -52,6 +56,10 @@ func callWithRetryAndVerification[RT any](
 		}
 
 		actionErr := action(callContext)
+		var permanentErr *backoff.PermanentError
+		if errors.As(actionErr, &permanentErr) {
+			return *new(RT), actionErr
+		}
 
 		// Unfortunately, an error from the action does not NECESSARILY mean the action failed.
 
@@ -108,7 +116,16 @@ func inspectManyContainers(ctx context.Context, o containers.ContainerOrchestrat
 
 	b := exponentialBackoff(containerInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() ([]containers.InspectedContainer, error) {
-		return o.InspectContainers(ctx, containerIDs)
+		inspectedCtrs, err := o.InspectContainers(ctx, containerIDs)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(inspectedCtrs) == 0 {
+			return nil, containers.ErrNotFound
+		}
+
+		return inspectedCtrs, nil
 	})
 }
 
@@ -404,9 +421,22 @@ func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestra
 }
 
 func inspectManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networks []string) ([]containers.InspectedNetwork, error) {
+	if len(networks) == 0 {
+		return nil, nil
+	}
+
 	b := exponentialBackoff(networkInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() ([]containers.InspectedNetwork, error) {
-		return o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: networks})
+		inspectedNets, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: networks})
+		if err != nil {
+			return nil, err
+		}
+
+		if len(inspectedNets) == 0 {
+			return nil, containers.ErrNotFound
+		}
+
+		return inspectedNets, nil
 	})
 }
 
@@ -503,4 +533,85 @@ func removeManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, n
 
 	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
 	return err
+}
+
+func inspectContainerVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
+	b := exponentialBackoff(volumeInspectionTimeout)
+	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedVolume, error) {
+		inspectedVolumes, err := o.InspectVolumes(ctx, []string{volumeName})
+		if err != nil {
+			return nil, err
+		}
+		if len(inspectedVolumes) == 0 {
+			return nil, containers.ErrNotFound
+		}
+		return &inspectedVolumes[0], nil
+	})
+}
+
+func inspectContainerVolumeIfExists(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
+	b := exponentialBackoff(volumeInspectionTimeout)
+	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedVolume, error) {
+		inspectedVolumes, err := o.InspectVolumes(ctx, []string{volumeName})
+		if errors.Is(err, containers.ErrNotFound) {
+			return nil, resiliency.Permanent(containers.ErrNotFound)
+		} else if err != nil {
+			return nil, err
+		}
+
+		if len(inspectedVolumes) == 0 {
+			return nil, resiliency.Permanent(containers.ErrNotFound)
+		}
+
+		return &inspectedVolumes[0], nil
+	})
+}
+
+func removeVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) error {
+	action := func(ctx context.Context) error {
+		_, err := o.RemoveVolumes(ctx, []string{volumeName}, false /* force */)
+		if errors.Is(err, containers.ErrObjectInUse) {
+			// Treat this error as permanent and let the caller decide how to handle it
+			// (e.g. wait, or retry, or try to remove containers that use the volume).
+			return backoff.Permanent(err)
+		}
+		return err
+	}
+
+	verify := func(ctx context.Context) (any, error) {
+		// Do not use r.inspectContainerVolume() here, we do not want to retry this when the volume is not found
+		_, inspectErr := o.InspectVolumes(ctx, []string{volumeName})
+
+		if errors.Is(inspectErr, containers.ErrNotFound) {
+			return nil, nil // Volume is gone as expected
+		}
+
+		if inspectErr != nil {
+			return nil, inspectErr
+		} else {
+			return nil, fmt.Errorf("volume %s still exists", volumeName)
+		}
+	}
+
+	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
+	return err
+}
+
+func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
+	action := func(ctx context.Context) error {
+		err := o.CreateVolume(ctx, volumeName)
+
+		if errors.Is(err, containers.ErrAlreadyExists) {
+			return backoff.Permanent(err)
+		}
+
+		return err
+	}
+
+	verify := func(ctx context.Context) (*containers.InspectedVolume, error) {
+		return inspectContainerVolume(ctx, o, volumeName)
+	}
+
+	inspected, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
+	return inspected, err
 }

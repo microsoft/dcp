@@ -40,7 +40,7 @@ func CleanupSessionFolderIfNeeded() {
 }
 
 func init() {
-	DcpSessionDir = sync.OnceValue[string](func() string {
+	DcpSessionDir = sync.OnceValue(func() string {
 		if dcpSessionDir, found := os.LookupEnv(DCP_SESSION_FOLDER); found {
 			info, err := os.Stat(dcpSessionDir)
 			if err == nil && info.IsDir() {

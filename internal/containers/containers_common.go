@@ -15,6 +15,7 @@ var (
 	ErrAlreadyExists     = errors.New("object already exists")
 	ErrCouldNotAllocate  = errors.New("object could not allocate required resources")
 	ErrRuntimeNotHealthy = errors.New("runtime is not healthy")
+	ErrObjectInUse       = errors.New("object is in use")
 )
 
 func (o StreamContainerLogsOptions) Apply(args []string) []string {

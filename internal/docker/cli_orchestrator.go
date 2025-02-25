@@ -39,9 +39,11 @@ var (
 	endpointAlreadyExistsRegEx = regexp.MustCompile(`(?i)endpoint with (.*) already exists in network`)
 	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
 	dockerNotRunningRegEx      = regexp.MustCompile(`(?i)error during connect:`)
+	volumeInUseRegEx           = regexp.MustCompile(`(?i)volume is in use`)
 
 	newContainerNotFoundErrorMatch     = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch        = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
+	volumeInUseErrorMatch              = containers.NewCliErrorMatch(volumeInUseRegEx, errors.Join(containers.ErrObjectInUse, fmt.Errorf("volume is being used by a container")))
 	newNetworkNotFoundErrorMatch       = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
 	newNetworkAlreadyExistsErrorMatch  = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
 	newEndpointAlreadyExistsErrorMatch = containers.NewCliErrorMatch(endpointAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
@@ -286,6 +288,7 @@ func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string)
 	cmd := makeDockerCommand("volume", "create", name)
 	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
+		// Note: unlike Podman, Docker does not return an error if the volume already exists.
 		return err
 	}
 	return containers.ExpectCliStrings(outBuf, []string{name})
@@ -318,7 +321,7 @@ func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)), volumeInUseErrorMatch.MaxObjects(len(volumes)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))

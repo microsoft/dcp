@@ -3,8 +3,14 @@ package ctrlutil
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,18 +18,21 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clientgorest "k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -78,6 +87,11 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 		ApiServerDisposalComplete: concurrency.NewAutoResetEvent(false),
 	}
 
+	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
+	if sessionFolderErr != nil {
+		return nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
+	}
+
 	cleanup := func() {
 		info.lock.Lock()
 		defer info.lock.Unlock()
@@ -109,11 +123,12 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 			}
 		}
 
-		if info.kubeconfigPath != "" {
-			path := info.kubeconfigPath
-			info.kubeconfigPath = ""
-			// Best effort. May be deleted at this point anyway by the API server process cleaning up the session folder.
-			_ = os.Remove(path)
+		// Try a few times because it may not succeed immediately (e.g. AV software may be scanning the folder).
+		sessionFolderRemoveErr := resiliency.RetryExponentialWithTimeout(context.Background(), 5*time.Second, func() error {
+			return os.RemoveAll(sessionFolder)
+		})
+		if sessionFolderRemoveErr != nil {
+			log.Error(sessionFolderRemoveErr, "Failed to remove the session folder of the API server instance")
 		}
 	}
 
@@ -139,7 +154,7 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 
 	tco, tcoErr := NewTestContainerOrchestrator(
 		info.dcpCtx,
-		ctrl.Log.WithName("TestContainerOrchestrator"),
+		log.WithName("TestContainerOrchestrator"),
 		TcoOptionEnableSocketListener,
 	)
 	if tcoErr != nil {
@@ -161,10 +176,10 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 		logger.DCP_DIAGNOSTICS_LOG_FOLDER,
 		logger.DCP_DIAGNOSTICS_LOG_LEVEL,
 		logger.DCP_LOG_SOCKET,
-		usvc_io.DCP_SESSION_FOLDER,
 		usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS,
 		kubeconfig.DCP_SECURE_TOKEN,
 	)
+	env = append(env, fmt.Sprintf("%s=%s", usvc_io.DCP_SESSION_FOLDER, sessionFolder))
 	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
@@ -272,4 +287,71 @@ func addToEnvIfPresent(env []string, vars ...string) []string {
 	}
 
 	return retval
+}
+
+func GetApiServerClient(t *testing.T, serverInfo *ApiServerInfo) *http.Client {
+	client := http.Client{}
+
+	// Mostly need to set up the client to trust the server's certificate
+	block, _ := pem.Decode(serverInfo.ClientConfig.TLSClientConfig.CAData)
+	require.NotNil(t, block, "Failed to decode server certificate authority data")
+	require.Equal(t, "CERTIFICATE", block.Type)
+	cert, certParseErr := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, certParseErr, "Failed to parse server certificate authority data")
+	caCertPool := x509.NewCertPool()
+	caCertPool.AddCert(cert)
+	tlsConfig := &tls.Config{
+		RootCAs: caCertPool,
+	}
+	client.Transport = &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+
+	return &client
+}
+
+func WaitApiServerStatus(
+	ctx context.Context,
+	client *http.Client,
+	serverInfo *ApiServerInfo,
+	expectedStatus apiserver.ApiServerExecutionStatus,
+) error {
+	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
+
+	waitErr := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true /* pollImmediately */, func(_ context.Context) (bool, error) {
+		req, reqCreationErr := http.NewRequestWithContext(ctx, "GET", adminDocUrl, nil)
+		if reqCreationErr != nil {
+			return false, reqCreationErr
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
+
+		resp, respErr := client.Do(req)
+		if respErr != nil {
+			return false, respErr
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("Expected status code 200 OK, but got %d", resp.StatusCode)
+		}
+
+		body, bodyErr := io.ReadAll(resp.Body)
+		if bodyErr != nil {
+			return false, bodyErr
+		}
+
+		var execData apiserver.ApiServerExecutionData
+		unmarshalErr := json.Unmarshal(body, &execData)
+		if unmarshalErr != nil {
+			return false, unmarshalErr
+		}
+
+		if execData.Status == expectedStatus {
+			return true, nil
+		} else {
+			return false, nil
+		}
+	})
+
+	return waitErr
 }

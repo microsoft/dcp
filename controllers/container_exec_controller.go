@@ -85,11 +85,12 @@ func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.
 	return &r
 }
 
-func (r *ContainerExecReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ContainerExecReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	src := ctrl_source.Channel(r.notifyExecChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.ContainerExec{}).
 		WatchesRawSource(src).
+		Named(name).
 		Complete(r)
 }
 

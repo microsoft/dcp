@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,6 +17,7 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
 // VolumeSpec defines the desired state of a ContainerVolume
@@ -23,6 +25,11 @@ import (
 type ContainerVolumeSpec struct {
 	// Name of the volume
 	Name string `json:"name"`
+
+	// Is this volume persistent (is NOT cleaned up when the application ends) or not.
+	// Volumes are persistent by default.
+	// +kubebuilder:default=true
+	Persistent *bool `json:"persistent,omitempty"`
 }
 
 // ContainerVolume represents a volume that can be consumed by Container instances
@@ -51,7 +58,12 @@ func (cv *ContainerVolume) GetObjectMeta() *metav1.ObjectMeta {
 }
 
 func (cv *ContainerVolume) New() runtime.Object {
-	return &ContainerVolume{}
+	persistent := true // Default value
+	return &ContainerVolume{
+		Spec: ContainerVolumeSpec{
+			Persistent: &persistent,
+		},
+	}
 }
 
 func (cv *ContainerVolume) NewList() runtime.Object {
@@ -82,6 +94,26 @@ func (cv *ContainerVolume) Validate(ctx context.Context) field.ErrorList {
 
 	if ResourceCreationProhibited.Load() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
+
+	if strings.TrimSpace(cv.Spec.Name) == "" {
+		errorList = append(errorList, field.Required(field.NewPath("spec").Child("name"), "Name is required"))
+	}
+
+	return errorList
+}
+
+func (cv *ContainerVolume) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
+	errorList := field.ErrorList{}
+
+	oldVolume := old.(*ContainerVolume)
+
+	if oldVolume.Spec.Name != cv.Spec.Name {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec").Child("name"), "Name cannot be changed"))
+	}
+
+	if !pointers.EqualValue(oldVolume.Spec.Persistent, cv.Spec.Persistent) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec").Child("persistent"), "volume persistence cannot be changed"))
 	}
 
 	return errorList
@@ -122,3 +154,4 @@ var _ apiserver_resource.ObjectList = (*ContainerVolumeList)(nil)
 var _ commonapi.ListWithObjectItems = (*ContainerVolumeList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerVolume)(nil)
 var _ apiserver_resourcestrategy.Validater = (*ContainerVolume)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*ContainerVolume)(nil)

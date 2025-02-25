@@ -1723,6 +1723,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref common.Refer
 							Format:      "",
 						},
 					},
+					"persistent": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Is this volume persistent (is NOT cleaned up when the application ends) or not. Volumes are persistent by default.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"name"},
 			},

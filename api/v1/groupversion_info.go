@@ -67,6 +67,12 @@ var (
 				(&ContainerNetworkConnection{}).GetGroupVersionResource(),
 			},
 		},
+		{
+			GVR: (&ContainerVolume{}).GetGroupVersionResource(),
+			CleanUpAfter: []schema.GroupVersionResource{
+				(&Container{}).GetGroupVersionResource(),
+			},
+		},
 	}
 
 	// A registry of resource log streaming implementations

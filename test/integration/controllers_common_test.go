@@ -62,27 +62,20 @@ func TestMain(m *testing.M) {
 	log := testutil.NewLogForTesting("IntegrationTests")
 	ctrl.SetLogger(log)
 
-	sessionDir, sessionDirErr := testutil.CreateTestSessionDir()
-	if sessionDirErr != nil {
-		log.Error(sessionDirErr, "Failed to create test session directory")
-		// But we will run the tests anyway, because the session directory is not strictly necessary.
-	} else {
-		os.Setenv(usvc_io.DCP_SESSION_FOLDER, sessionDir)
-	}
-
 	networking.EnableStrictMruPortHandling(log)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	serverInfo, envStartErr := startTestEnvironment(ctx, log)
+	serverInfo, pe, ir, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", log)
 	if envStartErr != nil {
 		cancel()
-		_ = os.RemoveAll(sessionDir) // Best effort
 		panic(envStartErr)
 	}
 	client = serverInfo.Client
 	restClient = serverInfo.RestClient
 	containerOrchestrator = serverInfo.ContainerOrchestrator
+	testProcessExecutor = pe
+	ideRunner = ir
 
 	var code int = 0
 	defer func() {
@@ -95,30 +88,46 @@ func TestMain(m *testing.M) {
 		case <-time.After(5 * time.Second):
 		}
 
-		// Try a few times because it may not succeed immediately (e.g. AV software may be scanning the folder).
-		sessionDirRemoveErr := resiliency.RetryExponentialWithTimeout(context.Background(), 5*time.Second, func() error {
-			return os.RemoveAll(sessionDir)
-		})
-		if sessionDirRemoveErr != nil {
-			log.Error(sessionDirRemoveErr, "Failed to remove test session directory")
-		}
-
 		os.Exit(code)
 	}()
 
 	code = m.Run()
 }
 
+type IncludedController uint32
+
+const (
+	ExecutableController IncludedController = 1 << iota
+	ExecutableReplicaSetController
+	NetworkController
+	ContainerController
+	ContainerExecController
+	VolumeController
+	ServiceController
+	NoControllers  IncludedController = 0
+	AllControllers IncludedController = ^NoControllers
+)
+
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
-func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.ApiServerInfo, error) {
+func StartTestEnvironment(
+	ctx context.Context,
+	inclCtrl IncludedController,
+	instanceTag string,
+	log logr.Logger,
+) (
+	*ctrl_testutil.ApiServerInfo,
+	*internal_testutil.TestProcessExecutor,
+	*ctrl_testutil.TestIdeRunner,
+	error,
+) {
 	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, log)
 	if serverErr != nil {
-		return nil, fmt.Errorf("failed to start the API server: %w", serverErr)
+		return nil, nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
-	testProcessExecutor = internal_testutil.NewTestProcessExecutor(ctx)
-	exeRunner := exerunners.NewProcessExecutableRunner(testProcessExecutor)
-	ideRunner = ctrl_testutil.NewTestIdeRunner(ctx)
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	exeRunner := exerunners.NewProcessExecutableRunner(pe)
+	ir := ctrl_testutil.NewTestIdeRunner(ctx)
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
@@ -129,7 +138,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.
 		// This avoids a bunch of shutdown errors from the manager.
 		<-managerDone.Wait()
 
-		tpeCloseErr := testProcessExecutor.Close()
+		tpeCloseErr := pe.Close()
 		if tpeCloseErr != nil {
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
 		}
@@ -140,7 +149,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.
 	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
 	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize controller manager: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
 	}
 
 	hpSet := health.NewHealthProbeSet(
@@ -151,87 +160,101 @@ func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.
 		},
 	)
 
-	execR := controllers.NewExecutableReconciler(
-		ctx,
-		mgr.GetClient(),
-		ctrl.Log.WithName("ExecutableReconciler"),
-		map[apiv1.ExecutionType]controllers.ExecutableRunner{
-			apiv1.ExecutionTypeProcess: exeRunner,
-			apiv1.ExecutionTypeIDE:     ideRunner,
-		},
-		hpSet,
-	)
-	if err = execR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
+	if inclCtrl&ExecutableController != 0 {
+		execR := controllers.NewExecutableReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("ExecutableReconciler"),
+			map[apiv1.ExecutionType]controllers.ExecutableRunner{
+				apiv1.ExecutionTypeProcess: exeRunner,
+				apiv1.ExecutionTypeIDE:     ir,
+			},
+			hpSet,
+		)
+		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
+		}
 	}
 
-	execrsR := controllers.NewExecutableReplicaSetReconciler(
-		mgr.GetClient(),
-		ctrl.Log.WithName("ExecutableReplicaSetReconciler"),
-	)
-	if err = execrsR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
+	if inclCtrl&ExecutableReplicaSetController != 0 {
+		execrsR := controllers.NewExecutableReplicaSetReconciler(
+			mgr.GetClient(),
+			log.WithName("ExecutableReplicaSetReconciler"),
+		)
+		if err = execrsR.SetupWithManager(mgr, instanceTag+"-ExecutableReplicaSetReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
+		}
 	}
 
-	networkR := controllers.NewNetworkReconciler(
-		ctx,
-		mgr.GetClient(),
-		ctrl.Log.WithName("NetworkReconciler"),
-		serverInfo.ContainerOrchestrator,
-	)
-	if err = networkR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
+	if inclCtrl&NetworkController != 0 {
+		networkR := controllers.NewNetworkReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("NetworkReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
+		}
 	}
 
-	containerR := controllers.NewContainerReconciler(
-		ctx,
-		mgr.GetClient(),
-		ctrl.Log.WithName("ContainerReconciler"),
-		serverInfo.ContainerOrchestrator,
-		controllers.ContainerReconcilerConfig{
-			MaxParallelContainerStarts:      math.MaxUint8,
-			ContainerStartupTimeoutOverride: 2 * time.Second,
-		},
-	)
-	if err = containerR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+	if inclCtrl&ContainerController != 0 {
+		containerR := controllers.NewContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("ContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+			controllers.ContainerReconcilerConfig{
+				MaxParallelContainerStarts:      math.MaxUint8,
+				ContainerStartupTimeoutOverride: 2 * time.Second,
+			},
+		)
+		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+		}
 	}
 
-	containerExecR := controllers.NewContainerExecReconciler(
-		ctx,
-		mgr.GetClient(),
-		ctrl.Log.WithName("ContainerExecReconciler"),
-		serverInfo.ContainerOrchestrator,
-	)
-	if err = containerExecR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
+	if inclCtrl&ContainerExecController != 0 {
+		containerExecR := controllers.NewContainerExecReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("ContainerExecReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = containerExecR.SetupWithManager(mgr, instanceTag+"-ContainerExecReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
+		}
 	}
 
-	volumeR := controllers.NewVolumeReconciler(
-		mgr.GetClient(),
-		ctrl.Log.WithName("VolumeReconciler"),
-		serverInfo.ContainerOrchestrator,
-	)
-	if err = volumeR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
+	if inclCtrl&VolumeController != 0 {
+		volumeR := controllers.NewVolumeReconciler(
+			mgr.GetClient(),
+			log.WithName("VolumeReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
+		}
 	}
 
-	serviceR := controllers.NewServiceReconciler(
-		ctx,
-		mgr.GetClient(),
-		ctrl.Log.WithName("ServiceReconciler"),
-		controllers.ServiceReconcilerConfig{
-			ProcessExecutor:               testProcessExecutor,
-			CreateProxy:                   ctrl_testutil.NewTestProxy,
-			AdditionalReconciliationDelay: 200 * time.Millisecond,
-		},
-	)
-	if err = serviceR.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
+	if inclCtrl&ServiceController != 0 {
+		serviceR := controllers.NewServiceReconciler(
+			ctx,
+			mgr.GetClient(),
+			log.WithName("ServiceReconciler"),
+			controllers.ServiceReconcilerConfig{
+				ProcessExecutor:               pe,
+				CreateProxy:                   ctrl_testutil.NewTestProxy,
+				AdditionalReconciliationDelay: 200 * time.Millisecond,
+			},
+		)
+		if err = serviceR.SetupWithManager(mgr, instanceTag+"-ServiceReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
+		}
 	}
 
 	if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
 	}
 
 	// Starts the controller manager and all the associated controllers
@@ -241,7 +264,7 @@ func startTestEnvironment(ctx context.Context, log logr.Logger) (*ctrl_testutil.
 		managerDone.Set()
 	}()
 
-	return serverInfo, nil
+	return serverInfo, pe, ir, nil
 }
 
 // unexpectedObjectStateError can be used to provide additional context when an object is not in the expected state.
@@ -257,7 +280,22 @@ func (e *unexpectedObjectStateError) Error() string { return e.errText }
 
 var _ error = (*unexpectedObjectStateError)(nil)
 
-func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](t *testing.T, ctx context.Context, name types.NamespacedName, isInState func(*T) (bool, error)) *T {
+func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+	t *testing.T,
+	ctx context.Context,
+	name types.NamespacedName,
+	isInState func(*T) (bool, error),
+) *T {
+	return waitObjectAssumesStateEx[T, PT](t, ctx, client, name, isInState)
+}
+
+func waitObjectAssumesStateEx[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+	t *testing.T,
+	ctx context.Context,
+	apiServerClient ctrl_client.Client,
+	name types.NamespacedName,
+	isInState func(*T) (bool, error),
+) *T {
 	var updatedObject *T = new(T)
 	var unexpectedStateErr *unexpectedObjectStateError
 
@@ -266,7 +304,7 @@ func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectSt
 			return false, ctx.Err()
 		}
 
-		err := client.Get(ctx, name, PT(updatedObject))
+		err := apiServerClient.Get(ctx, name, PT(updatedObject))
 		if ctrl_client.IgnoreNotFound(err) != nil {
 			t.Fatalf("unable to fetch the object '%s' from API server: %v", name.String(), err)
 			return false, err
