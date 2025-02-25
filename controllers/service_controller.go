@@ -124,7 +124,7 @@ func NewServiceReconciler(
 	return &r
 }
 
-func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv1.Endpoint{}, ".metadata.serviceNamespace", func(rawObj ctrl_client.Object) []string {
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceNamespace}
@@ -146,6 +146,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&apiv1.Service{}).
 		Watches(&apiv1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForEndpoint), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(src).
+		Named(name).
 		Complete(r)
 }
 

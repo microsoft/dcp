@@ -73,7 +73,7 @@ func NewExecutableReplicaSetReconciler(client ctrl_client.Client, log logr.Logge
 	return &r
 }
 
-func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	// Setup a client side index to allow quickly finding all Executables owned by an ExecutableReplicaSet.
 	// Behind the scenes this is using listers and informers to keep an index on an internal cache owned by
 	// the Manager up to date.
@@ -102,6 +102,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		For(&apiv1.ExecutableReplicaSet{}).
 		Owns(&apiv1.Executable{}).
 		WithOptions(controller.Options{CacheSyncTimeout: 30 * time.Second}).
+		Named(name).
 		Complete(r)
 }
 

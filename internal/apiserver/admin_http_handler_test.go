@@ -2,12 +2,6 @@ package apiserver_test
 
 import (
 	"bytes"
-	"context"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/json"
-	"encoding/pem"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -240,7 +234,7 @@ func TestCannotChangeExecutionWhenNotAuthenticated(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	// NOTE: no Authorization header set
 
-	client := getApiServerClient(t, serverInfo)
+	client := ctrl_testutil.GetApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request for API server execution data")
 	require.True(t, resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden, "Execution GET:expected status code 401 Unauthorized or 403 Forbidden, but got %d", resp.StatusCode)
@@ -281,7 +275,7 @@ func TestCanStopApiServer(t *testing.T) {
 	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"Stopping"}`))
 	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
 
-	client := getApiServerClient(t, serverInfo)
+	client := ctrl_testutil.GetApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to stop the API server")
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
@@ -319,13 +313,13 @@ func TestCanRunCleanupWithoutStoppingApiServer(t *testing.T) {
 	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
 	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
 
-	client := getApiServerClient(t, serverInfo)
+	client := ctrl_testutil.GetApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	t.Logf("Waiting for API server to complete cleanup...")
-	waitErr := waitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
+	waitErr := ctrl_testutil.WaitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
 	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
 
 	t.Logf("Trying to request cleanup again (should not cause an error)...")
@@ -399,13 +393,13 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
 	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
 
-	client := getApiServerClient(t, serverInfo)
+	client := ctrl_testutil.GetApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
 	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
 	require.Equal(t, http.StatusAccepted, resp.StatusCode)
 
 	t.Logf("Waiting for API server to complete cleanup...")
-	waitErr := waitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
+	waitErr := ctrl_testutil.WaitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
 	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
 
 	t.Logf("Verifying Executable object was deleted...")
@@ -423,71 +417,4 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	t.Logf("Creating Executable object '%s'...", exe.Name)
 	createErr = serverInfo.Client.Create(ctx, &exe)
 	require.Error(t, createErr, "Executable creation should fail")
-}
-
-func getApiServerClient(t *testing.T, serverInfo *ctrl_testutil.ApiServerInfo) *http.Client {
-	client := http.Client{}
-
-	// Mostly need to set up the client to trust the server's certificate
-	block, _ := pem.Decode(serverInfo.ClientConfig.TLSClientConfig.CAData)
-	require.NotNil(t, block, "Failed to decode server certificate authority data")
-	require.Equal(t, "CERTIFICATE", block.Type)
-	cert, certParseErr := x509.ParseCertificate(block.Bytes)
-	require.NoError(t, certParseErr, "Failed to parse server certificate authority data")
-	caCertPool := x509.NewCertPool()
-	caCertPool.AddCert(cert)
-	tlsConfig := &tls.Config{
-		RootCAs: caCertPool,
-	}
-	client.Transport = &http.Transport{
-		TLSClientConfig: tlsConfig,
-	}
-
-	return &client
-}
-
-func waitApiServerStatus(
-	ctx context.Context,
-	client *http.Client,
-	serverInfo *ctrl_testutil.ApiServerInfo,
-	expectedStatus apiserver.ApiServerExecutionStatus,
-) error {
-	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
-
-	waitErr := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true /* pollImmediately */, func(_ context.Context) (bool, error) {
-		req, reqCreationErr := http.NewRequestWithContext(ctx, "GET", adminDocUrl, nil)
-		if reqCreationErr != nil {
-			return false, reqCreationErr
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
-
-		resp, respErr := client.Do(req)
-		if respErr != nil {
-			return false, respErr
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return false, fmt.Errorf("Expected status code 200 OK, but got %d", resp.StatusCode)
-		}
-
-		body, bodyErr := io.ReadAll(resp.Body)
-		if bodyErr != nil {
-			return false, bodyErr
-		}
-
-		var execData apiserver.ApiServerExecutionData
-		unmarshalErr := json.Unmarshal(body, &execData)
-		if unmarshalErr != nil {
-			return false, unmarshalErr
-		}
-
-		if execData.Status == expectedStatus {
-			return true, nil
-		} else {
-			return false, nil
-		}
-	})
-
-	return waitErr
 }

@@ -38,9 +38,13 @@ var (
 	networkAlreadyExistsRegEx     = regexp.MustCompile(`(?i)network with name (.*) already exists`)
 	containerAlreadyAttachedRegEx = regexp.MustCompile(`(?i)container (.*) is already connected to network`)
 	unableToConnectRegEx          = regexp.MustCompile(`(?i)unable to connect to Podman socket:`)
+	volumeInUseRegEx              = regexp.MustCompile(`(?i)volume is being used`)
+	volumeAlreadyExistsRegEx      = regexp.MustCompile(`(?i)volume already exists`)
 
 	newContainerNotFoundErrorMatch        = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch           = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
+	volumeInUseErrorMatch                 = containers.NewCliErrorMatch(volumeInUseRegEx, errors.Join(containers.ErrObjectInUse, fmt.Errorf("volume is being used by a container")))
+	volumeAlreadyExistsErrorMatch         = containers.NewCliErrorMatch(volumeAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("volume already exists")))
 	newNetworkNotFoundErrorMatch          = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
 	newNetworkAlreadyExistsErrorMatch     = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
 	newContainerAlreadyAttachedErrorMatch = containers.NewCliErrorMatch(containerAlreadyAttachedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
@@ -219,9 +223,9 @@ func (pco *PodmanCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	cmd := makePodmanCommand("volume", "create", name)
-	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return err
+		return normalizeCliErrors(err, errBuf, volumeAlreadyExistsErrorMatch.MaxObjects(1))
 	}
 	return containers.ExpectCliStrings(outBuf, []string{name})
 }
@@ -253,7 +257,7 @@ func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []s
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)), volumeInUseErrorMatch.MaxObjects(len(volumes)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))

@@ -36,3 +36,10 @@ func SetValue[T any, PT *T](pp *PT, pVal PT) {
 
 	**pp = *pVal
 }
+
+func TrueValue[T ~bool, PT *T](p PT) bool {
+	if p == nil {
+		return false
+	}
+	return bool(*p)
+}
