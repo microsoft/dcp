@@ -82,6 +82,8 @@ type containerNetworkConnectionKey struct {
 	Network   types.NamespacedName
 }
 
+type containerID string
+
 // Data that we keep, in memory, about running containers.
 type runningContainerData struct {
 	// The most recent state that we set on the Container object.
@@ -92,7 +94,7 @@ type runningContainerData struct {
 	startupError error
 
 	// If the container starts successfully, this is the container ID from the container orchestrator.
-	containerID string
+	containerID containerID
 
 	// If the container starts successfully, this is the container name obtained from the container orchestrator.
 	// Note that the orchestrator typically only returns container ID upon startup.
@@ -141,11 +143,11 @@ func newRunningContainerData(ctr *apiv1.Container) *runningContainerData {
 	// For the sake of storing the runningContainerData in the runningContainers map we need
 	// to have a unique container ID, so we generate a fake one here.
 	// This ID won't be used for any real work.
-	var placeholderID string
+	var placeholderID containerID
 	if ctr.UID != "" {
-		placeholderID = placeholderContainerIdPrefix + string(ctr.UID)
+		placeholderID = containerID(placeholderContainerIdPrefix + string(ctr.UID))
 	} else {
-		placeholderID = placeholderContainerIdPrefix + ctr.NamespacedName().String()
+		placeholderID = containerID(placeholderContainerIdPrefix + ctr.NamespacedName().String())
 	}
 
 	// Update the image name for container build scenarios
@@ -345,11 +347,11 @@ func (rcd *runningContainerData) getStartupLogWriters() (usvc_io.ParagraphWriter
 }
 
 func (rcd *runningContainerData) hasValidContainerID() bool {
-	return rcd.containerID != "" && !strings.HasPrefix(rcd.containerID, placeholderContainerIdPrefix)
+	return rcd.containerID != "" && !strings.HasPrefix(string(rcd.containerID), placeholderContainerIdPrefix)
 }
 
 func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.InspectedContainer) {
-	rcd.containerID = inspected.Id
+	rcd.containerID = containerID(inspected.Id)
 	rcd.containerName = strings.TrimLeft(inspected.Name, "/")
 	rcd.runSpec.Env = maps.MapToSlice[apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
 		return apiv1.EnvVar{Name: key, Value: value}
@@ -378,8 +380,8 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 func (rcd *runningContainerData) applyTo(ctr *apiv1.Container) objectChange {
 	change := setContainerState(ctr, rcd.containerState)
 
-	if rcd.hasValidContainerID() && ctr.Status.ContainerID != rcd.containerID {
-		ctr.Status.ContainerID = rcd.containerID
+	if rcd.hasValidContainerID() && ctr.Status.ContainerID != string(rcd.containerID) {
+		ctr.Status.ContainerID = string(rcd.containerID)
 		change |= statusChanged
 	}
 

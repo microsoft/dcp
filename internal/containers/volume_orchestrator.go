@@ -27,4 +27,6 @@ type VolumeOrchestrator interface {
 	// Returns list of removed volumes. If some volumes are not found, an error will be reported,
 	// but volumes that were found will be removed (this is NOT an all-or-nothing operation).
 	RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error)
+
+	RuntimeStatusChecker
 }

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
+	mathrand "math/rand"
 	"strings"
 	"time"
 
@@ -33,10 +34,11 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	defaultAdditionalReconciliationDelay = 2 * time.Second
-	conflictRequeueDelay                 = 100 * time.Millisecond
-	reconciliationDebounceDelay          = 500 * time.Millisecond
-	reconciliationMaxDelay               = 5 * time.Second
+	defaultAdditionalReconciliationDelay            = 2 * time.Second
+	minimumLongAdditionalReconciliationDelaySeconds = 5
+	conflictRequeueDelay                            = 100 * time.Millisecond
+	reconciliationDebounceDelay                     = 500 * time.Millisecond
+	reconciliationMaxDelay                          = 5 * time.Second
 
 	// If the health probe result is different by timestamp only, we do not write it to the status
 	// unless the existing result is older than this value.
@@ -114,6 +116,19 @@ type PObjectStruct[T ObjectStruct] interface {
 type PCopyableObjectStruct[T ObjectStruct] interface {
 	DeepCopyable[T]
 	PObjectStruct[T]
+}
+
+// Computes the delay to use for additional reconciliation, if necessary.
+// The passed "useLongDelay" parameter determines whether the delay should be "standard" or "long".
+// Passing true will result in a longer delay with a random component,
+// and will also adjust the returned object change to force additional reconciliation.
+func computeAdditionalReconciliationDelay(change objectChange, useLongDelay bool) (time.Duration, objectChange) {
+	reconciliationDelay := defaultAdditionalReconciliationDelay
+	if useLongDelay {
+		reconciliationDelay = time.Duration(mathrand.Intn(minimumLongAdditionalReconciliationDelaySeconds)+minimumLongAdditionalReconciliationDelaySeconds) * time.Second
+		change |= additionalReconciliationNeeded
+	}
+	return reconciliationDelay, change
 }
 
 func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](

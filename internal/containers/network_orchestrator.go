@@ -162,4 +162,6 @@ type NetworkOrchestrator interface {
 
 	// Get default (bridge-type) network name
 	DefaultNetworkName() string
+
+	RuntimeStatusChecker
 }

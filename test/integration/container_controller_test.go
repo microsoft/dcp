@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,17 +27,21 @@ import (
 )
 
 func ensureContainerRunning(t *testing.T, ctx context.Context, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
-	updated := ensureContainerState(t, ctx, container, apiv1.ContainerStateRunning)
+	return ensureContainerRunningEx(t, ctx, client, containerOrchestrator, container)
+}
 
-	inspectedContainers, err := containerOrchestrator.InspectContainers(ctx, []string{updated.Status.ContainerID})
+func ensureContainerRunningEx(t *testing.T, ctx context.Context, client ctrl_client.Client, co *ctrl_testutil.TestContainerOrchestrator, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
+	updated := ensureContainerState(t, ctx, client, container, apiv1.ContainerStateRunning)
+
+	inspectedContainers, err := co.InspectContainers(ctx, []string{updated.Status.ContainerID})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspectedContainers, 1, "expected to find a single container")
 
 	return updated, inspectedContainers[0]
 }
 
-func ensureContainerState(t *testing.T, ctx context.Context, container *apiv1.Container, state apiv1.ContainerState) *apiv1.Container {
-	updated := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(container), func(currentContainer *apiv1.Container) (bool, error) {
+func ensureContainerState(t *testing.T, ctx context.Context, client ctrl_client.Client, container *apiv1.Container, state apiv1.ContainerState) *apiv1.Container {
+	updated := waitObjectAssumesStateEx(t, ctx, client, ctrl_client.ObjectKeyFromObject(container), func(currentContainer *apiv1.Container) (bool, error) {
 		if currentContainer.Status.State == apiv1.ContainerStateFailedToStart {
 			return false, fmt.Errorf("container creation failed: %s", currentContainer.Status.Message)
 		}
@@ -103,6 +108,61 @@ func TestContainerInstanceStarts(t *testing.T) {
 	require.NoError(t, err, "Could not create a Container object")
 
 	_, _ = ensureContainerRunning(t, ctx, &ctr)
+}
+
+// Ensure a container instance is started after container runtime goes from unhealthy to healthy
+func TestContainerRuntimeUnhealthy(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+
+	const testName = "container-runtime-unhealthy"
+	const imageName = testName + "-image"
+
+	log := testutil.NewLogForTesting(t.Name())
+
+	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
+	// and that might interfere with other tests if we used the shared container orchestrator.
+
+	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		// Wait for the API server cleanup to complete.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Setting container runtime to unhealthy...")
+	serverInfo.ContainerOrchestrator.SetRuntimeHealth(false)
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	t.Logf("Ensure Container '%s' state is 'runtime unhealthy'...", ctr.ObjectMeta.Name)
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateRuntimeUnhealthy, nil
+	})
+
+	t.Logf("Setting container runtime to healthy...")
+	serverInfo.ContainerOrchestrator.SetRuntimeHealth(true)
+
+	t.Logf("Ensure Container '%s' is running...", ctr.ObjectMeta.Name)
+	_, _ = ensureContainerRunningEx(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &ctr)
 }
 
 func TestContainerMarkedDone(t *testing.T) {
@@ -1094,7 +1154,7 @@ func TestContainerLogsNonFollow(t *testing.T) {
 				require.True(t, c.Status.State == apiv1.ContainerStateRunning)
 				exitErr := containerOrchestrator.SimulateContainerExit(ctx, c.Status.ContainerID, 0)
 				require.NoError(t, exitErr)
-				_ = ensureContainerState(t, ctx, c, apiv1.ContainerStateExited)
+				_ = ensureContainerState(t, ctx, client, c, apiv1.ContainerStateExited)
 			},
 		},
 	}
@@ -1263,7 +1323,7 @@ func TestContainerLogsFollowAfterExit(t *testing.T) {
 	t.Logf("Transitioning Container '%s' to 'Exited' state...", ctr.ObjectMeta.Name)
 	exitErr := containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, 0)
 	require.NoError(t, exitErr)
-	updatedCtr = ensureContainerState(t, ctx, updatedCtr, apiv1.ContainerStateExited)
+	updatedCtr = ensureContainerState(t, ctx, client, updatedCtr, apiv1.ContainerStateExited)
 
 	t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
 	opts := apiv1.LogOptions{
