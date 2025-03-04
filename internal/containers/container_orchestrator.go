@@ -210,6 +210,11 @@ type CachedRuntimeStatusUsage string
 const CachedRuntimeStatusAllowed CachedRuntimeStatusUsage = "cachedResultAllowed"
 const IgnoreCachedRuntimeStatus CachedRuntimeStatusUsage = "ignoreCachedResult"
 
+type RuntimeStatusChecker interface {
+	// Check the runtime status
+	CheckStatus(ctx context.Context, cacheUsage CachedRuntimeStatusUsage) ContainerRuntimeStatus
+}
+
 // Represents portion of container orchestrator functionality that is related to container management
 type ContainerOrchestrator interface {
 	// Is this the default orchestrator?
@@ -223,9 +228,6 @@ type ContainerOrchestrator interface {
 
 	// Start running background checks for the runtime status
 	EnsureBackgroundStatusUpdates(ctx context.Context)
-
-	// Check the runtime status
-	CheckStatus(ctx context.Context, cacheUsage CachedRuntimeStatusUsage) ContainerRuntimeStatus
 
 	// Build a new container image. If successful, the ID of the image is returned.
 	BuildImage(ctx context.Context, options BuildImageOptions) error
@@ -266,6 +268,7 @@ type ContainerOrchestrator interface {
 	ContainerLogSource
 	VolumeOrchestrator
 	NetworkOrchestrator
+	RuntimeStatusChecker
 }
 
 // Types of events reported for containers

@@ -39,6 +39,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":                  schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus":            schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                         schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":                     schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":                     schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
@@ -1651,11 +1652,17 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref common.Reference
 							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec"),
 						},
 					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus"),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
@@ -1712,7 +1719,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref common.Refer
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "VolumeSpec defines the desired state of a ContainerVolume",
+				Description: "ContainerVolumeSpec defines the desired state of a ContainerVolume",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"name": {
@@ -1732,6 +1739,26 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref common.Refer
 					},
 				},
 				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerVolumeStatus describes the status of a ContainerVolume",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The current state of the ContainerVolume",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
 			},
 		},
 	}

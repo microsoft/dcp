@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -96,7 +95,7 @@ type containerStateInitializerFunc = stateInitializerFunc[
 	runningContainerData, *runningContainerData,
 ]
 
-type runningContainersMap = ObjectStateMap[string, runningContainerData, *runningContainerData]
+type runningContainersMap = ObjectStateMap[containerID, runningContainerData, *runningContainerData]
 
 type ContainerReconciler struct {
 	ctrl_client.Client
@@ -129,7 +128,7 @@ type ContainerReconciler struct {
 	containerEvtWorkerStop chan struct{}
 
 	// Debouncer used to schedule reconciliation. Extra data is the running container ID whose state changed.
-	debouncer *reconcilerDebouncer[string]
+	debouncer *reconcilerDebouncer[containerID]
 
 	// Count of existing Container resources
 	watchingResources *syncmap.Map[types.UID, bool]
@@ -149,14 +148,14 @@ func NewContainerReconciler(lifetimeCtx context.Context, client ctrl_client.Clie
 		Client:                 client,
 		orchestrator:           orchestrator,
 		notifyContainerChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		runningContainers:      NewObjectStateMap[string, runningContainerData](),
+		runningContainers:      NewObjectStateMap[containerID, runningContainerData](),
 		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, config.MaxParallelContainerStarts),
 		containerEvtSub:        nil,
 		networkEvtSub:          nil,
 		containerEvtCh:         nil,
 		networkEvtCh:           nil,
 		containerEvtWorkerStop: nil,
-		debouncer:              newReconcilerDebouncer[string](),
+		debouncer:              newReconcilerDebouncer[containerID](),
 		watchingResources:      &syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
 		lifetimeCtx:            lifetimeCtx,
@@ -243,14 +242,10 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	reconciliationDelay := defaultAdditionalReconciliationDelay
-	if container.Status.State == apiv1.ContainerStateRuntimeUnhealthy && (change&additionalReconciliationNeeded) == 0 {
-		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
-		reconciliationDelay = time.Duration(rand.Intn(5)+5) * time.Second
-		change |= additionalReconciliationNeeded
-	}
+	reconciliationDelay, finalChange := computeAdditionalReconciliationDelay(change, container.Status.State == apiv1.ContainerStateRuntimeUnhealthy)
 
-	return saveChangesWithCustomReconciliationDelay(r.Client, ctx, &container, patch, change, reconciliationDelay, nil, log)
+	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &container, patch, finalChange, reconciliationDelay, nil, log)
+	return result, saveErr
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
@@ -269,9 +264,7 @@ func (r *ContainerReconciler) manageContainer(ctx context.Context, container *ap
 	change := initalizer(ctx, r, container, targetContainerState, rcd, log)
 
 	if rcd != nil {
-		// UNDONE: should we handle runningContainerData deletion here?
-
-		r.runningContainers.Update(container.NamespacedName(), rcd.containerID, rcd)
+		r.runningContainers.Update(container.NamespacedName(), containerID(rcd.containerID), rcd)
 	}
 
 	return change
@@ -315,7 +308,7 @@ func handleNewContainer(
 	container *apiv1.Container,
 	_ apiv1.ContainerState,
 	_ *runningContainerData,
-	_ logr.Logger,
+	log logr.Logger,
 ) objectChange {
 	var change objectChange
 
@@ -327,6 +320,7 @@ func handleNewContainer(
 	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !status.IsHealthy() {
 		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
+		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
 		return setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
@@ -528,7 +522,7 @@ func ensureContainerRunningState(
 	}
 
 	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
-	inspected, err := inspectContainer(ctx, r.orchestrator, rcd.containerID)
+	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
 		if errors.Is(err, containers.ErrNotFound) {
 			log.Info("container resource not found, assuming it was removed... ", "ContainerID", rcd.containerID)
@@ -578,7 +572,7 @@ func ensureContainerExitedState(ctx context.Context,
 	removeEndpointsForWorkload(r, ctx, container, log)
 
 	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
-	inspected, err := inspectContainer(ctx, r.orchestrator, rcd.containerID)
+	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
 		log.Info("container resource could not be inspected, might have been removed... ",
 			"ContainerID", rcd.containerID,
@@ -678,7 +672,7 @@ func ensureContainerStoppingState(
 // Returns an error if the container resource could not be stopped.
 func (r *ContainerReconciler) stopContainerIfNecessary(
 	ctx context.Context,
-	id string,
+	containerID containerID,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) error {
@@ -693,20 +687,20 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 
 	if inspected == nil {
 		var inspectErr error
-		inspected, inspectErr = inspectContainer(ctx, r.orchestrator, id)
+		inspected, inspectErr = inspectContainer(ctx, r.orchestrator, string(containerID))
 		if inspectErr != nil {
 			if errors.Is(inspectErr, containers.ErrNotFound) {
-				log.Info("container resource not found, assuming it was removed... ", "ContainerID", id)
+				log.Info("container resource not found, assuming it was removed... ", "ContainerID", containerID)
 				return containers.ErrNotFound
 			}
 		}
 	}
 
 	if needsStopping() {
-		log.V(1).Info("calling container orchestrator to stop the existing container...", "ContainerID", id)
-		stopErr := stopContainer(ctx, r.orchestrator, id)
+		log.V(1).Info("calling container orchestrator to stop the existing container...", "ContainerID", containerID)
+		stopErr := stopContainer(ctx, r.orchestrator, string(containerID))
 		if stopErr != nil {
-			log.Error(stopErr, "could not stop the running container", "ContainerID", id)
+			log.Error(stopErr, "could not stop the running container", "ContainerID", containerID)
 		}
 		return stopErr
 	}
@@ -716,21 +710,21 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 
 func (r *ContainerReconciler) removeExistingContainer(
 	ctx context.Context,
-	id string,
+	containerID containerID,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) error {
-	stopErr := r.stopContainerIfNecessary(ctx, id, inspected, log)
+	stopErr := r.stopContainerIfNecessary(ctx, containerID, inspected, log)
 	if errors.Is(stopErr, containers.ErrNotFound) {
 		// Already logged (at info level) by stopExistingContainer()
 		return nil // Nothing to do
 	}
 
 	// Try to remove the container even if stop error occurred.
-	removeErr := removeContainer(ctx, r.orchestrator, id)
+	removeErr := removeContainer(ctx, r.orchestrator, string(containerID))
 	if removeErr != nil {
 		// Log any unexpected error, but attempt to continue with creation of the new container
-		log.Error(removeErr, "could not remove the running container", "ContainerID", id)
+		log.Error(removeErr, "could not remove the running container", "ContainerID", containerID)
 		return removeErr
 	}
 
@@ -826,8 +820,8 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 
 		r.runningContainers.QueueDeferredOp(
 			container.NamespacedName(),
-			func(containerObjectName types.NamespacedName, containerID string) {
-				r.runningContainers.Update(containerObjectName, containerID, rcd)
+			func(containerObjectName types.NamespacedName, id containerID) {
+				r.runningContainers.Update(containerObjectName, id, rcd)
 			},
 		)
 		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
@@ -1022,13 +1016,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
 						}
 
-						if removeErr := r.removeExistingContainer(startupCtx, inspected.Id, inspected, log); removeErr != nil {
+						if removeErr := r.removeExistingContainer(startupCtx, containerID(inspected.Id), inspected, log); removeErr != nil {
 							return removeErr
 						}
 					} else if dcpManaged && inspected.Status != containers.ContainerStatusRunning {
 						// We need to recreate this DCP managed container because it is not running
 						log.Info("found existing Container that is not running, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "ContainerStatus", inspected.Status)
-						if removeErr := r.removeExistingContainer(startupCtx, inspected.Id, inspected, log); removeErr != nil {
+						if removeErr := r.removeExistingContainer(startupCtx, containerID(inspected.Id), inspected, log); removeErr != nil {
 							return removeErr
 						}
 					} else {
@@ -1192,7 +1186,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				if !container.Spec.Persistent {
 					for i := range inspected.Networks {
 						networkID := inspected.Networks[i].Id
-						err = disconnectNetwork(startupCtx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: rcd.containerID, Force: true})
+						err = disconnectNetwork(startupCtx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
 						if err != nil {
 							log.Error(err, "could not detach network from the container", "ContainerID", rcd.containerID, "Network", networkID)
 							return err
@@ -1216,7 +1210,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 		r.runningContainers.QueueDeferredOp(
 			container.NamespacedName(),
-			func(containerObjectName types.NamespacedName, containerID string) {
+			func(containerObjectName types.NamespacedName, containerID containerID) {
 				r.runningContainers.UpdateChangingStateKey(containerObjectName, placeholderContainerID, rcd.containerID, rcd)
 			},
 		)
@@ -1246,7 +1240,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 
 		r.runningContainers.QueueDeferredOp(
 			container.NamespacedName(),
-			func(containerObjectName types.NamespacedName, containerID string) {
+			func(containerObjectName types.NamespacedName, containerID containerID) {
 				r.runningContainers.Update(containerObjectName, containerID, rcd)
 			},
 		)
@@ -1293,7 +1287,7 @@ func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, 
 
 func (r *ContainerReconciler) startContainerWithTimeout(
 	parentCtx context.Context,
-	containerID string,
+	containerID containerID,
 	streamOptions containers.StreamCommandOptions,
 ) error {
 	startContainerCallCtx := parentCtx
@@ -1302,7 +1296,7 @@ func (r *ContainerReconciler) startContainerWithTimeout(
 		startContainerCallCtx, startContainerCallCtxCancel = context.WithTimeout(parentCtx, r.config.ContainerStartupTimeoutOverride)
 		defer startContainerCallCtxCancel()
 	}
-	_, err := startContainer(startContainerCallCtx, r.orchestrator, containerID, streamOptions)
+	_, err := startContainer(startContainerCallCtx, r.orchestrator, string(containerID), streamOptions)
 	return err
 }
 
@@ -1448,7 +1442,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			log.Error(err, "")
 			return []*apiv1.ContainerNetwork{}, err
 		}
-		if i, err := inspectContainer(ctx, r.orchestrator, containerID); err != nil {
+		if i, err := inspectContainer(ctx, r.orchestrator, string(containerID)); err != nil {
 			log.Error(err, "could not inspect the container", "ContainerID", containerID)
 			return []*apiv1.ContainerNetwork{}, err
 		} else {
@@ -1559,7 +1553,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			},
 			Spec: apiv1.ContainerNetworkConnectionSpec{
 				ContainerNetworkName: namespacedNetworkName.String(),
-				ContainerID:          containerID,
+				ContainerID:          string(containerID),
 				Aliases:              network.Aliases,
 			},
 		}
@@ -1668,7 +1662,7 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 	}
 
 	log.V(1).Info("inspecting running container resource to get its port information...", "ContainerID", rcd.containerID)
-	inspected, err := inspectContainer(ctx, r.orchestrator, rcd.containerID)
+	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
 		return "", 0, err
 	}
@@ -1817,7 +1811,7 @@ func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) 
 	switch em.Action {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
 	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionDied, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune:
-		containerID := em.Actor.ID
+		containerID := containerID(em.Actor.ID)
 		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
 		if rcd == nil {
 			// We are not tracking this container
@@ -1835,11 +1829,12 @@ func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) 
 func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 	switch em.Action {
 	case containers.EventActionConnect, containers.EventActionDisconnect:
-		containerID, found := em.Attributes["container"]
+		val, found := em.Attributes["container"]
 		if !found {
 			// We could not identify the container this event applies to
 			return
 		}
+		containerID := containerID(val)
 
 		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
 		if rcd == nil {
@@ -1945,11 +1940,11 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 	return nil
 }
 
-func (r *ContainerReconciler) scheduleContainerReconciliation(containerName types.NamespacedName, containerID string) {
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, containerName, containerID, r.doReconcileContainer)
+func (r *ContainerReconciler) scheduleContainerReconciliation(containerName types.NamespacedName, id containerID) {
+	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, containerName, id, r.doReconcileContainer)
 }
 
-func (r *ContainerReconciler) doReconcileContainer(rti reconcileTriggerInput[string]) {
+func (r *ContainerReconciler) doReconcileContainer(rti reconcileTriggerInput[containerID]) {
 	event := ctrl_event.GenericEvent{
 		Object: &apiv1.Container{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1968,10 +1963,10 @@ func (r *ContainerReconciler) onShutdown() {
 	defer r.lock.Unlock()
 	r.cancelContainerWatch()
 
-	r.runningContainers.Range(func(containerName types.NamespacedName, containerID string, rcd *runningContainerData) bool {
+	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
 		rcd.closeStartupLogFiles(r.Log)
 		rcd.deleteStartupLogFiles(r.Log)
-		_ = r.runningContainers.Update(containerName, containerID, rcd)
+		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
 	})
 	r.runningContainers.Clear()

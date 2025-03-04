@@ -20,7 +20,24 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
-// VolumeSpec defines the desired state of a ContainerVolume
+type ContainerVolumeState string
+
+const (
+	// Same as ContainerVolumeStatePending. Happens when ContainerVolume status has not been initialized yet.
+	ContainerVolumeStateEmpty ContainerVolumeState = ""
+
+	// The volume has not been checked for existence or has not been created yet.
+	ContainerVolumeStatePending ContainerVolumeState = "Pending"
+
+	// ContainerVolumeStateRuntimeUnhealthy indicates that the underlying Docker/Podman volume cannot be created
+	// (or its existence cannot be verified) because the container runtime is not healthy.
+	ContainerVolumeStateRuntimeUnhealthy ContainerVolumeState = "RuntimeUnhealthy"
+
+	// The underlying Docker/Podman volume has been created and is ready for use.
+	ContainerVolumeStateReady ContainerVolumeState = "Ready"
+)
+
+// ContainerVolumeSpec defines the desired state of a ContainerVolume
 // +k8s:openapi-gen=true
 type ContainerVolumeSpec struct {
 	// Name of the volume
@@ -32,6 +49,19 @@ type ContainerVolumeSpec struct {
 	Persistent *bool `json:"persistent,omitempty"`
 }
 
+// ContainerVolumeStatus describes the status of a ContainerVolume
+// +k8s:openapi-gen=true
+type ContainerVolumeStatus struct {
+	// The current state of the ContainerVolume
+	// +kubebuilder:default=Pending
+	// +kubebuilder:validation:Enum=Pending;RuntimeUnhealthy;Ready
+	State ContainerVolumeState `json:"state,omitempty"`
+}
+
+func (cvs ContainerVolumeStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
+	cvs.DeepCopyInto(&dest.(*ContainerVolume).Status)
+}
+
 // ContainerVolume represents a volume that can be consumed by Container instances
 // Its lifetime is independent from the lifetime of containers
 // +kubebuilder:object:root=true
@@ -41,8 +71,8 @@ type ContainerVolume struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec ContainerVolumeSpec `json:"spec,omitempty"`
-	// No status for now, but we might need to introduce status in future.
+	Spec   ContainerVolumeSpec   `json:"spec,omitempty"`
+	Status ContainerVolumeStatus `json:"status,omitempty"`
 }
 
 func (cv *ContainerVolume) GetGroupVersionResource() schema.GroupVersionResource {
@@ -87,6 +117,10 @@ func (cv *ContainerVolume) NamespacedName() types.NamespacedName {
 		Name:      cv.Name,
 		Namespace: cv.Namespace,
 	}
+}
+
+func (cv *ContainerVolume) GetStatus() apiserver_resource.StatusSubResource {
+	return cv.Status
 }
 
 func (cv *ContainerVolume) Validate(ctx context.Context) field.ErrorList {
@@ -150,6 +184,8 @@ func init() {
 
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*ContainerVolume)(nil)
+var _ apiserver_resource.ObjectWithStatusSubResource = (*ContainerVolume)(nil)
+var _ apiserver_resource.StatusSubResource = (*ContainerVolumeStatus)(nil)
 var _ apiserver_resource.ObjectList = (*ContainerVolumeList)(nil)
 var _ commonapi.ListWithObjectItems = (*ContainerVolumeList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerVolume)(nil)

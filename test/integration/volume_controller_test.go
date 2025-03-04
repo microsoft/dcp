@@ -31,7 +31,7 @@ func ensureVolumeCreated(
 	volume *apiv1.ContainerVolume,
 ) containers.InspectedVolume {
 	waitObjectAssumesStateEx(t, ctx, apiServerClient, ctrl_client.ObjectKeyFromObject(volume), func(updatedVol *apiv1.ContainerVolume) (bool, error) {
-		return len(updatedVol.Finalizers) > 0, nil
+		return updatedVol.Status.State == apiv1.ContainerVolumeStateReady, nil
 	})
 
 	var inspected []containers.InspectedVolume
@@ -261,4 +261,56 @@ func TestContainerVolumeCleanup(t *testing.T) {
 		return false, nil
 	})
 	require.NoError(t, notFoundErr, "Could not ensure that volume associated with nonpersistent ContainerVolume was deleted")
+}
+
+// Ensure that ContainerVolume behaves correctly when the container runtime is unhealthy.
+func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	const testName = "container-volume-runtime-unhealthy"
+	log := testutil.NewLogForTesting(t.Name())
+
+	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
+	// and that might interfere with other tests if we used the shared container orchestrator.
+
+	serverInfo, _, _, startupErr := StartTestEnvironment(ctx, VolumeController, t.Name(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		// Wait for the API server cleanup to complete.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	vol := apiv1.ContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerVolumeSpec{
+			Name: testName,
+		},
+	}
+
+	t.Logf("Setting container runtime to unhealthy...")
+	serverInfo.ContainerOrchestrator.SetRuntimeHealth(false)
+
+	t.Logf("Creating ContainerVolume object '%s'...", vol.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &vol)
+	require.NoError(t, err, "Could not create a ContainerVolume object")
+
+	t.Logf("Ensure that ContainerVolume '%s' is marked as unhealthy...", vol.ObjectMeta.Name)
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&vol), func(updatedVol *apiv1.ContainerVolume) (bool, error) {
+		return updatedVol.Status.State == apiv1.ContainerVolumeStateRuntimeUnhealthy, nil
+	})
+
+	t.Logf("Setting container runtime to healthy...")
+	serverInfo.ContainerOrchestrator.SetRuntimeHealth(true)
+
+	t.Logf("Ensure that ContainerVolume '%s' has a corresponding Docker volume created...", vol.ObjectMeta.Name)
+	_ = ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &vol)
 }

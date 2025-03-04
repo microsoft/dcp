@@ -33,15 +33,17 @@ import (
 
 var (
 	// Base32 encoder used to generate unique postfixes for Executable replicas.
-	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
+	randomNameEncoder   = base32.HexEncoding.WithPadding(base32.NoPadding)
+	errRuntimeUnhealthy = errors.New("(test) container runtime is unhealthy")
 )
 
 const (
 	TestEventActionStopWithoutRemove containers.EventAction = "stop_without_remove"
+	randomNameLength                 int                    = 20
 )
 
 type TestContainerOrchestrator struct {
-	randomNameLength       int
+	runtimeHealthy         bool
 	volumes                map[string]containerVolume
 	networks               map[string]*containerNetwork
 	images                 map[string]bool
@@ -96,8 +98,8 @@ func NewTestContainerOrchestrator(
 	now := time.Now()
 
 	to := &TestContainerOrchestrator{
-		randomNameLength: 20,
-		volumes:          map[string]containerVolume{},
+		runtimeHealthy: true,
+		volumes:        map[string]containerVolume{},
 		networks: map[string]*containerNetwork{
 			"bridge": {
 				withId:    newId("bridge"),
@@ -175,6 +177,11 @@ func setupSocketListener(to *TestContainerOrchestrator) error {
 }
 
 func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, req *http.Request) {
+	if !to.runtimeHealthy {
+		http.Error(resp, errRuntimeUnhealthy.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	containerId := req.PathValue("containerId")
 	if containerId == "" {
 		http.Error(resp, "containerId is required", http.StatusBadRequest)
@@ -317,11 +324,11 @@ func (to *TestContainerOrchestrator) doWatchNetworks(_ context.Context, _ *pubsu
 }
 
 func (to *TestContainerOrchestrator) getRandomName() (string, error) {
-	postfixBytes := make([]byte, to.randomNameLength)
+	postfixBytes := make([]byte, randomNameLength)
 	if read, err := rand.Read(postfixBytes); err != nil {
 		return "", err
-	} else if read != to.randomNameLength {
-		return "", fmt.Errorf("could not generate %d bytes of randomness", to.randomNameLength)
+	} else if read != randomNameLength {
+		return "", fmt.Errorf("could not generate %d bytes of randomness", randomNameLength)
 	}
 
 	return randomNameEncoder.EncodeToString(postfixBytes), nil
@@ -407,13 +414,23 @@ func (to *TestContainerOrchestrator) CheckStatus(_ context.Context, _ containers
 
 	return containers.ContainerRuntimeStatus{
 		Installed: true,
-		Running:   true,
+		Running:   to.runtimeHealthy,
 	}
+}
+
+func (to *TestContainerOrchestrator) SetRuntimeHealth(healthy bool) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	to.runtimeHealthy = healthy
 }
 
 func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, name string) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
 
 	if _, found := to.volumes[name]; found {
 		return containers.ErrAlreadyExists
@@ -427,6 +444,14 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, name stri
 func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
 
 	for _, name := range volumes {
 		if _, found := to.volumes[name]; !found {
@@ -447,6 +472,10 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, volumes
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
 	}
 
 	var result []containers.InspectedVolume
@@ -486,6 +515,10 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		return "", ctx.Err()
 	}
 
+	if !to.runtimeHealthy {
+		return "", errRuntimeUnhealthy
+	}
+
 	if options.Name == "" {
 		return "", fmt.Errorf("name must not be empty")
 	}
@@ -523,6 +556,10 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
 	}
 
 	names := []string{}
@@ -571,6 +608,10 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
 	}
 
 	var result []containers.InspectedNetwork
@@ -622,6 +663,10 @@ func (to *TestContainerOrchestrator) ConnectNetwork(ctx context.Context, options
 		return ctx.Err()
 	}
 
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
 	for _, network := range to.networks {
 		if network.matches(options.Network) {
 			for _, container := range to.containers {
@@ -664,6 +709,10 @@ func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, opti
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
 	}
 
 	for _, network := range to.networks {
@@ -709,6 +758,10 @@ func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context) ([]contai
 		return nil, ctx.Err()
 	}
 
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -738,6 +791,10 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
 	}
 
 	if options.IidFile != "" {
@@ -771,6 +828,14 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
 
 	for _, image := range images {
 		if _, found := to.images[image]; !found {
@@ -817,6 +882,14 @@ func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.Even
 func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return "", errRuntimeUnhealthy
+	}
 
 	container, err := to.doCreateContainer(ctx, options)
 	if err != nil {
@@ -916,6 +989,14 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
 	var result []string
 
 	var containersToStart []*testContainer
@@ -1009,6 +1090,14 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return "", errRuntimeUnhealthy
+	}
+
 	var cco containers.CreateContainerOptions = containers.CreateContainerOptions(options)
 	container, err := to.doCreateContainer(ctx, cco)
 	if err != nil {
@@ -1034,6 +1123,14 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options containers.ExecContainerOptions) (<-chan int32, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
 
 	var foundContainer *testContainer
 	for _, container := range to.containers {
@@ -1066,6 +1163,14 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
 
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
@@ -1152,6 +1257,14 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
 	if len(names) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
@@ -1236,6 +1349,14 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
 	var result []containers.InspectedContainer
 
 	for _, name := range names {
@@ -1290,6 +1411,10 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 		return ctx.Err()
 	}
 
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
 	for _, container := range to.containers {
 		if container.matches(name) {
 			if container.status == containers.ContainerStatusExited {
@@ -1322,6 +1447,14 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Context, container string, command string, exitCode int32) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
 
 	matching := slices.Select(maps.Values(to.containers), func(tc *testContainer) bool { return tc.matches(container) })
 	if len(matching) == 0 {
@@ -1362,6 +1495,10 @@ func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Conte
 func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, containerNameOrId string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
 	}
 
 	if options.Tail != 0 {
