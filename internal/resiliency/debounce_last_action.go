@@ -52,21 +52,20 @@ func (dl *DebounceLastAction[T]) Run(ctx context.Context, arg T) {
 }
 
 func (dl *DebounceLastAction[T]) execRunnerIfThresholdExceeded(ctx context.Context, arg T) {
-	defer func() {
-		dl.timer.Stop()
-		close(dl.runC)
-		dl.runC = nil
-		dl.threshold = time.Time{}
-		dl.m.Unlock()
-	}()
-
 	select {
 	case <-dl.timer.C:
-		func() {
-			defer dl.m.Lock()
-			dl.action(arg)
-		}()
+		dl.stopCurrentRun()
+		dl.action(arg)
 	case <-ctx.Done():
-		dl.m.Lock()
+		dl.stopCurrentRun()
 	}
+}
+
+func (dl *DebounceLastAction[T]) stopCurrentRun() {
+	dl.m.Lock()
+	defer dl.m.Unlock()
+	dl.timer.Stop()
+	close(dl.runC)
+	dl.runC = nil
+	dl.threshold = time.Time{}
 }
