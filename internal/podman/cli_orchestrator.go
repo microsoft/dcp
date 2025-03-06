@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -640,6 +641,52 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	return removed, containers.ExpectCliStrings(outBuf, names)
 }
 
+func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
+	args := []string{"container", "cp"}
+
+	// Read the tar file to copy from standard input
+	// Apply ownership information from the tar file
+	args = append(args, "-a=false", "-")
+
+	tarWriter := usvc_io.NewTarWriter()
+
+	for _, item := range options.Entries {
+		if item.Type == apiv1.FileSystemEntryTypeDir {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addDirectoryErr != nil {
+				return addDirectoryErr
+			}
+		} else {
+			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addFileErr != nil {
+				return addFileErr
+			}
+		}
+	}
+
+	buffer, bufferErr := tarWriter.Buffer()
+	if bufferErr != nil {
+		return bufferErr
+	}
+
+	args = append(args, options.Container+":"+options.Destination)
+
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		// TODO: Remove this workaround once podman cli supports copy via stdio on Windows
+		cmd = makePodmanMachineCommand(args...)
+	} else {
+		cmd = makePodmanCommand(args...)
+	}
+
+	cmd.Stdin = buffer
+
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if err != nil {
+		return normalizeCliErrors(err, errBuf)
+	}
+
+	return nil
+}
+
 func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
 	sub := pco.containerEvtWatcher.Subscribe(sink)
 	return sub, nil
@@ -1011,6 +1058,12 @@ func (pco *PodmanCliOrchestrator) runBufferedPodmanCommand(
 }
 
 func makePodmanCommand(args ...string) *exec.Cmd {
+	cmd := exec.Command("podman", args...)
+	return cmd
+}
+
+func makePodmanMachineCommand(args ...string) *exec.Cmd {
+	args = append([]string{"machine", "ssh", "podman"}, args...)
 	cmd := exec.Command("podman", args...)
 	return cmd
 }

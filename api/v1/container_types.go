@@ -3,6 +3,8 @@ package v1
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"path"
 	"regexp"
 	"slices"
 
@@ -172,6 +174,175 @@ const (
 	PullPolicyNever PullPolicy = "never"
 )
 
+type FileSystemEntryType string
+
+const (
+	FileSystemEntryTypeFile FileSystemEntryType = "file" // default
+	FileSystemEntryTypeDir  FileSystemEntryType = "directory"
+)
+
+// Represents part of the file structure to be created in the container
+// +k8s:openapi-gen=true
+type FileSystemEntry struct {
+	// The type of entry (file, symlink, or directory)
+	Type FileSystemEntryType `json:"type,omitempty"`
+
+	// The name of the entry (required)
+	Name string `json:"name"`
+
+	// The UID of the file owner. Defaults to 0 (root).
+	Owner *int32 `json:"owner,omitempty"`
+
+	// The ID of the file group. Defaults to 0 (root).
+	Group *int32 `json:"group,omitempty"`
+
+	// The unix mode permissions of this entry. Inherits from parent if not set.
+	Mode fs.FileMode `json:"mode,omitempty"`
+
+	// For file type entries, the contents of the file. Optional.
+	Contents string `json:"contents,omitempty"`
+
+	// For directory type entries, the child entries (files or directories). Optional.
+	Entries []FileSystemEntry `json:"entries,omitempty"`
+}
+
+func (cfi *FileSystemEntry) Equal(other *FileSystemEntry) bool {
+	if cfi == other {
+		return true
+	}
+
+	if cfi == nil || other == nil {
+		return false
+	}
+
+	if cfi.Type != other.Type {
+		return false
+	}
+
+	if cfi.Name != other.Name {
+		return false
+	}
+
+	if !pointers.EqualValue(cfi.Owner, other.Owner) {
+		return false
+	}
+
+	if !pointers.EqualValue(cfi.Group, other.Group) {
+		return false
+	}
+
+	if cfi.Mode != other.Mode {
+		return false
+	}
+
+	if cfi.Contents != other.Contents {
+		return false
+	}
+
+	if !slices.EqualFunc(cfi.Entries, other.Entries, func(i1, i2 FileSystemEntry) bool {
+		return i1.Equal(&i2)
+	}) {
+		return false
+	}
+
+	return true
+}
+
+func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
+	if fse == nil {
+		return nil
+	}
+
+	var errorList field.ErrorList
+
+	if fse.Name == "" {
+		errorList = append(errorList, field.Required(fieldPath.Child("name"), "name must be set to a non-empty value"))
+	}
+
+	if path.Dir(fse.Name) != "." {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("name"), fse.Name, "name must not include a path component"))
+	}
+
+	if fse.Owner != nil && *fse.Owner < 0 {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("owner"), fse.Owner, "owner must be a non-negative integer"))
+	}
+
+	if fse.Group != nil && *fse.Group < 0 {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("group"), fse.Group, "group must be a non-negative integer"))
+	}
+
+	if fse.Type != "" && fse.Type != FileSystemEntryTypeFile && fse.Type != FileSystemEntryTypeDir {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("type"), fse.Type, "type must be one of 'file' or 'directory'"))
+	}
+
+	if fse.Type == "" || fse.Type == FileSystemEntryTypeFile {
+		if len(fse.Entries) > 0 {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("entries"), "dirEntry cannot be set for file type entries"))
+		}
+	}
+
+	if fse.Type == FileSystemEntryTypeDir {
+		if fse.Contents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "contents cannot be set for directory type entries"))
+		}
+
+		for i, entry := range fse.Entries {
+			errorList = append(errorList, entry.Validate(fieldPath.Child("entries").Index(i))...)
+		}
+	}
+
+	if !fse.Mode.IsRegular() {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("mode"), fse.Mode, "mode must not include type bits"))
+	}
+
+	return errorList
+}
+
+// Describes files and/or folders to be created in the Container before it is started
+// +k8s:openapi-gen=true
+type CreateFileSystem struct {
+	// The destination path for the file (should already exist in the container)
+	Destination string `json:"destination,omitempty"`
+
+	// The default owner ID for created files (defaults to 0 for root)
+	DefaultOwner int32 `json:"defaultOwner,omitempty"`
+
+	// The default group ID for created files (defaults to 0 for root)
+	DefaultGroup int32 `json:"defaultGroup,omitempty"`
+
+	// The default mode for created files (defaults to 0600)
+	Mode fs.FileMode `json:"mode,omitempty"`
+
+	// The specific entries to create in the container (must have at least one item)
+	Entries []FileSystemEntry `json:"entries,omitempty"`
+}
+
+func (cf *CreateFileSystem) Equal(other *CreateFileSystem) bool {
+	if cf == other {
+		return true
+	}
+
+	if cf == nil || other == nil {
+		return false
+	}
+
+	if cf.Destination != other.Destination {
+		return false
+	}
+
+	if cf.Mode != other.Mode {
+		return false
+	}
+
+	if !slices.EqualFunc(cf.Entries, other.Entries, func(i1, i2 FileSystemEntry) bool {
+		return i1.Equal(&i2)
+	}) {
+		return false
+	}
+
+	return true
+}
+
 // ContainerSpec defines the desired state of a Container
 // +k8s:openapi-gen=true
 type ContainerSpec struct {
@@ -244,6 +415,10 @@ type ContainerSpec struct {
 
 	// Pull policy for container base images, if not set uses the default configuration for the container runtime.
 	PullPolicy PullPolicy `json:"pullPolicy,omitempty"`
+
+	// Files to create in the container before starting it
+	// +listType=atomic
+	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -591,6 +766,32 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
 	}
 
+	for i, createFile := range e.Spec.CreateFiles {
+		if createFile.Destination != "" && !path.IsAbs(createFile.Destination) {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("destination"), createFile.Destination, "destination must be absolute"))
+		}
+
+		if !fs.FileMode(createFile.Mode).IsRegular() {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("mode"), createFile.Mode, "mode must not include type bits"))
+		}
+
+		if len(createFile.Entries) == 0 {
+			errorList = append(errorList, field.Required(field.NewPath("spec", "createFiles").Index(i).Child("entries"), "at least one child entry must be specified"))
+		}
+
+		for j, item := range createFile.Entries {
+			errorList = append(errorList, item.Validate(field.NewPath("spec", "createFiles").Index(i).Child("entries").Index(j))...)
+		}
+
+		if createFile.DefaultOwner < 0 {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("defaultOwner"), createFile.DefaultOwner, "default owner must be a non-negative integer"))
+		}
+
+		if createFile.DefaultGroup < 0 {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("defaultGroup"), createFile.DefaultGroup, "default group must be a non-negative integer"))
+		}
+	}
+
 	return errorList
 }
 
@@ -648,6 +849,16 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 
 	if oldContainer.Spec.PullPolicy != e.Spec.PullPolicy {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pullPolicy"), "pullPolicy cannot be changed"))
+	}
+
+	if len(oldContainer.Spec.CreateFiles) != len(e.Spec.CreateFiles) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "createFiles"), "created files cannot be changed once a Container is created."))
+	} else {
+		for i, item := range oldContainer.Spec.CreateFiles {
+			if !item.Equal(&e.Spec.CreateFiles[i]) {
+				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "createFiles").Index(i), "created files cannot be changed once a Container is created."))
+			}
+		}
 	}
 
 	return errorList
