@@ -40,6 +40,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus":            schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem":                 schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                         schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":                     schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":                     schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
@@ -55,6 +56,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":                 schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":               schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry":                  schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbe":                      schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult":                schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref),
 		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule":              schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref),
@@ -1437,11 +1439,30 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							Format:      "",
 						},
 					},
+					"createFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Files to create in the container before starting it",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
 	}
 }
 
@@ -1761,6 +1782,63 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref common.Ref
 				},
 			},
 		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Describes files and/or folders to be created in the Container before it is started",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"destination": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The destination path for the file (should already exist in the container)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"defaultOwner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The default owner ID for created files (defaults to 0 for root)",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"defaultGroup": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The default group ID for created files (defaults to 0 for root)",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The default mode for created files (defaults to 0600)",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"entries": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The specific entries to create in the container (must have at least one item)",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"},
 	}
 }
 
@@ -2587,6 +2665,79 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref common.Refere
 		},
 		Dependencies: []string{
 			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Represents part of the file structure to be created in the container",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The type of entry (file, symlink, or directory)",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The name of the entry (required)",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"owner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The UID of the file owner. Defaults to 0 (root).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ID of the file group. Defaults to 0 (root).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The unix mode permissions of this entry. Inherits from parent if not set.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"contents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, the contents of the file. Optional.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"entries": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For directory type entries, the child entries (files or directories). Optional.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"},
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -28,6 +29,8 @@ const (
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
 	stdOutMaxLevel         = zapcore.InfoLevel
+
+	macOsLogErrorFilter = "Could not get process start time, could not read \"/proc\": stat /proc: no such file or directory"
 )
 
 var (
@@ -39,6 +42,57 @@ type Logger struct {
 	name        string
 	atomicLevel zap.AtomicLevel
 	flush       func()
+}
+
+type filterSink struct {
+	active    bool
+	maxLife   int
+	filter    string
+	innerSink logr.LogSink
+	mutex     *sync.Mutex
+}
+
+func (fs *filterSink) Init(info logr.RuntimeInfo) {
+	fs.innerSink.Init(info)
+}
+
+func (fs *filterSink) Enabled(level int) bool {
+	return fs.innerSink.Enabled(level)
+}
+
+func (fs *filterSink) Info(level int, msg string, keysAndValues ...any) {
+	fs.innerSink.Info(level, msg, keysAndValues...)
+}
+
+func (fs *filterSink) Error(err error, msg string, keysAndValues ...any) {
+	fs.mutex.Lock()
+	defer fs.mutex.Unlock()
+
+	if !fs.active {
+		fs.innerSink.Error(err, msg, keysAndValues...)
+		return
+	}
+
+	if msg == fs.filter {
+		fs.active = false
+		return
+	}
+
+	fs.maxLife--
+
+	if fs.maxLife <= 0 {
+		fs.active = false
+	}
+
+	fs.innerSink.Error(err, msg, keysAndValues...)
+}
+
+func (fs *filterSink) WithValues(keysAndValues ...any) logr.LogSink {
+	return fs.innerSink.WithValues(keysAndValues...)
+}
+
+func (fs *filterSink) WithName(name string) logr.LogSink {
+	return fs.innerSink.WithName(name)
 }
 
 // New logger implementation to handle logging to stdout/debug log
@@ -91,8 +145,21 @@ func New(name string) Logger {
 
 	zapLogger := zap.New(zapcore.NewTee(cores...))
 
+	logger := zapr.NewLogger(zapLogger).WithName(name)
+
+	if runtime.GOOS == "darwin" {
+		innerSink := logger.GetSink()
+		logger = logger.WithSink(&filterSink{
+			active:    true,
+			maxLife:   1,
+			filter:    macOsLogErrorFilter,
+			innerSink: innerSink,
+			mutex:     &sync.Mutex{},
+		})
+	}
+
 	return Logger{
-		Logger:      zapr.NewLogger(zapLogger).WithName(name),
+		Logger:      logger,
 		name:        name,
 		atomicLevel: consoleAtomicLevel,
 		flush: func() {

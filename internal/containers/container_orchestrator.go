@@ -183,6 +183,17 @@ type ExecContainerOptions struct {
 	StreamCommandOptions
 }
 
+type CreateFilesOptions struct {
+	// The container (name/id) to copy the file to
+	Container string
+
+	// Time the file was modified/created
+	ModTime time.Time
+
+	// The actual file structure to be created
+	apiv1.CreateFileSystem
+}
+
 type StreamContainerLogsOptions struct {
 	// Follow the logs vs. just returning the current logs at the time the command was run
 	Follow bool
@@ -260,6 +271,9 @@ type ContainerOrchestrator interface {
 	// Returns list of removed containers. If some containers are not found, an error will be reported,
 	// but containers that were found will be removed (this is NOT an all-or-noting operation).
 	RemoveContainers(ctx context.Context, containers []string, force bool) ([]string, error)
+
+	// Create files/folders in the container based on the provided structure
+	CreateFiles(ctx context.Context, options CreateFilesOptions) error
 
 	// Subscribes to events about container state changes
 	// When the subscription is cancelled, the channel will be closed

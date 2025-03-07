@@ -4,6 +4,7 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -61,6 +62,7 @@ const (
 	envLabel          = "com.microsoft.developer.usvc-dev.env"
 	mountsLabel       = "com.microsoft.developer.usvc-dev.mountsLabel"
 	portsLabel        = "com.microsoft.developer.usvc-dev.ports"
+	createFilesLabel  = "com.microsoft.developer.usvc-dev.createFiles"
 )
 
 var (
@@ -956,6 +958,14 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 		}
 	}
 
+	if createFilesLabelHash, found := inspected.Labels[createFilesLabel]; found && len(rcd.runSpec.CreateFiles) > 0 {
+		specCreateFilesHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles))))
+
+		if createFilesLabelHash != specCreateFilesHash {
+			changeList = append(changeList, "container create files entries changed")
+		}
+	}
+
 	return maps.Keys(changedMounts), maps.Keys(changedPorts), maps.Keys(changedEnv), changeList
 }
 
@@ -1142,6 +1152,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				})
 			}
 
+			if len(rcd.runSpec.CreateFiles) > 0 {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key:   createFilesLabel,
+					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles)))),
+				})
+			}
+
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			streamOptions := containers.StreamCommandOptions{
 				StdOutStream: startupStdoutWriter,
@@ -1162,6 +1179,29 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("container created", "ContainerID", inspected.Id)
 			rcd.updateFromInspectedContainer(inspected)
+
+			for _, createFileRequest := range rcd.runSpec.CreateFiles {
+				mode := createFileRequest.Mode
+				if mode == 0 {
+					mode = osutil.PermissionOnlyOwnerReadWrite
+				}
+
+				createFilesOptions := containers.CreateFilesOptions{
+					Container:        inspected.Id,
+					CreateFileSystem: createFileRequest,
+					ModTime:          time.Now(),
+				}
+
+				createFilesOptions.Mode = mode
+
+				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
+				if copyErr != nil {
+					log.Error(copyErr, "could not copy file to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
+					return err
+				}
+
+				log.V(1).Info("file copied to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
+			}
 
 			if rcd.runSpec.Networks == nil {
 				err = r.startContainerWithTimeout(startupCtx, rcd.containerID, streamOptions)

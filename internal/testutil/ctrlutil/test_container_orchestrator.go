@@ -1,12 +1,15 @@
 package ctrlutil
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -53,6 +56,7 @@ type TestContainerOrchestrator struct {
 	startupLogs            map[string]containerStartupLogs
 	containersToFail       map[string]containerExit
 	execs                  map[string]*containerExec
+	createFiles            map[string][]*containerCreateFile
 	containerEventsWatcher *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
 	socketServer           *http.Server
@@ -77,6 +81,34 @@ type containerExec struct {
 	stderr   io.WriteCloser
 	exited   bool
 	exitChan chan int32
+}
+
+type containerCreateFile struct {
+	Destination  string
+	Mode         fs.FileMode
+	DefaultOwner int32
+	DefaultGroup int32
+	ModTime      time.Time
+	Tar          *bytes.Buffer
+}
+
+func (ccf *containerCreateFile) GetTarItems() ([]*tar.Header, error) {
+	headers := []*tar.Header{}
+	reader := tar.NewReader(ccf.Tar)
+	for {
+		header, err := reader.Next()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				return nil, err
+			}
+
+			break
+		}
+
+		headers = append(headers, header)
+	}
+
+	return headers, nil
 }
 
 type TestContainerOrchestratorOption uint32
@@ -127,6 +159,7 @@ func NewTestContainerOrchestrator(
 		execs:            map[string]*containerExec{},
 		startupLogs:      map[string]containerStartupLogs{},
 		containersToFail: map[string]containerExit{},
+		createFiles:      map[string][]*containerCreateFile{},
 		mutex:            &sync.Mutex{},
 		lifetimeCtx:      lifetimeCtx,
 		log:              log,
@@ -1401,6 +1434,78 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 	}
 
 	return result, nil
+}
+
+func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	var foundContainer *testContainer
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			foundContainer = container
+		}
+	}
+
+	if foundContainer == nil {
+		return containers.ErrNotFound
+	}
+
+	tarWriter := usvc_io.NewTarWriter()
+
+	for _, item := range options.Entries {
+		if item.Type == apiv1.FileSystemEntryTypeDir {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addDirectoryErr != nil {
+				return addDirectoryErr
+			}
+		} else {
+			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addFileErr != nil {
+				return addFileErr
+			}
+		}
+	}
+
+	buffer, bufferErr := tarWriter.Buffer()
+	if bufferErr != nil {
+		return bufferErr
+	}
+
+	to.createFiles[foundContainer.id] = append(to.createFiles[foundContainer.id], &containerCreateFile{
+		Destination:  options.Destination,
+		Mode:         options.Mode,
+		DefaultOwner: options.DefaultOwner,
+		DefaultGroup: options.DefaultGroup,
+		ModTime:      options.ModTime,
+		Tar:          buffer,
+	})
+
+	return nil
+}
+
+func (to *TestContainerOrchestrator) GetCreatedFiles(name string) ([]*containerCreateFile, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	var foundContainer *testContainer
+	for _, container := range to.containers {
+		if container.matches(name) {
+			foundContainer = container
+		}
+	}
+
+	if foundContainer == nil {
+		return nil, containers.ErrNotFound
+	}
+
+	return to.createFiles[foundContainer.id], nil
 }
 
 func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, name string, exitCode int32) error {

@@ -473,6 +473,11 @@ func (rcd *runningContainerData) getLifecycleKey() (string, bool) {
 		rcd.runSpec.Args, // This is the evaluated arguments, not the raw arguments
 	)
 
+	// Newly added fields should be added to the end of the string only if not empty to prevent unintentional recreation
+	if len(rcd.runSpec.CreateFiles) > 0 {
+		configString += fmt.Sprintf("%v", rcd.runSpec.CreateFiles)
+	}
+
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(configString))), true
 }
 

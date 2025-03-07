@@ -707,6 +707,43 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []
 	return removed, containers.ExpectCliStrings(outBuf, names)
 }
 
+func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
+	args := []string{"container", "cp"}
+
+	// Read the tar file to copy from standard input
+	args = append(args, "-a", "-")
+
+	args = append(args, options.Container+":"+options.Destination)
+
+	tarWriter := usvc_io.NewTarWriter()
+
+	for _, item := range options.Entries {
+		if item.Type == apiv1.FileSystemEntryTypeDir {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addDirectoryErr != nil {
+				return addDirectoryErr
+			}
+		} else {
+			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addFileErr != nil {
+				return addFileErr
+			}
+		}
+	}
+
+	buffer, bufferErr := tarWriter.Buffer()
+	if bufferErr != nil {
+		return bufferErr
+	}
+
+	cmd := makeDockerCommand(args...)
+	cmd.Stdin = buffer
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if err != nil {
+		return normalizeCliErrors(err, errBuf)
+	}
+
+	return nil
+}
+
 func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
 	sub := dco.containerEvtWatcher.Subscribe(sink)
 	return sub, nil

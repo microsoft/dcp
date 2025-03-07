@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
@@ -1717,4 +1718,142 @@ func TestContainerNetworkConnectedFailedStartup(t *testing.T) {
 			return string(updatedCtr.Status.ContainerID) != id
 		}), nil
 	})
+}
+
+func TestContainerCreateFilesDefaultValues(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-create-files-default-values"
+	const imageName = testName + "-image"
+
+	testStart := time.Now()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			CreateFiles: []apiv1.CreateFileSystem{
+				{
+					Destination: "/tmp",
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Name:     "hello.txt",
+							Contents: "hello!",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container object")
+
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(inspected.Id)
+	require.NoError(t, getFileErr, "could not get created files")
+
+	require.Len(t, files, 1, "expected to find a single copied file")
+	require.Equal(t, ctr.Spec.CreateFiles[0].Destination, files[0].Destination, "copied file destination does not match")
+	require.LessOrEqual(t, testStart, files[0].ModTime, "copied file mod time is not greater than or equal to the test start time")
+	require.Equal(t, fs.FileMode(0600), files[0].Mode, "copied file mode does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultOwner, "copied file owner id does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultGroup, "copied file group id does not match expected default value")
+
+	items, itemsErr := files[0].GetTarItems()
+	require.NoError(t, itemsErr, "could not get tar items")
+	require.Len(t, items, 1, "expected a single tar recrd")
+
+	require.Equal(t, 0, items[0].Uid, "copied file item owner id does not match expected default value")
+	require.Equal(t, 0, items[0].Gid, "copied file item group id does not match expected default value")
+	require.Equal(t, int64(0600), items[0].Mode, "copied file item mode does not match expected default value")
+}
+
+func TestContainerCreateFilesMultipleFiles(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-create-files-multiple-files"
+	const imageName = testName + "-image"
+
+	testStart := time.Now()
+
+	itemOwner := int32(0)
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			CreateFiles: []apiv1.CreateFileSystem{
+				{
+					Destination: "/tmp",
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Name: "touch.txt",
+						},
+					},
+				},
+				{
+					Destination:  "/some/path",
+					Mode:         0700,
+					DefaultOwner: 1000,
+					DefaultGroup: 1000,
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Type: apiv1.FileSystemEntryTypeDir,
+							Name: "some-dir",
+							Entries: []apiv1.FileSystemEntry{
+								{
+									Name:  "hello.txt",
+									Owner: &itemOwner,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container object")
+
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(inspected.Id)
+	require.NoError(t, getFileErr, "could not get copied files")
+
+	require.Len(t, files, 2, "expected to find a single copied file")
+	require.Equal(t, ctr.Spec.CreateFiles[0].Destination, files[0].Destination, "copied file destination does not match")
+	require.LessOrEqual(t, testStart, files[0].ModTime, "copied file mod time is not greater than or equal to the test start time")
+	require.Equal(t, fs.FileMode(0600), files[0].Mode, "copied file mode does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultOwner, "copied file owner id does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultGroup, "copied file group id does not match expected default value")
+
+	require.Equal(t, ctr.Spec.CreateFiles[1].Destination, files[1].Destination, "copied file destination does not match")
+	require.LessOrEqual(t, testStart, files[1].ModTime, "copied file mod time is not greater than or equal to the test start time")
+	require.Equal(t, ctr.Spec.CreateFiles[1].Mode, files[1].Mode, "copied file mode does not match expected value")
+
+	items, itemsErr := files[1].GetTarItems()
+	require.NoError(t, itemsErr, "could not get tar items")
+	require.Len(t, items, 2, "expected two tar records")
+
+	require.Equal(t, "some-dir", items[0].Name, "copied file item name does not match expected value")
+	require.Equal(t, 1000, items[0].Uid, "copied file item owner id does not match expected value")
+	require.Equal(t, 1000, items[0].Gid, "copied file item group id does not match expected value")
+	require.Equal(t, int64(0700|fs.ModeDir), items[0].Mode, "copied file item mode does not match expected value")
+
+	require.Equal(t, "some-dir/hello.txt", items[1].Name, "copied file item name does not match expected value")
+	require.Equal(t, 0, items[1].Uid, "copied file item owner id does not match expected value")
+	require.Equal(t, 1000, items[1].Gid, "copied file item group id does not match expected value")
+	require.Equal(t, int64(0700), items[1].Mode, "copied file item mode does not match expected value")
 }
