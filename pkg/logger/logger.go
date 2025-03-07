@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -45,11 +45,28 @@ type Logger struct {
 }
 
 type filterSink struct {
-	active    bool
-	maxLife   int
+	active    *atomic.Bool
+	maxLife   uint32
+	life      *atomic.Uint32
 	filter    string
 	innerSink logr.LogSink
-	mutex     *sync.Mutex
+}
+
+func newFilterSink(innerSink logr.LogSink, filter string, maxLife uint32) *filterSink {
+	if maxLife == 0 {
+		panic("maxLife must be greater than 0")
+	}
+
+	fs := filterSink{
+		active:    &atomic.Bool{},
+		maxLife:   maxLife,
+		life:      &atomic.Uint32{},
+		filter:    filter,
+		innerSink: innerSink,
+	}
+
+	fs.active.Store(true)
+	return &fs
 }
 
 func (fs *filterSink) Init(info logr.RuntimeInfo) {
@@ -65,23 +82,20 @@ func (fs *filterSink) Info(level int, msg string, keysAndValues ...any) {
 }
 
 func (fs *filterSink) Error(err error, msg string, keysAndValues ...any) {
-	fs.mutex.Lock()
-	defer fs.mutex.Unlock()
-
-	if !fs.active {
+	active := fs.active.Load()
+	if !active {
 		fs.innerSink.Error(err, msg, keysAndValues...)
 		return
 	}
 
 	if msg == fs.filter {
-		fs.active = false
+		fs.active.Store(false)
 		return
 	}
 
-	fs.maxLife--
-
-	if fs.maxLife <= 0 {
-		fs.active = false
+	life := fs.life.Add(1)
+	if life >= fs.maxLife {
+		fs.active.Store(false)
 	}
 
 	fs.innerSink.Error(err, msg, keysAndValues...)
@@ -149,13 +163,7 @@ func New(name string) Logger {
 
 	if runtime.GOOS == "darwin" {
 		innerSink := logger.GetSink()
-		logger = logger.WithSink(&filterSink{
-			active:    true,
-			maxLife:   1,
-			filter:    macOsLogErrorFilter,
-			innerSink: innerSink,
-			mutex:     &sync.Mutex{},
-		})
+		logger = logger.WithSink(newFilterSink(innerSink, macOsLogErrorFilter, 1))
 	}
 
 	return Logger{

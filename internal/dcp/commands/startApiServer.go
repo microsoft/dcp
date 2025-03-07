@@ -69,7 +69,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 				}
 			}
 
-			if !hasContainerRuntimeFlag {
+			if !hasContainerRuntimeFlag && container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
 				args = append(args, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
 			}
 
@@ -134,9 +134,9 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			},
 		}
 
-		invocationFlags := []string{
-			"--kubeconfig", kconfig.Path(),
-			container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()),
+		invocationFlags := []string{"--kubeconfig", kconfig.Path()}
+		if container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
+			invocationFlags = append(invocationFlags, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
 		}
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
