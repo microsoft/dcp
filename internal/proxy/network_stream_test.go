@@ -28,7 +28,7 @@ func TestNetworkStreamDeadlineExceededOnRead(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -60,7 +60,7 @@ func TestNetworkStreamDeadlineExceededOnWrite(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -92,7 +92,7 @@ func TestNetworkStreamWrittenMoreThanRead(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -125,7 +125,7 @@ func TestNetworkStreamShortWrite(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -157,7 +157,7 @@ func TestNetworkStreamDeadlineExceededWithReadData(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -189,7 +189,7 @@ func TestNetworkStreamDeadlineExceededPartialWrite(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -221,7 +221,7 @@ func TestNetworkStreamDoubleDeadlineExceeded(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -253,7 +253,7 @@ func TestNetworkStreamTripleDeadlineExceeded(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -285,7 +285,7 @@ func TestNetworkStreamReadError(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -317,7 +317,7 @@ func TestNetworkStreamWriteError(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -349,7 +349,7 @@ func TestNetworkStreamPartialReadWithError(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 
@@ -381,7 +381,7 @@ func TestNetworkStreamPartialWriteWithError(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool[[]byte](func() []byte {
+	bufferPool := newGenericPool(func() []byte {
 		return make([]byte, 1024)
 	})
 

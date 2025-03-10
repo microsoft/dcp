@@ -142,6 +142,9 @@ func getAllLocalIps() ([]net.IP, error) {
 					candidateIps = append(candidateIps, ipaddr.IP)
 				}
 			case *net.IPAddr:
+				// Note: if we ever need to support link-local addresses, we would need to include the zone identifier
+				// (net.IPAddr.Zone) in the final address. Currently we filter out link-local addresses in IsValidIP() function,
+				// so that is not an issue.
 				if IsValidIP(ipaddr.IP) {
 					candidateIps = append(candidateIps, ipaddr.IP)
 				}
@@ -343,7 +346,10 @@ func IsValidPort(port int) bool {
 func IsValidIP(ip net.IP) bool {
 	return (IsValidIPv4(ip) || IsValidIPv6(ip)) &&
 		!ip.Equal(net.IPv4zero) && !ip.Equal(net.IPv6zero) &&
-		!ip.Equal(net.IPv4bcast) && !ip.IsMulticast()
+		!ip.Equal(net.IPv4bcast) && !ip.IsMulticast() &&
+		// Link-local addresses are difficult to bind to (because of mandatory zone identifier)
+		// and do not add any value over normal loopback addresses
+		!ip.IsLinkLocalUnicast()
 }
 
 func IsValidIPv4(ip net.IP) bool {
@@ -482,7 +488,7 @@ func GetPreferredHostIps(host string) ([]net.IP, error) {
 	// The result can be long connection delays.
 	// A similar problem can occur with "0.0.0.0" address. That is good for listening
 	// (it causes to listen on all available network interfaces), but it is not something that a client can use to talk to a server.
-	// To avoid these problems we resolve host names/IPs specified in object Spec/annotaions,
+	// To avoid these problems we resolve host names/IPs specified in object Spec/annotations,
 	// and use specific IP addresses for configuring proxies and clients, as necessary.
 
 	ips, err := LookupIP(host)
@@ -493,7 +499,7 @@ func GetPreferredHostIps(host string) ([]net.IP, error) {
 		return nil, fmt.Errorf("could not obtain IP address(es) for '%s' (no valid addresses found)", host)
 	}
 
-	// Account for IP version user preference if possble
+	// Account for IP version user preference if possible
 	var isPreferredIp func(net.IP) bool
 	switch GetIpVersionPreference() {
 	case IpVersionPreference4:
