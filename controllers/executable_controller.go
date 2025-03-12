@@ -242,13 +242,7 @@ func (r *ExecutableReconciler) manageExecutable(ctx context.Context, exe *apiv1.
 	change := initializer(ctx, r, exe, targetExecutableState, runInfo, log)
 
 	if runInfo != nil {
-		if runInfo.ExeState.IsTerminal() && change == noChange {
-			// We are in the final state and all the changes have been successfully saved
-			// during previous reconciliation loop(s). We can now safely delete the run data.
-			r.runs.DeleteByNamespacedName(exe.NamespacedName())
-		} else {
-			r.runs.Update(exe.NamespacedName(), runInfo.RunID, runInfo)
-		}
+		r.runs.Update(exe.NamespacedName(), runInfo.RunID, runInfo)
 	}
 
 	return change
@@ -482,6 +476,7 @@ func (r *ExecutableReconciler) OnMainProcessChanged(runID RunID, pid process.Pid
 func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode *int32, err error) {
 	r.processRunChangeNotification(runID, process.UnknownPID, exitCode, err, func(ri *ExecutableRunInfo) {
 		ri.ExeState = apiv1.ExecutableStateFinished
+		ri.FinishTimestamp = metav1.NowMicro()
 	})
 }
 
