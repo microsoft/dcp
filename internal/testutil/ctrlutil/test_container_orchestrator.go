@@ -38,6 +38,8 @@ var (
 	// Base32 encoder used to generate unique postfixes for Executable replicas.
 	randomNameEncoder   = base32.HexEncoding.WithPadding(base32.NoPadding)
 	errRuntimeUnhealthy = errors.New("(test) container runtime is unhealthy")
+
+	ContainerNameAttribute string = apiv1.GroupVersion.Group + ".container_name"
 )
 
 const (
@@ -1013,6 +1015,9 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionCreate,
 		Actor:  containers.EventActor{ID: id.id},
+		Attributes: map[string]string{
+			ContainerNameAttribute: name,
+		},
 	})
 
 	return &container, nil
@@ -1114,6 +1119,9 @@ func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, conta
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionStart,
 		Actor:  containers.EventActor{ID: container.id},
+		Attributes: map[string]string{
+			ContainerNameAttribute: container.name,
+		},
 	})
 
 	return container.id, nil
@@ -1272,6 +1280,9 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionStop,
 		Actor:  containers.EventActor{ID: container.id},
+		Attributes: map[string]string{
+			ContainerNameAttribute: container.name,
+		},
 	})
 
 	if stopAction == stoppingOnly {
@@ -1280,6 +1291,9 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 			Source: containers.EventSourcePlugin,
 			Action: TestEventActionStopWithoutRemove,
 			Actor:  containers.EventActor{ID: container.id},
+			Attributes: map[string]string{
+				ContainerNameAttribute: container.name,
+			},
 		})
 	}
 
@@ -1373,6 +1387,9 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 		Source: containers.EventSourceContainer,
 		Action: containers.EventActionDestroy,
 		Actor:  containers.EventActor{ID: container.id},
+		Attributes: map[string]string{
+			ContainerNameAttribute: container.name,
+		},
 	})
 
 	return container.id, nil
@@ -1540,6 +1557,9 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 				Source: containers.EventSourceContainer,
 				Action: containers.EventActionStop,
 				Actor:  containers.EventActor{ID: container.id},
+				Attributes: map[string]string{
+					ContainerNameAttribute: name,
+				},
 			})
 
 			return nil

@@ -331,8 +331,17 @@ func startContainer(
 			case containers.ContainerStatusRunning:
 				return nil
 
-			case containers.ContainerStatusExited, containers.ContainerStatusDead:
-				return resiliency.Permanent(fmt.Errorf("container %s start failed (current state is '%s')", containerID, i.Status))
+			case containers.ContainerStatusDead:
+				return resiliency.Permanent(fmt.Errorf("container %s start failed (current state is 'dead')", containerID))
+
+			case containers.ContainerStatusExited:
+				// It is possible that the container starts and then exits very quickly afterwards.
+				// For the sake of determining whether the startup was successful, we will assume that it was if exit code == 0.
+				if i.ExitCode == 0 {
+					return nil
+				} else {
+					return resiliency.Permanent(fmt.Errorf("container %s start failed (exit code %d)", containerID, i.ExitCode))
+				}
 
 			default:
 				errMsg := fmt.Sprintf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusRunning)

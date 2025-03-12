@@ -346,7 +346,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 
 	validatePorts(t, inspected, ctr.Spec.Ports)
 
-	// Case 4: ContainerPort, HostIP, and Portocol
+	// Case 4: ContainerPort, HostIP, and Protocol
 	testName = "container-start-with-ports-case4"
 	imageName = testName + "-image"
 
@@ -1226,7 +1226,7 @@ func TestContainerLogsNonFollow(t *testing.T) {
 	}
 }
 
-// Verify that logs can be captured in follow mode when log stream is open bofore any logs are written.
+// Verify that logs can be captured in follow mode when log stream is open before any logs are written.
 func TestContainerLogsFollowFromStart(t *testing.T) {
 	const containerName = "test-container-logs-follow-from-start"
 	const imageName = containerName + "-image"
@@ -1856,4 +1856,131 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 	require.Equal(t, 0, items[1].Uid, "copied file item owner id does not match expected value")
 	require.Equal(t, 1000, items[1].Gid, "copied file item group id does not match expected value")
 	require.Equal(t, int64(0700), items[1].Mode, "copied file item mode does not match expected value")
+}
+
+// Even if Docker container stops very quickly, the state of corresponding Container should be "Exited"
+// (and not something else, in particular not "FailedToStart").
+func TestContainerFastExiting(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-fast-exiting"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+		},
+	}
+
+	ctrEvtCh := concurrency.NewUnboundedChan[containers.EventMessage](ctx)
+	sub, subErr := containerOrchestrator.WatchContainers(ctrEvtCh.In)
+	require.NoError(t, subErr, "could not subscribe to container events")
+	defer sub.Cancel()
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	t.Logf("Simulating fast exit of Container '%s'...", ctr.ObjectMeta.Name)
+ContainerEventsLoop:
+	for {
+		select {
+		case msg := <-ctrEvtCh.Out:
+			containerCreated := msg.Action == containers.EventActionStart && msg.Source == containers.EventSourceContainer &&
+				maps.HasExactValue(msg.Attributes, ctrl_testutil.ContainerNameAttribute, ctr.Spec.ContainerName)
+			if containerCreated {
+				sub.Cancel()
+				ceErr := containerOrchestrator.SimulateContainerExit(ctx, ctr.Spec.ContainerName, 0)
+				require.NoError(t, ceErr, "could not simulate Container exit")
+				break ContainerEventsLoop
+			}
+		case <-ctx.Done():
+			t.Fatalf("Timed out waiting for container '%s' to be created", ctr.Spec.ContainerName)
+		}
+	}
+
+	t.Logf("Ensure Container '%s' state is 'Exited'...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited && c.Status.HealthStatus == apiv1.HealthStatusCaution, nil
+	})
+}
+
+// Similar to TestContainerFastExiting, but the container is also attached to custom network,
+// which exercises different code path in the controller.
+func TestContainerFastExitingWithNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-with-network-fast-exiting"
+	const imageName = testName + "-image"
+	const networkName = testName + "-network"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+				{
+					Name: networkName,
+				},
+			},
+		},
+	}
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      networkName,
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	_ = ensureNetworkCreated(t, ctx, &net)
+
+	ctrEvtCh := concurrency.NewUnboundedChan[containers.EventMessage](ctx)
+	sub, subErr := containerOrchestrator.WatchContainers(ctrEvtCh.In)
+	require.NoError(t, subErr, "could not subscribe to container events")
+	defer sub.Cancel()
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	t.Logf("Simulating fast exit of Container '%s'...", ctr.ObjectMeta.Name)
+ContainerEventsLoop:
+	for {
+		select {
+		case msg := <-ctrEvtCh.Out:
+			containerCreated := msg.Action == containers.EventActionStart && msg.Source == containers.EventSourceContainer &&
+				maps.HasExactValue(msg.Attributes, ctrl_testutil.ContainerNameAttribute, ctr.Spec.ContainerName)
+			if containerCreated {
+				sub.Cancel()
+				ceErr := containerOrchestrator.SimulateContainerExit(ctx, ctr.Spec.ContainerName, 0)
+				require.NoError(t, ceErr, "could not simulate Container exit")
+				break ContainerEventsLoop
+			}
+		case <-ctx.Done():
+			t.Fatalf("Timed out waiting for container '%s' to be created", ctr.Spec.ContainerName)
+		}
+	}
+
+	t.Logf("Ensure Container '%s' state is 'Exited'...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited && c.Status.HealthStatus == apiv1.HealthStatusCaution, nil
+	})
 }

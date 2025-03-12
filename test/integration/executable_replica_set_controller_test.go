@@ -188,7 +188,7 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 			return false, nil
 		}
 
-		if slices.LenIf[*apiv1.Executable](newOwnedExes, func(exe *apiv1.Executable) bool {
+		if slices.LenIf(newOwnedExes, func(exe *apiv1.Executable) bool {
 			return exe.UID == oldUid
 		}) != 0 {
 			return false, nil
@@ -250,13 +250,13 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 			return false, nil
 		}
 
-		if slices.LenIf[*apiv1.Executable](newOwnedExes, func(exe *apiv1.Executable) bool {
+		if slices.LenIf(newOwnedExes, func(exe *apiv1.Executable) bool {
 			return exe.Spec.ExecutablePath == "path/to/executable-replica-set-initial-template"
 		}) != initialScaleTo {
 			return false, nil
 		}
 
-		if slices.LenIf[*apiv1.Executable](newOwnedExes, func(exe *apiv1.Executable) bool {
+		if slices.LenIf(newOwnedExes, func(exe *apiv1.Executable) bool {
 			return exe.Spec.ExecutablePath == "path/to/executable-replica-set-updated-template"
 		}) != 1 {
 			return false, nil
@@ -633,7 +633,7 @@ func ensureExpectedReplicaCount(t *testing.T, exers *apiv1.ExecutableReplicaSet,
 			return false, err
 		}
 
-		active := slices.LenIf[*apiv1.Executable](ownedExes, func(exe *apiv1.Executable) bool {
+		active := slices.LenIf(ownedExes, func(exe *apiv1.Executable) bool {
 			return exe.Annotations[controllers.ExecutableReplicaStateAnnotation] == string(controllers.ExecutableReplicaSetStateActive)
 		})
 		inactive := len(ownedExes) - active

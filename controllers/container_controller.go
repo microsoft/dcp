@@ -428,7 +428,7 @@ func ensureContainerStartingState(
 		// The second portion of startup sequence of a container with custom networks.
 		// Need to create ContainerNetworkConnection objects and start the container resource.
 
-		started, err := r.handleInitialNetworkConnections(ctx, container, rcd, log)
+		inspected, err := r.handleInitialNetworkConnections(ctx, container, rcd, log)
 
 		switch {
 		case err != nil:
@@ -436,8 +436,12 @@ func ensureContainerStartingState(
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
-		case started:
+		case inspected.Status == containers.ContainerStatusRunning:
 			rcd.containerState = apiv1.ContainerStateRunning
+			rcd.startAttemptFinishedAt = metav1.NowMicro()
+			change |= statusChanged
+		case inspected.Status == containers.ContainerStatusExited:
+			rcd.containerState = apiv1.ContainerStateExited
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
 		default:
@@ -1204,7 +1208,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 
 			if rcd.runSpec.Networks == nil {
-				err = r.startContainerWithTimeout(startupCtx, rcd.containerID, streamOptions)
+				inspected, err = r.startContainerWithTimeout(startupCtx, rcd.containerID, streamOptions)
 				rcd.startAttemptFinishedAt = metav1.NowMicro()
 				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 				if err != nil {
@@ -1212,8 +1216,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					return err
 				}
 
-				log.V(1).Info("container started", "ContainerID", rcd.containerID)
-				rcd.containerState = apiv1.ContainerStateRunning
+				if inspected.Status == containers.ContainerStatusRunning {
+					log.V(1).Info("container started", "ContainerID", rcd.containerID)
+					rcd.containerState = apiv1.ContainerStateRunning
+				} else {
+					log.V(1).Info("container started and exited shortly after", "ContainerID", rcd.containerID, "ContainerStatus", inspected.Status)
+					rcd.containerState = apiv1.ContainerStateExited
+				}
 			} else {
 				// If a container resource is created without a network, it cannot be connected to a network later (orchestrator limitation).
 				// So for Containers that request attaching to custom networks via Spec, we create the corresponding container resource
@@ -1329,39 +1338,40 @@ func (r *ContainerReconciler) startContainerWithTimeout(
 	parentCtx context.Context,
 	containerID containerID,
 	streamOptions containers.StreamCommandOptions,
-) error {
+) (*containers.InspectedContainer, error) {
 	startContainerCallCtx := parentCtx
 	if r.config.ContainerStartupTimeoutOverride > 0 {
 		var startContainerCallCtxCancel context.CancelFunc
 		startContainerCallCtx, startContainerCallCtxCancel = context.WithTimeout(parentCtx, r.config.ContainerStartupTimeoutOverride)
 		defer startContainerCallCtxCancel()
 	}
-	_, err := startContainer(startContainerCallCtx, r.orchestrator, string(containerID), streamOptions)
-	return err
+	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, string(containerID), streamOptions)
+	return inspected, err
 }
 
 // NETWORKING SUPPORT METHODS
 
-// Creates initial set of ContainerNetworkConnection objects for this Container, and if all connections are satisfied,
-// starts the container.
-// Returns a value indicating if the container has been started, and an error, if any.
-// The error should be treated as permanent startup failure.
+// Creates initial set of ContainerNetworkConnection objects for this Container,
+// and if all connections are satisfied, starts the container.
+// Returns the inspected container data (if the container has been started successfully), and an error, if any.
+// The error should be treated as permanent startup failure. If a startup error is returned, the inspected container data
+// might be missing.
 // This method is executed as part of the reconciliation loop.
 func (r *ContainerReconciler) handleInitialNetworkConnections(
 	ctx context.Context,
 	container *apiv1.Container,
 	rcd *runningContainerData,
 	log logr.Logger,
-) (bool, error) {
-	connected, err := r.ensureContainerNetworkConnections(ctx, container, nil, rcd, log)
-	if err != nil {
-		return false, err
+) (*containers.InspectedContainer, error) {
+	connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, nil, rcd, log)
+	if connectionErr != nil {
+		return nil, connectionErr
 	}
 
 	// Check to see if we are connected to all the ContainerNetworks listed in the Container object spec
 	if len(connected) != len(*container.Spec.Networks) && !container.Spec.Stop && container.DeletionTimestamp.IsZero() {
 		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "ContainerID", rcd.containerID, "Expected", len(*container.Spec.Networks), "Connected", len(connected))
-		return false, nil
+		return nil, nil
 	}
 
 	containerID := rcd.containerID
@@ -1371,14 +1381,14 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 		StdErrStream: startupStderrWriter,
 	}
 
-	err = r.startContainerWithTimeout(ctx, containerID, streamOptions)
+	inspected, startupErr := r.startContainerWithTimeout(ctx, containerID, streamOptions)
 	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
-	if err != nil {
-		log.Error(err, "failed to start Container", "ContainerID", containerID)
-		return false, err
+	if startupErr != nil {
+		log.Error(startupErr, "failed to start Container", "ContainerID", containerID)
+		return nil, startupErr
 	}
 
-	return true, nil
+	return inspected, nil
 }
 
 // Connects the Container to networks as necessary, updating status.

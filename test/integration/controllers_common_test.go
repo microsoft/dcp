@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -322,13 +323,21 @@ func waitObjectAssumesStateEx[T controllers.ObjectStruct, PT controllers.PObject
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasExpectedState)
 	if err != nil {
+		objJSON := "<not available>"
+		if updatedObject != nil {
+			jsonBytes, jsonErr := json.Marshal(updatedObject)
+			if jsonErr == nil {
+				objJSON = string(jsonBytes)
+			}
+		}
+
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			// If the state check function returns errUnexpectedObjectState, use it.
 			if unexpectedStateErr != nil {
-				t.Fatalf("Waiting for object '%s' to assume desired state failed: %v", name.String(), unexpectedStateErr)
+				t.Fatalf("Waiting for object '%s' to assume desired state failed: %v. Last retrieved object was: %s", name.String(), unexpectedStateErr, objJSON)
 			}
 		}
-		t.Fatalf("Waiting for object '%s' to assume desired state failed: %v", name.String(), err)
+		t.Fatalf("Waiting for object '%s' to assume desired state failed: %v. Last retrieved object was: %s", name.String(), err, objJSON)
 		return nil // make the compiler happy
 	} else {
 		return updatedObject
