@@ -436,11 +436,11 @@ func ensureContainerStartingState(
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
-		case inspected.Status == containers.ContainerStatusRunning:
+		case inspected != nil && inspected.Status == containers.ContainerStatusRunning:
 			rcd.containerState = apiv1.ContainerStateRunning
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
-		case inspected.Status == containers.ContainerStatusExited:
+		case inspected != nil && inspected.Status == containers.ContainerStatusExited:
 			rcd.containerState = apiv1.ContainerStateExited
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
