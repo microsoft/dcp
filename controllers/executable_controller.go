@@ -398,7 +398,7 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
 	if isTransientTemplateError(err) {
 		log.Info("could not compute effective environment for the Executable, retrying startup...", "Cause", err.Error())
-		return additionalReconciliationNeeded
+		return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
 	} else if err != nil {
 		log.Error(err, "could not compute effective environment for the Executable")
 		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -408,7 +408,7 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
 	if isTransientTemplateError(err) {
 		log.Info("could not compute effective invocation arguments for the Executable, retrying startup...", "Cause", err.Error())
-		return additionalReconciliationNeeded
+		return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
 	} else if err != nil {
 		log.Error(err, "could not compute effective invocation arguments for the Executable")
 		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)

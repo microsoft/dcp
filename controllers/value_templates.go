@@ -34,17 +34,27 @@ func (e errServiceNotAssignedAddress) Error() string {
 	return fmt.Sprintf("service '%s' does not have an address assigned yet", e.Service.String())
 }
 
+type errServiceDoesNotExist struct {
+	Service       types.NamespacedName
+	ContextObject types.NamespacedName
+}
+
+func (e errServiceDoesNotExist) Error() string {
+	return fmt.Sprintf("service '%s' referenced by '%s' does not exist", e.Service.String(), e.ContextObject.String())
+}
+
 func isTransientTemplateError(err error) bool {
 	var ePort errServiceNotAssignedPort
 	var eAddress errServiceNotAssignedAddress
-	return errors.As(err, &ePort) || errors.As(err, &eAddress)
+	var eDoesNotExist errServiceDoesNotExist
+	return errors.As(err, &ePort) || errors.As(err, &eAddress) || errors.As(err, &eDoesNotExist)
 }
 
 // Creates a template for evaluating a value of a spec field.
 // Our template functions may need to query the API server, this is what ctx and client parameters are for.
 // The contextObject parameter is the object that will be used as context during template evaluation (Executable, Container, etc.)
 // If a port needs to be reserved for a service production by the context object,
-// information about the reservved port will be added to reservedPorts map.
+// information about the reserved port will be added to reservedPorts map.
 func newSpecValueTemplate(
 	ctx context.Context,
 	client ctrl_client.Client,
@@ -77,10 +87,7 @@ func newSpecValueTemplate(
 			// Need to take a peek at the Service to find out what port it is assigned.
 			var svc apiv1.Service
 			if svcQueryErr := client.Get(ctx, serviceName, &svc); svcQueryErr != nil {
-				// CONSIDER in future we could be smarter and delay the startup of the Executable until
-				// the service appears in the system, leaving the Executable in "pending" state.
-				// This would necessitate watching over Services (specifically, Service creation).
-				return 0, fmt.Errorf("service '%s' referenced by an environment variable does not exist", serviceName)
+				return 0, errServiceDoesNotExist{Service: serviceName, ContextObject: contextObj.NamespacedName()}
 			}
 
 			if svc.Status.EffectivePort == 0 {
@@ -139,7 +146,7 @@ func executeTemplate(
 	inputTmpl, err := commonTmpl.Parse(input)
 	if err != nil {
 		// This does not necessarily indicate a problem--the input might be a completely intentional string
-		// that happens to be un-parseable as a text template.
+		// that happens to be un-parsable as a text template.
 		log.Info(fmt.Sprintf("substitution is not possible for %s", substitutionContext), "Input", input)
 		return input, nil
 	}
@@ -147,7 +154,7 @@ func executeTemplate(
 	var sb strings.Builder
 	err = inputTmpl.Execute(&sb, contextObj)
 	if isTransientTemplateError(err) {
-		// Fatal error that should prevent the contextObj from running.
+		// Report the error to the caller and let them retry templating or fail, as necessary.
 		return "", err
 	} else if err != nil {
 		// We could not apply the template, so we are going to use the input value as-is.
@@ -201,14 +208,7 @@ func portForServingFromExecutable(
 		// Need to take a peek at the Service to find out what protocol it is using.
 		var svc apiv1.Service
 		if err := client.Get(ctx, serviceName, &svc); err != nil {
-			// CONSIDER in future we could be smarter and delay the startup of the Executable until
-			// the service appears in the system, leaving the Executable in "pending" state.
-			// This would necessitate watching over Services (specifically, Service creation).
-			return 0, fmt.Errorf(
-				"service '%s' referenced by executable '%s' specification does not exist",
-				serviceName,
-				exe.NamespacedName().String(),
-			)
+			return 0, errServiceDoesNotExist{Service: serviceName, ContextObject: exe.NamespacedName()}
 		}
 
 		port, err := networking.GetFreePort(svc.Spec.Protocol, sp.Address, log)
