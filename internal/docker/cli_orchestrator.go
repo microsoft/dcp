@@ -711,7 +711,7 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	args := []string{"container", "cp"}
 
 	// Read the tar file to copy from standard input
-	args = append(args, "-a", "-")
+	args = append(args, "-a=false", "-")
 
 	args = append(args, options.Container+":"+options.Destination)
 
