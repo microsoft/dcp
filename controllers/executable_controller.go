@@ -296,7 +296,7 @@ func ensureExecutableRunningState(
 	// Ensure the status matches the current state.
 	change |= runInfo.ApplyTo(exe, log)
 
-	ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, log)
+	ensureEndpointsForWorkload(ctx, r, exe, runInfo.ReservedPorts, struct{}{}, log)
 
 	if len(exe.Spec.HealthProbes) > 0 && (runInfo.healthProbesEnabled == nil || !*runInfo.healthProbesEnabled) {
 		log.V(1).Info("enabling health probes for Executable...")
@@ -674,6 +674,7 @@ func (r *ExecutableReconciler) createEndpoint(
 	ctx context.Context,
 	owner ctrl_client.Object,
 	serviceProducer ServiceProducer,
+	_ struct{}, // Endpoint creation context data, not used for Executables
 	log logr.Logger,
 ) (*apiv1.Endpoint, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
@@ -714,6 +715,19 @@ func (r *ExecutableReconciler) createEndpoint(
 	}
 
 	return endpoint, nil
+}
+
+func (r *ExecutableReconciler) validateExistingEndpoint(
+	ctx context.Context,
+	owner ctrl_client.Object,
+	serviceProducer ServiceProducer,
+	_ struct{},
+	_ *apiv1.Endpoint,
+	log logr.Logger,
+) error {
+	// Currently we do not support any scenario when Executable replicas change the ports they listen on
+	// at run time, so once an Endpoint is created, it will always be "valid".
+	return nil
 }
 
 // Environment variables starting with these prefixes will never be applied to Executables.

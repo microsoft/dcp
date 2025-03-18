@@ -32,9 +32,17 @@ type ServiceWorkloadEndpointKey struct {
 	ServiceName string
 }
 
-type EndpointOwner interface {
+type EndpointOwner[EndpointCreationContext any] interface {
 	ctrl_client.Client
-	createEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer ServiceProducer, log logr.Logger) (*apiv1.Endpoint, error)
+
+	// Creates a new Endpoint object for the given Service exposed by the workload object (owner parameter).
+	// The Service is represented by the serviceProducer parameter.
+	createEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer ServiceProducer, ecc EndpointCreationContext, log logr.Logger) (*apiv1.Endpoint, error)
+
+	// Validates that the existing Endpoint object still correctly represents the Service exposed by the workload object (owner parameter).
+	// If an error is returned, the Endpoint will be deleted and a new one will be created
+	// (via call to createEndpoint function).
+	validateExistingEndpoint(ctx context.Context, owner ctrl_client.Object, serviceProducer ServiceProducer, ecc EndpointCreationContext, endpoint *apiv1.Endpoint, log logr.Logger) error
 }
 
 func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
@@ -46,7 +54,14 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 	})
 }
 
-func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpModelObject, reservedServicePorts map[types.NamespacedName]int32, log logr.Logger) {
+func ensureEndpointsForWorkload[EndpointCreationContext any](
+	ctx context.Context,
+	r EndpointOwner[EndpointCreationContext],
+	owner dcpModelObject,
+	reservedServicePorts map[types.NamespacedName]int32,
+	ecc EndpointCreationContext,
+	log logr.Logger,
+) {
 	serviceProducers, err := getServiceProducersForObject(owner, log)
 	if err != nil || len(serviceProducers) == 0 {
 		return
@@ -63,12 +78,22 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 			NamespacedNameWithKind: apiv1.GetNamespacedNameWithKind(owner),
 			ServiceName:            serviceProducer.ServiceName,
 		}
-		hasEndpoint := slices.Any(childEndpoints.Items, func(e apiv1.Endpoint) bool {
+		existingEndpoints := slices.Select(childEndpoints.Items, func(e apiv1.Endpoint) bool {
 			return e.Spec.ServiceName == serviceProducer.ServiceName && e.Spec.ServiceNamespace == serviceProducer.ServiceNamespace
 		})
+		// Initially assume that all existing endpoints are valid.
+		allExistingEndpointsAreValid := len(existingEndpoints) > 0
 
-		if hasEndpoint {
-			log.V(1).Info("Endpoint already exists for this workload and service combination",
+		for _, endpoint := range existingEndpoints {
+			err = r.validateExistingEndpoint(ctx, owner, serviceProducer, ecc, &endpoint, log)
+			if err != nil {
+				allExistingEndpointsAreValid = false
+				break
+			}
+		}
+
+		if allExistingEndpointsAreValid {
+			log.V(1).Info("Endpoint(s) already exists for this workload and service combination",
 				"ServiceName", serviceProducer.ServiceName,
 				"Workload", owner.NamespacedName().String(),
 			)
@@ -77,7 +102,21 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 			workloadEndpointCache.Delete(sweKey)
 
 			continue
+		} else if len(existingEndpoints) > 0 {
+			// Delete all existing endpoints and force re-creation of a new one.
+			workloadEndpointCache.Delete(sweKey)
+
+			for _, endpoint := range existingEndpoints {
+				deleteErr := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
+				if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+					log.Error(deleteErr, "could not delete Endpoint object",
+						"Endpoint", endpoint.NamespacedName().String(),
+						"Workload", owner.NamespacedName().String(),
+					)
+				}
+			}
 		}
+
 		_, found := workloadEndpointCache.Load(sweKey)
 		if found {
 			log.V(1).Info("Endpoint was just created for this workload and service combination",
@@ -93,7 +132,7 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 			}
 		}
 		var endpoint *apiv1.Endpoint
-		endpoint, err = r.createEndpoint(ctx, owner, serviceProducer, log)
+		endpoint, err = r.createEndpoint(ctx, owner, serviceProducer, ecc, log)
 
 		if err != nil {
 			log.Error(err, "could not create Endpoint object",
@@ -126,7 +165,7 @@ func ensureEndpointsForWorkload(ctx context.Context, r EndpointOwner, owner dcpM
 	}
 }
 
-func removeEndpointsForWorkload(r EndpointOwner, ctx context.Context, owner dcpModelObject, log logr.Logger) {
+func removeEndpointsForWorkload(r ctrl_client.Client, ctx context.Context, owner dcpModelObject, log logr.Logger) {
 	var childEndpoints apiv1.EndpointList
 	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{workloadOwnerKey: string(owner.GetUID())}); err != nil {
 		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())

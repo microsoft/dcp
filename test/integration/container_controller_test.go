@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -246,11 +247,14 @@ func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports 
 		require.True(t, found, "container port %d/%s was not published", port.ContainerPort, port.Protocol)
 		require.Len(t, mappings, 1, "expected a single mapping for container port %d", port.ContainerPort)
 
-		hostPort := port.HostPort
-		if hostPort == 0 {
-			hostPort = port.ContainerPort
+		if port.HostPort != 0 {
+			require.Equal(t, fmt.Sprintf("%d", port.HostPort), mappings[0].HostPort, "expected the host port to be %s", port.HostPort)
+		} else {
+			hostPort, hostPortErr := strconv.Atoi(mappings[0].HostPort)
+			require.NoError(t, hostPortErr, "expected the host port to be a number")
+			require.GreaterOrEqual(t, hostPort, ctrl_testutil.MinRandomHostPort)
+			require.Less(t, hostPort, ctrl_testutil.MaxRandomHostPort)
 		}
-		require.Equal(t, fmt.Sprintf("%d", hostPort), mappings[0].HostPort, "expected the host port to be %s", hostPort)
 
 		hostIP := port.HostIP
 		if hostIP == "" {

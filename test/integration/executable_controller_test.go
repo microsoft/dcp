@@ -1400,7 +1400,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 	}
 }
 
-// Verify that envrioment variables are handled according to OS conventions:
+// Verify that environment variables are handled according to OS conventions:
 // in a case-insensitive manner on Windows, and in a case-sensitive manner everywhere else.
 func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 	t.Parallel()
@@ -1556,7 +1556,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	waitServiceReady(t, ctx, &svc)
 }
 
-// Verify that all changes to the Executable status made by IDE executable runner are refleced in the Executable status.
+// Verify that all changes to the Executable status made by IDE executable runner are reflected in the Executable status.
 func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 	type testcase struct {
 		description    string
@@ -1692,7 +1692,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 }
 
 // Verify that stdout and stderr logs can be captured in non-follow mode.
-// The two sub-tests are verifying that logs can be captured when Executable is runnning,
+// The two sub-tests are verifying that logs can be captured when Executable is running,
 // and when it has finished.
 func TestExecutableLogsNonFollow(t *testing.T) {
 	type testcase struct {
@@ -1796,7 +1796,7 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 }
 
 // Verify stdout and stderr logs can be captured in follow mode,
-// The two sub-tests are verifying that logs can be captured when Executable is runnning,
+// The two sub-tests are verifying that logs can be captured when Executable is running,
 // and when it has finished.
 func TestExecutableLogsFollow(t *testing.T) {
 	type testcase struct {

@@ -3,17 +3,21 @@ package integration_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/stretchr/testify/require"
+
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
-	"github.com/stretchr/testify/require"
 )
 
 func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
@@ -21,14 +25,19 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
+	const testName = "test-endpoint-creation-executable"
+	const serviceName = testName + "-svc"
+
 	exe := apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "test-endpoint-creation-executable",
-			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": `[{"serviceName":"MyExeApp","address":"127.0.0.1","port":5001}]`},
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+			Annotations: map[string]string{
+				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, serviceName),
+			},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-endpoint-creation-executable",
+			ExecutablePath: "path/to/" + testName,
 		},
 	}
 
@@ -38,7 +47,7 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		return e.Spec.ServiceName == "MyExeApp" &&
+		return e.Spec.ServiceName == serviceName &&
 			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
 			e.Spec.Port == 5001, nil
 	})
@@ -60,13 +69,16 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "endpoint-creation-deletion"
+	const testName = "endpoint-creation-deletion-container"
+	const svcName = testName + "-svc"
 
 	container := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        "test-endpoint-creation-container",
-			Namespace:   metav1.NamespaceNone,
-			Annotations: map[string]string{"service-producer": `[{"serviceName":"MyContainerApp","port":80}]`},
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+			Annotations: map[string]string{
+				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName),
+			},
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
@@ -87,7 +99,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 
 	t.Log("Check if Endpoint created...")
 	waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		return e.Spec.ServiceName == "MyContainerApp" &&
+		return e.Spec.ServiceName == svcName &&
 			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
 			e.Spec.Port == 8080, nil
 	})
@@ -117,13 +129,14 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 	defer cancel()
 
 	const testName = "test-endpoint-deleted-if-executable-stopped"
+	const svcName = testName + "-svc"
 
 	exe := apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, testName),
+				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":5001}]`, svcName),
 			},
 		},
 		Spec: apiv1.ExecutableSpec{
@@ -141,7 +154,7 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		return e.Spec.ServiceName == testName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 5001, nil
+		return e.Spec.ServiceName == svcName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 5001, nil
 	})
 	t.Log("Found Endpoint with correct spec")
 
@@ -162,13 +175,14 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	defer cancel()
 
 	const testName = "test-endpoint-deleted-if-container-stopped"
+	const svcName = testName + "-svc"
 
 	container := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testName,
 			Namespace: metav1.NamespaceNone,
 			Annotations: map[string]string{
-				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, testName),
+				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":80}]`, svcName),
 			},
 		},
 		Spec: apiv1.ContainerSpec{
@@ -190,7 +204,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 
 	t.Log("Check if Endpoint created...")
 	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		return e.Spec.ServiceName == testName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 8080, nil
+		return e.Spec.ServiceName == svcName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 8080, nil
 	})
 	t.Log("Found Endpoint with correct spec")
 
@@ -207,6 +221,81 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, endpoint)
 }
 
+func TestEndpointRecreatedIfContainerPortsChange(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-endpoint-recreated-if-container-ports-change"
+	const svcName = testName + "-svc"
+	const containerPort = 37229
+
+	container := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+			Annotations: map[string]string{
+				"service-producer": fmt.Sprintf(`[{"serviceName":"%s","port":%d}]`, svcName, containerPort),
+			},
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: testName + "-image",
+			Ports: []apiv1.ContainerPort{
+				{
+					ContainerPort: containerPort,
+					// No host port specified (host port is dynamically assigned)
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container '%s'...", container.ObjectMeta.Name)
+	err := client.Create(ctx, &container)
+	require.NoError(t, err, "Could not create the Container")
+
+	_, inspected := ensureContainerRunning(t, ctx, &container)
+
+	t.Log("Check if related service Endpoint was properly created...")
+	verifyContainerEndpoint(t, ctx, inspected, svcName, containerPort)
+
+	t.Logf("Simulating restart of the container '%s'...", inspected.Id)
+	restartErr := containerOrchestrator.SimulateContainerRestart(ctx, inspected.Id)
+	require.NoError(t, restartErr, "Could not simulate container restart")
+
+	// Inspect the container again to get the new host port (as part of inspected container data)
+	_, inspected = ensureContainerRunning(t, ctx, &container)
+
+	t.Logf("Waiting for service Endpoint to be updated...")
+	verifyContainerEndpoint(t, ctx, inspected, svcName, containerPort)
+
+	t.Logf("Verify that the old Endpoint was deleted...")
+	waitEndpointCount(t, ctx, svcName, 1)
+}
+
+func verifyContainerEndpoint(
+	t *testing.T,
+	ctx context.Context,
+	inspected containers.InspectedContainer,
+	serviceName string,
+	containerPort int,
+) {
+	_ = waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+		portConfig, found := inspected.Ports[fmt.Sprintf("%d/tcp", containerPort)]
+		if !found || len(portConfig) == 0 {
+			return false, fmt.Errorf("expected to find port %d/tcp in container inspection result", containerPort)
+		}
+
+		hostPort, portParseErr := strconv.Atoi(portConfig[0].HostPort)
+		if portParseErr != nil {
+			return false, fmt.Errorf("expected to find valid host port in container inspection result: %w", portParseErr)
+		}
+
+		return e.Spec.ServiceName == serviceName &&
+			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
+			e.Spec.Port == int32(hostPort), nil
+	})
+}
+
 func waitEndpointExists(t *testing.T, ctx context.Context, selector func(*apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
 	var updatedObject *apiv1.Endpoint = new(apiv1.Endpoint)
 
@@ -214,7 +303,7 @@ func waitEndpointExists(t *testing.T, ctx context.Context, selector func(*apiv1.
 		var endpointList apiv1.EndpointList
 		err := client.List(ctx, &endpointList)
 		if err != nil {
-			t.Fatal("unable to list Endpoints from API server", err)
+			t.Fatal("unable to list Endpoints", err)
 			return false, err
 		}
 
@@ -233,9 +322,33 @@ func waitEndpointExists(t *testing.T, ctx context.Context, selector func(*apiv1.
 
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, existsWithExpectedState)
 	if err != nil {
-		t.Fatal("Waiting for Endpoint to exist with desired state failed", err)
+		t.Fatal("Waiting for Endpoint to reach desired state failed", err)
 		return nil // make the compiler happy
 	} else {
 		return updatedObject
+	}
+}
+
+func waitEndpointCount(t *testing.T, ctx context.Context, serviceName string, expectedCount int) {
+	const unknownCount = -1
+	currentCount := unknownCount
+
+	hasDesiredCount := func(ctx context.Context) (bool, error) {
+		var endpointList apiv1.EndpointList
+		err := client.List(ctx, &endpointList)
+		if err != nil {
+			t.Fatalf("unable to list Endpoints for service '%s': %v", serviceName, err)
+			return false, err
+		}
+
+		currentCount = slices.LenIf(endpointList.Items, func(endpoint apiv1.Endpoint) bool {
+			return endpoint.Spec.ServiceName == serviceName
+		})
+		return currentCount == expectedCount, nil
+	}
+
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasDesiredCount)
+	if err != nil {
+		t.Fatalf("Waiting for number of Endpoints for service '%s' to reach %d failed. Last count was %d, the error from waiting routine is %v", serviceName, expectedCount, currentCount, err)
 	}
 }

@@ -45,6 +45,13 @@ var (
 const (
 	TestEventActionStopWithoutRemove containers.EventAction = "stop_without_remove"
 	randomNameLength                 int                    = 20
+
+	// Range of ports used for "host port" if container port configuration does not specify a host port.
+	// (Docker/Podman assigns a random port in this case)
+	// Note that these ports are not actually used during the test (no sockets are bound to them),
+	// they are just for verification purposes.
+	MinRandomHostPort int = 40001
+	MaxRandomHostPort int = 50000
 )
 
 type TestContainerOrchestrator struct {
@@ -407,6 +414,11 @@ type containerNetwork struct {
 	labels     map[string]string
 }
 
+type TestContainerPortConfig struct {
+	containers.InspectedContainerHostPortConfig
+	UseRandomHostPort bool
+}
+
 type testContainer struct {
 	withId
 	image      string
@@ -415,7 +427,7 @@ type testContainer struct {
 	finishedAt time.Time
 	status     containers.ContainerStatus
 	exitCode   int32
-	ports      map[string][]containers.InspectedContainerHostPortConfig
+	ports      map[string][]TestContainerPortConfig
 	networks   []string
 	args       []string
 	env        map[string]string
@@ -878,7 +890,7 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, images [
 		}
 	}
 
-	// TODO: Make image build data inspectable
+	// TODO: Surface image build data via inspection
 	return nil, nil
 }
 
@@ -971,7 +983,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		createdAt: time.Now().UTC(),
 		status:    containers.ContainerStatusCreated,
 		networks:  []string{},
-		ports:     map[string][]containers.InspectedContainerHostPortConfig{},
+		ports:     map[string][]TestContainerPortConfig{},
 		args:      options.Args,
 		env:       map[string]string{},
 		labels:    map[string]string{},
@@ -991,7 +1003,11 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 
 		hostPort := port.HostPort
 		if port.HostPort == 0 {
-			hostPort = port.ContainerPort
+			i, randErr := randdata.MakeRandomInt64(int64(MaxRandomHostPort) - int64(MinRandomHostPort))
+			if randErr != nil {
+				return nil, randErr
+			}
+			hostPort = int32(MinRandomHostPort) + int32(i)
 		}
 
 		hostIP := port.HostIP
@@ -999,8 +1015,14 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 			hostIP = networking.IPv4LocalhostDefaultAddress
 		}
 
-		container.ports[fmt.Sprintf("%d/%s", port.ContainerPort, protocol)] = []containers.InspectedContainerHostPortConfig{
-			{HostIp: hostIP, HostPort: fmt.Sprintf("%d", hostPort)},
+		container.ports[fmt.Sprintf("%d/%s", port.ContainerPort, protocol)] = []TestContainerPortConfig{
+			{
+				InspectedContainerHostPortConfig: containers.InspectedContainerHostPortConfig{
+					HostIp:   hostIP,
+					HostPort: fmt.Sprintf("%d", hostPort),
+				},
+				UseRandomHostPort: port.HostPort == 0,
+			},
 		}
 	}
 
@@ -1415,6 +1437,17 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 			if container.matches(name) {
 				found = true
 
+				inspectedContainerPorts := maps.Map[string, []TestContainerPortConfig, []containers.InspectedContainerHostPortConfig](container.ports, func(key string, tcp []TestContainerPortConfig) []containers.InspectedContainerHostPortConfig {
+					retval := make([]containers.InspectedContainerHostPortConfig, len(tcp))
+					for i, value := range tcp {
+						retval[i] = containers.InspectedContainerHostPortConfig{
+							HostIp:   value.HostIp,
+							HostPort: value.HostPort,
+						}
+					}
+					return retval
+				})
+
 				inspectedContainer := containers.InspectedContainer{
 					Id:         container.id,
 					Name:       container.name,
@@ -1424,7 +1457,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 					FinishedAt: container.finishedAt,
 					Status:     container.status,
 					ExitCode:   container.exitCode,
-					Ports:      container.ports,
+					Ports:      inspectedContainerPorts,
 					Args:       container.args,
 					Env:        container.env,
 					Labels:     container.labels,
@@ -1556,6 +1589,66 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 			to.containerEventsWatcher.Notify(containers.EventMessage{
 				Source: containers.EventSourceContainer,
 				Action: containers.EventActionStop,
+				Actor:  containers.EventActor{ID: container.id},
+				Attributes: map[string]string{
+					ContainerNameAttribute: name,
+				},
+			})
+
+			return nil
+		}
+	}
+
+	return containers.ErrNotFound
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerRestart(ctx context.Context, name string) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	for _, container := range to.containers {
+		if container.matches(name) {
+			if container.status != containers.ContainerStatusRunning {
+				return fmt.Errorf("container is not running and cannot be restarted")
+			}
+
+			container.status = containers.ContainerStatusRunning
+
+			// Simulate remapping of randomly assigned ports
+			newPorts := map[string][]TestContainerPortConfig{}
+
+			for key, portConfigs := range container.ports {
+				newPortConfigs := []TestContainerPortConfig{}
+
+				for _, portConfig := range portConfigs {
+					pc := portConfig
+					if portConfig.UseRandomHostPort {
+						i, randErr := randdata.MakeRandomInt64(int64(MaxRandomHostPort) - int64(MinRandomHostPort))
+						if randErr != nil {
+							return randErr
+						}
+						pc.HostPort = fmt.Sprintf("%d", int32(MinRandomHostPort)+int32(i))
+					}
+					newPortConfigs = append(newPortConfigs, pc)
+				}
+
+				newPorts[key] = newPortConfigs
+			}
+
+			container.ports = newPorts
+
+			// Notify listeners that we've restarted the container
+			to.containerEventsWatcher.Notify(containers.EventMessage{
+				Source: containers.EventSourceContainer,
+				Action: containers.EventActionRestart,
 				Actor:  containers.EventActor{ID: container.id},
 				Attributes: map[string]string{
 					ContainerNameAttribute: name,

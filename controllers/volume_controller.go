@@ -81,7 +81,7 @@ func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrato
 		Client:       client,
 		Log:          log,
 		orchestrator: orchestrator,
-		volumeData:   NewObjectStateMap[volumeName, containerVolumeData, *containerVolumeData](),
+		volumeData:   NewObjectStateMap[volumeName, containerVolumeData](),
 		debouncer:    newReconcilerDebouncer[volumeName](),
 	}
 	return &r

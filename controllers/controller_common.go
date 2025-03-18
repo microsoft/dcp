@@ -140,7 +140,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 	onSuccessfulSave func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
-	return saveChangesWithCustomReconciliationDelay[T, PCT](
+	return saveChangesWithCustomReconciliationDelay(
 		client,
 		ctx,
 		obj,
@@ -313,7 +313,7 @@ func getStateInitializer[
 	panic("the state handler map has no empty state handler")
 }
 
-// metav1.MicroTime it is subject to rounding errors when it is serialized, deserialized, and initialized from time.Time.
+// MicroTime it is subject to rounding errors when it is serialized, deserialized, and initialized from time.Time.
 // We consider a timestamp to be "different" from another one if it is off by more than 2 microseconds.
 const timestampEpsilon = 2 * time.Microsecond
 

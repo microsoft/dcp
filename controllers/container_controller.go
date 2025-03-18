@@ -520,13 +520,6 @@ func ensureContainerRunningState(
 		return change
 	}
 
-	if desiredState != apiv1.ContainerStateRunning {
-		removeEndpointsForWorkload(r, ctx, container, log)
-	} else {
-		reservedPorts := rcd.reservedPorts
-		ensureEndpointsForWorkload(ctx, r, container, reservedPorts, log)
-	}
-
 	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
@@ -542,6 +535,17 @@ func ensureContainerRunningState(
 			// Don't try to reconcile again unconditionally (that might result in an infinite loop),
 			// but instead wait for another event from the container watcher.
 			return change
+		}
+	}
+
+	if desiredState != apiv1.ContainerStateRunning {
+		removeEndpointsForWorkload(r, ctx, container, log)
+	} else {
+		if inspected.Status != containers.ContainerStatusRunning {
+			log.V(1).Info("container is not running, delaying Endpoint creation...")
+			change |= additionalReconciliationNeeded
+		} else {
+			ensureEndpointsForWorkload(ctx, r, container, rcd.reservedPorts, inspected, log)
 		}
 	}
 
@@ -1636,6 +1640,7 @@ func (r *ContainerReconciler) createEndpoint(
 	ctx context.Context,
 	owner ctrl_client.Object,
 	serviceProducer ServiceProducer,
+	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) (*apiv1.Endpoint, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
@@ -1644,16 +1649,10 @@ func (r *ContainerReconciler) createEndpoint(
 		return nil, err
 	}
 
-	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(ctx, owner.(*apiv1.Container), serviceProducer.Port, log)
+	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(owner.(*apiv1.Container), serviceProducer.Port, inspected, log)
 	if err != nil {
 		log.Error(err, "could not determine host address and port for container port")
 		return nil, err
-	}
-
-	if hostAddress == "" || hostAddress == networking.IPv4AllInterfaceAddress {
-		hostAddress = networking.IPv4LocalhostDefaultAddress
-	} else if hostAddress == networking.IPv6AllInterfaceAddress {
-		hostAddress = networking.IPv6LocalhostDefaultAddress
 	}
 
 	// Otherwise, create a new Endpoint object.
@@ -1673,10 +1672,32 @@ func (r *ContainerReconciler) createEndpoint(
 	return endpoint, nil
 }
 
-func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
+func (r *ContainerReconciler) validateExistingEndpoint(
 	ctx context.Context,
+	owner ctrl_client.Object,
+	serviceProducer ServiceProducer,
+	inspected *containers.InspectedContainer,
+	endpoint *apiv1.Endpoint,
+	log logr.Logger,
+) error {
+	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(owner.(*apiv1.Container), serviceProducer.Port, inspected, log)
+	if err != nil {
+		log.Error(err, "could not determine host address and port for container port")
+		return err
+	}
+
+	if endpoint.Spec.Address != hostAddress || endpoint.Spec.Port != hostPort {
+		log.V(1).Info("Existing Endpoint does not match host address and port derived from inspected Container port information", "EffectiveHostAddress", hostAddress, "HostPort", hostPort, "EndpointAddress", endpoint.Spec.Address, "EndpointPort", endpoint.Spec.Port)
+		return fmt.Errorf("Endpoint configuration does not match inspected Container port information")
+	}
+
+	return nil
+}
+
+func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 	ctr *apiv1.Container,
 	serviceProducerPort int32,
+	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) (string, int32, error) {
 	var matchedPort apiv1.ContainerPort
@@ -1699,22 +1720,10 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 	}
 
 	if found && matchedPort.HostPort != 0 {
+		hostAddress := normalizeHostAddress(matchedPort.HostIP)
 		// If the spec contains a port matching the desired container port, just use that
-		log.V(1).Info("found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort)
-		return matchedPort.HostIP, matchedPort.HostPort, nil
-	}
-
-	// Need to inspect the container to find the port used by the service (auto-allocated by Docker).
-	_, rcd := r.runningContainers.BorrowByNamespacedName(ctr.NamespacedName())
-	if rcd == nil || !rcd.hasValidContainerID() {
-		// Should never happen--this method should only be called for running container.
-		return "", 0, fmt.Errorf("running container data not found for Container '%s'", ctr.NamespacedName())
-	}
-
-	log.V(1).Info("inspecting running container resource to get its port information...", "ContainerID", rcd.containerID)
-	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
-	if err != nil {
-		return "", 0, err
+		log.V(1).Info("found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP, "EffectiveHostAddress", hostAddress)
+		return hostAddress, matchedPort.HostPort, nil
 	}
 
 	if inspected.Status != containers.ContainerStatusRunning {
@@ -1744,8 +1753,19 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 		return "", 0, fmt.Errorf("could not find host port for container port %d (invalid host port value %d reported by container orchestrator)", serviceProducerPort, hostPort)
 	}
 
-	log.V(1).Info("matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp)
-	return matchedHostPort.HostIp, int32(hostPort), nil
+	hostAddress := normalizeHostAddress(matchedHostPort.HostIp)
+	log.V(1).Info("matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp, "EffectiveHostAddress", hostAddress)
+	return hostAddress, int32(hostPort), nil
+}
+
+func normalizeHostAddress(hostIP string) string {
+	hostAddress := hostIP
+	if hostAddress == "" || hostAddress == networking.IPv4AllInterfaceAddress {
+		hostAddress = networking.IPv4LocalhostDefaultAddress
+	} else if hostAddress == networking.IPv6AllInterfaceAddress {
+		hostAddress = networking.IPv6LocalhostDefaultAddress
+	}
+	return hostAddress
 }
 
 // CONTAINER RESOURCE MANAGEMENT METHODS
