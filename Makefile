@@ -96,7 +96,7 @@ OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
 GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
-GO_LICENSES ?= $(GOTOOL_BIN) github.com/google/go-licenses
+GO_LICENSES ?= $(GOTOOL_BIN) github.com/google/go-licenses/v2
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v1.64.7

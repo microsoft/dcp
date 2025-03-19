@@ -68,28 +68,25 @@ require (
 	github.com/google/btree v1.0.1 // indirect
 	github.com/google/cel-go v0.22.0 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
-	github.com/google/go-licenses v1.6.0 // indirect
+	github.com/google/go-licenses/v2 v2.0.0-alpha.1 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
-	github.com/google/licenseclassifier v0.0.0-20210722185704-3043a050f148 // indirect
+	github.com/google/licenseclassifier/v2 v2.0.0 // indirect
 	github.com/google/pprof v0.0.0-20241029153458-d1b30febd7db // indirect
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.20.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	github.com/josephspurrier/goversioninfo v1.4.1 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/kevinburke/ssh_config v0.0.0-20190725054713-01f96b0aa0cd // indirect
 	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/otiai10/copy v1.6.0 // indirect
+	github.com/otiai10/copy v1.10.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/client_golang v1.20.5 // indirect
@@ -97,15 +94,13 @@ require (
 	github.com/prometheus/common v0.61.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/sergi/go-diff v1.2.0 // indirect
-	github.com/src-d/gcfg v1.4.0 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/xanzy/ssh-agent v0.2.1 // indirect
 	go.etcd.io/etcd/api/v3 v3.5.16 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.5.16 // indirect
 	go.etcd.io/etcd/client/v3 v3.5.16 // indirect
-	go.opencensus.io v0.23.0 // indirect
+	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.53.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.53.0 // indirect
@@ -128,9 +123,6 @@ require (
 	google.golang.org/protobuf v1.36.1 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	gopkg.in/src-d/go-billy.v4 v4.3.2 // indirect
-	gopkg.in/src-d/go-git.v4 v4.13.1 // indirect
-	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/api v0.32.1 // indirect
@@ -146,7 +138,7 @@ require (
 )
 
 tool (
-	github.com/google/go-licenses
+	github.com/google/go-licenses/v2
 	github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 	k8s.io/kube-openapi/cmd/openapi-gen
 	sigs.k8s.io/controller-tools/cmd/controller-gen
