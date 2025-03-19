@@ -3,6 +3,7 @@ package containers
 import (
 	"context"
 	"io"
+	"io/fs"
 	"time"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -190,8 +191,20 @@ type CreateFilesOptions struct {
 	// Time the file was modified/created
 	ModTime time.Time
 
-	// The actual file structure to be created
-	apiv1.CreateFileSystem
+	// The destination path for the file (should already exist in the container)
+	Destination string
+
+	// The default owner ID for created files (defaults to 0 for root)
+	DefaultOwner int32
+
+	// The default group ID for created files (defaults to 0 for root)
+	DefaultGroup int32
+
+	// The umask for created files and folders without explicit permissions set (defaults to 022)
+	Umask fs.FileMode
+
+	// The specific entries to create in the container (must have at least one item)
+	Entries []apiv1.FileSystemEntry
 }
 
 type StreamContainerLogsOptions struct {

@@ -1766,7 +1766,7 @@ func TestContainerCreateFilesDefaultValues(t *testing.T) {
 	require.Len(t, files, 1, "expected to find a single copied file")
 	require.Equal(t, ctr.Spec.CreateFiles[0].Destination, files[0].Destination, "copied file destination does not match")
 	require.LessOrEqual(t, testStart, files[0].ModTime, "copied file mod time is not greater than or equal to the test start time")
-	require.Equal(t, fs.FileMode(0600), files[0].Mode, "copied file mode does not match expected default value")
+	require.Equal(t, osutil.DefaultUmaskBitmask, files[0].Umask, "copied file mode does not match expected default value")
 	require.Equal(t, int32(0), files[0].DefaultOwner, "copied file owner id does not match expected default value")
 	require.Equal(t, int32(0), files[0].DefaultGroup, "copied file group id does not match expected default value")
 
@@ -1776,7 +1776,7 @@ func TestContainerCreateFilesDefaultValues(t *testing.T) {
 
 	require.Equal(t, 0, items[0].Uid, "copied file item owner id does not match expected default value")
 	require.Equal(t, 0, items[0].Gid, "copied file item group id does not match expected default value")
-	require.Equal(t, int64(0600), items[0].Mode, "copied file item mode does not match expected default value")
+	require.Equal(t, int64(osutil.PermissionOwnerReadWriteOthersRead), items[0].Mode, "copied file item mode does not match expected default value")
 }
 
 func TestContainerCreateFilesMultipleFiles(t *testing.T) {
@@ -1790,6 +1790,7 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 	testStart := time.Now()
 
 	itemOwner := int32(0)
+	umask := fs.FileMode(077)
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testName,
@@ -1808,7 +1809,7 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 				},
 				{
 					Destination:  "/some/path",
-					Mode:         0700,
+					Umask:        &umask,
 					DefaultOwner: 1000,
 					DefaultGroup: 1000,
 					Entries: []apiv1.FileSystemEntry{
@@ -1839,13 +1840,13 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 	require.Len(t, files, 2, "expected to find a single copied file")
 	require.Equal(t, ctr.Spec.CreateFiles[0].Destination, files[0].Destination, "copied file destination does not match")
 	require.LessOrEqual(t, testStart, files[0].ModTime, "copied file mod time is not greater than or equal to the test start time")
-	require.Equal(t, fs.FileMode(0600), files[0].Mode, "copied file mode does not match expected default value")
+	require.Equal(t, fs.FileMode(osutil.DefaultUmaskBitmask), files[0].Umask, "copied file umask does not match expected default value")
 	require.Equal(t, int32(0), files[0].DefaultOwner, "copied file owner id does not match expected default value")
 	require.Equal(t, int32(0), files[0].DefaultGroup, "copied file group id does not match expected default value")
 
 	require.Equal(t, ctr.Spec.CreateFiles[1].Destination, files[1].Destination, "copied file destination does not match")
 	require.LessOrEqual(t, testStart, files[1].ModTime, "copied file mod time is not greater than or equal to the test start time")
-	require.Equal(t, ctr.Spec.CreateFiles[1].Mode, files[1].Mode, "copied file mode does not match expected value")
+	require.Equal(t, umask, files[1].Umask, "copied file umask does not match expected value")
 
 	items, itemsErr := files[1].GetTarItems()
 	require.NoError(t, itemsErr, "could not get tar items")
@@ -1854,12 +1855,12 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 	require.Equal(t, "some-dir", items[0].Name, "copied file item name does not match expected value")
 	require.Equal(t, 1000, items[0].Uid, "copied file item owner id does not match expected value")
 	require.Equal(t, 1000, items[0].Gid, "copied file item group id does not match expected value")
-	require.Equal(t, int64(0700|fs.ModeDir), items[0].Mode, "copied file item mode does not match expected value")
+	require.Equal(t, int64(osutil.PermissionOnlyOwnerReadWriteSetCurrent|fs.ModeDir), items[0].Mode, "copied file item mode does not match expected value")
 
 	require.Equal(t, "some-dir/hello.txt", items[1].Name, "copied file item name does not match expected value")
 	require.Equal(t, 0, items[1].Uid, "copied file item owner id does not match expected value")
 	require.Equal(t, 1000, items[1].Gid, "copied file item group id does not match expected value")
-	require.Equal(t, int64(0700), items[1].Mode, "copied file item mode does not match expected value")
+	require.Equal(t, int64(osutil.PermissionOnlyOwnerReadWrite), items[1].Mode, "copied file item mode does not match expected value")
 }
 
 // Even if Docker container stops very quickly, the state of corresponding Container should be "Exited"

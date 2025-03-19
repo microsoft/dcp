@@ -1189,18 +1189,20 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			rcd.updateFromInspectedContainer(inspected)
 
 			for _, createFileRequest := range rcd.runSpec.CreateFiles {
-				mode := createFileRequest.Mode
-				if mode == 0 {
-					mode = osutil.PermissionOnlyOwnerReadWrite
+				umask := osutil.DefaultUmaskBitmask
+				if createFileRequest.Umask != nil {
+					umask = *createFileRequest.Umask
 				}
 
 				createFilesOptions := containers.CreateFilesOptions{
-					Container:        inspected.Id,
-					CreateFileSystem: createFileRequest,
-					ModTime:          time.Now(),
+					Container:    inspected.Id,
+					Entries:      createFileRequest.Entries,
+					Destination:  createFileRequest.Destination,
+					DefaultOwner: createFileRequest.DefaultOwner,
+					DefaultGroup: createFileRequest.DefaultGroup,
+					Umask:        umask,
+					ModTime:      time.Now(),
 				}
-
-				createFilesOptions.Mode = mode
 
 				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
 				if copyErr != nil {
