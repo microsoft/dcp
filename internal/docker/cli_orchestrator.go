@@ -26,6 +26,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
@@ -246,6 +247,13 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 	isDockerCh := make(chan bool, 1)
 	go func() {
 		defer close(isDockerCh)
+
+		// Skip the info check if the user explicitly declared the runtime to be Docker
+		if flags.GetRuntimeFlagValue() == flags.DockerRuntime {
+			dco.log.V(1).Info("docker runtime explicitly specified, skipping alias detection")
+			isDockerCh <- true
+			return
+		}
 
 		cmd := makeDockerCommand("info", "--format", "{{json .}}")
 		outBuf, _, err := dco.runBufferedDockerCommand(ctx, "AliasDetection", cmd, nil, nil, ordinaryDockerCommandTimeout)
