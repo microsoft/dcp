@@ -196,7 +196,7 @@ type FileSystemEntry struct {
 	// The ID of the file group. Defaults to 0 (root).
 	Group *int32 `json:"group,omitempty"`
 
-	// The unix mode permissions of this entry. Inherits from parent if not set.
+	// The unix mode permissions of this entry. If Mode is 0, the umask for the create file request will be applied.
 	Mode fs.FileMode `json:"mode,omitempty"`
 
 	// For file type entries, the contents of the file. Optional.
@@ -310,8 +310,8 @@ type CreateFileSystem struct {
 	// The default group ID for created files (defaults to 0 for root)
 	DefaultGroup int32 `json:"defaultGroup,omitempty"`
 
-	// The default mode for created files (defaults to 0600)
-	Mode fs.FileMode `json:"mode,omitempty"`
+	// The umask for created files and folders without explicit permissions set (defaults to 022)
+	Umask *fs.FileMode `json:"umask,omitempty"`
 
 	// The specific entries to create in the container (must have at least one item)
 	Entries []FileSystemEntry `json:"entries,omitempty"`
@@ -330,7 +330,7 @@ func (cf *CreateFileSystem) Equal(other *CreateFileSystem) bool {
 		return false
 	}
 
-	if cf.Mode != other.Mode {
+	if !pointers.EqualValue(cf.Umask, other.Umask) {
 		return false
 	}
 
@@ -771,8 +771,8 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("destination"), createFile.Destination, "destination must be absolute"))
 		}
 
-		if !fs.FileMode(createFile.Mode).IsRegular() {
-			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("mode"), createFile.Mode, "mode must not include type bits"))
+		if createFile.Umask != nil && !fs.FileMode(*createFile.Umask).IsRegular() {
+			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("umask"), *createFile.Umask, "umask must not include type bits"))
 		}
 
 		if len(createFile.Entries) == 0 {

@@ -1813,9 +1813,9 @@ func schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref common.Referenc
 							Format:      "int32",
 						},
 					},
-					"mode": {
+					"umask": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The default mode for created files (defaults to 0600)",
+							Description: "The umask for created files and folders without explicit permissions set (defaults to 022)",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -2706,7 +2706,7 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 					},
 					"mode": {
 						SchemaProps: spec.SchemaProps{
-							Description: "The unix mode permissions of this entry. Inherits from parent if not set.",
+							Description: "The unix mode permissions of this entry. If Mode is 0, the umask for the create file request will be applied.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},

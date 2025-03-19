@@ -727,11 +727,11 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	for _, item := range options.Entries {
 		if item.Type == apiv1.FileSystemEntryTypeDir {
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addDirectoryErr != nil {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
 		} else {
-			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addFileErr != nil {
+			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime); addFileErr != nil {
 				return addFileErr
 			}
 		}

@@ -94,7 +94,7 @@ type containerExec struct {
 
 type containerCreateFile struct {
 	Destination  string
-	Mode         fs.FileMode
+	Umask        fs.FileMode
 	DefaultOwner int32
 	DefaultGroup int32
 	ModTime      time.Time
@@ -1513,11 +1513,11 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 
 	for _, item := range options.Entries {
 		if item.Type == apiv1.FileSystemEntryTypeDir {
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addDirectoryErr != nil {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
 		} else {
-			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Mode, item, options.ModTime); addFileErr != nil {
+			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime); addFileErr != nil {
 				return addFileErr
 			}
 		}
@@ -1530,7 +1530,7 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 
 	to.createFiles[foundContainer.id] = append(to.createFiles[foundContainer.id], &containerCreateFile{
 		Destination:  options.Destination,
-		Mode:         options.Mode,
+		Umask:        options.Umask,
 		DefaultOwner: options.DefaultOwner,
 		DefaultGroup: options.DefaultGroup,
 		ModTime:      options.ModTime,
