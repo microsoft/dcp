@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	generic_registry "k8s.io/apiserver/pkg/registry/generic"
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ContainerExecSpec defines an exec command to run against a Container resource
@@ -227,8 +226,8 @@ func (cel *ContainerExecList) ItemCount() uint32 {
 	return uint32(len(cel.Items))
 }
 
-func (cel *ContainerExecList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cel.Items))
+func (cel *ContainerExecList) GetItems() []*ContainerExec {
+	retval := make([]*ContainerExec, len(cel.Items))
 	for i := range cel.Items {
 		retval[i] = &cel.Items[i]
 	}
@@ -278,7 +277,7 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*ContainerExec)(nil)
 var _ apiserver_resource.ObjectList = (*ContainerExecList)(nil)
-var _ commonapi.ListWithObjectItems = (*ContainerExecList)(nil)
+var _ commonapi.ListWithObjectItems[ContainerExec, *ContainerExec] = (*ContainerExecList)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*ContainerExec)(nil)
 var _ apiserver_resource.StatusSubResource = (*ContainerExecStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerExec)(nil)

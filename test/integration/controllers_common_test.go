@@ -35,6 +35,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -281,7 +282,7 @@ func (e *unexpectedObjectStateError) Error() string { return e.errText }
 
 var _ error = (*unexpectedObjectStateError)(nil)
 
-func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+func waitObjectAssumesState[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 	t *testing.T,
 	ctx context.Context,
 	name types.NamespacedName,
@@ -290,7 +291,7 @@ func waitObjectAssumesState[T controllers.ObjectStruct, PT controllers.PObjectSt
 	return waitObjectAssumesStateEx[T, PT](t, ctx, client, name, isInState)
 }
 
-func waitObjectAssumesStateEx[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+func waitObjectAssumesStateEx[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 	t *testing.T,
 	ctx context.Context,
 	apiServerClient ctrl_client.Client,
@@ -351,7 +352,7 @@ func waitServiceReady(t *testing.T, ctx context.Context, svc *apiv1.Service) *ap
 	return updatedSvc
 }
 
-func retryOnConflict[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](ctx context.Context, name types.NamespacedName, action func(context.Context, PT) error) error {
+func retryOnConflict[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](ctx context.Context, name types.NamespacedName, action func(context.Context, PT) error) error {
 
 	try := func() error {
 		var apiObject PT = new(T)
@@ -373,7 +374,7 @@ func retryOnConflict[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]
 	return resiliency.RetryExponential(ctx, try)
 }
 
-func openLogStream[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+func openLogStream[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 	ctx context.Context,
 	obj PT,
 	opts apiv1.LogOptions,
@@ -392,7 +393,7 @@ func openLogStream[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
 	return stream, err
 }
 
-func waitForObjectLogs[T controllers.ObjectStruct, PT controllers.PObjectStruct[T]](
+func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 	ctx context.Context,
 	obj PT,
 	opts apiv1.LogOptions,

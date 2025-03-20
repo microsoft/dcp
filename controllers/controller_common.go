@@ -22,6 +22,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -100,24 +101,6 @@ func MakeUniqueName(prefix string) (string, string, error) {
 	return uniqueName, postfix, nil
 }
 
-type ObjectStruct interface {
-}
-
-type DeepCopyable[T ObjectStruct] interface {
-	DeepCopy() *T
-}
-
-type PObjectStruct[T ObjectStruct] interface {
-	*T
-	ctrl_client.Object
-	apiserver_resource.Object
-}
-
-type PCopyableObjectStruct[T ObjectStruct] interface {
-	DeepCopyable[T]
-	PObjectStruct[T]
-}
-
 // Computes the delay to use for additional reconciliation, if necessary.
 // The passed "useLongDelay" parameter determines whether the delay should be "standard" or "long".
 // Passing true will result in a longer delay with a random component,
@@ -131,7 +114,7 @@ func computeAdditionalReconciliationDelay(change objectChange, useLongDelay bool
 	return reconciliationDelay, change
 }
 
-func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
+func saveChanges[T commonapi.ObjectStruct, PCT commonapi.PCopyableObjectStruct[T]](
 	client ctrl_client.Client,
 	ctx context.Context,
 	obj PCT,
@@ -152,7 +135,7 @@ func saveChanges[T ObjectStruct, PCT PCopyableObjectStruct[T]](
 	)
 }
 
-func saveChangesWithCustomReconciliationDelay[T ObjectStruct, PCT PCopyableObjectStruct[T]](
+func saveChangesWithCustomReconciliationDelay[T commonapi.ObjectStruct, PCT commonapi.PCopyableObjectStruct[T]](
 	client ctrl_client.Client,
 	parentCtx context.Context,
 	obj PCT,
@@ -264,11 +247,6 @@ type KubernetesObjectStateType interface {
 	~string
 }
 
-type PObjectWithStatusStruct[T ObjectStruct] interface {
-	PObjectStruct[T]
-	apiserver_resource.ObjectWithStatusSubResource
-}
-
 // A function invoked from the reconciliation loop when an object reaches a particular state.
 // The responsibility of the state initializer is threefold:
 // 1. Set the object's to the desired state (usually by modifying its Status).
@@ -276,7 +254,7 @@ type PObjectWithStatusStruct[T ObjectStruct] interface {
 // 3. Make necessary changes to the real-world resources that the object represents.
 // NOTE: the initializer MUST return noChange if no changes were made to the object, in order to avoid infinite reconciliation loops
 type stateInitializerFunc[
-	O ObjectStruct, PO PObjectWithStatusStruct[O],
+	O commonapi.ObjectStruct, PO commonapi.PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],
 	OS KubernetesObjectStateType,
 	IMOS any, PIMOS PInMemoryObjectState[IMOS],
@@ -290,7 +268,7 @@ type stateInitializerFunc[
 ) objectChange
 
 func getStateInitializer[
-	O ObjectStruct, PO PObjectWithStatusStruct[O],
+	O commonapi.ObjectStruct, PO commonapi.PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],
 	OS KubernetesObjectStateType,
 	IMOS any, PIMOS PInMemoryObjectState[IMOS],

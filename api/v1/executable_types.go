@@ -16,8 +16,6 @@ import (
 	generic_registry "k8s.io/apiserver/pkg/registry/generic"
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-
 	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
@@ -455,8 +453,8 @@ func (el *ExecutableList) ItemCount() uint32 {
 	return uint32(len(el.Items))
 }
 
-func (el *ExecutableList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(el.Items))
+func (el *ExecutableList) GetItems() []*Executable {
+	retval := make([]*Executable, len(el.Items))
 	for i := range el.Items {
 		retval[i] = &el.Items[i]
 	}
@@ -506,7 +504,7 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*Executable)(nil)
 var _ apiserver_resource.ObjectList = (*ExecutableList)(nil)
-var _ commonapi.ListWithObjectItems = (*ExecutableList)(nil)
+var _ commonapi.ListWithObjectItems[Executable, *Executable] = (*ExecutableList)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*Executable)(nil)
 var _ apiserver_resource.StatusSubResource = (*ExecutableStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Executable)(nil)

@@ -279,21 +279,22 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 
 	switch {
 	case rcd == nil:
+		log.V(1).Info("Container is being deleted (deleting finalizer only)...")
 		change = deleteFinalizer(container, containerFinalizer, log)
 
 	case rcd.containerState == apiv1.ContainerStateBuilding || rcd.containerState == apiv1.ContainerStateStarting || rcd.containerState == apiv1.ContainerStateStopping:
-		// Wait for Container to exit this transient state.
+		log.V(1).Info("Container is being deleted, waiting for it to exit transient state...", "CurrentState", rcd.containerState)
 		change = r.manageContainer(ctx, container, log)
 
 	case (rcd.containerState == apiv1.ContainerStateRunning || rcd.containerState == apiv1.ContainerStatePaused) && !container.Spec.Persistent:
-		// Need to stop the container first.
+		log.V(1).Info("Container is being deleted, but it needs to be stopped first...", "CurrentState", rcd.containerState)
 		rcd.containerState = apiv1.ContainerStateStopping
 		stoppingInitializer := getStateInitializer(containerStateInitializers, apiv1.ContainerStateStopping, log)
 		change = stoppingInitializer(ctx, r, container, apiv1.ContainerStateStopping, rcd, log)
 		r.runningContainers.Update(container.NamespacedName(), rcd.containerID, rcd)
 
-	default: // In initial or final state
-		log.V(1).Info("Container object is being deleted...")
+	default:
+		log.V(1).Info("Container is being deleted (in initial or final state; releasing resources and deleting finalizer)...", "CurrentState", rcd.containerState)
 		r.cleanupContainerResources(ctx, container, rcd, log)
 		change = deleteFinalizer(container, containerFinalizer, log)
 		r.runningContainers.DeleteByNamespacedName(container.NamespacedName())
@@ -988,6 +989,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		}
 
 		placeholderContainerID := rcd.containerID
+		log = log.WithValues("ContainerName", containerName)
 
 		err := func() error {
 			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
@@ -1018,7 +1020,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// Check for an existing persistent container
 				inspected, inspectedErr := inspectContainerIfExists(startupCtx, r.orchestrator, containerName)
 				if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
-					log.Error(inspectedErr, "could not inspect existing container", "ContainerName", containerName)
+					log.Error(inspectedErr, "could not inspect existing container")
 					return inspectedErr
 				}
 
@@ -1029,9 +1031,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 						// We need to recreate this DCP managed container because the lifecycle key has changed
 						if hasDefaultLifecycleKey {
 							mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
-							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
+							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
 						} else {
-							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
+							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
 						}
 
 						if removeErr := r.removeExistingContainer(startupCtx, containerID(inspected.Id), inspected, log); removeErr != nil {
@@ -1039,12 +1041,12 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 						}
 					} else if dcpManaged && inspected.Status != containers.ContainerStatusRunning {
 						// We need to recreate this DCP managed container because it is not running
-						log.Info("found existing Container that is not running, recreating container", "ContainerName", containerName, "ContainerID", inspected.Id, "ContainerStatus", inspected.Status)
+						log.Info("found existing Container that is not running, recreating container", "ContainerID", inspected.Id, "ContainerStatus", inspected.Status)
 						if removeErr := r.removeExistingContainer(startupCtx, containerID(inspected.Id), inspected, log); removeErr != nil {
 							return removeErr
 						}
 					} else {
-						log.Info("found existing Container", "ContainerName", containerName, "ContainerID", inspected.Id)
+						log.Info("found existing Container", "ContainerID", inspected.Id)
 						rcd.updateFromInspectedContainer(inspected)
 						rcd.startAttemptFinishedAt = metav1.NowMicro()
 						rcd.containerState = apiv1.ContainerStateRunning
@@ -1214,7 +1216,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 
 			if rcd.runSpec.Networks == nil {
-				inspected, err = r.startContainerWithTimeout(startupCtx, rcd.containerID, streamOptions)
+				inspected, err = r.startContainerWithTimeout(startupCtx, containerName, rcd.containerID, streamOptions)
 				rcd.startAttemptFinishedAt = metav1.NowMicro()
 				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 				if err != nil {
@@ -1342,6 +1344,7 @@ func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, 
 
 func (r *ContainerReconciler) startContainerWithTimeout(
 	parentCtx context.Context,
+	containerObjectName string,
 	containerID containerID,
 	streamOptions containers.StreamCommandOptions,
 ) (*containers.InspectedContainer, error) {
@@ -1351,7 +1354,7 @@ func (r *ContainerReconciler) startContainerWithTimeout(
 		startContainerCallCtx, startContainerCallCtxCancel = context.WithTimeout(parentCtx, r.config.ContainerStartupTimeoutOverride)
 		defer startContainerCallCtxCancel()
 	}
-	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, string(containerID), streamOptions)
+	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, containerObjectName, string(containerID), streamOptions)
 	return inspected, err
 }
 
@@ -1387,7 +1390,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 		StdErrStream: startupStderrWriter,
 	}
 
-	inspected, startupErr := r.startContainerWithTimeout(ctx, containerID, streamOptions)
+	inspected, startupErr := r.startContainerWithTimeout(ctx, container.Name, containerID, streamOptions)
 	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 	if startupErr != nil {
 		log.Error(startupErr, "failed to start Container", "ContainerID", containerID)
@@ -1468,8 +1471,15 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		return []*apiv1.ContainerNetwork{}, err
 	}
 
-	if container.Spec.Networks == nil || container.Spec.Stop || !container.DeletionTimestamp.IsZero() {
-		// If no networks are defined, stop has been requested, or the container is being deleted, delete all connections
+	if container.Spec.Networks == nil || container.Spec.Stop || !container.DeletionTimestamp.IsZero() || rcd.containerState == apiv1.ContainerStateFailedToStart {
+		// Delete all connections if no networks are defined, stop has been requested, or the container is being deleted.
+		//
+		// We also delete all connections if the container fails to start, because the container orchestrator (Docker/Podman)
+		// may not be able to attach a "dead" container to a network. Specifically, in dead state, inspecting the container
+		// may result in NetworkSetting populated with desired network information, but inspecting the network will reveal
+		// that the container is not connected to the network. Our ContainerNetwork controller is using network inspection
+		// to determine if the container is connected to the network, so it will forever try to re-attach it, unsuccessfully,
+		// if the ContainerNetworkConnection object is not deleted.
 		var err error
 		for i := range childNetworkConnections.Items {
 			if deleteErr := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
@@ -1521,7 +1531,6 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 	}
 
-	// Remove any network connections that don't correspond to an expected ContainerNetwork
 	for i := range inspected.Networks {
 		existingNetworkConnection := inspected.Networks[i]
 		var containerNetwork *apiv1.ContainerNetwork

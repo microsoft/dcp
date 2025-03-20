@@ -640,13 +640,15 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 	require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
 	require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
 
-	t.Logf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
-	executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
-		controllerOwner := metav1.GetControllerOf(e)
-		hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
-		return forCorrectService && hasOwner, nil
-	})
+	executableEndpoint := waitEndpointExists(t, ctx,
+		fmt.Sprintf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name),
+		func(e *apiv1.Endpoint) (bool, error) {
+			forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+			controllerOwner := metav1.GetControllerOf(e)
+			hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+			return forCorrectService && hasOwner, nil
+		},
+	)
 	require.Equal(t, int32(port), executableEndpoint.Spec.Port, "The port injected into the Executable '%s' process environment variables (%d) does not match the port of the Endpoint (%d)", exe.ObjectMeta.Name, port, executableEndpoint.Spec.Port)
 
 	t.Logf("Ensure the Status.EffectiveEnv for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
@@ -786,13 +788,14 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 	require.Greater(t, int32(port), int32(0), "The injected port '%d' is not a valid port number", port)
 	require.Less(t, int32(port), int32(65536), "The injected port '%d' is not a valid port number", port)
 
-	t.Logf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
-	executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-		forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
-		controllerOwner := metav1.GetControllerOf(e)
-		hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
-		return forCorrectService && hasOwner, nil
-	})
+	executableEndpoint := waitEndpointExists(t, ctx,
+		fmt.Sprintf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name),
+		func(e *apiv1.Endpoint) (bool, error) {
+			forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+			controllerOwner := metav1.GetControllerOf(e)
+			hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+			return forCorrectService && hasOwner, nil
+		})
 	require.Equal(t, int32(port), executableEndpoint.Spec.Port, "The port injected into the Executable '%s' (%d) does not match the port of the Endpoint (%d)", exe.ObjectMeta.Name, port, executableEndpoint.Spec.Port)
 
 	t.Logf("Ensure the Status.EffectiveArgs for Executable '%s' contains the injected port...", exe.ObjectMeta.Name)
@@ -994,14 +997,15 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 
 	// VALIDATION PART 3: validate endpoints
 
-	t.Logf("Ensure that all expected Endpoints for Executable '%s' are created...", exe.ObjectMeta.Name)
 	endpoints := slices.MapConcurrent[apiv1.Service, *apiv1.Endpoint](maps.Values(services), func(svc apiv1.Service) *apiv1.Endpoint {
-		executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-			forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
-			controllerOwner := metav1.GetControllerOf(e)
-			hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
-			return forCorrectService && hasOwner, nil
-		})
+		executableEndpoint := waitEndpointExists(t, ctx,
+			fmt.Sprintf("Ensure that all expected Endpoints for Executable '%s' are created...", exe.ObjectMeta.Name),
+			func(e *apiv1.Endpoint) (bool, error) {
+				forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+				controllerOwner := metav1.GetControllerOf(e)
+				hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+				return forCorrectService && hasOwner, nil
+			})
 		return executableEndpoint
 	}, slices.MaxConcurrency)
 	std_slices.SortFunc(endpoints, func(e1, e2 *apiv1.Endpoint) int {
@@ -1333,13 +1337,14 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 			require.True(t, tc.isUsableAddress(updatedSvc.Status.EffectiveAddress), "The Service '%s' effective address (%s) is not usable", svc.ObjectMeta.Name, updatedSvc.Status.EffectiveAddress)
 			require.True(t, networking.IsValidPort(int(updatedSvc.Status.EffectivePort)), "The Service '%s' effective port (%d) is not valid", svc.ObjectMeta.Name, updatedSvc.Status.EffectivePort)
 
-			t.Logf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name)
-			executableEndpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
-				forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
-				controllerOwner := metav1.GetControllerOf(e)
-				hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
-				return forCorrectService && hasOwner, nil
-			})
+			executableEndpoint := waitEndpointExists(t, ctx,
+				fmt.Sprintf("Ensure that the Endpoint for the Service '%s' and Executable '%s' is created...", svc.ObjectMeta.Name, exe.ObjectMeta.Name),
+				func(e *apiv1.Endpoint) (bool, error) {
+					forCorrectService := e.Spec.ServiceName == svc.ObjectMeta.Name && e.Spec.ServiceNamespace == svc.ObjectMeta.Namespace
+					controllerOwner := metav1.GetControllerOf(e)
+					hasOwner := controllerOwner != nil && controllerOwner.Name == exe.ObjectMeta.Name && controllerOwner.Kind == "Executable"
+					return forCorrectService && hasOwner, nil
+				})
 			require.True(t, tc.isUsableAddress(executableEndpoint.Spec.Address), "The address used by the Endpoint associated with the Executable '%s' (%s) is not usable", exe.ObjectMeta.Name, executableEndpoint.Spec.Address)
 			require.True(t, networking.IsValidPort(int(executableEndpoint.Spec.Port)), "The port used by the Endpoint associated with the Executable '%s' (%d) is not valid", exe.ObjectMeta.Name, executableEndpoint.Spec.Port)
 

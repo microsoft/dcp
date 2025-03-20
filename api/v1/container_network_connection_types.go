@@ -9,8 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -110,8 +108,8 @@ func (cnl *ContainerNetworkConnectionList) ItemCount() uint32 {
 	return uint32(len(cnl.Items))
 }
 
-func (cnl *ContainerNetworkConnectionList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cnl.Items))
+func (cnl *ContainerNetworkConnectionList) GetItems() []*ContainerNetworkConnection {
+	retval := make([]*ContainerNetworkConnection, len(cnl.Items))
 	for i := range cnl.Items {
 		retval[i] = &cnl.Items[i]
 	}
@@ -125,6 +123,6 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*ContainerNetworkConnection)(nil)
 var _ apiserver_resource.ObjectList = (*ContainerNetworkConnectionList)(nil)
-var _ commonapi.ListWithObjectItems = (*ContainerNetworkConnectionList)(nil)
+var _ commonapi.ListWithObjectItems[ContainerNetworkConnection, *ContainerNetworkConnection] = (*ContainerNetworkConnectionList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerNetworkConnection)(nil)
 var _ apiserver_resourcestrategy.Validater = (*ContainerNetworkConnection)(nil)

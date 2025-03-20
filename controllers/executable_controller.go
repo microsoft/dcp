@@ -203,21 +203,22 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 
 	switch {
 	case runInfo == nil:
+		log.V(1).Info("Executable is being deleted (deleting finalizer only)...")
 		change = deleteFinalizer(exe, executableFinalizer, log)
 
 	case runInfo.ExeState == apiv1.ExecutableStateStopping || runInfo.ExeState == apiv1.ExecutableStateStarting:
-		// We just need to wait for the Executable to exit the transient state
+		log.V(1).Info("Executable is being deleted, waiting for it to exit transient state...", "CurrentState", runInfo.ExeState)
 		change = r.manageExecutable(ctx, exe, log)
 
 	case runInfo.ExeState == apiv1.ExecutableStateRunning:
-		// Transition to stopping state
+		log.V(1).Info("Executable is being deleted, but it needs to be stopped first...")
 		runInfo.ExeState = apiv1.ExecutableStateStopping
 		stoppingInitializer := getStateInitializer(executableStateInitializers, apiv1.ExecutableStateStopping, log)
 		change = stoppingInitializer(ctx, r, exe, apiv1.ExecutableStateStopping, runInfo, log)
 		r.runs.Update(exe.NamespacedName(), runInfo.RunID, runInfo)
 
-	default: // In initial or final state
-		log.V(1).Info("Executable is being deleted...")
+	default:
+		log.V(1).Info("Executable is being deleted (in initial or final state; releasing resources and deleting finalizer)...", "CurrentState", runInfo.ExeState)
 		r.releaseExecutableResources(ctx, exe, log)
 		change = deleteFinalizer(exe, executableFinalizer, log)
 		r.runs.DeleteByNamespacedName(exe.NamespacedName())

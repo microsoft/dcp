@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ExecutableReplicaSetSpec desribes the desired state of an ExecutableReplicaSet
@@ -165,8 +164,8 @@ func (el *ExecutableReplicaSetList) ItemCount() uint32 {
 }
 
 // GetItems implements apiserver_resource.ObjectList.
-func (el *ExecutableReplicaSetList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(el.Items))
+func (el *ExecutableReplicaSetList) GetItems() []*ExecutableReplicaSet {
+	retval := make([]*ExecutableReplicaSet, len(el.Items))
 	for i := range el.Items {
 		retval[i] = &el.Items[i]
 	}
@@ -181,7 +180,7 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*ExecutableReplicaSet)(nil)
 var _ apiserver_resource.ObjectList = (*ExecutableReplicaSetList)(nil)
-var _ commonapi.ListWithObjectItems = (*ExecutableReplicaSetList)(nil)
+var _ commonapi.ListWithObjectItems[ExecutableReplicaSet, *ExecutableReplicaSet] = (*ExecutableReplicaSetList)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*ExecutableReplicaSet)(nil)
 var _ apiserver_resource.StatusSubResource = (*ExecutableReplicaSetStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ExecutableReplicaSet)(nil)

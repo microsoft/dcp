@@ -1693,35 +1693,21 @@ func TestContainerNetworkConnectedFailedStartup(t *testing.T) {
 	require.NoError(t, err, "could not get updated Container object for container '%s'", ctr.ObjectMeta.Name)
 	require.NotEmptyf(t, updatedCtr.Status.ContainerID, "expected ContainerID to be set for container '%s'", ctr.ObjectMeta.Name)
 
-	// Even though the Container fails to start, it should still be connected to the target network.
-	t.Logf("Ensure Container '%s' is connected to ContainerNetwork '%s'...", ctr.ObjectMeta.Name, net.ObjectMeta.Name)
-	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
-		return slices.Any(currentCtr.Status.Networks, func(n string) bool {
-			return updatedNetwork.NamespacedName().String() == n
-		}), nil
-	})
-	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
-		return slices.Any(currentNet.Status.ContainerIDs, func(id string) bool {
-			return string(updatedCtr.Status.ContainerID) == id
-		}), nil
-	})
-
-	// Delete the Container and verify the network connection is removed.
-	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
-	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
-		return client.Delete(ctx, currentCtr)
-	})
-	require.NoError(t, err, "Container '%s' could not be deleted", ctr.ObjectMeta.Name)
-
-	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
-	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
-
+	// Ensure that the Container is not connected to the network and that there are no ContainerNetworkConnection objects left for it.
 	t.Logf("Ensure Container '%s' is disconnected from ContainerNetwork '%s'...", ctr.ObjectMeta.Name, net.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
 		return slices.All(currentNet.Status.ContainerIDs, func(id string) bool {
 			return string(updatedCtr.Status.ContainerID) != id
 		}), nil
 	})
+
+	ctrl_testutil.WaitObjectCount[apiv1.ContainerNetworkConnection, apiv1.ContainerNetworkConnectionList](
+		t, ctx, client, 0,
+		fmt.Sprintf("ensure that there are no ContainerNetworkConnection objects left for container '%s'", ctr.ObjectMeta.Name),
+		func(cnc *apiv1.ContainerNetworkConnection) bool {
+			return cnc.Spec.ContainerID == updatedCtr.Status.ContainerID
+		},
+	)
 }
 
 func TestContainerCreateFilesDefaultValues(t *testing.T) {

@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type ContainerNetworkState string
@@ -189,8 +188,8 @@ func (cnl *ContainerNetworkList) ItemCount() uint32 {
 	return uint32(len(cnl.Items))
 }
 
-func (cnl *ContainerNetworkList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cnl.Items))
+func (cnl *ContainerNetworkList) GetItems() []*ContainerNetwork {
+	retval := make([]*ContainerNetwork, len(cnl.Items))
 	for i := range cnl.Items {
 		retval[i] = &cnl.Items[i]
 	}
@@ -204,7 +203,7 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*ContainerNetwork)(nil)
 var _ apiserver_resource.ObjectList = (*ContainerNetworkList)(nil)
-var _ commonapi.ListWithObjectItems = (*ContainerNetworkList)(nil)
+var _ commonapi.ListWithObjectItems[ContainerNetwork, *ContainerNetwork] = (*ContainerNetworkList)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*ContainerNetwork)(nil)
 var _ apiserver_resource.StatusSubResource = (*ContainerNetworkStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerNetwork)(nil)

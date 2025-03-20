@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/stretchr/testify/require"
@@ -16,7 +15,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -45,8 +43,7 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 	err := client.Create(ctx, &exe)
 	require.NoError(t, err, "Could not create an Executable")
 
-	t.Log("Check if Endpoint created...")
-	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+	endpoint := waitEndpointExists(t, ctx, "check if Endpoint created", func(e *apiv1.Endpoint) (bool, error) {
 		return e.Spec.ServiceName == serviceName &&
 			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
 			e.Spec.Port == 5001, nil
@@ -97,8 +94,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &container)
 
-	t.Log("Check if Endpoint created...")
-	waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+	waitEndpointExists(t, ctx, "check if Endpoint created", func(e *apiv1.Endpoint) (bool, error) {
 		return e.Spec.ServiceName == svcName &&
 			e.Spec.Address == networking.IPv4LocalhostDefaultAddress &&
 			e.Spec.Port == 8080, nil
@@ -152,8 +148,7 @@ func TestEndpointDeletedIfExecutableStopped(t *testing.T) {
 	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
 	require.NoError(t, err, "Executable was not started as expected")
 
-	t.Log("Check if Endpoint created...")
-	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+	endpoint := waitEndpointExists(t, ctx, "checking if Endpoint created", func(e *apiv1.Endpoint) (bool, error) {
 		return e.Spec.ServiceName == svcName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 5001, nil
 	})
 	t.Log("Found Endpoint with correct spec")
@@ -202,8 +197,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 
 	_, inspected := ensureContainerRunning(t, ctx, &container)
 
-	t.Log("Check if Endpoint created...")
-	endpoint := waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+	endpoint := waitEndpointExists(t, ctx, "check if Endpoint created", func(e *apiv1.Endpoint) (bool, error) {
 		return e.Spec.ServiceName == svcName && e.Spec.Address == networking.IPv4LocalhostDefaultAddress && e.Spec.Port == 8080, nil
 	})
 	t.Log("Found Endpoint with correct spec")
@@ -279,7 +273,7 @@ func verifyContainerEndpoint(
 	serviceName string,
 	containerPort int,
 ) {
-	_ = waitEndpointExists(t, ctx, func(e *apiv1.Endpoint) (bool, error) {
+	_ = waitEndpointExists(t, ctx, "verifying container endpoint", func(e *apiv1.Endpoint) (bool, error) {
 		portConfig, found := inspected.Ports[fmt.Sprintf("%d/tcp", containerPort)]
 		if !found || len(portConfig) == 0 {
 			return false, fmt.Errorf("expected to find port %d/tcp in container inspection result", containerPort)
@@ -296,59 +290,13 @@ func verifyContainerEndpoint(
 	})
 }
 
-func waitEndpointExists(t *testing.T, ctx context.Context, selector func(*apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
-	var updatedObject *apiv1.Endpoint = new(apiv1.Endpoint)
-
-	existsWithExpectedState := func(ctx context.Context) (bool, error) {
-		var endpointList apiv1.EndpointList
-		err := client.List(ctx, &endpointList)
-		if err != nil {
-			t.Fatal("unable to list Endpoints", err)
-			return false, err
-		}
-
-		for _, endpoint := range endpointList.Items {
-			if matches, matchErr := selector(&endpoint); matchErr != nil {
-				t.Fatal("unable to select Endpoint", matchErr)
-				return false, matchErr
-			} else if matches {
-				updatedObject = &endpoint
-				return true, nil
-			}
-		}
-
-		return false, nil
-	}
-
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, existsWithExpectedState)
-	if err != nil {
-		t.Fatal("Waiting for Endpoint to reach desired state failed", err)
-		return nil // make the compiler happy
-	} else {
-		return updatedObject
-	}
+func waitEndpointCount(t *testing.T, ctx context.Context, serviceName string, expectedCount int) {
+	ctrl_testutil.WaitObjectCount[apiv1.Endpoint, apiv1.EndpointList](t, ctx, client, expectedCount,
+		fmt.Sprintf("counting endpoints for service '%s'", serviceName), func(e *apiv1.Endpoint) bool {
+			return e.Spec.ServiceName == serviceName
+		})
 }
 
-func waitEndpointCount(t *testing.T, ctx context.Context, serviceName string, expectedCount int) {
-	const unknownCount = -1
-	currentCount := unknownCount
-
-	hasDesiredCount := func(ctx context.Context) (bool, error) {
-		var endpointList apiv1.EndpointList
-		err := client.List(ctx, &endpointList)
-		if err != nil {
-			t.Fatalf("unable to list Endpoints for service '%s': %v", serviceName, err)
-			return false, err
-		}
-
-		currentCount = slices.LenIf(endpointList.Items, func(endpoint apiv1.Endpoint) bool {
-			return endpoint.Spec.ServiceName == serviceName
-		})
-		return currentCount == expectedCount, nil
-	}
-
-	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasDesiredCount)
-	if err != nil {
-		t.Fatalf("Waiting for number of Endpoints for service '%s' to reach %d failed. Last count was %d, the error from waiting routine is %v", serviceName, expectedCount, currentCount, err)
-	}
+func waitEndpointExists(t *testing.T, ctx context.Context, contextStr string, selector func(e *apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
+	return ctrl_testutil.WaitObjectExists[apiv1.Endpoint, apiv1.EndpointList](t, ctx, client, contextStr, selector)
 }

@@ -10,8 +10,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -170,8 +168,8 @@ func (cvl *ContainerVolumeList) ItemCount() uint32 {
 	return uint32(len(cvl.Items))
 }
 
-func (cvl *ContainerVolumeList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cvl.Items))
+func (cvl *ContainerVolumeList) GetItems() []*ContainerVolume {
+	retval := make([]*ContainerVolume, len(cvl.Items))
 	for i := range cvl.Items {
 		retval[i] = &cvl.Items[i]
 	}
@@ -187,7 +185,7 @@ var _ apiserver_resource.Object = (*ContainerVolume)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*ContainerVolume)(nil)
 var _ apiserver_resource.StatusSubResource = (*ContainerVolumeStatus)(nil)
 var _ apiserver_resource.ObjectList = (*ContainerVolumeList)(nil)
-var _ commonapi.ListWithObjectItems = (*ContainerVolumeList)(nil)
+var _ commonapi.ListWithObjectItems[ContainerVolume, *ContainerVolume] = (*ContainerVolumeList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerVolume)(nil)
 var _ apiserver_resourcestrategy.Validater = (*ContainerVolume)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*ContainerVolume)(nil)

@@ -9,8 +9,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
-
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
@@ -186,8 +184,8 @@ func (svcl *ServiceList) ItemCount() uint32 {
 	return uint32(len(svcl.Items))
 }
 
-func (svcl *ServiceList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(svcl.Items))
+func (svcl *ServiceList) GetItems() []*Service {
+	retval := make([]*Service, len(svcl.Items))
 	for i := range svcl.Items {
 		retval[i] = &svcl.Items[i]
 	}
@@ -201,7 +199,7 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*Service)(nil)
 var _ apiserver_resource.ObjectList = (*ServiceList)(nil)
-var _ commonapi.ListWithObjectItems = (*ServiceList)(nil)
+var _ commonapi.ListWithObjectItems[Service, *Service] = (*ServiceList)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*Service)(nil)
 var _ apiserver_resource.StatusSubResource = (*ServiceStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Service)(nil)

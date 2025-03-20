@@ -317,6 +317,7 @@ func createContainer(createCtx context.Context, o containers.ContainerOrchestrat
 func startContainer(
 	startCtx context.Context,
 	o containers.ContainerOrchestrator,
+	containerObjectName string,
 	containerID string,
 	streamOptions containers.StreamCommandOptions,
 ) (*containers.InspectedContainer, error) {
@@ -332,7 +333,7 @@ func startContainer(
 				return nil
 
 			case containers.ContainerStatusDead:
-				return resiliency.Permanent(fmt.Errorf("container %s start failed (current state is 'dead')", containerID))
+				return resiliency.Permanent(fmt.Errorf("container '%s' start failed (current state is 'dead')", containerObjectName))
 
 			case containers.ContainerStatusExited:
 				// It is possible that the container starts and then exits very quickly afterwards.
@@ -340,11 +341,11 @@ func startContainer(
 				if i.ExitCode == 0 {
 					return nil
 				} else {
-					return resiliency.Permanent(fmt.Errorf("container %s start failed (exit code %d)", containerID, i.ExitCode))
+					return resiliency.Permanent(fmt.Errorf("container '%s' start failed (exit code %d)", containerObjectName, i.ExitCode))
 				}
 
 			default:
-				errMsg := fmt.Sprintf("status of container %s is '%s' (was expecting '%s')", containerID, i.Status, containers.ContainerStatusRunning)
+				errMsg := fmt.Sprintf("status of container '%s' is '%s' (was expecting '%s')", containerObjectName, i.Status, containers.ContainerStatusRunning)
 				if i.Error != "" {
 					errMsg += fmt.Sprintf(", error: %s", i.Error)
 				}

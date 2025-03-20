@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	generic_registry "k8s.io/apiserver/pkg/registry/generic"
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -930,8 +929,8 @@ func (cl *ContainerList) ItemCount() uint32 {
 	return uint32(len(cl.Items))
 }
 
-func (cl *ContainerList) GetItems() []ctrl_client.Object {
-	retval := make([]ctrl_client.Object, len(cl.Items))
+func (cl *ContainerList) GetItems() []*Container {
+	retval := make([]*Container, len(cl.Items))
 	for i := range cl.Items {
 		retval[i] = &cl.Items[i]
 	}
@@ -981,7 +980,7 @@ func init() {
 // Ensure types support interfaces expected by our API server
 var _ apiserver_resource.Object = (*Container)(nil)
 var _ apiserver_resource.ObjectList = (*ContainerList)(nil)
-var _ commonapi.ListWithObjectItems = (*ContainerList)(nil)
+var _ commonapi.ListWithObjectItems[Container, *Container] = (*ContainerList)(nil)
 var _ apiserver_resource.ObjectWithStatusSubResource = (*Container)(nil)
 var _ apiserver_resource.StatusSubResource = (*ContainerStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Container)(nil)
