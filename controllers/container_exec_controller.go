@@ -4,8 +4,8 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
 	"sync"
@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -66,7 +67,14 @@ type ContainerExecReconciler struct {
 
 	// Reconciler lifetime context, used to cancel container exec during reconciler shutdown
 	lifetimeCtx context.Context
+
+	// A WorkQueue related to stopping container executions, which need to be run asynchronously.
+	stopQueue *resiliency.WorkQueue
 }
+
+const (
+	maxParallelStopOps = math.MaxUint8
+)
 
 var (
 	containerExecFinalizer string = fmt.Sprintf("%s/container-exec-reconciler", apiv1.GroupVersion.Group)
@@ -81,6 +89,7 @@ func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.
 		notifyExecChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		debouncer:         newReconcilerDebouncer[string](),
 		lifetimeCtx:       lifetimeCtx,
+		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelStopOps),
 	}
 	return &r
 }
@@ -124,7 +133,7 @@ func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if exec.DeletionTimestamp != nil && !exec.DeletionTimestamp.IsZero() {
 		log.V(1).Info("ContainerExec object is being deleted")
-		r.releaseContainerExecResources(ctx, &exec, log)
+		r.releaseContainerExecResources(&exec, log)
 		change = deleteFinalizer(&exec, containerExecFinalizer, log)
 	} else {
 		change = ensureFinalizer(&exec, containerExecFinalizer, log)
@@ -342,14 +351,14 @@ func (r *ContainerExecReconciler) computeEffectiveInvocationArgs(
 	return effectiveArgs, nil
 }
 
-func (r *ContainerExecReconciler) releaseContainerExecResources(ctx context.Context, exec *apiv1.ContainerExec, log logr.Logger) {
+func (r *ContainerExecReconciler) releaseContainerExecResources(exec *apiv1.ContainerExec, log logr.Logger) {
 	r.stopContainerExec(exec, log)
 
 	// We are about to terminate the run. Since the run is not allowed to complete normally,
 	// we are not interested in its exit code (it will indicate a failure,
 	// but it is a failure induced by the Executable user), so we stop tracking the run now.
 	r.executions.Delete(exec.UID)
-	r.deleteOutputFiles(ctx, exec, log)
+	r.deleteOutputFiles(exec, log)
 }
 
 func (r *ContainerExecReconciler) stopContainerExec(exec *apiv1.ContainerExec, log logr.Logger) {
@@ -366,7 +375,7 @@ func (r *ContainerExecReconciler) stopContainerExec(exec *apiv1.ContainerExec, l
 	execStatus.cancel()
 }
 
-func (r *ContainerExecReconciler) deleteOutputFiles(ctx context.Context, exec *apiv1.ContainerExec, log logr.Logger) {
+func (r *ContainerExecReconciler) deleteOutputFiles(exec *apiv1.ContainerExec, log logr.Logger) {
 	// Do not bother updating the ContainerExec object--this method is called when the object is being deleted.
 
 	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
@@ -374,15 +383,21 @@ func (r *ContainerExecReconciler) deleteOutputFiles(ctx context.Context, exec *a
 	}
 
 	if exec.Status.StdOutFile != "" {
-		if err := logs.RemoveWithRetry(ctx, exec.Status.StdOutFile); err != nil {
-			log.Error(err, "could not remove ContainerExec's standard output file", "path", exec.Status.StdOutFile)
-		}
+		path := exec.Status.StdOutFile
+		_ = r.stopQueue.Enqueue(func(opCtx context.Context) { // Only errors if lifetimeCtx is done
+			if err := logs.RemoveWithRetry(opCtx, path); err != nil {
+				log.Error(err, "could not remove process's standard output file", "path", path)
+			}
+		})
 	}
 
 	if exec.Status.StdErrFile != "" {
-		if err := logs.RemoveWithRetry(ctx, exec.Status.StdErrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Error(err, "could not remove ContainerExec's standard error file", "path", exec.Status.StdErrFile)
-		}
+		path := exec.Status.StdErrFile
+		_ = r.stopQueue.Enqueue(func(opCtx context.Context) {
+			if err := logs.RemoveWithRetry(opCtx, path); err != nil {
+				log.Error(err, "could not remove process's standard error file", "path", path)
+			}
+		})
 	}
 }
 

@@ -83,7 +83,7 @@ type ExecutableReconciler struct {
 	// Reconciler lifetime context, used to cancel operations during reconciler shutdown
 	lifetimeCtx context.Context
 
-	// A WorkQueue for stopping Executables (which might take a while).
+	// A WorkQueue for operations related to stopping Executables (which might take a while).
 	stopQueue *resiliency.WorkQueue
 }
 
@@ -636,10 +636,10 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 	}
 
 	removeEndpointsForWorkload(r, ctx, exe, log)
-	r.deleteOutputFiles(ctx, exe, log)
+	r.deleteOutputFiles(exe, log)
 }
 
-func (r *ExecutableReconciler) deleteOutputFiles(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr.Logger) {
 	// Do not bother updating the Executable object--this method is called when the object is being deleted.
 
 	if osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
@@ -647,15 +647,21 @@ func (r *ExecutableReconciler) deleteOutputFiles(ctx context.Context, exe *apiv1
 	}
 
 	if exe.Status.StdOutFile != "" {
-		if err := logs.RemoveWithRetry(ctx, exe.Status.StdOutFile); err != nil {
-			log.Error(err, "could not remove process's standard output file", "path", exe.Status.StdOutFile)
-		}
+		path := exe.Status.StdOutFile
+		_ = r.stopQueue.Enqueue(func(opCtx context.Context) { // Only errors if lifetimeCtx is done
+			if err := logs.RemoveWithRetry(opCtx, path); err != nil {
+				log.Error(err, "could not remove process's standard output file", "path", path)
+			}
+		})
 	}
 
 	if exe.Status.StdErrFile != "" {
-		if err := logs.RemoveWithRetry(ctx, exe.Status.StdErrFile); err != nil {
-			log.Error(err, "could not remove process's standard error file", "path", exe.Status.StdErrFile)
-		}
+		path := exe.Status.StdErrFile
+		_ = r.stopQueue.Enqueue(func(opCtx context.Context) {
+			if err := logs.RemoveWithRetry(opCtx, path); err != nil {
+				log.Error(err, "could not remove process's standard error file", "path", path)
+			}
+		})
 	}
 }
 
