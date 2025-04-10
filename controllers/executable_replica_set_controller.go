@@ -99,6 +99,7 @@ func (r *ExecutableReplicaSetReconciler) SetupWithManager(mgr ctrl.Manager, name
 	// Register for reconciliation on changes to ExecutableReplicaSet objects as well
 	// as owned Executable objects (metadata.ownerReferences pointing to an ExecutableReplicaSet)
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ExecutableReplicaSet{}).
 		Owns(&apiv1.Executable{}).
 		WithOptions(controller.Options{CacheSyncTimeout: 30 * time.Second}).

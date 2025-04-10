@@ -17,13 +17,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/internal/templating"
@@ -57,7 +57,7 @@ type ContainerExecReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	orchestrator        ct.ContainerOrchestrator
+	orchestrator        containers.ContainerOrchestrator
 
 	// Currently running container exec commands
 	executions syncmap.Map[types.UID, *runningContainerExecStatus]
@@ -82,7 +82,7 @@ var (
 	containerExecFinalizer string = fmt.Sprintf("%s/container-exec-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.ContainerOrchestrator) *ContainerExecReconciler {
+func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *ContainerExecReconciler {
 	r := ContainerExecReconciler{
 		Client:            client,
 		Log:               log,
@@ -99,6 +99,7 @@ func NewContainerExecReconciler(lifetimeCtx context.Context, client ctrl_client.
 func (r *ContainerExecReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	src := ctrl_source.Channel(r.notifyExecChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerExec{}).
 		WatchesRawSource(src).
 		Named(name).
@@ -235,7 +236,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 		EnvFiles:         exec.Spec.EnvFiles,
 		Command:          exec.Spec.Command,
 		Args:             effectiveArgs,
-		StreamCommandOptions: ct.StreamCommandOptions{
+		StreamCommandOptions: containers.StreamCommandOptions{
 			// Always append timestamp to logs; we'll strip them out if the streaming request doesn't ask for them
 			StdOutStream: usvc_io.NewParagraphWriter(usvc_io.NewTimestampWriter(stdOutFile), osutil.LineSep()),
 			StdErrStream: usvc_io.NewParagraphWriter(usvc_io.NewTimestampWriter(stdErrFile), osutil.LineSep()),

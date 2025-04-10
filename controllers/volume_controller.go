@@ -12,10 +12,10 @@ import (
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
@@ -71,12 +71,12 @@ type VolumeReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	orchestrator        ct.VolumeOrchestrator
+	orchestrator        containers.VolumeOrchestrator
 	volumeData          *volumeDataMap
 	debouncer           *reconcilerDebouncer[volumeName]
 }
 
-func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrator ct.VolumeOrchestrator) *VolumeReconciler {
+func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrator containers.VolumeOrchestrator) *VolumeReconciler {
 	r := VolumeReconciler{
 		Client:       client,
 		Log:          log,
@@ -89,6 +89,7 @@ func NewVolumeReconciler(client ctrl_client.Client, log logr.Logger, orchestrato
 
 func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerVolume{}).
 		Named(name). // zero value is OK and will result in a default provided by controller-runtime
 		Complete(r)
@@ -142,13 +143,13 @@ func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1
 	_, volData := r.volumeData.BorrowByNamespacedName(vol.NamespacedName())
 	if volData == nil || volData.state != apiv1.ContainerVolumeStateReady || pointers.TrueValue(vol.Spec.Persistent) {
 		// No actual volume to delete, or it is persistent and needs to be preserved.
-		// We can just silently continue with finalizer removal and deletion of the object.
+		// We can just silently continue with finalizer removal and deletion of the objecontainers.
 		r.volumeData.DeleteByNamespacedName(vol.NamespacedName())
 		return deleteFinalizer(vol, volumeFinalizer, log)
 	}
 
 	err := removeVolume(ctx, r.orchestrator, vol.Spec.Name)
-	if err != nil && !errors.Is(err, ct.ErrNotFound) {
+	if err != nil && !errors.Is(err, containers.ErrNotFound) {
 		log.Error(err, "could not remove a container volume")
 		return additionalReconciliationNeeded
 	}
@@ -208,7 +209,7 @@ func handleNewContainerVolume(
 		volData.state = apiv1.ContainerVolumeStateReady
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
-	} else if !errors.Is(inspectErr, ct.ErrNotFound) {
+	} else if !errors.Is(inspectErr, containers.ErrNotFound) {
 		log.Error(inspectErr, "could not determine whether container volume exists")
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}

@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -31,7 +32,6 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	ct "github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
@@ -104,16 +104,16 @@ type NetworkReconciler struct {
 	ctrl_client.Client
 	Log                 logr.Logger
 	reconciliationSeqNo uint32
-	orchestrator        ct.ContainerOrchestrator
+	orchestrator        containers.ContainerOrchestrator
 
 	existingNetworks *networkStateMap
 
 	// Channel used to trigger reconciliation when underlying networks change
 	notifyNetworkChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
 	// Network events subscription
-	networkEvtSub *pubsub.Subscription[ct.EventMessage]
+	networkEvtSub *pubsub.Subscription[containers.EventMessage]
 	// Channel to receive network change events
-	networkEvtCh         *concurrency.UnboundedChan[ct.EventMessage]
+	networkEvtCh         *concurrency.UnboundedChan[containers.EventMessage]
 	networkEvtWorkerStop chan struct{}
 	// Count of existing Container resources
 	watchingResources *syncmap.Map[types.UID, bool]
@@ -136,7 +136,7 @@ var (
 	networkFinalizer string = fmt.Sprintf("%s/network-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator ct.ContainerOrchestrator) *NetworkReconciler {
+func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *NetworkReconciler {
 	r := NetworkReconciler{
 		Client:                 client,
 		orchestrator:           orchestrator,
@@ -181,6 +181,7 @@ func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 
 	src := ctrl_source.Channel(r.notifyNetworkChanged.Out, &handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.ContainerNetwork{}).
 		Watches(&apiv1.ContainerNetworkConnection{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNetwork), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(src).
@@ -340,7 +341,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		networkName = uniqueNetworkName
 	}
 
-	createOptions := ct.CreateNetworkOptions{
+	createOptions := containers.CreateNetworkOptions{
 		Name: networkName,
 		IPv6: network.Spec.IPv6,
 		Labels: map[string]string{
@@ -357,13 +358,13 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	}
 
 	cnet, err := createNetwork(ctx, r.orchestrator, createOptions)
-	if network.Spec.Persistent && errors.Is(err, ct.ErrAlreadyExists) {
+	if network.Spec.Persistent && errors.Is(err, containers.ErrAlreadyExists) {
 		log.V(1).Info("persistent network already exists, but initial inspection failed, retrying...", "Network", networkName)
 		return additionalReconciliationNeeded
-	} else if errors.Is(err, ct.ErrCouldNotAllocate) {
+	} else if errors.Is(err, containers.ErrCouldNotAllocate) {
 		log.Error(err, "could not create the network as all available subnet ranges from the default pool are allocated, retrying...", "Network", networkName)
 		return additionalReconciliationNeeded
-	} else if errors.Is(err, ct.ErrRuntimeNotHealthy) {
+	} else if errors.Is(err, containers.ErrRuntimeNotHealthy) {
 		log.Error(err, "could not create the network as the container runtime is not healthy, retrying...", "Network", networkName)
 		return additionalReconciliationNeeded
 	} else if err != nil {
@@ -427,19 +428,15 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
-		if err := disconnectNetwork(
-			ctx,
-			r.orchestrator,
-			ct.DisconnectNetworkOptions{
-				Network:   network.Status.ID,
-				Container: containerID,
-			},
-		); err != nil && !errors.Is(err, ct.ErrNotFound) {
+		err := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
+			Network:   network.Status.ID,
+			Container: containerID,
+		})
+		if err != nil && !errors.Is(err, containers.ErrNotFound) {
 			log.Error(err, "could not disconnect a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
 		} else {
 			delete(networkState.connections, containerID)
-			log.Info("disconnected a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
 		}
 	}
 
@@ -447,25 +444,49 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 		connection := networkConnections.Items[i]
 		containerID := connection.Spec.ContainerID
 
-		_, found := networkState.connections[containerID]
+		found := slices.Contains(network.Status.ContainerIDs, containerID)
 
 		if found {
 			// Container is already connected to the network, do nothing
 			continue
 		}
 
-		err := connectNetwork(ctx, r.orchestrator, ct.ConnectNetworkOptions{
+		err := r.orchestrator.ConnectNetwork(ctx, containers.ConnectNetworkOptions{
 			Network:   network.Status.ID,
 			Container: containerID,
 			Aliases:   connection.Spec.Aliases,
 		})
-		if err != nil {
+
+		if err != nil && !errors.Is(err, containers.ErrAlreadyExists) && !errors.Is(err, containers.ErrNotFound) {
 			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 			change |= additionalReconciliationNeeded
-		} else {
-			networkState.connections[containerID] = true
-			log.Info("connected a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
 		}
+	}
+
+	found := 0
+	_, verifyErr := verifyNetworkState(ctx, r.orchestrator, network.Status.ID, func(network *containers.InspectedNetwork) error {
+		for i := range networkConnections.Items {
+			connection := networkConnections.Items[i]
+			containerID := connection.Spec.ContainerID
+
+			if slices.ContainsFunc(network.Containers, func(c containers.InspectedNetworkContainer) bool {
+				return c.Name == containerID || strings.HasPrefix(c.Id, containerID)
+			}) {
+				found += 1
+				networkState.connections[containerID] = true
+			}
+		}
+
+		return nil
+	})
+
+	if verifyErr != nil {
+		log.Error(verifyErr, "could not verify network state", "Network", network.Status.NetworkName)
+		change |= additionalReconciliationNeeded
+	}
+
+	if found < len(networkConnections.Items) {
+		change |= additionalReconciliationNeeded
 	}
 
 	return change
@@ -473,7 +494,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 
 func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *apiv1.ContainerNetwork, rns *runningNetworkState, log logr.Logger) objectChange {
 	cnet, err := inspectNetwork(ctx, r.orchestrator, network.Status.ID)
-	if errors.Is(err, ct.ErrNotFound) {
+	if errors.Is(err, containers.ErrNotFound) {
 		network.Status.State = apiv1.ContainerNetworkStateRemoved
 		rns.state = apiv1.ContainerNetworkStateRemoved
 		return statusChanged
@@ -505,7 +526,7 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 		change |= statusChanged
 	}
 	// Get the list of container IDs connected to the network
-	newContainerIds := usvc_slices.Map[ct.InspectedNetworkContainer, string](cnet.Containers, func(c ct.InspectedNetworkContainer) string {
+	newContainerIds := usvc_slices.Map[containers.InspectedNetworkContainer, string](cnet.Containers, func(c containers.InspectedNetworkContainer) string {
 		return c.Id
 	})
 	if !slices.Equal(network.Status.ContainerIDs, newContainerIds) {
@@ -530,7 +551,7 @@ func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, 
 		return // We are already watching container events
 	}
 
-	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[ct.EventMessage](
+	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
 		r.lifetimeCtx,
 		containerEventChanBuffer,
 		containerEventChanBuffer,
@@ -570,7 +591,7 @@ func (r *NetworkReconciler) releaseNetworkWatch(network *apiv1.ContainerNetwork,
 	r.cancelNetworkWatch()
 }
 
-func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}, eventCh <-chan ct.EventMessage) {
+func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}, eventCh <-chan containers.EventMessage) {
 	for {
 		select {
 		case em, isOpen := <-eventCh:
@@ -578,7 +599,7 @@ func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}, eventCh <-c
 				return
 			}
 
-			if em.Source != ct.EventSourceNetwork {
+			if em.Source != containers.EventSourceNetwork {
 				continue
 			}
 
@@ -590,10 +611,10 @@ func (r *NetworkReconciler) networkEventWorker(stopCh chan struct{}, eventCh <-c
 	}
 }
 
-func (r *NetworkReconciler) processNetworkEvent(em ct.EventMessage) {
+func (r *NetworkReconciler) processNetworkEvent(em containers.EventMessage) {
 	switch em.Action {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
-	case ct.EventActionCreate, ct.EventActionDestroy, ct.EventActionConnect, ct.EventActionDisconnect:
+	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionConnect, containers.EventActionDisconnect:
 		networkId := em.Actor.ID
 		networkObjectName, rns := r.existingNetworks.BorrowByStateKey(networkId)
 		if rns == nil {
@@ -680,7 +701,7 @@ func DoHarvestUnusedNetworks(
 	}
 
 	// Only consider networks that are not persistent and have the creator process ID/start time label set.
-	networks = usvc_slices.Select(networks, func(n ct.ListedNetwork) bool {
+	networks = usvc_slices.Select(networks, func(n containers.ListedNetwork) bool {
 		return nonPersistentWithCreator(n.Labels)
 	})
 
@@ -696,7 +717,7 @@ func DoHarvestUnusedNetworks(
 	}
 
 	// Filter out networks that were created by processes that are still running.
-	abandonedNetworks := usvc_slices.Select(networks, func(n ct.ListedNetwork) bool {
+	abandonedNetworks := usvc_slices.Select(networks, func(n containers.ListedNetwork) bool {
 		return !creatorStillRunning(n.Labels, procs)
 	})
 
@@ -705,7 +726,7 @@ func DoHarvestUnusedNetworks(
 		return nil
 	}
 
-	abandonedNetworkIDs := usvc_slices.Map[ct.ListedNetwork, string](abandonedNetworks, func(n ct.ListedNetwork) string { return n.ID })
+	abandonedNetworkIDs := usvc_slices.Map[containers.ListedNetwork, string](abandonedNetworks, func(n containers.ListedNetwork) string { return n.ID })
 	inspectedNetworks, inspectErr := inspectManyNetworks(ctx, co, abandonedNetworkIDs)
 	if inspectErr != nil {
 		log.Info("Could not inspect container networks"+networksWillNotBeHarvested, "Error", inspectErr)
@@ -719,9 +740,9 @@ func DoHarvestUnusedNetworks(
 		return nil
 	}
 
-	unusedNetworkNames := usvc_slices.Map[ct.InspectedNetwork, string](unusedNetworks, func(n ct.InspectedNetwork) string { return n.Name })
+	unusedNetworkNames := usvc_slices.Map[containers.InspectedNetwork, string](unusedNetworks, func(n containers.InspectedNetwork) string { return n.Name })
 	log.V(1).Info("Removing unused container networks...", "Networks", unusedNetworkNames)
-	ususedNetworkIDs := usvc_slices.Map[ct.InspectedNetwork, string](unusedNetworks, func(n ct.InspectedNetwork) string { return n.Id })
+	ususedNetworkIDs := usvc_slices.Map[containers.InspectedNetwork, string](unusedNetworks, func(n containers.InspectedNetwork) string { return n.Id })
 
 	removeErr := removeManyNetworks(ctx, co, ususedNetworkIDs, log)
 	if removeErr != nil {
@@ -771,10 +792,10 @@ func harvestContainersFromNetworks(
 	ctx context.Context,
 	co containers.ContainerOrchestrator,
 	log logr.Logger,
-	abandonedNetworks []ct.InspectedNetwork,
+	abandonedNetworks []containers.InspectedNetwork,
 	procs []ps.Process,
-) []ct.InspectedNetwork {
-	networksWithNoContainers := usvc_slices.Select(abandonedNetworks, func(n ct.InspectedNetwork) bool {
+) []containers.InspectedNetwork {
+	networksWithNoContainers := usvc_slices.Select(abandonedNetworks, func(n containers.InspectedNetwork) bool {
 		return len(n.Containers) == 0
 	})
 
@@ -790,8 +811,8 @@ func harvestContainersFromNetworks(
 
 	// Compute all (containerID, networkID) pairs that correspond to containers connected to abandoned networks.
 	containerNetworkPairs := usvc_slices.Flatten(
-		usvc_slices.Map[ct.InspectedNetwork, []containerNetwork](abandonedNetworks, func(n ct.InspectedNetwork) []containerNetwork {
-			return usvc_slices.Map[ct.InspectedNetworkContainer, containerNetwork](n.Containers, func(c ct.InspectedNetworkContainer) containerNetwork {
+		usvc_slices.Map[containers.InspectedNetwork, []containerNetwork](abandonedNetworks, func(n containers.InspectedNetwork) []containerNetwork {
+			return usvc_slices.Map[containers.InspectedNetworkContainer, containerNetwork](n.Containers, func(c containers.InspectedNetworkContainer) containerNetwork {
 				return containerNetwork{
 					networkID:   n.Id,
 					containerID: c.Id,
@@ -817,7 +838,7 @@ func harvestContainersFromNetworks(
 	}
 
 	// Figure out which containers are non-persistent and abandoned by DCP.
-	abandonedContainers := usvc_slices.Select(inspectedContainers, func(c ct.InspectedContainer) bool {
+	abandonedContainers := usvc_slices.Select(inspectedContainers, func(c containers.InspectedContainer) bool {
 		return nonPersistentWithCreator(c.Labels) && !creatorStillRunning(c.Labels, procs)
 	})
 
@@ -827,7 +848,7 @@ func harvestContainersFromNetworks(
 	}
 
 	// Try to remove all abandoned containers
-	abandonedContainerIDs := usvc_slices.Map[ct.InspectedContainer, string](abandonedContainers, func(c ct.InspectedContainer) string { return c.Id })
+	abandonedContainerIDs := usvc_slices.Map[containers.InspectedContainer, string](abandonedContainers, func(c containers.InspectedContainer) string { return c.Id })
 	removeContainersErr := removeManyContainers(ctx, co, abandonedContainerIDs)
 	if removeContainersErr != nil {
 		log.Info("Could not remove some containers that are connected to abandoned Docker networks. Some container networks may not be harvested.", "Error", removeContainersErr)
@@ -849,7 +870,7 @@ func harvestContainersFromNetworks(
 	)
 
 	// After abandoned containers have been removed, re-compute all abandoned networks eligible for removal
-	networksWithNoContainers = usvc_slices.Select(abandonedNetworks, func(n ct.InspectedNetwork) bool {
+	networksWithNoContainers = usvc_slices.Select(abandonedNetworks, func(n containers.InspectedNetwork) bool {
 		return !usvc_slices.Contains(networkIDsWithContainers, n.Id)
 	})
 

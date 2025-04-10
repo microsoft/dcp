@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
@@ -222,6 +223,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) er
 
 	src := ctrl_source.Channel(r.notifyContainerChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.Container{}).
 		Owns(&apiv1.Endpoint{}).
 		Owns(&apiv1.ContainerNetworkConnection{}).

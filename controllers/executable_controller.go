@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
@@ -134,6 +135,7 @@ func NewExecutableReconciler(
 func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	src := ctrl_source.Channel(r.notifyRunChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.Executable{}).
 		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(src).

@@ -17,6 +17,7 @@ import (
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
@@ -42,6 +43,8 @@ const (
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
 	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
+
+	MaxConcurrentReconciles = 6
 )
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
@@ -220,6 +223,9 @@ func NewControllerManagerOptions(lifetimeCtx context.Context, scheme *apiruntime
 		},
 		Logger:      log.WithName("ControllerManager"),
 		BaseContext: func() context.Context { return lifetimeCtx },
+		Controller: ctrl_config.Controller{
+			MaxConcurrentReconciles: MaxConcurrentReconciles,
+		},
 	}
 }
 
