@@ -25,7 +25,10 @@ func NewTarWriter() *TarWriter {
 func (tw *TarWriter) Buffer() (*bytes.Buffer, error) {
 	err := tw.writer.Close()
 
-	return tw.buffer, err
+	if err != nil {
+		return nil, err
+	}
+	return tw.buffer, nil
 }
 
 func (tw *TarWriter) WriteDir(name string, uid int32, gid int32, mode os.FileMode, modTime time.Time, changeTime time.Time, accessTime time.Time) error {
@@ -92,6 +95,36 @@ func (tw *TarWriter) WriteFile(contents []byte, name string, uid int32, gid int3
 	}
 
 	if n < len(contents) {
+		return io.ErrShortWrite
+	}
+
+	return nil
+}
+
+func (tw *TarWriter) CopyFile(src io.Reader, size int64, name string, uid int32, gid int32, mode os.FileMode, modTime time.Time, changeTime time.Time, accessTime time.Time) error {
+	header := &tar.Header{
+		Name:       name,
+		Size:       size,
+		Uid:        int(uid),
+		Gid:        int(gid),
+		Mode:       int64(mode),
+		ModTime:    modTime,
+		ChangeTime: changeTime,
+		AccessTime: accessTime,
+		Typeflag:   tar.TypeReg,
+	}
+
+	err := tw.writer.WriteHeader(header)
+	if err != nil {
+		return err
+	}
+
+	n, writeErr := io.Copy(tw.writer, src)
+	if writeErr != nil {
+		return writeErr
+	}
+
+	if n < size {
 		return io.ErrShortWrite
 	}
 

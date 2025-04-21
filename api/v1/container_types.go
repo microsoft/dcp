@@ -198,6 +198,9 @@ type FileSystemEntry struct {
 	// The unix mode permissions of this entry. If Mode is 0, the umask for the create file request will be applied.
 	Mode fs.FileMode `json:"mode,omitempty"`
 
+	// For file type entries, an optional path to a source file to copy. It's an error to set both a Source and Contents for a file.
+	Source string `json:"source,omitempty"`
+
 	// For file type entries, the contents of the file. Optional.
 	Contents string `json:"contents,omitempty"`
 
@@ -231,6 +234,10 @@ func (cfi *FileSystemEntry) Equal(other *FileSystemEntry) bool {
 	}
 
 	if cfi.Mode != other.Mode {
+		return false
+	}
+
+	if cfi.Source != other.Source {
 		return false
 	}
 
@@ -278,9 +285,17 @@ func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
 		if len(fse.Entries) > 0 {
 			errorList = append(errorList, field.Forbidden(fieldPath.Child("entries"), "dirEntry cannot be set for file type entries"))
 		}
+
+		if fse.Source != "" && fse.Contents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "source and contents cannot be set at the same time"))
+		}
 	}
 
 	if fse.Type == FileSystemEntryTypeDir {
+		if fse.Source != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("source"), "source cannot be set for directory type entries"))
+		}
+
 		if fse.Contents != "" {
 			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "contents cannot be set for directory type entries"))
 		}

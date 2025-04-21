@@ -1236,7 +1236,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
 				if copyErr != nil {
 					log.Error(copyErr, "could not copy file to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
-					return err
+					return copyErr
 				}
 
 				log.V(1).Info("file copied to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)

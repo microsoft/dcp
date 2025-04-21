@@ -4,6 +4,10 @@ import (
 	"runtime"
 )
 
+const (
+	MaxCopyFileSize = 50 * 1024 * 1024 // 50MB
+)
+
 var (
 	lf   = []byte("\n")
 	crlf = []byte("\r\n")

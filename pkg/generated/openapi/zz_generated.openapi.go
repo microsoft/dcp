@@ -2711,6 +2711,13 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 							Format:      "int64",
 						},
 					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, an optional path to a source file to copy. It's an error to set both a Source and Contents for a file.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"contents": {
 						SchemaProps: spec.SchemaProps{
 							Description: "For file type entries, the contents of the file. Optional.",

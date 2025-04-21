@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"time"
 
@@ -63,7 +64,25 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 
 	basePath = path.Join(basePath, file.Name)
 
-	return tarWriter.WriteFile([]byte(file.Contents), basePath, owner, group, mode, modTime, modTime, modTime)
+	if file.Source != "" {
+		stat, statErr := os.Stat(file.Source)
+		if statErr != nil {
+			return fmt.Errorf("could not stat file %s: %w", file.Source, statErr)
+		}
+
+		if stat.Size() > osutil.MaxCopyFileSize {
+			return fmt.Errorf("file %s exceeds max supported file size (%d bytes): %d bytes", file.Source, osutil.MaxCopyFileSize, stat.Size())
+		}
+
+		f, openErr := usvc_io.OpenFile(file.Source, os.O_RDONLY, osutil.PermissionOnlyOwnerReadWrite)
+		if openErr != nil {
+			return fmt.Errorf("could not open file %s: %w", file.Source, openErr)
+		}
+		defer f.Close()
+		return tarWriter.CopyFile(f, stat.Size(), basePath, owner, group, mode, stat.ModTime(), stat.ModTime(), stat.ModTime())
+	} else {
+		return tarWriter.WriteFile([]byte(file.Contents), basePath, owner, group, mode, modTime, modTime, modTime)
+	}
 }
 
 func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, directory apiv1.FileSystemEntry, modTime time.Time) error {
