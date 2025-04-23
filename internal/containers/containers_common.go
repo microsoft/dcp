@@ -8,6 +8,7 @@ import (
 	"path"
 	"time"
 
+	"github.com/go-logr/logr"
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -44,7 +45,7 @@ func (o StreamContainerLogsOptions) Apply(args []string) []string {
 	return args
 }
 
-func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, file apiv1.FileSystemEntry, modTime time.Time) error {
+func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, file apiv1.FileSystemEntry, modTime time.Time, log logr.Logger) error {
 	if file.Type != "" && file.Type != apiv1.FileSystemEntryTypeFile {
 		return fmt.Errorf("item is not a file")
 	}
@@ -74,7 +75,9 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 			return fmt.Errorf("file %s exceeds max supported file size (%d bytes): %d bytes", file.Source, osutil.MaxCopyFileSize, stat.Size())
 		}
 
-		f, openErr := usvc_io.OpenFile(file.Source, os.O_RDONLY, osutil.PermissionOnlyOwnerReadWrite)
+		log.V(1).Info("copying file to tar", "file", file.Source, "size", stat.Size())
+
+		f, openErr := usvc_io.OpenFile(file.Source, os.O_RDONLY, 0)
 		if openErr != nil {
 			return fmt.Errorf("could not open file %s: %w", file.Source, openErr)
 		}
@@ -85,7 +88,7 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 	}
 }
 
-func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, directory apiv1.FileSystemEntry, modTime time.Time) error {
+func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, directory apiv1.FileSystemEntry, modTime time.Time, log logr.Logger) error {
 	if directory.Type != apiv1.FileSystemEntryTypeDir {
 		return fmt.Errorf("item is not a directory")
 	}
@@ -113,11 +116,11 @@ func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int3
 
 	for _, item := range directory.Entries {
 		if item.Type == apiv1.FileSystemEntryTypeDir {
-			if addDirectoryErr := AddDirectoryToTar(tarWriter, basePath, owner, group, umask, item, modTime); addDirectoryErr != nil {
+			if addDirectoryErr := AddDirectoryToTar(tarWriter, basePath, owner, group, umask, item, modTime, log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
 		} else {
-			if addFileErr := AddFileToTar(tarWriter, basePath, owner, group, umask, item, modTime); addFileErr != nil {
+			if addFileErr := AddFileToTar(tarWriter, basePath, owner, group, umask, item, modTime, log); addFileErr != nil {
 				return addFileErr
 			}
 		}

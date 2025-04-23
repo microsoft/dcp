@@ -1235,11 +1235,11 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
 				if copyErr != nil {
-					log.Error(copyErr, "could not copy file to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
+					log.Error(copyErr, "could not copy files to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
 					return copyErr
 				}
 
-				log.V(1).Info("file copied to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
+				log.V(1).Info("files copied to the container", "ContainerID", rcd.containerID, "Destination", createFileRequest.Destination)
 			}
 
 			if rcd.runSpec.Networks == nil {

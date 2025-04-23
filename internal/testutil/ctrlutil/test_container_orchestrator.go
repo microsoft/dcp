@@ -1513,11 +1513,11 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 
 	for _, item := range options.Entries {
 		if item.Type == apiv1.FileSystemEntryTypeDir {
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime); addDirectoryErr != nil {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
 		} else {
-			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime); addFileErr != nil {
+			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addFileErr != nil {
 				return addFileErr
 			}
 		}
