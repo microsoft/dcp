@@ -1345,7 +1345,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "ContaineNetworks resources the container should be attached to. If omitted or nil, the container will be attached to the default network and the controller will not manage network connections.",
+							Description: "ContainerNetworks resources the container should be attached to. If omitted or nil, the container will be attached to the default network and the controller will not manage network connections.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -1821,6 +1821,11 @@ func schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref common.Referenc
 						},
 					},
 					"entries": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
 						SchemaProps: spec.SchemaProps{
 							Description: "The specific entries to create in the container (must have at least one item)",
 							Type:        []string{"array"},
@@ -2726,6 +2731,11 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 						},
 					},
 					"entries": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
 						SchemaProps: spec.SchemaProps{
 							Description: "For directory type entries, the child entries (files or directories). Optional.",
 							Type:        []string{"array"},

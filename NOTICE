@@ -10993,8 +10993,8 @@ THE SOFTWARE.
 
 ---------------------------------------------------------
 
-golang.org/x/crypto/cryptobyte v0.35.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/crypto/+/v0.35.0:LICENSE
+golang.org/x/crypto/cryptobyte v0.36.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/crypto/+/v0.36.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -11065,8 +11065,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/net v0.36.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/net/+/v0.36.0:LICENSE
+golang.org/x/net v0.38.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/net/+/v0.38.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -11137,8 +11137,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/sync/singleflight v0.11.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sync/+/v0.11.0:LICENSE
+golang.org/x/sync/singleflight v0.12.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sync/+/v0.12.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -11173,8 +11173,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/sys/unix v0.30.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.30.0:LICENSE
+golang.org/x/sys/unix v0.31.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.31.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -11209,8 +11209,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/term v0.29.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/term/+/v0.29.0:LICENSE
+golang.org/x/term v0.30.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/term/+/v0.30.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -11245,8 +11245,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ---------------------------------------------------------
 
-golang.org/x/text v0.22.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/text/+/v0.22.0:LICENSE
+golang.org/x/text v0.23.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/text/+/v0.23.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
