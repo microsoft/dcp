@@ -135,7 +135,7 @@ func NewExecutableReconciler(
 func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	src := ctrl_source.Channel(r.notifyRunChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
-		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		For(&apiv1.Executable{}).
 		Owns(&apiv1.Endpoint{}).
 		WatchesRawSource(src).
