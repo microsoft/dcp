@@ -3,26 +3,18 @@
 package logs
 
 import (
-	"io"
 	"sync/atomic"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
-type Syncer interface {
-	Sync() error
-}
-
-type WriteSyncerCloser interface {
-	io.WriteCloser
-	Syncer
-}
-
 type logfile struct {
-	inner  WriteSyncerCloser
+	inner  usvc_io.WriteSyncerCloser
 	closed *atomic.Bool
 	id     string
 }
 
-func newLogFile(inner WriteSyncerCloser, id string) *logfile {
+func newLogFile(inner usvc_io.WriteSyncerCloser, id string) *logfile {
 	return &logfile{
 		inner:  inner,
 		closed: &atomic.Bool{},
@@ -48,4 +40,8 @@ func (f *logfile) Id() string {
 	return f.id
 }
 
-var _ io.WriteCloser = (*logfile)(nil)
+func (f *logfile) Sync() error {
+	return f.inner.Sync()
+}
+
+var _ usvc_io.WriteSyncerCloser = (*logfile)(nil)

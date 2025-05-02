@@ -5,11 +5,11 @@ package logs
 import (
 	"context"
 	"errors"
-	"io"
 	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"k8s.io/apimachinery/pkg/types"
@@ -87,7 +87,7 @@ func (lds *LogDescriptorSet) AcquireForResource(
 	cancel context.CancelFunc,
 	resourceName types.NamespacedName,
 	resourceUID types.UID,
-) (*LogDescriptor, io.WriteCloser, io.WriteCloser, bool, error) {
+) (*LogDescriptor, usvc_io.WriteSyncerCloser, usvc_io.WriteSyncerCloser, bool, error) {
 	lds.lock.Lock()
 
 	if lds.lifetimeCtx.Err() != nil {

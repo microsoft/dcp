@@ -18,7 +18,7 @@ require (
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/pflag v1.0.6
 	github.com/stretchr/testify v1.10.0
-	github.com/tilt-dev/tilt-apiserver v0.14.0
+	github.com/tilt-dev/tilt-apiserver v0.14.1
 	github.com/tklauser/ps v0.0.3
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.34.0

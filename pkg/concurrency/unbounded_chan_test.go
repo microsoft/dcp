@@ -1,4 +1,4 @@
-package concurrency
+package concurrency_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
@@ -46,7 +47,7 @@ func TestUnboundedChanReadsAndWrites(t *testing.T) {
 			defer cancel()
 
 			inputChannelBufferSize := tc.channelBufferSize
-			ch := NewUnboundedChanBuffered[int](ctx, inputChannelBufferSize, tc.channelBufferSize)
+			ch := concurrency.NewUnboundedChanBuffered[int](ctx, inputChannelBufferSize, tc.channelBufferSize)
 
 			for try := 0; try < tries; try++ {
 				done := make(chan struct{})
@@ -104,7 +105,7 @@ func TestUnboundedChanRwImmediateCancellation(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultUnboundedChanTestTimeout)
 			defer cancel()
 
-			ch := NewUnboundedChanBuffered[int](ctx, tc.channelBufferSize, tc.channelBufferSize)
+			ch := concurrency.NewUnboundedChanBuffered[int](ctx, tc.channelBufferSize, tc.channelBufferSize)
 			result := syncmap.Map[int, int]{}
 
 			// Writing goroutines
@@ -176,7 +177,7 @@ func TestUnboundedChanRwDrainCancellation(t *testing.T) {
 			channelCtx, channelCtxCancel := context.WithCancel(testCtx)
 			defer channelCtxCancel()
 
-			ch := NewUnboundedChanBuffered[int](channelCtx, 0, tc.channelBufferSize)
+			ch := concurrency.NewUnboundedChanBuffered[int](channelCtx, 0, tc.channelBufferSize)
 			result := syncmap.Map[int, int]{}
 			writingDone := make(chan struct{}, goroutines)
 

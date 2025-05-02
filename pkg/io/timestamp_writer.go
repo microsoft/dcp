@@ -8,11 +8,11 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
-// TimestampWriter is an io.WriteCloser that wraps another writer and appends timestamps before the first content
-// of each new line. Doesn't append timestamps to empty lines.
+// TimestampWriter is an WriteSyncerCloser that wraps another writer
+// and appends timestamps before the first content of each new line.
 type timestampWriter struct {
 	// The underlying writer to write to
-	inner io.WriteCloser
+	inner WriteSyncerCloser
 	// Do we need to write a timestamp before we output the next byte?
 	needsTimestamp bool
 	// Buffer for processing output
@@ -20,8 +20,8 @@ type timestampWriter struct {
 	closed bool
 }
 
-// NewTimestampWriter creates a new TimestampWriter that wraps the given writer and sets needsTimestamp to true.
-func NewTimestampWriter(inner io.WriteCloser) io.WriteCloser {
+// NewTimestampWriter creates a new TimestampWriter that wraps the given writer and adds timestamps to the written data.
+func NewTimestampWriter(inner WriteSyncerCloser) WriteSyncerCloser {
 	return &timestampWriter{
 		inner:          inner,
 		needsTimestamp: true,
@@ -36,27 +36,21 @@ func (tw *timestampWriter) Write(p []byte) (int, error) {
 	}
 
 	// Reset the buffer before every read
-	tw.buffer.Reset()
+	reset(&tw.buffer)
+
+	// Note: buffer writes never return an error (they may panic if the buffer grows beyond 2GB)
 
 	for _, b := range p {
 		if tw.needsTimestamp {
-			if _, err := tw.buffer.WriteString(time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat) + " "); err != nil {
-				return 0, err
-			}
+			_, _ = tw.buffer.WriteString(time.Now().UTC().Format(osutil.RFC3339MiliTimestampFormat) + " ")
 			tw.needsTimestamp = false
 		}
 
 		if b == '\n' {
 			tw.needsTimestamp = true
-			if err := tw.buffer.WriteByte(b); err != nil {
-				return 0, err
-			}
-			continue
 		}
 
-		if err := tw.buffer.WriteByte(b); err != nil {
-			return 0, err
-		}
+		tw.buffer.WriteByte(b)
 	}
 
 	data := tw.buffer.Bytes()
@@ -83,4 +77,6 @@ func (tw *timestampWriter) Close() error {
 	return tw.inner.Close()
 }
 
-var _ io.WriteCloser = (*timestampWriter)(nil)
+func (tw *timestampWriter) Sync() error {
+	return tw.inner.Sync()
+}

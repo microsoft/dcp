@@ -11,22 +11,37 @@ import (
 // Reasonable length longer than any RFC3339Nano timestamp
 const maxTimestampLength = 40
 
-type timestampAwareReader struct {
-	inner             io.Reader
-	reader            *bufio.Reader
-	includeTimestamps bool
-	maybeTimestamp    bool
-	timestampBuffer   *bytes.Buffer
+type TimestampAwareReaderOptions struct {
+	Timestamps bool
+	Limit      int64
+	Skip       int64
 }
 
-func NewTimestampAwareReader(inner io.Reader, includeTimestamps bool) *timestampAwareReader {
-	return &timestampAwareReader{
-		inner:             inner,
-		reader:            bufio.NewReader(inner),
-		includeTimestamps: includeTimestamps,
-		maybeTimestamp:    true,
-		timestampBuffer:   new(bytes.Buffer),
+type timestampAwareReader struct {
+	inner           io.Reader
+	reader          *bufio.Reader
+	opts            TimestampAwareReaderOptions
+	maybeTimestamp  bool
+	skippedLines    int64
+	writtenLines    int64
+	timestampBuffer *bytes.Buffer
+}
+
+func NewTimestampAwareReader(inner io.Reader, opts TimestampAwareReaderOptions) io.ReadCloser {
+	retval := timestampAwareReader{
+		inner:           inner,
+		reader:          bufio.NewReader(inner),
+		opts:            opts,
+		skippedLines:    0,
+		writtenLines:    0,
+		timestampBuffer: new(bytes.Buffer),
 	}
+	if opts.Timestamps {
+		retval.maybeTimestamp = false
+	} else {
+		retval.maybeTimestamp = true
+	}
+	return &retval
 }
 
 func (tr *timestampAwareReader) Read(p []byte) (int, error) {
@@ -34,9 +49,13 @@ func (tr *timestampAwareReader) Read(p []byte) (int, error) {
 		return 0, io.ErrShortBuffer
 	}
 
-	if tr.includeTimestamps {
-		// If we want timestamps, just read from the inner stream as normal
-		return tr.inner.Read(p)
+	if tr.opts.Limit > 0 && tr.writtenLines == tr.opts.Limit {
+		return 0, io.EOF
+	}
+
+	skipErr := tr.skipIfRequested()
+	if skipErr != nil {
+		return 0, skipErr
 	}
 
 	bufSize := len(p)
@@ -99,8 +118,16 @@ func (tr *timestampAwareReader) Read(p []byte) (int, error) {
 
 			p[written] = b
 			written += 1
-			if b == '\n' && tr.timestampBuffer.Len() <= 0 {
-				tr.maybeTimestamp = true
+
+			if b == '\n' {
+				tr.writtenLines++
+				if tr.opts.Limit > 0 && tr.writtenLines == tr.opts.Limit {
+					break // Limit of lines to read reached.
+				}
+
+				if !tr.opts.Timestamps && tr.timestampBuffer.Len() <= 0 {
+					tr.maybeTimestamp = true
+				}
 			}
 		}
 	}
@@ -111,6 +138,22 @@ func (tr *timestampAwareReader) Read(p []byte) (int, error) {
 func (tr *timestampAwareReader) Close() error {
 	if closer, isCloser := tr.inner.(io.Closer); isCloser {
 		return closer.Close()
+	}
+
+	return nil
+}
+
+func (tr *timestampAwareReader) skipIfRequested() error {
+	if tr.opts.Skip > 0 {
+		for tr.skippedLines < tr.opts.Skip {
+			b, err := tr.reader.ReadByte()
+			if err != nil {
+				return err
+			}
+			if b == '\n' {
+				tr.skippedLines++
+			}
+		}
 	}
 
 	return nil

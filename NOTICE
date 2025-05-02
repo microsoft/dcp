@@ -1190,7 +1190,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ---------------------------------------------------------
 
 github.com/evanphx/json-patch/v5 v5.9.0 - BSD-3-Clause
-https://github.com/evanphx/json-patch/blob/v5.9.0/v5/LICENSE
+https://github.com/evanphx/json-patch/blob/v5.9.0/LICENSE
 
 Copyright (c) 2014, Evan Phoenix
 All rights reserved.
@@ -7295,8 +7295,8 @@ SOFTWARE.
 
 ---------------------------------------------------------
 
-github.com/tilt-dev/tilt-apiserver/pkg v0.14.0 - Apache-2.0
-https://github.com/tilt-dev/tilt-apiserver/blob/v0.14.0/LICENSE
+github.com/tilt-dev/tilt-apiserver/pkg v0.14.1 - Apache-2.0
+https://github.com/tilt-dev/tilt-apiserver/blob/v0.14.1/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -7997,7 +7997,7 @@ https://github.com/etcd-io/etcd/blob/client/pkg/v3.5.16/client/pkg/LICENSE
 ---------------------------------------------------------
 
 go.etcd.io/etcd/client/v3 v3.5.16 - Apache-2.0
-https://github.com/etcd-io/etcd/blob/client/v3.5.16/client/v3/LICENSE
+https://github.com/etcd-io/etcd/blob/client/v3.5.16/client/LICENSE
 
 
                                  Apache License
@@ -11318,7 +11318,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ---------------------------------------------------------
 
 gomodules.xyz/jsonpatch/v2 v2.4.0 - Apache-2.0
-https://github.com/gomodules/jsonpatch/blob/v2.4.0/v2/LICENSE
+https://github.com/gomodules/jsonpatch/blob/v2.4.0/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004

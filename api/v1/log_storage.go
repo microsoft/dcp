@@ -402,6 +402,11 @@ func (ls *LogStorage) Get(ctx context.Context, name string, options runtime.Obje
 
 func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogOptions) (registry_rest.ResourceStreamer, error) {
 	return ResourceStreamerFunc(func(ctx context.Context, apiVersion, acceptHeader string) (io.ReadCloser, bool, string, error) {
+		vErr := options.Validate()
+		if vErr != nil {
+			return nil, false, "", apierrors.NewBadRequest(vErr.Error())
+		}
+
 		getOpts := metav1.GetOptions{}
 		obj, err := ls.parentKindStorage.Get(ctx, resourceName, &getOpts)
 		if err != nil {
@@ -411,10 +416,6 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 		apiObj, isAPIObj := obj.(apiserver_resource.Object)
 		if !isAPIObj {
 			return nil, false, "", apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type: %s", obj.GetObjectKind().GroupVersionKind().String()))
-		}
-
-		if options.Source != "" && options.Source != string(LogStreamSourceStdout) && options.Source != string(LogStreamSourceStderr) && options.Source != string(LogStreamSourceStartupStdout) && options.Source != string(LogStreamSourceStartupStderr) {
-			return nil, false, "", apierrors.NewBadRequest(fmt.Sprintf("invalid log source '%s'. Supported log sources are '%s', '%s', '%s', and '%s'", options.Source, LogStreamSourceStdout, LogStreamSourceStderr, LogStreamSourceStartupStdout, LogStreamSourceStartupStderr))
 		}
 
 		log := contextdata.GetContextLogger(ctx)
@@ -429,8 +430,7 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 			"Kind", apiObj.GetObjectKind().GroupVersionKind().String(),
 			"Name", apiObj.GetObjectMeta().Name,
 			"UID", apiObj.GetObjectMeta().GetUID(),
-			"Source", options.Source,
-			"Follow", options.Follow,
+			"Options", options.String(),
 		)
 
 		log.V(1).Info("preparing log stream")

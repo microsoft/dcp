@@ -3033,6 +3033,27 @@ func schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
+					"limit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Limits the number of log lines to return. Cannot be used if Follow option is true.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"tail": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Limits the response to at most N existing, NEWEST log lines. If Follow is set, new log lines that appear after the log stream was created do not count against the limit, and will be streamed until the client closes the stream.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"skip": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Skips the first N log lines in the result set. Not compatible with Tail option.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
 				},
 			},
 		},

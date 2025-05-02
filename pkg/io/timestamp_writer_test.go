@@ -139,6 +139,7 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 
 	t.Parallel()
 
+	// Run testcases with TimestampWriter
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
@@ -148,6 +149,32 @@ func TestTimestampWriterAppliesTimestamps(t *testing.T) {
 
 			for _, line := range tc.inputLines {
 				_, err := tw.Write(line)
+				require.NoError(t, err)
+			}
+
+			output := sink.Bytes()
+			chunks := sink.Chunks()
+
+			for i, expectedLine := range tc.expectedLines {
+				require.Regexp(
+					t, expectedLine, string(output[chunks[i].Offset:chunks[i].Offset+chunks[i].Length]),
+					"write with index %d did not match expected", i,
+				)
+			}
+		})
+	}
+
+	// Run the same testcases with indexingWriter
+	for _, tc := range testcases {
+		t.Run(tc.description+"_indexing-writer", func(t *testing.T) {
+			t.Parallel()
+
+			sink := testutil.NewBufferWriter()
+			indexSink := testutil.NewBufferWriter()
+			iw := usvc_io.NewIndexingWriter(sink, indexSink)
+
+			for _, line := range tc.inputLines {
+				_, err := iw.Write(line)
 				require.NoError(t, err)
 			}
 

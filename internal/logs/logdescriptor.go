@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,7 +24,7 @@ const (
 	cleanupReadyPollInterval = 200 * time.Millisecond
 )
 
-// LogDescriptor is a struct that holds information about logs beloning to a single DCP resource
+// LogDescriptor is a struct that holds information about logs belonging to a single DCP resource
 // (e.g. Container, Executable etc). LogDescriptor manages a set of two files for capturing logs of the resource,
 // (for stdout and stderr output), and tracks the number of active log watchers.
 type LogDescriptor struct {
@@ -66,7 +65,7 @@ func NewLogDescriptor(
 
 // Returns information about destination files for capturing resource logs, creating them as necessary.
 // The returned bool indicates whether the files were created by this call.
-func (l *LogDescriptor) EnableLogCapturing(logsFolder string) (io.WriteCloser, io.WriteCloser, bool, error) {
+func (l *LogDescriptor) EnableLogCapturing(logsFolder string) (usvc_io.WriteSyncerCloser, usvc_io.WriteSyncerCloser, bool, error) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 

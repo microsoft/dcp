@@ -21,6 +21,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -57,6 +58,9 @@ func (c *containerLogStreamer) StreamLogs(
 	opts *apiv1.LogOptions,
 	streamLog logr.Logger,
 ) (apiv1.ResourceStreamStatus, <-chan struct{}, error) {
+	// Do not let a panic in the log streaming goroutine down the entire API server process.
+	defer func() { _ = resiliency.MakePanicError(recover(), streamLog) }()
+
 	ctr, isContainer := obj.(*apiv1.Container)
 	if !isContainer {
 		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
@@ -172,11 +176,19 @@ func (c *containerLogStreamer) StreamLogs(
 		return apiv1.ResourceStreamStatusNotReady, nil, nil
 	}
 
-	src, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
+	logFile, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
 	if fileErr != nil {
 		cleanup()
 		return apiv1.ResourceStreamStatusNotReady, nil, fmt.Errorf("failed to open log file '%s': %w", logFilePath, fileErr)
 	}
+
+	var src io.ReadCloser
+	if opts.Tail != nil {
+		src = usvc_io.NewTailReader(logFile, int(*opts.Tail))
+	} else {
+		src = logFile
+	}
+	src = usvc_io.NewTimestampAwareReader(src, logs.ToTimestampReaderOptions(opts))
 
 	if !follow {
 		// If we aren't following, just copy the file and report that we're done streaming
@@ -185,7 +197,7 @@ func (c *containerLogStreamer) StreamLogs(
 
 		streamLog.V(1).Info("starting streaming logs to destination (non-follow mode)...")
 
-		_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
+		_, copyErr := io.Copy(dest, src)
 		if copyErr != nil {
 			streamLog.Error(copyErr, "failed to copy log file to destination")
 		}
@@ -198,7 +210,7 @@ func (c *containerLogStreamer) StreamLogs(
 		c.lock.Lock()
 		defer c.lock.Unlock()
 
-		followWriter := usvc_io.NewFollowWriter(ctx, usvc_io.NewTimestampAwareReader(src, opts.Timestamps), dest)
+		followWriter := usvc_io.NewFollowWriter(ctx, src, dest)
 
 		switch opts.Source {
 		case string(apiv1.LogStreamSourceStartupStdout), string(apiv1.LogStreamSourceStartupStderr):
@@ -241,7 +253,7 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 	defer c.lock.Unlock()
 
 	if c.containerLogSource == nil {
-		// We haven't completed initalization for any resources yet
+		// We haven't completed initialization for any resources yet
 		return
 	}
 
@@ -274,18 +286,16 @@ func stopLogStreamsForContainer(
 	streamKind string,
 	log logr.Logger,
 ) {
-	logs, found := streams.LoadAndDelete(ctr.UID)
+	ctrStreams, found := streams.LoadAndDelete(ctr.UID)
 	if found {
 		if log.V(1).Enabled() {
 			log.V(1).Info(fmt.Sprintf("stopping %s follow logs for container", streamKind),
 				"Container", ctr.Status.ContainerID,
-				"StreamCount", len(logs),
+				"StreamCount", len(ctrStreams),
 			)
 		}
 
-		for i := range logs {
-			logs[i].StopFollow()
-		}
+		logs.DelayCancelFollowStreams(ctrStreams, (*usvc_io.FollowWriter).StopFollow)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
 type ContainerStatus string
@@ -226,7 +227,7 @@ type StreamContainerLogsOptions struct {
 
 type ContainerLogSource interface {
 	// Starts capturing container logs to the provided writers
-	CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options StreamContainerLogsOptions) error
+	CaptureContainerLogs(ctx context.Context, container string, stdout usvc_io.WriteSyncerCloser, stderr usvc_io.WriteSyncerCloser, options StreamContainerLogsOptions) error
 }
 
 type CachedRuntimeStatusUsage string

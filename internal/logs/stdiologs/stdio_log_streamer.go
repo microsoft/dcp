@@ -16,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/logs"
+	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -42,6 +44,9 @@ func (sls stdIoLogStreamer) StreamLogs(
 	opts *apiv1.LogOptions,
 	log logr.Logger,
 ) (apiv1.ResourceStreamStatus, <-chan struct{}, error) {
+	// Do not let a panic in the log streaming goroutine down the entire API server process.
+	defer func() { _ = resiliency.MakePanicError(recover(), log) }()
+
 	status := apiv1.ResourceStreamStatusNotReady
 
 	resource, isResource := obj.(apiv1.StdIoStreamableResource)
@@ -69,15 +74,23 @@ func (sls stdIoLogStreamer) StreamLogs(
 		return status, nil, nil
 	}
 
-	src, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
+	logFile, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
 	if fileErr != nil {
 		return status, nil, fmt.Errorf("failed to open log file '%s': %w", logFilePath, fileErr)
 	}
 
-	if !opts.Follow {
-		defer src.Close()
+	var src io.ReadCloser
+	if opts.Tail != nil {
+		src = usvc_io.NewTailReader(logFile, int(*opts.Tail))
+	} else {
+		src = logFile
+	}
+	src = usvc_io.NewTimestampAwareReader(src, logs.ToTimestampReaderOptions(opts))
 
-		_, copyErr := io.Copy(dest, usvc_io.NewTimestampAwareReader(src, opts.Timestamps))
+	if !opts.Follow {
+		defer logFile.Close()
+
+		_, copyErr := io.Copy(dest, src)
 		if copyErr != nil {
 			log.Error(copyErr, "failed to copy log file to destination")
 		}
@@ -89,7 +102,7 @@ func (sls stdIoLogStreamer) StreamLogs(
 	defer sls.lock.Unlock()
 
 	// Track this writer instance
-	followWriter := usvc_io.NewFollowWriter(requestCtx, usvc_io.NewTimestampAwareReader(src, opts.Timestamps), dest)
+	followWriter := usvc_io.NewFollowWriter(requestCtx, src, dest)
 	followWriters, _ := sls.activeStreams.LoadOrStore(resource.GetUID(), []*usvc_io.FollowWriter{})
 	followWriters = append(followWriters, followWriter)
 	sls.activeStreams.Store(resource.GetUID(), followWriters)
@@ -118,30 +131,37 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 	sls.lock.Lock()
 	defer sls.lock.Unlock()
 
+	stopResourceStreams := func(
+		logMessage string,
+		getResourceStreams func(*syncmap.Map[types.UID, []*usvc_io.FollowWriter], types.UID) ([]*usvc_io.FollowWriter, bool),
+		stopStream func(*usvc_io.FollowWriter),
+	) {
+		if fwStreams, found := getResourceStreams(sls.activeStreams, resource.GetUID()); found {
+			if log.V(1).Enabled() {
+				log.V(1).Info(logMessage, "Kind", evt.Object.GetObjectKind().GroupVersionKind().String(),
+					"Name", resource.NamespacedName().String(),
+					"StreamCount", len(fwStreams),
+				)
+			}
+			logs.DelayCancelFollowStreams(fwStreams, stopStream)
+		}
+	}
+
 	if evt.Type == watch.Modified {
 		if !resource.GetDeletionTimestamp().IsZero() {
-			followWriters, found := sls.activeStreams.LoadAndDelete(resource.GetUID())
-			if found {
-				for _, followWriter := range followWriters {
-					followWriter.Cancel()
-				}
-			}
+			stopResourceStreams("cancelling log stream for resource that is being deleted",
+				(*syncmap.Map[types.UID, []*usvc_io.FollowWriter]).LoadAndDelete, (*usvc_io.FollowWriter).Cancel,
+			)
 		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
-			if logs, found := sls.activeStreams.Load(resource.GetUID()); found {
-				log.V(1).Info("stopping follow logs for resource", "Kind", evt.Object.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "StreamCount", len(logs))
-				for i := range logs {
-					logs[i].StopFollow()
-				}
-			}
+			stopResourceStreams("stopping log following for resource that reached its final state",
+				(*syncmap.Map[types.UID, []*usvc_io.FollowWriter]).Load, (*usvc_io.FollowWriter).StopFollow,
+			)
 		}
 	} else if evt.Type == watch.Deleted {
-		followWriters, found := sls.activeStreams.LoadAndDelete(resource.GetUID())
-		if found {
-			for _, followWriter := range followWriters {
-				followWriter.Cancel()
-			}
-		}
+		stopResourceStreams("cancelling log stream for resource that was deleted",
+			(*syncmap.Map[types.UID, []*usvc_io.FollowWriter]).LoadAndDelete, (*usvc_io.FollowWriter).Cancel,
+		)
 	}
 }
 

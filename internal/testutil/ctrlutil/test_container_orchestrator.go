@@ -266,7 +266,7 @@ func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, 
 		"follow", logOptions.Follow,
 	)
 	requestLog.V(1).Info("serving container logs")
-	innerWriter := testutil.NewLoggingWriteCloser(requestLog, usvc_io.NewFlushWriter(resp))
+	innerWriter := NewLoggingWriteCloser(requestLog, resp)
 
 	var stdoutWriter, stderrWriter usvc_io.NotifyWriteCloser
 	switch logOptions.Source {
@@ -1710,7 +1710,7 @@ func (to *TestContainerOrchestrator) SimulateContainerExecExit(ctx context.Conte
 	return nil
 }
 
-func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, containerNameOrId string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
+func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, containerNameOrId string, stdout usvc_io.WriteSyncerCloser, stderr usvc_io.WriteSyncerCloser, options containers.StreamContainerLogsOptions) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -1743,25 +1743,25 @@ func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, c
 	}
 	tc := matching[0]
 
-	var effectiveStdout, effecitveStderr io.WriteCloser
+	var effectiveStdout, effectiveStderr usvc_io.WriteSyncerCloser
 	if options.Timestamps {
 		if stdout != nil {
 			effectiveStdout = usvc_io.NewTimestampWriter(stdout)
 		}
 		if stderr != nil {
-			effecitveStderr = usvc_io.NewTimestampWriter(stderr)
+			effectiveStderr = usvc_io.NewTimestampWriter(stderr)
 		}
 	} else {
 		effectiveStdout = stdout
-		effecitveStderr = stderr
+		effectiveStderr = stderr
 	}
 
 	// Account for the possibility that the capturing context, or the orchestrator lifetime context, may be cancelled.
 	if effectiveStdout != nil {
 		effectiveStdout = usvc_io.NewContextWriteCloser(ctx, effectiveStdout)
 	}
-	if effecitveStderr != nil {
-		effecitveStderr = usvc_io.NewContextWriteCloser(ctx, effecitveStderr)
+	if effectiveStderr != nil {
+		effectiveStderr = usvc_io.NewContextWriteCloser(ctx, effectiveStderr)
 	}
 
 	var logErrors error
@@ -1774,19 +1774,19 @@ func (to *TestContainerOrchestrator) CaptureContainerLogs(ctx context.Context, c
 			}
 		}
 
-		if effecitveStderr != nil {
-			if _, stdErrWriteErr := effecitveStderr.Write(tc.stderrLog.Bytes()); stdErrWriteErr != nil {
+		if effectiveStderr != nil {
+			if _, stdErrWriteErr := effectiveStderr.Write(tc.stderrLog.Bytes()); stdErrWriteErr != nil {
 				logErrors = errors.Join(logErrors, stdErrWriteErr)
 			} else {
-				logErrors = errors.Join(logErrors, effecitveStderr.Close())
+				logErrors = errors.Join(logErrors, effectiveStderr.Close())
 			}
 		}
 	} else {
 		if effectiveStdout != nil {
 			logErrors = errors.Join(logErrors, tc.stdoutLog.AddTarget(effectiveStdout))
 		}
-		if effecitveStderr != nil {
-			logErrors = errors.Join(logErrors, tc.stderrLog.AddTarget(effecitveStderr))
+		if effectiveStderr != nil {
+			logErrors = errors.Join(logErrors, tc.stderrLog.AddTarget(effectiveStderr))
 		}
 	}
 

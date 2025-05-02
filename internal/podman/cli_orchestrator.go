@@ -692,7 +692,7 @@ func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMe
 	return sub, nil
 }
 
-func (pco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout io.WriteCloser, stderr io.WriteCloser, options containers.StreamContainerLogsOptions) error {
+func (pco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, container string, stdout usvc_io.WriteSyncerCloser, stderr usvc_io.WriteSyncerCloser, options containers.StreamContainerLogsOptions) error {
 	args := []string{"container", "logs"}
 	args = options.Apply(args)
 	args = append(args, container)

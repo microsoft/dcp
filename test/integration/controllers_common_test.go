@@ -37,6 +37,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -493,14 +494,30 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 		err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasExpectedLogLines)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return fmt.Errorf("Timeout occurred while waiting for expected logs from %s '%s'. Last log contents: %s",
+				return fmt.Errorf("Timeout occurred while waiting for expected logs from %s '%s'. Last log contents:\n%s\nExpected log contents:\n%s",
 					obj.GetObjectKind().GroupVersionKind().Kind,
 					obj.GetObjectMeta().Name,
-					string(lastLogContents))
+					string(lastLogContents),
+					string(bytes.Join(expectedLines, osutil.LineSep())),
+				)
 			} else {
 				return fmt.Errorf("Expected logs could not be retrieved: %w", err)
 			}
 		}
 		return nil
 	}
+}
+
+func generateLogLines(prefix []byte, count int) [][]byte {
+	lines := make([][]byte, count)
+	for i := 0; i < count; i++ {
+		lines[i] = append(prefix, []byte(fmt.Sprintf(" line %d", i))...)
+	}
+	return lines
+}
+
+func withTimestampRegexes(lines [][]byte) [][]byte {
+	return slices.Map[[]byte, []byte](lines, func(line []byte) []byte {
+		return bytes.Join([][]byte{[]byte(osutil.RFC3339MiliTimestampRegex), []byte(" "), line}, nil)
+	})
 }

@@ -9,7 +9,7 @@ import (
 
 // NotifiyWriteCloser is a WriteCloser that can notify when it is closed.
 type NotifyWriteCloser interface {
-	io.WriteCloser
+	WriteSyncerCloser
 	Closed() <-chan struct{}
 }
 
@@ -18,7 +18,7 @@ type NotifyWriteCloser interface {
 // If the inner writer is also a Closer, it will be closed when the contextWriteCloser is closed.
 // contextWriteCloser is safe for concurrent use as long as the inner writer is.
 type contextWriteCloser struct {
-	inner    io.Writer
+	inner    WriteSyncerCloser
 	ctx      context.Context
 	lock     *sync.Mutex
 	closeErr error
@@ -26,7 +26,7 @@ type contextWriteCloser struct {
 	closedCh chan struct{}
 }
 
-func NewContextWriteCloser(ctx context.Context, w io.Writer) NotifyWriteCloser {
+func NewContextWriteCloser(ctx context.Context, w WriteSyncerCloser) NotifyWriteCloser {
 	if ctx == nil {
 		panic("context must not be nil")
 	}
@@ -84,5 +84,8 @@ func (cwc *contextWriteCloser) Closed() <-chan struct{} {
 	return cwc.closedCh
 }
 
-var _ io.WriteCloser = (*contextWriteCloser)(nil)
+func (cwc *contextWriteCloser) Sync() error {
+	return cwc.inner.Sync()
+}
+
 var _ NotifyWriteCloser = (*contextWriteCloser)(nil)

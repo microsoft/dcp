@@ -17,6 +17,7 @@ import (
 // The written data with associated timestamps can be retrieved using Chunks() method.
 // The BufferWriter can also have a set of "target" writers attached.
 // These writers receive all data written to the BufferWriter.
+// FailNextWrite() and FailNextSync() introduce errors in the next write or sync operation, respectively.
 
 type Chunk struct {
 	Offset    int
@@ -25,13 +26,15 @@ type Chunk struct {
 }
 
 type BufferWriter struct {
-	data       []byte
-	chunks     []Chunk
-	lock       *sync.Mutex
-	closed     bool
-	closedCh   chan struct{}
-	closeError error
-	targets    []io.Writer
+	data         []byte
+	chunks       []Chunk
+	lock         *sync.Mutex
+	closed       bool
+	closedCh     chan struct{}
+	closeError   error
+	targets      []io.Writer
+	nextWriteErr error
+	nextSyncErr  error
 }
 
 func NewBufferWriter() *BufferWriter {
@@ -45,6 +48,12 @@ func NewBufferWriter() *BufferWriter {
 func (bw *BufferWriter) Write(p []byte) (int, error) {
 	bw.lock.Lock()
 	defer bw.lock.Unlock()
+
+	if bw.nextWriteErr != nil {
+		err := bw.nextWriteErr
+		bw.nextWriteErr = nil
+		return 0, err
+	}
 
 	if bw.closed {
 		return 0, usvc_io.ErrClosedWriter
@@ -78,6 +87,19 @@ func (bw *BufferWriter) Bytes() []byte {
 	bw.lock.Lock()
 	defer bw.lock.Unlock()
 	return bytes.Clone(bw.data)
+}
+
+func (bw *BufferWriter) Lines(sep []byte) [][]byte {
+	bw.lock.Lock()
+	defer bw.lock.Unlock()
+
+	// The way bytes.Split() works is that it will return an empty slice as the last element
+	// if the input data ends with a separator. So we need to trim it.
+	retval := bytes.Split(bw.data, sep)
+	if len(retval) > 1 && len(retval[len(retval)-1]) == 0 {
+		retval = retval[:len(retval)-1]
+	}
+	return retval
 }
 
 func (bw *BufferWriter) Close() error {
@@ -142,4 +164,39 @@ func (bw *BufferWriter) AddTarget(t io.Writer) error {
 	return replayErrors
 }
 
-var _ io.WriteCloser = (*BufferWriter)(nil)
+func (bw *BufferWriter) Sync() error {
+	bw.lock.Lock()
+	defer bw.lock.Unlock()
+
+	if bw.nextSyncErr != nil {
+		err := bw.nextSyncErr
+		bw.nextSyncErr = nil
+		return err
+	}
+
+	var syncErrors error
+	for _, target := range bw.targets {
+		if syncer, isSyncer := target.(usvc_io.Syncer); isSyncer {
+			syncErrors = errors.Join(syncErrors, syncer.Sync())
+		}
+	}
+	return syncErrors
+}
+
+// FailNextWrite causes the next Write operation to fail with an error.
+// After the failure, subsequent writes will succeed normally.
+func (bw *BufferWriter) FailNextWrite(err error) {
+	bw.lock.Lock()
+	defer bw.lock.Unlock()
+	bw.nextWriteErr = err
+}
+
+// FailNextSync causes the next Sync operation to fail with an error.
+// After the failure, subsequent syncs will succeed normally.
+func (bw *BufferWriter) FailNextSync(err error) {
+	bw.lock.Lock()
+	defer bw.lock.Unlock()
+	bw.nextSyncErr = err
+}
+
+var _ usvc_io.WriteSyncerCloser = (*BufferWriter)(nil)

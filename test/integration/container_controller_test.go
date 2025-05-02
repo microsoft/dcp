@@ -1139,39 +1139,205 @@ func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
 // The sub-tests are verifying that the logs can be obtained when Container is running,
 // and when it has finished running.
 func TestContainerLogsNonFollow(t *testing.T) {
+	t.Parallel()
+
 	type testcase struct {
-		description        string
-		containerName      string
-		ensureDesiredState func(*testing.T, context.Context, *apiv1.Container)
+		description         string
+		opts                apiv1.LogOptions
+		ensureDesiredState  func(*testing.T, context.Context, *apiv1.Container)
+		expectedStdoutLines [][]byte
+		expectedStderrLines [][]byte
 	}
 
-	const runningContainerName = "test-container-logs-non-follow-running"
-	const exitedContainerName = "test-container-logs-non-follow-exited"
+	const testName = "test-container-logs-non-follow"
+
+	ensureRunning := func(t *testing.T, ctx context.Context, c *apiv1.Container) {
+		require.True(t, c.Status.State == apiv1.ContainerStateRunning)
+	}
+	transitionFromRunningToExited := func(t *testing.T, ctx context.Context, c *apiv1.Container) {
+		require.True(t, c.Status.State == apiv1.ContainerStateRunning)
+		exitErr := containerOrchestrator.SimulateContainerExit(ctx, c.Status.ContainerID, 0)
+		require.NoError(t, exitErr)
+		_ = ensureContainerState(t, ctx, client, c, apiv1.ContainerStateExited)
+	}
+
+	const LINE_COUNT = 20
+	stdoutLines := generateLogLines([]byte("stdout"), LINE_COUNT)
+	stderrLines := generateLogLines([]byte("stderr"), LINE_COUNT)
+	var skip int64 = 3
+	var limit int64 = 5
+	var tail int64 = 7 // Must be greater than limit to test tail+limit combination.
 
 	testcases := []testcase{
 		{
-			description:   "running",
-			containerName: runningContainerName,
-			ensureDesiredState: func(t *testing.T, ctx context.Context, c *apiv1.Container) {
-				require.True(t, c.Status.State == apiv1.ContainerStateRunning)
-			},
+			description:         "running",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: stdoutLines,
+			expectedStderrLines: stderrLines,
 		},
 		{
-			description:   "finished",
-			containerName: exitedContainerName,
-			ensureDesiredState: func(t *testing.T, ctx context.Context, c *apiv1.Container) {
-				require.True(t, c.Status.State == apiv1.ContainerStateRunning)
-				exitErr := containerOrchestrator.SimulateContainerExit(ctx, c.Status.ContainerID, 0)
-				require.NoError(t, exitErr)
-				_ = ensureContainerState(t, ctx, client, c, apiv1.ContainerStateExited)
-			},
+			description:         "finished",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: stdoutLines,
+			expectedStderrLines: stderrLines,
+		},
+		{
+			description:         "running-ts",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines),
+			expectedStderrLines: withTimestampRegexes(stderrLines),
+		},
+		{
+			description:         "finished-ts",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines),
+			expectedStderrLines: withTimestampRegexes(stderrLines),
+		},
+		{
+			description:         "running-skip",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: stdoutLines[skip:],
+			expectedStderrLines: stderrLines[skip:],
+		},
+		{
+			description:         "finished-skip",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: stdoutLines[skip:],
+			expectedStderrLines: stderrLines[skip:],
+		},
+		{
+			description:         "running-ts-skip",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Skip: &skip},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[skip:],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[skip:],
+		},
+		{
+			description:         "finished-ts-skip",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Skip: &skip},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[skip:],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[skip:],
+		},
+		{
+			description:         "running-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Limit: &limit},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: stdoutLines[:limit],
+			expectedStderrLines: stderrLines[:limit],
+		},
+		{
+			description:         "finished-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Limit: &limit},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: stdoutLines[:limit],
+			expectedStderrLines: stderrLines[:limit],
+		},
+		{
+			description:         "running-ts-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Limit: &limit},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[:limit],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[:limit],
+		},
+		{
+			description:         "finished-ts-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Limit: &limit},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[:limit],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[:limit],
+		},
+		{
+			description:         "running-skip-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip, Limit: &limit},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: stdoutLines[skip:][:limit],
+			expectedStderrLines: stderrLines[skip:][:limit],
+		},
+		{
+			description:         "finished-skip-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip, Limit: &limit},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: stdoutLines[skip:][:limit],
+			expectedStderrLines: stderrLines[skip:][:limit],
+		},
+		{
+			description:         "running-ts-skip-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Skip: &skip, Limit: &limit},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[skip:][:limit],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[skip:][:limit],
+		},
+		{
+			description:         "finished-ts-skip-limit",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Skip: &skip, Limit: &limit},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[skip:][:limit],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[skip:][:limit],
+		},
+		{
+			description:         "running-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Tail: &tail},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):],
+		},
+		{
+			description:         "finished-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Tail: &tail},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):],
+		},
+		{
+			description:         "running-ts-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Tail: &tail},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[len(stdoutLines)-int(tail):],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[len(stderrLines)-int(tail):],
+		},
+		{
+			description:         "finished-ts-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Tail: &tail},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[len(stdoutLines)-int(tail):],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[len(stderrLines)-int(tail):],
+		},
+		{
+			description:         "running-limit-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Limit: &limit, Tail: &tail},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):][:limit],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):][:limit],
+		},
+		{
+			description:         "finished-limit-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: false, Limit: &limit, Tail: &tail},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):][:limit],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):][:limit],
+		},
+		{
+			description:         "running-ts-limit-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Limit: &limit, Tail: &tail},
+			ensureDesiredState:  ensureRunning,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[len(stdoutLines)-int(tail):][:limit],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[len(stderrLines)-int(tail):][:limit],
+		},
+		{
+			description:         "finished-ts-limit-tail",
+			opts:                apiv1.LogOptions{Follow: false, Timestamps: true, Limit: &limit, Tail: &tail},
+			ensureDesiredState:  transitionFromRunningToExited,
+			expectedStdoutLines: withTimestampRegexes(stdoutLines)[len(stdoutLines)-int(tail):][:limit],
+			expectedStderrLines: withTimestampRegexes(stderrLines)[len(stderrLines)-int(tail):][:limit],
 		},
 	}
-
-	t.Parallel()
-
-	stdoutLine := []byte("Standard output log line 1")
-	stderrLine := []byte("Standard error log line 1")
 
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
@@ -1180,15 +1346,15 @@ func TestContainerLogsNonFollow(t *testing.T) {
 			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 			defer cancel()
 
-			var imageName = tc.containerName + "-image"
+			containerName := testName + "-" + tc.description
 
 			ctr := apiv1.Container{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      tc.containerName,
+					Name:      containerName,
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ContainerSpec{
-					Image: imageName,
+					Image: containerName + "-image",
 				},
 			}
 
@@ -1199,96 +1365,114 @@ func TestContainerLogsNonFollow(t *testing.T) {
 			updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 			t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
-			logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout,
-				osutil.WithNewline(stdoutLine))
-			require.NoError(t, logErr, "could not simulate logging to stdout")
-			logErr = containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStderr,
-				osutil.WithNewline(stderrLine))
-			require.NoError(t, logErr, "could not simulate logging to stderr")
+			for i := 0; i < LINE_COUNT; i++ {
+				logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(stdoutLines[i]))
+				require.NoError(t, logErr, "could not simulate logging to stdout for Container '%s'", containerName)
+				logErr = containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStderr,
+					osutil.WithNewline(stderrLines[i]))
+				require.NoError(t, logErr, "could not simulate logging to stderr for Container '%s'", containerName)
+			}
 
 			t.Logf("Transitioning Container '%s' to desired state...", ctr.ObjectMeta.Name)
 			tc.ensureDesiredState(t, ctx, updatedCtr)
 
 			t.Logf("Ensure logs can be captured for Container '%s'...", ctr.ObjectMeta.Name)
-			useCases := []apiv1.LogOptions{
-				{Follow: false, Source: "stdout", Timestamps: false},
-				{Follow: false, Source: "stderr", Timestamps: false},
-				{Follow: false, Source: "stdout", Timestamps: true},
-				{Follow: false, Source: "stderr", Timestamps: true},
-			}
 
-			for _, opts := range useCases {
-				var expected []byte
-				if opts.Source == "stdout" {
-					expected = stdoutLine
-				} else {
-					expected = stderrLine
-				}
-				if opts.Timestamps {
-					expected = bytes.Join([][]byte{[]byte(osutil.RFC3339MiliTimestampRegex), []byte(" "), expected}, nil)
-				}
-				waitErr := waitForObjectLogs(ctx, &ctr, opts, [][]byte{expected}, nil)
-				require.NoError(t, waitErr, "Could not capture startup logs for Container '%s' (with options %s)", ctr.ObjectMeta.Name, opts.String())
-			}
+			opts := tc.opts
+			opts.Source = "stdout"
+			waitErr := waitForObjectLogs(ctx, &ctr, opts, tc.expectedStdoutLines, nil)
+			require.NoError(t, waitErr)
+
+			opts = tc.opts
+			opts.Source = "stderr"
+			waitErr = waitForObjectLogs(ctx, &ctr, opts, tc.expectedStderrLines, nil)
+			require.NoError(t, waitErr)
 		})
 	}
 }
 
 // Verify that logs can be captured in follow mode when log stream is open before any logs are written.
 func TestContainerLogsFollowFromStart(t *testing.T) {
-	const containerName = "test-container-logs-follow-from-start"
-	const imageName = containerName + "-image"
-
-	lines := [][]byte{
-		[]byte("Standard output log line 1"),
-		[]byte("Standard output log line 2"),
-		[]byte("Standard output log line 3"),
-	}
-
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	type testcase struct {
+		description   string
+		opts          apiv1.LogOptions
+		expectedLines [][]byte
+	}
 
-	ctr := apiv1.Container{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      containerName,
-			Namespace: metav1.NamespaceNone,
+	const testName = "test-container-logs-follow-from-start"
+
+	const LINE_COUNT = 11
+	lines := generateLogLines([]byte("stdout"), LINE_COUNT)
+	var skip int64 = 2
+	var tail int64 = 5
+
+	testcases := []testcase{
+		{
+			description:   "regular",
+			opts:          apiv1.LogOptions{Follow: true, Timestamps: false},
+			expectedLines: lines,
 		},
-		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+		{
+			description:   "skip",
+			opts:          apiv1.LogOptions{Follow: true, Timestamps: false, Skip: &skip},
+			expectedLines: lines[skip:],
+		},
+		{
+			description:   "tail",
+			opts:          apiv1.LogOptions{Follow: true, Timestamps: false, Tail: &tail},
+			expectedLines: lines[len(lines)-int(tail):],
 		},
 	}
 
-	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
-	err := client.Create(ctx, &ctr)
-	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
 
-	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
 
-	t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
-	logsErrCh := make(chan error, 1)
-	logStreamOpen := concurrency.NewAutoResetEvent(false)
-	opts := apiv1.LogOptions{
-		Follow:     true,
-		Source:     "stdout",
-		Timestamps: false,
+			containerName := testName + "-" + tc.description
+
+			ctr := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      containerName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ContainerSpec{
+					Image: containerName + "-image",
+				},
+			}
+
+			t.Logf("Creating Container '%s'", containerName)
+			err := client.Create(ctx, &ctr)
+			require.NoError(t, err, "Could not create Container '%s'", containerName)
+
+			updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+			t.Logf("Start following logs for Container '%s'...", containerName)
+			logsErrCh := make(chan error, 1)
+			logStreamOpen := concurrency.NewAutoResetEvent(false)
+			go func() {
+				opts := tc.opts
+				opts.Source = "stdout"
+				// Run this in a separate goroutine to make sure we open the log stream before we start writing logs.
+				logsErrCh <- waitForObjectLogs(ctx, updatedCtr, opts, tc.expectedLines, logStreamOpen)
+			}()
+
+			<-logStreamOpen.Wait()
+
+			t.Logf("Simulating logging for Container '%s'...", containerName)
+			for _, line := range lines {
+				logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
+				require.NoError(t, logErr, "could not simulate logging to stdout")
+			}
+
+			err = <-logsErrCh
+			require.NoError(t, err, "Could not follow logs for Container '%s'", containerName)
+		})
 	}
-	go func() {
-		// Run this in a separate goroutine to make sure we open the log stream before we start writing logs.
-		logsErrCh <- waitForObjectLogs(ctx, updatedCtr, opts, lines, logStreamOpen)
-	}()
-
-	<-logStreamOpen.Wait()
-
-	t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
-	for _, line := range lines {
-		logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
-		require.NoError(t, logErr, "could not simulate logging to stdout")
-	}
-
-	err = <-logsErrCh
-	require.NoError(t, err, "Could not follow logs for Container '%s'", ctr.ObjectMeta.Name)
 }
 
 // Verify that logs can be captured in follow mode when log stream is opened after the Container has exited.

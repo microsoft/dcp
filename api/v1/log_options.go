@@ -3,6 +3,7 @@
 package v1
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 
@@ -11,6 +12,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 )
 
@@ -21,7 +25,15 @@ const (
 	LogStreamSourceStderr        LogStreamSource = "stderr"
 	LogStreamSourceStartupStdout LogStreamSource = "startup_stdout"
 	LogStreamSourceStartupStderr LogStreamSource = "startup_stderr"
-	LogStreamSourceAll           LogStreamSource = "all"
+)
+
+var (
+	validLogStreamSources = []string{
+		string(LogStreamSourceStdout),
+		string(LogStreamSourceStderr),
+		string(LogStreamSourceStartupStdout),
+		string(LogStreamSourceStartupStderr),
+	}
 )
 
 // +kubebuilder:object:root=true
@@ -47,9 +59,20 @@ type LogOptions struct {
 	// +optional
 	Timestamps bool `json:"timestamps,omitempty"`
 
-	// CONSIDER other options such as the timestamp from which to start showing logs,
-	// whether to include timestamps etc. For inspiration see K8s PodLogOptions struct definition:
-	// https://github.com/kubernetes/kubernetes/blob/master/pkg/apis/core/types.go#L5212
+	// Limits the number of log lines to return.
+	// Cannot be used if Follow option is true.
+	// +optional
+	Limit *int64 `json:"limit,omitempty"`
+
+	// Limits the response to at most N existing, NEWEST log lines.
+	// If Follow is set, new log lines that appear after the log stream was created
+	// do not count against the limit, and will be streamed until the client closes the stream.
+	// +optional
+	Tail *int64 `json:"tail,omitempty"`
+
+	// Skips the first N log lines in the result set. Not compatible with Tail option.
+	// +optional
+	Skip *int64 `json:"skip,omitempty"`
 }
 
 func (lo *LogOptions) GetGroupVersionResource() schema.GroupVersionResource {
@@ -85,7 +108,49 @@ func (lo *LogOptions) NewList() runtime.Object {
 }
 
 func (lo *LogOptions) String() string {
-	return fmt.Sprintf("{Follow: %t, Source: %s, Timestamps: %t}", lo.Follow, lo.Source, lo.Timestamps)
+	return fmt.Sprintf("{Follow: %t, Source: %s, Timestamps: %t, Limit: %s, Skip: %s, Tail: %s}",
+		lo.Follow,
+		lo.Source,
+		lo.Timestamps,
+		logger.IntPtrValToString(lo.Limit),
+		logger.IntPtrValToString(lo.Skip),
+		logger.IntPtrValToString(lo.Tail),
+	)
+}
+
+func (lo *LogOptions) Validate() error {
+	var retval error
+
+	// Empty source is valid and means "stdout".
+	if lo.Source != "" && !slices.Contains(validLogStreamSources, lo.Source) {
+		retval = errors.Join(retval, fmt.Errorf("invalid log source '%s'. Supported log sources are '%s', '%s', '%s', and '%s'", lo.Source, LogStreamSourceStdout, LogStreamSourceStderr, LogStreamSourceStartupStdout, LogStreamSourceStartupStderr))
+	}
+
+	if lo.Limit != nil {
+		if *lo.Limit <= 0 {
+			retval = errors.Join(retval, fmt.Errorf("invalid log response size limit '%d' (must be greater than 0)", *lo.Limit))
+		} else if lo.Follow {
+			retval = errors.Join(retval, fmt.Errorf("log response size cannot be limited in follow mode"))
+		}
+	}
+
+	if lo.Tail != nil {
+		if *lo.Tail <= 0 {
+			retval = errors.Join(retval, fmt.Errorf("invalid log tail value '%d' (must be greater than 0)", *lo.Tail))
+		} else if *lo.Tail > usvc_io.MaxTailSize {
+			retval = errors.Join(retval, fmt.Errorf("invalid log tail value '%d' (must be less than or equal to %d)", *lo.Tail, usvc_io.MaxTailSize))
+		} else if lo.Skip != nil && *lo.Skip > 0 {
+			retval = errors.Join(retval, fmt.Errorf("cannot use both 'tail' and 'skip' options"))
+		}
+	}
+
+	if lo.Skip != nil {
+		if *lo.Skip < 0 {
+			retval = errors.Join(retval, fmt.Errorf("invalid log skip value '%d' (must be greater than or equal to 0)", *lo.Skip))
+		}
+	}
+
+	return retval
 }
 
 // We'll never have "lists of LogOptions", but list definition is required to register the resource with the API server.
@@ -145,6 +210,33 @@ func UrlValuesToLogOptions(in *url.Values, out *LogOptions, cscope conversion.Sc
 		}
 	} else {
 		out.Timestamps = false
+	}
+
+	limitValues := (*in)["limit"]
+	if len(limitValues) > 0 {
+		if err := runtime.Convert_Slice_string_To_Pointer_int64(&limitValues, &out.Limit, cscope); err != nil {
+			return fmt.Errorf("failed to convert LogOptions 'limit' parameter: %w", err)
+		}
+	} else {
+		out.Limit = nil
+	}
+
+	tailValues := (*in)["tail"]
+	if len(tailValues) > 0 {
+		if err := runtime.Convert_Slice_string_To_Pointer_int64(&tailValues, &out.Tail, cscope); err != nil {
+			return fmt.Errorf("failed to convert LogOptions 'tail' parameter: %w", err)
+		}
+	} else {
+		out.Tail = nil
+	}
+
+	skipValues := (*in)["skip"]
+	if len(skipValues) > 0 {
+		if err := runtime.Convert_Slice_string_To_Pointer_int64(&skipValues, &out.Skip, cscope); err != nil {
+			return fmt.Errorf("failed to convert LogOptions 'skip' parameter: %w", err)
+		}
+	} else {
+		out.Skip = nil
 	}
 
 	return nil

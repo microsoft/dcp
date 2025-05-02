@@ -272,7 +272,7 @@ endif
 
 ##@ Test targets
 
-.PHONY: test-prereqs
+test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
 .PHONY: test

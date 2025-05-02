@@ -55,7 +55,7 @@ func TestExecutableIsStarted(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-starts-process",
+					ExecutablePath: "/path/to/executable-starts-process",
 				},
 			},
 			verifyRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
@@ -72,7 +72,7 @@ func TestExecutableIsStarted(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-starts-ide-run-session",
+					ExecutablePath: "/path/to/executable-starts-ide-run-session",
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
@@ -125,7 +125,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/exit-code-captured-process",
+					ExecutablePath: "/path/to/exit-code-captured-process",
 				},
 			},
 			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) controllers.RunID {
@@ -153,7 +153,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/exit-code-captured-ide",
+					ExecutablePath: "/path/to/exit-code-captured-ide",
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
@@ -232,7 +232,7 @@ func TestExecutableStopState(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-stop-state-process",
+					ExecutablePath: "/path/to/executable-stop-state-process",
 				},
 			},
 			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
@@ -260,7 +260,7 @@ func TestExecutableStopState(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-stop-state-ide",
+					ExecutablePath: "/path/to/executable-stop-state-ide",
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
@@ -347,7 +347,7 @@ func TestExecutableDeletion(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-deletion-process",
+					ExecutablePath: "/path/to/executable-deletion-process",
 				},
 			},
 			verifyExeRunning: func(ctx context.Context, t *testing.T, exe *apiv1.Executable) {
@@ -375,7 +375,7 @@ func TestExecutableDeletion(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-deletion-ide",
+					ExecutablePath: "/path/to/executable-deletion-ide",
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
@@ -451,7 +451,7 @@ func TestExecutableStartupFailureProcess(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 		},
 	}
 
@@ -493,7 +493,7 @@ func TestExecutableStartupFailureIDE(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/executable-startup-failure-ide",
+			ExecutablePath: "/path/to/executable-startup-failure-ide",
 			ExecutionType:  apiv1.ExecutionTypeIDE,
 		},
 	}
@@ -547,7 +547,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7733}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-serving-port-injected-env-var",
+			ExecutablePath: "/path/to/test-executable-serving-port-injected-env-var",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "SVC_PORT",
@@ -614,7 +614,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-serving-port-allocated-injected-env-var",
+			ExecutablePath: "/path/to/test-executable-serving-port-allocated-injected-env-var",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "SVC_PORT",
@@ -699,7 +699,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s","address":"127.0.0.1","port":7746}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-serving-port-injected-startup-param",
+			ExecutablePath: "/path/to/test-executable-serving-port-injected-startup-param",
 			Args: []string{
 				"--port",
 				fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -763,7 +763,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-serving-port-allocated-injected-startup-param",
+			ExecutablePath: "/path/to/test-executable-serving-port-allocated-injected-startup-param",
 			Args: []string{
 				"--port",
 				fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -902,7 +902,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 			Annotations: map[string]string{"service-producer": spAnn.String()},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-multiple-serving-ports-injected",
+			ExecutablePath: "/path/to/test-executable-multiple-serving-ports-injected",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "SVC_A_PORT",
@@ -1062,7 +1062,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-client-executable-port-for-injected",
+			ExecutablePath: "/path/to/test-client-executable-port-for-injected",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "UPSTREAM_SVC_PORT",
@@ -1109,7 +1109,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s", "port":%d}]`, producedSvcName, 26020)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + testName,
+			ExecutablePath: "/path/to/" + testName,
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "PRODUCED_SVC_PORT",
@@ -1185,7 +1185,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-templated-env-vars-injected",
+			ExecutablePath: "/path/to/test-executable-templated-env-vars-injected",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "EXE_NAME",
@@ -1312,7 +1312,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 					Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s", "address":"%s"}]`, svc.ObjectMeta.Name, tc.address)},
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/test-executable-using-all-interface-address-exe-" + tc.name,
+					ExecutablePath: "/path/to/test-executable-using-all-interface-address-exe-" + tc.name,
 					Env: []apiv1.EnvVar{
 						{
 							Name:  "LISTENING_PORT",
@@ -1371,7 +1371,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/test-executable-using-all-interface-address-client-" + tc.name,
+					ExecutablePath: "/path/to/test-executable-using-all-interface-address-client-" + tc.name,
 					Env: []apiv1.EnvVar{
 						{
 							Name:  "SVC_PORT",
@@ -1422,7 +1422,7 @@ func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-executable-environment-variables-handling",
+			ExecutablePath: "/path/to/test-executable-environment-variables-handling",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "AlphaVar",
@@ -1498,7 +1498,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 			Annotations: map[string]string{"service-producer": spAnn.String()},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + testName + "-server",
+			ExecutablePath: "/path/to/" + testName + "-server",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "ADDRESS",
@@ -1532,7 +1532,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + testName + "-consumer",
+			ExecutablePath: "/path/to/" + testName + "-consumer",
 			Args: []string{
 				fmt.Sprintf(`--server-address={{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
 			},
@@ -1622,7 +1622,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/" + successfulStartExeName,
+					ExecutablePath: "/path/to/" + successfulStartExeName,
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
@@ -1649,7 +1649,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/" + failedStartExeName,
+					ExecutablePath: "/path/to/" + failedStartExeName,
 					ExecutionType:  apiv1.ExecutionTypeIDE,
 				},
 			},
@@ -1706,31 +1706,143 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 // and when it has finished.
 func TestExecutableLogsNonFollow(t *testing.T) {
 	type testcase struct {
-		description     string
-		exeName         string
-		finishExecution *concurrency.AutoResetEvent
-		readyToReadLogs func(*apiv1.Executable) (bool, error)
+		description         string
+		opts                apiv1.LogOptions
+		finishExecution     *concurrency.AutoResetEvent
+		readyToReadLogs     func(*apiv1.Executable) (bool, error)
+		expectedStdoutLines [][]byte
+		expectedStderrLines [][]byte
 	}
 
-	const runningExeName = "test-executable-logs-non-follow-running"
-	const finishedExeName = "test-executable-logs-non-follow-finished"
+	const testName = "test-executable-logs-non-follow"
+
+	const LINE_COUNT = 20
+	stdoutLines := generateLogLines([]byte("stdout"), LINE_COUNT)
+	stderrLines := generateLogLines([]byte("stderr"), LINE_COUNT)
+	var skip int64 = 3
+	var limit int64 = 4
+	var tail int64 = 7 // Must be greater than limit to test tail+limit combination.
 
 	testcases := []testcase{
 		{
 			description:     "running",
-			exeName:         runningExeName,
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false},
 			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
 			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
 				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
 			},
+			expectedStdoutLines: stdoutLines,
+			expectedStderrLines: stderrLines,
 		},
 		{
 			description:     "finished",
-			exeName:         finishedExeName,
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false},
 			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
 			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
 				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
 			},
+			expectedStdoutLines: stdoutLines,
+			expectedStderrLines: stderrLines,
+		},
+		{
+			description:     "running-skip",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip},
+			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+			},
+			expectedStdoutLines: stdoutLines[skip:],
+			expectedStderrLines: stderrLines[skip:],
+		},
+		{
+			description:     "finished-skip",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip},
+			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedStdoutLines: stdoutLines[skip:],
+			expectedStderrLines: stderrLines[skip:],
+		},
+		{
+			description:     "running-limit",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Limit: &limit},
+			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+			},
+			expectedStdoutLines: stdoutLines[:limit],
+			expectedStderrLines: stderrLines[:limit],
+		},
+		{
+			description:     "finished-limit",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Limit: &limit},
+			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedStdoutLines: stdoutLines[:limit],
+			expectedStderrLines: stderrLines[:limit],
+		},
+		{
+			description:     "running-tail",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Tail: &tail},
+			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+			},
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):],
+		},
+		{
+			description:     "finished-tail",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Tail: &tail},
+			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):],
+		},
+		{
+			description:     "running-limit-tail",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Tail: &tail, Limit: &limit},
+			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+			},
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):][:limit],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):][:limit],
+		},
+		{
+			description:     "finished-limit-tail",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Tail: &tail, Limit: &limit},
+			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedStdoutLines: stdoutLines[len(stdoutLines)-int(tail):][:limit],
+			expectedStderrLines: stderrLines[len(stderrLines)-int(tail):][:limit],
+		},
+		{
+			description:     "running-skip-limit",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip, Limit: &limit},
+			finishExecution: concurrency.NewAutoResetEvent(false), // Do not exit until told so
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+			},
+			expectedStdoutLines: stdoutLines[skip:][:limit],
+			expectedStderrLines: stderrLines[skip:][:limit],
+		},
+		{
+			description:     "finished-skip-limit",
+			opts:            apiv1.LogOptions{Follow: false, Timestamps: false, Skip: &skip, Limit: &limit},
+			finishExecution: concurrency.NewAutoResetEvent(true), // Exit immediately
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedStdoutLines: stdoutLines[skip:][:limit],
+			expectedStderrLines: stderrLines[skip:][:limit],
 		},
 	}
 
@@ -1746,17 +1858,18 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 			// Ensure test cases will not block forever, but instead exit after context expires
 			defer tc.finishExecution.Set()
 
+			exeName := testName + "-" + tc.description
 			exe := apiv1.Executable{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: apiv1.GroupVersion.Version,
 					Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      tc.exeName,
+					Name:      exeName,
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/" + tc.exeName,
+					ExecutablePath: "/path/to/" + exeName,
 				},
 			}
 
@@ -1765,10 +1878,14 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 					Command: []string{exe.Spec.ExecutablePath},
 				},
 				RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
-					_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line 1")))
-					require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", tc.exeName)
-					_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline([]byte("Standard error log line 1")))
-					require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", tc.exeName)
+					t.Logf("Writing logs for Executable '%s'...", exeName)
+					for i := 0; i < LINE_COUNT; i++ {
+						_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(stdoutLines[i]))
+						require.NoError(t, stdoutErr, "Could not write to stdout of Executable '%s'", exeName)
+						_, stderrErr := pe.Cmd.Stderr.Write(osutil.WithNewline(stderrLines[i]))
+						require.NoError(t, stderrErr, "Could not write to stderr of Executable '%s'", exeName)
+					}
+					t.Logf("Finished writing logs for Executable '%s'", exeName)
 
 					<-tc.finishExecution.Wait()
 					return 0
@@ -1778,52 +1895,51 @@ func TestExecutableLogsNonFollow(t *testing.T) {
 				Command: []string{exe.Spec.ExecutablePath},
 			})
 
-			t.Logf("Creating Executable '%s'...", tc.exeName)
+			t.Logf("Creating Executable '%s'...", exeName)
 			err := client.Create(ctx, &exe)
-			require.NoError(t, err, "Could not create Executable '%s'", tc.exeName)
+			require.NoError(t, err, "Could not create Executable '%s'", exeName)
 
-			t.Logf("Ensure Executable '%s' is in the expected state...", tc.exeName)
+			t.Logf("Ensure Executable '%s' is in the expected state...", exeName)
 			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), tc.readyToReadLogs)
 
-			t.Logf("Ensure logs for Executable '%s' can be captured...", tc.exeName)
-			opts := apiv1.LogOptions{
-				Follow:     false,
-				Source:     "stdout",
-				Timestamps: false,
-			}
-			err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte("Standard output log line 1")}, nil)
+			t.Logf("Ensure logs for Executable '%s' can be captured...", exeName)
+			opts := tc.opts
+			opts.Source = "stdout"
+			err = waitForObjectLogs(ctx, &exe, opts, tc.expectedStdoutLines, nil)
 			require.NoError(t, err)
 
-			opts = apiv1.LogOptions{
-				Follow:     false,
-				Source:     "stderr",
-				Timestamps: false,
-			}
-			err = waitForObjectLogs(ctx, &exe, opts, [][]byte{[]byte("Standard error log line 1")}, nil)
+			opts = tc.opts
+			opts.Source = "stderr"
+			err = waitForObjectLogs(ctx, &exe, opts, tc.expectedStderrLines, nil)
 			require.NoError(t, err)
 		})
 	}
 }
 
 // Verify stdout and stderr logs can be captured in follow mode,
-// The two sub-tests are verifying that logs can be captured when Executable is running,
+// The sub-tests are verifying that logs can be captured when Executable is running,
 // and when it has finished.
 func TestExecutableLogsFollow(t *testing.T) {
 	type testcase struct {
 		description     string
-		exeName         string
+		opts            apiv1.LogOptions
 		startWriting    *concurrency.AutoResetEvent
 		finishExecution *concurrency.AutoResetEvent
 		readyToReadLogs func(*apiv1.Executable) (bool, error)
+		expectedLines   [][]byte
 	}
 
-	const runningExeName = "test-executable-logs-follow-running"
-	const finishedExeName = "test-executable-logs-follow-finished"
+	const testName = "test-executable-logs-follow"
+
+	const LINE_COUNT = 11
+	lines := generateLogLines([]byte("stdout"), LINE_COUNT)
+	var skip int64 = 2
+	var tail int64 = 5
 
 	testcases := []testcase{
 		{
 			description: "running",
-			exeName:     runningExeName,
+			opts:        apiv1.LogOptions{Follow: true, Timestamps: false},
 			// In the running case we want the log stream to be open BEFORE any logs were written,
 			// to ensure that all logs are captured and delivered.
 			startWriting:    concurrency.NewAutoResetEvent(false),
@@ -1832,10 +1948,11 @@ func TestExecutableLogsFollow(t *testing.T) {
 			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
 				return true, nil
 			},
+			expectedLines: lines,
 		},
 		{
 			description: "finished",
-			exeName:     finishedExeName,
+			opts:        apiv1.LogOptions{Follow: true, Timestamps: false},
 			// In the "finished" case we want the log stream to be opened AFTER the logs were written
 			// and the Executable finished running.
 			startWriting:    concurrency.NewAutoResetEvent(true),
@@ -1843,13 +1960,46 @@ func TestExecutableLogsFollow(t *testing.T) {
 			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
 				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
 			},
+			expectedLines: lines,
 		},
-	}
-
-	lines := [][]byte{
-		[]byte("Standard output log line 1"),
-		[]byte("Standard output log line 2"),
-		[]byte("Standard output log line 3"),
+		{
+			description: "running-skip",
+			opts:        apiv1.LogOptions{Follow: true, Timestamps: false, Skip: &skip},
+			// In the running case we want the log stream to be open BEFORE any logs were written,
+			// to ensure that all logs are captured and delivered.
+			startWriting:    concurrency.NewAutoResetEvent(false),
+			finishExecution: concurrency.NewAutoResetEvent(false),
+			// Logs in follow mode should be captured even if the stream is open before Executable is running
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return true, nil
+			},
+			expectedLines: lines[skip:],
+		},
+		{
+			description: "finished-skip",
+			opts:        apiv1.LogOptions{Follow: true, Timestamps: false, Skip: &skip},
+			// In the "finished" case we want the log stream to be opened AFTER the logs were written
+			// and the Executable finished running.
+			startWriting:    concurrency.NewAutoResetEvent(true),
+			finishExecution: concurrency.NewAutoResetEvent(true),
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedLines: lines[skip:],
+		},
+		{
+			description: "finished-tail",
+			opts:        apiv1.LogOptions{Follow: true, Timestamps: false, Tail: &tail},
+			// In the "finished" case we want the log stream to be opened AFTER the logs were written
+			// and the Executable finished running.
+			startWriting:    concurrency.NewAutoResetEvent(true),
+			finishExecution: concurrency.NewAutoResetEvent(true),
+			readyToReadLogs: func(currentExe *apiv1.Executable) (bool, error) {
+				return currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+			},
+			expectedLines: lines[len(lines)-int(tail):],
+		},
+		// The tail option with the running Executable has its own test (see TestExecutableLogsFollowTail).
 	}
 
 	t.Parallel()
@@ -1865,17 +2015,18 @@ func TestExecutableLogsFollow(t *testing.T) {
 			defer tc.finishExecution.Set()
 			defer tc.startWriting.Set()
 
+			exeName := testName + "-" + tc.description
 			exe := apiv1.Executable{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: apiv1.GroupVersion.Version,
 					Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
 				},
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      tc.exeName,
+					Name:      exeName,
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/" + tc.exeName,
+					ExecutablePath: "/path/to/" + exeName,
 				},
 			}
 
@@ -1888,7 +2039,7 @@ func TestExecutableLogsFollow(t *testing.T) {
 
 					for i, line := range lines {
 						_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line))
-						require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, tc.exeName)
+						require.NoError(t, stdoutErr, "Could not write line %d to stdout of Executable '%s'", i, exeName)
 					}
 
 					<-tc.finishExecution.Wait()
@@ -1899,30 +2050,29 @@ func TestExecutableLogsFollow(t *testing.T) {
 				Command: []string{exe.Spec.ExecutablePath},
 			})
 
-			t.Logf("Creating Executable '%s'...", tc.exeName)
+			t.Logf("Creating Executable '%s'...", exeName)
 			err := client.Create(ctx, &exe)
-			require.NoError(t, err, "Could not create Executable '%s'", tc.exeName)
+			require.NoError(t, err, "Could not create Executable '%s'", exeName)
 
-			t.Logf("Ensure Executable '%s' is in the expected state...", tc.exeName)
+			t.Logf("Ensure Executable '%s' is in the expected state...", exeName)
 			_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), tc.readyToReadLogs)
 
-			t.Logf("Start following Executable '%s' logs...", tc.exeName)
+			t.Logf("Start following Executable '%s' logs...", exeName)
 			logsErrCh := make(chan error, 1)
 			logStreamOpen := concurrency.NewAutoResetEvent(false)
-			opts := apiv1.LogOptions{
-				Follow:     true,
-				Source:     "stdout",
-				Timestamps: false,
-			}
+
 			go func() {
+				opts := tc.opts
+				opts.Source = "stdout"
+
 				// Run this in a separate goroutine to make sure we open the log stream before the Executable starts writing logs
-				logsErrCh <- waitForObjectLogs(ctx, &exe, opts, lines, logStreamOpen)
+				logsErrCh <- waitForObjectLogs(ctx, &exe, opts, tc.expectedLines, logStreamOpen)
 			}()
 
 			<-logStreamOpen.Wait()
 			tc.startWriting.Set()
 			err = <-logsErrCh
-			require.NoError(t, err, "Could not follow logs for Executable '%s'", tc.exeName)
+			require.NoError(t, err, "Could not follow logs for Executable '%s'", exeName)
 		})
 	}
 }
@@ -1947,7 +2097,7 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 		},
 	}
 
@@ -2013,6 +2163,166 @@ func TestExecutableLogsFollowIncremental(t *testing.T) {
 	}
 }
 
+// Verify that "tail" option works in follow mode.
+// We write logs in several "batches" and verify that "tail + follow" works as expected
+// regardless when the log stream is opened within the batch sequence.
+func TestExecutableLogsFollowTail(t *testing.T) {
+	t.Parallel()
+
+	type writeBatch struct {
+		lines        [][]byte
+		startWriting *concurrency.AutoResetEvent
+		written      *concurrency.AutoResetEvent
+	}
+
+	const exeNamePrefix = "test-executable-logs-follow-tail"
+	const BATCHES_COUNT = 4
+	const BATCH_SIZE = 6
+	var tail int64 = 3
+
+	// The pause after initial set of log writes, introduced so that the "tail" option only applies
+	// to this initial set. Intentionally pretty long to ensure that the test is not flaky on slow CI machines.
+	var LOG_WRITING_PAUSE time.Duration = 10 * time.Second
+
+	getWriteBatches := func(tc int) []writeBatch {
+		var batches []writeBatch
+		for b := 0; b < BATCHES_COUNT; b++ {
+			batch := writeBatch{
+				lines:        generateLogLines([]byte(fmt.Sprintf("testcase %d batch %d", tc, b)), BATCH_SIZE),
+				startWriting: concurrency.NewAutoResetEvent(false),
+				written:      concurrency.NewAutoResetEvent(false),
+			}
+			batches = append(batches, batch)
+		}
+		return batches
+	}
+
+	getExpectedLines := func(batches []writeBatch, tc int) [][]byte {
+		allLinesOf := func(bb []writeBatch) [][]byte {
+			return slices.Accumulate[writeBatch, [][]byte](
+				bb,
+				func(lines [][]byte, wb writeBatch) [][]byte {
+					return std_slices.Concat(lines, wb.lines)
+				},
+			)
+		}
+
+		writtenSoFar := allLinesOf(batches[:tc])
+		toBeWritten := [][]byte{}
+		if tc < len(batches) {
+			toBeWritten = allLinesOf(batches[tc:])
+		}
+
+		if len(writtenSoFar) == 0 {
+			return toBeWritten[len(toBeWritten)-int(tail):]
+		} else {
+			tailOfWrittenSoFar := writtenSoFar
+			if len(writtenSoFar) > int(tail) {
+				tailOfWrittenSoFar = writtenSoFar[len(writtenSoFar)-int(tail):]
+			}
+			return std_slices.Concat(tailOfWrittenSoFar, toBeWritten)
+		}
+	}
+
+	for tc := 0; tc <= BATCHES_COUNT; tc++ {
+		t.Run(fmt.Sprintf("pause-after-%d", tc), func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			writeBatches := getWriteBatches(tc)
+			defer func() {
+				// Ensure test process executions eventually finish
+				for _, batch := range writeBatches {
+					batch.startWriting.SetAndFreeze()
+				}
+			}()
+
+			exeName := fmt.Sprintf("%s-testcase-%d", exeNamePrefix, tc)
+			exe := apiv1.Executable{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: apiv1.GroupVersion.Version,
+					Kind:       reflect.TypeOf(apiv1.Executable{}).Name(),
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      exeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "/path/to/" + exeName,
+				},
+			}
+
+			finishExecution := concurrency.NewAutoResetEvent(false)
+			testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+				Condition: internal_testutil.ProcessSearchCriteria{
+					Command: []string{exe.Spec.ExecutablePath},
+				},
+				RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
+					for b, batch := range writeBatches {
+						<-batch.startWriting.Wait()
+						for i, line := range batch.lines {
+							_, stdoutErr := pe.Cmd.Stdout.Write(osutil.WithNewline(line))
+							require.NoError(t, stdoutErr, "Could not write line %d of batch %d to stdout of Executable '%s'", i, b, exeName)
+						}
+						batch.written.SetAndFreeze()
+					}
+
+					// Do not exit until we are done with the testcase, otherwise the client might miss some of the last log writes.
+					<-finishExecution.Wait()
+					return 0
+				},
+			})
+			defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
+				Command: []string{exe.Spec.ExecutablePath},
+			})
+			defer finishExecution.Set()
+
+			t.Logf("Creating Executable '%s'...", exeName)
+			err := client.Create(ctx, &exe)
+			require.NoError(t, err, "Could not create Executable '%s'", exeName)
+
+			t.Logf("Allowing Executable '%s' to write initial %d log batches...", exeName, tc)
+			for b := 0; b < tc; b++ {
+				writeBatches[b].startWriting.Set()
+				<-writeBatches[b].written.Wait()
+			}
+
+			t.Logf("Start following Executable '%s' logs...", exeName)
+			logsErrCh := make(chan error, 1)
+			logStreamOpen := concurrency.NewAutoResetEvent(false)
+
+			go func() {
+				opts := apiv1.LogOptions{
+					Follow:     true,
+					Source:     "stdout",
+					Timestamps: false,
+					Tail:       &tail,
+				}
+				expected := getExpectedLines(writeBatches, tc)
+				logsErrCh <- waitForObjectLogs(ctx, &exe, opts, expected, logStreamOpen)
+			}()
+
+			<-logStreamOpen.Wait()
+
+			t.Logf("Simulating log writing pause for Executable '%s'...", exeName)
+			time.Sleep(LOG_WRITING_PAUSE)
+
+			t.Logf("Allowing Executable '%s' to write remaining log batches...", exeName)
+			for b := tc; b < BATCHES_COUNT; b++ {
+				writeBatches[b].startWriting.Set()
+				<-writeBatches[b].written.Wait()
+			}
+
+			t.Logf("Waiting for expected logs for Executable '%s'...", exeName)
+			err = <-logsErrCh
+			require.NoError(t, err, "Could not follow logs for Executable '%s'", exeName)
+			t.Logf("Expected logs for Executable '%s' arrived", exeName)
+		})
+	}
+}
+
 // Verify that stdout and stderr logs can be timestamped.
 func TestExecutableLogsTimestamped(t *testing.T) {
 	t.Parallel()
@@ -2032,7 +2342,7 @@ func TestExecutableLogsTimestamped(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 		},
 	}
 
@@ -2092,7 +2402,7 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 		},
 	}
 
@@ -2204,7 +2514,7 @@ func TestExecutableHealthBasic(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/" + tc.exeName,
+					ExecutablePath: "/path/to/" + tc.exeName,
 				},
 			}
 
@@ -2271,7 +2581,7 @@ func TestExecutableHealthSingleProbe(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 			HealthProbes: []apiv1.HealthProbe{
 				{
 					Name: "healthz",
@@ -2350,7 +2660,7 @@ func TestExecutableHealthMultipleProbes(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 			HealthProbes: []apiv1.HealthProbe{
 				{
 					Name: "p1",
@@ -2466,7 +2776,7 @@ func TestExecutableHealthScheduleUntilSuccess(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 			HealthProbes: []apiv1.HealthProbe{
 				{
 					Name: "healthz",
@@ -2548,7 +2858,7 @@ func TestExecutableDeleteParallel(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ExecutableSpec{
-				ExecutablePath: "path/to/" + exeName,
+				ExecutablePath: "/path/to/" + exeName,
 			},
 		}
 		exes[i] = &exe
@@ -2621,7 +2931,7 @@ func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + exeName,
+			ExecutablePath: "/path/to/" + exeName,
 		},
 	}
 
@@ -2708,7 +3018,7 @@ func TestExecutableHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + baseName + "-exe",
+			ExecutablePath: "/path/to/" + baseName + "-exe",
 			HealthProbes: []apiv1.HealthProbe{
 				{
 					Name: "healthz",
@@ -2790,7 +3100,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, svc.ObjectMeta.Name)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + baseName + "-exe",
+			ExecutablePath: "/path/to/" + baseName + "-exe",
 			HealthProbes: []apiv1.HealthProbe{
 				{
 					Name: "healthz",
@@ -2892,7 +3202,7 @@ func TestExecutableHttpHealthProbePortsInjectedAfterServiceCreated(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + baseName + "-exe",
+			ExecutablePath: "/path/to/" + baseName + "-exe",
 			HealthProbes: []apiv1.HealthProbe{
 				{
 					Name: "healthz",

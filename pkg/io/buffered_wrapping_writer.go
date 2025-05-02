@@ -2,7 +2,6 @@ package io
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -13,8 +12,6 @@ import (
 // Once the target writer is available, all buffered data will be written to it.
 // Subsequent writes will be written directly to the target writer.
 // All methods of the BufferedWrappingWriter are thread-safe.
-
-var ErrClosedWriter = errors.New("writer is closed")
 
 type BufferedWrappingWriter struct {
 	lock   *sync.Mutex

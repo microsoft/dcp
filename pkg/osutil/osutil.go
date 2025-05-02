@@ -1,6 +1,7 @@
 package osutil
 
 import (
+	"bytes"
 	"runtime"
 )
 
@@ -26,8 +27,14 @@ func IsWindows() bool {
 }
 
 func WithNewline(b []byte) []byte {
-	b = append(b, LineSep()...)
-	return b
+	// Do not modify the original slice (e.g. don't do ret = append(b, '\n'))
+	var retval []byte
+	if IsWindows() {
+		retval = bytes.Join([][]byte{b, crlf}, nil)
+	} else {
+		retval = bytes.Join([][]byte{b, lf}, nil)
+	}
+	return retval
 }
 
 func LineSep() []byte {

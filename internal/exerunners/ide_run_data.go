@@ -119,7 +119,7 @@ func (rs *runData) DisableChangeHandlerReadiness() {
 	}
 }
 
-func (rs *runData) SetOutputWriters(stdOut, stdErr io.WriteCloser) error {
+func (rs *runData) SetOutputWriters(stdOut, stdErr usvc_io.WriteSyncerCloser) error {
 	var err error
 	if stdOut != nil {
 		err = rs.stdOut.SetTarget(usvc_io.NewTimestampWriter(stdOut))

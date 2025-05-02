@@ -136,7 +136,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 							"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}]`, "svc-becomes-ready-multi-process"),
 						},
 						Spec: apiv1.ExecutableSpec{
-							ExecutablePath: "path/to/ers-becomes-ready-multi-process",
+							ExecutablePath: "/path/to/ers-becomes-ready-multi-process",
 							Env: []apiv1.EnvVar{
 								{
 									Name:  "PORT",
@@ -174,7 +174,7 @@ func TestServicesBecomeReadyMultipleReplicas(t *testing.T) {
 							ctrl_testutil.AutoStartExecutableAnnotation: "true",
 						},
 						Spec: apiv1.ExecutableSpec{
-							ExecutablePath: "path/to/ers-becomes-ready-multi-ide",
+							ExecutablePath: "/path/to/ers-becomes-ready-multi-ide",
 							Env: []apiv1.EnvVar{
 								{
 									Name:  "PORT",
@@ -236,7 +236,7 @@ func TestServiceDelayedCreation(t *testing.T) {
 			Annotations: map[string]string{"service-producer": fmt.Sprintf(`[{ "serviceName":"%s", "address":"127.0.0.1", "port":%d }]`, svcName, pDelayedCreationExe)},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/test-service-delayed-creation",
+			ExecutablePath: "/path/to/test-service-delayed-creation",
 		},
 	}
 
@@ -340,7 +340,7 @@ func TestServiceConsumableAfterLatePortAllocation(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + testName + "-exe",
+			ExecutablePath: "/path/to/" + testName + "-exe",
 			Env: []apiv1.EnvVar{
 				{
 					Name:  "PORT",

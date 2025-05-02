@@ -379,7 +379,7 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/executable-cannot-create-new-objects-after-cleanup-started-successful",
+			ExecutablePath: "/path/to/executable-cannot-create-new-objects-after-cleanup-started-successful",
 		},
 	}
 	t.Logf("Creating Executable object '%s'...", exe.Name)
@@ -411,7 +411,7 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/executable-cannot-create-new-objects-after-cleanup-started-expected-failure",
+			ExecutablePath: "/path/to/executable-cannot-create-new-objects-after-cleanup-started-expected-failure",
 		},
 	}
 	t.Logf("Creating Executable object '%s'...", exe.Name)

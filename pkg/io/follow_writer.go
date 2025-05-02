@@ -1,7 +1,6 @@
 package io
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"sync/atomic"
@@ -44,8 +43,7 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 		}()
 		defer cancel()
 		defer close(fw.doneChan)
-		// Goroutine that handles following the source and writing to the destination
-		reader := bufio.NewReader(source)
+
 		buf := make([]byte, defaultBufferSize)
 		timer := time.NewTimer(0)
 		timer.Stop() // Stop the timer initially
@@ -54,27 +52,24 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 		for {
 			read := 0
 			var readErr error
-			// Peek to see if there's any data to read as reader.Read can potentially block
-			if _, peekErr := reader.Peek(1); peekErr == nil {
-				read, readErr = reader.Read(buf)
 
-				if read > 0 {
-					out, writeErr := dest.Write(buf[:read])
-					if writeErr != nil {
-						fw.err.Store(writeErr)
-						return
-					}
-
-					if out != read {
-						fw.err.Store(io.ErrShortWrite)
-						return
-					}
-				}
-
-				if readErr != nil && readErr != io.EOF {
-					fw.err.Store(readErr)
+			read, readErr = source.Read(buf)
+			if read > 0 {
+				out, writeErr := dest.Write(buf[:read])
+				if writeErr != nil {
+					fw.err.Store(writeErr)
 					return
 				}
+
+				if out != read {
+					fw.err.Store(io.ErrShortWrite)
+					return
+				}
+			}
+
+			if readErr != nil && readErr != io.EOF {
+				fw.err.Store(readErr)
+				return
 			}
 
 			if read <= 0 || readErr == io.EOF {

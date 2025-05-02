@@ -35,7 +35,7 @@ func TestEndpointCreatedAndDeletedForExecutable(t *testing.T) {
 			},
 		},
 		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "path/to/" + testName,
+			ExecutablePath: "/path/to/" + testName,
 		},
 	}
 

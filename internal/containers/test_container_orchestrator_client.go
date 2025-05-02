@@ -47,8 +47,8 @@ func NewTestContainerOrchestratorClient(
 func (c *TestContainerOrchestratorClient) CaptureContainerLogs(
 	ctx context.Context,
 	container string,
-	stdout io.WriteCloser,
-	stderr io.WriteCloser,
+	stdout usvc_io.WriteSyncerCloser,
+	stderr usvc_io.WriteSyncerCloser,
 	options StreamContainerLogsOptions,
 ) error {
 	containerId := strings.TrimSpace(container)

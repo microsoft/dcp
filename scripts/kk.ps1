@@ -26,7 +26,7 @@ function dcpdKubectl() {
         }
     }
     
-    $kubeconfig = $dcpCommandLine | Where-Object { $_.EndsWith("kubeconfig") -and ($_ -ne "--kubeconfig") }
+    $kubeconfig = $dcpCommandLine | Where-Object { $_.Contains("kubeconfig") -and ($_ -ne "--kubeconfig") }
     
     $tokenOptionIndex = $dcpCommandLine.IndexOf("--token")
     if ($tokenOptionIndex -ge 0) {

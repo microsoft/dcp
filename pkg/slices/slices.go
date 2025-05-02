@@ -207,7 +207,7 @@ type AccumulatorFunc[T any, R any] interface {
 }
 
 func Accumulate[T any, R any, AF AccumulatorFunc[T, R], S ~[]T](ss S, accumulator AF) R {
-	return AccumulateIf[T, R, func(T) bool](ss, func(_ T) bool { return true }, accumulator)
+	return AccumulateIf[T, R](ss, func(_ T) bool { return true }, accumulator)
 }
 
 func AccumulateIf[T any, R any, SF SelectFunc[T], AF AccumulatorFunc[T, R], S ~[]T](ss S, selector SF, accumulator AF) R {

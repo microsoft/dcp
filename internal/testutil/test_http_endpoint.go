@@ -19,8 +19,8 @@ type TestHttpEndpoint struct {
 	enableUnhealthyResp   *atomic.Bool
 	responses             []ResponseSpec
 	url                   string
-	unhealthyRespObserver func(*http.Request)
-	healthyRespObserver   func(*http.Request)
+	unhealthyRespObserver *atomic.Value
+	healthyRespObserver   *atomic.Value
 }
 
 const TestHttpEndpointPath = "/healthz"
@@ -31,7 +31,9 @@ func NewTestHttpEndpoint(lifetimeCtx context.Context) *TestHttpEndpoint {
 
 func NewTestHttpEndpointWithAddressAndPort(lifetimeCtx context.Context, address string, port int32) *TestHttpEndpoint {
 	e := TestHttpEndpoint{
-		enableUnhealthyResp: &atomic.Bool{},
+		enableUnhealthyResp:   &atomic.Bool{},
+		unhealthyRespObserver: &atomic.Value{},
+		healthyRespObserver:   &atomic.Value{},
 	}
 
 	e.enableUnhealthyResp.Store(true) // Initial response is "unhealthy".
@@ -44,8 +46,9 @@ func NewTestHttpEndpointWithAddressAndPort(lifetimeCtx context.Context, address 
 			StatusCode: http.StatusServiceUnavailable,
 			Active:     e.enableUnhealthyResp,
 			Observer: func(r *http.Request) {
-				if e.unhealthyRespObserver != nil {
-					e.unhealthyRespObserver(r)
+				rawObserver := e.unhealthyRespObserver.Load()
+				if rawObserver != nil {
+					rawObserver.(func(*http.Request))(r)
 				}
 			},
 		},
@@ -53,8 +56,9 @@ func NewTestHttpEndpointWithAddressAndPort(lifetimeCtx context.Context, address 
 			StatusCode: http.StatusOK,
 			Active:     enableHealthyResp,
 			Observer: func(r *http.Request) {
-				if e.healthyRespObserver != nil {
-					e.healthyRespObserver(r)
+				rawObserver := e.healthyRespObserver.Load()
+				if rawObserver != nil {
+					rawObserver.(func(*http.Request))(r)
 				}
 			},
 		},
@@ -95,11 +99,11 @@ func (e *TestHttpEndpoint) Url() string {
 }
 
 func (e *TestHttpEndpoint) SetUnhealthyResponseObserver(observer func(*http.Request)) {
-	e.unhealthyRespObserver = observer
+	e.unhealthyRespObserver.Store(observer)
 }
 
 func (e *TestHttpEndpoint) SetHealthyResponseObserver(observer func(*http.Request)) {
-	e.healthyRespObserver = observer
+	e.healthyRespObserver.Store(observer)
 }
 
 func (e *TestHttpEndpoint) AddressAndPort() (string, int32, error) {

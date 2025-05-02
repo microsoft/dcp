@@ -2,6 +2,8 @@ package testutil
 
 import (
 	"io"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
 // The maximum number of entries in the timeline
@@ -47,6 +49,7 @@ func (ete *errorTimelineEntry) Value() (byte, error) {
 
 type TestReader struct {
 	timeline chan testReaderTimelineEntry
+	closed   bool
 }
 
 func NewTestReader() *TestReader {
@@ -62,6 +65,10 @@ func (tr *TestReader) AddEntry(entries ...testReaderTimelineEntry) {
 }
 
 func (tr *TestReader) Read(p []byte) (int, error) {
+	if tr.closed {
+		return 0, usvc_io.ErrClosedReader
+	}
+
 	for i := range p {
 		select {
 		case entry := <-tr.timeline:
@@ -78,4 +85,9 @@ func (tr *TestReader) Read(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+func (tr *TestReader) Close() error {
+	tr.closed = true
+	return nil
 }

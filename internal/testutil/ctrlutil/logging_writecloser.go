@@ -1,27 +1,36 @@
-package testutil
+package ctrlutil
 
 import (
+	"fmt"
 	"io"
+	"net/http"
 
 	"github.com/go-logr/logr"
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 )
 
 // LoggingWriteCloser is an implementation of io.WriteCloser that also logs results of all writes
 // and results of the Close() call to a given log.
+// If the passed inner writer implements http.Flusher interface,
+// it will also flush after every write.
 
 type loggingWriteCloser struct {
-	log    logr.Logger
-	inner  io.Writer
-	closer io.Closer
+	log     logr.Logger
+	inner   io.Writer
+	closer  io.Closer
+	flusher http.Flusher
 }
 
-func NewLoggingWriteCloser(log logr.Logger, inner io.Writer) io.WriteCloser {
+func NewLoggingWriteCloser(log logr.Logger, inner io.Writer) usvc_io.WriteSyncerCloser {
 	lwc := loggingWriteCloser{
 		log:   log,
 		inner: inner,
 	}
 	if closer, ok := inner.(io.Closer); ok {
 		lwc.closer = closer
+	}
+	if flusher, ok := inner.(http.Flusher); ok {
+		lwc.flusher = flusher
 	}
 	return &lwc
 }
@@ -39,6 +48,9 @@ func (lwc *loggingWriteCloser) Write(p []byte) (int, error) {
 			"written", n,
 		)
 	}
+	if lwc.flusher != nil {
+		lwc.flusher.Flush()
+	}
 	return n, err
 }
 
@@ -54,4 +66,11 @@ func (lwc *loggingWriteCloser) Close() error {
 		lwc.log.V(1).Info("inner writer closed")
 	}
 	return err
+}
+
+func (lwc *loggingWriteCloser) Sync() error {
+	if lwc.flusher != nil {
+		return nil // We flush after write, so no-op here.
+	}
+	return fmt.Errorf("inner writer does not support Sync()")
 }

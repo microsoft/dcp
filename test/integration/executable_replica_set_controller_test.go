@@ -38,7 +38,7 @@ func TestExecutableReplicaSetScales(t *testing.T) {
 			Replicas: 0,
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-scales",
+					ExecutablePath: "/path/to/executable-replica-set-scales",
 				},
 			},
 		},
@@ -97,7 +97,7 @@ func TestExecutableReplicaSetSoftDeleteScales(t *testing.T) {
 			StopOnScaleDown: true,
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-soft-delete-scales",
+					ExecutablePath: "/path/to/executable-replica-set-soft-delete-scales",
 				},
 			},
 		},
@@ -148,7 +148,7 @@ func TestExecutableReplicaSetRecreatesDeletedReplicas(t *testing.T) {
 			Replicas: int32(scaleTo),
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-restores",
+					ExecutablePath: "/path/to/executable-replica-set-restores",
 				},
 			},
 		},
@@ -217,7 +217,7 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 			Replicas: initialScaleTo,
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-initial-template",
+					ExecutablePath: "/path/to/executable-replica-set-initial-template",
 				},
 			},
 		},
@@ -233,7 +233,7 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 
 	if err = updateExecutableReplicaSet(ctx, ctrl_client.ObjectKeyFromObject(&exers), func(ers *apiv1.ExecutableReplicaSet) error {
 		ers.Spec.Replicas = initialScaleTo + 1
-		ers.Spec.Template.Spec.ExecutablePath = "path/to/executable-replica-set-updated-template"
+		ers.Spec.Template.Spec.ExecutablePath = "/path/to/executable-replica-set-updated-template"
 		return nil
 	}); err != nil {
 		t.Fatalf("could not update ExecutableReplicaSet: %v", err)
@@ -251,13 +251,13 @@ func TestExecutableReplicaSetTemplateChangeAppliesToNewReplicas(t *testing.T) {
 		}
 
 		if slices.LenIf(newOwnedExes, func(exe *apiv1.Executable) bool {
-			return exe.Spec.ExecutablePath == "path/to/executable-replica-set-initial-template"
+			return exe.Spec.ExecutablePath == "/path/to/executable-replica-set-initial-template"
 		}) != initialScaleTo {
 			return false, nil
 		}
 
 		if slices.LenIf(newOwnedExes, func(exe *apiv1.Executable) bool {
-			return exe.Spec.ExecutablePath == "path/to/executable-replica-set-updated-template"
+			return exe.Spec.ExecutablePath == "/path/to/executable-replica-set-updated-template"
 		}) != 1 {
 			return false, nil
 		}
@@ -285,7 +285,7 @@ func TestExecutableReplicaSetDeleteRemovesExecutables(t *testing.T) {
 			Replicas: initialScaleTo,
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-delete",
+					ExecutablePath: "/path/to/executable-replica-set-delete",
 				},
 			},
 		},
@@ -325,7 +325,7 @@ func TestExecutableReplicaSetDeleteRemovesSoftDeleteExecutables(t *testing.T) {
 			StopOnScaleDown: true,
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-delete-with-soft-delete",
+					ExecutablePath: "/path/to/executable-replica-set-delete-with-soft-delete",
 				},
 			},
 		},
@@ -364,7 +364,7 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 			Replicas: int32(scaleTo),
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-executable-status-tracked",
+					ExecutablePath: "/path/to/executable-replica-set-executable-status-tracked",
 				},
 			},
 		},
@@ -480,7 +480,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 					"service-producer": fmt.Sprintf(`[{"serviceName":"%s"}, {"serviceName":"%s"}]`, svcAName, svcBName),
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/exers-injects-ports-into-replicas",
+					ExecutablePath: "/path/to/exers-injects-ports-into-replicas",
 					Env: []apiv1.EnvVar{
 						{
 							Name:  "SVC_PORT",
@@ -557,7 +557,7 @@ func TestExecutableReplicaSetHealthStatus(t *testing.T) {
 			Replicas: int32(scaleTo),
 			Template: apiv1.ExecutableTemplate{
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "path/to/executable-replica-set-health-status",
+					ExecutablePath: "/path/to/executable-replica-set-health-status",
 				},
 			},
 		},

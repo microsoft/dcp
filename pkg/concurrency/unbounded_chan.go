@@ -3,6 +3,8 @@ package concurrency
 import (
 	"context"
 	"sync/atomic"
+
+	"github.com/microsoft/usvc-apiserver/pkg/container"
 )
 
 // UnboundedChan implements an unbounded channel that exhibits at most a short block time when writing
@@ -22,7 +24,7 @@ import (
 type UnboundedChan[T any] struct {
 	In     chan<- T // channel for writing data
 	Out    <-chan T // channel for reading data
-	buf    *ringBuffer[T]
+	buf    *container.RingBuffer[T]
 	bufLen *atomic.Int64
 }
 
@@ -40,7 +42,7 @@ func NewUnboundedChanBuffered[T any](ctx context.Context, inSize, outSize int) *
 	ch := UnboundedChan[T]{
 		In:     in,
 		Out:    out,
-		buf:    newRingBuffer[T](),
+		buf:    container.NewRingBuffer[T](),
 		bufLen: &atomic.Int64{},
 	}
 
