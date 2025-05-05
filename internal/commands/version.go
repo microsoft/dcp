@@ -13,6 +13,9 @@ import (
 
 const (
 	defaultVersion = "dev"
+
+	//  If set, the value of this variable will be written to the log file as one of the first log messages.
+	DCP_LOGGING_CONTEXT = "DCP_LOGGING_CONTEXT"
 )
 
 var (
@@ -63,6 +66,11 @@ func LogVersion(log logger.Logger, programStartMsg string) func(_ *cobra.Command
 		args := os.Args[1:]
 
 		log.V(1).Info(programStartMsg, "exe", launchPath, "args", args, "version", versionString)
+
+		logContext, found := os.LookupEnv(DCP_LOGGING_CONTEXT)
+		if found && len(logContext) > 0 {
+			log.V(1).Info(logContext)
+		}
 	}
 }
 

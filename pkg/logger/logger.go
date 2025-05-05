@@ -25,6 +25,7 @@ const (
 	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
 	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
 	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
+	DCP_LOG_FILE_NAME_SUFFIX   = "DCP_LOG_FILE_NAME_SUFFIX"   // Suffix to append to the log file name (defaults to process ID)
 
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
@@ -219,13 +220,18 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 		return nil, err
 	}
 
-	// Create a new log file in the output folder with <name>-<timestamp>-<pid> format
-	logOutput, err := usvc_io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%d.log", name, time.Now().Unix(), os.Getpid())), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	// Create a new log file in the output folder. The default log file name is <name>-<timestamp>-<pid>
+	// but the PID part can be overridden by setting the DCP_LOG_FILE_NAME_SUFFIX environment variable.
+	logFileNameSuffix, found := os.LookupEnv(DCP_LOG_FILE_NAME_SUFFIX)
+	if !found || len(logFileNameSuffix) == 0 {
+		logFileNameSuffix = fmt.Sprintf("%d", os.Getpid())
+	}
+	logOutput, err := usvc_io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%s.log", name, time.Now().Unix(), logFileNameSuffix)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}
 
-	// Format debug log to be machine readible
+	// Format debug log to be machine readable
 	logEncoder := zapcore.NewJSONEncoder(encoderConfig)
 
 	// Return a new log core for the debug log

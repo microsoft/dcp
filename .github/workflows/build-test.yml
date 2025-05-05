@@ -44,7 +44,8 @@ jobs:
         script: |
           const result = await exec.getExecOutput('git status -s');
           if (result.exitCode != 0 || result.stdout.trim() != '') {
-            core.setFailed('Generated files not up-to-date. Please run make generate-ci and commit the latest versions.')
+            const diffResult = await exec.getExecOutput('git diff')
+            core.setFailed('Generated files not up-to-date. Please run make generate-ci and commit the latest versions. The output of git diff command is:' + diffResult.stdout.trim())
           }
       if: matrix.os != 'windows-latest'
 
