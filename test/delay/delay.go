@@ -14,11 +14,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
 func main() {
-	err := newMainCommand().Execute()
+	log := logger.New("delay")
+	err := newMainCommand(log).Execute()
 	if err != nil {
 		os.Exit(1)
 	} else {
@@ -44,7 +46,7 @@ const (
 	ignoreSigtermFlag = "ignore-sigterm"
 )
 
-func newMainCommand() *cobra.Command {
+func newMainCommand(log logger.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delay",
 		Short: "A simple program that waits for a specified number of time before exiting.",
@@ -52,7 +54,9 @@ func newMainCommand() *cobra.Command {
 
 It will exit sooner if SIGTERM or SIGINT is received.
 You can also ask it to exit with a specific exit code.`,
-		RunE: runMain,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runMain(log)
+		},
 		Args: cobra.NoArgs,
 	}
 
@@ -64,7 +68,7 @@ You can also ask it to exit with a specific exit code.`,
 	return cmd
 }
 
-func runMain(cmd *cobra.Command, _ []string) error {
+func runMain(log logger.Logger) error {
 	if flags.exitCode < 0 || flags.exitCode > 125 {
 		return fmt.Errorf("the exit code must be between 0 and 125 inclusive")
 	}
@@ -80,7 +84,8 @@ func runMain(cmd *cobra.Command, _ []string) error {
 	go func() {
 		for {
 			sig := <-shutdownCh
-			if flags.ignoreSigTerm && sig == syscall.SIGTERM {
+			log.Info("Received signal", "signal", sig)
+			if flags.ignoreSigTerm && (sig == syscall.SIGTERM || sig == os.Interrupt) {
 				continue
 			} else {
 				break
@@ -99,10 +104,13 @@ func runMain(cmd *cobra.Command, _ []string) error {
 
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
+		log.Info("Received request to exit")
 		fmt.Fprintln(os.Stdout, "Received request to exit")
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		fmt.Fprintln(os.Stdout, "Run to completion")
+		log.Info("Ran to completion")
+		fmt.Fprintln(os.Stdout, "Ran to completion")
 	default:
+		log.Error(ctx.Err(), "unexpected context copletion")
 		fmt.Fprintf(os.Stdout, "Unexpected context completion: %v\n", ctx.Err())
 	}
 

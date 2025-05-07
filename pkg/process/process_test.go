@@ -149,6 +149,7 @@ func TestRunCancelled(t *testing.T) {
 	exitInfoChan := make(chan process.ProcessExitInfo, 2)
 	cmd := exec.Command("./delay", "-d", "20s")
 	cmd.Dir = delayToolDir
+	process.DecoupleFromParent(cmd)
 	var onProcessExited process.ProcessExitHandlerFunc = func(pid process.Pid_t, exitCode int32, err error) {
 		exitInfoChan <- process.ProcessExitInfo{
 			ExitCode: exitCode,
@@ -244,6 +245,8 @@ func TestChildrenTerminated(t *testing.T) {
 			// that turn into zombies.
 			cmd := exec.Command("./delay", "--delay=20s", "--child-spec=2,1")
 			cmd.Dir = delayToolDir
+
+			process.DecoupleFromParent(cmd)
 
 			rootP := tc.processStartFn(t, cmd, executor)
 
@@ -362,6 +365,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	// that turn into zombies.
 	parentCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
 	parentCmd.Dir = delayToolDir
+	process.DecoupleFromParent(parentCmd)
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "command should start without error")
 
@@ -375,6 +379,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 
 	childrenCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s", "--child-spec=1,1")
 	childrenCmd.Dir = delayToolDir
+	process.DecoupleFromParent(childrenCmd)
 	childrenCmdErr := childrenCmd.Start()
 	require.NoError(t, childrenCmdErr, "command should start without error")
 
@@ -394,6 +399,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	)
 	dcpProcCmd.Stdout = os.Stdout
 	dcpProcCmd.Stderr = os.Stderr
+	process.DecoupleFromParent(dcpProcCmd)
 	dcpProcCmdErr := dcpProcCmd.Start()
 	require.NoError(t, dcpProcCmdErr, "command should start without error")
 

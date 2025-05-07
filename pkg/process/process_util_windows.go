@@ -12,7 +12,12 @@ import (
 
 // Use separate process group so this process exit will not affect the children.
 func DecoupleFromParent(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP}
+	sysProcAttr := cmd.SysProcAttr
+	if sysProcAttr == nil {
+		sysProcAttr = &syscall.SysProcAttr{}
+	}
+	sysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
+	cmd.SysProcAttr = sysProcAttr
 }
 
 // Separate the child from the parent to the largest extent possible by: (1) using separate console,
@@ -21,14 +26,17 @@ func DecoupleFromParent(cmd *exec.Cmd) {
 // (assuming JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE). For the job detachment to be effective,
 // the job has to allow it via JOB_OBJECT_LIMIT_BREAKAWAY_OK.
 func ForkFromParent(cmd *exec.Cmd) {
+	sysProcAttr := cmd.SysProcAttr
+	if sysProcAttr == nil {
+		sysProcAttr = &syscall.SysProcAttr{}
+	}
 	creationFlags := uint32(windows.CREATE_NEW_CONSOLE | syscall.CREATE_NEW_PROCESS_GROUP)
 	if breakaway, err := canBreakAwayFromJob(); err == nil && breakaway {
 		creationFlags |= windows.CREATE_BREAKAWAY_FROM_JOB
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: creationFlags,
-		HideWindow:    true,
-	}
+	sysProcAttr.CreationFlags = creationFlags
+	sysProcAttr.HideWindow = true
+	cmd.SysProcAttr = sysProcAttr
 }
 
 func canBreakAwayFromJob() (bool, error) {
