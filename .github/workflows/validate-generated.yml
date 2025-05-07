@@ -1,0 +1,53 @@
+name: Check Generated Files
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+      - release/*
+      - production
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  GOPRIVATE: github.com/microsoft/usvc-*
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        include:
+        - os: ubuntu-latest
+          generateCommand: make generate-ci
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go environment
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        architecture: 'x64'
+
+    - name: Build
+      run: ${{ matrix.generateCommand }}
+
+    - name: Verify generated files up-to-date
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const result = await exec.getExecOutput('git status -s');
+          if (result.exitCode != 0 || result.stdout.trim() != '') {
+            const diffResult = await exec.getExecOutput('git diff')
+            core.setFailed('Generated files not up-to-date. Please run make generate-ci and commit the latest versions. The output of git diff command is:' + diffResult.stdout.trim())
+          }
+      if: matrix.os != 'windows-latest'
