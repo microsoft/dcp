@@ -534,7 +534,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ---------------------------------------------------------
 
 github.com/blang/semver/v4 v4.0.0 - MIT
-https://github.com/blang/semver/blob/v4.0.0/LICENSE
+https://github.com/blang/semver/blob/v4.0.0/v4/LICENSE
 
 The MIT License
 
@@ -1190,7 +1190,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ---------------------------------------------------------
 
 github.com/evanphx/json-patch/v5 v5.9.0 - BSD-3-Clause
-https://github.com/evanphx/json-patch/blob/v5.9.0/LICENSE
+https://github.com/evanphx/json-patch/blob/v5.9.0/v5/LICENSE
 
 Copyright (c) 2014, Evan Phoenix
 All rights reserved.

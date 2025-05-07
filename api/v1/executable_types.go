@@ -40,7 +40,7 @@ const (
 	// Executable is stopping (DCP is trying to stop the process)
 	ExecutableStateStopping ExecutableState = "Stopping"
 
-	// Terminated means the Executable was terminated by its owner. Common reasons are scale-down, or debug session end (for execution via IDE).
+	// Terminated means the Executable was terminated by its owner (e.g. because ExecutableReplicaSet is scaling down).
 	ExecutableStateTerminated ExecutableState = "Terminated"
 
 	// Failed to start means the Executable could not be started
