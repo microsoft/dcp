@@ -209,7 +209,7 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 	startWaitForProcessExit()
 
 	// Using generous timeout because AzDO pipeline machines can be very slow at times.
-	const configCreationTimeout = 40 * time.Second
+	const configCreationTimeout = 70 * time.Second
 	const clientCreationTimeout = 20 * time.Second
 	configCreationCtx, configCreationCancel := context.WithTimeout(info.dcpCtx, configCreationTimeout)
 	defer configCreationCancel()

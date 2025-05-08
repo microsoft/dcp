@@ -143,3 +143,5 @@ tool (
 	k8s.io/kube-openapi/cmd/openapi-gen
 	sigs.k8s.io/controller-tools/cmd/controller-gen
 )
+
+replace github.com/google/go-licenses/v2 v2.0.0-alpha.1 => github.com/danegsta/go-licenses/v2 v2.0.0-20250508191800-f917eeea5e92

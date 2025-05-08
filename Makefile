@@ -275,6 +275,9 @@ endif
 test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
+.PHONY: test-ci-prereqs
+test-ci-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool
+
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
 test: TEST_OPTS = -coverprofile cover.out -count 1 -parallel 32
@@ -290,11 +293,11 @@ endif
 ifeq ($(CGO_ENABLED),0)
 # On Windows enabling -race requires additional components to be installed (gcc), so we do not support it at the moment.
 test-ci: TEST_OPTS = -coverprofile cover.out -count 1
-test-ci: lint test-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
 else
 test-ci: TEST_OPTS = -coverprofile cover.out -race -count 1
-test-ci: lint test-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
+test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
 endif
 

@@ -19,14 +19,14 @@ env:
   GOPRIVATE: github.com/microsoft/usvc-*
 
 jobs:
-  build:
+  validate:
     strategy:
       matrix:
         os: [ubuntu-latest]
         include:
         - os: ubuntu-latest
           generateCommand: make generate-ci
-    name: Build ${{ matrix.os }}
+    name: Validate ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -38,7 +38,7 @@ jobs:
         go-version-file: 'go.mod'
         architecture: 'x64'
 
-    - name: Build
+    - name: Validate
       run: ${{ matrix.generateCommand }}
 
     - name: Verify generated files up-to-date

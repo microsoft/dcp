@@ -1,0 +1,44 @@
+name: Lint
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+      - release/*
+      - production
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: write
+
+env:
+  GOPRIVATE: github.com/microsoft/usvc-*
+
+jobs:
+  lint:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        include:
+        - os: ubuntu-latest
+          lintCommand: make lint
+    name: Lint ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go environment
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        architecture: 'x64'
+
+    - name: Lint
+      id: lint
+      run: ${{ matrix.lintCommand }}
