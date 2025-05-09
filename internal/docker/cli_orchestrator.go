@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -255,29 +256,27 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 			return
 		}
 
-		cmd := makeDockerCommand("info", "--format", "{{json .}}")
-		outBuf, _, err := dco.runBufferedDockerCommand(ctx, "AliasDetection", cmd, nil, nil, ordinaryDockerCommandTimeout)
-		if err != nil || outBuf == nil {
-			// Failed to run the command, or got no output. This is probably not a valid Docker runtime.
+		dockerPath, err := exec.LookPath("docker")
+		if err != nil {
+			// We didn't find the Docker CLI, but our other check will catch that and report an error
 			isDockerCh <- false
 			return
 		}
 
-		var info dockerInfo
-		if err = json.Unmarshal(outBuf.Bytes(), &info); err != nil {
-			// Didn't get valid JSON, this is probably not a valid Docker runtime.
-			isDockerCh <- false
+		linkedDockerPath, linkErr := filepath.EvalSymlinks(dockerPath)
+		if linkErr != nil {
+			// Failed to resolve symlinks, assume it's the actual Docker binary
+			isDockerCh <- true
 			return
 		}
 
-		if info.DockerRootDir == "" {
-			// Docker info should include DockerRootDir, this is probably a different runtime.
-			isDockerCh <- false
-			return
+		isValidAlias := strings.EqualFold(filepath.Base(linkedDockerPath), filepath.Base(dockerPath))
+		if !isValidAlias {
+			dco.log.V(1).Info("docker runtime appears to be a symlink to a different runtime", "MatchedBinary", filepath.Base(linkedDockerPath))
 		}
 
-		// Looks like a valid Docker runtime
-		isDockerCh <- true
+		// If this is just a symlink to the Docker binary, assume it's valid. Otherwise, assume it's a different runtime.
+		isDockerCh <- isValidAlias
 	}()
 
 	newStatus := <-statusCh
@@ -1299,10 +1298,6 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 	}
 
 	return nil
-}
-
-type dockerInfo struct {
-	DockerRootDir string `json:"DockerRootDir,omitempty"`
 }
 
 // dockerInspectedImageXxx correspond to data returned by "docker image inspect" command.
