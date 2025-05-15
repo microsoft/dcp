@@ -55,12 +55,6 @@ const (
 	UdpStreamInactivityTimeout = 2 * time.Minute
 )
 
-var (
-	tcpBufferPool = newGenericPool[[]byte](func() []byte {
-		return make([]byte, TcpDataBufferSize)
-	})
-)
-
 // A "UDP stream" binds the client with the Endpoint that is serving it.
 // Packets sent by the client will be forwarded to the Endpoint using dedicated PacketConn connection.
 // Packets received from that PacketConn will be sent back to the client.
@@ -404,7 +398,7 @@ func (p *netProxy) runTcpStream(
 	// such as DNS name resolution or initial connection establishment.
 	// In all other cases we just shut down the communication stream and let the client(s) retry.
 
-	ir, or := StreamNetworkData(streamCtx, incoming, outgoing, tcpBufferPool)
+	ir, or := StreamNetworkData(streamCtx, incoming, outgoing)
 
 	if p.log.V(1).Enabled() {
 		if ir.ReadError != nil {

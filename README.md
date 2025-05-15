@@ -183,6 +183,12 @@ The same steps can also be used to:
 
 > Tip: if the API server request is failing before hitting DCP code, a good place to put a breakpoint is one of the endpoint handlers in `${GOPATH}/pkg/mod/k8s.io/apiserver@{version}/pkg/endpoints/handlers`. You can figure out which `apiserver` package version DCP is using from the `go.mod` file, and your `${GOPATH}` value can be learned by running `go env` command.
 
+### Advanced tests
+
+Not all tests are run by default. A small subset of tests aren't suitable for running in a CI/CD pipeline due to their nature (they require a specific environment or are too slow). In addition, some networking tests will trigger firewall prompts when run on Windows. These tests are skipped by the `test` and `test-ci` Make targets.
+
+Run `make test-extended` to execute the full test suite including these advanced test scenarios.
+
 ### Taking performance traces
 
 See [performance investigations page](performance-investigations.md).

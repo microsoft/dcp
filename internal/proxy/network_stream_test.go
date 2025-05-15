@@ -21,48 +21,13 @@ var (
 	nothingButSilence = []ioResult{silenceForever}
 )
 
-// East-to-west, single data transfer with timeout followed by EOF
+// East-to-west, single data transfer followed by EOF
 // No errors on write.
-func TestNetworkStreamDeadlineExceededOnRead(t *testing.T) {
+func TestNetworkStreamReadsExpectedBytes(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
-
-	east := newTestReaderWriter(
-		[]ioResult{{20, nil}, {0, os.ErrDeadlineExceeded}},
-		nothingButSilence,
-	)
-	west := newTestReaderWriter(
-		nothingButSilence,
-		[]ioResult{{20, nil}},
-	)
-
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
-
-	require.Equal(t, int64(20), eastResult.BytesRead)
-	require.Equal(t, int64(0), eastResult.BytesWritten)
-	require.NoError(t, eastResult.ReadError)
-	require.NoError(t, eastResult.WriteError)
-
-	require.Equal(t, int64(0), westResult.BytesRead)
-	require.Equal(t, int64(20), westResult.BytesWritten)
-	require.NoError(t, westResult.ReadError)
-	require.NoError(t, westResult.WriteError)
-}
-
-// Two data transfers with timeout on write.
-func TestNetworkStreamDeadlineExceededOnWrite(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
-	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}, {10, nil}},
@@ -70,10 +35,10 @@ func TestNetworkStreamDeadlineExceededOnWrite(t *testing.T) {
 	)
 	west := newTestReaderWriter(
 		nothingButSilence,
-		[]ioResult{{10, nil}, {0, os.ErrDeadlineExceeded}, {10, nil}},
+		[]ioResult{{10, nil}, {10, nil}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -92,9 +57,6 @@ func TestNetworkStreamWrittenMoreThanRead(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}, {10, nil}},
@@ -105,7 +67,7 @@ func TestNetworkStreamWrittenMoreThanRead(t *testing.T) {
 		[]ioResult{{10, nil}, {20, nil}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -113,9 +75,9 @@ func TestNetworkStreamWrittenMoreThanRead(t *testing.T) {
 	require.NoError(t, eastResult.WriteError)
 
 	require.Equal(t, int64(0), westResult.BytesRead)
-	require.Equal(t, int64(30), westResult.BytesWritten)
+	require.Equal(t, int64(10), westResult.BytesWritten)
 	require.NoError(t, westResult.ReadError)
-	expected := ErrInconsistentWrite{}
+	expected := io.ErrShortWrite
 	require.ErrorAs(t, westResult.WriteError, &expected)
 }
 
@@ -125,9 +87,6 @@ func TestNetworkStreamShortWrite(t *testing.T) {
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}},
@@ -138,7 +97,7 @@ func TestNetworkStreamShortWrite(t *testing.T) {
 		[]ioResult{{5, nil}, {0, io.EOF}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(10), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -151,47 +110,12 @@ func TestNetworkStreamShortWrite(t *testing.T) {
 	require.ErrorIs(t, westResult.WriteError, io.ErrShortWrite)
 }
 
-// Deadline exceeded on read, but the read also returned some data.
-func TestNetworkStreamDeadlineExceededWithReadData(t *testing.T) {
+// Partial write.
+func TestNetworkStreamPartialWrite(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
-
-	east := newTestReaderWriter(
-		[]ioResult{{10, nil}, {10, os.ErrDeadlineExceeded}},
-		nothingButSilence,
-	)
-	west := newTestReaderWriter(
-		nothingButSilence,
-		[]ioResult{{10, nil}, {10, nil}},
-	)
-
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
-
-	require.Equal(t, int64(20), eastResult.BytesRead)
-	require.Equal(t, int64(0), eastResult.BytesWritten)
-	require.NoError(t, eastResult.ReadError)
-	require.NoError(t, eastResult.WriteError)
-
-	require.Equal(t, int64(0), westResult.BytesRead)
-	require.Equal(t, int64(20), westResult.BytesWritten)
-	require.NoError(t, westResult.ReadError)
-	require.NoError(t, westResult.WriteError)
-}
-
-// Deadline exceeded on write, but the write was also partially successful.
-func TestNetworkStreamDeadlineExceededPartialWrite(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
-	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}, {10, nil}},
@@ -199,10 +123,39 @@ func TestNetworkStreamDeadlineExceededPartialWrite(t *testing.T) {
 	)
 	west := newTestReaderWriter(
 		nothingButSilence,
-		[]ioResult{{10, nil}, {5, os.ErrDeadlineExceeded}, {5, nil}},
+		[]ioResult{{10, nil}, {5, nil}, {5, nil}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
+
+	require.Equal(t, int64(20), eastResult.BytesRead)
+	require.Equal(t, int64(0), eastResult.BytesWritten)
+	require.NoError(t, eastResult.ReadError)
+	require.NoError(t, eastResult.WriteError)
+
+	require.Equal(t, int64(0), westResult.BytesRead)
+	require.Equal(t, int64(15), westResult.BytesWritten)
+	require.NoError(t, westResult.ReadError)
+	require.ErrorIs(t, westResult.WriteError, io.ErrShortWrite)
+}
+
+// EOF received mid stream processes expected data.
+func TestNetworkStreamEOFMidStream(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+
+	east := newTestReaderWriter(
+		[]ioResult{{10, nil}, {10, io.EOF}, {10, nil}},
+		nothingButSilence,
+	)
+	west := newTestReaderWriter(
+		nothingButSilence,
+		[]ioResult{{10, nil}, {10, io.EOF}, {10, nil}},
+	)
+
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -215,26 +168,23 @@ func TestNetworkStreamDeadlineExceededPartialWrite(t *testing.T) {
 	require.NoError(t, westResult.WriteError)
 }
 
-// Deadline exceeded on read and on write, but the write retry is successful.
-func TestNetworkStreamDoubleDeadlineExceeded(t *testing.T) {
+// Write closed while data remaining to be read.
+func TestNetworkStreamWriteEOFBeforeRead(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
-		[]ioResult{{10, nil}, {10, os.ErrDeadlineExceeded}},
+		[]ioResult{{10, nil}, {10, nil}, {10, io.EOF}},
 		nothingButSilence,
 	)
 	west := newTestReaderWriter(
 		nothingButSilence,
-		[]ioResult{{10, nil}, {0, os.ErrDeadlineExceeded}, {10, nil}},
+		[]ioResult{{10, nil}, {10, io.EOF}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -247,47 +197,12 @@ func TestNetworkStreamDoubleDeadlineExceeded(t *testing.T) {
 	require.NoError(t, westResult.WriteError)
 }
 
-// Deadline exceeded on read and on write, and the retry also ends with a deadline exceeded.
-func TestNetworkStreamTripleDeadlineExceeded(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
-	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
-
-	east := newTestReaderWriter(
-		[]ioResult{{10, nil}, {10, os.ErrDeadlineExceeded}},
-		nothingButSilence,
-	)
-	west := newTestReaderWriter(
-		nothingButSilence,
-		[]ioResult{{10, nil}, {0, os.ErrDeadlineExceeded}, {0, os.ErrDeadlineExceeded}, {0, io.EOF}},
-	)
-
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
-
-	require.Equal(t, int64(20), eastResult.BytesRead)
-	require.Equal(t, int64(0), eastResult.BytesWritten)
-	require.NoError(t, eastResult.ReadError)
-	require.NoError(t, eastResult.WriteError)
-
-	require.Equal(t, int64(0), westResult.BytesRead)
-	require.Equal(t, int64(10), westResult.BytesWritten)
-	require.NoError(t, westResult.ReadError)
-	require.Error(t, westResult.WriteError, io.EOF)
-}
-
-// Read returns an error other than deadline exceeded.
+// Read returns errors.
 func TestNetworkStreamReadError(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{20, nil}, {0, errCouldNotDoIt}},
@@ -298,7 +213,7 @@ func TestNetworkStreamReadError(t *testing.T) {
 		[]ioResult{{20, nil}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -311,15 +226,12 @@ func TestNetworkStreamReadError(t *testing.T) {
 	require.NoError(t, westResult.WriteError)
 }
 
-// Write returns an error other than deadline exceeded.
+// Write returns errors.
 func TestNetworkStreamWriteError(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}, {10, nil}},
@@ -330,7 +242,7 @@ func TestNetworkStreamWriteError(t *testing.T) {
 		[]ioResult{{10, nil}, {0, errCouldNotDoIt}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -343,15 +255,12 @@ func TestNetworkStreamWriteError(t *testing.T) {
 	require.Error(t, westResult.WriteError, errCouldNotDoIt)
 }
 
-// Read returns an error other than deadline exceeded, but also some data is read.
+// Read returns an error, but also some data is read.
 func TestNetworkStreamPartialReadWithError(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}, {10, errCouldNotDoIt}},
@@ -362,7 +271,7 @@ func TestNetworkStreamPartialReadWithError(t *testing.T) {
 		[]ioResult{{10, nil}, {10, nil}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)
@@ -375,15 +284,12 @@ func TestNetworkStreamPartialReadWithError(t *testing.T) {
 	require.NoError(t, westResult.WriteError)
 }
 
-// Write returns an error other than deadline exceeded, but also some data is written.
+// Write returns an error, but also some data is written.
 func TestNetworkStreamPartialWriteWithError(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
-	bufferPool := newGenericPool(func() []byte {
-		return make([]byte, 1024)
-	})
 
 	east := newTestReaderWriter(
 		[]ioResult{{10, nil}, {10, nil}},
@@ -394,7 +300,7 @@ func TestNetworkStreamPartialWriteWithError(t *testing.T) {
 		[]ioResult{{10, nil}, {5, errCouldNotDoIt}},
 	)
 
-	eastResult, westResult := StreamNetworkData(ctx, east, west, bufferPool)
+	eastResult, westResult := StreamNetworkData(ctx, east, west)
 
 	require.Equal(t, int64(20), eastResult.BytesRead)
 	require.Equal(t, int64(0), eastResult.BytesWritten)

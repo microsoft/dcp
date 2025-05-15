@@ -5,6 +5,8 @@ package proxy
 import (
 	"errors"
 	"io"
+	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -27,6 +29,21 @@ type testReaderWriter struct {
 	nextWriteResult int
 	readResults     []ioResult
 	writeResults    []ioResult
+	closed          bool
+}
+
+// Close implements DeadlineReaderWriter.
+func (trw *testReaderWriter) Close() error {
+	trw.lock.Lock()
+	defer trw.lock.Unlock()
+
+	if trw.closed {
+		return net.ErrClosed
+	}
+
+	trw.closed = true
+
+	return nil
 }
 
 func newTestReaderWriter(readResults, writeResults []ioResult) *testReaderWriter {
@@ -40,6 +57,10 @@ func newTestReaderWriter(readResults, writeResults []ioResult) *testReaderWriter
 func (trw *testReaderWriter) Read(p []byte) (n int, err error) {
 	trw.lock.Lock()
 	defer trw.lock.Unlock()
+
+	if trw.closed {
+		return 0, net.ErrClosed
+	}
 
 	if trw.nextReadResult >= len(trw.readResults) {
 		return 0, io.EOF
@@ -59,12 +80,20 @@ func (trw *testReaderWriter) Read(p []byte) (n int, err error) {
 	}
 	trw.nextLetter = (trw.nextLetter + 1) % len(lowercaseLetters)
 
+	if errors.Is(result.err, os.ErrDeadlineExceeded) {
+		return result.n, nil
+	}
+
 	return result.n, result.err
 }
 
 func (trw *testReaderWriter) Write(p []byte) (n int, err error) {
 	trw.lock.Lock()
 	defer trw.lock.Unlock()
+
+	if trw.closed {
+		return 0, net.ErrClosed
+	}
 
 	if trw.nextWriteResult >= len(trw.writeResults) {
 		panic("Write() called too many times")
@@ -73,6 +102,10 @@ func (trw *testReaderWriter) Write(p []byte) (n int, err error) {
 	result := trw.writeResults[trw.nextWriteResult]
 	if !errors.Is(result.err, testErrRepeatForever) {
 		trw.nextWriteResult++
+	}
+
+	if errors.Is(result.err, os.ErrDeadlineExceeded) {
+		return result.n, nil
 	}
 
 	return result.n, result.err

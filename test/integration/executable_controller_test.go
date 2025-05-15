@@ -1236,10 +1236,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 
 // Verify that Services, clients and servers can use "all-interface" addresses in their configurations.
 func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
-	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES) {
-		t.Skip(skippingAllNetworkInterfacesTests)
-		return
-	}
+	testutil.SkipIfNotEnableAdvancedNetworking(t)
 
 	type testcase struct {
 		name                     string

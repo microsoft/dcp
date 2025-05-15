@@ -5,8 +5,15 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,6 +268,204 @@ func TestRandomEndpointSelection(t *testing.T) {
 	endpoint, err := chooseEndpoint(config)
 	require.Error(t, err)
 	require.Nil(t, endpoint)
+}
+
+func TestTCPProxyConnectionThroughput(t *testing.T) {
+	testutil.SkipIfNotEnableAdvancedNetworking(t)
+
+	t.Parallel()
+
+	// Set up a TCP server that echoes back data and closes the connection
+	serverListener, port := setupTcpServer(t, autoAllocatePort)
+	defer serverListener.Close()
+
+	var successfulRequests atomic.Int32
+
+	// Start a goroutine to handle client connections
+	go func() {
+		for {
+			conn, err := serverListener.Accept()
+			if err != nil {
+				// Server closed, exit the goroutine
+				return
+			}
+
+			go func(c net.Conn) {
+				defer c.Close()
+
+				// Read data from client
+				buffer := make([]byte, 1024)
+				n, readErr := c.Read(buffer)
+				if readErr != nil {
+					return
+				}
+
+				// Echo the data back
+				_, _ = c.Write(buffer[:n])
+			}(conn)
+		}
+	}()
+
+	// Setup test context
+	ctx, cancelFunc := testutil.GetTestContext(t, 30*time.Second)
+	defer cancelFunc()
+
+	proxy := setupTcpProxy(t, ctx)
+
+	// Feed the config to the proxy
+	config := ProxyConfig{
+		Endpoints: []Endpoint{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
+		},
+	}
+	err := proxy.Configure(config)
+	require.NoError(t, err)
+
+	// Run 100 simultaneous clients making requests until the context is cancelled
+	const numUsers = 100
+	var wg sync.WaitGroup
+	wg.Add(numUsers)
+
+	errorsChan := make(chan error, numUsers)
+
+	clientsCtx, clientsCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer clientsCancel()
+
+	// Function to run a single client connection
+	runUser := func(runCtx context.Context) {
+		defer wg.Done()
+
+		runClient := func() error {
+			// Set up a client connection to the proxy
+			clientConn, dialErr := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
+			if dialErr != nil {
+				return fmt.Errorf("failed to connect to proxy: %w", dialErr)
+			}
+			defer clientConn.Close()
+
+			clientStop := context.AfterFunc(runCtx, func() {
+				clientConn.Close()
+			})
+			defer clientStop()
+
+			// Generate 500 bytes of random data
+			randomData := []byte(testutil.GetRandLetters(t, 500))
+
+			// Send the data to the proxy
+			_, writeErr := clientConn.Write(randomData)
+			if writeErr != nil {
+				return fmt.Errorf("failed to write to proxy: %w", writeErr)
+			}
+
+			// Read the response
+			responseData := make([]byte, len(randomData))
+			_, readErr := clientConn.Read(responseData)
+			if readErr != nil {
+				return fmt.Errorf("failed to read from proxy: %w", readErr)
+			}
+
+			// Verify the received data matches what was sent
+			if !slices.Equal(randomData, responseData) {
+				return fmt.Errorf("data mismatch: sent %d bytes, received %d bytes with different content",
+					len(randomData), len(responseData))
+			}
+
+			successfulRequests.Add(1)
+
+			return nil
+		}
+
+		// Run the client in a loop until the context is cancelled or an error occurs
+		for {
+			if runCtx.Err() != nil {
+				// Context was cancelled, exit the loop
+				return
+			}
+
+			clientErr := runClient()
+			if clientErr != nil {
+				if runCtx.Err() == nil {
+					// Report the error if the context hasn't been cancelled
+					errorsChan <- clientErr
+				}
+				return
+			}
+		}
+	}
+
+	// Launch all clients in parallel
+	for i := 0; i < numUsers; i++ {
+		go runUser(clientsCtx)
+	}
+
+	// Wait for all clients to finish
+	wg.Wait()
+	close(errorsChan)
+
+	// Check for errors
+	var clientErr error
+	for err := range errorsChan {
+		clientErr = errors.Join(clientErr, err)
+	}
+
+	require.NoError(t, clientErr, "Error running client connections")
+
+	require.Greater(t, successfulRequests.Load(), int32(10_000), "Client throughput is less than expected")
+}
+
+// This test connects a .NET server and client via the proxy in order to reproduce a specific issue with continuous streams
+// in older DCP releases. In versions before v0.9.2, the data received by the client would eventually be corrupted.
+func TestTCPProxyContinuousStream(t *testing.T) {
+	testutil.SkipIfNotEnableAdvancedNetworking(t)
+
+	t.Parallel()
+
+	serverPort, portErr := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
+	require.NoError(t, portErr, "Failed to get free port for server")
+
+	// Set up a proxy
+	ctx, cancelFunc := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancelFunc()
+	proxy := setupTcpProxy(t, ctx)
+
+	rootDir, findRootErr := testutil.FindRootFor(testutil.DirTarget, "test")
+	require.NoError(t, findRootErr, "Failed to find root directory for ./test")
+
+	go func() {
+		// If the server exits due to an error, cancel the context
+		defer cancelFunc()
+
+		serverCmd := exec.CommandContext(ctx, "dotnet", "run")
+		serverCmd.Dir = filepath.Join(rootDir, "test", "HttpContentStreamRepro.Server")
+		serverCmd.Env = os.Environ()
+		serverCmd.Env = append(serverCmd.Env, fmt.Sprintf("ASPNETCORE_URLS=http://localhost:%d", serverPort))
+		serverErr := serverCmd.Run()
+		if ctx.Err() == nil {
+			// Cancel the context if the server exits
+			require.NoError(t, serverErr, "Failed running server")
+		}
+	}()
+
+	// Feed the config to the proxy
+	config := ProxyConfig{
+		Endpoints: []Endpoint{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(serverPort)},
+		},
+	}
+	err := proxy.Configure(config)
+	require.NoError(t, err)
+
+	clientCmd := exec.CommandContext(ctx, "dotnet", "run")
+	clientCmd.Dir = filepath.Join(rootDir, "test", "HttpContentStreamRepro.Client")
+	clientCmd.Env = os.Environ()
+	clientCmd.Env = append(clientCmd.Env, fmt.Sprintf("SERVER_URL=http://%s", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort())))
+	clientCmd.Stderr = os.Stderr
+	clientErr := clientCmd.Run()
+
+	if ctx.Err() == nil {
+		// If the context is not cancelled, make sure the client didn't return an error
+		require.NoError(t, clientErr)
+	}
 }
 
 const autoAllocatePort = 0

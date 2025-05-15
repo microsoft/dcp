@@ -12,7 +12,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 	"github.com/stretchr/testify/require"
@@ -687,10 +686,7 @@ func TestServiceProxylessWithMultipleEndpoints(t *testing.T) {
 }
 
 func TestServiceAllAddressesIPv4(t *testing.T) {
-	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES) {
-		t.Skip(skippingAllNetworkInterfacesTests)
-		return
-	}
+	testutil.SkipIfNotEnableAdvancedNetworking(t)
 
 	if !nettest.SupportsIPv4() {
 		t.Skip("Skipping test because IPv4 is not supported by the test environment")
@@ -725,10 +721,7 @@ func TestServiceAllAddressesIPv4(t *testing.T) {
 }
 
 func TestServiceAllAddressesIPv6(t *testing.T) {
-	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES) {
-		t.Skip(skippingAllNetworkInterfacesTests)
-		return
-	}
+	testutil.SkipIfNotEnableAdvancedNetworking(t)
 
 	if !nettest.SupportsIPv6() {
 		t.Skip("Skipping test because IPv6 is not supported by the test environment")

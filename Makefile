@@ -207,6 +207,10 @@ lfwriter-tool: $(LFWRITER_TOOL)
 $(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/usvc-apiserver/test/lfwriter
 
+.PHONY: httpcontent-stream-repro
+httpcontent-stream-repro:
+	dotnet build test/HttpContentStreamRepro.Server/HttpContentStreamRepro.Server.csproj
+
 ##@ Development
 
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
@@ -302,13 +306,13 @@ test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, wit
 endif
 
 .PHONY: test-extended
-test-extended: test-prereqs ## Run all tests, including tests that require special environment setup
+test-extended: test-prereqs httpcontent-stream-repro ## Run all tests, including tests that require special environment setup
 ifeq ($(detected_OS),windows)
-	$$env:DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = "true"; $(GO_BIN) test ./... -count 1; $$env:DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = $$null;
+	$$env:DCP_TEST_ENABLE_ADVANCED_NETWORKING = "true"; $(GO_BIN) test ./... -count 1; $$env:DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES = $$null;
 else ifeq ($(CGO_ENABLED),1)
-	DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES="true" $(GO_BIN) test ./... -count 1 -race
+	DCP_TEST_ENABLE_ADVANCED_NETWORKING="true" $(GO_BIN) test ./... -count 1 -race
 else
-	DCP_TEST_ENABLE_ALL_NETWORK_INTERFACES="true" $(GO_BIN) test ./... -count 1
+	DCP_TEST_ENABLE_ADVANCED_NETWORKING="true" $(GO_BIN) test ./... -count 1
 endif
 
 ## Development and test support targets

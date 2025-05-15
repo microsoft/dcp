@@ -1,9 +1,32 @@
-linters-settings:
-  govet:
-    enable:
-      - shadow
-    settings:
-      shadow:
-        strict: true
-    disable:
-      - loopclosure # https://go.dev/doc/faq#closures_and_goroutines, we are using Go 1.22+ now
+version: "2"
+linters:
+  default: standard
+  disable:
+  - staticcheck
+  settings:
+    govet:
+      enable:
+        - shadow
+      disable:
+        - loopclosure # Using Go 1.22+ so this is not needed
+      settings:
+        shadow:
+          strict: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

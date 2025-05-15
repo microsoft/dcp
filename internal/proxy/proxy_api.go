@@ -34,6 +34,7 @@ type DeadlineReaderWriter interface {
 	DeadlineReader
 	DeadlineWriter
 	SetDeadline(t time.Time) error
+	Close() error
 }
 
 type ProxyState uint32
@@ -138,7 +139,7 @@ type ProxyConn interface {
 	// Runs the connection's main loop (for reading and writing data).
 	// The goroutine that calls Run() is the only goroutine that interacts with the underlying net.TCPConn connection.
 	// The connections always work in pairs, and the main loop will stop when either connection fails or is closed by the client.
-	Run(ProxyConn)
+	Run(ProxyConn, logr.Logger)
 
 	// Stops reading data from the connection, but writes any pending data to the connection,
 	// then stops the main loop.

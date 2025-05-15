@@ -7,7 +7,23 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
+
+const (
+	// Set to true to enable advanced networking tests such as those that require access to all network interfaces
+	// and try to open ports that are accessible to requests originating from outside of the machine or tests
+	// that evaluate network performance against a baseline (these are unreliable on CI machines).
+	// This is disabled by default because on Windows it causes a security prompt every time the tests are run.
+	DCP_TEST_ENABLE_ADVANCED_NETWORKING = "DCP_TEST_ENABLE_ADVANCED_NETWORKING"
+)
+
+func SkipIfNotEnableAdvancedNetworking(t *testing.T) {
+	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ADVANCED_NETWORKING) {
+		t.Skipf("Skipping test because %s is not set to 'true'", DCP_TEST_ENABLE_ADVANCED_NETWORKING)
+	}
+}
 
 func GetTestContext(t *testing.T, testTimeout time.Duration) (context.Context, context.CancelFunc) {
 	timeoutStr, found := os.LookupEnv("TEST_CONTEXT_TIMEOUT")
