@@ -29,10 +29,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 var (
-	cleanupJob = concurrency.NewOneTimeJob[error]()
+	cleanupJob         = concurrency.NewOneTimeJob[error]()
+	beforeCleanupTasks = &syncmap.Map[string, func()]{}
 )
 
 type cleanupResourceState uint
@@ -47,7 +49,8 @@ const (
 	// It is called DCP_SHUTDOWN_TIMEOUT_SECONDS but strictly speaking it is a timeout for the resource cleanup process.
 	DCP_SHUTDOWN_TIMEOUT_SECONDS = "DCP_SHUTDOWN_TIMEOUT_SECONDS"
 
-	defaultCleanupTimeoutSeconds = 120 // Two minutes
+	defaultCleanupTimeoutSeconds     = 120 // Two minutes
+	beforeCleanupTasksTimeoutSeconds = 5
 )
 
 type cleanupResourceDescriptor struct {
@@ -92,7 +95,19 @@ func CleanupAllResources(log logr.Logger) (cleanupResult error) {
 	return // Make compiler happy
 }
 
+func AddBeforeCleanupTask(name string, task func()) {
+	if task == nil {
+		panic("task cannot be nil")
+	}
+	if name == "" {
+		panic("name cannot be empty")
+	}
+	beforeCleanupTasks.Store(name, task)
+}
+
 func doCleanup(log logr.Logger) error {
+	log.Info("Running before cleanup tasks...")
+	runBeforeCleanupTasks(log)
 
 	cleanupTimeout, cleanupTimeoutProvided := osutil.EnvVarIntVal(DCP_SHUTDOWN_TIMEOUT_SECONDS)
 	if !cleanupTimeoutProvided {
@@ -389,4 +404,17 @@ func deleteSingleObject(
 	}
 
 	return retryErr
+}
+
+func runBeforeCleanupTasks(log logr.Logger) {
+	beforeCleanupTasks.Range(func(name string, task func()) (proceed bool) {
+		defer func() {
+			_ = resiliency.MakePanicError(recover(), log)
+			proceed = true
+		}()
+		defer beforeCleanupTasks.Delete(name)
+		log.Info("running before cleanup task...", "name", name)
+		task()
+		return true // Always proceed to the next task
+	})
 }

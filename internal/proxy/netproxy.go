@@ -401,14 +401,16 @@ func (p *netProxy) runTcpStream(
 	ir, or := StreamNetworkData(streamCtx, incoming, outgoing)
 
 	if p.log.V(1).Enabled() {
-		if ir.ReadError != nil {
+		silenceErrors := SilenceTcpStreamCompletionErrors.Load()
+
+		if ir.ReadError != nil && !silenceErrors {
 			p.log.V(1).Error(
 				ir.ReadError,
 				"The incoming TCP connection encountered a read error",
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
 				"Stats", ir.LogProperties(),
 			)
-		} else if ir.WriteError != nil {
+		} else if ir.WriteError != nil && !silenceErrors {
 			p.log.V(1).Error(
 				ir.WriteError,
 				"The incoming TCP connection encountered a write error",
@@ -423,14 +425,14 @@ func (p *netProxy) runTcpStream(
 			)
 		}
 
-		if or.WriteError != nil {
+		if or.WriteError != nil && !silenceErrors {
 			p.log.V(1).Error(
 				or.WriteError,
 				"The outgoing TCP connection encountered a write error",
 				"Stream", getStreamDescription(streamID, incoming, outgoing),
 				"Stats", or.LogProperties(),
 			)
-		} else if or.ReadError != nil {
+		} else if or.ReadError != nil && !silenceErrors {
 			p.log.V(1).Error(
 				or.ReadError,
 				"The outgoing TCP connection encountered a read error",

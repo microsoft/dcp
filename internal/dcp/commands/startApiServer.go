@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
@@ -17,6 +20,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
 var (
@@ -142,6 +146,23 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
 
+		if !serverOnly {
+			// Do not use apiServerCtx for the notification source because it is a monitor context
+			// that gets cancelled monitored process exits, triggering API server shutdown.
+			// We want to be able to send notifications throughout the shutdown process, so we use a separate context.
+			notifyCtx, notifyCtxCancel := context.WithCancel(context.Background())
+			defer notifyCtxCancel()
+
+			ns, nsErr := createNotificationSource(notifyCtx, log)
+			if nsErr == nil {
+				appmgmt.AddBeforeCleanupTask("SendCleanupStartedNotification", func() {
+					// Best effort
+					_ = ns.NotifySubscribers(cmds.Notification{Type: cmds.NotificationTypeCleanupStarted})
+				})
+				invocationFlags = append(invocationFlags, "--"+cmds.NotificationSocketPathFlagName, ns.SocketPath)
+			}
+		}
+
 		err = bootstrap.DcpRun(
 			apiServerCtx,
 			rootDir,
@@ -154,4 +175,25 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		return err
 	}
+}
+
+func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (*cmds.NotificationSource, error) {
+	const noNotifications = "notifications will not be sent to controller process"
+
+	suffix, suffixErr := randdata.MakeRandomString(8)
+	if suffixErr != nil {
+		retErr := fmt.Errorf("failed to create random string for notification socket path suffix: %w", suffixErr)
+		log.Error(suffixErr, noNotifications)
+		return nil, retErr
+	}
+
+	socketPath := filepath.Join(usvc_io.DcpTempDir(), "dcp-notify-sock-"+string(suffix))
+	ns, nsErr := cmds.NewNotificationSource(lifetimeCtx, socketPath, log)
+	if nsErr != nil {
+		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)
+		log.Error(nsErr, noNotifications)
+		return nil, retErr
+	}
+
+	return ns, nil
 }

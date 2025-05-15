@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -146,3 +147,8 @@ type ProxyConn interface {
 	// DrainAndStop() is a blocking operation that is goroutine-safe and idempotent.
 	DrainAndStop()
 }
+
+// If set, the proxy will not log TCP stream execution errors upon stream completion.
+// This is useful for handling application shutdown,
+// when TCP stream abrupt terminations are expected.
+var SilenceTcpStreamCompletionErrors = &atomic.Bool{}

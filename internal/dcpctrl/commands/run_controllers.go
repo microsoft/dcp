@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -42,6 +43,7 @@ func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
 
 	cmds.AddMonitorFlags(runControllersCmd)
+	cmds.AddNotificationSocketFlag(runControllersCmd.Flags())
 
 	return runControllersCmd
 }
@@ -100,6 +102,8 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 		if err != nil {
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}
+
+		trySetupNotificationHandler(ctrlCtx, log)
 
 		mgr, err := getManager(ctrlCtx, log.V(1))
 		if err != nil {
@@ -257,5 +261,27 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			log.Error(mgrShutdownErr, "")
 			return mgrShutdownErr
 		}
+	}
+}
+
+func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
+	notifySocketPath := cmds.GetNotificationSocketPath()
+	if notifySocketPath == "" {
+		return
+	}
+
+	log.V(1).Info("setting up notification receiver", "SocketPath", notifySocketPath)
+	nrLog := log.WithName("NotificationReceiver")
+
+	_, nrErr := cmds.NewNotificationReceiver(notifyCtx, notifySocketPath, nrLog,
+		func(note cmds.Notification) {
+			if note.Type == cmds.NotificationTypeCleanupStarted {
+				nrLog.V(1).Info("received cleanup notification, suppressing TCP stream completion errors...")
+				proxy.SilenceTcpStreamCompletionErrors.Store(true)
+			}
+		},
+	)
+	if nrErr != nil {
+		log.Error(nrErr, "failed to create cleanup notification receiver")
 	}
 }
