@@ -552,6 +552,11 @@ func (in *ContainerSpec) DeepCopyInto(out *ContainerSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Start != nil {
+		in, out := &in.Start, &out.Start
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Networks != nil {
 		in, out := &in.Networks, &out.Networks
 		*out = new([]ContainerNetworkConnectionConfig)

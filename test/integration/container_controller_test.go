@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,6 +90,141 @@ func TestInvalidContainerName(t *testing.T) {
 	}
 
 	require.Len(t, ctr.Validate(ctx), 0, "Unexpected validation error for valid container name")
+}
+
+func TestContainerLifecycleKey(t *testing.T) {
+	t.Parallel()
+
+	spec := apiv1.ContainerSpec{
+		Env: []apiv1.EnvVar{
+			{
+				Name:  "A",
+				Value: "A",
+			},
+			{
+				Name:  "Z",
+				Value: "Z",
+			},
+		},
+	}
+
+	lifecycleKey, isGenerated := spec.GetLifecycleKey()
+	require.True(t, isGenerated, "expected lifecycle key to be generated")
+	require.NotEmpty(t, lifecycleKey, "expected lifecycle key to have a value")
+
+	// Test with same env vars in different order
+	equivalentSpec := apiv1.ContainerSpec{
+		Env: []apiv1.EnvVar{
+			{
+				Name:  "Z",
+				Value: "Z",
+			},
+			{
+				Name:  "A",
+				Value: "A",
+			},
+		},
+	}
+
+	equivalentLifecycleKey, equivalentIsGenerated := equivalentSpec.GetLifecycleKey()
+	require.Equal(t, isGenerated, equivalentIsGenerated, "expected isGenerated to match")
+	require.Equal(t, lifecycleKey, equivalentLifecycleKey, "expected lifecycle key to match")
+
+	differentSpec := apiv1.ContainerSpec{
+		Env: []apiv1.EnvVar{
+			{
+				Name:  "A",
+				Value: "A",
+			},
+			{
+				Name:  "H",
+				Value: "H",
+			},
+			{
+				Name:  "Z",
+				Value: "Z",
+			},
+		},
+	}
+
+	differentLifecycleKey, _ := differentSpec.GetLifecycleKey()
+	require.NotEqual(t, lifecycleKey, differentLifecycleKey, "expected lifecycle key to be different")
+}
+
+func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
+	t.Parallel()
+
+	const testName = "container-lifecycle-key-dockerfile"
+	const imageName = testName + "-image"
+
+	tmpDir, tmpErr := os.MkdirTemp(testutil.TestTempDir(), "lifecycle-dockerfile")
+	require.NoError(t, tmpErr, "could not create temp dir")
+
+	dockerfile := filepath.Join(tmpDir, "Dockerfile")
+
+	t.Logf("Creating Dockerfile '%s'", dockerfile)
+	writeErr := os.WriteFile(dockerfile, []byte("FROM scratch\n"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, writeErr, "could not write Dockerfile")
+
+	spec := apiv1.ContainerSpec{
+		Image: imageName,
+		Build: &apiv1.ContainerBuildContext{
+			Context: tmpDir,
+		},
+	}
+
+	lifecycleKey, isGenerated := spec.GetLifecycleKey()
+	require.True(t, isGenerated, "expected lifecycle key to be generated")
+	require.NotEmpty(t, lifecycleKey, "expected lifecycle key to have a value")
+
+	t.Logf("Changing Dockerfile '%s'", dockerfile)
+	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\nRUN echo hello"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, writeErr, "could not write Dockerfile")
+
+	newLifecycleKey, _ := spec.GetLifecycleKey()
+	require.NotEqual(t, lifecycleKey, newLifecycleKey, "expected lifecycle key to be different")
+
+	// Repeat the test with a different context path
+	t.Logf("Testing with new context path")
+	tmpDir, tmpErr = os.MkdirTemp(testutil.TestTempDir(), "lifecycle-dockerfile")
+	require.NoError(t, tmpErr, "could not create temp dir")
+
+	dockerfile = filepath.Join(tmpDir, "Dockerfile")
+
+	t.Logf("Creating Dockerfile '%s'", dockerfile)
+	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\n"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, writeErr, "could not write dockerfile")
+
+	spec.Build.Context = tmpDir
+
+	newContextLifecycleKey, _ := spec.GetLifecycleKey()
+	require.NotEqual(t, lifecycleKey, newContextLifecycleKey, "expected lifecycle keys to be different due to context path")
+
+	t.Logf("Changing Dockerfile '%s'", dockerfile)
+	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\nRUN echo hello"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, writeErr, "could not write Dockerfile")
+
+	newLifecycleKey, _ = spec.GetLifecycleKey()
+	require.NotEqual(t, newContextLifecycleKey, newLifecycleKey, "expected lifecycle key to be different")
+
+	// Repeat the test with an explicitly set Dockerfile name
+	dockerfile = filepath.Join(tmpDir, "MyDockerfile")
+
+	t.Logf("Creating MyDockerfile '%s'", dockerfile)
+	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\n"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, writeErr, "could not write dockerfile")
+
+	spec.Build.Dockerfile = "./MyDockerfile"
+
+	customDockerfileLifecycleKey, _ := spec.GetLifecycleKey()
+	require.Equal(t, newContextLifecycleKey, customDockerfileLifecycleKey, "expected lifecycle keys for same Dockerfile content to be equal for same context path")
+
+	t.Logf("Changing dockerfile '%s'", dockerfile)
+	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\nRUN echo hello"), osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, writeErr, "could not write Dockerfile")
+
+	newMyDockerfileLifecycleKey, _ := spec.GetLifecycleKey()
+	require.Equal(t, newLifecycleKey, newMyDockerfileLifecycleKey, "expected lifecycle keys for same Dockerfile content to be equal for same context path")
 }
 
 // Ensure a container instance is started when new Container object appears
@@ -405,6 +542,290 @@ func TestContainerStartWithPorts(t *testing.T) {
 	_, inspected = ensureContainerRunning(t, ctx, &ctr)
 
 	validatePorts(t, inspected, ctr.Spec.Ports)
+}
+
+func TestContainerDelayStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-delay-start-state"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Start: &shouldStart,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Logf("Ensure Container '%s' state is 'starting'...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStateStarting, nil
+	})
+
+	t.Logf("Waiting 5 seconds")
+	time.Sleep(5 * time.Second)
+
+	t.Logf("Ensure Container '%s' state is still 'starting'...", ctr.ObjectMeta.Name)
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStateStarting, nil
+	})
+
+	shouldStart = true
+	t.Logf("Patching Container '%s' to start...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Start = &shouldStart
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Logf("Ensure Container '%s' state is 'running'...", ctr.ObjectMeta.Name)
+	updatedCtr, _ = ensureContainerRunning(t, ctx, updatedCtr)
+
+	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Stop = true
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "Container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+
+	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.Error(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 0, "expected the container to be gone")
+}
+
+func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "no-existing-persistent-container-delay-start-state"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Logf("Ensure Container '%s' state is 'starting'...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStateStarting, nil
+	})
+
+	t.Logf("Waiting 5 seconds")
+	time.Sleep(5 * time.Second)
+
+	t.Logf("Ensure Container '%s' state is still 'starting'...", ctr.ObjectMeta.Name)
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return (c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStateStarting) && c.Status.LifecycleKey != "", nil
+	})
+
+	initialLifecycleKey := updatedCtr.Status.LifecycleKey
+
+	shouldStart = true
+	t.Logf("Patching Container '%s' to start...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Start = &shouldStart
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Logf("Ensure Container '%s' state is 'running'...", ctr.ObjectMeta.Name)
+	updatedCtr, inspectedCtr := ensureContainerRunning(t, ctx, updatedCtr)
+	require.Equal(t, inspectedCtr.Status, containers.ContainerStatusRunning, "expected the container to be in 'running' state")
+
+	require.Equal(t, initialLifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
+
+	calculatedLifecycleKey, _ := updatedCtr.Spec.GetLifecycleKey()
+	require.Equal(t, initialLifecycleKey, calculatedLifecycleKey, "calculated lifecycle key should not change")
+
+	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Stop = true
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "Container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+
+	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestExistingPersistentContainerDelayStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-delay-start-state"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+		},
+	}
+
+	lifecycleKey, _ := ctr.Spec.GetLifecycleKey()
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Logf("Ensure Container '%s' state is 'running'...", ctr.ObjectMeta.Name)
+	updatedCtr, inspectedCtr := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, inspectedCtr.Status, containers.ContainerStatusRunning, "expected the container to be in 'running' state")
+
+	require.Equal(t, id, inspectedCtr.Id, "container ID should match the one created by the orchestrator")
+
+	require.Equal(t, lifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
+
+	calculatedLifecycleKey, _ := updatedCtr.Spec.GetLifecycleKey()
+	require.Equal(t, lifecycleKey, calculatedLifecycleKey, "calculated lifecycle key should not change")
+
+	shouldStart = true
+	t.Logf("Patching Container '%s' to start...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Start = &shouldStart
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Logf("Ensure Container '%s' state is 'running'...", ctr.ObjectMeta.Name)
+	updatedCtr, inspectedCtr = ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, inspectedCtr.Status, containers.ContainerStatusRunning, "expected the container to be in 'running' state")
+
+	require.Equal(t, lifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
+
+	calculatedLifecycleKey, _ = updatedCtr.Spec.GetLifecycleKey()
+	require.Equal(t, lifecycleKey, calculatedLifecycleKey, "calculated lifecycle key should not change")
+
+	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Stop = true
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "Container object could not be deleted")
+
+	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+
+	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	require.NoError(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
 }
 
 func TestContainerStop(t *testing.T) {
@@ -1098,7 +1519,7 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 
-	require.True(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "image should still be built for persistent container")
+	require.False(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "image should only be built if the persistent container doesn't exist")
 }
 
 func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {

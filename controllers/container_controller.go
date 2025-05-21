@@ -342,7 +342,7 @@ func handleNewContainer(
 	_ *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	var change objectChange
+	change := noChange
 
 	if container.Spec.Stop {
 		// The container was started with a desired state of stopped, don't attempt to start it.
@@ -356,15 +356,71 @@ func handleNewContainer(
 		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
-	if container.Spec.Build != nil {
-		// Container has a build context, so need to build it first.
-		change = r.setContainerState(container, apiv1.ContainerStateBuilding)
-	} else {
-		// Initiate startup sequence.
-		change = r.setContainerState(container, apiv1.ContainerStateStarting)
+	lifecycleKey, hasDefaultLifecycleKey := container.Spec.GetLifecycleKey()
+	if container.Status.LifecycleKey == "" {
+		container.Status.LifecycleKey = lifecycleKey
+		change |= statusChanged
 	}
 
-	return change
+	if container.Spec.Persistent {
+		// Check for an existing persistent container
+		inspected, inspectedErr := inspectContainerIfExists(ctx, r.orchestrator, container.Spec.ContainerName)
+		if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
+			log.Error(inspectedErr, "could not inspect existing container")
+			return change | additionalReconciliationNeeded
+		}
+
+		if inspected != nil {
+			rcd := newRunningContainerData(container)
+			rcd.updateFromInspectedContainer(inspected)
+
+			_, dcpManaged := inspected.Labels[dcpBuildLabel]
+			oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
+			if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
+				// We need to recreate this DCP managed container because the lifecycle key has changed
+				if hasDefaultLifecycleKey {
+					mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
+					log.Info("found existing Container, but calculated lifecycle key doesn't match", "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
+				} else {
+					log.Info("found existing Container, but custom lifecycle key doesn't match", "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
+				}
+			} else if dcpManaged && inspected.Status != containers.ContainerStatusRunning {
+				log.V(1).Info("found existing Container that is not running", "ContainerID", inspected.Id, "ContainerStatus", inspected.Status)
+			} else {
+				log.Info("found existing Container", "ContainerID", inspected.Id)
+
+				rcd.ensureStartupLogFiles(container, log)
+				rcd.startAttemptFinishedAt = metav1.NowMicro()
+				rcd.containerState = apiv1.ContainerStateRunning
+
+				r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
+
+				return change | r.setContainerState(container, apiv1.ContainerStateRunning)
+			}
+
+			if container.ShouldStart() {
+				log.V(1).Info("removing existing container", "ContainerID", inspected.Id)
+				if removeErr := r.removeExistingContainer(ctx, containerID(inspected.Id), inspected, log); removeErr != nil {
+					log.Error(removeErr, "could not remove existing container")
+					return change | additionalReconciliationNeeded
+				}
+			}
+		}
+	}
+
+	if !container.ShouldStart() {
+		// We should wait to create a container until the user clears Start = false
+		log.V(1).Info("waiting for the container to be started")
+		return change
+	}
+
+	if container.Spec.Build != nil {
+		// Container has a build context, so need to build it first.
+		return change | r.setContainerState(container, apiv1.ContainerStateBuilding)
+	} else {
+		// Initiate startup sequence.
+		return change | r.setContainerState(container, apiv1.ContainerStateStarting)
+	}
 }
 
 func ensureContainerBuildingState(
@@ -379,7 +435,6 @@ func ensureContainerBuildingState(
 
 	if rcd == nil {
 		// This is a brand new Container and we need to build it.
-
 		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateBuilding
 		rcd.ensureStartupLogFiles(container, log)
@@ -843,8 +898,8 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 				return buildErr
 			}
 
-			// We know the actual Image ID, so use that instead of the original name
-			rcd.runSpec.Image = imageId
+			log.V(1).Info("image built successfully", "ImageId", imageId)
+
 			rcd.containerState = apiv1.ContainerStateStarting
 
 			return nil
@@ -1041,47 +1096,6 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				return err
 			}
 
-			lifecycleKey, hasDefaultLifecycleKey := rcd.getLifecycleKey()
-
-			if container.Spec.Persistent {
-				// Check for an existing persistent container
-				inspected, inspectedErr := inspectContainerIfExists(startupCtx, r.orchestrator, containerName)
-				if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
-					log.Error(inspectedErr, "could not inspect existing container")
-					return inspectedErr
-				}
-
-				if inspected != nil {
-					_, dcpManaged := inspected.Labels[dcpBuildLabel]
-					oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
-					if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
-						// We need to recreate this DCP managed container because the lifecycle key has changed
-						if hasDefaultLifecycleKey {
-							mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
-							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
-						} else {
-							log.Info("found existing Container, but the lifecycle key doesn't match, recreating container", "ContainerID", inspected.Id, "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
-						}
-
-						if removeErr := r.removeExistingContainer(startupCtx, containerID(inspected.Id), inspected, log); removeErr != nil {
-							return removeErr
-						}
-					} else if dcpManaged && inspected.Status != containers.ContainerStatusRunning {
-						// We need to recreate this DCP managed container because it is not running
-						log.Info("found existing Container that is not running, recreating container", "ContainerID", inspected.Id, "ContainerStatus", inspected.Status)
-						if removeErr := r.removeExistingContainer(startupCtx, containerID(inspected.Id), inspected, log); removeErr != nil {
-							return removeErr
-						}
-					} else {
-						log.Info("found existing Container", "ContainerID", inspected.Id)
-						rcd.updateFromInspectedContainer(inspected)
-						rcd.startAttemptFinishedAt = metav1.NowMicro()
-						rcd.containerState = apiv1.ContainerStateRunning
-						return nil
-					}
-				}
-			}
-
 			for _, volume := range container.Spec.VolumeMounts {
 				if volume.Type == apiv1.BindMount {
 					isValid := filepath.IsAbs(volume.Source)
@@ -1116,6 +1130,8 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// See comment below why we create the container with default network explicitly enabled here.
 				defaultNetwork = r.orchestrator.DefaultNetworkName()
 			}
+
+			lifecycleKey, _ := rcd.runSpec.GetLifecycleKey()
 
 			rcd.runSpec.Labels = append(rcd.runSpec.Labels, []apiv1.ContainerLabel{
 				{

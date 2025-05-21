@@ -1331,6 +1331,13 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 							},
 						},
 					},
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should the controller attempt to start the container?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should the controller attempt to stop the container?",

@@ -19,6 +19,13 @@ func EqualValueFunc[T any, PT *T](p1 PT, p2 PT, equal func(PT, PT) bool) bool {
 	return equal(p1, p2)
 }
 
+func GetValueOrDefault[T any, PT *T](p PT, defaultValue T) T {
+	if p == nil {
+		return defaultValue
+	}
+	return *p
+}
+
 // Sets the value pointed to by a pointer to the given value, allocating new memory if the pointer is nil.
 func SetValue[T any, PT *T](pp *PT, pVal PT) {
 	if pp == nil {
@@ -38,10 +45,7 @@ func SetValue[T any, PT *T](pp *PT, pVal PT) {
 }
 
 func TrueValue[T ~bool, PT *T](p PT) bool {
-	if p == nil {
-		return false
-	}
-	return bool(*p)
+	return bool(GetValueOrDefault(p, true))
 }
 
 func NotTrue[T ~bool, PT *T](p PT) bool {

@@ -3,7 +3,6 @@
 package controllers
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	stdmaps "maps"
@@ -452,8 +451,11 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 
 	if ctr.Status.StartupTimestamp.IsZero() && !rcd.startAttemptFinishedAt.IsZero() {
 		ctr.Status.StartupTimestamp = rcd.startAttemptFinishedAt
-		// Set the lifecycle key once the container has started
-		lifecycleKey, _ := rcd.getLifecycleKey()
+		change |= statusChanged
+	}
+
+	if ctr.Status.LifecycleKey == "" {
+		lifecycleKey, _ := rcd.runSpec.GetLifecycleKey()
 		ctr.Status.LifecycleKey = lifecycleKey
 		change |= statusChanged
 	}
@@ -473,32 +475,6 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 	change |= updateContainerHealthStatus(ctr, rcd.containerState, log)
 
 	return change
-}
-
-func (rcd *runningContainerData) getLifecycleKey() (string, bool) {
-	if rcd.runSpec.LifecycleKey != "" {
-		return rcd.runSpec.LifecycleKey, false
-	}
-
-	// Concatenate fields that can necessitate recreating a container if changed
-	configString := fmt.Sprintf(
-		"%s%v%v%v%v%s%s%v",
-		rcd.runSpec.Image, // Use the evaluated image name (which could be an image ID if a build context is specified)
-		rcd.runSpec.VolumeMounts,
-		rcd.runSpec.Ports,
-		rcd.runSpec.Env, // This is the evaluated environment, not the raw environment
-		rcd.runSpec.EnvFiles,
-		rcd.runSpec.RestartPolicy,
-		rcd.runSpec.Command,
-		rcd.runSpec.Args, // This is the evaluated arguments, not the raw arguments
-	)
-
-	// Newly added fields should be added to the end of the string only if not empty to prevent unintentional recreation
-	if len(rcd.runSpec.CreateFiles) > 0 {
-		configString += fmt.Sprintf("%v", rcd.runSpec.CreateFiles)
-	}
-
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(configString))), true
 }
 
 var _ Cloner[*runningContainerData] = (*runningContainerData)(nil)

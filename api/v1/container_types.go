@@ -1,12 +1,18 @@
 package v1
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -209,6 +215,14 @@ type FileSystemEntry struct {
 	Entries []FileSystemEntry `json:"entries,omitempty"`
 }
 
+func (fse *FileSystemEntry) GetType() FileSystemEntryType {
+	if fse.Type == "" {
+		return FileSystemEntryTypeFile
+	}
+
+	return fse.Type
+}
+
 func (cfi *FileSystemEntry) Equal(other *FileSystemEntry) bool {
 	if cfi == other {
 		return true
@@ -400,6 +414,10 @@ type ContainerSpec struct {
 	// +listType=atomic
 	Args []string `json:"args,omitempty"`
 
+	// Should the controller attempt to start the container?
+	// +kubebuilder:default:=true
+	Start *bool `json:"start,omitempty"`
+
 	// Should the controller attempt to stop the container?
 	// +kubebuilder:default:=false
 	Stop bool `json:"stop,omitempty"`
@@ -488,6 +506,14 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
+	if pointers.GetValueOrDefault(cs.Start, true) != pointers.GetValueOrDefault(other.Start, true) {
+		return false
+	}
+
+	if !pointers.EqualValue(cs.Start, other.Start) {
+		return false
+	}
+
 	if cs.Stop != other.Stop {
 		return false
 	}
@@ -527,6 +553,181 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	}
 
 	return true
+}
+
+func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
+	if cs.LifecycleKey != "" {
+		return cs.LifecycleKey, false
+	}
+
+	var hashBytes bytes.Buffer
+	encoder := gob.NewEncoder(&hashBytes)
+
+	fnvHash := fnv.New128()
+
+	// Use the image name for the hash
+	_, _ = fnvHash.Write([]byte(cs.Image))
+
+	if cs.Build != nil {
+		// Use the build context for the hash
+
+		// First attempt to determine the path to the Dockerfile
+		dockerfile := cs.Build.Dockerfile
+
+		if dockerfile == "" {
+			dockerfile = filepath.Join(cs.Build.Context, "Dockerfile")
+		}
+
+		if !filepath.IsAbs(dockerfile) {
+			dockerfile = filepath.Clean(filepath.Join(cs.Build.Context, dockerfile))
+		}
+
+		contents, readErr := os.ReadFile(dockerfile)
+		if readErr == nil {
+			// Use the contents of the Dockerfile for the hash
+			_, _ = fnvHash.Write(contents)
+		} else {
+			// Failed to read the Dockerfile, so just use the path for the hash
+			_, _ = fnvHash.Write([]byte(dockerfile))
+		}
+
+		// Add the build context to the hash
+		_, _ = fnvHash.Write([]byte(cs.Build.Context))
+
+		// Add the build stage to the hash
+		_, _ = fnvHash.Write([]byte(cs.Build.Stage))
+
+		if len(cs.Build.Labels) > 0 {
+			// Add the build labels to the hash
+			sortedLabels := slices.Clone(cs.Build.Labels)
+			slices.SortFunc(sortedLabels, func(l1, l2 ContainerLabel) int {
+				return strings.Compare(l1.Key, l2.Key)
+			})
+
+			for i := range sortedLabels {
+				encodeErr := encoder.Encode(sortedLabels[i])
+				if encodeErr == nil {
+					_, _ = fnvHash.Write(hashBytes.Bytes())
+				}
+			}
+		}
+
+		if len(cs.Build.Secrets) > 0 {
+			// Add the build secrets to the hash
+			sortedSecrets := slices.Clone(cs.Build.Secrets)
+			slices.SortFunc(sortedSecrets, func(s1, s2 ContainerBuildSecret) int {
+				return strings.Compare(s1.ID, s2.ID)
+			})
+
+			for i := range sortedSecrets {
+				encodeErr := encoder.Encode(sortedSecrets[i])
+				if encodeErr == nil {
+					_, _ = fnvHash.Write(hashBytes.Bytes())
+				}
+
+				if sortedSecrets[i].Type == "" || sortedSecrets[i].Type == FileSecret {
+					// For file type secrets, track the contents of the file as part of the hash
+					fileContents, readErr := os.ReadFile(sortedSecrets[i].Source)
+					if readErr == nil {
+						_, _ = fnvHash.Write(fileContents)
+					}
+				} else if sortedSecrets[i].Type == EnvSecret {
+					// For env type secrets, track the value of the environment variable
+					value := os.Getenv(sortedSecrets[i].Source)
+					_, _ = fnvHash.Write([]byte(value))
+				}
+			}
+		}
+	}
+
+	if len(cs.VolumeMounts) > 0 {
+		// Add the volume mounts to the hash
+		sortedVolumes := slices.Clone(cs.VolumeMounts)
+		slices.SortFunc(sortedVolumes, func(v1, v2 VolumeMount) int {
+			return strings.Compare(v1.Target, v2.Target)
+		})
+
+		for i := range sortedVolumes {
+			encodeErr := encoder.Encode(sortedVolumes[i])
+			if encodeErr == nil {
+				_, _ = fnvHash.Write(hashBytes.Bytes())
+			}
+		}
+	}
+
+	if len(cs.Ports) > 0 {
+		// Add the ports to the hash
+		sortedPorts := slices.Clone(cs.Ports)
+		slices.SortFunc(sortedPorts, func(p1, p2 ContainerPort) int {
+			compare := strings.Compare(string(p1.Protocol), string(p2.Protocol))
+			if compare != 0 {
+				return compare
+			}
+
+			if p1.HostPort < p2.HostPort {
+				return -1
+			} else if p1.HostPort > p2.HostPort {
+				return 1
+			}
+
+			return 0
+		})
+
+		for i := range sortedPorts {
+			encodeErr := encoder.Encode(sortedPorts[i])
+			if encodeErr == nil {
+				_, _ = fnvHash.Write(hashBytes.Bytes())
+			}
+		}
+	}
+
+	if len(cs.Env) > 0 {
+		// Add the environment variables to the hash
+		sortedEnv := slices.Clone(cs.Env)
+		slices.SortFunc(sortedEnv, func(e1, e2 EnvVar) int {
+			return strings.Compare(e1.Name, e2.Name)
+		})
+
+		for i := range sortedEnv {
+			encodeErr := encoder.Encode(sortedEnv[i])
+			if encodeErr == nil {
+				_, _ = fnvHash.Write(hashBytes.Bytes())
+			}
+		}
+	}
+
+	if len(cs.EnvFiles) > 0 {
+		// Add the environment files to the hash
+		sortedEnvFiles := slices.Clone(cs.EnvFiles)
+		slices.Sort(sortedEnvFiles)
+
+		for i := range sortedEnvFiles {
+			readBytes, readErr := os.ReadFile(sortedEnvFiles[i])
+			if readErr == nil {
+				_, _ = fnvHash.Write(readBytes)
+			}
+		}
+	}
+
+	if len(cs.CreateFiles) > 0 {
+		// Add the create files to the hash
+		sortedCreateFiles := slices.Clone(cs.CreateFiles)
+		slices.SortFunc(sortedCreateFiles, func(f1, f2 CreateFileSystem) int {
+			return strings.Compare(f1.Destination, f2.Destination)
+		})
+
+		for i := range sortedCreateFiles {
+			encodeErr := encoder.Encode(sortedCreateFiles[i])
+			if encodeErr == nil {
+				_, _ = fnvHash.Write(hashBytes.Bytes())
+			}
+		}
+	}
+
+	// Compute the hash for the lifecycle key
+	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
+
+	return lifecycleKey, true
 }
 
 // +k8s:openapi-gen=true
@@ -838,6 +1039,11 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "networks cannot be set to a list value if it was initialized as null"))
 	}
 
+	// Make sure start isn't changed to false after the container was created
+	if (oldContainer.Spec.Start == nil || *oldContainer.Spec.Start) && (e.Spec.Start != nil && !*e.Spec.Start) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "start"), "start cannot be set to false after container creation"))
+	}
+
 	// Make sure stop isn't set to false after having been set to true
 	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
@@ -921,6 +1127,10 @@ func (c *Container) SpecifiedImageNameOrDefault() string {
 	}
 
 	return c.NamespacedName().Name + ":dev"
+}
+
+func (c *Container) ShouldStart() bool {
+	return c.Spec.Start == nil || *c.Spec.Start
 }
 
 func (*Container) GenericSubResources() []apiserver_resource.GenericSubResource {
