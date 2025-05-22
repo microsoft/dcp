@@ -455,9 +455,13 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 	}
 
 	if ctr.Status.LifecycleKey == "" {
-		lifecycleKey, _ := rcd.runSpec.GetLifecycleKey()
-		ctr.Status.LifecycleKey = lifecycleKey
-		change |= statusChanged
+		lifecycleKey, _, hashErr := rcd.runSpec.GetLifecycleKey()
+		if hashErr != nil {
+			change |= additionalReconciliationNeeded
+		} else {
+			ctr.Status.LifecycleKey = lifecycleKey
+			change |= statusChanged
+		}
 	}
 
 	if setTimestampIfBeforeOrUnknown(rcd.finishTimestamp, &ctr.Status.FinishTimestamp) {

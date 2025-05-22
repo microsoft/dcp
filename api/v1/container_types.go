@@ -1,11 +1,12 @@
 package v1
 
 import (
-	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -555,18 +556,32 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	return true
 }
 
-func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
+// To get consistent output from gob encoders, we need to introduce types in
+// a deterministic order as the encoder generates (and globally caches) an incrementing ID
+// for each type it encounters. This is a bit of a hack, but it works.
+// Any types being encoded in GetLifecycleKey need to be registered here.
+func initializeHashEncoder() {
+	initEncoder := gob.NewEncoder(io.Discard)
+
+	_ = initEncoder.Encode(ContainerLabel{})
+	_ = initEncoder.Encode(ContainerBuildSecret{})
+	_ = initEncoder.Encode(VolumeMount{})
+	_ = initEncoder.Encode(ContainerPort{})
+	_ = initEncoder.Encode(EnvVar{})
+	_ = initEncoder.Encode(CreateFileSystem{})
+}
+
+func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 	if cs.LifecycleKey != "" {
-		return cs.LifecycleKey, false
+		return cs.LifecycleKey, false, nil
 	}
 
-	var hashBytes bytes.Buffer
-	encoder := gob.NewEncoder(&hashBytes)
-
 	fnvHash := fnv.New128()
+	encoder := gob.NewEncoder(fnvHash)
 
 	// Use the image name for the hash
-	_, _ = fnvHash.Write([]byte(cs.Image))
+	_, writeErr := fnvHash.Write([]byte(cs.Image))
+	hashErr := writeErr
 
 	if cs.Build != nil {
 		// Use the build context for the hash
@@ -585,17 +600,21 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 		contents, readErr := os.ReadFile(dockerfile)
 		if readErr == nil {
 			// Use the contents of the Dockerfile for the hash
-			_, _ = fnvHash.Write(contents)
+			_, writeErr = fnvHash.Write(contents)
+			hashErr = errors.Join(hashErr, writeErr)
 		} else {
 			// Failed to read the Dockerfile, so just use the path for the hash
-			_, _ = fnvHash.Write([]byte(dockerfile))
+			_, writeErr = fnvHash.Write([]byte(dockerfile))
+			hashErr = errors.Join(hashErr, writeErr)
 		}
 
 		// Add the build context to the hash
-		_, _ = fnvHash.Write([]byte(cs.Build.Context))
+		_, writeErr = fnvHash.Write([]byte(cs.Build.Context))
+		hashErr = errors.Join(hashErr, writeErr)
 
 		// Add the build stage to the hash
-		_, _ = fnvHash.Write([]byte(cs.Build.Stage))
+		_, writeErr = fnvHash.Write([]byte(cs.Build.Stage))
+		hashErr = errors.Join(hashErr, writeErr)
 
 		if len(cs.Build.Labels) > 0 {
 			// Add the build labels to the hash
@@ -605,10 +624,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 			})
 
 			for i := range sortedLabels {
-				encodeErr := encoder.Encode(sortedLabels[i])
-				if encodeErr == nil {
-					_, _ = fnvHash.Write(hashBytes.Bytes())
-				}
+				hashErr = errors.Join(hashErr, encoder.Encode(sortedLabels[i]))
 			}
 		}
 
@@ -620,21 +636,19 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 			})
 
 			for i := range sortedSecrets {
-				encodeErr := encoder.Encode(sortedSecrets[i])
-				if encodeErr == nil {
-					_, _ = fnvHash.Write(hashBytes.Bytes())
-				}
-
+				hashErr = errors.Join(hashErr, encoder.Encode(sortedSecrets[i]))
 				if sortedSecrets[i].Type == "" || sortedSecrets[i].Type == FileSecret {
 					// For file type secrets, track the contents of the file as part of the hash
 					fileContents, secretFileReadErr := os.ReadFile(sortedSecrets[i].Source)
 					if secretFileReadErr == nil {
-						_, _ = fnvHash.Write(fileContents)
+						_, writeErr = fnvHash.Write(fileContents)
+						hashErr = errors.Join(hashErr, writeErr)
 					}
 				} else if sortedSecrets[i].Type == EnvSecret {
 					// For env type secrets, track the value of the environment variable
 					value := os.Getenv(sortedSecrets[i].Source)
-					_, _ = fnvHash.Write([]byte(value))
+					_, writeErr = fnvHash.Write([]byte(value))
+					hashErr = errors.Join(hashErr, writeErr)
 				}
 			}
 		}
@@ -648,10 +662,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 		})
 
 		for i := range sortedVolumes {
-			encodeErr := encoder.Encode(sortedVolumes[i])
-			if encodeErr == nil {
-				_, _ = fnvHash.Write(hashBytes.Bytes())
-			}
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedVolumes[i]))
 		}
 	}
 
@@ -674,10 +685,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 		})
 
 		for i := range sortedPorts {
-			encodeErr := encoder.Encode(sortedPorts[i])
-			if encodeErr == nil {
-				_, _ = fnvHash.Write(hashBytes.Bytes())
-			}
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedPorts[i]))
 		}
 	}
 
@@ -689,10 +697,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 		})
 
 		for i := range sortedEnv {
-			encodeErr := encoder.Encode(sortedEnv[i])
-			if encodeErr == nil {
-				_, _ = fnvHash.Write(hashBytes.Bytes())
-			}
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedEnv[i]))
 		}
 	}
 
@@ -703,7 +708,9 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 
 		for i := range sortedEnvFiles {
 			readBytes, readErr := os.ReadFile(sortedEnvFiles[i])
-			if readErr == nil {
+			if readErr != nil {
+				hashErr = errors.Join(hashErr, readErr)
+			} else {
 				_, _ = fnvHash.Write(readBytes)
 			}
 		}
@@ -717,17 +724,14 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 		})
 
 		for i := range sortedCreateFiles {
-			encodeErr := encoder.Encode(sortedCreateFiles[i])
-			if encodeErr == nil {
-				_, _ = fnvHash.Write(hashBytes.Bytes())
-			}
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedCreateFiles[i]))
 		}
 	}
 
 	// Compute the hash for the lifecycle key
 	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
 
-	return lifecycleKey, true
+	return lifecycleKey, true, hashErr
 }
 
 // +k8s:openapi-gen=true
@@ -1202,6 +1206,7 @@ func (clr *ContainerLogResource) GetStorageProvider(
 
 func init() {
 	SchemeBuilder.Register(&Container{}, &ContainerList{})
+	initializeHashEncoder()
 }
 
 // Ensure types support interfaces expected by our API server

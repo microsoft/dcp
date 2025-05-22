@@ -108,7 +108,8 @@ func TestContainerLifecycleKey(t *testing.T) {
 		},
 	}
 
-	lifecycleKey, isGenerated := spec.GetLifecycleKey()
+	lifecycleKey, isGenerated, hashErr := spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.True(t, isGenerated, "expected lifecycle key to be generated")
 	require.NotEmpty(t, lifecycleKey, "expected lifecycle key to have a value")
 
@@ -126,7 +127,8 @@ func TestContainerLifecycleKey(t *testing.T) {
 		},
 	}
 
-	equivalentLifecycleKey, equivalentIsGenerated := equivalentSpec.GetLifecycleKey()
+	equivalentLifecycleKey, equivalentIsGenerated, hashErr := equivalentSpec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.Equal(t, isGenerated, equivalentIsGenerated, "expected isGenerated to match")
 	require.Equal(t, lifecycleKey, equivalentLifecycleKey, "expected lifecycle key to match")
 
@@ -147,7 +149,8 @@ func TestContainerLifecycleKey(t *testing.T) {
 		},
 	}
 
-	differentLifecycleKey, _ := differentSpec.GetLifecycleKey()
+	differentLifecycleKey, _, hashErr := differentSpec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.NotEqual(t, lifecycleKey, differentLifecycleKey, "expected lifecycle key to be different")
 }
 
@@ -173,7 +176,8 @@ func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
 		},
 	}
 
-	lifecycleKey, isGenerated := spec.GetLifecycleKey()
+	lifecycleKey, isGenerated, hashErr := spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.True(t, isGenerated, "expected lifecycle key to be generated")
 	require.NotEmpty(t, lifecycleKey, "expected lifecycle key to have a value")
 
@@ -181,7 +185,8 @@ func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
 	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\nRUN echo hello"), osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, writeErr, "could not write Dockerfile")
 
-	newLifecycleKey, _ := spec.GetLifecycleKey()
+	newLifecycleKey, _, hashErr := spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.NotEqual(t, lifecycleKey, newLifecycleKey, "expected lifecycle key to be different")
 
 	// Repeat the test with a different context path
@@ -197,14 +202,16 @@ func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
 
 	spec.Build.Context = tmpDir
 
-	newContextLifecycleKey, _ := spec.GetLifecycleKey()
+	newContextLifecycleKey, _, hashErr := spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.NotEqual(t, lifecycleKey, newContextLifecycleKey, "expected lifecycle keys to be different due to context path")
 
 	t.Logf("Changing Dockerfile '%s'", dockerfile)
 	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\nRUN echo hello"), osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, writeErr, "could not write Dockerfile")
 
-	newLifecycleKey, _ = spec.GetLifecycleKey()
+	newLifecycleKey, _, hashErr = spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.NotEqual(t, newContextLifecycleKey, newLifecycleKey, "expected lifecycle key to be different")
 
 	// Repeat the test with an explicitly set Dockerfile name
@@ -216,14 +223,16 @@ func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
 
 	spec.Build.Dockerfile = "./MyDockerfile"
 
-	customDockerfileLifecycleKey, _ := spec.GetLifecycleKey()
+	customDockerfileLifecycleKey, _, hashErr := spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.Equal(t, newContextLifecycleKey, customDockerfileLifecycleKey, "expected lifecycle keys for same Dockerfile content to be equal for same context path")
 
 	t.Logf("Changing dockerfile '%s'", dockerfile)
 	writeErr = os.WriteFile(dockerfile, []byte("FROM scratch\nRUN echo hello"), osutil.PermissionOnlyOwnerReadWrite)
 	require.NoError(t, writeErr, "could not write Dockerfile")
 
-	newMyDockerfileLifecycleKey, _ := spec.GetLifecycleKey()
+	newMyDockerfileLifecycleKey, _, hashErr := spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.Equal(t, newLifecycleKey, newMyDockerfileLifecycleKey, "expected lifecycle keys for same Dockerfile content to be equal for same context path")
 }
 
@@ -681,7 +690,8 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 
 	require.Equal(t, initialLifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
 
-	calculatedLifecycleKey, _ := updatedCtr.Spec.GetLifecycleKey()
+	calculatedLifecycleKey, _, hashErr := updatedCtr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.Equal(t, initialLifecycleKey, calculatedLifecycleKey, "calculated lifecycle key should not change")
 
 	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
@@ -739,7 +749,8 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 		},
 	}
 
-	lifecycleKey, _ := ctr.Spec.GetLifecycleKey()
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
 	createSpec.Labels = []apiv1.ContainerLabel{
@@ -774,7 +785,8 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 
 	require.Equal(t, lifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
 
-	calculatedLifecycleKey, _ := updatedCtr.Spec.GetLifecycleKey()
+	calculatedLifecycleKey, _, hashErr := updatedCtr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.Equal(t, lifecycleKey, calculatedLifecycleKey, "calculated lifecycle key should not change")
 
 	shouldStart = true
@@ -792,7 +804,8 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 
 	require.Equal(t, lifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
 
-	calculatedLifecycleKey, _ = updatedCtr.Spec.GetLifecycleKey()
+	calculatedLifecycleKey, _, hashErr = updatedCtr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 	require.Equal(t, lifecycleKey, calculatedLifecycleKey, "calculated lifecycle key should not change")
 
 	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
