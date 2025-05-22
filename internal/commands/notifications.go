@@ -15,8 +15,8 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 

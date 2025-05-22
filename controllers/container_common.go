@@ -16,9 +16,9 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 

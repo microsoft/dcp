@@ -627,8 +627,8 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool) {
 
 				if sortedSecrets[i].Type == "" || sortedSecrets[i].Type == FileSecret {
 					// For file type secrets, track the contents of the file as part of the hash
-					fileContents, readErr := os.ReadFile(sortedSecrets[i].Source)
-					if readErr == nil {
+					fileContents, secretFileReadErr := os.ReadFile(sortedSecrets[i].Source)
+					if secretFileReadErr == nil {
 						_, _ = fnvHash.Write(fileContents)
 					}
 				} else if sortedSecrets[i].Type == EnvSecret {

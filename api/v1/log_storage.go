@@ -21,9 +21,9 @@ import (
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
 	"github.com/microsoft/usvc-apiserver/internal/contextdata"
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
@@ -235,6 +235,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 		for {
 			select {
 			case <-timer.C:
+				log.V(1).Info("restarting parent resource watcher...")
 				ls.mutex.Lock()
 				var needsStopping watch.Interface
 
@@ -261,6 +262,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 				if needsStopping != nil {
 					needsStopping.Stop()
 				}
+				log.V(1).Info("parent resource watcher restart complete")
 
 			case <-ls.disposeCh:
 				// The watcher (if any) will be stopped in the Destroy method
@@ -305,6 +307,20 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 		Object: apiObj,
 	}
 
+	resourceName := commonapi.GetNamespacedNameWithKindForResourceObject(apiObj).String()
+	startTime := time.Now()
+	const longNotificationThreshold = 2 * time.Second
+	defer func() {
+		duration := time.Since(startTime)
+		if duration > longNotificationThreshold {
+			log.Info("Warning: notifying resource watchers of parent resource event took longer than expected",
+				"Event", rwevt.Type,
+				"Resource", resourceName,
+				"Duration", duration,
+			)
+		}
+	}()
+
 	activeResourceWatchers, found := ls.resourceWatchers.Load(apiObj.GetObjectMeta().GetUID())
 	if found {
 		watcherCount := 0
@@ -317,16 +333,12 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 		if watcherCount > 0 {
 			log.V(1).Info("completed notifying resource watchers of parent resource event",
 				"Event", rwevt.Type,
-				"Resource", commonapi.GetNamespacedNameWithKindForResourceObject(apiObj).String(),
+				"Resource", resourceName,
 				"WatcherCount", watcherCount,
 			)
 		}
 	}
 
-	log.V(1).Info("notify the log streamer of resource update",
-		"Event", rwevt.Type,
-		"Resource", commonapi.GetNamespacedNameWithKindForResourceObject(apiObj).String(),
-	)
 	_ = ls.logStreamerEventQueue.Enqueue(func(_ context.Context) {
 		ls.logStreamer.OnResourceUpdated(rwevt, log)
 	})
