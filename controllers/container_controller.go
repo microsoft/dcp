@@ -356,7 +356,12 @@ func handleNewContainer(
 		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
-	lifecycleKey, hasDefaultLifecycleKey := container.Spec.GetLifecycleKey()
+	lifecycleKey, hasDefaultLifecycleKey, hashErr := container.Spec.GetLifecycleKey()
+	if hashErr != nil {
+		log.Error(hashErr, "could not calculate lifecycle key")
+		return change | additionalReconciliationNeeded
+	}
+
 	if container.Status.LifecycleKey == "" {
 		container.Status.LifecycleKey = lifecycleKey
 		change |= statusChanged
@@ -1131,7 +1136,11 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				defaultNetwork = r.orchestrator.DefaultNetworkName()
 			}
 
-			lifecycleKey, _ := rcd.runSpec.GetLifecycleKey()
+			lifecycleKey, _, hashErr := rcd.runSpec.GetLifecycleKey()
+			if hashErr != nil {
+				log.Error(hashErr, "could not compute lifecycle key for the container")
+				return hashErr
+			}
 
 			rcd.runSpec.Labels = append(rcd.runSpec.Labels, []apiv1.ContainerLabel{
 				{
