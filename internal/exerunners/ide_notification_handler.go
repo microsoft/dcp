@@ -16,8 +16,8 @@ import (
 	"github.com/gorilla/websocket"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
 type ideNotificationHandlerState uint32

@@ -1,4 +1,4 @@
-package resiliency
+package resiliency_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -23,7 +24,7 @@ func TestWorkQueueLimitsConcurrency(t *testing.T) {
 
 	testCtx, cancel := testutil.GetTestContext(t, 10*time.Second)
 	defer cancel()
-	wq := NewWorkQueue(testCtx, desiredMaxConcurrency)
+	wq := resiliency.NewWorkQueue(testCtx, desiredMaxConcurrency)
 	wg := &sync.WaitGroup{}
 	wg.Add(workCount)
 
@@ -57,7 +58,7 @@ func TestWorkQueueStopsProcessingAfterContextCancelled(t *testing.T) {
 	lifetimeCtx, cancelLifetimeCtx := testutil.GetTestContext(t, 10*time.Second)
 	defer cancelLifetimeCtx()
 
-	wq := NewWorkQueue(lifetimeCtx, 1)
+	wq := resiliency.NewWorkQueue(lifetimeCtx, 1)
 	var workDone uint32 = 0
 	const workCount = 20
 

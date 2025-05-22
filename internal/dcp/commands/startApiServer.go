@@ -82,6 +82,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
 			forked := exec.Command(os.Args[0], args...)
+			forked.Env = os.Environ() // Inherit the environment from the parent process
 			process.ForkFromParent(forked)
 
 			if err := forked.Start(); err != nil {

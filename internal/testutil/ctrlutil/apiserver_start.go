@@ -32,13 +32,13 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 

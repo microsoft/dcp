@@ -13,9 +13,9 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/tklauser/ps"
 
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 

@@ -12,13 +12,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 	"github.com/go-logr/zapr"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
 const (
@@ -226,7 +229,23 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	if !found || len(logFileNameSuffix) == 0 {
 		logFileNameSuffix = fmt.Sprintf("%d", os.Getpid())
 	}
-	logOutput, err := usvc_io.OpenFile(filepath.Join(logFolder, fmt.Sprintf("%s-%d-%s.log", name, time.Now().Unix(), logFileNameSuffix)), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+
+	// If custom log file name suffix is used, there's a chance that the file using the resulting name
+	// was already created, so let's retry a few times.
+	// Worst case we will run without a log file, but that should be super rare.
+	b := backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(20*time.Millisecond),
+		backoff.WithMaxInterval(100*time.Millisecond),
+		backoff.WithMaxElapsedTime(2*time.Second),
+	)
+	logOutput, err := resiliency.RetryGet(context.Background(), b, func() (*os.File, error) {
+		atMost100kSeconds := time.Now().UnixNano() % 1e14
+		return usvc_io.OpenFile(
+			filepath.Join(logFolder, fmt.Sprintf("%s-%d-%s.log", name, atMost100kSeconds, logFileNameSuffix)),
+			os.O_RDWR|os.O_CREATE|os.O_EXCL,
+			osutil.PermissionOnlyOwnerReadWrite,
+		)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create log file: %w", err)
 	}

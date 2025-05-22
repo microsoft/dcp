@@ -12,8 +12,8 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
 const (
