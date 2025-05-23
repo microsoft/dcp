@@ -232,6 +232,15 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 		timer := time.NewTimer(watcherRestartInterval)
 		watcherResultChan := watcher.ResultChan()
 
+		// We need to drain the watcher result channel because it is an unbuffered channel
+		// that the Tilt API server storage layer synchronously writes to it as part of handling object changes.
+		// If we simply abandon the channel with some pending writes, the corresponding update will block forever.
+		// Even calling Stop() on the watcher will NOT help, because the Stop() method tries to take an exclusive lock
+		// on the "watch set" that the watcher belongs to before closing the watcher channel,
+		// and lock is held (in shared mode) by the goroutine that is writing to the channel
+		// to broadcast object update events.
+		defer drain(watcherResultChan)
+
 		for {
 			select {
 			case <-timer.C:
@@ -254,6 +263,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 					needsStopping = watcher
 					watcher = newWatcher
 					ls.watcher = newWatcher
+					go drain(watcherResultChan)
 					watcherResultChan = newWatcher.ResultChan()
 				}()
 
@@ -508,6 +518,19 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 
 func (ls *LogStorage) NewGetOptions() (runtime.Object, bool, string) {
 	return &LogOptions{}, false, ""
+}
+
+func drain[T any](ch <-chan T) {
+	if ch == nil {
+		return
+	}
+
+	for {
+		_, isOpen := <-ch
+		if !isOpen {
+			return
+		}
+	}
 }
 
 var _ registry_rest.Storage = (*LogStorage)(nil)
