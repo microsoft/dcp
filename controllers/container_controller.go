@@ -400,6 +400,8 @@ func handleNewContainer(
 
 				r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
 
+				change |= rcd.applyTo(container, log)
+
 				return change | r.setContainerState(container, apiv1.ContainerStateRunning)
 			}
 
