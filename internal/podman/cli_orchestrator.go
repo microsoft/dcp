@@ -648,15 +648,17 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	// Apply ownership information from the tar file
 	args = append(args, "-a=false", "-")
 
+	args = append(args, options.Container+":/")
+
 	tarWriter := usvc_io.NewTarWriter()
 
 	for _, item := range options.Entries {
 		if item.Type == apiv1.FileSystemEntryTypeDir {
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addDirectoryErr != nil {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
 		} else {
-			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addFileErr != nil {
+			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addFileErr != nil {
 				return addFileErr
 			}
 		}
@@ -666,8 +668,6 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	if bufferErr != nil {
 		return bufferErr
 	}
-
-	args = append(args, options.Container+":"+options.Destination)
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {

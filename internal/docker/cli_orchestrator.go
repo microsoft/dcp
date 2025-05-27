@@ -720,17 +720,17 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	// Read the tar file to copy from standard input
 	args = append(args, "-a=false", "-")
 
-	args = append(args, options.Container+":"+options.Destination)
+	args = append(args, options.Container+":/")
 
 	tarWriter := usvc_io.NewTarWriter()
 
 	for _, item := range options.Entries {
 		if item.Type == apiv1.FileSystemEntryTypeDir {
-			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addDirectoryErr != nil {
+			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
 		} else {
-			if addFileErr := containers.AddFileToTar(tarWriter, ".", options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addFileErr != nil {
+			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addFileErr != nil {
 				return addFileErr
 			}
 		}

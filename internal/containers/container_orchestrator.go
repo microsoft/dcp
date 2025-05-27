@@ -192,7 +192,7 @@ type CreateFilesOptions struct {
 	// Time the file was modified/created
 	ModTime time.Time
 
-	// The destination path for the file (should already exist in the container)
+	// The base path in the container under which the files and folders will be created
 	Destination string
 
 	// The default owner ID for created files (defaults to 0 for root)
