@@ -216,13 +216,13 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 		ResourceVersionMatch: metav1.ResourceVersionMatchNotOlderThan,
 	}
 
-	// This watcher will be cleaned up when the Destroy method of the log storage instance is called, which will cleanup these goroutines
-	watcher, watchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
+	initialWatcher, watchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
 	if watchErr != nil {
 		return watchErr
 	}
 
-	ls.watcher = watcher
+	// The ls.watcher will be cleaned up when the Destroy method of the log storage instance is called.
+	ls.watcher = initialWatcher
 
 	go func() {
 		// We've seen in tests scenarios where the watcher doesn't always return every event.
@@ -230,23 +230,15 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 		// we are periodically restarting the watcher to ensure we don't miss any events (the watcher always
 		// emits the current state of resources when it starts).
 		timer := time.NewTimer(watcherRestartInterval)
-		watcherResultChan := watcher.ResultChan()
-
-		// We need to drain the watcher result channel because it is an unbuffered channel
-		// that the Tilt API server storage layer synchronously writes to it as part of handling object changes.
-		// If we simply abandon the channel with some pending writes, the corresponding update will block forever.
-		// Even calling Stop() on the watcher will NOT help, because the Stop() method tries to take an exclusive lock
-		// on the "watch set" that the watcher belongs to before closing the watcher channel,
-		// and lock is held (in shared mode) by the goroutine that is writing to the channel
-		// to broadcast object update events.
-		defer drain(watcherResultChan)
+		watcherResultChan := ls.watcher.ResultChan()
 
 		for {
 			select {
 			case <-timer.C:
+				timer.Stop()
 				log.V(1).Info("restarting parent resource watcher...")
 				ls.mutex.Lock()
-				var needsStopping watch.Interface
+				var oldWatcher watch.Interface
 
 				func() {
 					defer ls.mutex.Unlock()
@@ -260,19 +252,20 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 						return
 					}
 
-					needsStopping = watcher
-					watcher = newWatcher
+					log.V(1).Info("new parent resource watcher created")
+
+					oldWatcher = ls.watcher
 					ls.watcher = newWatcher
-					go drain(watcherResultChan)
 					watcherResultChan = newWatcher.ResultChan()
 				}()
 
-				timer.Reset(watcherRestartInterval)
-
-				if needsStopping != nil {
-					needsStopping.Stop()
-				}
-				log.V(1).Info("parent resource watcher restart complete")
+				// Use a separate goroutine to stop the old watcher and drain its channel
+				// so that events from the new watcher are processed expeditiously.
+				go func(w watch.Interface) {
+					stopWatcher(w)
+					log.V(1).Info("parent resource watcher restart complete")
+					timer.Reset(watcherRestartInterval)
+				}(oldWatcher)
 
 			case <-ls.disposeCh:
 				// The watcher (if any) will be stopped in the Destroy method
@@ -382,7 +375,7 @@ func (ls *LogStorage) Destroy() {
 	// Logs do not have independent storage/lifecycle, they will be deleted when the parent is deleted,
 	// but we do need to stop the watcher, and we do not want to hold the storage lock while doing so.
 	if watcher != nil {
-		watcher.Stop()
+		stopWatcher(watcher)
 	}
 }
 
@@ -518,6 +511,21 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 
 func (ls *LogStorage) NewGetOptions() (runtime.Object, bool, string) {
 	return &LogOptions{}, false, ""
+}
+
+func stopWatcher(w watch.Interface) {
+	// We need to drain the watcher result channel because it is an unbuffered channel
+	// that the Tilt API server storage layer synchronously writes to it as part of handling object changes.
+	// If we simply abandon the channel with some pending writes, the corresponding update will block forever.
+	// Even calling Stop() on the watcher will NOT help, because the Stop() method tries to take an exclusive lock
+	// on the "watch set" that the watcher belongs to before closing the watcher channel,
+	// and lock is held (in shared mode) by the goroutine that is writing to the channel
+	// to broadcast object update events.
+	// By calling drain() on a separate goroutine we ensure that the channel
+	// will continue to be drained until the call to Stop() succeeds.
+	go drain(w.ResultChan())
+
+	w.Stop()
 }
 
 func drain[T any](ch <-chan T) {
