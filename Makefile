@@ -99,7 +99,7 @@ LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 GO_LICENSES ?= $(GOTOOL_BIN) github.com/google/go-licenses/v2
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v1.64.7
+GOLANGCI_LINT_VERSION ?= v2.1.6
 
 # DCP Version information
 VERSION ?= dev
