@@ -104,7 +104,7 @@ func CreateTestSessionDir() (string, error) {
 	dirName := fmt.Sprintf("usvc-test-%s", suffix)
 	sessionDir := filepath.Join(testRoot, dirName)
 
-	if err := os.MkdirAll(sessionDir, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
+	if err := os.MkdirAll(sessionDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
 		return "", fmt.Errorf("failed to create session directory: %w", err)
 	}
 

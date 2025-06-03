@@ -2912,7 +2912,7 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 	require.Equal(t, "/some/path/some-dir", items[0].Name, "copied file item name does not match expected value")
 	require.Equal(t, 1000, items[0].Uid, "copied file item owner id does not match expected value")
 	require.Equal(t, 1000, items[0].Gid, "copied file item group id does not match expected value")
-	require.Equal(t, int64(osutil.PermissionOnlyOwnerReadWriteSetCurrent|fs.ModeDir), items[0].Mode, "copied file item mode does not match expected value")
+	require.Equal(t, int64(osutil.PermissionOnlyOwnerReadWriteTraverse|fs.ModeDir), items[0].Mode, "copied file item mode does not match expected value")
 
 	require.Equal(t, "/some/path/some-dir/hello.txt", items[1].Name, "copied file item name does not match expected value")
 	require.Equal(t, 0, items[1].Uid, "copied file item owner id does not match expected value")

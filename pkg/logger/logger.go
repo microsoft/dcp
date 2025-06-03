@@ -266,7 +266,7 @@ func EnsureDetailedLogsFolder() (string, error) {
 
 	info, err := os.Stat(logFolder)
 	if errors.Is(err, fs.ErrNotExist) {
-		if err = os.MkdirAll(logFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
+		if err = os.MkdirAll(logFolder, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
 			return "", fmt.Errorf("failed to create the diagnostic log folder '%s': %w", logFolder, err)
 		}
 	} else if err != nil {

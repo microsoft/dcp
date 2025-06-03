@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
@@ -32,12 +30,12 @@ func TestNotificationSendReceive(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultNotificationsTestTimeout)
 	defer cancel()
 
-	suffix, suffixErr := randdata.MakeRandomString(8)
-	require.NoError(t, suffixErr)
-	socketPath := filepath.Join(testutil.TestTempDir(), "test-notification-socket-"+string(suffix))
+	socketPath, socketPathErr := PrepareNotificationSocketPath(testutil.TestTempDir(), "test-notification-socket-")
+	require.NoError(t, socketPathErr)
 	ns, nsErr := NewNotificationSource(ctx, socketPath, sourceLog)
 	require.NoError(t, nsErr)
 	require.NotNil(t, ns)
+	defer ns.Dispose()
 
 	const numNotifications = 10
 	notes := make(chan Notification, numNotifications)
@@ -89,12 +87,12 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultNotificationsTestTimeout)
 	defer cancel()
 
-	suffix, suffixErr := randdata.MakeRandomString(8)
-	require.NoError(t, suffixErr)
-	socketPath := filepath.Join(testutil.TestTempDir(), "test-notification-socket-"+string(suffix))
+	socketPath, socketPathErr := PrepareNotificationSocketPath(testutil.TestTempDir(), "test-notification-socket-")
+	require.NoError(t, socketPathErr)
 	ns, err := NewNotificationSource(ctx, socketPath, testLog)
 	require.NoError(t, err)
 	require.NotNil(t, ns)
+	defer ns.Dispose()
 
 	// Start with two receivers
 	r1Ctx, r1CtxCancel := context.WithCancel(ctx)

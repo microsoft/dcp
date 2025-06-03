@@ -15,6 +15,7 @@ const (
 	DcpRootDir           = ".dcp"
 	DcpExtensionsDir     = "ext"
 	DcpBinDir            = "bin"
+	DcpWorkDir           = "dcp-work"
 	DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
 	DcpBinPathEnv        = "DCP_BIN_PATH"
 )
@@ -93,7 +94,7 @@ func EnsureDcpRootDir() (string, error) {
 	dcpFolder := filepath.Join(homePath, DcpRootDir)
 	dcpFolderInfo, dcpFolderErr := os.Stat(dcpFolder)
 	if errors.Is(dcpFolderErr, iofs.ErrNotExist) {
-		if err := os.MkdirAll(dcpFolder, osutil.PermissionOnlyOwnerReadWriteSetCurrent); err != nil {
+		if err := os.MkdirAll(dcpFolder, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
 			return "", fmt.Errorf("failed to create DCP default directory '%s': %w", dcpFolder, err)
 		}
 	} else if dcpFolderErr != nil {

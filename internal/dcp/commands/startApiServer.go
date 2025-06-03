@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
@@ -20,7 +19,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 )
 
 var (
@@ -161,6 +159,7 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 					_ = ns.NotifySubscribers(cmds.Notification{Type: cmds.NotificationTypeCleanupStarted})
 				})
 				invocationFlags = append(invocationFlags, "--"+cmds.NotificationSocketPathFlagName, ns.SocketPath)
+				defer ns.Dispose()
 			}
 		}
 
@@ -181,14 +180,13 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (*cmds.NotificationSource, error) {
 	const noNotifications = "notifications will not be sent to controller process"
 
-	suffix, suffixErr := randdata.MakeRandomString(8)
-	if suffixErr != nil {
-		retErr := fmt.Errorf("failed to create random string for notification socket path suffix: %w", suffixErr)
-		log.Error(suffixErr, noNotifications)
+	socketPath, socketPathErr := cmds.PrepareNotificationSocketPath("", "dcp-notify-sock-")
+	if socketPathErr != nil {
+		retErr := fmt.Errorf("failed to prepare notification socket path: %w", socketPathErr)
+		log.Error(socketPathErr, noNotifications)
 		return nil, retErr
 	}
 
-	socketPath := filepath.Join(usvc_io.DcpTempDir(), "dcp-notify-sock-"+string(suffix))
 	ns, nsErr := cmds.NewNotificationSource(lifetimeCtx, socketPath, log)
 	if nsErr != nil {
 		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)

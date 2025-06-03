@@ -10,12 +10,17 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 
+	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -63,6 +68,7 @@ type NotificationSource struct {
 	listener         *net.UnixListener
 	connections      *syncmap.Map[uint32, *net.UnixConn]
 	stoppedAccepting chan struct{}
+	disposed         *atomic.Bool
 
 	// Mostly used for testing, to signal when a client is connected.
 	clientConnected *concurrency.Semaphore
@@ -81,19 +87,23 @@ func NewNotificationSource(lifetimeCtx context.Context, socketPath string, log l
 		listener:         listener,
 		connections:      &syncmap.Map[uint32, *net.UnixConn]{},
 		stoppedAccepting: make(chan struct{}),
+		disposed:         &atomic.Bool{},
 		clientConnected:  concurrency.NewSemaphore(),
 	}
-	context.AfterFunc(lifetimeCtx, func() {
-		listener.Close() // This also removes the socket file.
-		ns.closeConnections()
-	})
+	context.AfterFunc(lifetimeCtx, ns.Dispose)
 
 	go ns.acceptConnections()
 
 	return ns, nil
 }
 
-func (ns *NotificationSource) closeConnections() {
+func (ns *NotificationSource) Dispose() {
+	if ns.disposed.Swap(true) {
+		return // Already disposed
+	}
+
+	_ = ns.listener.Close() // This also removes the socket file
+
 	<-ns.stoppedAccepting
 
 	ns.connections.Range(func(connID uint32, conn *net.UnixConn) bool {
@@ -356,4 +366,47 @@ func (nr *NotificationReceiver) receiveNotifications(conn *net.UnixConn) {
 			return
 		}
 	}
+}
+
+// A helper function that ensures the notification socket can be created
+// in a folder that is writable only by the current user, and that the path
+// is reasonably unique to the calling process.
+// If the `rootDir` is empty, it will use the user's cache directory.
+func PrepareNotificationSocketPath(rootDir string, socketNamePrefix string) (string, error) {
+	if rootDir == "" {
+		cacheDir, cacheDirErr := os.UserCacheDir()
+		if cacheDirErr != nil {
+			return "", fmt.Errorf("failed to get user cache directory when creating a notification socket: %w", cacheDirErr)
+		} else {
+			rootDir = cacheDir
+		}
+	}
+
+	socketDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
+	if err := os.MkdirAll(socketDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
+		return "", fmt.Errorf("failed to create directory for notification socket: %w", err)
+	}
+
+	// On Windows the user cache directory always exists and is always private to the user,
+	// but on Unix-like systems, we need to ensure the directory is private.
+	if !osutil.IsWindows() {
+		info, infoErr := os.Stat(socketDir)
+		if infoErr != nil {
+			return "", fmt.Errorf("failed to check permissions on the notification socket directory: %w", infoErr)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("notification socket path %s is not a directory", socketDir)
+		}
+		if info.Mode().Perm() != osutil.PermissionOnlyOwnerReadWriteTraverse {
+			return "", fmt.Errorf("notification socket directory %s is not private to the user", socketDir)
+		}
+	}
+
+	suffix, suffixErr := randdata.MakeRandomString(8)
+	if suffixErr != nil {
+		return "", fmt.Errorf("failed to create random string for notification socket path suffix: %w", suffixErr)
+	}
+
+	socketPath := filepath.Join(socketDir, socketNamePrefix+string(suffix))
+	return socketPath, nil
 }
