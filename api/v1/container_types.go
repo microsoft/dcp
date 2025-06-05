@@ -579,11 +579,13 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
 
-	// Use the image name for the hash
-	_, writeErr := fnvHash.Write([]byte(cs.Image))
-	hashErr := writeErr
+	var writeErr, hashErr error
 
-	if cs.Build != nil {
+	if cs.Build == nil {
+		// Use the image name for the hash
+		_, writeErr = fnvHash.Write([]byte(cs.Image))
+		hashErr = errors.Join(hashErr, writeErr)
+	} else {
 		// Use the build context for the hash
 
 		// First attempt to determine the path to the Dockerfile
