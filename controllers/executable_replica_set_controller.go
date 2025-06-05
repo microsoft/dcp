@@ -467,6 +467,7 @@ func (r *ExecutableReplicaSetReconciler) Reconcile(ctx context.Context, req reco
 		patch,
 		change,
 		reconciliationDelay,
+		defaultAdditionalReconciliationJitter,
 		nil,
 		log,
 	)

@@ -36,7 +36,9 @@ func ensureVolumeCreated(
 
 	var inspected []containers.InspectedVolume
 	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		inspectedVolumes, err := vo.InspectVolumes(ctx, []string{volume.Spec.Name})
+		inspectedVolumes, err := vo.InspectVolumes(ctx, containers.InspectVolumesOptions{
+			Volumes: []string{volume.Spec.Name},
+		})
 		if err != nil {
 			if !errors.Is(err, containers.ErrNotFound) {
 				return false, err
@@ -118,7 +120,9 @@ func TestContainerVolumeDeletion(t *testing.T) {
 	t.Logf("Ensure that ContainerVolume '%s' object really disappeared from the API server...", vol.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &vol)
 
-	_, inspectedErr := containerOrchestrator.InspectVolumes(ctx, []string{testName})
+	_, inspectedErr := containerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+		Volumes: []string{testName},
+	})
 	require.NoError(t, inspectedErr, "Could not ensure that the volume was not deleted")
 }
 
@@ -158,7 +162,9 @@ func TestContainerVolumeDeletionNonpersistent(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &vol)
 
 	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, inspectionErr := containerOrchestrator.InspectVolumes(ctx, []string{testName})
+		_, inspectionErr := containerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+			Volumes: []string{testName},
+		})
 		if inspectionErr != nil {
 			if errors.Is(inspectionErr, containers.ErrNotFound) {
 				return true, nil
@@ -244,12 +250,16 @@ func TestContainerVolumeCleanup(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &npVol)
 
 	t.Logf("Ensure that volume associated with persistent ContainerVolume was preserved...")
-	_, inspectedErr := serverInfo.ContainerOrchestrator.InspectVolumes(ctx, []string{pVol.Spec.Name})
+	_, inspectedErr := serverInfo.ContainerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+		Volumes: []string{pVol.Spec.Name},
+	})
 	require.NoError(t, inspectedErr, "Could not ensure that the volume was not deleted")
 
 	t.Logf("Ensure that volume associated with nonpersistent ContainerVolume was deleted...")
 	notFoundErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, inspectionErr := serverInfo.ContainerOrchestrator.InspectVolumes(ctx, []string{testName})
+		_, inspectionErr := serverInfo.ContainerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{
+			Volumes: []string{testName},
+		})
 		if inspectionErr != nil {
 			if errors.Is(inspectionErr, containers.ErrNotFound) {
 				return true, nil

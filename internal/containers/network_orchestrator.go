@@ -7,6 +7,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 )
 
+// CreateNetwork command types
+
 type CreateNetworkOptions struct {
 	// Name of the network
 	Name string
@@ -22,6 +24,8 @@ type CreateNetwork interface {
 	CreateNetwork(ctx context.Context, options CreateNetworkOptions) (string, error)
 }
 
+// RemoveNetworks command types
+
 type RemoveNetworksOptions struct {
 	// The list of networks to remove
 	Networks []string
@@ -33,6 +37,8 @@ type RemoveNetworksOptions struct {
 type RemoveNetworks interface {
 	RemoveNetworks(ctx context.Context, options RemoveNetworksOptions) ([]string, error)
 }
+
+// InspectNetworks command types
 
 type InspectNetworksOptions struct {
 	Networks []string
@@ -91,6 +97,8 @@ type InspectNetworks interface {
 	InspectNetworks(ctx context.Context, options InspectNetworksOptions) ([]InspectedNetwork, error)
 }
 
+// ConnectNetwork command types
+
 type ConnectNetworkOptions struct {
 	// The name or ID of the network to connect to
 	Network string
@@ -106,6 +114,8 @@ type ConnectNetwork interface {
 	ConnectNetwork(ctx context.Context, options ConnectNetworkOptions) error
 }
 
+// DisconnectNetwork command types
+
 type DisconnectNetworkOptions struct {
 	// The name or ID of the network to disconnect from
 	Network string
@@ -120,6 +130,8 @@ type DisconnectNetworkOptions struct {
 type DisconnectNetwork interface {
 	DisconnectNetwork(ctx context.Context, options DisconnectNetworkOptions) error
 }
+
+// ListNetworks command types
 
 type ListedNetwork struct {
 	// Creation timestamp for the network
@@ -144,8 +156,16 @@ type ListedNetwork struct {
 	Name string
 }
 
+type ListNetworksFilters struct {
+	LabelFilters []LabelFilter
+}
+
+type ListNetworksOptions struct {
+	Filters ListNetworksFilters
+}
+
 type ListNetworks interface {
-	ListNetworks(ctx context.Context) ([]ListedNetwork, error)
+	ListNetworks(ctx context.Context, options ListNetworksOptions) ([]ListedNetwork, error)
 }
 
 type NetworkOrchestrator interface {

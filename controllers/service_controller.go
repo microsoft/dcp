@@ -55,20 +55,22 @@ type serviceData struct {
 // Stores ServiceReconciler dependencies and configuration that often varies
 // between normal execution and testing.
 type ServiceReconcilerConfig struct {
-	ProcessExecutor               process.Executor
-	CreateProxy                   proxy.ProxyFactory
-	AdditionalReconciliationDelay time.Duration
+	ProcessExecutor                process.Executor
+	CreateProxy                    proxy.ProxyFactory
+	AdditionalReconciliationDelay  time.Duration
+	AdditionalReconciliationJitter time.Duration
 }
 
 type ServiceReconciler struct {
 	ctrl_client.Client
-	Log                           logr.Logger
-	reconciliationSeqNo           uint32
-	ProcessExecutor               process.Executor
-	ProxyConfigDir                string
-	serviceInfo                   *syncmap.Map[types.NamespacedName, *serviceData]
-	createProxy                   proxy.ProxyFactory
-	additionalReconciliationDelay time.Duration
+	Log                            logr.Logger
+	reconciliationSeqNo            uint32
+	ProcessExecutor                process.Executor
+	ProxyConfigDir                 string
+	serviceInfo                    *syncmap.Map[types.NamespacedName, *serviceData]
+	createProxy                    proxy.ProxyFactory
+	additionalReconciliationDelay  time.Duration
+	additionalReconciliationJitter time.Duration
 
 	// Channel used to trigger reconciliation function when underlying run status changes.
 	notifyProxyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
@@ -120,6 +122,12 @@ func NewServiceReconciler(
 		r.additionalReconciliationDelay = config.AdditionalReconciliationDelay
 	} else {
 		r.additionalReconciliationDelay = defaultAdditionalReconciliationDelay
+	}
+
+	if config.AdditionalReconciliationJitter != 0 {
+		r.additionalReconciliationJitter = config.AdditionalReconciliationJitter
+	} else {
+		r.additionalReconciliationJitter = defaultAdditionalReconciliationJitter
 	}
 
 	return &r
@@ -216,6 +224,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		patch,
 		change,
 		r.additionalReconciliationDelay,
+		r.additionalReconciliationJitter,
 		nil,
 		log,
 	)

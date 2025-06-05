@@ -19,11 +19,16 @@ const (
 )
 
 var (
+	ErrUnmatched         = errors.New("error")
+	ErrUnmarshalling     = errors.New("error unmarshalling object")
 	ErrNotFound          = errors.New("object not found")
 	ErrAlreadyExists     = errors.New("object already exists")
 	ErrCouldNotAllocate  = errors.New("object could not allocate required resources")
 	ErrRuntimeNotHealthy = errors.New("runtime is not healthy")
 	ErrObjectInUse       = errors.New("object is in use")
+	ErrIncomplete        = errors.New("not all requested objects were returned")
+	DanglingFilterTrue   = true
+	DanglingFilterFalse  = false
 )
 
 func (o StreamContainerLogsOptions) Apply(args []string) []string {

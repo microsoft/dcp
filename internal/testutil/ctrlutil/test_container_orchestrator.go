@@ -469,7 +469,7 @@ func (to *TestContainerOrchestrator) SetRuntimeHealth(healthy bool) {
 	to.runtimeHealthy = healthy
 }
 
-func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, name string) error {
+func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -477,16 +477,16 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, name stri
 		return errRuntimeUnhealthy
 	}
 
-	if _, found := to.volumes[name]; found {
+	if _, found := to.volumes[options.Name]; found {
 		return containers.ErrAlreadyExists
 	}
 
-	to.volumes[name] = containerVolume{name: name, created: time.Now().UTC()}
+	to.volumes[options.Name] = containerVolume{name: options.Name, created: time.Now().UTC()}
 
 	return nil
 }
 
-func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
+func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -498,20 +498,30 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, volumes 
 		return nil, errRuntimeUnhealthy
 	}
 
-	for _, name := range volumes {
+	var removed []string
+
+	var err error
+	for _, name := range options.Volumes {
 		if _, found := to.volumes[name]; !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
+			continue
 		}
+
+		removed = append(removed, name)
 	}
 
-	for _, name := range volumes {
+	for _, name := range removed {
 		delete(to.volumes, name)
 	}
 
-	return volumes, nil
+	if len(removed) < len(options.Volumes) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were removed, expected %d but got %d", len(options.Volumes), len(removed))))
+	}
+
+	return removed, err
 }
 
-func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
+func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -525,10 +535,12 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, volumes
 
 	var result []containers.InspectedVolume
 
-	for _, name := range volumes {
+	var err error
+	for _, name := range options.Volumes {
 		volume, found := to.volumes[name]
 		if !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
+			continue
 		}
 
 		result = append(result, containers.InspectedVolume{
@@ -541,7 +553,11 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, volumes
 		})
 	}
 
-	return result, nil
+	if len(result) < len(options.Volumes) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were inspected, expected %d but got %d", len(options.Volumes), len(result))))
+	}
+
+	return result, err
 }
 
 func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
@@ -607,27 +623,28 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 		return nil, errRuntimeUnhealthy
 	}
 
+	var err error
 	names := []string{}
 	ids := []string{}
 	for _, name := range options.Networks {
-		var found bool
 		for _, network := range to.networks {
 			if network.matches(name) {
 				if network.isDefault {
-					return nil, fmt.Errorf("cannot remove default network")
+					err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
+					continue
 				}
 
 				if len(network.containers) > 0 {
-					return nil, fmt.Errorf("cannot remove network with containers")
+					err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
+					continue
 				}
 
-				found = true
 				names = append(names, network.name)
 				ids = append(ids, network.id)
 			}
 
-			if !found && !options.Force {
-				return nil, containers.ErrNotFound
+			if !options.Force {
+				err = errors.Join(err, fmt.Errorf("network %s not found", name))
 			}
 		}
 	}
@@ -644,7 +661,11 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 		})
 	}
 
-	return ids, nil
+	if len(ids) < len(options.Networks) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were removed, expected %d but got %d", len(options.Networks), len(ids))))
+	}
+
+	return ids, err
 }
 
 func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
@@ -661,6 +682,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 
 	var result []containers.InspectedNetwork
 
+	var err error
 	for _, name := range options.Networks {
 		var found bool
 		for _, network := range to.networks {
@@ -693,11 +715,15 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 		}
 
 		if !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
 		}
 	}
 
-	return result, nil
+	if len(result) < len(options.Networks) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were inspected, expected %d but got %d", len(options.Networks), len(result))))
+	}
+
+	return result, err
 }
 
 func (to *TestContainerOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
@@ -798,7 +824,7 @@ func (to *TestContainerOrchestrator) DisconnectNetwork(ctx context.Context, opti
 	return nil
 }
 
-func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context) ([]containers.ListedNetwork, error) {
+func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -810,8 +836,29 @@ func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context) ([]contai
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	filteredNetworks := slices.Select(maps.Values(to.networks), func(network *containerNetwork) bool {
+		// If there are no label filters, we can include the network as it satisfied all other filters.
+		if len(options.Filters.LabelFilters) == 0 {
+			return true
+		}
+
+		if slices.Any(options.Filters.LabelFilters, func(label containers.LabelFilter) bool {
+			if value, found := network.labels[label.Key]; found && label.Value == "" || value == label.Value {
+				// If the label is present and matches the value, we want to include the network.
+				return true
+			}
+
+			return false
+		}) {
+			// One of the label filters matched, so we include this network.
+			return true
+		}
+
+		return false
+	})
+
 	return slices.Map[*containerNetwork, containers.ListedNetwork](
-		maps.Values(to.networks),
+		filteredNetworks,
 		func(network *containerNetwork) containers.ListedNetwork {
 			return containers.ListedNetwork{
 				Created:  network.created,
@@ -870,7 +917,7 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	return nil
 }
 
-func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
+func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options containers.InspectImagesOptions) ([]containers.InspectedImage, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -882,14 +929,26 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, images [
 		return nil, errRuntimeUnhealthy
 	}
 
-	for _, image := range images {
+	var err error
+	var result []containers.InspectedImage
+	for _, image := range options.Images {
 		if _, found := to.images[image]; !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
+			continue
 		}
+
+		// TODO: Surface mock image build data via inspection
+		result = append(result, containers.InspectedImage{
+			Id:     to.imageIds[image],
+			Labels: map[string]string{},
+		})
 	}
 
-	// TODO: Surface image build data via inspection
-	return nil, nil
+	if len(result) < len(options.Images) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all images were inspected, expected %d but got %d", len(options.Images), len(result))))
+	}
+
+	return result, err
 }
 
 func (to *TestContainerOrchestrator) GetImageId(tag string) (string, bool) {
@@ -1043,7 +1102,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 	return &container, nil
 }
 
-func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
+func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, options containers.StartContainersOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1059,7 +1118,8 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 
 	var containersToStart []*testContainer
 
-	for _, name := range names {
+	var err error
+	for _, name := range options.Containers {
 		var found bool
 		for _, container := range to.containers {
 			if container.matches(name) {
@@ -1069,20 +1129,25 @@ func (to *TestContainerOrchestrator) StartContainers(ctx context.Context, names 
 		}
 
 		if !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
 		}
 	}
 
 	for _, container := range containersToStart {
-		id, err := to.doStartContainer(ctx, container, streamOptions)
-		if err != nil {
-			return result, err
+		id, startErr := to.doStartContainer(ctx, container, options.StreamCommandOptions)
+		if startErr != nil {
+			err = errors.Join(err, startErr)
+			continue
 		}
 
 		result = append(result, id)
 	}
 
-	return result, nil
+	if len(result) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were started, expected %d but got %d", len(options.Containers), len(result))))
+	}
+
+	return result, err
 }
 
 func (to *TestContainerOrchestrator) doStartContainer(ctx context.Context, container *testContainer, streamOptions containers.StreamCommandOptions) (string, error) {
@@ -1221,7 +1286,7 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 	return exitCodeChan, nil
 }
 
-func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
+func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1233,12 +1298,13 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names [
 		return nil, errRuntimeUnhealthy
 	}
 
-	if len(names) == 0 {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
+	var err error
 	var containersToStop []*testContainer
-	for _, name := range names {
+	for _, name := range options.Containers {
 		var found bool
 		for _, container := range to.containers {
 			if container.matches(name) {
@@ -1248,21 +1314,26 @@ func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, names [
 		}
 
 		if !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
 		}
 	}
 
 	var results []string
 
 	for _, container := range containersToStop {
-		if err := to.doStopContainer(ctx, container, stoppingOnly); err != nil {
-			return results, err
+		if stopErr := to.doStopContainer(ctx, container, stoppingOnly); stopErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to stop container '%s': %w", container.id, stopErr))
+			continue
 		}
 
 		results = append(results, container.id)
 	}
 
-	return results, nil
+	if len(results) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were stopped, expected %d but got %d", len(options.Containers), len(results))))
+	}
+
+	return results, err
 }
 
 type stopContainerAction string
@@ -1320,9 +1391,13 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 	return nil
 }
 
-func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
+func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if len(options.Containers) == 0 {
+		return nil, fmt.Errorf("must specify at least one container")
+	}
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -1332,12 +1407,9 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 		return nil, errRuntimeUnhealthy
 	}
 
-	if len(names) == 0 {
-		return nil, fmt.Errorf("must specify at least one container")
-	}
-
+	var err error
 	var containersToRemove []*testContainer
-	for _, name := range names {
+	for _, name := range options.Containers {
 		var found bool
 		for _, container := range to.containers {
 			if container.matches(name) {
@@ -1347,7 +1419,7 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 		}
 
 		if !found {
-			return nil, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
 		}
 	}
 
@@ -1355,21 +1427,27 @@ func (to *TestContainerOrchestrator) RemoveContainers(ctx context.Context, names
 
 	for i := range containersToRemove {
 		container := containersToRemove[i]
-		if force {
-			if err := to.doStopContainer(ctx, container, stopAndRemove); err != nil {
-				return results, err
+		if options.Force {
+			if stopErr := to.doStopContainer(ctx, container, stopAndRemove); stopErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed to stop container '%s': %w", container.id, stopErr))
+				continue
 			}
 		}
 
-		id, err := to.doRemoveContainer(ctx, container)
-		if err != nil {
-			return results, err
+		id, removeErr := to.doRemoveContainer(ctx, container)
+		if removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("failed to remove container '%s': %w", container.id, removeErr))
+			continue
 		}
 
 		results = append(results, id)
 	}
 
-	return results, nil
+	if len(results) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were removed, expected %d but got %d", len(options.Containers), len(results))))
+	}
+
+	return results, err
 }
 
 func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, container *testContainer) (string, error) {
@@ -1415,7 +1493,7 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 	return container.id, nil
 }
 
-func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
+func (to *TestContainerOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1427,9 +1505,63 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 		return nil, errRuntimeUnhealthy
 	}
 
+	filteredContainers := slices.Select(maps.Values(to.containers), func(container *testContainer) bool {
+		// If there are no label filters, we should include all containers.
+		if len(options.Filters.LabelFilters) == 0 {
+			return true
+		}
+
+		if slices.Any(options.Filters.LabelFilters, func(label containers.LabelFilter) bool {
+			if value, found := container.labels[label.Key]; found && label.Value == "" || value == label.Value {
+				// If the label is present and matches the value, we want to include the network.
+				return true
+			}
+
+			return false
+		}) {
+			// One of the label filters matched, so we include this network.
+			return true
+		}
+
+		// We didn't match any of the label filters, so we don't include this container.
+		return false
+	})
+
+	return slices.Map[*testContainer, containers.ListedContainer](
+		filteredContainers,
+		func(container *testContainer) containers.ListedContainer {
+			return containers.ListedContainer{
+				Id:       container.id,
+				Name:     container.name,
+				Image:    container.image,
+				Status:   container.status,
+				Labels:   container.labels,
+				Networks: container.networks,
+			}
+		},
+	), nil
+}
+
+func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if len(options.Containers) == 0 {
+		return nil, fmt.Errorf("must specify at least one container")
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
 	var result []containers.InspectedContainer
 
-	for _, name := range names {
+	var err error
+	for _, name := range options.Containers {
 		var found bool
 		for _, container := range to.containers {
 			if container.matches(name) {
@@ -1477,11 +1609,15 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, name
 		}
 
 		if !found {
-			return result, containers.ErrNotFound
+			err = errors.Join(err, containers.ErrNotFound)
 		}
 	}
 
-	return result, nil
+	if len(result) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were inspected, expected %d but got %d", len(options.Containers), len(result))))
+	}
+
+	return result, err
 }
 
 func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {

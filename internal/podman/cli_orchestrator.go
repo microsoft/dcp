@@ -222,48 +222,68 @@ func (pco *PodmanCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 	}
 }
 
-func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
-	cmd := makePodmanCommand("volume", "create", name)
+func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+	cmd := makePodmanCommand("volume", "create", options.Name)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf, volumeAlreadyExistsErrorMatch.MaxObjects(1))
+		return errors.Join(err, normalizeCliErrors(errBuf, volumeAlreadyExistsErrorMatch.MaxObjects(1)))
 	}
-	return containers.ExpectCliStrings(outBuf, []string{name})
+
+	return containers.ExpectCliStrings(outBuf, []string{options.Name})
 }
 
-func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
-	if len(volumes) == 0 {
+func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
+	if len(options.Volumes) == 0 {
 		return nil, fmt.Errorf("must specify at least one volume")
 	}
 
 	cmd := makePodmanCommand(append(
 		[]string{"volume", "inspect", "--format", "json"},
-		volumes...)...,
+		options.Volumes...)...,
 	)
 
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(options.Volumes))))
 	}
 
-	return asObjects(outBuf, unmarshalVolume)
+	inspectedVolumes, unmarshalErr := asObjects(outBuf, unmarshalVolume)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedVolumes) < len(options.Volumes) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were inspected, expected %d but got %d", len(options.Volumes), len(inspectedVolumes))))
+	}
+
+	return inspectedVolumes, err
 }
 
-func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
+func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	if len(options.Volumes) == 0 {
+		return nil, fmt.Errorf("must specify at least one volume")
+	}
+
 	args := []string{"volume", "rm"}
-	if force {
+	if options.Force {
 		args = append(args, "--force")
 	}
-	args = append(args, volumes...)
+
+	args = append(args, options.Volumes...)
+
 	cmd := makePodmanCommand(args...)
+
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)), volumeInUseErrorMatch.MaxObjects(len(volumes)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(options.Volumes)), volumeInUseErrorMatch.MaxObjects(len(options.Volumes))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return removed, containers.ExpectCliStrings(outBuf, volumes)
+
+	if len(removed) < len(options.Volumes) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were removed, expected %d but got %d", len(options.Volumes), len(removed))))
+	}
+
+	return removed, err
 }
 
 func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
@@ -354,21 +374,28 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 	return nil
 }
 
-func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
-	if len(images) == 0 {
+func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, options containers.InspectImagesOptions) ([]containers.InspectedImage, error) {
+	if len(options.Images) == 0 {
 		return nil, fmt.Errorf("must specify at least one image")
 	}
 
 	cmd := makePodmanCommand(append(
 		[]string{"image", "inspect", "--format", "{{json .}}"},
-		images...)...,
+		options.Images...)...,
 	)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Images))))
 	}
 
-	return asObjects(outBuf, unmarshalImage)
+	inspectedImages, unmarshalErr := asObjects(outBuf, unmarshalImage)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedImages) < len(options.Images) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all images were inspected, expected %d but got %d", len(options.Images), len(inspectedImages))))
+	}
+
+	return inspectedImages, err
 }
 
 func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
@@ -507,6 +534,7 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 	if err != nil {
 		return "", err
 	}
+
 	return asId(outBuf)
 }
 
@@ -559,86 +587,132 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	return exitCh, nil
 }
 
-func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
-	if len(names) == 0 {
+func (pco *PodmanCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
+	args := []string{"container", "ls", "--no-trunc"}
+
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+
+		args = append(args, "--filter", filter)
+	}
+
+	args = append(args, "--format", "json")
+
+	cmd := makePodmanCommand(args...)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if err != nil {
+		return nil, errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	return asObjects(outBuf, unmarshalListedContainer)
+}
+
+func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	cmd := makePodmanCommand(append(
 		[]string{"container", "inspect", "--format", "json"},
-		names...)...,
+		options.Containers...)...,
 	)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
-	return asObjects(outBuf, unmarshalContainer)
+	inspectedContainers, unmarshalErr := asObjects(outBuf, unmarshalContainer)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedContainers) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were inspected, expected %d but got %d", len(options.Containers), len(inspectedContainers))))
+	}
+
+	return inspectedContainers, err
 }
 
-func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, containerIds []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
-	if len(containerIds) == 0 {
+func (pco *PodmanCliOrchestrator) StartContainers(ctx context.Context, options containers.StartContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "start"}
-	args = append(args, containerIds...)
+	args = append(args, options.Containers...)
 
 	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StartContainers", cmd, streamOptions.StdOutStream, streamOptions.StdErrStream, ordinaryPodmanCommandTimeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StartContainers", cmd, options.StdOutStream, options.StdErrStream, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIds)))
+		err = normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers)))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	started := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return started, containers.ExpectCliStrings(outBuf, containerIds)
+
+	if len(started) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were started, expected %d but got %d", len(options.Containers), len(started))))
+	}
+
+	return started, err
 }
 
-func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
-	if len(names) == 0 {
+func (pco *PodmanCliOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "stop"}
 	var timeout time.Duration = ordinaryPodmanCommandTimeout
-	if secondsToKill > 0 {
-		args = append(args, "--time", fmt.Sprintf("%d", secondsToKill))
-		timeout = time.Duration(secondsToKill)*time.Second + ordinaryPodmanCommandTimeout
+	if options.SecondsToKill > 0 {
+		args = append(args, "--time", fmt.Sprintf("%d", options.SecondsToKill))
+		timeout = time.Duration(options.SecondsToKill)*time.Second + ordinaryPodmanCommandTimeout
 	}
-	args = append(args, names...)
+	args = append(args, options.Containers...)
 
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "StopContainers", cmd, nil, nil, timeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	stopped := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return stopped, containers.ExpectCliStrings(outBuf, names)
+
+	if len(stopped) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were stopped, expected %d but got %d", len(options.Containers), len(stopped))))
+	}
+
+	return stopped, err
 }
 
-func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
-	if len(names) == 0 {
+func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "rm", "-v"}
-	if force {
+	if options.Force {
 		args = append(args, "--force")
 	}
-	args = append(args, names...)
+	args = append(args, options.Containers...)
 
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return removed, containers.ExpectCliStrings(outBuf, names)
+
+	if len(removed) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all containers were removed, expected %d but got %d", len(options.Containers), len(removed))))
+	}
+
+	return removed, err
 }
 
 func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
@@ -681,7 +755,7 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf)
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -743,8 +817,9 @@ func (pco *PodmanCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return "", normalizeCliErrors(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1))
+		return "", errors.Join(err, normalizeCliErrors(errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1)))
 	}
+
 	return asId(outBuf)
 }
 
@@ -762,12 +837,17 @@ func (pco *PodmanCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RemoveNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return removed, containers.ExpectCliStrings(outBuf, options.Networks)
+
+	if len(removed) < len(options.Networks) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were removed, expected %d but got %d", len(options.Networks), len(removed))))
+	}
+
+	return removed, err
 }
 
 func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
@@ -781,10 +861,17 @@ func (pco *PodmanCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks))))
 	}
 
-	return asObjects(outBuf, unmarshalNetwork)
+	inspectedNetworks, unmarshalErr := asObjects(outBuf, unmarshalNetwork)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedNetworks) < len(options.Networks) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all networks were inspected, expected %d but got %d", len(options.Networks), len(inspectedNetworks))))
+	}
+
+	return inspectedNetworks, err
 }
 
 func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
@@ -799,8 +886,9 @@ func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newContainerAlreadyAttachedErrorMatch)
+		return errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newContainerAlreadyAttachedErrorMatch))
 	}
+
 	return nil
 }
 
@@ -816,19 +904,32 @@ func (pco *PodmanCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "DisconnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
+		return errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1)))
 	}
+
 	return nil
 }
 
-func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context) ([]containers.ListedNetwork, error) {
-	args := []string{"network", "ls", "--format", "json"}
+func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+	args := []string{"network", "ls"}
+
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+
+		args = append(args, "--filter", filter)
+	}
+
+	args = append(args, "--format", "json")
 
 	cmd := makePodmanCommand(args...)
 
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListNetworks", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf)
+		return nil, errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return asObjects(outBuf, unmarshalListedNetwork)
@@ -1127,6 +1228,19 @@ func unmarshalImage(pii *podmanInspectedImage, ic *containers.InspectedImage) er
 	return nil
 }
 
+func unmarshalListedContainer(plc *podmanListedContainer, lc *containers.ListedContainer) error {
+	lc.Id = plc.Id
+	if len(plc.Names) == 0 {
+		lc.Name = plc.Names[0]
+	}
+	lc.Image = plc.Image
+	lc.Status = plc.State
+	lc.Networks = plc.Networks
+	lc.Labels = plc.Labels
+
+	return nil
+}
+
 func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedContainer) error {
 	ic.Id = pci.Id
 	ic.Name = pci.Name
@@ -1234,6 +1348,16 @@ type podmanInspectedImage struct {
 
 type podmanInspectedImageConfig struct {
 	Labels map[string]string `json:"Labels,omitempty"`
+}
+
+// podmanListedContainerXxx correspond to data returned by "podman container ls" command.
+type podmanListedContainer struct {
+	Id       string                     `json:"Id"`
+	Names    []string                   `json:"Names,omitempty"`
+	Image    string                     `json:"Image,omitempty"`
+	State    containers.ContainerStatus `json:"State,omitempty"`
+	Labels   map[string]string          `json:"Labels,omitempty"`
+	Networks []string                   `json:"Networks,omitempty"`
 }
 
 // podmanInspectedContainerXxx correspond to data returned by "podman container inspect" command.
@@ -1388,11 +1512,12 @@ func (pem *podmanEventMessage) ToEventMessage() containers.EventMessage {
 	}
 }
 
-func normalizeCliErrors(originalErr error, errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
+func normalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
 	errorMatches = append(errorMatches, newPodmanNotRunningErrorMatch)
-	return containers.NormalizeCliError(originalErr, errBuf, errorMatches...)
+	return containers.NormalizeCliErrors(errBuf, errorMatches...)
 }
 
 var _ containers.VolumeOrchestrator = (*PodmanCliOrchestrator)(nil)
+var _ containers.ImageOrchestrator = (*PodmanCliOrchestrator)(nil)
 var _ containers.ContainerOrchestrator = (*PodmanCliOrchestrator)(nil)
 var _ containers.NetworkOrchestrator = (*PodmanCliOrchestrator)(nil)

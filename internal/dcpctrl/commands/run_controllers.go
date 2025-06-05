@@ -136,6 +136,8 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			},
 		)
 
+		_ = controllers.HarvestAbandonedContainerResources(ctrlCtx, containerOrchestrator, log.WithName("ResourceCleanup"))
+
 		const defaultControllerName = ""
 
 		exCtrl := controllers.NewExecutableReconciler(

@@ -110,7 +110,9 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", container.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &container)
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
 

@@ -133,9 +133,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change = r.manageVolume(ctx, &vol, log)
 	}
 
-	reconciliationDelay, finalChange := computeAdditionalReconciliationDelay(change, vol.Status.State == apiv1.ContainerVolumeStateRuntimeUnhealthy)
+	reconciliationDelay, reconciliationJitter, finalChange := computeAdditionalReconciliationDelay(change, vol.Status.State == apiv1.ContainerVolumeStateRuntimeUnhealthy)
 
-	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &vol, patch, finalChange, reconciliationDelay, nil, log)
+	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &vol, patch, finalChange, reconciliationDelay, reconciliationJitter, nil, log)
 	return result, saveErr
 }
 
