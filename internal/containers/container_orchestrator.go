@@ -35,6 +35,13 @@ func (crs ContainerRuntimeStatus) IsHealthy() bool {
 	return crs.Installed && crs.Running
 }
 
+type LabelFilter struct {
+	// Key of the label to filter by
+	Key string
+	// Value of the label to filter by
+	Value string
+}
+
 type InspectedContainerPortMapping map[string][]InspectedContainerHostPortConfig
 
 type InspectedContainerHostPortConfig struct {
@@ -55,23 +62,39 @@ type TimeoutOption struct {
 	Timeout time.Duration
 }
 
-type BuildImageOptions struct {
-	IidFile string
-	Pull    bool
-
-	*apiv1.ContainerBuildContext
-
-	StreamCommandOptions
-	TimeoutOption
+type ListContainersFilters struct {
+	LabelFilters []LabelFilter
 }
 
-type InspectedImage struct {
-	// ID of the image
+type ListContainersOptions struct {
+	Filters ListContainersFilters
+}
+
+type ListedContainer struct {
+	// ID of the container
 	Id string `json:"Id"`
 
-	// Labels applied to the image
+	// Name of the container
+	Name string `json:"Name,omitempty"`
+
+	// Container image name or ID
+	Image string `json:"Image,omitempty"`
+
+	// Status of the container
+	Status ContainerStatus `json:"State,omitempty"`
+
+	// Labels applied to the container
 	Labels map[string]string `json:"Labels,omitempty"`
+
+	// Connected network names or IDs
+	Networks []string `json:"Networks,omitempty"`
 }
+
+type ListContainers interface {
+	ListContainers(ctx context.Context, options ListContainersOptions) ([]ListedContainer, error)
+}
+
+// InspectContainers command types
 
 type InspectedContainer struct {
 	// ID of the container
@@ -137,6 +160,52 @@ type InspectedContainerNetwork struct {
 	Gateway string `json:"Gateway,omitempty"`
 }
 
+type InspectContainersOptions struct {
+	// List of container IDs or names to inspect
+	Containers []string
+}
+
+type InspectContainers interface {
+	// Inspects containers identified by given list of IDs or names.
+	InspectContainers(ctx context.Context, options InspectContainersOptions) ([]InspectedContainer, error)
+}
+
+// StopContainers command types
+
+type StopContainersOptions struct {
+	// The list of containers to stop (by name or ID)
+	Containers []string
+
+	// How many seconds to wait for the container to gracefully exit before killing it
+	SecondsToKill uint
+}
+
+type StopContainers interface {
+	// Stops containers identified by given list of IDs or names.
+	// Returns list of stopped containers. If some containers are not found, an error will be reported,
+	// but containers that were found will be stopped (this is NOT an all-or-noting operation).
+	StopContainers(ctx context.Context, options StopContainersOptions) ([]string, error)
+}
+
+// RemoveContainers command types
+
+type RemoveContainersOptions struct {
+	// The list of containers to remove (by name or ID)
+	Containers []string
+
+	// If true, the containers will be removed even if they are running
+	Force bool
+}
+
+type RemoveContainers interface {
+	// Removes containers identified by given list of IDs or names.
+	// Returns list of removed containers. If some containers are not found, an error will be reported,
+	// but containers that were found will be removed (this is NOT an all-or-noting operation).
+	RemoveContainers(ctx context.Context, options RemoveContainersOptions) ([]string, error)
+}
+
+// CreateContainer command types
+
 type CreateContainerOptions struct {
 	// Name of the container
 	Name string
@@ -150,6 +219,27 @@ type CreateContainerOptions struct {
 	apiv1.ContainerSpec
 }
 
+type CreateContainer interface {
+	// Create (but do not start) a container. If successful, the ID of the container is returned.
+	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)
+}
+
+// StartContainers command types
+
+type StartContainersOptions struct {
+	// The list of containers to start (by name or ID)
+	Containers []string
+
+	StreamCommandOptions
+}
+
+type StartContainers interface {
+	// Start one or more stopped containers. Returns list of started containers.
+	StartContainers(ctx context.Context, options StartContainersOptions) ([]string, error)
+}
+
+// RunContainer command types
+
 type RunContainerOptions struct {
 	// Name of the container
 	Name string
@@ -162,6 +252,13 @@ type RunContainerOptions struct {
 
 	apiv1.ContainerSpec
 }
+
+type RunContainer interface {
+	// Starts the container. If successful, the ID of the container is returned.
+	RunContainer(ctx context.Context, options RunContainerOptions) (string, error)
+}
+
+// ExecContainer command types
 
 type ExecContainerOptions struct {
 	// The container (name/id) to execute the command in
@@ -185,6 +282,13 @@ type ExecContainerOptions struct {
 	StreamCommandOptions
 }
 
+type ExecContainers interface {
+	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
+	ExecContainer(ctx context.Context, options ExecContainerOptions) (<-chan int32, error)
+}
+
+// CreateFiles command types
+
 type CreateFilesOptions struct {
 	// The container (name/id) to copy the file to
 	Container string
@@ -206,6 +310,11 @@ type CreateFilesOptions struct {
 
 	// The specific entries to create in the container (must have at least one item)
 	Entries []apiv1.FileSystemEntry
+}
+
+type CreateFiles interface {
+	// Create files/folders in the container based on the provided structure
+	CreateFiles(ctx context.Context, options CreateFilesOptions) error
 }
 
 type StreamContainerLogsOptions struct {
@@ -245,40 +354,15 @@ type ContainerOrchestrator interface {
 	// Start running background checks for the runtime status
 	EnsureBackgroundStatusUpdates(ctx context.Context)
 
-	// Build a new container image. If successful, the ID of the image is returned.
-	BuildImage(ctx context.Context, options BuildImageOptions) error
-
-	InspectImages(ctx context.Context, images []string) ([]InspectedImage, error)
-
-	// Create (but do not start) a container. If successful, the ID of the container is returned.
-	CreateContainer(ctx context.Context, options CreateContainerOptions) (string, error)
-
-	// Start one or more stopped containers. Returns list of started containers.
-	StartContainers(ctx context.Context, containers []string, streamOptions StreamCommandOptions) ([]string, error)
-
-	// Starts the container. If successful, the ID of the container is returned.
-	RunContainer(ctx context.Context, options RunContainerOptions) (string, error)
-
-	// Executes a command in a running container. Returns a channel that will emit the final exit code of running the command.
-	ExecContainer(ctx context.Context, options ExecContainerOptions) (<-chan int32, error)
-
-	// Inspects containers identified by given list of IDs or names.
-	InspectContainers(ctx context.Context, containers []string) ([]InspectedContainer, error)
-
-	// Stops containers identified by given list of IDs or names.
-	// Returns list of stopped containers. If some containers are not found, an error will be reported,
-	// but containers that were found will be stopped (this is NOT an all-or-noting operation).
-	//
-	// secondsToKill is the time to wait for the container to gracefully exit before killing it (default 10).
-	StopContainers(ctx context.Context, containers []string, secondsToKill uint) ([]string, error)
-
-	// Removes containers identified by given list of IDs or names.
-	// Returns list of removed containers. If some containers are not found, an error will be reported,
-	// but containers that were found will be removed (this is NOT an all-or-noting operation).
-	RemoveContainers(ctx context.Context, containers []string, force bool) ([]string, error)
-
-	// Create files/folders in the container based on the provided structure
-	CreateFiles(ctx context.Context, options CreateFilesOptions) error
+	CreateContainer
+	StartContainers
+	RunContainer
+	ListContainers
+	InspectContainers
+	StopContainers
+	RemoveContainers
+	ExecContainers
+	CreateFiles
 
 	// Subscribes to events about container state changes
 	// When the subscription is cancelled, the channel will be closed
@@ -286,6 +370,7 @@ type ContainerOrchestrator interface {
 
 	ContainerLogSource
 	VolumeOrchestrator
+	ImageOrchestrator
 	NetworkOrchestrator
 	RuntimeStatusChecker
 }

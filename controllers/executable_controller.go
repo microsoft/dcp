@@ -851,7 +851,7 @@ func (r *ExecutableReconciler) handleHealthProbeResults() {
 			}
 
 			if report.Owner.Kind != executableKind {
-				r.Log.Error(fmt.Errorf("Executable reconciler received health probe report for some other type of object"), "", "Kind", report.Owner.Kind)
+				r.Log.Error(fmt.Errorf("executable reconciler received health probe report for some other type of object"), "", "Kind", report.Owner.Kind)
 				continue
 			}
 

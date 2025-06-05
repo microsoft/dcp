@@ -19,7 +19,6 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 const (
@@ -80,7 +79,7 @@ func callWithRetryAndVerification[RT any](
 func inspectContainer(findContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
 	b := exponentialBackoff(containerInspectionTimeout)
 	return resiliency.RetryGet(findContext, b, func() (*containers.InspectedContainer, error) {
-		inspectedCtrs, err := o.InspectContainers(findContext, []string{containerID})
+		inspectedCtrs, err := o.InspectContainers(findContext, containers.InspectContainersOptions{Containers: []string{containerID}})
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +93,7 @@ func inspectContainer(findContext context.Context, o containers.ContainerOrchest
 func inspectContainerIfExists(findContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
 	b := exponentialBackoff(containerInspectionTimeout)
 	return resiliency.RetryGet(findContext, b, func() (*containers.InspectedContainer, error) {
-		inspectedCtrs, err := o.InspectContainers(findContext, []string{containerID})
+		inspectedCtrs, err := o.InspectContainers(findContext, containers.InspectContainersOptions{Containers: []string{containerID}})
 		if errors.Is(err, containers.ErrNotFound) {
 			return nil, resiliency.Permanent(containers.ErrNotFound)
 		} else if err != nil {
@@ -106,26 +105,6 @@ func inspectContainerIfExists(findContext context.Context, o containers.Containe
 		}
 
 		return &inspectedCtrs[0], nil
-	})
-}
-
-func inspectManyContainers(ctx context.Context, o containers.ContainerOrchestrator, containerIDs []string) ([]containers.InspectedContainer, error) {
-	if len(containerIDs) == 0 {
-		return nil, nil
-	}
-
-	b := exponentialBackoff(containerInspectionTimeout)
-	return resiliency.RetryGet(ctx, b, func() ([]containers.InspectedContainer, error) {
-		inspectedCtrs, err := o.InspectContainers(ctx, containerIDs)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(inspectedCtrs) == 0 {
-			return nil, containers.ErrNotFound
-		}
-
-		return inspectedCtrs, nil
 	})
 }
 
@@ -167,7 +146,11 @@ func verifyNetworkState(
 
 func stopContainer(stopContext context.Context, o containers.ContainerOrchestrator, containerID string) error {
 	action := func(ctx context.Context) error {
-		_, stopErr := o.StopContainers(ctx, []string{containerID}, stopContainerTimeoutSeconds)
+		_, stopErr := o.StopContainers(ctx, containers.StopContainersOptions{
+			Containers:    []string{containerID},
+			SecondsToKill: stopContainerTimeoutSeconds,
+		})
+
 		return stopErr
 	}
 
@@ -193,13 +176,17 @@ func stopContainer(stopContext context.Context, o containers.ContainerOrchestrat
 
 func removeContainer(removeContext context.Context, o containers.ContainerOrchestrator, containerID string) error {
 	action := func(ctx context.Context) error {
-		_, removeErr := o.RemoveContainers(ctx, []string{containerID}, true /* force */)
+		_, removeErr := o.RemoveContainers(ctx, containers.RemoveContainersOptions{
+			Containers: []string{containerID},
+			Force:      true,
+		})
+
 		return removeErr
 	}
 
 	verify := func(ctx context.Context) (any, error) {
 		// Do not use r.inspectContainer() here, we do not want to retry this when the container is not found
-		_, inspectErr := o.InspectContainers(ctx, []string{containerID})
+		_, inspectErr := o.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
 
 		if errors.Is(inspectErr, containers.ErrNotFound) {
 			return nil, nil // This is what we wanted, the container is gone
@@ -214,34 +201,6 @@ func removeContainer(removeContext context.Context, o containers.ContainerOrches
 
 	_, removeErr := callWithRetryAndVerification(removeContext, defaultContainerOrchestratorBackoff(), action, verify)
 	return removeErr
-}
-
-func removeManyContainers(removeContext context.Context, o containers.ContainerOrchestrator, containerIDs []string) error {
-	if len(containerIDs) == 0 {
-		return nil
-	}
-
-	action := func(ctx context.Context) error {
-		_, err := o.RemoveContainers(ctx, containerIDs, true /* force */)
-		return err
-	}
-
-	verify := func(ctx context.Context) (any, error) {
-		_, inspectErr := o.InspectContainers(ctx, containerIDs)
-
-		if errors.Is(inspectErr, containers.ErrNotFound) {
-			return nil, nil // This is what we wanted, all containers are gone
-		}
-
-		if inspectErr != nil {
-			return nil, inspectErr
-		} else {
-			return nil, fmt.Errorf("some containers still exist after remove")
-		}
-	}
-
-	_, err := callWithRetryAndVerification(removeContext, defaultContainerOrchestratorBackoff(), action, verify)
-	return err
 }
 
 func buildImage(buildCtx context.Context, o containers.ContainerOrchestrator, buildOptions containers.BuildImageOptions) (string, error) {
@@ -322,7 +281,10 @@ func startContainer(
 	streamOptions containers.StreamCommandOptions,
 ) (*containers.InspectedContainer, error) {
 	action := func(ctx context.Context) error {
-		_, startErr := o.StartContainers(ctx, []string{containerID}, streamOptions)
+		_, startErr := o.StartContainers(ctx, containers.StartContainersOptions{
+			Containers:           []string{containerID},
+			StreamCommandOptions: streamOptions,
+		})
 		return startErr
 	}
 
@@ -410,33 +372,6 @@ func inspectNetworkIfExists(ctx context.Context, o containers.ContainerOrchestra
 	})
 }
 
-func inspectManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networks []string) ([]containers.InspectedNetwork, error) {
-	if len(networks) == 0 {
-		return nil, nil
-	}
-
-	b := exponentialBackoff(networkInspectionTimeout)
-	return resiliency.RetryGet(ctx, b, func() ([]containers.InspectedNetwork, error) {
-		inspectedNets, err := o.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: networks})
-		if err != nil {
-			return nil, err
-		}
-
-		if len(inspectedNets) == 0 {
-			return nil, containers.ErrNotFound
-		}
-
-		return inspectedNets, nil
-	})
-}
-
-func listNetworks(ctx context.Context, o containers.NetworkOrchestrator) ([]containers.ListedNetwork, error) {
-	b := exponentialBackoff(networkInspectionTimeout)
-	return resiliency.RetryGet(ctx, b, func() ([]containers.ListedNetwork, error) {
-		return o.ListNetworks(ctx)
-	})
-}
-
 func createNetwork(ctx context.Context, o containers.NetworkOrchestrator, opts containers.CreateNetworkOptions) (*containers.InspectedNetwork, error) {
 	action := func(ctx context.Context) error {
 		_, err := o.CreateNetwork(ctx, opts)
@@ -487,48 +422,10 @@ func removeNetwork(ctx context.Context, o containers.NetworkOrchestrator, networ
 	return err
 }
 
-func removeManyNetworks(ctx context.Context, o containers.NetworkOrchestrator, networkIDs []string, log logr.Logger) error {
-	if len(networkIDs) == 0 {
-		return nil
-	}
-
-	action := func(ctx context.Context) error {
-		_, err := o.RemoveNetworks(ctx, containers.RemoveNetworksOptions{Networks: networkIDs, Force: true})
-		if err != nil {
-			// Network removal has been particularly problematic in the past, so we want extra logging.
-			log.V(1).Info("Some container networks could not be removed", "networks", networkIDs, "error", err.Error())
-		}
-		return err
-	}
-
-	verify := func(ctx context.Context) (any, error) {
-		networks, listErr := o.ListNetworks(ctx)
-
-		if listErr != nil {
-			return nil, listErr
-		}
-
-		existingNetworkIds := usvc_slices.Map[containers.ListedNetwork, string](networks, func(n containers.ListedNetwork) string {
-			return n.ID
-		})
-
-		deleted, _ := usvc_slices.Diff(networkIDs, existingNetworkIds)
-		if len(deleted) == len(networkIDs) {
-			return nil, nil
-		} else {
-			remaining, _ := usvc_slices.Diff(networkIDs, deleted)
-			return nil, fmt.Errorf("some networks still exist: %v", remaining)
-		}
-	}
-
-	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
-	return err
-}
-
 func inspectContainerVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
 	b := exponentialBackoff(volumeInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedVolume, error) {
-		inspectedVolumes, err := o.InspectVolumes(ctx, []string{volumeName})
+		inspectedVolumes, err := o.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
 		if err != nil {
 			return nil, err
 		}
@@ -542,7 +439,7 @@ func inspectContainerVolume(ctx context.Context, o containers.VolumeOrchestrator
 func inspectContainerVolumeIfExists(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
 	b := exponentialBackoff(volumeInspectionTimeout)
 	return resiliency.RetryGet(ctx, b, func() (*containers.InspectedVolume, error) {
-		inspectedVolumes, err := o.InspectVolumes(ctx, []string{volumeName})
+		inspectedVolumes, err := o.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
 		if errors.Is(err, containers.ErrNotFound) {
 			return nil, resiliency.Permanent(containers.ErrNotFound)
 		} else if err != nil {
@@ -559,7 +456,7 @@ func inspectContainerVolumeIfExists(ctx context.Context, o containers.VolumeOrch
 
 func removeVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) error {
 	action := func(ctx context.Context) error {
-		_, err := o.RemoveVolumes(ctx, []string{volumeName}, false /* force */)
+		_, err := o.RemoveVolumes(ctx, containers.RemoveVolumesOptions{Volumes: []string{volumeName}})
 		if errors.Is(err, containers.ErrObjectInUse) {
 			// Treat this error as permanent and let the caller decide how to handle it
 			// (e.g. wait, or retry, or try to remove containers that use the volume).
@@ -570,7 +467,7 @@ func removeVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 
 	verify := func(ctx context.Context) (any, error) {
 		// Do not use r.inspectContainerVolume() here, we do not want to retry this when the volume is not found
-		_, inspectErr := o.InspectVolumes(ctx, []string{volumeName})
+		_, inspectErr := o.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
 
 		if errors.Is(inspectErr, containers.ErrNotFound) {
 			return nil, nil // Volume is gone as expected
@@ -589,7 +486,7 @@ func removeVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 
 func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeName string) (*containers.InspectedVolume, error) {
 	action := func(ctx context.Context) error {
-		err := o.CreateVolume(ctx, volumeName)
+		err := o.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName})
 
 		if errors.Is(err, containers.ErrAlreadyExists) {
 			return backoff.Permanent(err)

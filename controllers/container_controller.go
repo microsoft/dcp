@@ -273,9 +273,9 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	reconciliationDelay, finalChange := computeAdditionalReconciliationDelay(change, container.Status.State == apiv1.ContainerStateRuntimeUnhealthy)
+	reconciliationDelay, reconciliationJitter, finalChange := computeAdditionalReconciliationDelay(change, container.Status.State == apiv1.ContainerStateRuntimeUnhealthy)
 
-	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &container, patch, finalChange, reconciliationDelay, nil, log)
+	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &container, patch, finalChange, reconciliationDelay, reconciliationJitter, nil, log)
 	return result, saveErr
 }
 
@@ -1294,14 +1294,12 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				//
 				// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
 				// The Network controller takes care of connecting the container resource to requested networks.
-				if !container.Spec.Persistent {
-					for i := range inspected.Networks {
-						networkID := inspected.Networks[i].Id
-						err = disconnectNetwork(startupCtx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
-						if err != nil {
-							log.Error(err, "could not detach network from the container", "ContainerID", rcd.containerID, "Network", networkID)
-							return err
-						}
+				for i := range inspected.Networks {
+					networkID := inspected.Networks[i].Id
+					err = disconnectNetwork(startupCtx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
+					if err != nil {
+						log.Error(err, "could not detach network from the container", "ContainerID", rcd.containerID, "Network", networkID)
+						return err
 					}
 				}
 			}
@@ -1530,6 +1528,10 @@ func (r *ContainerReconciler) removeContainerNetworkConnections(
 	container *apiv1.Container,
 	log logr.Logger,
 ) {
+	if container.Spec.Persistent {
+		return
+	}
+
 	var childNetworkConnections apiv1.ContainerNetworkConnectionList
 	if err := r.List(ctx, &childNetworkConnections, ctrl_client.InNamespace(container.GetNamespace()), ctrl_client.MatchingFields{ownerKey: string(container.Name)}); err != nil {
 		log.Error(err, "failed to list child ContainerNetworkConnection objects", "Container", container.NamespacedName().String())
@@ -1789,7 +1791,7 @@ func (r *ContainerReconciler) validateExistingEndpoint(
 
 	if endpoint.Spec.Address != hostAddress || endpoint.Spec.Port != hostPort {
 		log.V(1).Info("Existing Endpoint does not match host address and port derived from inspected Container port information", "EffectiveHostAddress", hostAddress, "HostPort", hostPort, "EndpointAddress", endpoint.Spec.Address, "EndpointPort", endpoint.Spec.Port)
-		return fmt.Errorf("Endpoint configuration does not match inspected Container port information")
+		return fmt.Errorf("endpoint configuration does not match inspected Container port information")
 	}
 
 	return nil
@@ -2092,7 +2094,7 @@ func (r *ContainerReconciler) handleHealthProbeResults() {
 			}
 
 			if report.Owner.Kind != containerKind {
-				r.Log.Error(fmt.Errorf("Container reconciler received health probe report for some other type of object"), "", "Kind", report.Owner.Kind)
+				r.Log.Error(fmt.Errorf("container reconciler received health probe report for some other type of object"), "", "Kind", report.Owner.Kind)
 				continue
 			}
 

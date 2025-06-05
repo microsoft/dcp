@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/tklauser/ps"
 
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,10 +34,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
@@ -90,14 +87,6 @@ func (rnc *runningNetworkState) UpdateFrom(other *runningNetworkState) bool {
 var _ Cloner[*runningNetworkState] = (*runningNetworkState)(nil)
 var _ UpdateableFrom[*runningNetworkState] = (*runningNetworkState)(nil)
 
-type networkHarvesterStatus uint32
-
-const (
-	networkHarvesterNotStarted networkHarvesterStatus = 0
-	networkHarversterRunning   networkHarvesterStatus = 1
-	networkHarvesterDone       networkHarvesterStatus = 2
-)
-
 type networkStateMap = ObjectStateMap[string, runningNetworkState, *runningNetworkState]
 
 type NetworkReconciler struct {
@@ -127,9 +116,6 @@ type NetworkReconciler struct {
 
 	// True if the container orchestrator is healthy, false otherwise
 	orchestratorHealthy *atomic.Bool
-
-	// Status of the (unused) network harvester
-	networkHarvesterStatus *atomic.Uint32
 }
 
 var (
@@ -138,23 +124,20 @@ var (
 
 func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *NetworkReconciler {
 	r := NetworkReconciler{
-		Client:                 client,
-		orchestrator:           orchestrator,
-		existingNetworks:       NewObjectStateMap[string, runningNetworkState](),
-		notifyNetworkChanged:   concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		networkEvtSub:          nil,
-		networkEvtCh:           nil,
-		networkEvtWorkerStop:   nil,
-		debouncer:              newReconcilerDebouncer[string](),
-		watchingResources:      &syncmap.Map[types.UID, bool]{},
-		lock:                   &sync.Mutex{},
-		lifetimeCtx:            lifetimeCtx,
-		Log:                    log,
-		orchestratorHealthy:    &atomic.Bool{},
-		networkHarvesterStatus: &atomic.Uint32{},
+		Client:               client,
+		orchestrator:         orchestrator,
+		existingNetworks:     NewObjectStateMap[string, runningNetworkState](),
+		notifyNetworkChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
+		networkEvtSub:        nil,
+		networkEvtCh:         nil,
+		networkEvtWorkerStop: nil,
+		debouncer:            newReconcilerDebouncer[string](),
+		watchingResources:    &syncmap.Map[types.UID, bool]{},
+		lock:                 &sync.Mutex{},
+		lifetimeCtx:          lifetimeCtx,
+		Log:                  log,
+		orchestratorHealthy:  &atomic.Bool{},
 	}
-
-	r.networkHarvesterStatus.Store(uint32(networkHarvesterNotStarted))
 
 	go r.onShutdown()
 
@@ -227,10 +210,6 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5)+5) * time.Second}, nil
 	}
 
-	if r.networkHarvesterStatus.CompareAndSwap(uint32(networkHarvesterNotStarted), uint32(networkHarversterRunning)) {
-		go r.harvestUnusedNetworks()
-	}
-
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
@@ -254,15 +233,18 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
+	// Reconcile again after a delay (with some fuzz to avoid stampedes) if needed
 	reconciliationDelay := defaultAdditionalReconciliationDelay
+	reconciliationJitter := defaultAdditionalReconciliationJitter
 	if (change & additionalReconciliationNeeded) == 0 {
 		// Schedule followup reconciliation on a random delay between 5 to 10 seconds (to avoid stampedes).
 		// The goal is to enable periodic reconciliation polling.
-		reconciliationDelay = time.Duration(rand.Intn(5)+5) * time.Second
+		reconciliationDelay = 5 * time.Second
+		reconciliationJitter = 5 * time.Second
 		change |= additionalReconciliationNeeded
 	}
 
-	result, err := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &network, patch, change, reconciliationDelay, nil, log)
+	result, err := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &network, patch, change, reconciliationDelay, reconciliationJitter, nil, log)
 	return result, err
 }
 
@@ -273,7 +255,35 @@ func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.Co
 
 	_, networkState := r.existingNetworks.BorrowByNamespacedName(network.NamespacedName())
 	if networkState != nil && networkState.state == apiv1.ContainerNetworkStateRunning {
-		err := removeNetwork(ctx, r.orchestrator, networkState.id, log)
+		inspectedNetwork, err := r.orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+			Networks: []string{networkState.id},
+		})
+
+		if errors.Is(err, containers.ErrNotFound) {
+			return nil
+		}
+
+		if err != nil {
+			return err
+		}
+
+		for _, container := range inspectedNetwork[0].Containers {
+			disconnectErr := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
+				Network:   networkState.id,
+				Container: container.Id,
+			})
+
+			if disconnectErr != nil && !errors.Is(disconnectErr, containers.ErrNotFound) {
+				err = errors.Join(err, disconnectErr)
+			}
+		}
+
+		if err != nil {
+			log.Info("could not disconnect all containers from the network, retrying...", "Network", network.Status.NetworkName)
+			return err
+		}
+
+		err = removeNetwork(ctx, r.orchestrator, networkState.id, log)
 		if err != nil {
 			return err
 		}
@@ -405,8 +415,11 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	if networkState.connections == nil {
 		networkState.connections = make(map[string]bool)
 
-		for _, containerID := range network.Status.ContainerIDs {
-			networkState.connections[containerID] = true
+		if !network.Spec.Persistent {
+			// If this is not a persistent network, we assume these were all connected by us
+			for _, containerID := range network.Status.ContainerIDs {
+				networkState.connections[containerID] = true
+			}
 		}
 	}
 
@@ -423,7 +436,8 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
-		if _, knownConnection := networkState.connections[containerID]; !knownConnection && network.Spec.Persistent {
+		_, knownConnection := networkState.connections[containerID]
+		if !knownConnection && network.Spec.Persistent {
 			// If this is a persistent network, we shouldn't disconnect any containers that we didn't explicitly connect
 			continue
 		}
@@ -670,212 +684,4 @@ func (r *NetworkReconciler) onShutdown() {
 	r.lock.Lock()
 	defer r.lock.Unlock()
 	r.cancelNetworkWatch()
-}
-
-func (r *NetworkReconciler) harvestUnusedNetworks() {
-	defer r.networkHarvesterStatus.Store(uint32(networkHarvesterDone))
-	log := r.Log.WithName("NetworkHarvester")
-
-	// Errors, if any, will be logged by the harvester function.
-	_ = DoHarvestUnusedNetworks(r.lifetimeCtx, r.orchestrator, log)
-}
-
-// This is a separate, public function to allow for easy testing.
-func DoHarvestUnusedNetworks(
-	ctx context.Context,
-	co containers.ContainerOrchestrator,
-	log logr.Logger,
-) error {
-	log.V(1).Info("Unused container network harvester started...")
-
-	// Even if we encounter errors, we are going to log them at Info level.
-	// Unused network harvesting is a best-effort operation,
-	// and the end user is not expected to take any action if an error occurs during the process.
-
-	// Do not let a panic in the harvester goroutine bring down the entire process.
-	defer func() { _ = resiliency.MakePanicError(recover(), log) }()
-
-	const networksWillNotBeHarvested = "; unused container networks will not be harvested"
-
-	networks, listErr := listNetworks(ctx, co)
-	if listErr != nil {
-		log.Info("Could not list container networks"+networksWillNotBeHarvested, "Error", listErr)
-		return listErr
-	}
-
-	// Only consider networks that are not persistent and have the creator process ID/start time label set.
-	networks = usvc_slices.Select(networks, func(n containers.ListedNetwork) bool {
-		return nonPersistentWithCreator(n.Labels)
-	})
-
-	if len(networks) == 0 {
-		log.V(1).Info("No container networks to harvest left after check for persistent networks and creator process ID/start time label")
-		return nil
-	}
-
-	procs, procsErr := ps.Processes()
-	if procsErr != nil {
-		log.Info("Could not list current processes"+networksWillNotBeHarvested, "Error", procsErr)
-		return procsErr
-	}
-
-	// Filter out networks that were created by processes that are still running.
-	abandonedNetworks := usvc_slices.Select(networks, func(n containers.ListedNetwork) bool {
-		return !creatorStillRunning(n.Labels, procs)
-	})
-
-	if len(abandonedNetworks) == 0 {
-		log.V(1).Info("No container networks to harvest left after eliminating networks that belong to running processes")
-		return nil
-	}
-
-	abandonedNetworkIDs := usvc_slices.Map[containers.ListedNetwork, string](abandonedNetworks, func(n containers.ListedNetwork) string { return n.ID })
-	inspectedNetworks, inspectErr := inspectManyNetworks(ctx, co, abandonedNetworkIDs)
-	if inspectErr != nil {
-		log.Info("Could not inspect container networks"+networksWillNotBeHarvested, "Error", inspectErr)
-		return inspectErr
-	}
-
-	// Filter out networks that have any non-DCP, or persistent containers attached to them.
-	unusedNetworks := harvestContainersFromNetworks(ctx, co, log, inspectedNetworks, procs)
-	if len(unusedNetworks) == 0 {
-		log.V(1).Info("No container networks to harvest left after eliminating networks with attached containers")
-		return nil
-	}
-
-	unusedNetworkNames := usvc_slices.Map[containers.InspectedNetwork, string](unusedNetworks, func(n containers.InspectedNetwork) string { return n.Name })
-	log.V(1).Info("Removing unused container networks...", "Networks", unusedNetworkNames)
-	ususedNetworkIDs := usvc_slices.Map[containers.InspectedNetwork, string](unusedNetworks, func(n containers.InspectedNetwork) string { return n.Id })
-
-	removeErr := removeManyNetworks(ctx, co, ususedNetworkIDs, log)
-	if removeErr != nil {
-		log.Info("Could not remove unused container networks"+networksWillNotBeHarvested, "Error", removeErr)
-		return removeErr
-	} else {
-		log.V(1).Info("Unused container networks have been removed")
-		return nil
-	}
-}
-
-// Returns true if the set of given labels belongs to an object (network or container) that is non-persistent
-// and has a creator process ID/start time label set (and thus was created by DCP).
-func nonPersistentWithCreator(labels map[string]string) bool {
-	nonPersistent := maps.HasExactValue(labels, PersistentLabel, "false")
-	_, hasValidPid := maps.TryGetValidValue(labels, CreatorProcessIdLabel, func(v string) bool {
-		_, err := process.StringToPidT(v)
-		return err == nil
-	})
-	_, hasValidStartTime := maps.TryGetValidValue(labels, CreatorProcessStartTimeLabel, func(v string) bool {
-		_, err := time.Parse(osutil.RFC3339MiliTimestampFormat, v)
-		return err == nil
-	})
-	return nonPersistent && hasValidPid && hasValidStartTime
-}
-
-// Returns true if the set of given labels belongs to an object (network or container) that was created
-// by a DCP process that is still running.
-func creatorStillRunning(labels map[string]string, procs []ps.Process) bool {
-	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
-	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
-
-	return usvc_slices.Any(procs, func(p ps.Process) bool {
-		pPid, pPidErr := process.IntToPidT(p.PID())
-		if pPidErr != nil {
-			return true // Can't convert the PID, so assume it's a running process and the network is off limits.
-		}
-		return pPid == creatorPID && process.HasExpectedStartTime(p, creatorStartTime)
-	})
-}
-
-// Takes a list of container networks that have been "abandoned" (i.e. they are non-persistent and
-// have been created by a DCP process that is no longer running) and tries to figure out which ones
-// can be deleted if the non-persistent containers attached to them (if any) are also deleted.
-// Returns the list of networks that can be deleted ("unused" networks).
-func harvestContainersFromNetworks(
-	ctx context.Context,
-	co containers.ContainerOrchestrator,
-	log logr.Logger,
-	abandonedNetworks []containers.InspectedNetwork,
-	procs []ps.Process,
-) []containers.InspectedNetwork {
-	networksWithNoContainers := usvc_slices.Select(abandonedNetworks, func(n containers.InspectedNetwork) bool {
-		return len(n.Containers) == 0
-	})
-
-	if len(networksWithNoContainers) == len(abandonedNetworks) {
-		log.V(1).Info("There are no containers connected to abandoned networks, so all abandoned networks can be removed.")
-		return abandonedNetworks
-	}
-
-	type containerNetwork = struct {
-		networkID   string
-		containerID string
-	}
-
-	// Compute all (containerID, networkID) pairs that correspond to containers connected to abandoned networks.
-	containerNetworkPairs := usvc_slices.Flatten(
-		usvc_slices.Map[containers.InspectedNetwork, []containerNetwork](abandonedNetworks, func(n containers.InspectedNetwork) []containerNetwork {
-			return usvc_slices.Map[containers.InspectedNetworkContainer, containerNetwork](n.Containers, func(c containers.InspectedNetworkContainer) containerNetwork {
-				return containerNetwork{
-					networkID:   n.Id,
-					containerID: c.Id,
-				}
-			})
-		}),
-	)
-
-	// Compute set of unique container IDs connected to abandoned networks
-	containerIDs := usvc_slices.Unique(
-		usvc_slices.Map[containerNetwork, string](containerNetworkPairs, func(nc containerNetwork) string {
-			return nc.containerID
-		}),
-	)
-
-	inspectedContainers, inspectErr := inspectManyContainers(ctx, co, containerIDs)
-	if inspectErr != nil {
-		log.Info("Could not inspect some containers that are connected to abandoned Docker networks. Some container networks may not be harvested.", "Error", inspectErr)
-
-		// Assume all containers connected to networks should not be removed.
-		// The only networks that can be removed are those that have no containers connected to them.
-		return networksWithNoContainers
-	}
-
-	// Figure out which containers are non-persistent and abandoned by DCP.
-	abandonedContainers := usvc_slices.Select(inspectedContainers, func(c containers.InspectedContainer) bool {
-		return nonPersistentWithCreator(c.Labels) && !creatorStillRunning(c.Labels, procs)
-	})
-
-	if len(abandonedContainers) == 0 {
-		log.V(1).Info("There are no abandoned containers connected to abandoned networks. Only abandoned networks with no containers can be removed.")
-		return networksWithNoContainers
-	}
-
-	// Try to remove all abandoned containers
-	abandonedContainerIDs := usvc_slices.Map[containers.InspectedContainer, string](abandonedContainers, func(c containers.InspectedContainer) string { return c.Id })
-	removeContainersErr := removeManyContainers(ctx, co, abandonedContainerIDs)
-	if removeContainersErr != nil {
-		log.Info("Could not remove some containers that are connected to abandoned Docker networks. Some container networks may not be harvested.", "Error", removeContainersErr)
-		return networksWithNoContainers
-	}
-
-	if len(abandonedContainers) != len(inspectedContainers) {
-		log.V(1).Info("There are some containers connected to abandoned networks that are not abandoned themselves. Only abandoned networks with no containers can be removed.")
-	}
-
-	// Compute remaining networks with containers
-	networkIDsWithContainers := usvc_slices.Unique(
-		usvc_slices.Map[containerNetwork, string](
-			usvc_slices.Select(containerNetworkPairs, func(nc containerNetwork) bool {
-				return !usvc_slices.Contains(abandonedContainerIDs, nc.containerID)
-			}),
-			func(nc containerNetwork) string { return nc.networkID },
-		),
-	)
-
-	// After abandoned containers have been removed, re-compute all abandoned networks eligible for removal
-	networksWithNoContainers = usvc_slices.Select(abandonedNetworks, func(n containers.InspectedNetwork) bool {
-		return !usvc_slices.Contains(networkIDsWithContainers, n.Id)
-	})
-
-	return networksWithNoContainers
 }

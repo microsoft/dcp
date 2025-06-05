@@ -291,49 +291,71 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 	return newStatus
 }
 
-func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, name string) error {
-	cmd := makeDockerCommand("volume", "create", name)
+func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+	cmd := makeDockerCommand("volume", "create", options.Name)
 	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		// Note: unlike Podman, Docker does not return an error if the volume already exists.
 		return err
 	}
-	return containers.ExpectCliStrings(outBuf, []string{name})
+
+	return containers.ExpectCliStrings(outBuf, []string{options.Name})
 }
 
-func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, volumes []string) ([]containers.InspectedVolume, error) {
-	if len(volumes) == 0 {
+// InspectVolumes returns the details of successfully inspected volumes, and a slice of all errors encountered during the inspection.
+func (dco *DockerCliOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
+	if len(options.Volumes) == 0 {
 		return nil, fmt.Errorf("must specify at least one volume")
 	}
 
 	cmd := makeDockerCommand(append(
 		[]string{"volume", "inspect", "--format", "{{json .}}"},
-		volumes...)...,
+		options.Volumes...)...,
 	)
 
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newVolumeNotFoundErrorMatch))
 	}
 
-	return asObjects(outBuf, unmarshalVolume)
+	inspectedVolumes, unmarshalErr := asObjects(outBuf, unmarshalVolume)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedVolumes) < len(options.Volumes) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v volumes were successfully inspected", len(inspectedVolumes), len(options.Volumes))))
+	}
+
+	return inspectedVolumes, err
 }
 
-func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, volumes []string, force bool) ([]string, error) {
+func (dco *DockerCliOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	if len(options.Volumes) == 0 {
+		return nil, fmt.Errorf("must specify at least one volume")
+	}
+
 	args := []string{"volume", "rm"}
-	if force {
+
+	if options.Force {
 		args = append(args, "--force")
 	}
-	args = append(args, volumes...)
+
+	args = append(args, options.Volumes...)
+
 	cmd := makeDockerCommand(args...)
+
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveVolumes", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(volumes)), volumeInUseErrorMatch.MaxObjects(len(volumes)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newVolumeNotFoundErrorMatch.MaxObjects(len(options.Volumes)), volumeInUseErrorMatch.MaxObjects(len(options.Volumes))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return removed, containers.ExpectCliStrings(outBuf, volumes)
+
+	if len(removed) < len(options.Volumes) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v volumes were successfully removed", len(removed), len(options.Volumes))))
+	}
+
+	return removed, err
 }
 
 func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
@@ -427,21 +449,29 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	return nil
 }
 
-func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, images []string) ([]containers.InspectedImage, error) {
-	if len(images) == 0 {
+func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, options containers.InspectImagesOptions) ([]containers.InspectedImage, error) {
+	if len(options.Images) == 0 {
 		return nil, fmt.Errorf("must specify at least one image")
 	}
 
 	cmd := makeDockerCommand(append(
 		[]string{"image", "inspect", "--format", "{{json .}}"},
-		images...)...,
+		options.Images...)...,
 	)
+
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(images)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Images))))
 	}
 
-	return asObjects(outBuf, unmarshalImage)
+	inspectedImages, unmarshalErr := asObjects(outBuf, unmarshalImage)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedImages) < len(options.Images) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v images were successfully inspected", len(inspectedImages), len(options.Images))))
+	}
+
+	return inspectedImages, err
 }
 
 func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
@@ -632,86 +662,136 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	return exitCh, nil
 }
 
-func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, names []string) ([]containers.InspectedContainer, error) {
-	if len(names) == 0 {
+func (dco *DockerCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
+	args := []string{"container", "ls", "--no-trunc"}
+
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+
+		args = append(args, "--filter", filter)
+	}
+
+	args = append(args, "--format", "{{json .}}")
+
+	cmd := makeDockerCommand(args...)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "ListContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	if err != nil {
+		// If the command failed, return the error
+		return nil, errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	return asObjects(outBuf, unmarshalListedContainer)
+}
+
+func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	cmd := makeDockerCommand(append(
 		[]string{"container", "inspect", "--format", "{{json .}}"},
-		names...)...,
+		options.Containers...)...,
 	)
+
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
-	return asObjects(outBuf, unmarshalContainer)
+	inspectedContainers, unmarshalErr := asObjects(outBuf, unmarshalContainer)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspectedContainers) < len(options.Containers) {
+		// We're returning an incomplete set of inspected containers
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v containers were successfully inspected", len(inspectedContainers), len(options.Containers))))
+	}
+
+	return inspectedContainers, err
 }
 
-func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, containerIDs []string, streamOptions containers.StreamCommandOptions) ([]string, error) {
-	if len(containerIDs) == 0 {
+func (dco *DockerCliOrchestrator) StartContainers(ctx context.Context, options containers.StartContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "start"}
-	args = append(args, containerIDs...)
+	args = append(args, options.Containers...)
 
 	cmd := makeDockerCommand(args...)
-	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StartContainers", cmd, streamOptions.StdOutStream, streamOptions.StdErrStream, ordinaryDockerCommandTimeout)
+
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StartContainers", cmd, options.StdOutStream, options.StdErrStream, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(containerIDs)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	started := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return started, containers.ExpectCliStrings(outBuf, containerIDs)
+
+	if len(started) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v containers were successfully started", len(started), len(options.Containers))))
+	}
+
+	return started, err
 }
 
-func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, names []string, secondsToKill uint) ([]string, error) {
-	if len(names) == 0 {
+func (dco *DockerCliOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "stop"}
 	var timeout time.Duration = ordinaryDockerCommandTimeout
-	if secondsToKill > 0 {
-		args = append(args, "--time", fmt.Sprintf("%d", secondsToKill))
-		timeout = time.Duration(secondsToKill)*time.Second + ordinaryDockerCommandTimeout
+	if options.SecondsToKill > 0 {
+		args = append(args, "--time", fmt.Sprintf("%d", options.SecondsToKill))
+		timeout = time.Duration(options.SecondsToKill)*time.Second + ordinaryDockerCommandTimeout
 	}
-	args = append(args, names...)
+	args = append(args, options.Containers...)
 
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "StopContainers", cmd, nil, nil, timeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	stopped := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return stopped, containers.ExpectCliStrings(outBuf, names)
+
+	if len(stopped) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v containers were successfully stopped", len(stopped), len(options.Containers))))
+	}
+
+	return stopped, err
 }
 
-func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, names []string, force bool) ([]string, error) {
-	if len(names) == 0 {
+func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
 		return nil, fmt.Errorf("must specify at least one container")
 	}
 
 	args := []string{"container", "rm", "-v"}
-	if force {
+	if options.Force {
 		args = append(args, "--force")
 	}
-	args = append(args, names...)
+	args = append(args, options.Containers...)
 
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveContainers", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(names)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Containers))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return removed, containers.ExpectCliStrings(outBuf, names)
+
+	if len(removed) < len(options.Containers) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v containers were successfully removed", len(removed), len(options.Containers))))
+	}
+
+	return removed, err
 }
 
 func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
@@ -745,7 +825,7 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	cmd.Stdin = buffer
 	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "CopyFile", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf)
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -807,8 +887,9 @@ func (dco *DockerCliOrchestrator) CreateNetwork(ctx context.Context, options con
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return "", normalizeCliErrors(err, errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1), newNetworkPoolNotAvailableError)
+		return "", errors.Join(err, normalizeCliErrors(errBuf, newNetworkAlreadyExistsErrorMatch.MaxObjects(1), newNetworkPoolNotAvailableError))
 	}
+
 	return asId(outBuf)
 }
 
@@ -826,12 +907,17 @@ func (dco *DockerCliOrchestrator) RemoveNetworks(ctx context.Context, options co
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RemoveNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks))))
 	}
 
 	nonEmpty := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
 	removed := slices.Map[[]byte, string](nonEmpty, func(bs []byte) string { return string(bs) })
-	return removed, containers.ExpectCliStrings(outBuf, options.Networks)
+
+	if len(removed) < len(options.Networks) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v networks were successfully removed", len(removed), len(options.Networks))))
+	}
+
+	return removed, err
 }
 
 func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
@@ -845,10 +931,17 @@ func (dco *DockerCliOrchestrator) InspectNetworks(ctx context.Context, options c
 	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks)))
+		err = errors.Join(err, normalizeCliErrors(errBuf, newNetworkNotFoundErrorMatch.MaxObjects(len(options.Networks))))
 	}
 
-	return asObjects(outBuf, unmarshalNetwork)
+	inspected, unmarshalErr := asObjects(outBuf, unmarshalNetwork)
+	err = errors.Join(err, unmarshalErr)
+
+	if len(inspected) < len(options.Networks) {
+		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v networks were successfully inspected", len(inspected), len(options.Networks))))
+	}
+
+	return inspected, err
 }
 
 func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options containers.ConnectNetworkOptions) error {
@@ -863,8 +956,9 @@ func (dco *DockerCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	cmd := makeDockerCommand(args...)
 	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newEndpointAlreadyExistsErrorMatch)
+		return errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newEndpointAlreadyExistsErrorMatch))
 	}
+
 	return nil
 }
 
@@ -880,16 +974,31 @@ func (dco *DockerCliOrchestrator) DisconnectNetwork(ctx context.Context, options
 	cmd := makeDockerCommand(args...)
 	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "DisconnectNetwork", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return normalizeCliErrors(err, errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1))
+		return errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1)))
 	}
+
 	return nil
 }
 
-func (dco *DockerCliOrchestrator) ListNetworks(ctx context.Context) ([]containers.ListedNetwork, error) {
-	cmd := makeDockerCommand("network", "ls", "--format", "{{json .}}")
+func (dco *DockerCliOrchestrator) ListNetworks(ctx context.Context, options containers.ListNetworksOptions) ([]containers.ListedNetwork, error) {
+	args := []string{"network", "ls"}
+
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+
+		args = append(args, "--filter", filter)
+	}
+
+	args = append(args, "--format", "{{json .}}")
+
+	cmd := makeDockerCommand(args...)
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "ListNetworks", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		return nil, normalizeCliErrors(err, errBuf)
+		return nil, errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return asObjects(outBuf, unmarshalListedNetwork)
@@ -1102,20 +1211,7 @@ func (dco *DockerCliOrchestrator) runBufferedDockerCommand(
 		}
 	}
 
-	if err != nil {
-		stderr := ""
-		stdout := ""
-		if errBuf.Len() > 0 {
-			stderr = errBuf.String()
-		}
-		if outBuf.Len() > 0 {
-			stdout = outBuf.String()
-		}
-
-		return outBuf, errBuf, fmt.Errorf("%w: command output: Stdout: '%s' Stderr: '%s'", err, stdout, stderr)
-	}
-
-	return outBuf, errBuf, nil
+	return outBuf, errBuf, err
 }
 
 func makeDockerCommand(args ...string) *exec.Cmd {
@@ -1124,6 +1220,8 @@ func makeDockerCommand(args ...string) *exec.Cmd {
 }
 
 // Docker CLI returns JSON lines for most output, so split the lines before unmarshaling.
+// This function can parshally succeed, so it returns a slice of successfully unmarshaled
+// objects and a slice of all errors that occurred during unmarshaling.
 func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T, error) {
 	if b == nil {
 		return nil, fmt.Errorf("the Docker command timed out without returning any data")
@@ -1132,6 +1230,7 @@ func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T,
 	retval := []T{}
 	chunks := bytes.Split(b.Bytes(), osutil.LF())
 
+	var err error
 	for _, chunk := range chunks {
 		chunk = bytes.TrimSpace(chunk)
 		if len(chunk) == 0 {
@@ -1139,15 +1238,15 @@ func asObjects[T any](b *bytes.Buffer, unmarshalFn func([]byte, *T) error) ([]T,
 		}
 
 		var obj T
-		err := unmarshalFn(chunk, &obj)
-		if err != nil {
-			return nil, err
+		unmarshalErr := unmarshalFn(chunk, &obj)
+		if unmarshalErr != nil {
+			err = errors.Join(err, errors.Join(containers.ErrUnmarshalling, unmarshalErr))
 		} else {
 			retval = append(retval, obj)
 		}
 	}
 
-	return retval, nil
+	return retval, err
 }
 
 func asId(b *bytes.Buffer) (string, error) {
@@ -1183,6 +1282,33 @@ func unmarshalImage(data []byte, ic *containers.InspectedImage) error {
 
 	ic.Id = dii.Id
 	ic.Labels = dii.Config.Labels
+
+	return nil
+}
+
+func unmarshalListedContainer(data []byte, lc *containers.ListedContainer) error {
+	if data == nil {
+		return fmt.Errorf("the Docker command timed out without returning container data")
+	}
+
+	var dlc dockerListedContainer
+	err := json.Unmarshal(data, &dlc)
+	if err != nil {
+		return err
+	}
+
+	labels := make(map[string]string)
+	for _, label := range strings.Split(dlc.Labels, ",") {
+		key, value, _ := strings.Cut(label, "=")
+		labels[key] = value
+	}
+
+	lc.Id = dlc.Id
+	lc.Name = strings.Split(dlc.Names, ",")[0]
+	lc.Image = dlc.Image
+	lc.Status = dlc.State
+	lc.Labels = labels
+	lc.Networks = strings.Split(dlc.Networks, ",")
 
 	return nil
 }
@@ -1298,6 +1424,15 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 	}
 
 	return nil
+}
+
+type dockerListedContainer struct {
+	Id       string                     `json:"ID"`
+	Names    string                     `json:"Names,omitempty"`
+	Image    string                     `json:"Image,omitempty"`
+	State    containers.ContainerStatus `json:"State,omitempty"`
+	Labels   string                     `json:"Labels,omitempty"`
+	Networks string                     `json:"Networks,omitempty"`
 }
 
 // dockerInspectedImageXxx correspond to data returned by "docker image inspect" command.
@@ -1467,11 +1602,12 @@ func unmarshalListedNetwork(data []byte, net *containers.ListedNetwork) error {
 	return nil
 }
 
-func normalizeCliErrors(originalErr error, errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
+func normalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...containers.ErrorMatch) error {
 	errorMatches = append(errorMatches, newDockerNotRunningError)
-	return containers.NormalizeCliError(originalErr, errBuf, errorMatches...)
+	return containers.NormalizeCliErrors(errBuf, errorMatches...)
 }
 
 var _ containers.VolumeOrchestrator = (*DockerCliOrchestrator)(nil)
+var _ containers.ImageOrchestrator = (*DockerCliOrchestrator)(nil)
 var _ containers.ContainerOrchestrator = (*DockerCliOrchestrator)(nil)
 var _ containers.NetworkOrchestrator = (*DockerCliOrchestrator)(nil)

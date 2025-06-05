@@ -41,7 +41,9 @@ func ensureContainerRunning(t *testing.T, ctx context.Context, container *apiv1.
 func ensureContainerRunningEx(t *testing.T, ctx context.Context, client ctrl_client.Client, co *ctrl_testutil.TestContainerOrchestrator, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
 	updated := ensureContainerState(t, ctx, client, container, apiv1.ContainerStateRunning)
 
-	inspectedContainers, err := co.InspectContainers(ctx, []string{updated.Status.ContainerID})
+	inspectedContainers, err := co.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updated.Status.ContainerID},
+	})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspectedContainers, 1, "expected to find a single container")
 
@@ -615,7 +617,9 @@ func TestContainerDelayStart(t *testing.T) {
 		return c.Status.State == apiv1.ContainerStateExited, nil
 	})
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -629,7 +633,9 @@ func TestContainerDelayStart(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err = containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
 }
@@ -707,7 +713,9 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 		return c.Status.State == apiv1.ContainerStateExited, nil
 	})
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -721,7 +729,9 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err = containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -770,7 +780,9 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -821,7 +833,9 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 		return c.Status.State == apiv1.ContainerStateExited, nil
 	})
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -835,7 +849,9 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err = containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -878,7 +894,9 @@ func TestContainerStop(t *testing.T) {
 		return c.Status.State == apiv1.ContainerStateExited, nil
 	})
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
@@ -892,7 +910,9 @@ func TestContainerStop(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server, '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err = containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err = containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
 }
@@ -1005,7 +1025,9 @@ func TestContainerRestart(t *testing.T) {
 		return statusUpdated, nil
 	})
 
-	_, err = containerOrchestrator.StartContainers(ctx, []string{updatedCtr.Status.ContainerID}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "could not simulate container start")
 
 	t.Log("Ensure container state is 'running'...")
@@ -1259,7 +1281,9 @@ func TestPersistentContainerDeletion(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, inspected[0].Status, containers.ContainerStatusRunning, "expected the container to be running")
@@ -1291,7 +1315,9 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -1311,7 +1337,9 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 }
@@ -1355,7 +1383,9 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -1375,7 +1405,9 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 }
@@ -1419,7 +1451,9 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -1439,7 +1473,9 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 }
@@ -1508,7 +1544,9 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	})
 	require.NoError(t, err, "could not create container resource")
 
-	_, err = containerOrchestrator.StartContainers(ctx, []string{id}, containers.StreamCommandOptions{})
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
 	require.NoError(t, err, "could not start container resource")
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
@@ -1528,7 +1566,9 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	t.Logf("Ensure that Container object really disappeared from the API server '%s'...", ctr.ObjectMeta.Name)
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
 
-	inspected, err := containerOrchestrator.InspectContainers(ctx, []string{updatedCtr.Status.ContainerID})
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 
@@ -1560,7 +1600,10 @@ func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
 	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
 
 	t.Logf("Deleting Container resource '%s'...", updatedCtr.Status.ContainerID)
-	_, err = containerOrchestrator.RemoveContainers(ctx, []string{updatedCtr.Status.ContainerID}, true /* force */)
+	_, err = containerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+		Force:      true,
+	})
 	require.NoError(t, err, "could not remove container resource '%s'", updatedCtr.Status.ContainerID)
 
 	t.Logf("Ensure Container object status becomes 'Unknown'...")

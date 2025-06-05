@@ -22,7 +22,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
 type objectChange int
@@ -35,6 +35,7 @@ const (
 	additionalReconciliationNeeded objectChange = 0x8
 
 	defaultAdditionalReconciliationDelay            = 2 * time.Second
+	defaultAdditionalReconciliationJitter           = 500 * time.Millisecond
 	minimumLongAdditionalReconciliationDelaySeconds = 5
 	conflictRequeueDelay                            = 100 * time.Millisecond
 	reconciliationDebounceDelay                     = 500 * time.Millisecond
@@ -45,11 +46,18 @@ const (
 	CreatorProcessStartTimeLabel = "com.microsoft.developer.usvc-dev.creatorProcessStartTime"
 
 	MaxConcurrentReconciles = 6
+
+	numPostfixBytes = 6
+)
+
+var (
+	// Base32 encoder used to generate unique postfixes for Executable replicas.
+	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
 )
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
-	if slices.Contains(finalizers, finalizer) {
+	if usvc_slices.Contains(finalizers, finalizer) {
 		return noChange
 	}
 
@@ -61,7 +69,7 @@ func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 
 func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
-	i := slices.Index(finalizers, finalizer)
+	i := usvc_slices.Index(finalizers, finalizer)
 	if i == -1 {
 		return noChange
 	}
@@ -71,15 +79,6 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	log.V(1).Info("removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
 }
-
-const (
-	numPostfixBytes = 6
-)
-
-var (
-	// Base32 encoder used to generate unique postfixes for Executable replicas.
-	randomNameEncoder = base32.HexEncoding.WithPadding(base32.NoPadding)
-)
 
 // Returns a name made probabilistically unique by appending a random postfix,
 // together with the used random postfix and an error, if any.
@@ -101,13 +100,15 @@ func MakeUniqueName(prefix string) (string, string, error) {
 // The passed "useLongDelay" parameter determines whether the delay should be "standard" or "long".
 // Passing true will result in a longer delay with a random component,
 // and will also adjust the returned object change to force additional reconciliation.
-func computeAdditionalReconciliationDelay(change objectChange, useLongDelay bool) (time.Duration, objectChange) {
+func computeAdditionalReconciliationDelay(change objectChange, useLongDelay bool) (time.Duration, time.Duration, objectChange) {
 	reconciliationDelay := defaultAdditionalReconciliationDelay
+	reconciliationJitter := defaultAdditionalReconciliationJitter
 	if useLongDelay {
-		reconciliationDelay = time.Duration(mathrand.Intn(minimumLongAdditionalReconciliationDelaySeconds)+minimumLongAdditionalReconciliationDelaySeconds) * time.Second
+		reconciliationDelay = minimumLongAdditionalReconciliationDelaySeconds
+		reconciliationJitter = minimumLongAdditionalReconciliationDelaySeconds
 		change |= additionalReconciliationNeeded
 	}
-	return reconciliationDelay, change
+	return reconciliationDelay, reconciliationJitter, change
 }
 
 func saveChanges[T commonapi.ObjectStruct, PCT commonapi.PCopyableObjectStruct[T]](
@@ -125,7 +126,8 @@ func saveChanges[T commonapi.ObjectStruct, PCT commonapi.PCopyableObjectStruct[T
 		obj,
 		patch,
 		change,
-		defaultAdditionalReconciliationDelay,
+		defaultAdditionalReconciliationDelay, // Default delay + up to 500ms of random jitter to avoid thundering herd
+		defaultAdditionalReconciliationJitter,
 		onSuccessfulSave,
 		log,
 	)
@@ -138,6 +140,7 @@ func saveChangesWithCustomReconciliationDelay[T commonapi.ObjectStruct, PCT comm
 	patch ctrl_client.Patch,
 	change objectChange,
 	customReconciliationDelay time.Duration,
+	customReconciliationJitter time.Duration,
 	onSuccessfulSave func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
@@ -149,6 +152,10 @@ func saveChangesWithCustomReconciliationDelay[T commonapi.ObjectStruct, PCT comm
 			if onSuccessfulSave != nil {
 				onSuccessfulSave()
 			}
+		}
+
+		if customReconciliationJitter > 0 {
+			customReconciliationDelay += time.Duration(mathrand.Intn(int(customReconciliationJitter)))
 		}
 
 		// Apply one update per reconciliation function invocation,

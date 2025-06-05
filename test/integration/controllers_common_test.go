@@ -237,9 +237,10 @@ func StartTestEnvironment(
 			mgr.GetClient(),
 			log.WithName("ServiceReconciler"),
 			controllers.ServiceReconcilerConfig{
-				ProcessExecutor:               pe,
-				CreateProxy:                   ctrl_testutil.NewTestProxy,
-				AdditionalReconciliationDelay: 200 * time.Millisecond,
+				ProcessExecutor:                pe,
+				CreateProxy:                    ctrl_testutil.NewTestProxy,
+				AdditionalReconciliationDelay:  200 * time.Millisecond,
+				AdditionalReconciliationJitter: 1 * time.Millisecond,
 			},
 		)
 		if err = serviceR.SetupWithManager(mgr, instanceTag+"-ServiceReconciler"); err != nil {
