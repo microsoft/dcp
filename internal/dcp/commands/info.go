@@ -17,7 +17,7 @@ import (
 )
 
 // Default timeout for the info command
-var timeout = 20
+var timeout = 10
 
 func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 	infoCmd := &cobra.Command{
@@ -29,7 +29,7 @@ func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 	}
 
 	container_flags.EnsureRuntimeFlag(infoCmd.PersistentFlags())
-	infoCmd.Flags().IntVarP(&timeout, "timeout", "t", 20, "Timeout for the command in seconds")
+	infoCmd.Flags().IntVarP(&timeout, "timeout", "t", 10, "Timeout for the command in seconds")
 
 	return infoCmd, nil
 }
