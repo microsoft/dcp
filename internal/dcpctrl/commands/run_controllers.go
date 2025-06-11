@@ -136,9 +136,29 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			},
 		)
 
-		_ = controllers.HarvestAbandonedContainerResources(ctrlCtx, containerOrchestrator, log.WithName("ResourceCleanup"))
+		// Run the harvester in a separate goroutine to ensure that it does not block controller startup
+		harvester := controllers.NewResourceHarvester()
+		go harvester.Harvest(ctrlCtx, containerOrchestrator, log.WithName("ResourceCleanup"))
 
 		const defaultControllerName = ""
+
+		serviceCtrl := controllers.NewServiceReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			log.WithName("ServiceReconciler"),
+			controllers.ServiceReconcilerConfig{
+				ProcessExecutor: processExecutor,
+			},
+		)
+		if err = serviceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "unable to set up Service controller")
+			return err
+		}
+
+		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
+			log.Error(err, "unable to set up Endpoint owner index")
+			return err
+		}
 
 		exCtrl := controllers.NewExecutableReconciler(
 			ctrlCtx,
@@ -202,27 +222,10 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			mgr.GetClient(),
 			log.WithName("NetworkReconciler"),
 			containerOrchestrator,
+			harvester,
 		)
 		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "unable to setup a ContainerNetwork controller")
-			return err
-		}
-
-		serviceCtrl := controllers.NewServiceReconciler(
-			ctrlCtx,
-			mgr.GetClient(),
-			log.WithName("ServiceReconciler"),
-			controllers.ServiceReconcilerConfig{
-				ProcessExecutor: processExecutor,
-			},
-		)
-		if err = serviceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up Service controller")
-			return err
-		}
-
-		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
-			log.Error(err, "unable to set up Endpoint owner index")
 			return err
 		}
 
