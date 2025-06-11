@@ -238,8 +238,21 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	})
 	require.NoError(t, netCreateErr)
 
-	harvestErr := controllers.HarvestAbandonedContainerResources(ctx, co, log)
-	require.NoError(t, harvestErr, "could not harvest unused networks")
+	// Network that has only DCP abandoned, non-persistent containers attached to it (should be removed)
+	const protectedPersistentNetwork = prefix + "persistent-protected"
+	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: protectedPersistentNetwork,
+		Labels: map[string]string{
+			controllers.PersistentLabel:              "false",
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		},
+	})
+	require.NoError(t, netCreateErr)
+
+	harvester := controllers.NewResourceHarvester()
+	require.True(t, harvester.TryProtectNetwork(ctx, protectedPersistentNetwork), "could not protect network")
+	harvester.Harvest(ctx, co, log)
 
 	remaining, listNetworksErr := co.ListNetworks(ctx, containers.ListNetworksOptions{})
 	require.NoError(t, listNetworksErr, "could not list networks")
@@ -253,6 +266,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		netWithNonDcpContainers,
 		netWithMixedContainers,
 		netWithAbandonedPersistentContainer,
+		protectedPersistentNetwork,
 		co.DefaultNetworkName(),
 		"host",
 		"none",

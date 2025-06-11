@@ -3,10 +3,12 @@ package controllers
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_maps "github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
@@ -15,14 +17,78 @@ import (
 	"github.com/tklauser/ps"
 )
 
+type resourceHarvester struct {
+	// This is a cache of DCP processes that are currently running.
+	// It is used to avoid querying the process multiple times.
+	processes map[process.Pid_t]bool
+
+	// Map of protected networks that should not be harvested.
+	protectedNetworks map[string]bool
+
+	// Synchronization for network harvesting.
+	networkHarvestSync *concurrency.SyncChannel
+
+	// Has the harvester started? Ensures that we only run the harvester once.
+	started atomic.Bool
+
+	// Has the harvester completed? Used to check if harvesting is complete.
+	done atomic.Bool
+}
+
+func NewResourceHarvester() *resourceHarvester {
+	return &resourceHarvester{
+		processes:          make(map[process.Pid_t]bool),
+		protectedNetworks:  make(map[string]bool),
+		networkHarvestSync: concurrency.NewSyncChannel(),
+		started:            atomic.Bool{},
+		done:               atomic.Bool{},
+	}
+}
+
+// This is a mock function to allow for testing controller interactions with the harvester
+// without actually harvesting resources. It simply waits a bit and then sets the done flag
+// to true.
+func (rh *resourceHarvester) MockHarvest(
+	ctx context.Context,
+	sleepDuration time.Duration,
+	log logr.Logger,
+) {
+	select {
+	case <-time.After(sleepDuration):
+		log.V(1).Info("mock resource harvester completed")
+		rh.done.Store(true)
+		return
+	case <-ctx.Done():
+		log.V(1).Info("mock resource harvester cancelled")
+		return
+	}
+}
+
+func (rh *resourceHarvester) TryProtectNetwork(
+	ctx context.Context,
+	networkName string,
+) bool {
+	// Harvesting is already done, so nothing further will be harvested.
+	if rh.IsDone() {
+		return true
+	}
+
+	if !rh.networkHarvestSync.TryLock() {
+		// If we cannot aquire the lock, the harvester is currently removing networks
+		return false
+	}
+	defer rh.networkHarvestSync.Unlock()
+
+	rh.protectedNetworks[networkName] = true
+	return true
+}
+
 // This is a separate, public function to allow for easy testing.
-func HarvestAbandonedContainerResources(
+func (rh *resourceHarvester) Harvest(
 	ctx context.Context,
 	co containers.ContainerOrchestrator,
 	log logr.Logger,
-) error {
-	log.V(1).Info("unused container resource harvester started...")
-
+) {
 	// Even if we encounter errors, we are going to log them at Info level.
 	// Unused network harvesting is a best-effort operation,
 	// and the end user is not expected to take any action if an error occurs during the process.
@@ -30,29 +96,33 @@ func HarvestAbandonedContainerResources(
 	// Do not let a panic in the harvester goroutine bring down the entire process.
 	defer func() { _ = resiliency.MakePanicError(recover(), log) }()
 
-	procs, procsErr := ps.Processes()
-	if procsErr != nil {
-		log.Info("Could not list current processes; unused container resources will not be harvested", "Error", procsErr)
-		return procsErr
+	if rh.started.Swap(true) {
+		// We're already harvesting, so return early.
+		return
 	}
 
-	harvestedContainers, harvestErr := harvestAbandonedContainers(ctx, co, procs, log)
+	defer rh.done.Store(true)
+
+	log.V(1).Info("unused container resource harvester started...")
+
+	harvestedContainers, harvestErr := rh.harvestAbandonedContainers(ctx, co, log)
 	if harvestErr != nil {
 		log.Info("could not harvest all abandoned containers", "Error", harvestErr)
 	}
 
-	harvestErr = harvestAbandonedNetworks(ctx, co, harvestedContainers, procs, log)
+	harvestErr = rh.harvestAbandonedNetworks(ctx, co, harvestedContainers, log)
 	if harvestErr != nil {
 		log.Info("could not harvest all abandoned container networks", "Error", harvestErr)
 	}
-
-	return nil
 }
 
-func harvestAbandonedContainers(
+func (rh *resourceHarvester) IsDone() bool {
+	return rh.done.Load()
+}
+
+func (rh *resourceHarvester) harvestAbandonedContainers(
 	ctx context.Context,
 	co containers.ContainerOrchestrator,
-	procs []ps.Process,
 	log logr.Logger,
 ) (map[string]bool, error) {
 	runningContainers, listErr := co.ListContainers(ctx, containers.ListContainersOptions{
@@ -78,7 +148,7 @@ func harvestAbandonedContainers(
 			return ids
 		}
 
-		if creatorStillRunning(c.Labels, procs) {
+		if rh.creatorStillRunning(c.Labels) {
 			// The creator process is still running, so skip this container.
 			return ids
 		}
@@ -96,14 +166,15 @@ func harvestAbandonedContainers(
 		log.Info("could not remove some abandoned containers.", "Error", removeErr)
 	}
 
+	log.V(1).Info("removed containers", "Containers", removedContainerIds)
+
 	return usvc_maps.SliceToMap(removedContainerIds, func(id string) (string, bool) { return id, true }), nil
 }
 
-func harvestAbandonedNetworks(
+func (rh *resourceHarvester) harvestAbandonedNetworks(
 	ctx context.Context,
 	co containers.ContainerOrchestrator,
 	removedContainers map[string]bool,
-	procs []ps.Process,
 	log logr.Logger,
 ) error {
 	runningNetworks, listErr := co.ListNetworks(ctx, containers.ListNetworksOptions{
@@ -130,7 +201,7 @@ func harvestAbandonedNetworks(
 			return ids
 		}
 
-		if creatorStillRunning(n.Labels, procs) {
+		if rh.creatorStillRunning(n.Labels) {
 			return ids
 		}
 
@@ -150,8 +221,20 @@ func harvestAbandonedNetworks(
 		log.Info("could not inspect all running networks", "Error", inspectErr)
 	}
 
+	lockErr := rh.networkHarvestSync.Lock(ctx)
+	if lockErr != nil {
+		log.Info("could not acquire network harvest lock, skipping network harvesting", "Error", lockErr)
+		return lockErr // We could not acquire the lock, so we cannot harvest networks.
+	}
+	defer rh.networkHarvestSync.Unlock()
+
 	var networksToRemove []string
 	for _, network := range inspectedNetworks {
+		if _, found := rh.protectedNetworks[network.Name]; found {
+			// Skip protected networks (the network controller wants to re-use them).
+			continue
+		}
+
 		foundAll := true
 
 		for _, container := range network.Containers {
@@ -170,12 +253,45 @@ func harvestAbandonedNetworks(
 		}
 	}
 
-	_, removeErr := co.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
+	removed, removeErr := co.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
 		Networks: networksToRemove,
 		Force:    true,
 	})
 
+	log.V(1).Info("removed networks", "Networks", removed)
+
 	return removeErr
+}
+
+func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime time.Time) bool {
+	if running, exists := rh.processes[pid]; exists {
+		return running
+	}
+
+	// If the process is not in the cache, we need to check if it is running.
+	intPid, pidErr := process.PidT_ToInt(pid)
+	if pidErr != nil {
+		return false
+	}
+
+	proc, findErr := ps.FindProcess(intPid)
+	if findErr != nil {
+		return false // Process not found, so it's not running.
+	}
+
+	// Check if we found a process with the expected PID and start time.
+	running := proc.PID() == intPid && process.HasExpectedStartTime(proc, startTime)
+	rh.processes[pid] = running
+	return running
+}
+
+// Returns true if the set of given labels belongs to an object (network or container) that was created
+// by a DCP process that is still running.
+func (rh *resourceHarvester) creatorStillRunning(labels map[string]string) bool {
+	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
+	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
+
+	return rh.isRunningDCPProcess(creatorPID, creatorStartTime)
 }
 
 // Checks for the presence of the creator process ID and start time labels.
@@ -197,19 +313,4 @@ func nonPersistentWithCreator(labels map[string]string) bool {
 	nonPersistent := usvc_maps.HasExactValue(labels, PersistentLabel, "false")
 	hasCreator := withCreator(labels)
 	return nonPersistent && hasCreator
-}
-
-// Returns true if the set of given labels belongs to an object (network or container) that was created
-// by a DCP process that is still running.
-func creatorStillRunning(labels map[string]string, procs []ps.Process) bool {
-	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
-	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
-
-	return usvc_slices.Any(procs, func(p ps.Process) bool {
-		pPid, pPidErr := process.IntToPidT(p.PID())
-		if pPidErr != nil {
-			return true // Can't convert the PID, so assume it's a running process and the network is off limits.
-		}
-		return pPid == creatorPID && process.HasExpectedStartTime(p, creatorStartTime)
-	})
 }

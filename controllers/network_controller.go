@@ -116,13 +116,22 @@ type NetworkReconciler struct {
 
 	// True if the container orchestrator is healthy, false otherwise
 	orchestratorHealthy *atomic.Bool
+
+	// The resource harvester used to clean up abandoned resources on startup
+	harvester *resourceHarvester
 }
 
 var (
 	networkFinalizer string = fmt.Sprintf("%s/network-reconciler", apiv1.GroupVersion.Group)
 )
 
-func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client, log logr.Logger, orchestrator containers.ContainerOrchestrator) *NetworkReconciler {
+func NewNetworkReconciler(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	log logr.Logger,
+	orchestrator containers.ContainerOrchestrator,
+	harvester *resourceHarvester,
+) *NetworkReconciler {
 	r := NetworkReconciler{
 		Client:               client,
 		orchestrator:         orchestrator,
@@ -137,6 +146,7 @@ func NewNetworkReconciler(lifetimeCtx context.Context, client ctrl_client.Client
 		lifetimeCtx:          lifetimeCtx,
 		Log:                  log,
 		orchestratorHealthy:  &atomic.Bool{},
+		harvester:            harvester,
 	}
 
 	go r.onShutdown()
@@ -327,8 +337,16 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
 
 	if network.Spec.Persistent {
+		isNetworkSafeToReuse := r.harvester.IsDone() || r.harvester.TryProtectNetwork(ctx, networkName)
 		existing, err := inspectNetworkIfExists(ctx, r.orchestrator, networkName)
 		if err == nil {
+			if !isNetworkSafeToReuse {
+				// If the harvester is not done, we need to wait for it to complete before we can safely re-use an
+				// existing network.
+				log.V(1).Info("waiting for the resource harvester to finish before re-using persistent network")
+				return additionalReconciliationNeeded
+			}
+
 			// We found an existing network
 			r.existingNetworks.Store(network.NamespacedName(), existing.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateRunning, id: existing.Id})
 			network.Status.ID = existing.Id

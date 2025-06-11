@@ -122,6 +122,10 @@ func StartTestEnvironment(
 	exeRunner := exerunners.NewProcessExecutableRunner(pe)
 	ir := ctrl_testutil.NewTestIdeRunner(ctx)
 
+	// Run the harvester in a separate goroutine to ensure that it does not block controller startup
+	harvester := controllers.NewResourceHarvester()
+	go harvester.MockHarvest(ctx, 2*time.Second, log.WithName("ResourceCleanup"))
+
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
 	managerDone := concurrency.NewAutoResetEvent(true)
@@ -185,6 +189,7 @@ func StartTestEnvironment(
 			mgr.GetClient(),
 			log.WithName("NetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
+			harvester,
 		)
 		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
