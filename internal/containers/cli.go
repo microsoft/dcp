@@ -50,12 +50,12 @@ func NormalizeCliErrors(errBuf *bytes.Buffer, errorMatches ...ErrorMatch) error 
 
 		for i := range errorMatches {
 			if errorMatches[i].regex.Match(line) {
-				return errors.Join(err, errors.Join(errorMatches[i].err, errors.New(string(line))))
+				return errors.Join(err, errorMatches[i].err, errors.New(string(line)))
 			}
 		}
 
 		// If no match found, report the error as unmatched
-		return errors.Join(err, errors.Join(ErrUnmatched, errors.New(string(line))))
+		return errors.Join(err, ErrUnmatched, errors.New(string(line)))
 	})
 }
 

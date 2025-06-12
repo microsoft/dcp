@@ -33,23 +33,25 @@ import (
 )
 
 var (
-	volumeNotFoundRegEx           = regexp.MustCompile(`(?i)no such volume`)
-	networkNotFoundRegEx          = regexp.MustCompile(`(?i)network (.*) not found`)
-	containerNotFoundRegEx        = regexp.MustCompile(`(?i)no such container`)
-	networkAlreadyExistsRegEx     = regexp.MustCompile(`(?i)network with name (.*) already exists`)
-	containerAlreadyAttachedRegEx = regexp.MustCompile(`(?i)container (.*) is already connected to network`)
-	unableToConnectRegEx          = regexp.MustCompile(`(?i)unable to connect to Podman socket:`)
-	volumeInUseRegEx              = regexp.MustCompile(`(?i)volume is being used`)
-	volumeAlreadyExistsRegEx      = regexp.MustCompile(`(?i)volume already exists`)
+	volumeNotFoundRegEx            = regexp.MustCompile(`(?i)no such volume`)
+	networkNotFoundRegEx           = regexp.MustCompile(`(?i)network (.*) not found`)
+	containerNotFoundRegEx         = regexp.MustCompile(`(?i)no such container`)
+	networkAlreadyExistsRegEx      = regexp.MustCompile(`(?i)network with name (.*) already exists`)
+	containerAlreadyAttachedRegEx  = regexp.MustCompile(`(?i)container (.*) is already connected to network`)
+	networkIsAlreadyConnectedRegEx = regexp.MustCompile(`(?i): network is already connected`)
+	unableToConnectRegEx           = regexp.MustCompile(`(?i)unable to connect to Podman socket:`)
+	volumeInUseRegEx               = regexp.MustCompile(`(?i)volume is being used`)
+	volumeAlreadyExistsRegEx       = regexp.MustCompile(`(?i)volume already exists`)
 
-	newContainerNotFoundErrorMatch        = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
-	newVolumeNotFoundErrorMatch           = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
-	volumeInUseErrorMatch                 = containers.NewCliErrorMatch(volumeInUseRegEx, errors.Join(containers.ErrObjectInUse, fmt.Errorf("volume is being used by a container")))
-	volumeAlreadyExistsErrorMatch         = containers.NewCliErrorMatch(volumeAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("volume already exists")))
-	newNetworkNotFoundErrorMatch          = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
-	newNetworkAlreadyExistsErrorMatch     = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
-	newContainerAlreadyAttachedErrorMatch = containers.NewCliErrorMatch(containerAlreadyAttachedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
-	newPodmanNotRunningErrorMatch         = containers.NewCliErrorMatch(unableToConnectRegEx, errors.Join(containers.ErrRuntimeNotHealthy, fmt.Errorf("podman runtime is not healthy")))
+	newContainerNotFoundErrorMatch         = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
+	newVolumeNotFoundErrorMatch            = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
+	volumeInUseErrorMatch                  = containers.NewCliErrorMatch(volumeInUseRegEx, errors.Join(containers.ErrObjectInUse, fmt.Errorf("volume is being used by a container")))
+	volumeAlreadyExistsErrorMatch          = containers.NewCliErrorMatch(volumeAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("volume already exists")))
+	newNetworkNotFoundErrorMatch           = containers.NewCliErrorMatch(networkNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("network not found")))
+	newNetworkAlreadyExistsErrorMatch      = containers.NewCliErrorMatch(networkAlreadyExistsRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network already exists")))
+	newContainerAlreadyAttachedErrorMatch  = containers.NewCliErrorMatch(containerAlreadyAttachedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("container already attached")))
+	newNetworkIsAlreadyConnectedErrorMatch = containers.NewCliErrorMatch(networkIsAlreadyConnectedRegEx, errors.Join(containers.ErrAlreadyExists, fmt.Errorf("network is already connected to the container")))
+	newPodmanNotRunningErrorMatch          = containers.NewCliErrorMatch(unableToConnectRegEx, errors.Join(containers.ErrRuntimeNotHealthy, fmt.Errorf("podman runtime is not healthy")))
 
 	// We expect almost all Podman CLI invocations to finish within this time.
 	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
@@ -886,7 +888,7 @@ func (pco *PodmanCliOrchestrator) ConnectNetwork(ctx context.Context, options co
 	cmd := makePodmanCommand(args...)
 	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ConnectNetwork", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		return errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newContainerAlreadyAttachedErrorMatch))
+		return errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(1), newNetworkNotFoundErrorMatch.MaxObjects(1), newContainerAlreadyAttachedErrorMatch, newNetworkIsAlreadyConnectedErrorMatch))
 	}
 
 	return nil

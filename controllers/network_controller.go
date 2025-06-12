@@ -45,13 +45,22 @@ const (
 	NetworkResourceNameField        = ".metadata.networkResourceName"
 
 	networkInspectionTimeout = 6 * time.Second
+
+	// How many concurrent failures connecting or disconnecting from a network should we tolerate before we log an error
+	logAfterFailures = 4
 )
+
+type connectionState struct {
+	// Number of attempts made to connect to the network
+	// This will be reset to 0 when a connection is established
+	attempts int
+}
 
 type runningNetworkState struct {
 	state       apiv1.ContainerNetworkState
 	id          string
 	message     string
-	connections map[string]bool
+	connections map[string]*connectionState
 }
 
 func (rnc *runningNetworkState) Clone() *runningNetworkState {
@@ -431,12 +440,12 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 
 	// Initialize the connected network containers map if needed
 	if networkState.connections == nil {
-		networkState.connections = make(map[string]bool)
+		networkState.connections = make(map[string]*connectionState)
 
 		if !network.Spec.Persistent {
 			// If this is not a persistent network, we assume these were all connected by us
 			for _, containerID := range network.Status.ContainerIDs {
-				networkState.connections[containerID] = true
+				networkState.connections[containerID] = &connectionState{}
 			}
 		}
 	}
@@ -460,12 +469,21 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
+		if !knownConnection {
+			networkState.connections[containerID] = &connectionState{}
+		}
+
 		err := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
 			Network:   network.Status.ID,
 			Container: containerID,
 		})
 		if err != nil && !errors.Is(err, containers.ErrNotFound) {
-			log.Error(err, "could not disconnect a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
+			networkState.connections[containerID].attempts += 1
+			if networkState.connections[containerID].attempts%logAfterFailures == 0 {
+				// We only log an error every logAfterFailures attempts to avoid flooding the logs with transient errors
+				log.Error(err, "could not disconnect a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
+			}
+
 			change |= additionalReconciliationNeeded
 		} else {
 			delete(networkState.connections, containerID)
@@ -483,6 +501,10 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			continue
 		}
 
+		if _, knownConnection := networkState.connections[containerID]; !knownConnection {
+			networkState.connections[containerID] = &connectionState{}
+		}
+
 		err := r.orchestrator.ConnectNetwork(ctx, containers.ConnectNetworkOptions{
 			Network:   network.Status.ID,
 			Container: containerID,
@@ -490,8 +512,15 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 		})
 
 		if err != nil && !errors.Is(err, containers.ErrAlreadyExists) && !errors.Is(err, containers.ErrNotFound) {
-			log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
+			networkState.connections[containerID].attempts += 1
+			if networkState.connections[containerID].attempts%logAfterFailures == 0 {
+				// We only log an error every logAfterFailures attempts to avoid flooding the logs with transient errors
+				log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
+			}
+
 			change |= additionalReconciliationNeeded
+		} else {
+			networkState.connections[containerID].attempts = 0 // Reset the attempts counter on success
 		}
 	}
 
@@ -505,7 +534,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 				return c.Name == containerID || strings.HasPrefix(c.Id, containerID)
 			}) {
 				found += 1
-				networkState.connections[containerID] = true
+				networkState.connections[containerID] = &connectionState{}
 			}
 		}
 
