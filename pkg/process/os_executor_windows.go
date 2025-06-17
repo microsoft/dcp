@@ -24,7 +24,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 	if err != nil {
 		e.acquireLock()
 		alreadyEnded := false
-		ws, found := e.procsWaiting[pid]
+		ws, found := e.procsWaiting[WaitKey{pid, processStartTime}]
 		if found {
 			alreadyEnded = !ws.waitEnded.IsZero()
 		}
@@ -38,7 +38,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 	}
 
 	waitable := makeWaitable(pid, proc)
-	ws, shouldStopProcess := e.tryStartWaiting(pid, waitable, waitReasonStopping)
+	ws, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {

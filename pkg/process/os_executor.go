@@ -40,15 +40,20 @@ type waitState struct {
 	reason      waitReason    // The reason why are waiting on the process
 }
 
+type WaitKey struct {
+	Pid       Pid_t
+	StartedAt time.Time
+}
+
 type OSExecutor struct {
-	procsWaiting map[Pid_t]*waitState
+	procsWaiting map[WaitKey]*waitState
 	lock         sync.Locker
 	log          logr.Logger
 }
 
 func NewOSExecutor(log logr.Logger) Executor {
 	return &OSExecutor{
-		procsWaiting: make(map[Pid_t]*waitState),
+		procsWaiting: make(map[WaitKey]*waitState),
 		lock:         &sync.Mutex{},
 		log:          log.WithName("os-executor"),
 	}
@@ -62,7 +67,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	ws, _ := e.tryStartWaiting(pid, waitableCmd{cmd}, waitReasonNone)
+	ws, _ := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd}, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
@@ -77,7 +82,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(pid, waitableCmd{cmd}, waitReasonStopping)
+			_, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd}, waitReasonStopping)
 			var stopProcessErr error = nil
 
 			if shouldStopProcess {
@@ -104,7 +109,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _ = e.tryStartWaiting(pid, waitableCmd{cmd}, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd}, waitReasonMonitoring)
 	}
 
 	return pid, processStartTime, startWaitingForProcessExit, nil
@@ -168,7 +173,7 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 // Returns the waitState object associated with the process, and a boolean indicating whether the caller
 // is the first one to indicate that the reason for the wait is "stopping the process",
 // and thus IT is the caller that must stop the process.
-func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitReason) (*waitState, bool) {
+func (e *OSExecutor) tryStartWaiting(pid Pid_t, startTime time.Time, waitable Waitable, reason waitReason) (*waitState, bool) {
 	doWait := func(ws *waitState) {
 		e.log.V(1).Info("starting waiting for process to exit", "pid", pid, "cmd", waitable.Info())
 		err := ws.waitable.Wait()
@@ -185,7 +190,7 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 	e.acquireLock()
 	defer e.releaseLock()
 
-	ws, found := e.procsWaiting[pid]
+	ws, found := e.procsWaiting[WaitKey{pid, startTime}]
 	callerShouldStopProcess := false
 
 	if found {
@@ -207,7 +212,7 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, waitable Waitable, reason waitRe
 			waitEndedCh: make(chan struct{}),
 			reason:      reason,
 		}
-		e.procsWaiting[pid] = ws
+		e.procsWaiting[WaitKey{pid, startTime}] = ws
 		if reason != waitReasonNone {
 			go doWait(ws)
 		}
@@ -234,7 +239,7 @@ func (e *OSExecutor) acquireLock() {
 	e.lock.Lock()
 
 	// Only keep wait states that correspond to processes that are still running, or the ones that completed recently
-	e.procsWaiting = maps.Select(e.procsWaiting, func(_ Pid_t, ws *waitState) bool {
+	e.procsWaiting = maps.Select(e.procsWaiting, func(_ WaitKey, ws *waitState) bool {
 		return ws.waitEnded.IsZero() || time.Since(ws.waitEnded) < maxCompletedDuration
 	})
 }
