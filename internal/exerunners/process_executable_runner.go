@@ -78,7 +78,20 @@ func (r *ProcessExecutableRunner) StartRun(
 		processExitHandler = process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, err error) {
 			ec := new(int32)
 			*ec = exitCode
-			runChangeHandler.OnRunCompleted(pidToRunID(pid), ec, err)
+
+			runID := pidToRunID(pid)
+
+			if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
+				for _, f := range []io.Closer{runState.stdOutFile, runState.stdErrFile} {
+					if f != nil {
+						if closeErr := f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+							err = errors.Join(closeErr, err)
+						}
+					}
+				}
+			}
+
+			runChangeHandler.OnRunCompleted(runID, ec, err)
 		})
 	}
 
