@@ -395,7 +395,7 @@ func handleNewContainer(
 				log.Info("found existing Container", "ContainerID", inspected.Id)
 
 				rcd.ensureStartupLogFiles(container, log)
-				rcd.startAttemptFinishedAt = metav1.NowMicro()
+				rcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)
 				rcd.containerState = apiv1.ContainerStateRunning
 
 				r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)

@@ -1575,6 +1575,50 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 	require.False(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "image should only be built if the persistent container doesn't exist")
 }
 
+func TestPersistentContainerStartTime(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-container-start-time"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	// Sleep for 1 second to ensure the container has more than a second of uptime.
+	time.Sleep(1 * time.Second)
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, inspected := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID does not match existing value")
+	require.NotZero(t, updatedCtr.Status.StartupTimestamp, "expected the container to have a start timestamp")
+	require.WithinDuration(t, updatedCtr.Status.StartupTimestamp.Time, inspected.StartedAt, 2*time.Microsecond, "expected the startup timestamp to match the one in the inspected container")
+}
+
 func TestContainerStateBecomesUnknownIfContainerResourceDeleted(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
