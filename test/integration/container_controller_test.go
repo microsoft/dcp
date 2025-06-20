@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
@@ -3246,16 +3247,24 @@ func TestContainerHealthcheckUpdatesProbeResults(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+			Image:         imageName,
+			ContainerName: testName,
 		},
 	}
+
+	containerOrchestrator.SetHealthcheckMatchingContainers(ctx, testName, containers.ContainerHealthcheck{
+		Command: []string{"test", "operation"},
+	})
 
 	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
 
 	updatedCtr, inspected := ensureContainerRunning(t, ctx, &ctr)
-	require.Empty(t, updatedCtr.Status.HealthProbeResults, "Expected no health probe results")
+	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a health probe result")
+	require.Equal(t, controllers.RuntimeContainerHealthProbeName, updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime")
+	require.Equal(t, apiv1.HealthProbeOutcomeUnknown, updatedCtr.Status.HealthProbeResults[0].Outcome, "Expected the health probe result to be unknown due to no results yet")
+	require.Equal(t, apiv1.HealthStatusCaution, updatedCtr.Status.HealthStatus, "Expected the Container to be in Caution health status")
 
 	healthCheck := containers.InspectedContainerHealth{
 		Status:        "unhealthy",
@@ -3294,7 +3303,7 @@ func TestContainerHealthcheckUpdatesProbeResults(t *testing.T) {
 	})
 
 	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
-	require.Equal(t, "__runtime", updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, controllers.RuntimeContainerHealthProbeName, updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime for Container '%s'", ctr.ObjectMeta.Name)
 	require.Equal(t, apiv1.HealthProbeOutcomeFailure, updatedCtr.Status.HealthProbeResults[0].Outcome, "Expected the health probe result to be a failure for Container '%s'", ctr.ObjectMeta.Name)
 	require.WithinDuration(t, healthCheck.Log[1].End, updatedCtr.Status.HealthProbeResults[0].Timestamp.Time, 1*time.Millisecond, "Expected the health probe result timestamp to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
 	require.Equal(t, healthCheck.Log[1].Output, updatedCtr.Status.HealthProbeResults[0].Reason, "Expected the health probe result message to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
@@ -3336,7 +3345,7 @@ func TestContainerHealthcheckUpdatesProbeResults(t *testing.T) {
 	})
 
 	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
-	require.Equal(t, "__runtime", updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, controllers.RuntimeContainerHealthProbeName, updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime for Container '%s'", ctr.ObjectMeta.Name)
 	require.Equal(t, apiv1.HealthProbeOutcomeSuccess, updatedCtr.Status.HealthProbeResults[0].Outcome, "Expected the health probe result to be a failure for Container '%s'", ctr.ObjectMeta.Name)
 	require.WithinDuration(t, healthCheck.Log[2].End, updatedCtr.Status.HealthProbeResults[0].Timestamp.Time, 1*time.Millisecond, "Expected the health probe result timestamp to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
 	require.Equal(t, healthCheck.Log[2].Output, updatedCtr.Status.HealthProbeResults[0].Reason, "Expected the health probe result message to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)

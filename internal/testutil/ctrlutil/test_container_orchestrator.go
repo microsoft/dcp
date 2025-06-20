@@ -55,24 +55,25 @@ const (
 )
 
 type TestContainerOrchestrator struct {
-	runtimeHealthy         bool
-	volumes                map[string]containerVolume
-	networks               map[string]*containerNetwork
-	images                 map[string]bool
-	imageIds               map[string]string
-	imageSecrets           map[string]map[string]string
-	containers             map[string]*testContainer
-	startupLogs            map[string]containerStartupLogs
-	containersToFail       map[string]containerExit
-	execs                  map[string]*containerExec
-	createFiles            map[string][]*containerCreateFile
-	containerEventsWatcher *pubsub.SubscriptionSet[containers.EventMessage]
-	networkEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
-	socketServer           *http.Server
-	socketFilePath         string
-	mutex                  *sync.Mutex
-	lifetimeCtx            context.Context
-	log                    logr.Logger
+	runtimeHealthy          bool
+	volumes                 map[string]containerVolume
+	networks                map[string]*containerNetwork
+	images                  map[string]bool
+	imageIds                map[string]string
+	imageSecrets            map[string]map[string]string
+	containers              map[string]*testContainer
+	startupLogs             map[string]containerStartupLogs
+	containersToFail        map[string]containerExit
+	containersToHealthcheck map[string]containers.ContainerHealthcheck
+	execs                   map[string]*containerExec
+	createFiles             map[string][]*containerCreateFile
+	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
+	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
+	socketServer            *http.Server
+	socketFilePath          string
+	mutex                   *sync.Mutex
+	lifetimeCtx             context.Context
+	log                     logr.Logger
 }
 
 type containerExit struct {
@@ -161,17 +162,18 @@ func NewTestContainerOrchestrator(
 				created:   now,
 			},
 		},
-		images:           map[string]bool{},
-		imageIds:         map[string]string{},
-		imageSecrets:     map[string]map[string]string{},
-		containers:       map[string]*testContainer{},
-		execs:            map[string]*containerExec{},
-		startupLogs:      map[string]containerStartupLogs{},
-		containersToFail: map[string]containerExit{},
-		createFiles:      map[string][]*containerCreateFile{},
-		mutex:            &sync.Mutex{},
-		lifetimeCtx:      lifetimeCtx,
-		log:              log,
+		images:                  map[string]bool{},
+		imageIds:                map[string]string{},
+		imageSecrets:            map[string]map[string]string{},
+		containers:              map[string]*testContainer{},
+		execs:                   map[string]*containerExec{},
+		startupLogs:             map[string]containerStartupLogs{},
+		containersToFail:        map[string]containerExit{},
+		containersToHealthcheck: map[string]containers.ContainerHealthcheck{},
+		createFiles:             map[string][]*containerCreateFile{},
+		mutex:                   &sync.Mutex{},
+		lifetimeCtx:             lifetimeCtx,
+		log:                     log,
 	}
 
 	to.containerEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchContainers, lifetimeCtx)
@@ -350,6 +352,21 @@ func (to *TestContainerOrchestrator) FailMatchingContainers(ctx context.Context,
 	}()
 }
 
+func (to *TestContainerOrchestrator) SetHealthcheckMatchingContainers(ctx context.Context, name string, healthcheck containers.ContainerHealthcheck) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	to.containersToHealthcheck[name] = healthcheck
+
+	go func() {
+		<-ctx.Done()
+		to.mutex.Lock()
+		defer to.mutex.Unlock()
+
+		delete(to.containersToHealthcheck, name)
+	}()
+}
+
 func (to *TestContainerOrchestrator) SimulateContainerStartupLogs(name string, stdout, stderr []byte) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -419,20 +436,21 @@ type TestContainerPortConfig struct {
 
 type testContainer struct {
 	withId
-	image      string
-	createdAt  time.Time
-	startedAt  time.Time
-	finishedAt time.Time
-	status     containers.ContainerStatus
-	exitCode   int32
-	ports      map[string][]TestContainerPortConfig
-	networks   []string
-	args       []string
-	env        map[string]string
-	labels     map[string]string
-	health     *containers.InspectedContainerHealth
-	stdoutLog  *testutil.BufferWriter
-	stderrLog  *testutil.BufferWriter
+	image       string
+	createdAt   time.Time
+	startedAt   time.Time
+	finishedAt  time.Time
+	status      containers.ContainerStatus
+	exitCode    int32
+	ports       map[string][]TestContainerPortConfig
+	networks    []string
+	args        []string
+	env         map[string]string
+	labels      map[string]string
+	health      *containers.InspectedContainerHealth
+	healthcheck containers.ContainerHealthcheck
+	stdoutLog   *testutil.BufferWriter
+	stderrLog   *testutil.BufferWriter
 }
 
 func getID() string {
@@ -1036,17 +1054,25 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 	id := newId(name)
 
 	container := testContainer{
-		withId:    id,
-		image:     options.Image,
-		createdAt: time.Now().UTC(),
-		status:    containers.ContainerStatusCreated,
-		networks:  []string{},
-		ports:     map[string][]TestContainerPortConfig{},
-		args:      options.Args,
-		env:       map[string]string{},
-		labels:    map[string]string{},
-		stdoutLog: testutil.NewBufferWriter(),
-		stderrLog: testutil.NewBufferWriter(),
+		withId:      id,
+		image:       options.Image,
+		createdAt:   time.Now().UTC(),
+		status:      containers.ContainerStatusCreated,
+		networks:    []string{},
+		ports:       map[string][]TestContainerPortConfig{},
+		args:        options.Args,
+		env:         map[string]string{},
+		labels:      map[string]string{},
+		healthcheck: options.Healthcheck,
+		stdoutLog:   testutil.NewBufferWriter(),
+		stderrLog:   testutil.NewBufferWriter(),
+	}
+
+	for ctr, healthcheck := range to.containersToHealthcheck {
+		if container.matches(ctr) {
+			container.healthcheck = healthcheck
+			break
+		}
 	}
 
 	for _, env := range options.Env {
@@ -1225,8 +1251,7 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 		return "", errRuntimeUnhealthy
 	}
 
-	var cco containers.CreateContainerOptions = containers.CreateContainerOptions(options)
-	container, err := to.doCreateContainer(ctx, cco)
+	container, err := to.doCreateContainer(ctx, options.CreateContainerOptions)
 	if err != nil {
 		return "", err
 	}
@@ -1580,19 +1605,20 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 				})
 
 				inspectedContainer := containers.InspectedContainer{
-					Id:         container.id,
-					Name:       container.name,
-					Image:      container.image,
-					CreatedAt:  container.createdAt,
-					StartedAt:  container.startedAt,
-					FinishedAt: container.finishedAt,
-					Status:     container.status,
-					ExitCode:   container.exitCode,
-					Ports:      inspectedContainerPorts,
-					Args:       container.args,
-					Env:        container.env,
-					Labels:     container.labels,
-					Health:     container.health,
+					Id:          container.id,
+					Name:        container.name,
+					Image:       container.image,
+					CreatedAt:   container.createdAt,
+					StartedAt:   container.startedAt,
+					FinishedAt:  container.finishedAt,
+					Status:      container.status,
+					ExitCode:    container.exitCode,
+					Ports:       inspectedContainerPorts,
+					Args:        container.args,
+					Env:         container.env,
+					Labels:      container.labels,
+					Healthcheck: container.healthcheck.Command,
+					Health:      container.health,
 				}
 
 				for _, networkName := range container.networks {

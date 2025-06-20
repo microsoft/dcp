@@ -400,7 +400,15 @@ func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, options con
 	return inspectedImages, err
 }
 
-func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []string {
+func applyCreateContainerOptions(args []string, options containers.CreateContainerOptions) []string {
+	if options.Name != "" {
+		args = append(args, "--name", options.Name)
+	}
+
+	if options.Network != "" {
+		args = append(args, "--network", options.Network)
+	}
+
 	for _, mount := range options.VolumeMounts {
 		mountVal := fmt.Sprintf("type=%s,src=%s,target=%s", mount.Type, mount.Source, mount.Target)
 		if mount.ReadOnly {
@@ -459,6 +467,34 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 		args = append(args, "--entrypoint", options.Command)
 	}
 
+	if len(options.Healthcheck.Command) > 0 {
+		args = append(args, "--health-cmd", strings.Join(options.Healthcheck.Command, " "))
+
+		if options.Healthcheck.Interval > 0 {
+			args = append(args, "--health-interval", fmt.Sprintf("%dms", options.Healthcheck.Interval.Milliseconds()))
+		} else {
+			args = append(args, "--health-interval", "30s")
+		}
+
+		if options.Healthcheck.Timeout > 0 {
+			args = append(args, "--health-timeout", fmt.Sprintf("%dms", options.Healthcheck.Timeout.Milliseconds()))
+		}
+
+		if options.Healthcheck.Retries > 0 {
+			args = append(args, "--health-retries", fmt.Sprintf("%d", options.Healthcheck.Retries))
+		} else {
+			args = append(args, "--health-retries", "3")
+		}
+
+		if options.Healthcheck.StartPeriod > 0 {
+			args = append(args, "--health-start-period", fmt.Sprintf("%dms", options.Healthcheck.StartPeriod.Milliseconds()))
+		}
+
+		if options.Healthcheck.StartInterval > 0 {
+			args = append(args, "--health-start-interval", fmt.Sprintf("%dms", options.Healthcheck.StartInterval.Milliseconds()))
+		}
+	}
+
 	args = append(args, options.RunArgs...)
 
 	return args
@@ -467,19 +503,11 @@ func applyCreateContainerOptions(args []string, options apiv1.ContainerSpec) []s
 func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
 	args := []string{"create"}
 
-	if options.Name != "" {
-		args = append(args, "--name", options.Name)
-	}
-
-	if options.Network != "" {
-		args = append(args, "--network", options.Network)
-	}
-
-	args = applyCreateContainerOptions(args, options.ContainerSpec)
+	args = applyCreateContainerOptions(args, options)
 
 	args = append(args, options.Image)
 
-	if (options.Args != nil) && (len(options.Args) > 0) {
+	if len(options.Args) > 0 {
 		args = append(args, options.Args...)
 	}
 
@@ -507,20 +535,12 @@ func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options c
 func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options containers.RunContainerOptions) (string, error) {
 	args := []string{"run"}
 
-	if options.Name != "" {
-		args = append(args, "--name", options.Name)
-	}
-
-	if options.Network != "" {
-		args = append(args, "--network", options.Network)
-	}
-
-	args = applyCreateContainerOptions(args, options.ContainerSpec)
+	args = applyCreateContainerOptions(args, options.CreateContainerOptions)
 
 	args = append(args, "--detach")
 	args = append(args, options.Image)
 
-	if (options.Args != nil) && (len(options.Args) > 0) {
+	if len(options.Args) > 0 {
 		args = append(args, options.Args...)
 	}
 
@@ -1254,6 +1274,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 	ic.ExitCode = pci.State.ExitCode
 	ic.Error = pci.State.Error
 	ic.Health = pci.State.Health
+	ic.Healthcheck = pci.Config.Healthcheck.Test
 
 	ic.Mounts = make([]apiv1.VolumeMount, len(pci.Mounts))
 	for i, mount := range pci.Mounts {
@@ -1400,11 +1421,12 @@ func (pe *podmanEntrypoint) UnmarshalJSON(b []byte) error {
 }
 
 type podmanInspectedContainerConfig struct {
-	Image      string            `json:"Image,omitempty"`
-	Env        []string          `json:"Env,omitempty"`
-	Cmd        []string          `json:"Cmd,omitempty"`
-	Entrypoint podmanEntrypoint  `json:"Entrypoint,omitempty"`
-	Labels     map[string]string `json:"Labels,omitempty"`
+	Image       string                                   `json:"Image,omitempty"`
+	Env         []string                                 `json:"Env,omitempty"`
+	Cmd         []string                                 `json:"Cmd,omitempty"`
+	Entrypoint  podmanEntrypoint                         `json:"Entrypoint,omitempty"`
+	Labels      map[string]string                        `json:"Labels,omitempty"`
+	Healthcheck containers.InspectedContainerHealthcheck `json:"Healthcheck,omitempty"`
 }
 
 type podmanInspectedContainerState struct {

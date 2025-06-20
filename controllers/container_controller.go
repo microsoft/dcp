@@ -1866,11 +1866,14 @@ func (r *ContainerReconciler) getHostAddressAndPortForContainerPort(
 
 func normalizeHostAddress(hostIP string) string {
 	hostAddress := hostIP
-	if hostAddress == "" || hostAddress == networking.IPv4AllInterfaceAddress {
+
+	switch hostAddress {
+	case "", networking.IPv4AllInterfaceAddress:
 		hostAddress = networking.IPv4LocalhostDefaultAddress
-	} else if hostAddress == networking.IPv6AllInterfaceAddress {
+	case networking.IPv6AllInterfaceAddress:
 		hostAddress = networking.IPv6LocalhostDefaultAddress
 	}
+
 	return hostAddress
 }
 
@@ -2050,7 +2053,8 @@ func updateContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerStat
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ContainerStateRunning:
-		if len(ctr.Status.HealthProbeResults) == 0 {
+		if len(ctr.Spec.HealthProbes) == 0 && len(ctr.Status.HealthProbeResults) == 0 {
+			// The container has no configured health probes and no results (i.e. no configured healthcheck)
 			newHealthStatus = apiv1.HealthStatusHealthy
 		} else {
 			newHealthStatus = health.HealthStatusFromProbeResults(ctr.Status.HealthProbeResults)

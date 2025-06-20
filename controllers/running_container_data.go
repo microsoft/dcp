@@ -381,29 +381,35 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 		rcd.containerState = apiv1.ContainerStateExited
 	}
 
-	// We ignore "starting" state here as Podman will report it for all
-	// containers, even ones without a configured Healthcheck.
-	if inspected.Health != nil && inspected.Health.Status != "starting" {
-		// If the container has health information available, update
-		// the health probe results to include it.
-		outcome := apiv1.HealthProbeOutcomeUnknown
-		switch inspected.Health.Status {
-		case "healthy":
-			outcome = apiv1.HealthProbeOutcomeSuccess
-		case "unhealthy":
-			outcome = apiv1.HealthProbeOutcomeFailure
-		}
-
+	if len(inspected.Healthcheck) > 0 {
+		// If the container has a healthcheck command configured, we need to report a result for it.
+		// We do this even if the healthcheck hasn't run yet to allow the container to be reported
+		// as caution instead of healthy or unhealthy until the actual health check result is available.
 		result := apiv1.HealthProbeResult{
 			ProbeName: RuntimeContainerHealthProbeName,
-			Outcome:   outcome,
+			Outcome:   apiv1.HealthProbeOutcomeUnknown,
 		}
 
-		for _, log := range inspected.Health.Log {
-			if log.End.After(result.Timestamp.Time) {
-				result.Timestamp = metav1.NewMicroTime(log.End)
-				result.Reason = log.Output
+		if inspected.Health != nil {
+			// If the container has health information available, update
+			// the health probe result to include it.
+			switch inspected.Health.Status {
+			case "healthy":
+				result.Outcome = apiv1.HealthProbeOutcomeSuccess
+			case "unhealthy":
+				result.Outcome = apiv1.HealthProbeOutcomeFailure
 			}
+
+			for _, log := range inspected.Health.Log {
+				if log.End.After(result.Timestamp.Time) {
+					result.Timestamp = metav1.NewMicroTime(log.End)
+					result.Reason = log.Output
+				}
+			}
+		}
+
+		if result.Timestamp.IsZero() {
+			result.Timestamp = rcd.startAttemptFinishedAt
 		}
 
 		rcd.healthProbeResults[RuntimeContainerHealthProbeName] = result

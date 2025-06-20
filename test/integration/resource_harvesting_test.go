@@ -59,8 +59,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 
 	_, containerCreateErr := co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "non-dcp-container-1",
-		Network: netPersistentWithContainer,
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "non-dcp-container-1",
+			Network: netPersistentWithContainer,
+		},
 	})
 	require.NoError(t, containerCreateErr)
 
@@ -91,13 +93,17 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	})
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "non-dcp-container-2",
-		Network: netWithNonDcpContainers,
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "non-dcp-container-2",
+			Network: netWithNonDcpContainers,
+		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "non-dcp-container-3",
-		Network: netWithNonDcpContainers,
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "non-dcp-container-3",
+			Network: netWithNonDcpContainers,
+		},
 	})
 	require.NoError(t, containerCreateErr)
 
@@ -113,29 +119,33 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	})
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "dcp-container-1",
-		Network: netWithMixedContainers,
-		ContainerSpec: apiv1.ContainerSpec{
-			Labels: []apiv1.ContainerLabel{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "false",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "dcp-container-1",
+			Network: netWithMixedContainers,
+			ContainerSpec: apiv1.ContainerSpec{
+				Labels: []apiv1.ContainerLabel{
+					{
+						Key:   controllers.PersistentLabel,
+						Value: "false",
+					},
+					{
+						Key:   controllers.CreatorProcessIdLabel,
+						Value: fmt.Sprintf("%d", procNonExistent.Pid),
+					},
+					{
+						Key:   controllers.CreatorProcessStartTimeLabel,
+						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+					},
 				},
 			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "non-dcp-container-4",
-		Network: netWithMixedContainers,
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "non-dcp-container-4",
+			Network: netWithMixedContainers,
+		},
 	})
 	require.NoError(t, containerCreateErr)
 
@@ -151,21 +161,23 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	})
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "abandoned-persistent-container",
-		Network: netWithAbandonedPersistentContainer,
-		ContainerSpec: apiv1.ContainerSpec{
-			Labels: []apiv1.ContainerLabel{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "true",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "abandoned-persistent-container",
+			Network: netWithAbandonedPersistentContainer,
+			ContainerSpec: apiv1.ContainerSpec{
+				Labels: []apiv1.ContainerLabel{
+					{
+						Key:   controllers.PersistentLabel,
+						Value: "true",
+					},
+					{
+						Key:   controllers.CreatorProcessIdLabel,
+						Value: fmt.Sprintf("%d", procNonExistent.Pid),
+					},
+					{
+						Key:   controllers.CreatorProcessStartTimeLabel,
+						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+					},
 				},
 			},
 		},
@@ -184,42 +196,46 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	})
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "dcp-container-2",
-		Network: netWithDcpContainers,
-		ContainerSpec: apiv1.ContainerSpec{
-			Labels: []apiv1.ContainerLabel{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "false",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "dcp-container-2",
+			Network: netWithDcpContainers,
+			ContainerSpec: apiv1.ContainerSpec{
+				Labels: []apiv1.ContainerLabel{
+					{
+						Key:   controllers.PersistentLabel,
+						Value: "false",
+					},
+					{
+						Key:   controllers.CreatorProcessIdLabel,
+						Value: fmt.Sprintf("%d", procNonExistent.Pid),
+					},
+					{
+						Key:   controllers.CreatorProcessStartTimeLabel,
+						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+					},
 				},
 			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
-		Name:    prefix + "dcp-container-3",
-		Network: netWithDcpContainers,
-		ContainerSpec: apiv1.ContainerSpec{
-			Labels: []apiv1.ContainerLabel{
-				{
-					Key:   controllers.PersistentLabel,
-					Value: "false",
-				},
-				{
-					Key:   controllers.CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", procNonExistent.Pid),
-				},
-				{
-					Key:   controllers.CreatorProcessStartTimeLabel,
-					Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:    prefix + "dcp-container-3",
+			Network: netWithDcpContainers,
+			ContainerSpec: apiv1.ContainerSpec{
+				Labels: []apiv1.ContainerLabel{
+					{
+						Key:   controllers.PersistentLabel,
+						Value: "false",
+					},
+					{
+						Key:   controllers.CreatorProcessIdLabel,
+						Value: fmt.Sprintf("%d", procNonExistent.Pid),
+					},
+					{
+						Key:   controllers.CreatorProcessStartTimeLabel,
+						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+					},
 				},
 			},
 		},

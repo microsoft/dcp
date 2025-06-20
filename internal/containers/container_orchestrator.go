@@ -124,6 +124,9 @@ type InspectedContainer struct {
 	// Exit code
 	ExitCode int32 `json:"ExitCode,omitempty"`
 
+	// The command that is configured to health check the container (if any)
+	Healthcheck []string `json:"Healthcheck,omitempty"`
+
 	// The status of any container health checks
 	Health *InspectedContainerHealth `json:"Health,omitempty"`
 
@@ -146,6 +149,7 @@ type InspectedContainer struct {
 	Labels map[string]string `json:"Labels,omitempty"`
 }
 
+// Results of container health check
 type InspectedContainerHealth struct {
 	// Status of the container health check
 	Status string `json:"Status,omitempty"`
@@ -155,6 +159,12 @@ type InspectedContainerHealth struct {
 
 	// Log of health check results
 	Log []InspectedContainerHealthLog `json:"Log,omitempty"`
+}
+
+// Configuration for the container health check
+type InspectedContainerHealthcheck struct {
+	// The command to run for the health check
+	Test []string `json:"Test,omitempty"`
 }
 
 type InspectedContainerHealthLog struct {
@@ -238,10 +248,34 @@ type CreateContainerOptions struct {
 	// Name or ID of a network to connect to
 	Network string
 
+	// Healthcheck configuration for the container
+	// This is currently only used for testing purposes
+	Healthcheck ContainerHealthcheck
+
 	StreamCommandOptions
 	TimeoutOption
 
 	apiv1.ContainerSpec
+}
+
+type ContainerHealthcheck struct {
+	// The command to run for the health check
+	Command []string
+
+	// The interval between health checks
+	Interval time.Duration
+
+	// The maximum time to wait for the health check to complete
+	Timeout time.Duration
+
+	// The number of failures before the container is considered unhealthy
+	Retries int32
+
+	// The duration after the container starts before failures count against health check retry failures
+	StartPeriod time.Duration
+
+	// The interval between health checks during the start period
+	StartInterval time.Duration
 }
 
 type CreateContainer interface {
@@ -266,16 +300,7 @@ type StartContainers interface {
 // RunContainer command types
 
 type RunContainerOptions struct {
-	// Name of the container
-	Name string
-
-	// Name or ID of a network to connect to
-	Network string
-
-	StreamCommandOptions
-	TimeoutOption
-
-	apiv1.ContainerSpec
+	CreateContainerOptions
 }
 
 type RunContainer interface {

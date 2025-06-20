@@ -27,9 +27,10 @@ func HealthStatusFromProbeResults(results []apiv1.HealthProbeResult) apiv1.Healt
 
 	numSuccess := 0
 	for _, result := range results {
-		if result.Outcome == apiv1.HealthProbeOutcomeFailure {
+		switch result.Outcome {
+		case apiv1.HealthProbeOutcomeFailure:
 			return apiv1.HealthStatusUnhealthy
-		} else if result.Outcome == apiv1.HealthProbeOutcomeSuccess {
+		case apiv1.HealthProbeOutcomeSuccess:
 			numSuccess++
 		}
 	}

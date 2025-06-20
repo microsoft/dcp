@@ -762,14 +762,15 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
 	}
 
-	if exe.Spec.AmbientEnvironment.Behavior == "" || exe.Spec.AmbientEnvironment.Behavior == apiv1.EnvironmentBehaviorInherit {
+	switch exe.Spec.AmbientEnvironment.Behavior {
+	case "", apiv1.EnvironmentBehaviorInherit:
 		envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
 			parts := strings.SplitN(envStr, "=", 2)
 			return parts[0], parts[1]
 		}))
-	} else if exe.Spec.AmbientEnvironment.Behavior == apiv1.EnvironmentBehaviorDoNotInherit {
+	case apiv1.EnvironmentBehaviorDoNotInherit:
 		// Noop
-	} else {
+	default:
 		return fmt.Errorf("unknown environment behavior: %s", exe.Spec.AmbientEnvironment.Behavior)
 	}
 
@@ -913,7 +914,7 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ExecutableStateRunning:
-		if len(exe.Status.HealthProbeResults) == 0 {
+		if len(exe.Spec.HealthProbes) == 0 && len(exe.Status.HealthProbeResults) == 0 {
 			newHealthStatus = apiv1.HealthStatusHealthy
 		} else {
 			newHealthStatus = health.HealthStatusFromProbeResults(exe.Status.HealthProbeResults)
