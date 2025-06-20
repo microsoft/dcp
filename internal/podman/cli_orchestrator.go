@@ -1253,6 +1253,7 @@ func unmarshalContainer(pci *podmanInspectedContainer, ic *containers.InspectedC
 	ic.Status = pci.State.Status
 	ic.ExitCode = pci.State.ExitCode
 	ic.Error = pci.State.Error
+	ic.Health = pci.State.Health
 
 	ic.Mounts = make([]apiv1.VolumeMount, len(pci.Mounts))
 	for i, mount := range pci.Mounts {
@@ -1407,11 +1408,12 @@ type podmanInspectedContainerConfig struct {
 }
 
 type podmanInspectedContainerState struct {
-	Status     containers.ContainerStatus `json:"Status,omitempty"`
-	StartedAt  time.Time                  `json:"StartedAt,omitempty"`
-	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
-	ExitCode   int32                      `json:"ExitCode,omitempty"`
-	Error      string                     `json:"Error,omitempty"`
+	Status     containers.ContainerStatus           `json:"Status,omitempty"`
+	StartedAt  time.Time                            `json:"StartedAt,omitempty"`
+	FinishedAt time.Time                            `json:"FinishedAt,omitempty"`
+	ExitCode   int32                                `json:"ExitCode,omitempty"`
+	Error      string                               `json:"Error,omitempty"`
+	Health     *containers.InspectedContainerHealth `json:"Health,omitempty"`
 }
 
 type podmanInspectedContainerMount struct {

@@ -134,6 +134,8 @@ func (hp *HealthProbe) Validate(probePath *field.Path) field.ErrorList {
 
 	if hp.Name == "" {
 		errorList = append(errorList, field.Invalid(probePath.Child("name"), "", "A health probe must have a name"))
+	} else if hp.Name[0] == '_' {
+		errorList = append(errorList, field.Invalid(probePath.Child("name"), hp.Name, "Health probe name cannot start with an underscore"))
 	}
 
 	switch hp.Type {

@@ -913,7 +913,7 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ExecutableStateRunning:
-		if len(exe.Spec.HealthProbes) == 0 {
+		if len(exe.Status.HealthProbeResults) == 0 {
 			newHealthStatus = apiv1.HealthStatusHealthy
 		} else {
 			newHealthStatus = health.HealthStatusFromProbeResults(exe.Status.HealthProbeResults)

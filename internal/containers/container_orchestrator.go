@@ -124,6 +124,9 @@ type InspectedContainer struct {
 	// Exit code
 	ExitCode int32 `json:"ExitCode,omitempty"`
 
+	// The status of any container health checks
+	Health *InspectedContainerHealth `json:"Health,omitempty"`
+
 	// Environment variables
 	Env map[string]string `json:"Env,omitempty"`
 
@@ -141,6 +144,28 @@ type InspectedContainer struct {
 
 	// Container labels
 	Labels map[string]string `json:"Labels,omitempty"`
+}
+
+type InspectedContainerHealth struct {
+	// Status of the container health check
+	Status string `json:"Status,omitempty"`
+
+	// How many times the health check has failed
+	FailingStreak int32 `json:"FailingStreak,omitempty"`
+
+	// Log of health check results
+	Log []InspectedContainerHealthLog `json:"Log,omitempty"`
+}
+
+type InspectedContainerHealthLog struct {
+	// The start time of the health check
+	Start time.Time `json:"Start,omitempty"`
+	// The time the health check completed
+	End time.Time `json:"End,omitempty"`
+	// The exit code of the health check
+	Exit int32 `json:"Exit,omitempty"`
+	// The output of the health check command
+	Output string `json:"Output,omitempty"`
 }
 
 type InspectedContainerNetwork struct {
