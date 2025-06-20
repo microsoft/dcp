@@ -399,6 +399,7 @@ func handleNewContainer(
 				rcd.containerState = apiv1.ContainerStateRunning
 
 				r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
+				r.ensureContainerWatch(container, log)
 
 				change |= rcd.applyTo(container, log)
 
@@ -597,19 +598,10 @@ func ensureContainerRunningState(
 	rcd *runningContainerData,
 	log logr.Logger,
 ) objectChange {
-	change := r.setContainerState(container, desiredState)
-
 	if rcd == nil {
 		// Should never happen--the runningContainers map should have the data about the Container object.
 		log.Error(fmt.Errorf("the data about the container resource is missing (current container state is '%s')", desiredState), "")
 		return ensureContainerUnknownState(ctx, r, container, desiredState, nil, log)
-	}
-
-	if container.Spec.Stop {
-		// Start the stopping sequence
-		rcd.containerState = apiv1.ContainerStateStopping
-		change |= r.setContainerState(container, apiv1.ContainerStateStopping)
-		return change
 	}
 
 	log.V(1).Info("inspecting container resource...", "ContainerID", rcd.containerID)
@@ -626,8 +618,20 @@ func ensureContainerRunningState(
 			// Could be a transient error, so for know we keep the rest of the status as-is.
 			// Don't try to reconcile again unconditionally (that might result in an infinite loop),
 			// but instead wait for another event from the container watcher.
-			return change
+			return noChange
 		}
+	}
+
+	// We're able to inspect the container, so we can update the runningContainerData.
+	// This lets us reconcile against the latest container state
+	rcd.updateFromInspectedContainer(inspected)
+	change := noChange
+
+	if container.Spec.Stop {
+		// Start the stopping sequence
+		rcd.containerState = apiv1.ContainerStateStopping
+		change |= r.setContainerState(container, apiv1.ContainerStateStopping)
+		return change
 	}
 
 	if desiredState != apiv1.ContainerStateRunning {
@@ -641,7 +645,6 @@ func ensureContainerRunningState(
 		}
 	}
 
-	rcd.updateFromInspectedContainer(inspected)
 	change |= rcd.applyTo(container, log)
 
 	if container.Spec.Networks != nil {
@@ -1983,7 +1986,7 @@ func (r *ContainerReconciler) containerEventWorker(
 func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) {
 	switch em.Action {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
-	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionDied, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune:
+	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionDied, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune, containers.EventActionExecDie, containers.EventActionHealthStatus:
 		containerID := containerID(em.Actor.ID)
 		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
 		if rcd == nil {
@@ -2047,7 +2050,7 @@ func updateContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerStat
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ContainerStateRunning:
-		if len(ctr.Spec.HealthProbes) == 0 {
+		if len(ctr.Status.HealthProbeResults) == 0 {
 			newHealthStatus = apiv1.HealthStatusHealthy
 		} else {
 			newHealthStatus = health.HealthStatusFromProbeResults(ctr.Status.HealthProbeResults)

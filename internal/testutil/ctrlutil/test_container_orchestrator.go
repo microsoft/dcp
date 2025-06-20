@@ -430,6 +430,7 @@ type testContainer struct {
 	args       []string
 	env        map[string]string
 	labels     map[string]string
+	health     *containers.InspectedContainerHealth
 	stdoutLog  *testutil.BufferWriter
 	stderrLog  *testutil.BufferWriter
 }
@@ -1591,6 +1592,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 					Args:       container.args,
 					Env:        container.env,
 					Labels:     container.labels,
+					Health:     container.health,
 				}
 
 				for _, networkName := range container.networks {
@@ -1690,6 +1692,40 @@ func (to *TestContainerOrchestrator) GetCreatedFiles(name string) ([]*containerC
 	}
 
 	return to.createFiles[foundContainer.id], nil
+}
+
+func (to *TestContainerOrchestrator) SimulateHealthcheck(ctx context.Context, name string, health *containers.InspectedContainerHealth) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	for _, container := range to.containers {
+		if container.matches(name) {
+			container.health = health
+			to.containers[container.id] = container
+
+			// Notify listeners that we've updated the health of the container
+			to.containerEventsWatcher.Notify(containers.EventMessage{
+				Source: containers.EventSourceContainer,
+				Action: containers.EventActionHealthStatus,
+				Actor:  containers.EventActor{ID: container.id},
+				Attributes: map[string]string{
+					ContainerNameAttribute: name,
+				},
+			})
+
+			return nil
+		}
+	}
+
+	return containers.ErrNotFound
 }
 
 func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, name string, exitCode int32) error {

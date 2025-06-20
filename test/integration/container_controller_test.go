@@ -3230,3 +3230,114 @@ func TestContainerHttpHealthProbePortInjected(t *testing.T) {
 	})
 	require.NoError(t, err, "Could not delete Container '%s'", ctr.ObjectMeta.Name)
 }
+
+func TestContainerHealthcheckUpdatesProbeResults(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-healthcheck-updates-probe-results"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr, inspected := ensureContainerRunning(t, ctx, &ctr)
+	require.Empty(t, updatedCtr.Status.HealthProbeResults, "Expected no health probe results")
+
+	healthCheck := containers.InspectedContainerHealth{
+		Status:        "unhealthy",
+		FailingStreak: 2,
+		Log: []containers.InspectedContainerHealthLog{
+			{
+				Start:  time.Now().Add(-6 * time.Second),
+				End:    time.Now().Add(-5 * time.Second),
+				Exit:   21,
+				Output: "Health check failed 1",
+			},
+			{
+				Start:  time.Now().Add(-1 * time.Second),
+				End:    time.Now(),
+				Exit:   22,
+				Output: "Health check failed 2",
+			},
+			{
+				Start:  time.Now().Add(-3 * time.Second),
+				End:    time.Now().Add(-2 * time.Second),
+				Exit:   23,
+				Output: "Health check failed 3",
+			},
+		},
+	}
+
+	checkErr := containerOrchestrator.SimulateHealthcheck(ctx, inspected.Id, &healthCheck)
+	require.NoError(t, checkErr, "Could not simulate health check for Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedCtr), func(c *apiv1.Container) (bool, error) {
+		running := c.Status.State == apiv1.ContainerStateRunning
+		unhealthy := c.Status.HealthStatus == apiv1.HealthStatusUnhealthy
+		hasProbeResult := len(c.Status.HealthProbeResults) > 0
+
+		return running && unhealthy && hasProbeResult, nil
+	})
+
+	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, "__runtime", updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, apiv1.HealthProbeOutcomeFailure, updatedCtr.Status.HealthProbeResults[0].Outcome, "Expected the health probe result to be a failure for Container '%s'", ctr.ObjectMeta.Name)
+	require.WithinDuration(t, healthCheck.Log[1].End, updatedCtr.Status.HealthProbeResults[0].Timestamp.Time, 1*time.Millisecond, "Expected the health probe result timestamp to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, healthCheck.Log[1].Output, updatedCtr.Status.HealthProbeResults[0].Reason, "Expected the health probe result message to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
+
+	healthCheck = containers.InspectedContainerHealth{
+		Status:        "healthy",
+		FailingStreak: 0,
+		Log: []containers.InspectedContainerHealthLog{
+			{
+				Start:  time.Now().Add(-6 * time.Second),
+				End:    time.Now().Add(-5 * time.Second),
+				Exit:   25,
+				Output: "Health check failed 1",
+			},
+			{
+				Start:  time.Now().Add(-3 * time.Second),
+				End:    time.Now().Add(-2 * time.Second),
+				Exit:   0,
+				Output: "Health check succeed 2",
+			},
+			{
+				Start:  time.Now().Add(-1 * time.Second),
+				End:    time.Now(),
+				Exit:   0,
+				Output: "Health check succeed 3",
+			},
+		},
+	}
+
+	checkErr = containerOrchestrator.SimulateHealthcheck(ctx, inspected.Id, &healthCheck)
+	require.NoError(t, checkErr, "Could not simulate health check for Container '%s'", ctr.ObjectMeta.Name)
+
+	updatedCtr = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedCtr), func(c *apiv1.Container) (bool, error) {
+		running := c.Status.State == apiv1.ContainerStateRunning
+		healthy := c.Status.HealthStatus == apiv1.HealthStatusHealthy
+		hasProbeResult := len(c.Status.HealthProbeResults) > 0
+
+		return running && healthy && hasProbeResult, nil
+	})
+
+	require.Len(t, updatedCtr.Status.HealthProbeResults, 1, "Expected a single health probe result for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, "__runtime", updatedCtr.Status.HealthProbeResults[0].ProbeName, "Expected the health probe result to be from the runtime for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, apiv1.HealthProbeOutcomeSuccess, updatedCtr.Status.HealthProbeResults[0].Outcome, "Expected the health probe result to be a failure for Container '%s'", ctr.ObjectMeta.Name)
+	require.WithinDuration(t, healthCheck.Log[2].End, updatedCtr.Status.HealthProbeResults[0].Timestamp.Time, 1*time.Millisecond, "Expected the health probe result timestamp to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
+	require.Equal(t, healthCheck.Log[2].Output, updatedCtr.Status.HealthProbeResults[0].Reason, "Expected the health probe result message to match the last log entry for Container '%s'", ctr.ObjectMeta.Name)
+}

@@ -1333,6 +1333,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.Status = dci.State.Status
 	ic.ExitCode = dci.State.ExitCode
 	ic.Error = dci.State.Error
+	ic.Health = dci.State.Health
 
 	ic.Mounts = make([]apiv1.VolumeMount, len(dci.Mounts))
 	for i, mount := range dci.Mounts {
@@ -1477,11 +1478,12 @@ type dockerInspectedContainerConfig struct {
 }
 
 type dockerInspectedContainerState struct {
-	Status     containers.ContainerStatus `json:"Status,omitempty"`
-	StartedAt  time.Time                  `json:"StartedAt,omitempty"`
-	FinishedAt time.Time                  `json:"FinishedAt,omitempty"`
-	ExitCode   int32                      `json:"ExitCode,omitempty"`
-	Error      string                     `json:"Error,omitempty"`
+	Status     containers.ContainerStatus           `json:"Status,omitempty"`
+	StartedAt  time.Time                            `json:"StartedAt,omitempty"`
+	FinishedAt time.Time                            `json:"FinishedAt,omitempty"`
+	ExitCode   int32                                `json:"ExitCode,omitempty"`
+	Error      string                               `json:"Error,omitempty"`
+	Health     *containers.InspectedContainerHealth `json:"Health,omitempty"`
 }
 
 type dockerInspectedContainerNetworkSettings struct {

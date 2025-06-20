@@ -24,6 +24,10 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
+const (
+	RuntimeContainerHealthProbeName = "__runtime"
+)
+
 // A structure representing startup log file with an associated ParagraphWriter.
 // Having a shared writer enables separation of logs from multiple startup activities
 // (image build, container creation, container start, network configuration).
@@ -375,6 +379,34 @@ func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.Insp
 		rcd.containerState = apiv1.ContainerStateStopping
 	case ct.ContainerStatusExited, ct.ContainerStatusDead:
 		rcd.containerState = apiv1.ContainerStateExited
+	}
+
+	// We ignore "starting" state here as Podman will report it for all
+	// containers, even ones without a configured Healthcheck.
+	if inspected.Health != nil && inspected.Health.Status != "starting" {
+		// If the container has health information available, update
+		// the health probe results to include it.
+		outcome := apiv1.HealthProbeOutcomeUnknown
+		switch inspected.Health.Status {
+		case "healthy":
+			outcome = apiv1.HealthProbeOutcomeSuccess
+		case "unhealthy":
+			outcome = apiv1.HealthProbeOutcomeFailure
+		}
+
+		result := apiv1.HealthProbeResult{
+			ProbeName: RuntimeContainerHealthProbeName,
+			Outcome:   outcome,
+		}
+
+		for _, log := range inspected.Health.Log {
+			if log.End.After(result.Timestamp.Time) {
+				result.Timestamp = metav1.NewMicroTime(log.End)
+				result.Reason = log.Output
+			}
+		}
+
+		rcd.healthProbeResults[RuntimeContainerHealthProbeName] = result
 	}
 
 	rcd.finishTimestamp = metav1.NewMicroTime(inspected.FinishedAt)
