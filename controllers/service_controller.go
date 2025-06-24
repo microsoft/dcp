@@ -531,18 +531,25 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		return "", 0
 	}
 
+	hostname, hostnameErr := networking.Hostname()
+	if hostnameErr != nil {
+		hostname = networking.Localhost
+	}
+
 	// We might bind to multiple addresses if the address specified by the service spec
 	// is one of the pseudo-addresses (e.g. "localhost", "0.0.0.0.", or "[::]").
 
-	// For "localhost" we can (and should) still report the effective address as "localhost"
-	// if the port used by all addresses is the same.
-	if requestedServiceAddress == networking.Localhost {
+	// For "localhost" or the hostname we can (and should) still report the effective address
+	// as the requested name if all endpoints are bound to the same port.
+	switch requestedServiceAddress {
+	case hostname, networking.Localhost:
+		// If the requested service address is "localhost", the hostname, or an IPv4/IPv6 all interfaces request
 		portsInUse := make(map[int32]bool)
 		for _, pd := range eligibleProxies {
 			portsInUse[pd.proxy.EffectivePort()] = true
 		}
 		if len(portsInUse) == 1 {
-			return networking.Localhost, eligibleProxies[0].proxy.EffectivePort()
+			return requestedServiceAddress, eligibleProxies[0].proxy.EffectivePort()
 		}
 	}
 
@@ -575,11 +582,12 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 	requestedServiceAddress := svc.Spec.Address
 
 	if requestedServiceAddress == "" {
-		if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeLocalhost || svc.Spec.AddressAllocationMode == "" {
+		switch svc.Spec.AddressAllocationMode {
+		case apiv1.AddressAllocationModeLocalhost, "":
 			requestedServiceAddress = networking.Localhost
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4ZeroOne {
+		case apiv1.AddressAllocationModeIPv4ZeroOne:
 			requestedServiceAddress = networking.IPv4LocalhostDefaultAddress
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv4Loopback {
+		case apiv1.AddressAllocationModeIPv4Loopback:
 			// Use the standard LookupIP implementation because we want to specifically limit to IPv4 addresses
 			ips, err := net.LookupIP(networking.Localhost)
 			if err != nil {
@@ -595,9 +603,20 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 				return "", fmt.Errorf("could not obtain valid IP address(es) for 'localhost': %w", err)
 			}
 			requestedServiceAddress = networking.IpToString(ips[rand.Intn(len(ips))])
-		} else if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeIPv6ZeroOne {
+		case apiv1.AddressAllocationModeIPv6ZeroOne:
 			requestedServiceAddress = networking.IPv6LocalhostDefaultAddress
-		} else {
+		case apiv1.AddressAllocationModeAllInterfaces:
+			hostname, hostnameErr := networking.Hostname()
+			if hostnameErr != nil {
+				requestedServiceAddress = networking.Localhost
+			} else {
+				requestedServiceAddress = hostname
+			}
+		case apiv1.AddressAllocationModeIPv4AllInterfaces:
+			requestedServiceAddress = networking.IPv4AllInterfaceAddress
+		case apiv1.AddressAllocationModeIPv6AllInterfaces:
+			requestedServiceAddress = networking.IPv6AllInterfaceAddress
+		default:
 			return "", fmt.Errorf("unsupported address allocation mode: %s", svc.Spec.AddressAllocationMode)
 		}
 	}

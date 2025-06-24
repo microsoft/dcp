@@ -53,11 +53,13 @@ var (
 	programInstanceID     string
 	ipVersionPreference   IpVersionPreference
 	getAllLocalIpsOnce    func() ([]net.IP, error)
+	getHostnameOnce       func() (string, error)
 )
 
 func init() {
 	portFileLock = &sync.Mutex{}
 	getAllLocalIpsOnce = sync.OnceValues(getAllLocalIps)
+	getHostnameOnce = sync.OnceValues(os.Hostname)
 
 	idBytes, err := randdata.MakeRandomString(instanceIdLength)
 	if err != nil {
@@ -111,6 +113,14 @@ func LookupIP(host string) ([]net.IP, error) {
 		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 		if err != nil {
 			return nil, err
+		}
+
+		hostname, hostnameErr := Hostname()
+		if hostnameErr == nil && host == hostname {
+			allLocalIps, localIpsErr := getAllLocalIpsOnce()
+			if localIpsErr == nil {
+				ips = append(ips, slices.DiffFunc(allLocalIps, ips, net.IP.Equal)...)
+			}
 		}
 
 		validIps = slices.Select(ips, IsValidIP)
@@ -442,6 +452,12 @@ func doGetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
 
 func AddressAndPort(address string, port int32) string {
 	return fmt.Sprintf("%s:%d", address, port)
+}
+
+func Hostname() (string, error) {
+	// Returns the hostname of the machine, which is used for address resolution.
+	// This is a wrapper around os.Hostname() to ensure that it is only called once.
+	return getHostnameOnce()
 }
 
 // Creates the (default) most-recently-used ports file.
