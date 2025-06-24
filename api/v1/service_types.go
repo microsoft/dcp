@@ -41,6 +41,17 @@ const (
 	// Bind only to ::1
 	AddressAllocationModeIPv6ZeroOne AddressAllocationMode = "IPv6ZeroOne"
 
+	// Bind to all interfaces (including localhost/loopback addresses).
+	// DCP will bind to either IPv4 or IPv6 depending on configuration and available
+	// interfaces, but not both.
+	AddressAllocationModeAllInterfaces AddressAllocationMode = "AllInterfaces"
+
+	// Bind to all IPv4 interfaces (0.0.0.0).
+	AddressAllocationModeIPv4AllInterfaces AddressAllocationMode = "IPv4AllInterfaces"
+
+	// Bind to all IPv6 interfaces (::).
+	AddressAllocationModeIPv6AllInterfaces AddressAllocationMode = "IPv6AllInterfaces"
+
 	// Don't use a proxy--the service will have the same address and port as the first endpoint
 	AddressAllocationModeProxyless AddressAllocationMode = "Proxyless"
 )
