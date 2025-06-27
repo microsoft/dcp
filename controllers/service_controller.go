@@ -531,25 +531,18 @@ func (r *ServiceReconciler) getEffectiveAddressAndPort(proxies []proxyInstanceDa
 		return "", 0
 	}
 
-	hostname, hostnameErr := networking.Hostname()
-	if hostnameErr != nil {
-		hostname = networking.Localhost
-	}
-
 	// We might bind to multiple addresses if the address specified by the service spec
 	// is one of the pseudo-addresses (e.g. "localhost", "0.0.0.0.", or "[::]").
 
-	// For "localhost" or the hostname we can (and should) still report the effective address
-	// as the requested name if all endpoints are bound to the same port.
-	switch requestedServiceAddress {
-	case hostname, networking.Localhost:
-		// If the requested service address is "localhost", the hostname, or an IPv4/IPv6 all interfaces request
+	// For any "hostname" style addresses (e.g. "localhost", "<machinename>"), we use "localhost" as the effective
+	// address if possible.
+	if net.ParseIP(networking.ToStandaloneAddress(requestedServiceAddress)) == nil {
 		portsInUse := make(map[int32]bool)
 		for _, pd := range eligibleProxies {
 			portsInUse[pd.proxy.EffectivePort()] = true
 		}
 		if len(portsInUse) == 1 {
-			return requestedServiceAddress, eligibleProxies[0].proxy.EffectivePort()
+			return networking.Localhost, eligibleProxies[0].proxy.EffectivePort()
 		}
 	}
 

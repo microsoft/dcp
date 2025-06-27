@@ -110,23 +110,39 @@ func LookupIP(host string) ([]net.IP, error) {
 		host = ToStandaloneAddress(host) // LookupIP does not like brackets around IPv6 addresses
 		ctx, cancel := context.WithTimeout(context.Background(), NetworkOpTimeout)
 		defer cancel()
-		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-		if err != nil {
-			return nil, err
-		}
 
-		hostname, hostnameErr := Hostname()
-		if hostnameErr == nil && host == hostname {
-			allLocalIps, localIpsErr := getAllLocalIpsOnce()
-			if localIpsErr == nil {
-				ips = append(ips, slices.DiffFunc(allLocalIps, ips, net.IP.Equal)...)
+		switch host {
+		case Localhost:
+			// If this is localhost, resolve it to all loopback addresses
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, err
+			}
+
+			validIps = slices.Select(ips, IsValidIP)
+		default:
+			if ip := net.ParseIP(host); ip != nil {
+				// This is a direct IP address, so we attempt to use it as is
+				validIps = slices.Select([]net.IP{ip}, IsValidIP)
+			} else {
+				// This is an arbitrary hostname, so resolve it to all local IP addresses
+				allLocalIps, err := getAllLocalIpsOnce()
+				if err != nil {
+					return nil, err
+				}
+
+				validIps = allLocalIps
 			}
 		}
-
-		validIps = slices.Select(ips, IsValidIP)
 	}
 
 	return validIps, nil
+}
+
+func IsAllAddresses(address string) bool {
+	return address == IPv4AllInterfaceAddress ||
+		address == IPv6AllInterfaceAddress ||
+		net.ParseIP(ToStandaloneAddress(address)) == nil
 }
 
 func getAllLocalIps() ([]net.IP, error) {
@@ -192,6 +208,11 @@ func getAllLocalIps() ([]net.IP, error) {
 func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error) {
 	if address == "" {
 		address = Localhost
+	}
+
+	if address != Localhost && net.ParseIP(ToStandaloneAddress(address)) == nil {
+		// We treat any non-Localhost and non-IP address as a request to bind to all interfaces.
+		address = IPv4AllInterfaceAddress
 	}
 
 	portFileLock.Lock()

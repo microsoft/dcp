@@ -854,3 +854,32 @@ func TestServiceGetsReadyAfterTransientProxyFailure(t *testing.T) {
 	t.Logf("Ensure Service '%s' is in Ready state...", svc.ObjectMeta.Name)
 	_ = waitServiceReady(t, ctx, &svc)
 }
+
+func TestBindAllResolvesCorrectInterfaces(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	svcName := "test-non-localhost-hostname-resolves-to-all-interfaces"
+
+	svc := apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      svcName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol: apiv1.TCP,
+			Address:  "*",
+		},
+	}
+
+	t.Logf("Creating Service '%s'", svc.ObjectMeta.Name)
+	err := client.Create(ctx, &svc)
+	require.NoError(t, err, "Could not create the Service '%s'", svc.ObjectMeta.Name)
+
+	t.Log("Check if Service is listening with expected allocated address...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&svc), func(s *apiv1.Service) (bool, error) {
+		hasAllocatedAddress := s.Status.EffectiveAddress == networking.Localhost
+		return hasAllocatedAddress, nil
+	})
+}
