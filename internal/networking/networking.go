@@ -139,12 +139,6 @@ func LookupIP(host string) ([]net.IP, error) {
 	return validIps, nil
 }
 
-func IsAllAddresses(address string) bool {
-	return address == IPv4AllInterfaceAddress ||
-		address == IPv6AllInterfaceAddress ||
-		net.ParseIP(ToStandaloneAddress(address)) == nil
-}
-
 func getAllLocalIps() ([]net.IP, error) {
 	ifaces, ifaceErr := net.Interfaces()
 	if ifaceErr != nil {
