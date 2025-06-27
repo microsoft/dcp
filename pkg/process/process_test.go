@@ -42,6 +42,7 @@ func TestRunCompleted(t *testing.T) {
 	require.NoError(t, err)
 
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 	testCtx, cancel := testutil.GetTestContext(t, 10*time.Second)
 	defer cancel()
 
@@ -76,6 +77,7 @@ func TestRunToCompletionDeadlineExceeded(t *testing.T) {
 	require.NoError(t, err)
 
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 
 	// Start the process, but use a context that expires within 2 seconds.
 	// If it takes more than 10 seconds to receive a notification that the process has exited,
@@ -107,6 +109,7 @@ func TestRunWithTimeout(t *testing.T) {
 	require.NoError(t, err)
 
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 
 	// Command returns on its own after 5 seconds. This prevents the test from hanging
 	// or leaving processes running after the test is done.
@@ -144,6 +147,7 @@ func TestRunCancelled(t *testing.T) {
 	require.NoError(t, err)
 
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 
 	// Command returns on its own after 20 seconds. This prevents the test from hanging.
 	exitInfoChan := make(chan process.ProcessExitInfo, 2)
@@ -161,7 +165,7 @@ func TestRunCancelled(t *testing.T) {
 	ctx, cancelFn := context.WithCancel(context.Background())
 
 	go func() {
-		_, _, startWaitForExit, processStartErr := executor.StartProcess(ctx, cmd, onProcessExited)
+		_, _, startWaitForExit, processStartErr := executor.StartProcess(ctx, cmd, onProcessExited, process.CreationFlagsNone)
 		startupNotification := process.NewProcessExitInfo()
 		if processStartErr != nil {
 			startupNotification.Err = processStartErr
@@ -207,7 +211,7 @@ func TestChildrenTerminated(t *testing.T) {
 			return process.ProcessTreeItem{pid, pp.CreationTime()}
 		}},
 		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
-			pid, _, _, err := e.StartProcess(context.Background(), cmd, nil)
+			pid, _, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			intPid, intPidErr := process.PidT_ToInt(pid)
 			require.NoError(t, intPidErr)
@@ -216,7 +220,7 @@ func TestChildrenTerminated(t *testing.T) {
 			return process.ProcessTreeItem{pid, pp.CreationTime()}
 		}},
 		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
-			pid, _, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil)
+			pid, _, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			startWaitForProcessExit()
 			intPid, intPidErr := process.PidT_ToInt(pid)
@@ -236,8 +240,6 @@ func TestChildrenTerminated(t *testing.T) {
 	executor := process.NewOSExecutor(log)
 
 	for _, tc := range testcases {
-		tc := tc // capture range variable for use in a goroutine
-
 		t.Run(tc.description, func(t *testing.T) {
 			t.Parallel()
 
@@ -266,6 +268,42 @@ func TestChildrenTerminated(t *testing.T) {
 			// actually works, and not because 'delay' instances exited on their own (after 20 seconds).
 			ensureAllStopped(t, processTree, 10*time.Second)
 		})
+	}
+}
+
+// Ensures that children using CreationFlagEnsureKillOnDispose are terminated when the executor is disposed.
+func TestChildrenTerminatedOnDispose(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, toolLaunchErr := getDelayToolDir()
+	require.NoError(t, toolLaunchErr)
+
+	executor := process.NewOSExecutor(log)
+
+	// Command return on its own after 20 seconds, so that it does not end up as a zombie process.
+	cmd := exec.Command("./delay", "--delay=20s")
+	cmd.Dir = delayToolDir
+	processExited := make(chan struct{})
+
+	_, _, startWaitForProcessExit, startErr := executor.StartProcess(
+		context.Background(),
+		cmd,
+		process.ProcessExitHandlerFunc(func(_ process.Pid_t, _ int32, err error) {
+			require.True(t, err == nil || process.IsEarlyProcessExitError(err), "The process could not be tracked: %v", err)
+			close(processExited)
+		}),
+		process.CreationFlagEnsureKillOnDispose,
+	)
+	require.NoError(t, startErr)
+	startWaitForProcessExit()
+
+	executor.Dispose()
+
+	select {
+	case <-processExited:
+		// Process exited as expected, so the test passes.
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "Process did not exit within 10 seconds after Dispose() was called")
 	}
 }
 

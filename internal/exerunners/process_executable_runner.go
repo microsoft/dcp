@@ -95,7 +95,8 @@ func (r *ProcessExecutableRunner) StartRun(
 		})
 	}
 
-	pid, startTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler)
+	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
+	pid, startTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		log.Error(startErr, "failed to start a process")
 		runInfo.FinishTimestamp = metav1.NowMicro()

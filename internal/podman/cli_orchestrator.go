@@ -599,7 +599,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	_, _, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagEnsureKillOnDispose)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Podman command '%s'", "ExecContainer"))
@@ -998,7 +998,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh)
+	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagEnsureKillOnDispose)
 	if err != nil {
 		pco.log.Error(err, "could not execute 'podman events' command; container events unavailable")
 		return
@@ -1058,7 +1058,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh)
+	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagEnsureKillOnDispose)
 	if err != nil {
 		pco.log.Error(err, "could not execute 'podman events' command; network events unavailable")
 		return
@@ -1111,7 +1111,7 @@ func (pco *PodmanCliOrchestrator) streamPodmanCommand(
 	}
 
 	pco.log.V(1).Info("running podman command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler))
+	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagEnsureKillOnDispose)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start podman command '%s'", commandName))

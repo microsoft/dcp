@@ -2,11 +2,14 @@ package process
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/tklauser/ps"
@@ -79,7 +82,7 @@ func RunToCompletion(ctx context.Context, executor Executor, cmd *exec.Cmd) (int
 	pic := make(chan ProcessExitInfo, 1)
 	peh := NewChannelProcessExitHandler(pic)
 
-	_, _, startWaitForProcessExit, err := executor.StartProcess(ctx, cmd, peh)
+	_, _, startWaitForProcessExit, err := executor.StartProcess(ctx, cmd, peh, CreationFlagsNone)
 	if err != nil {
 		return UnknownExitCode, err
 	}
@@ -181,22 +184,52 @@ func HasExpectedStartTime(psProcess ps.Process, expectedStartTime time.Time) boo
 	}
 }
 
+// Checks if the error is associated with early exit of a process, which is often expected.
+func IsEarlyProcessExitError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var ee *exec.ExitError
+	if errors.Is(err, os.ErrProcessDone) || errors.As(err, &ee) {
+		// These are all expected errors, the process exited successfully.
+		return true
+	}
+
+	// Receiving ECHILD when calling wait() on the child process is expected,
+	// (the parent process might have terminated them).
+	var sysErr *os.SyscallError
+	isEChildErr := errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
+	if isEChildErr {
+		return true
+	}
+
+	return false
+}
+
 type Waitable interface {
 	Wait() error
 	Info() string
+	Flags() ProcessCreationFlag
 }
 
 type waitableCmd struct {
 	*exec.Cmd
+	flags ProcessCreationFlag
 }
 
 func (cmd waitableCmd) Info() string {
 	return fmt.Sprintf("Command %s", cmd.String())
 }
 
+func (cmd waitableCmd) Flags() ProcessCreationFlag {
+	return cmd.flags
+}
+
 type waitableLite struct {
-	wait func() error
-	info func() string
+	wait  func() error
+	info  func() string
+	flags func() ProcessCreationFlag
 }
 
 func (wl waitableLite) Info() string {
@@ -205,6 +238,10 @@ func (wl waitableLite) Info() string {
 
 func (wl waitableLite) Wait() error {
 	return wl.wait()
+}
+
+func (wl waitableLite) Flags() ProcessCreationFlag {
+	return wl.flags()
 }
 
 var _ Waitable = waitableCmd{}
@@ -218,6 +255,9 @@ func makeWaitable(pid Pid_t, proc *os.Process) Waitable {
 		},
 		info: func() string {
 			return "(" + strconv.FormatInt(int64(pid), 10) + ")"
+		},
+		flags: func() ProcessCreationFlag {
+			return CreationFlagsNone
 		},
 	}
 }

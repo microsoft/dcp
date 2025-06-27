@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Returns true if the environemnt variable "switch" is enabled.
+// Returns true if the environment variable "switch" is enabled.
 // The environment variable is considered enabled if it is set to one of the "truthy" values:
 // "1", "true", "on", or "yes".
 func EnvVarSwitchEnabled(varName string) bool {

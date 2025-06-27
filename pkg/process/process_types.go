@@ -20,6 +20,17 @@ var (
 	ErrTimedOutWaitingForProcessToStop = errors.New("timed out waiting for process to stop")
 )
 
+type ProcessCreationFlag uint32
+
+const (
+	CreationFlagsNone ProcessCreationFlag = 0
+
+	// Ensures that the process is killed when process executor is disposed.
+	// This has currently no effect on Mac/Linux, but on Windows the process started with this flag
+	// will be added to the "killer job" object that terminates all processes assigned to it.
+	CreationFlagEnsureKillOnDispose = 0x1
+)
+
 // Pid_t is a type used to represent process IDs.
 // The domain is all unsigned 32-bit integers, but we use a signed type to align with Kubernetes API conventions.
 type Pid_t int64
@@ -29,7 +40,12 @@ type Executor interface {
 	// When the passed context is cancelled, the process is automatically terminated.
 	// Returns the process PID, process start time, and a function that enables process exit notifications
 	// delivered to the exit handler.
-	StartProcess(ctx context.Context, cmd *exec.Cmd, exitHandler ProcessExitHandler) (pid Pid_t, startTime time.Time, startWaitForProcessExit func(), err error)
+	StartProcess(
+		ctx context.Context,
+		cmd *exec.Cmd,
+		exitHandler ProcessExitHandler,
+		creationFlags ProcessCreationFlag,
+	) (pid Pid_t, startTime time.Time, startWaitForProcessExit func(), err error)
 
 	// Stops the process with a given PID.
 	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped.
@@ -38,7 +54,11 @@ type Executor interface {
 
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.
-	StartAndForget(cmd *exec.Cmd) (pid Pid_t, startTime time.Time, err error)
+	StartAndForget(cmd *exec.Cmd, creationFlags ProcessCreationFlag) (pid Pid_t, startTime time.Time, err error)
+
+	// Disposes the executor. Processes started with CreationFlagEnsureKillOnDispose will be terminated.
+	// Other processes will be waited on (so that they do not become zombies), but not terminated.
+	Dispose()
 }
 
 type ProcessExitHandler interface {

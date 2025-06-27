@@ -111,6 +111,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 		}
 
 		processExecutor := process.NewOSExecutor(log)
+		defer processExecutor.Dispose()
 		containerOrchestrator, orchestratorErr := runtimes.FindAvailableContainerRuntime(ctrlCtx, log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagValue()), processExecutor)
 		if orchestratorErr != nil {
 			return orchestratorErr

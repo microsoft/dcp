@@ -21,9 +21,13 @@ type Semaphore struct {
 }
 
 func NewSemaphore() *Semaphore {
+	return NewSemaphoreWithCount(0)
+}
+
+func NewSemaphoreWithCount(initialCount uint) *Semaphore {
 	sem := &Semaphore{
 		lock:       &sync.Mutex{},
-		count:      0,
+		count:      initialCount,
 		nextHandle: invalidWaiterHandle + 1,
 		waiters:    make(map[waiterHandle]*Waiter),
 		wq:         container.NewRingBuffer[waiterHandle](),

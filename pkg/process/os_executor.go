@@ -4,15 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	stdlib_maps "maps"
 	"os"
 	"os/exec"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/tklauser/ps"
 
+	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
@@ -32,6 +33,10 @@ const (
 	waitForProcessExitTimeout = 15 * time.Second
 )
 
+var (
+	ErrDisposed = errors.New("the process executor has been disposed")
+)
+
 type waitState struct {
 	waitable    Waitable      // The waitable that is being waited on
 	waitEndedCh chan struct{} // A channel that gets closed when the wait ends
@@ -45,29 +50,27 @@ type WaitKey struct {
 	StartedAt time.Time
 }
 
-type OSExecutor struct {
-	procsWaiting map[WaitKey]*waitState
-	lock         sync.Locker
-	log          logr.Logger
-}
-
-func NewOSExecutor(log logr.Logger) Executor {
-	return &OSExecutor{
-		procsWaiting: make(map[WaitKey]*waitState),
-		lock:         &sync.Mutex{},
-		log:          log.WithName("os-executor"),
+func (e *OSExecutor) StartProcess(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	handler ProcessExitHandler,
+	flags ProcessCreationFlag,
+) (Pid_t, time.Time, func(), error) {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return UnknownPID, time.Time{}, nil, ErrDisposed
 	}
-}
+	e.releaseLock()
 
-func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler ProcessExitHandler) (Pid_t, time.Time, func(), error) {
-	pid, processStartTime, err := e.startProcess(cmd)
+	pid, processStartTime, err := e.startProcess(cmd, flags)
 	if err != nil {
 		return UnknownPID, time.Time{}, nil, err
 	}
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	ws, _ := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd}, waitReasonNone)
+	ws, _ := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd, flags}, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
@@ -82,7 +85,7 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd}, waitReasonStopping)
+			_, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd, flags}, waitReasonStopping)
 			var stopProcessErr error = nil
 
 			if shouldStopProcess {
@@ -109,14 +112,21 @@ func (e *OSExecutor) StartProcess(ctx context.Context, cmd *exec.Cmd, handler Pr
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _ = e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd}, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd, flags}, waitReasonMonitoring)
 	}
 
 	return pid, processStartTime, startWaitingForProcessExit, nil
 }
 
-func (e *OSExecutor) StartAndForget(cmd *exec.Cmd) (Pid_t, time.Time, error) {
-	pid, processStartTime, err := e.startProcess(cmd)
+func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid_t, time.Time, error) {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return UnknownPID, time.Time{}, ErrDisposed
+	}
+	e.releaseLock()
+
+	pid, processStartTime, err := e.startProcess(cmd, flags)
 	if err != nil {
 		return UnknownPID, time.Time{}, err
 	}
@@ -138,12 +148,19 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 	return pid, processStartTime, nil
 }
 
-func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
-	if runtime.GOOS == "windows" {
-		// On Windows, we need to decouple the process from the parent to ensure we can
-		// send CTRL_BREAK_EVENT to the child without impacting the parent.
-		DecoupleFromParent(cmd)
+func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return ErrDisposed
 	}
+	e.releaseLock()
+
+	return e.stopProcessInternal(pid, processStartTime, optNone)
+}
+
+func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid_t, time.Time, error) {
+	e.prepareProcessStart(cmd, flags)
 
 	if err := cmd.Start(); err != nil {
 		return UnknownPID, time.Time{}, err
@@ -164,6 +181,19 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 		processStartTime = psProcess.CreationTime()
 	}
 
+	startCompletionErr := e.completeProcessStart(cmd, pid, processStartTime, flags)
+	if startCompletionErr != nil {
+		e.log.Error(startCompletionErr, "could not complete process start", "PID", pid, "Command", cmd.Path, "Args", cmd.Args)
+
+		// If we could not complete the process start, we need to stop the process.
+		// Do not try graceful stop (no optTrySignal), just kill it immediately.
+		if stopErr := e.stopProcessInternal(pid, processStartTime, optIsResponsibleForStopping); stopErr != nil {
+			e.log.Error(stopErr, "could not stop process after failed start", "PID", pid, "Command", cmd.Path, "Args", cmd.Args)
+		}
+
+		return UnknownPID, time.Time{}, fmt.Errorf("could not complete process start: %w", startCompletionErr)
+	}
+
 	return pid, processStartTime, nil
 }
 
@@ -174,19 +204,6 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd) (Pid_t, time.Time, error) {
 // is the first one to indicate that the reason for the wait is "stopping the process",
 // and thus IT is the caller that must stop the process.
 func (e *OSExecutor) tryStartWaiting(pid Pid_t, startTime time.Time, waitable Waitable, reason waitReason) (*waitState, bool) {
-	doWait := func(ws *waitState) {
-		e.log.V(1).Info("starting waiting for process to exit", "pid", pid, "cmd", waitable.Info())
-		err := ws.waitable.Wait()
-		e.log.V(1).Info("process wait ended", "pid", pid, "Error", logger.FriendlyErrorString(err), "cmd", waitable.Info())
-
-		e.acquireLock()
-		defer e.releaseLock()
-
-		ws.waitEnded = time.Now()
-		ws.waitErr = err
-		close(ws.waitEndedCh)
-	}
-
 	e.acquireLock()
 	defer e.releaseLock()
 
@@ -201,10 +218,11 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, startTime time.Time, waitable Wa
 		}
 
 		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
-		if ws.reason == waitReasonNone && reason != waitReasonNone {
-			go doWait(ws)
-		}
+		mustStartWaiting := ws.reason == waitReasonNone && reason != waitReasonNone
 		ws.reason |= reason
+		if mustStartWaiting {
+			go e.doWait(ws, waitable, pid)
+		}
 	} else {
 		callerShouldStopProcess = (reason & waitReasonStopping) != 0
 		ws = &waitState{
@@ -214,11 +232,24 @@ func (e *OSExecutor) tryStartWaiting(pid Pid_t, startTime time.Time, waitable Wa
 		}
 		e.procsWaiting[WaitKey{pid, startTime}] = ws
 		if reason != waitReasonNone {
-			go doWait(ws)
+			go e.doWait(ws, waitable, pid)
 		}
 	}
 
 	return ws, callerShouldStopProcess
+}
+
+func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
+	e.log.V(1).Info("starting waiting for process to exit", "pid", pid, "cmd", waitable.Info())
+	err := waitable.Wait()
+	e.log.V(1).Info("process wait ended", "pid", pid, "Error", logger.FriendlyErrorString(err), "cmd", waitable.Info())
+
+	e.acquireLock()
+	defer e.releaseLock()
+
+	ws.waitEnded = time.Now()
+	ws.waitErr = err
+	close(ws.waitEndedCh)
 }
 
 // Returns the process execution error and process exit code depending on the result of command wait call.
@@ -238,6 +269,12 @@ func (e *OSExecutor) acquireLock() {
 
 	e.lock.Lock()
 
+	if e.disposed {
+		// Do not forget any process state when we are disposing of the executor,
+		// so that we have all the information needed to stop processes.
+		return
+	}
+
 	// Only keep wait states that correspond to processes that are still running, or the ones that completed recently
 	e.procsWaiting = maps.Select(e.procsWaiting, func(_ WaitKey, ws *waitState) bool {
 		return ws.waitEnded.IsZero() || time.Since(ws.waitEnded) < maxCompletedDuration
@@ -246,10 +283,6 @@ func (e *OSExecutor) acquireLock() {
 
 func (e *OSExecutor) releaseLock() {
 	e.lock.Unlock()
-}
-
-func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
-	return e.stopProcessInternal(pid, processStartTime, optNone)
 }
 
 func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
@@ -335,6 +368,65 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 	rootWaitErr := waitForRootProcessToEnd()
 
 	return errors.Join(append([]error{rootWaitErr}, childStoppingErrors...)...)
+}
+
+var maxConcurrentProcessStops = runtime.NumCPU() * 5
+
+// Disposes the process executor.
+func (e *OSExecutor) Dispose() {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return
+	}
+	e.disposed = true
+	// Make a shallow copy of the waiting processes map so we can safely iterate over it while stopping processes.
+	currentProcs := stdlib_maps.Clone(e.procsWaiting)
+	e.releaseLock()
+
+	if len(currentProcs) == 0 {
+		e.log.V(1).Info("No processes to stop during executor disposal")
+		return
+	} else {
+		e.log.V(1).Info("Stopping processes during executor disposal...", "Count", len(currentProcs))
+	}
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(currentProcs))
+	sem := concurrency.NewSemaphoreWithCount(uint(maxConcurrentProcessStops))
+
+	for wk, ws := range currentProcs {
+		<-sem.Wait().Chan
+
+		go func() {
+			defer wg.Done()
+			defer sem.Signal()
+			e.acquireLock()
+
+			if ws != nil && !ws.waitEnded.IsZero() {
+				// The process has already ended
+				e.releaseLock()
+				return
+			}
+
+			waitable := ws.waitable
+			flags := waitable.Flags()
+			e.releaseLock()
+
+			if flags&CreationFlagEnsureKillOnDispose == CreationFlagEnsureKillOnDispose {
+				// Best effort to stop the process.
+				_ = e.stopProcessInternal(wk.Pid, wk.StartedAt, optIsResponsibleForStopping|optTrySignal)
+			} else {
+				// Just make sure we called wait() so the process does not become a zombie.
+				_, _ = e.tryStartWaiting(wk.Pid, wk.StartedAt, waitable, waitReasonMonitoring)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	e.completeDispose()
+	e.log.V(1).Info("Process executor disposed")
 }
 
 type processStoppingOpts uint16

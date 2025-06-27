@@ -7,15 +7,33 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/go-logr/logr"
 )
 
 const (
 	// The timeout for sending a signal and waiting for the process to exit.
 	signalAndWaitTimeout = 6 * time.Second
 )
+
+type OSExecutor struct {
+	procsWaiting map[WaitKey]*waitState
+	disposed     bool
+	lock         sync.Locker
+	log          logr.Logger
+}
+
+func NewOSExecutor(log logr.Logger) Executor {
+	return &OSExecutor{
+		procsWaiting: make(map[WaitKey]*waitState),
+		disposed:     false,
+		lock:         &sync.Mutex{},
+		log:          log.WithName("os-executor"),
+	}
+}
 
 func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
 	proc, err := FindProcess(pid, processStartTime)
@@ -88,17 +106,7 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 
 	case <-ws.waitEndedCh:
 		err = ws.waitErr
-		var ee *exec.ExitError
-		if err == nil || errors.Is(err, os.ErrProcessDone) || errors.As(err, &ee) {
-			// These are all expected errors, the process exited successfully.
-			return nil
-		}
-
-		// Receiving ECHILD when calling wait() on the child process is expected,
-		// (the parent process might have terminated them).
-		var sysErr *os.SyscallError
-		isEChildErr := errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
-		if isEChildErr {
+		if err == nil || IsEarlyProcessExitError(err) {
 			return nil
 		}
 
@@ -107,4 +115,17 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig syscall.Signal, 
 	case <-time.After(signalAndWaitTimeout):
 		return ErrTimedOutWaitingForProcessToStop
 	}
+}
+
+func (e *OSExecutor) completeDispose() {
+	// No additional cleanup needed for Unix-like systems.
+}
+
+func (e *OSExecutor) prepareProcessStart(_ *exec.Cmd, _ ProcessCreationFlag) {
+	// No additional preparation needed for Unix-like systems.
+}
+
+func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, pid Pid_t, _ time.Time, _ ProcessCreationFlag) error {
+	// No additional actions needed on process start for Unix-like systems.
+	return nil
 }

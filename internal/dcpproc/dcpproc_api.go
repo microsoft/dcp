@@ -62,7 +62,7 @@ func RunWatcher(
 		}
 
 		monitorCmd := exec.Command(procMonitorPath, monitorCmdArgs...)
-		_, _, monitorErr := pe.StartAndForget(monitorCmd)
+		_, _, monitorErr := pe.StartAndForget(monitorCmd, process.CreationFlagsNone)
 		if monitorErr != nil {
 			log.Error(monitorErr, "failed to start process monitor", "executable", procMonitorPath, "PID", childPid)
 		}

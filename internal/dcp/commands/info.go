@@ -64,6 +64,7 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 		defer cancel()
 
 		processExecutor := process.NewOSExecutor(log)
+		defer processExecutor.Dispose()
 
 		containerOrchestrator, orchestratorErr := container_runtimes.FindAvailableContainerRuntime(ctx, log, processExecutor)
 		var status containers.ContainerRuntimeStatus
