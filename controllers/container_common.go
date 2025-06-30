@@ -3,11 +3,9 @@
 package controllers
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -16,8 +14,6 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
@@ -201,42 +197,6 @@ func removeContainer(removeContext context.Context, o containers.ContainerOrches
 
 	_, removeErr := callWithRetryAndVerification(removeContext, defaultContainerOrchestratorBackoff(), action, verify)
 	return removeErr
-}
-
-func buildImage(buildCtx context.Context, o containers.ContainerOrchestrator, buildOptions containers.BuildImageOptions) (string, error) {
-	// Building an image can take a while
-	// Since we are using a very long timeout for the operation, we are going to only retry at most once
-	buildOptions.Timeout = 10 * time.Minute
-	const maxRetries = 1
-
-	action := func(ctx context.Context) error {
-		return o.BuildImage(buildCtx, buildOptions)
-	}
-
-	verify := func(ctx context.Context) (string, error) {
-		iidFile, fileErr := usvc_io.OpenFile(buildOptions.IidFile, os.O_RDONLY, osutil.PermissionOwnerReadWriteOthersRead)
-		if fileErr != nil {
-			return "", fmt.Errorf("could not open the image ID file: %w", fileErr)
-		}
-		defer func() {
-			_ = iidFile.Close()
-			os.Remove(buildOptions.IidFile)
-		}()
-
-		reader := bufio.NewReader(iidFile)
-		idBytes, _, readErr := reader.ReadLine()
-		if readErr != nil {
-			return "", fmt.Errorf("could not read the image ID from the ID file: %w", readErr)
-		}
-		if len(idBytes) == 0 {
-			return "", fmt.Errorf("image ID file is empty")
-		}
-		return string(idBytes), nil
-	}
-
-	b := backoff.WithMaxRetries(exponentialBackoff(buildOptions.Timeout), maxRetries)
-	imageId, buildErr := callWithRetryAndVerification(buildCtx, b, action, verify)
-	return imageId, buildErr
 }
 
 func createContainer(createCtx context.Context, o containers.ContainerOrchestrator, creationOptions containers.CreateContainerOptions) (*containers.InspectedContainer, error) {

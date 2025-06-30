@@ -1511,8 +1511,6 @@ func TestContainerWithBuildContextInstanceStarts(t *testing.T) {
 	_, _ = ensureContainerRunning(t, ctx, &ctr)
 
 	require.True(t, containerOrchestrator.HasImage(ctr.SpecifiedImageNameOrDefault()), "expected image to be present in the orchestrator")
-	_, found := containerOrchestrator.GetImageId(ctr.SpecifiedImageNameOrDefault())
-	require.True(t, found, "expected image ID to be found")
 }
 
 func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {

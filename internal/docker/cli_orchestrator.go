@@ -404,7 +404,7 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 					secretEnvironment[secret.Source] = secret.Value
 				}
 			} else {
-				args = append(args, "--secret", fmt.Sprintf("id=%s", secret.ID))
+				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.ID))
 				if secret.Value != "" {
 					secretEnvironment[secret.ID] = secret.Value
 				}

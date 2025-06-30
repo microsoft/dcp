@@ -890,7 +890,6 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			}...)
 
 			buildOptions := containers.BuildImageOptions{
-				IidFile:               filepath.Join(usvc_io.DcpTempDir(), fmt.Sprintf("%s_iid_%s", container.Name, container.UID)),
 				Pull:                  container.Spec.PullPolicy == apiv1.PullPolicyAlways,
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
@@ -901,14 +900,12 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 				StdErrStream: startupStderrWriter,
 			}
 
-			imageId, buildErr := buildImage(buildCtx, r.orchestrator, buildOptions)
+			buildErr := r.orchestrator.BuildImage(buildCtx, buildOptions)
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 			if buildErr != nil {
 				log.Error(buildErr, "could not build the image")
 				return buildErr
 			}
-
-			log.V(1).Info("image built successfully", "ImageId", imageId)
 
 			rcd.containerState = apiv1.ContainerStateStarting
 
