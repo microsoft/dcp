@@ -50,6 +50,7 @@ type proxyInstanceData struct {
 type serviceData struct {
 	proxies       []proxyInstanceData
 	startAttempts uint32
+	warnedUser    bool
 }
 
 // Stores ServiceReconciler dependencies and configuration that often varies
@@ -176,7 +177,10 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 }
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ServiceName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues(
+		"Service", req.NamespacedName.String(),
+		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
+	)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -301,13 +305,24 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		psd, proxyStartErr := r.startProxyIfNeeded(ctx, svc, log)
 		if proxyStartErr != nil {
 			if psd.startAttempts >= MaxServiceStartAttempts {
-				log.Error(proxyStartErr, "could not start the proxy")
+				if networking.IsEphemeralPort(svc.Spec.Port) {
+					start, end, _ := networking.GetEphemeralPortRange()
+					log.Error(proxyStartErr, fmt.Sprintf("service %s proxy failed to start; the service is configured to use a port in the ephemeral range on your machine; ports in the ephemeral range are used by the system for dynamic allocation and outgoing connections.", svc.NamespacedName().Name), "Port", svc.Spec.Port, "Ephemeral Range", fmt.Sprintf("%d-%d", start, end))
+				} else {
+					log.Error(proxyStartErr, "could not start the proxy")
+				}
 				if oldState != apiv1.ServiceStateNotReady {
 					return statusChanged
 				} else {
 					return noChange
 				}
 			} else {
+				if psd.startAttempts > 2 && !psd.warnedUser && networking.IsEphemeralPort(svc.Spec.Port) {
+					psd.warnedUser = true
+					start, end, _ := networking.GetEphemeralPortRange()
+					log.Error(proxyStartErr, fmt.Sprintf("service %s is configured to use a port in the ephemeral range on your machine, which may cause conflicts; ports in the ephemeral range are used by the system for dynamic allocation and outgoing connections.", svc.NamespacedName().Name), "Port", svc.Spec.Port, "Ephemeral Range", fmt.Sprintf("%d-%d", start, end))
+				}
+
 				log.V(1).Info("could not start the proxy, will retry", "Attempt", psd.startAttempts, "Error", proxyStartErr.Error())
 				return additionalReconciliationNeeded
 			}
@@ -342,9 +357,9 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		// If the log level is info, we'll only log when the service becomes ready
 		logLevel, loggerErr := logger.GetDebugLogLevel()
 		if loggerErr == nil && logLevel == zapcore.DebugLevel {
-			log.V(1).Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
+			log.V(1).Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName().Name, svc.Status.State))
 		} else if svc.Status.State == apiv1.ServiceStateReady {
-			log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName(), svc.Status.State))
+			log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName().Name, svc.Status.State))
 		}
 
 		change |= statusChanged
@@ -352,16 +367,16 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 	if svc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless && (svc.Status.EffectiveAddress != oldEffectiveAddress || svc.Status.EffectivePort != oldEffectivePort) {
 		log.V(1).Info(fmt.Sprintf("service %s is now running on %s",
-			svc.NamespacedName(),
-			networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort)),
-		)
+			svc.NamespacedName().Name,
+			networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort),
+		))
 		change |= statusChanged
 	}
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless && (svc.Status.ProxylessEndpointNamespace != oldEndpointNamespacedName.Namespace || svc.Status.ProxylessEndpointName != oldEndpointNamespacedName.Name) {
 		if svc.Status.EffectiveAddress != "" || svc.Status.EffectivePort != 0 {
 			log.V(1).Info(fmt.Sprintf("proxyless service %s is now running on %s",
-				svc.NamespacedName(),
+				svc.NamespacedName().Name,
 				networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort)),
 			)
 		}
@@ -434,6 +449,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Ser
 
 	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
 	log.V(1).Info("service serving traffic",
+		"IsProxied", svc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless,
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
 	)

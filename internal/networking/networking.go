@@ -47,19 +47,26 @@ const (
 )
 
 var (
-	portFileLock          *sync.Mutex
-	portFileErrorReported bool
-	packageMruPortFile    *mruPortFile
-	programInstanceID     string
-	ipVersionPreference   IpVersionPreference
-	getAllLocalIpsOnce    func() ([]net.IP, error)
-	getHostnameOnce       func() (string, error)
+	portFileLock              *sync.Mutex
+	portFileErrorReported     bool
+	packageMruPortFile        *mruPortFile
+	programInstanceID         string
+	ipVersionPreference       IpVersionPreference
+	getAllLocalIpsOnce        func() ([]net.IP, error)
+	getHostnameOnce           func() (string, error)
+	getEphemeralPortRangeOnce func() (portRange, bool)
 )
+
+type portRange struct {
+	Start int
+	End   int
+}
 
 func init() {
 	portFileLock = &sync.Mutex{}
 	getAllLocalIpsOnce = sync.OnceValues(getAllLocalIps)
 	getHostnameOnce = sync.OnceValues(os.Hostname)
+	getEphemeralPortRangeOnce = sync.OnceValues(getEphemeralPortRange)
 
 	idBytes, err := randdata.MakeRandomString(instanceIdLength)
 	if err != nil {
@@ -195,6 +202,11 @@ func getAllLocalIps() ([]net.IP, error) {
 	)
 	allLocalIps = append(allLocalIps, slices.Select(verifiedIps, net.IP.IsLoopback)...)
 	return allLocalIps, nil
+}
+
+func GetEphemeralPortRange() (int, int, bool) {
+	ephemeralRange, matched := getEphemeralPortRangeOnce()
+	return ephemeralRange.Start, ephemeralRange.End, matched
 }
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
@@ -368,6 +380,11 @@ func ToStandaloneAddress(address string) string {
 
 func IsValidPort(port int) bool {
 	return port >= 1 && port <= 65535
+}
+
+func IsEphemeralPort(port int32) bool {
+	start, end, _ := GetEphemeralPortRange()
+	return int(port) >= start && int(port) <= end
 }
 
 func IsValidIP(ip net.IP) bool {

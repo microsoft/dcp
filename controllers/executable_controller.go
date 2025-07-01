@@ -152,7 +152,10 @@ Status will be updated based on the status of the corresponding run and the run 
 the Executable is deleted.
 */
 func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("Executable", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues(
+		"Executable", req.NamespacedName.String(),
+		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
+	)
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 

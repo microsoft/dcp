@@ -233,7 +233,10 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) er
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("Container", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues(
+		"Container", req.NamespacedName.String(),
+		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
+	)
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 

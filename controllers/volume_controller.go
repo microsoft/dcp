@@ -96,7 +96,10 @@ func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager, name string) error
 }
 
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("VolumeName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues(
+		"Volume", req.NamespacedName.String(),
+		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
+	)
 
 	r.debouncer.OnReconcile(req.NamespacedName)
 

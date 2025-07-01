@@ -192,7 +192,10 @@ func (r *NetworkReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 }
 
 func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("NetworkName", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues(
+		"Network", req.NamespacedName.String(),
+		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
+	)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -223,6 +226,17 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		getSucceededCounter.Add(ctx, 1)
 	}
 
+	// Add common metadata to the log
+	if network.Status.NetworkName != "" {
+		log = log.WithValues("NetworkName", network.Status.NetworkName)
+	} else if strings.TrimSpace(network.Spec.NetworkName) != "" {
+		log = log.WithValues("NetworkName", strings.TrimSpace(network.Spec.NetworkName))
+	}
+
+	if network.Status.ID != "" {
+		log = log.WithValues("NetworkID", network.Status.ID)
+	}
+
 	if !r.orchestratorHealthy.Load() {
 		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
 		// Retry after five to ten seconds
@@ -233,7 +247,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	patch := ctrl_client.MergeFromWithOptions(network.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
-		log.Info("ContainerNetwork object is being deleted", "NetworkName", network.Status.NetworkName)
+		log.Info("ContainerNetwork object is being deleted")
 
 		err = r.deleteNetwork(ctx, &network, log)
 		if err != nil {
@@ -298,7 +312,7 @@ func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.Co
 		}
 
 		if err != nil {
-			log.Info("could not disconnect all containers from the network, retrying...", "Network", network.Status.NetworkName)
+			log.Info("could not disconnect all containers from the network, retrying...")
 			return err
 		}
 
@@ -376,6 +390,8 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		}
 
 		networkName = uniqueNetworkName
+
+		log = log.WithValues("NetworkName", networkName)
 	}
 
 	createOptions := containers.CreateNetworkOptions{
@@ -396,23 +412,23 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 
 	cnet, err := createNetwork(ctx, r.orchestrator, createOptions)
 	if network.Spec.Persistent && errors.Is(err, containers.ErrAlreadyExists) {
-		log.V(1).Info("persistent network already exists, but initial inspection failed, retrying...", "Network", networkName)
+		log.V(1).Info("persistent network already exists, but initial inspection failed, retrying...")
 		return additionalReconciliationNeeded
 	} else if errors.Is(err, containers.ErrCouldNotAllocate) {
-		log.Error(err, "could not create the network as all available subnet ranges from the default pool are allocated, retrying...", "Network", networkName)
+		log.Error(err, "could not create the network as all available subnet ranges from the default pool are allocated, retrying...")
 		return additionalReconciliationNeeded
 	} else if errors.Is(err, containers.ErrRuntimeNotHealthy) {
-		log.Error(err, "could not create the network as the container runtime is not healthy, retrying...", "Network", networkName)
+		log.Error(err, "could not create the network as the container runtime is not healthy, retrying...")
 		return additionalReconciliationNeeded
 	} else if err != nil {
-		log.Error(err, "could not create a network", "Network", networkName)
+		log.Error(err, "could not create a network")
 		r.existingNetworks.Store(network.NamespacedName(), networkName, &runningNetworkState{state: apiv1.ContainerNetworkStateFailedToStart, message: err.Error()})
 		network.Status.State = apiv1.ContainerNetworkStateFailedToStart
 		network.Status.Message = err.Error()
 		return statusChanged
 	}
 
-	log.Info("network created", "Network", networkName)
+	log.Info("network created")
 
 	r.existingNetworks.Store(network.NamespacedName(), cnet.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateRunning, id: cnet.Id})
 
@@ -434,7 +450,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 
 	var networkConnections apiv1.ContainerNetworkConnectionList
 	if err := r.List(ctx, &networkConnections, ctrl_client.InNamespace(network.GetNamespace()), ctrl_client.MatchingFields{NetworkResourceNameField: namespacedName.Name}); err != nil {
-		log.Error(err, "failed to list child ContainerNetworkConnection objects", "Network", namespacedName.String())
+		log.Error(err, "failed to list child ContainerNetworkConnection objects")
 		return additionalReconciliationNeeded
 	}
 
@@ -481,7 +497,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			networkState.connections[containerID].attempts += 1
 			if networkState.connections[containerID].attempts%logAfterFailures == 0 {
 				// We only log an error every logAfterFailures attempts to avoid flooding the logs with transient errors
-				log.Error(err, "could not disconnect a container from the network", "Container", containerID, "Network", network.Status.NetworkName)
+				log.Error(err, "could not disconnect a container from the network", "Container", containerID)
 			}
 
 			change |= additionalReconciliationNeeded
@@ -515,7 +531,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 			networkState.connections[containerID].attempts += 1
 			if networkState.connections[containerID].attempts%logAfterFailures == 0 {
 				// We only log an error every logAfterFailures attempts to avoid flooding the logs with transient errors
-				log.Error(err, "could not connect a container to the network", "Container", containerID, "Network", network.Status.NetworkName)
+				log.Error(err, "could not connect a container to the network", "Container", containerID)
 			}
 
 			change |= additionalReconciliationNeeded
@@ -542,15 +558,15 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	})
 
 	if verifyErr != nil {
-		log.Error(verifyErr, "could not verify network state", "Network", network.Status.NetworkName)
+		log.Error(verifyErr, "could not verify network state")
 		change |= additionalReconciliationNeeded
 	}
 
 	if found < len(networkConnections.Items) {
-		log.Info("not all expected containers are connected to the network, retrying...", "Network", network.Status.NetworkName, "Expected", len(networkConnections.Items), "Found", found)
+		log.Info("not all expected containers are connected to the network, retrying...", "Expected", len(networkConnections.Items), "Found", found)
 		change |= additionalReconciliationNeeded
 	} else {
-		log.Info("all expected containers are connected to the network", "Network", network.Status.NetworkName, "Expected", len(networkConnections.Items), "Found", found)
+		log.Info("all expected containers are connected to the network", "Expected", len(networkConnections.Items), "Found", found)
 	}
 
 	return change
@@ -563,7 +579,7 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 		rns.state = apiv1.ContainerNetworkStateRemoved
 		return statusChanged
 	} else if err != nil {
-		log.Error(err, "could not inspect a network", "NetworkID", network.Status.ID)
+		log.Error(err, "could not inspect a network")
 		return additionalReconciliationNeeded
 	}
 

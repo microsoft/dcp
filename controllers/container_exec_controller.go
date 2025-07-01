@@ -107,7 +107,10 @@ func (r *ContainerExecReconciler) SetupWithManager(mgr ctrl.Manager, name string
 }
 
 func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("ContainerExecRequest", req.NamespacedName).WithValues("Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1))
+	log := r.Log.WithValues(
+		"ContainerExec", req.NamespacedName.String(),
+		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
+	)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")

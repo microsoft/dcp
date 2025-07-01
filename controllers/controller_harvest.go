@@ -156,6 +156,11 @@ func (rh *resourceHarvester) harvestAbandonedContainers(
 		return append(ids, c.Id)
 	})
 
+	if len(containersToHarvest) == 0 {
+		// No containers to harvest, so return early
+		return nil, nil
+	}
+
 	removedContainerIds, removeErr := co.RemoveContainers(ctx, containers.RemoveContainersOptions{
 		Containers: containersToHarvest,
 		Force:      true,
@@ -251,6 +256,11 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 			networksToRemove = append(networksToRemove, network.Id)
 			continue
 		}
+	}
+
+	if len(networksToRemove) == 0 {
+		// No networks to harvest, so return early
+		return nil
 	}
 
 	removed, removeErr := co.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
