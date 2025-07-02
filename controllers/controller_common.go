@@ -96,6 +96,17 @@ func MakeUniqueName(prefix string) (string, string, error) {
 	return uniqueName, postfix, nil
 }
 
+// Returns a short version of the ID (the first 12 characters). Intended for use
+// with containr resource IDs, which are usually long and not very human-readable.
+// The short ID is used in logs and other places where a shorter identifier is more convenient.
+func GetShortId(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+
+	return id
+}
+
 // Computes the delay to use for additional reconciliation, if necessary.
 // The passed "useLongDelay" parameter determines whether the delay should be "standard" or "long".
 // Passing true will result in a longer delay with a random component,
