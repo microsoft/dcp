@@ -219,7 +219,7 @@ type waitableCmd struct {
 }
 
 func (cmd waitableCmd) Info() string {
-	return fmt.Sprintf("Command %s", cmd.String())
+	return cmd.String()
 }
 
 func (cmd waitableCmd) Flags() ProcessCreationFlag {
