@@ -28,6 +28,7 @@ type processRunState struct {
 	startTime  time.Time
 	stdOutFile *os.File
 	stdErrFile *os.File
+	cmdInfo    string // Command line used to start the process, for logging purposes
 }
 
 type ProcessExecutableRunner struct {
@@ -50,16 +51,14 @@ func (r *ProcessExecutableRunner) StartRun(
 	log logr.Logger,
 ) error {
 	cmd := makeCommand(exe)
-	log.Info("starting process...", "executable", cmd.Path)
-	log.V(1).Info("process settings",
-		"executable", cmd.Path,
-		"args", cmd.Args[1:],
-		"env", cmd.Env,
-		"cwd", cmd.Dir)
+	startLog := log.WithValues("Executable", cmd.Path, "Args", cmd.Args[1:])
+
+	startLog.Info("Starting process...")
+	startLog.V(1).Info("Process details", "Env", cmd.Env, "Cwd", cmd.Dir)
 
 	stdOutFile, stdOutFileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if stdOutFileErr != nil {
-		log.Error(stdOutFileErr, "failed to create temporary file for capturing process standard output data")
+		startLog.Error(stdOutFileErr, "Failed to create temporary file for capturing process standard output data")
 	} else {
 		cmd.Stdout = usvc_io.NewTimestampWriter(stdOutFile)
 		runInfo.StdOutFile = stdOutFile.Name()
@@ -67,7 +66,7 @@ func (r *ProcessExecutableRunner) StartRun(
 
 	stdErrFile, stdErrFileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if stdErrFileErr != nil {
-		log.Error(stdErrFileErr, "failed to create temporary file for capturing process standard error data")
+		startLog.Error(stdErrFileErr, "Failed to create temporary file for capturing process standard error data")
 	} else {
 		cmd.Stderr = usvc_io.NewTimestampWriter(stdErrFile)
 		runInfo.StdErrFile = stdErrFile.Name()
@@ -98,20 +97,20 @@ func (r *ProcessExecutableRunner) StartRun(
 	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
 	pid, startTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
-		log.Error(startErr, "failed to start a process")
+		startLog.Error(startErr, "Failed to start a process")
 		runInfo.FinishTimestamp = metav1.NowMicro()
 		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
 		return startErr
 	}
 
-	log.Info("process started", "executable", cmd.Path, "PID", pid)
-
+	// Use original log here, the watcher is a different process.
 	dcpproc.RunWatcher(r.pe, pid, startTime, log)
 
 	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
 		startTime:  startTime,
 		stdOutFile: stdOutFile,
 		stdErrFile: stdErrFile,
+		cmdInfo:    cmd.String(),
 	})
 
 	runInfo.RunID = pidToRunID(pid)
@@ -127,11 +126,12 @@ func (r *ProcessExecutableRunner) StartRun(
 func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
 	runState, found := r.runningProcesses.LoadAndDelete(runID)
 	if !found {
-		log.V(1).Info("run stop requested, but the run was already stopped", "runID", runID)
+		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
 	}
 
-	log.V(1).Info("stopping process...", "runID", runID)
+	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
+	stopLog.V(1).Info("Stopping run...")
 
 	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
 	const ProcessStopTimeout = 15 * time.Second
@@ -162,6 +162,9 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 		}
 	}
 
+	if stopErr != nil {
+		stopLog.Error(stopErr, "Failed to stop run")
+	}
 	return stopErr
 }
 

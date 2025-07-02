@@ -672,7 +672,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagEnsureKillOnDispose)
+	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "ExecContainer"))
@@ -1066,7 +1066,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagEnsureKillOnDispose)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
 		dco.log.Error(err, "could not execute 'docker events' command; container events unavailable")
 		return
@@ -1125,7 +1125,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagEnsureKillOnDispose)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
 		dco.log.Error(err, "could not execute 'docker events' command; network events unavailable")
 		return
@@ -1178,7 +1178,7 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagEnsureKillOnDispose)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", commandName))
