@@ -61,6 +61,8 @@ type runningNetworkState struct {
 	id          string
 	message     string
 	connections map[string]*connectionState
+	expected    int
+	connected   int
 }
 
 func (rnc *runningNetworkState) Clone() *runningNetworkState {
@@ -69,6 +71,8 @@ func (rnc *runningNetworkState) Clone() *runningNetworkState {
 		id:          rnc.id,
 		message:     rnc.message,
 		connections: stdmaps.Clone(rnc.connections),
+		expected:    rnc.expected,
+		connected:   rnc.connected,
 	}
 }
 
@@ -88,6 +92,14 @@ func (rnc *runningNetworkState) UpdateFrom(other *runningNetworkState) bool {
 	}
 	if !stdmaps.Equal(rnc.connections, other.connections) {
 		rnc.connections = stdmaps.Clone(other.connections)
+		changed = true
+	}
+	if rnc.expected != other.expected {
+		rnc.expected = other.expected
+		changed = true
+	}
+	if rnc.connected != other.connected {
+		rnc.connected = other.connected
 		changed = true
 	}
 	return changed
@@ -234,7 +246,7 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if network.Status.ID != "" {
-		log = log.WithValues("NetworkID", network.Status.ID)
+		log = log.WithValues("NetworkID", GetShortId(network.Status.ID))
 	}
 
 	if !r.orchestratorHealthy.Load() {
@@ -560,13 +572,25 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	if verifyErr != nil {
 		log.Error(verifyErr, "could not verify network state")
 		change |= additionalReconciliationNeeded
-	}
-
-	if found < len(networkConnections.Items) {
-		log.Info("not all expected containers are connected to the network, retrying...", "Expected", len(networkConnections.Items), "Found", found)
-		change |= additionalReconciliationNeeded
 	} else {
-		log.Info("all expected containers are connected to the network", "Expected", len(networkConnections.Items), "Found", found)
+		changed := false
+		if networkState.expected != len(networkConnections.Items) {
+			changed = true
+			networkState.expected = len(networkConnections.Items)
+		}
+		if networkState.connected != found {
+			changed = true
+			networkState.connected = found
+		}
+
+		if changed {
+			if networkState.connected < networkState.expected {
+				log.V(1).Info("not all expected containers are connected to the network, retrying...", "Expected", networkState.expected, "Found", networkState.connected)
+				change |= additionalReconciliationNeeded
+			} else {
+				log.Info("all expected containers are connected to the network", "Expected", networkState.expected, "Found", networkState.connected)
+			}
+		}
 	}
 
 	return change
