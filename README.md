@@ -194,7 +194,7 @@ Run `make test-extended` to execute the full test suite including these advanced
 
 ### Taking performance traces
 
-See [performance investigations page](performance-investigations.md).
+See [performance investigations page](doc/performance-investigations.md).
 
 ### Environment variables affecting DCP behavior
 
