@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
+	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -30,16 +31,30 @@ func DcpRun(
 	allExtensions []DcpExtension,
 	invocationFlags []string,
 	log logr.Logger,
-	evtHandlers DcpRunEventHandlers,
 ) error {
+	// If the context is already complete, we should not proceed with running the API server and controllers.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	controllers := slices.Select(allExtensions, func(ext DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
 
 	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), kconfig, log)
-	runCtx, runCtxCancel := context.WithCancel(ctx)
-	defer runCtxCancel()
+
+	cleanupCtx, cancelCleanupCtx := context.WithCancel(ctx)
+	defer cancelCleanupCtx()
+
+	// This context is used to trigger shutdown of the API server.
+	apiServerCtx, cancelApiServerCtx := context.WithCancel(context.Background())
+	defer cancelApiServerCtx()
+
+	// This context is used to trigger shutdown of the controllers (or other extensions).
+	// We intentionally use context.Background() here to allow us to control the timing of when
+	// we shutdown the controllers.
+	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
+	defer cancelHostCtx()
 
 	hostedServices := []hosting.Service{}
 	for _, controller := range controllers {
@@ -50,7 +65,6 @@ func DcpRun(
 		hostedServices = append(hostedServices, controllerService)
 	}
 
-	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
 	host := &hosting.Host{
 		Services: hostedServices,
 		Logger:   log.WithName("dcp-host"),
@@ -59,12 +73,11 @@ func DcpRun(
 	var requestedResourceCleanup atomic.Value
 	requestedResourceCleanup.Store(apiserver.ApiServerResourceCleanupFull) // By default we do full cleanup on shutdown.
 
-	apiServerShutdown, apiServerErr := apiServer.Run(hostCtx, func(cleanup apiserver.ApiServerResourceCleanup) {
+	apiServerShutdown, apiServerErr := apiServer.Run(apiServerCtx, func(cleanup apiserver.ApiServerResourceCleanup) {
 		requestedResourceCleanup.Store(cleanup)
-		runCtxCancel()
+		cancelCleanupCtx()
 	})
 	if apiServerErr != nil {
-		cancelHostCtx()
 		return apiServerErr
 	}
 
@@ -84,58 +97,49 @@ func DcpRun(
 	}
 
 	var err error
-	if evtHandlers.AfterApiSrvStart != nil {
-		if err = evtHandlers.AfterApiSrvStart(); err != nil {
-			return errors.Join(err, shutdownHost())
-		}
-	}
-
 	// Wait for the user to signal that they want to shut down.
-	err = func() error {
-		for {
-			select {
-			case <-runCtx.Done():
-				// We are being asked to shut down.
-				log.Info("Shutting down...")
-				return nil
+	for {
+		select {
+		case <-cleanupCtx.Done():
+			// We are being asked to shut down.
+			log.Info("Shutting down...")
 
-			case <-apiServerShutdown:
-				err = fmt.Errorf("API server shut down unexpectedly. Graceful shutdown is not possible.")
-				log.Error(err, "Terminating...")
-				return errors.Join(err, shutdownHost())
+			// Determine what level of resource cleanup is requested.
+			resourceCleanup := requestedResourceCleanup.Load().(apiserver.ApiServerResourceCleanup)
+			log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.", "ResourceCleanup", resourceCleanup)
 
-			case msg, isOpen := <-lifecycleMsgs:
-				if !isOpen {
-					lifecycleMsgs = nil
-					continue
-				}
+			// If we are in server-only mode (no standard controllers) such as when running tests,
+			// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
+			// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
+			if len(allExtensions) == 0 || !resourceCleanup.IsFull() {
+				return nil // No cleanup needed, just return
+			}
 
-				if msg.Err != nil {
-					log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
-					// Let the user decide whether to continue or not, do not break the loop yet.
-				}
+			err = appmgmt.CleanupAllResources(log)
+			err = errors.Join(err, shutdownHost())
+			if err != nil {
+				log.Error(err, "Failed to cleanup some resources. This may lead to resource leaks.")
+				return err
+			}
+
+			log.Info("Shutdown complete.")
+			return nil
+
+		case <-apiServerShutdown:
+			err = fmt.Errorf("API server shut down unexpectedly. Graceful shutdown is not possible.")
+			log.Error(err, "Terminating...")
+			return errors.Join(err, shutdownHost())
+
+		case msg, isOpen := <-lifecycleMsgs:
+			if !isOpen {
+				lifecycleMsgs = nil
+				continue
+			}
+
+			if msg.Err != nil {
+				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
+				// Let the user decide whether to continue or not, do not break the loop yet.
 			}
 		}
-	}()
-
-	if err != nil {
-		return err
-	}
-
-	if evtHandlers.BeforeApiSrvShutdown != nil {
-		resourceCleanup := requestedResourceCleanup.Load().(apiserver.ApiServerResourceCleanup)
-		log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.", "ResourceCleanup", resourceCleanup)
-
-		if err = evtHandlers.BeforeApiSrvShutdown(resourceCleanup); err != nil {
-			log.Error(err, "BeforeApiSrvShutdown event handler failed.")
-			return errors.Join(err, shutdownHost())
-		}
-	}
-
-	if err = shutdownHost(); err != nil {
-		return err
-	} else {
-		log.Info("Shutdown complete.")
-		return nil
 	}
 }

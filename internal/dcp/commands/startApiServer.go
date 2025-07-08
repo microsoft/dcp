@@ -9,7 +9,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
@@ -123,20 +122,6 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		runEvtHandlers := bootstrap.DcpRunEventHandlers{
-			BeforeApiSrvShutdown: func(requestedResourceCleanup apiserver.ApiServerResourceCleanup) error {
-				// If we are in server-only mode (no standard controllers) such as when running tests,
-				// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
-				// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
-				if serverOnly || !requestedResourceCleanup.IsFull() {
-					return nil
-				}
-
-				cleanupErr := appmgmt.CleanupAllResources(log)
-				return cleanupErr // Already logged by appmgmt.CleanupAllResources()
-			},
-		}
-
 		invocationFlags := []string{"--kubeconfig", kconfig.Path()}
 		if container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
 			invocationFlags = append(invocationFlags, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
@@ -170,7 +155,6 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			allExtensions,
 			invocationFlags,
 			log,
-			runEvtHandlers,
 		)
 
 		return err
