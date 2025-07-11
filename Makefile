@@ -218,7 +218,7 @@ endif
 generate-grpc: generate-grpc-proto generate-grpc-interfaces ## Generates Go code for communication via gRPC protocol
 
 # Unfortunately "go tool -n <sometool>" (as of Go 1.24.3) does not resolve the path correctly if the tool is not already installed.
-# Instead, upon first invocation, the command returns some random temporary build path 
+# Instead, upon first invocation, the command returns some random temporary build path
 # that is supposed to be the tool binary, but actually isn't :-(
 # As a temporary workaround, we will invoke the gRPC codegen commands several times, with some dealy.
 # Relevant issue: https://github.com/golang/go/issues/72824
@@ -226,6 +226,7 @@ generate-grpc: generate-grpc-proto generate-grpc-interfaces ## Generates Go code
 ifeq ($(detected_OS),windows)
 define do-grpc-gen
 	$$attempt = 0; \
+	$(CLEAR_GOARGS) \
 	while ($$attempt -lt 5) { \
 		$$attempt++; \
 		$$grpc_plugin_path = & $(GOTOOL_BIN) -n $(grpc_plugin_url); \
@@ -243,7 +244,7 @@ define do-grpc-gen
 	attempt=0; \
 	while [[ $$attempt -lt 5 ]]; do \
 		attempt=$$((attempt + 1)); \
-		grpc_plugin_path=$$( $(GOTOOL_BIN) -n $(grpc_plugin_url) ); \
+		grpc_plugin_path=$$($(CLEAR_GOARGS) $(GOTOOL_BIN) -n $(grpc_plugin_url) ); \
 		$(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$${grpc_plugin_path}" $< ; \
 		if [[ $$? -eq 0 ]]; then \
 			exit 0; \
@@ -371,7 +372,7 @@ test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(versi
 test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
 .PHONY: test-ci-prereqs
-test-ci-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool
+test-ci-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool generate-grpc
 
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
@@ -447,7 +448,7 @@ else
 $(PROTOC): | $(TOOL_BIN)
 	@[[ -s $(PROTOC) ]] || \
 	{ \
-		curl -sSfL --output-dir '$(TOOL_BIN)' --output '$(PROTOC_ZIP)' https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/$(PROTOC_ZIP) \
+		curl -sSfL --output '$(TOOL_BIN)/$(PROTOC_ZIP)' https://github.com/protocolbuffers/protobuf/releases/download/v$(PROTOC_VERSION)/$(PROTOC_ZIP) \
 		&& unzip -q -o -DD '$(TOOL_BIN)/$(PROTOC_ZIP)' -d '$(TOOL_BIN)/protoc'; \
 	}
 endif
