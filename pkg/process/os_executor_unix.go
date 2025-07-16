@@ -125,7 +125,7 @@ func (e *OSExecutor) prepareProcessStart(_ *exec.Cmd, _ ProcessCreationFlag) {
 	// No additional preparation needed for Unix-like systems.
 }
 
-func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, pid Pid_t, _ time.Time, _ ProcessCreationFlag) error {
+func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, _ Pid_t, _ time.Time, _ ProcessCreationFlag) error {
 	// No additional actions needed on process start for Unix-like systems.
 	return nil
 }

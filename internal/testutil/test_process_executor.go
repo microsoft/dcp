@@ -184,7 +184,7 @@ func (e *TestProcessExecutor) StartProcess(
 	_ process.ProcessCreationFlag,
 ) (process.Pid_t, time.Time, func(), error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
-	pid, err := process.Int64ToPidT(pid64)
+	pid, err := process.Int64_ToPidT(pid64)
 	if err != nil {
 		return process.UnknownPID, time.Time{}, nil, err
 	}
@@ -240,7 +240,7 @@ func (e *TestProcessExecutor) StartProcess(
 
 func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
-	pid, err := process.Int64ToPidT(pid64)
+	pid, err := process.Int64_ToPidT(pid64)
 	if err != nil {
 		return process.UnknownPID, time.Time{}, err
 	}

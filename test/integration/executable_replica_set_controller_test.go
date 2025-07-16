@@ -391,7 +391,7 @@ func TestExecutableReplicaSetExecutableStatusChangeTracked(t *testing.T) {
 	t.Log("Stopping first Executable...")
 	pid64, err := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
 	require.NoError(t, err, "Failed to parse PID from Executable status")
-	pid, err := process.Int64ToPidT(pid64)
+	pid, err := process.Int64_ToPidT(pid64)
 	require.NoError(t, err)
 	testProcessExecutor.SimulateProcessExit(t, pid, 0)
 
@@ -586,7 +586,7 @@ func TestExecutableReplicaSetHealthStatus(t *testing.T) {
 		})
 		pid64, parseErr := strconv.ParseInt(updatedExe.Status.ExecutionID, 10, 32)
 		require.NoError(t, parseErr, "Failed to parse PID from Executable status")
-		pid, convertErr := process.Int64ToPidT(pid64)
+		pid, convertErr := process.Int64_ToPidT(pid64)
 		require.NoError(t, convertErr)
 		testProcessExecutor.SimulateProcessExit(t, pid, 0)
 	}

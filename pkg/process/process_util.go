@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
@@ -12,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tklauser/ps"
+	ps "github.com/shirou/gopsutil/v4/process"
 
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -49,22 +50,32 @@ func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
 		next = next[1:]
 		tree = append(tree, current)
 
-		children := slices.Select(procs, func(p ps.Process) bool {
-			ppid, ppidErr := IntToPidT(p.PPID())
+		children := slices.Select(procs, func(p *ps.Process) bool {
+			osPpid, osPpidErr := p.Ppid()
+			if osPpidErr != nil {
+				return false // If we cannot get the parent PID, this process isn't a child
+			}
+			ppid, ppidErr := Uint32_ToPidT(uint32(osPpid))
 			if ppidErr != nil {
 				panic(ppidErr)
 			}
-			return ppid == current.Pid && !p.CreationTime().Before(current.CreationTime)
+
+			createTime := startTimeForProcess(p)
+
+			return ppid == current.Pid && !createTime.Before(current.CreationTime)
 		})
 
-		next = append(next, slices.Map[ps.Process, ProcessTreeItem](children, func(p ps.Process) ProcessTreeItem {
-			processPID, pidConversionErr := IntToPidT(p.PID())
+		next = append(next, slices.Map[*ps.Process, ProcessTreeItem](children, func(p *ps.Process) ProcessTreeItem {
+			processPID, pidConversionErr := Uint32_ToPidT(uint32(p.Pid))
 			if pidConversionErr != nil {
 				panic(pidConversionErr)
 			}
+
+			creationTime := startTimeForProcess(p)
+
 			return ProcessTreeItem{
 				Pid:          processPID,
-				CreationTime: p.CreationTime(),
+				CreationTime: creationTime,
 			}
 		})...)
 	}
@@ -119,22 +130,52 @@ func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int3
 // We serialize timestamps with millisecond precision, so a maximum couple of milliseconds of difference works well.
 const ProcessStartTimestampMaximumDifference = 2 * time.Millisecond
 
+func startTimeForProcess(proc *ps.Process) time.Time {
+	createTimestamp, err := proc.CreateTime()
+	if err != nil {
+		return time.Time{}
+	}
+
+	return time.UnixMilli(createTimestamp)
+}
+
+// Returns the creation time as a time.Time for a process.
+// If the creation time cannot be retrieved, an error is returned.
+func StartTimeForProcess(pid Pid_t) time.Time {
+	osPid, osPidErr := PidT_ToUint32(pid)
+	if osPidErr != nil {
+		return time.Time{}
+	}
+
+	proc, procErr := ps.NewProcess(int32(osPid))
+	if procErr != nil {
+		return time.Time{}
+	}
+
+	return startTimeForProcess(proc)
+}
+
 // Returns the process with the given PID. If the expectedStartTime is not zero,
 // the process start time is checked to match the expected start time.
 func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
-	osPid, err := PidT_ToInt(pid)
+	osPid, err := PidT_ToUint32(pid)
 	if err != nil {
 		return nil, err
 	}
 
 	// Call this first even if processStartTime is not used, to ensure the process exists.
-	psProcess, findErr := ps.FindProcess(osPid)
-	if findErr != nil {
-		return nil, findErr
+	proc, procErr := ps.NewProcess(int32(osPid))
+	if procErr != nil {
+		if !errors.Is(procErr, ps.ErrorProcessNotRunning) {
+			return nil, procErr
+		} else {
+			return nil, fmt.Errorf("process with pid %d does not exist", pid)
+		}
 	}
 
-	if !HasExpectedStartTime(psProcess, expectedStartTime) {
-		actualStartTime := psProcess.CreationTime()
+	if !HasExpectedStartTime(proc, expectedStartTime) {
+		actualStartTime := startTimeForProcess(proc)
+
 		return nil, fmt.Errorf(
 			"process start time mismatch, pid might have been reused: pid %d, expected start time %s, actual start time %s",
 			pid,
@@ -143,7 +184,7 @@ func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
 		)
 	}
 
-	process, err := os.FindProcess(osPid)
+	process, err := os.FindProcess(int(osPid))
 	if err != nil {
 		return nil, err
 	}
@@ -151,12 +192,12 @@ func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
 	return process, nil
 }
 
-func Int64ToPidT(val int64) (Pid_t, error) {
+func Int64_ToPidT(val int64) (Pid_t, error) {
 	return convertPid[int64, Pid_t](val)
 }
 
-func IntToPidT(val int) (Pid_t, error) {
-	return convertPid[int, Pid_t](val)
+func Uint32_ToPidT(val uint32) (Pid_t, error) {
+	return convertPid[uint32, Pid_t](val)
 }
 
 func PidT_ToInt(val Pid_t) (int, error) {
@@ -167,20 +208,29 @@ func PidT_ToUint32(val Pid_t) (uint32, error) {
 	return convertPid[Pid_t, uint32](val)
 }
 
-func StringToPidT(val string) (Pid_t, error) {
-	i64val, i64ParseErr := strconv.ParseInt(val, 10, 64)
-	if i64ParseErr != nil {
-		return UnknownPID, i64ParseErr
+func convertPid[From ~int64 | ~uint64 | ~uint32, To ~int64 | ~int | ~uint32](val From) (To, error) {
+	outOfRange := val < 0 || val > math.MaxUint32
+	if outOfRange {
+		return 0, fmt.Errorf("value %d is out of range of valid process ID values", val)
 	}
-
-	return convertPid[int64, Pid_t](i64val)
+	return To(val), nil
 }
 
-func HasExpectedStartTime(psProcess ps.Process, expectedStartTime time.Time) bool {
+func StringToPidT(val string) (Pid_t, error) {
+	u64val, u64ParseErr := strconv.ParseUint(val, 10, 32)
+	if u64ParseErr != nil {
+		return UnknownPID, u64ParseErr
+	}
+
+	return convertPid[uint64, Pid_t](u64val)
+}
+
+func HasExpectedStartTime(proc *ps.Process, expectedStartTime time.Time) bool {
 	if expectedStartTime.IsZero() {
 		return true
 	} else {
-		return osutil.Within(expectedStartTime, psProcess.CreationTime(), ProcessStartTimestampMaximumDifference)
+		creationTime := startTimeForProcess(proc)
+		return osutil.Within(expectedStartTime, creationTime, ProcessStartTimestampMaximumDifference)
 	}
 }
 
@@ -200,11 +250,7 @@ func IsEarlyProcessExitError(err error) bool {
 	// (the parent process might have terminated them).
 	var sysErr *os.SyscallError
 	isEChildErr := errors.As(err, &sysErr) && strings.Index(sysErr.Syscall, "wait") == 0 && errors.Is(sysErr.Err, syscall.ECHILD)
-	if isEChildErr {
-		return true
-	}
-
-	return false
+	return isEChildErr
 }
 
 type Waitable interface {
@@ -263,6 +309,8 @@ func makeWaitable(pid Pid_t, proc *os.Process) Waitable {
 }
 
 func init() {
+	ps.EnableBootTimeCache(true)
+
 	This = sync.OnceValues(func() (ProcessTreeItem, error) {
 		retval := ProcessTreeItem{
 			Pid:          UnknownPID,
@@ -270,18 +318,20 @@ func init() {
 		}
 
 		osPid := os.Getpid()
-		pid, conversionErr := IntToPidT(osPid)
+		pid, conversionErr := Uint32_ToPidT(uint32(osPid))
 		if conversionErr != nil {
 			return retval, conversionErr
 		}
 
-		pp, findProcessErr := ps.FindProcess(osPid)
+		pp, findProcessErr := ps.NewProcess(int32(osPid))
 		if findProcessErr != nil {
 			return retval, findProcessErr
 		}
 
+		startTime := startTimeForProcess(pp)
+
 		retval.Pid = pid
-		retval.CreationTime = pp.CreationTime()
+		retval.CreationTime = startTime
 
 		return retval, nil
 	})

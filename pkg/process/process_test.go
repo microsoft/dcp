@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/tklauser/ps"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/stretchr/testify/require"
@@ -204,30 +203,26 @@ func TestChildrenTerminated(t *testing.T) {
 		{"external start", func(t *testing.T, cmd *exec.Cmd, _ process.Executor) process.ProcessTreeItem {
 			err := cmd.Start()
 			require.NoError(t, err, "could not start the 'delay' test program")
-			pid, err := process.IntToPidT(cmd.Process.Pid)
+			pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 			require.NoError(t, err)
-			pp, ppErr := ps.FindProcess(cmd.Process.Pid)
-			require.NoError(t, ppErr)
-			return process.ProcessTreeItem{pid, pp.CreationTime()}
+			creationTime := process.StartTimeForProcess(pid)
+			require.False(t, creationTime.IsZero(), "process start time should not be zero")
+			return process.ProcessTreeItem{pid, creationTime}
 		}},
 		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
-			intPid, intPidErr := process.PidT_ToInt(pid)
-			require.NoError(t, intPidErr)
-			pp, ppErr := ps.FindProcess(intPid)
-			require.NoError(t, ppErr)
-			return process.ProcessTreeItem{pid, pp.CreationTime()}
+			creationTime := process.StartTimeForProcess(pid)
+			require.False(t, creationTime.IsZero(), "process start time should not be zero")
+			return process.ProcessTreeItem{pid, creationTime}
 		}},
 		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			startWaitForProcessExit()
-			intPid, intPidErr := process.PidT_ToInt(pid)
-			require.NoError(t, intPidErr)
-			pp, ppErr := ps.FindProcess(intPid)
-			require.NoError(t, ppErr)
-			return process.ProcessTreeItem{pid, pp.CreationTime()}
+			creationTime := process.StartTimeForProcess(pid)
+			require.False(t, creationTime.IsZero(), "process start time should not be zero")
+			return process.ProcessTreeItem{pid, creationTime}
 		}},
 	}
 
@@ -324,7 +319,7 @@ func TestWatchCatchesProcessExit(t *testing.T) {
 	err := cmd.Start()
 	require.NoError(t, err)
 
-	pid, err := process.IntToPidT(cmd.Process.Pid)
+	pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	require.NoError(t, err)
 
 	delayProc, err := process.FindWaitableProcess(pid, time.Time{})
@@ -353,7 +348,7 @@ func TestContextCancelsWatch(t *testing.T) {
 
 	require.NoError(t, err, "command should start without error")
 
-	pid, err := process.IntToPidT(cmd.Process.Pid)
+	pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	require.NoError(t, err)
 	delayProc, err := process.FindWaitableProcess(pid, time.Time{})
 	require.NoError(t, err, "find process should succeed without error")
@@ -407,13 +402,11 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "command should start without error")
 
-	parentPid, parentPidErr := process.IntToPidT(parentCmd.Process.Pid)
+	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	require.NoError(t, parentPidErr)
-	parentPp, parentPpErr := ps.FindProcess(int(parentPid))
-	require.NoError(t, parentPpErr)
-	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentPp.CreationTime()}, 1, 5*time.Second)
-	parentProcInfo, parentProcInfoErr := ps.FindProcess(int(parentPid))
-	require.NoError(t, parentProcInfoErr)
+	parentCreateTime := process.StartTimeForProcess(parentPid)
+	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
+	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentCreateTime}, 1, 5*time.Second)
 
 	childrenCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s", "--child-spec=1,1")
 	childrenCmd.Dir = delayToolDir
@@ -421,19 +414,17 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	childrenCmdErr := childrenCmd.Start()
 	require.NoError(t, childrenCmdErr, "command should start without error")
 
-	pid, pidErr := process.IntToPidT(childrenCmd.Process.Pid)
+	pid, pidErr := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
 	require.NoError(t, pidErr)
-	childPp, childPpErr := ps.FindProcess(int(pid))
-	require.NoError(t, childPpErr)
-	ensureProcessTree(t, process.ProcessTreeItem{pid, childPp.CreationTime()}, 3, 10*time.Second)
-	childProcInfo, childProcInfoErr := ps.FindProcess(int(pid))
-	require.NoError(t, childProcInfoErr)
+	childCreateTime := process.StartTimeForProcess(pid)
+	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
+	ensureProcessTree(t, process.ProcessTreeItem{pid, childCreateTime}, 3, 10*time.Second)
 
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--child", strconv.Itoa(childrenCmd.Process.Pid),
-		"--monitor-start-time", parentProcInfo.CreationTime().Format(osutil.RFC3339MiliTimestampFormat),
-		"--child-start-time", childProcInfo.CreationTime().Format(osutil.RFC3339MiliTimestampFormat),
+		"--monitor-start-time", parentCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--child-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
 	)
 	dcpProcCmd.Stdout = os.Stdout
 	dcpProcCmd.Stderr = os.Stderr
@@ -479,13 +470,11 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 		_ = parentCmd.Wait()
 	}()
 
-	parentPid, parentPidErr := process.IntToPidT(parentCmd.Process.Pid)
+	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	require.NoError(t, parentPidErr)
-	parentPp, parentPpErr := ps.FindProcess(int(parentPid))
-	require.NoError(t, parentPpErr)
-	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentPp.CreationTime()}, 1, 5*time.Second)
-	parentProcInfo, parentProcInfoErr := ps.FindProcess(int(parentPid))
-	require.NoError(t, parentProcInfoErr)
+	parentCreateTime := process.StartTimeForProcess(parentPid)
+	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
+	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentCreateTime}, 1, 5*time.Second)
 
 	childCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
 	childCmd.Dir = delayToolDir
@@ -496,23 +485,21 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 		_ = childCmd.Wait()
 	}()
 
-	childPid, childPidErr := process.IntToPidT(childCmd.Process.Pid)
+	childPid, childPidErr := process.Uint32_ToPidT(uint32(childCmd.Process.Pid))
 	require.NoError(t, childPidErr)
-	childPp, childPpErr := ps.FindProcess(childCmd.Process.Pid)
-	require.NoError(t, childPpErr)
-	ensureProcessTree(t, process.ProcessTreeItem{childPid, childPp.CreationTime()}, 1, 5*time.Second)
-	childProcInfo, childProcInfoErr := ps.FindProcess(int(childPid))
-	require.NoError(t, childProcInfoErr)
+	childCreateTime := process.StartTimeForProcess(childPid)
+	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
+	ensureProcessTree(t, process.ProcessTreeItem{childPid, childCreateTime}, 1, 5*time.Second)
 
 	// Case 1: monitor start time does not match
 	stdoutBuf := new(bytes.Buffer)
 	stderrBuf := new(bytes.Buffer)
-	monitorStartTime := parentProcInfo.CreationTime().Add(1 * time.Second)
+	monitorStartTime := parentCreateTime.Add(1 * time.Second)
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--child", strconv.Itoa(childCmd.Process.Pid),
 		"--monitor-start-time", monitorStartTime.Format(osutil.RFC3339MiliTimestampFormat),
-		"--child-start-time", childProcInfo.CreationTime().Format(osutil.RFC3339MiliTimestampFormat),
+		"--child-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
 	)
 	dcpProcCmd.Stdout = stdoutBuf
 	dcpProcCmd.Stderr = stderrBuf
@@ -529,11 +516,11 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	// Case 2: child start time does not match
 	stdoutBuf.Reset()
 	stderrBuf.Reset()
-	childStartTime := childProcInfo.CreationTime().Add(1 * time.Second)
+	childStartTime := childCreateTime.Add(1 * time.Second)
 	dcpProcCmd = exec.CommandContext(testCtx, dcpProc,
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--child", strconv.Itoa(childCmd.Process.Pid),
-		"--monitor-start-time", parentProcInfo.CreationTime().Format(osutil.RFC3339MiliTimestampFormat),
+		"--monitor-start-time", parentCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
 		"--child-start-time", childStartTime.Format(osutil.RFC3339MiliTimestampFormat),
 	)
 	dcpProcCmd.Stdout = stdoutBuf
