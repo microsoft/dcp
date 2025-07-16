@@ -37,3 +37,8 @@ __debug_*
 
 # Temporary kubeconfig file for development
 kubeconfig.dev
+
+# Temporary notice files
+NOTICE.darwin
+NOTICE.linux
+NOTICE.windows

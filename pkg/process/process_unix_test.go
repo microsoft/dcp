@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tklauser/ps"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	"testing"
@@ -41,11 +40,11 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	pid, err := process.IntToPidT(cmd.Process.Pid)
+	pid, err := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	require.NoError(t, err)
-	pp, ppErr := ps.FindProcess(cmd.Process.Pid)
-	require.NoError(t, ppErr)
-	rootP := process.ProcessTreeItem{pid, pp.CreationTime()}
+	createTime := process.StartTimeForProcess(pid)
+	require.False(t, createTime.IsZero(), "process start time should not be zero")
+	rootP := process.ProcessTreeItem{pid, createTime}
 
 	// Only one process should be running, so the "tree" size is 1.
 	ensureProcessTree(t, rootP, 1, 5*time.Second)

@@ -11,8 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tklauser/ps"
-
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
@@ -173,10 +171,9 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid
 	if err := cmd.Start(); err != nil {
 		return UnknownPID, time.Time{}, err
 	}
-	processStartTime := time.Now()
 
 	osPid := cmd.Process.Pid
-	pid, err := IntToPidT(osPid)
+	pid, err := Uint32_ToPidT(uint32(osPid))
 	if err != nil {
 		return UnknownPID, time.Time{}, err
 	}
@@ -187,12 +184,9 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid
 		"CreationFlags", flags,
 	)
 
-	psProcess, psProcessErr := ps.FindProcess(osPid)
-	if psProcessErr != nil {
-		startLog.Error(psProcessErr, "Could not find process startup time")
-	} else {
-		// This is what the OS process startup timestamp is, so it is the most accurate value we can get.
-		processStartTime = psProcess.CreationTime()
+	processStartTime := StartTimeForProcess(pid)
+	if processStartTime.IsZero() {
+		startLog.Error(fmt.Errorf("could not get process start time for PID %d", pid), "could not get process start time", "PID", pid)
 	}
 
 	startCompletionErr := e.completeProcessStart(cmd, pid, processStartTime, flags)
@@ -303,7 +297,8 @@ func (e *OSExecutor) releaseLock() {
 func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
 	tree, err := GetProcessTree(ProcessTreeItem{pid, processStartTime})
 	if err != nil {
-		return fmt.Errorf("Could not get process tree for process %d: %w", pid, err)
+		e.log.Error(err, "Could not get process tree", "PID", pid)
+		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
 	}
 
 	procTreeLog := e.log.WithValues("Root", pid)

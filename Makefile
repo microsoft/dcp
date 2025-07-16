@@ -173,7 +173,7 @@ help: ## Display this help.
 generate: generate-object-methods generate-openapi generate-goversioninfo generate-grpc ## Generate artifacts needed for DCP binary build: object copy methods, OpenAPI definitions, binary version info, and gRPC files.
 
 .PHONY: generate-ci
-generate-ci: generate generate-licenses ## Generate all codegen artifacts including licenses/notice files.
+generate-ci: generate ## Generate all codegen artifacts including licenses/notice files.
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo

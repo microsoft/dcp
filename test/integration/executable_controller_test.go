@@ -140,7 +140,7 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 			simulateRunEnding: func(t *testing.T, runID controllers.RunID) {
 				pid64, err := strconv.ParseInt(string(runID), 10, 32)
 				require.NoError(t, err)
-				pid, err := process.Int64ToPidT(pid64)
+				pid, err := process.Int64_ToPidT(pid64)
 				require.NoError(t, err)
 				testProcessExecutor.SimulateProcessExit(t, pid, int32(expectedEC))
 			},
@@ -1575,7 +1575,7 @@ func TestExecutableStatusUpdatedByIdeRunner(t *testing.T) {
 	const successfulStartExeName = "test-executable-status-updated-by-ide-runner-successful-start"
 	const failedStartExeName = "test-executable-status-updated-by-ide-runner-failed-start"
 
-	randomPid, pidCreationErr := process.IntToPidT(rand.Intn(60000) + 1)
+	randomPid, pidCreationErr := process.Uint32_ToPidT(uint32(rand.Intn(60000) + 1))
 	require.NoError(t, pidCreationErr, "Could not generate random PID for successful run")
 	desiredSuccessfulExeStatus := apiv1.ExecutableStatus{
 		PID:        (*int64)(&randomPid),
@@ -3352,7 +3352,7 @@ func ensureIdeRunSessionStarted(ctx context.Context, cmdPath string) (controller
 		return controllers.UnknownRunID, err
 	}
 
-	randomPid, _ := process.IntToPidT(rand.Intn(12345) + 1)
+	randomPid, _ := process.Uint32_ToPidT(uint32(rand.Intn(12345) + 1))
 	if err = ideRunner.SimulateSuccessfulRunStart(controllers.RunID(runID), randomPid); err != nil {
 		return controllers.UnknownRunID, err
 	}
