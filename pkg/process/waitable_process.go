@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/tklauser/ps"
+	ps "github.com/shirou/gopsutil/v4/process"
 )
 
 const (
@@ -65,7 +65,7 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 				for done := false; !done; {
 					select {
 					case <-timer.C:
-						pid, pidConversionErr := IntToPidT(p.process.Pid)
+						pid, pidConversionErr := Uint32_ToPidT(uint32(p.process.Pid))
 						if pidConversionErr != nil {
 							panic(pidConversionErr)
 						}
@@ -111,9 +111,14 @@ func (p *WaitableProcess) Kill() error {
 }
 
 func (p *WaitableProcess) StartTime() (time.Time, error) {
-	procInfo, err := ps.FindProcess(p.process.Pid)
+	procInfo, err := ps.NewProcess(int32(p.process.Pid))
 	if err != nil {
 		return time.Time{}, err
 	}
-	return procInfo.CreationTime(), nil
+
+	startTime := startTimeForProcess(procInfo)
+	if startTime.IsZero() {
+		return time.Time{}, errors.New("process start time could not be determined")
+	}
+	return startTime, nil
 }

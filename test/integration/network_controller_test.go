@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tklauser/ps"
+	ps "github.com/shirou/gopsutil/v4/process"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -196,8 +196,8 @@ func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.Cont
 func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
 	pps, ppsErr := ps.Processes()
 	require.NoError(t, ppsErr, "could not list processes")
-	pids := slices.Map[ps.Process, process.Pid_t](pps, func(pp ps.Process) process.Pid_t {
-		pid, pidErr := process.IntToPidT(pp.PID())
+	pids := slices.Map[*ps.Process, process.Pid_t](pps, func(pp *ps.Process) process.Pid_t {
+		pid, pidErr := process.Uint32_ToPidT(uint32(pp.Pid))
 		require.NoError(t, pidErr)
 		return pid
 	})
@@ -208,7 +208,7 @@ func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
 		require.NoError(t, randErr)
 		i += PID_OFFSET
 
-		candidate, candidateErr := process.Int64ToPidT(i)
+		candidate, candidateErr := process.Int64_ToPidT(i)
 		require.NoError(t, candidateErr)
 
 		if !slices.Contains(pids, candidate) {

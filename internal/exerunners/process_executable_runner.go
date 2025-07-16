@@ -188,7 +188,7 @@ func runIdToPID(runID controllers.RunID) process.Pid_t {
 	if err != nil {
 		return process.UnknownPID
 	}
-	pid, err := process.Int64ToPidT(pid64)
+	pid, err := process.Int64_ToPidT(pid64)
 	if err != nil {
 		return process.UnknownPID
 	}

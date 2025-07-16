@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/tklauser/ps"
 
 	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -49,11 +48,14 @@ func RunWatcher(
 			"--child", strconv.FormatInt(int64(childPid), 10),
 		}
 
-		procInfo, procInfoErr := ps.FindProcess(monitorPid)
-		if procInfoErr != nil {
-			log.Error(procInfoErr, "could not find process information for the current process", "PID", monitorPid)
-		} else {
-			monitorTime := procInfo.CreationTime()
+		pid, pidErr := process.Uint32_ToPidT(uint32(monitorPid))
+		if pidErr != nil {
+			log.Error(pidErr, "could not validate monitor PID", "PID", monitorPid)
+			return
+		}
+
+		monitorTime := process.StartTimeForProcess(pid)
+		if !monitorTime.IsZero() {
 			monitorCmdArgs = append(monitorCmdArgs, "--monitor-start-time", monitorTime.Format(osutil.RFC3339MiliTimestampFormat))
 		}
 

@@ -14,7 +14,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/tklauser/ps"
 )
 
 type resourceHarvester struct {
@@ -279,20 +278,14 @@ func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime ti
 	}
 
 	// If the process is not in the cache, we need to check if it is running.
-	intPid, pidErr := process.PidT_ToInt(pid)
-	if pidErr != nil {
-		return false
-	}
-
-	proc, findErr := ps.FindProcess(intPid)
+	_, findErr := process.FindProcess(pid, startTime)
 	if findErr != nil {
 		return false // Process not found, so it's not running.
 	}
 
-	// Check if we found a process with the expected PID and start time.
-	running := proc.PID() == intPid && process.HasExpectedStartTime(proc, startTime)
-	rh.processes[pid] = running
-	return running
+	// We found the process, so cache it as running.
+	rh.processes[pid] = true
+	return true
 }
 
 // Returns true if the set of given labels belongs to an object (network or container) that was created
