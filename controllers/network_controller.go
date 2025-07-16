@@ -633,6 +633,7 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 	newContainerIds := usvc_slices.Map[containers.InspectedNetworkContainer, string](cnet.Containers, func(c containers.InspectedNetworkContainer) string {
 		return c.Id
 	})
+	slices.Sort(newContainerIds) // Sort so we can do set comparison using slices.Equal
 	if !slices.Equal(network.Status.ContainerIDs, newContainerIds) {
 		network.Status.ContainerIDs = newContainerIds
 		change |= statusChanged

@@ -34,12 +34,12 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	defaultAdditionalReconciliationDelay            = 2 * time.Second
-	defaultAdditionalReconciliationJitter           = 500 * time.Millisecond
-	minimumLongAdditionalReconciliationDelaySeconds = 5
-	conflictRequeueDelay                            = 100 * time.Millisecond
-	reconciliationDebounceDelay                     = 500 * time.Millisecond
-	reconciliationMaxDelay                          = 5 * time.Second
+	defaultAdditionalReconciliationDelay     = 2 * time.Second
+	defaultAdditionalReconciliationJitter    = 500 * time.Millisecond
+	minimumLongAdditionalReconciliationDelay = 5 * time.Second
+	conflictRequeueDelay                     = 100 * time.Millisecond
+	reconciliationDebounceDelay              = 500 * time.Millisecond
+	reconciliationMaxDelay                   = 5 * time.Second
 
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"
@@ -115,8 +115,8 @@ func computeAdditionalReconciliationDelay(change objectChange, useLongDelay bool
 	reconciliationDelay := defaultAdditionalReconciliationDelay
 	reconciliationJitter := defaultAdditionalReconciliationJitter
 	if useLongDelay {
-		reconciliationDelay = minimumLongAdditionalReconciliationDelaySeconds
-		reconciliationJitter = minimumLongAdditionalReconciliationDelaySeconds
+		reconciliationDelay = minimumLongAdditionalReconciliationDelay
+		reconciliationJitter = minimumLongAdditionalReconciliationDelay
 		change |= additionalReconciliationNeeded
 	}
 	return reconciliationDelay, reconciliationJitter, change
