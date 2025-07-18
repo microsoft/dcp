@@ -116,12 +116,13 @@ OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
 GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
-GO_LICENSES ?= $(GOTOOL_BIN) github.com/google/go-licenses/v2
+GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v2.1.6
 PROTOC_VERSION ?= 31.1
+GO_LICENSES_VERSION ?= 706c3b73c1f289c2f9f174651e3452a2ec4cfd57
 
 # DCP Version information
 VERSION ?= dev
@@ -173,7 +174,7 @@ help: ## Display this help.
 generate: generate-object-methods generate-openapi generate-goversioninfo generate-grpc ## Generate artifacts needed for DCP binary build: object copy methods, OpenAPI definitions, binary version info, and gRPC files.
 
 .PHONY: generate-ci
-generate-ci: generate ## Generate all codegen artifacts including licenses/notice files.
+generate-ci: generate generate-licenses ## Generate all codegen artifacts including licenses/notice files.
 
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
@@ -278,8 +279,27 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 # # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244.
 # The awk script converts the output of `go list std` (line separated modules) to the input that `--ignore` expects
 .PHONY: generate-dependency-notices
-generate-dependency-notices:
-	$(CLEAR_GOARGS) $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE
+generate-dependency-notices: go-licenses
+ifeq ($(detected_OS),windows)
+	$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
+	$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
+	$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
+else
+	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
+	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
+	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
+endif
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES)
+$(GO_LICENSES): | $(TOOL_BIN)
+ifeq ($(detected_OS),windows)
+	if (-not (Test-Path "$(GO_LICENSES)")) { $$env:GOBIN = "$(TOOL_BIN)"; $(CLEAR_GOARGS) $(GO_BIN) install github.com/danegsta/go-licenses/v2@$(GO_LICENSES_VERSION); $$env:GOBIN = $$null; }
+else
+	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) $(CLEAR_GOARGS) $(GO_BIN) install github.com/danegsta/go-licenses/v2@$(GO_LICENSES_VERSION)
+endif
 
 # delay-tool is used for process package testing
 .PHONY: delay-tool

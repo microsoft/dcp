@@ -69,7 +69,6 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/cel-go v0.23.2 // indirect
 	github.com/google/gnostic-models v0.6.9 // indirect
-	github.com/google/go-licenses/v2 v2.0.0-alpha.1 // indirect
 	github.com/google/licenseclassifier/v2 v2.0.0 // indirect
 	github.com/google/pprof v0.0.0-20241029153458-d1b30febd7db // indirect
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0 // indirect
@@ -142,14 +141,11 @@ require (
 )
 
 tool (
-	github.com/google/go-licenses/v2
 	github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 	google.golang.org/grpc/cmd/protoc-gen-go-grpc
 	google.golang.org/protobuf/cmd/protoc-gen-go
 	k8s.io/kube-openapi/cmd/openapi-gen
 	sigs.k8s.io/controller-tools/cmd/controller-gen
 )
-
-replace github.com/google/go-licenses/v2 v2.0.0-alpha.1 => github.com/danegsta/go-licenses/v2 v2.0.0-20250508191800-f917eeea5e92
 
 replace github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 => github.com/gorilla/websocket v1.5.3
