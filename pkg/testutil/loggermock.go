@@ -9,6 +9,17 @@ type MockLoggerSink struct {
 	mock.Mock
 }
 
+func NewMockLoggerSink() *MockLoggerSink {
+	retval := &MockLoggerSink{}
+
+	// Enable Init(), Enabled(), and Info() calls by default
+	retval.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
+	retval.On("Enabled", mock.AnythingOfType("int")).Return(true)
+	retval.On("Info", mock.AnythingOfType("int"), mock.AnythingOfType("string"), mock.Anything).Return()
+
+	return retval
+}
+
 func (m *MockLoggerSink) Enabled(level int) bool {
 	args := m.Called(level)
 	return args.Bool(0)
@@ -34,6 +45,10 @@ func (m *MockLoggerSink) WithName(name string) logr.LogSink {
 func (m *MockLoggerSink) WithValues(keysAndValues ...interface{}) logr.LogSink {
 	args := m.Called(keysAndValues)
 	return args.Get(0).(logr.LogSink)
+}
+
+func (m *MockLoggerSink) EnableErrorCall() {
+	m.On("Error", mock.AnythingOfType("*errors.errorString"), mock.AnythingOfType("string"), mock.Anything).Return()
 }
 
 var _ logr.LogSink = (*MockLoggerSink)(nil)

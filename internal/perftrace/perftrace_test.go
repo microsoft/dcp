@@ -6,16 +6,13 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
 func TestPerfTraceRequestParsed(t *testing.T) {
-	logSink := &testutil.MockLoggerSink{}
-	logSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
-	// Not setting up any other calls, Error in particular, since we do not expect any errors.
+	logSink := testutil.NewMockLoggerSink()
 
 	reqStr := "startup=30s,shutdown=15s"
 	requests := parseProfilingRequests(reqStr, logr.New(logSink))
@@ -28,9 +25,8 @@ func TestPerfTraceRequestParsed(t *testing.T) {
 }
 
 func TestPerfTraceInvalidTraceType(t *testing.T) {
-	logSink := &testutil.MockLoggerSink{}
-	logSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
-	logSink.On("Error", mock.AnythingOfType("*errors.errorString"), mock.AnythingOfType("string"), mock.Anything).Return()
+	logSink := testutil.NewMockLoggerSink()
+	logSink.EnableErrorCall()
 
 	reqStr := "unknown=30s"
 	requests := parseProfilingRequests(reqStr, logr.New(logSink))
@@ -40,9 +36,8 @@ func TestPerfTraceInvalidTraceType(t *testing.T) {
 }
 
 func TestPerfTraceInvalidTraceDuration(t *testing.T) {
-	logSink := &testutil.MockLoggerSink{}
-	logSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
-	logSink.On("Error", mock.AnythingOfType("*errors.errorString"), mock.AnythingOfType("string"), mock.Anything).Return()
+	logSink := testutil.NewMockLoggerSink()
+	logSink.EnableErrorCall()
 
 	reqStr := "startup=xxx"
 	requests := parseProfilingRequests(reqStr, logr.New(logSink))
@@ -52,9 +47,8 @@ func TestPerfTraceInvalidTraceDuration(t *testing.T) {
 }
 
 func TestPerfTraceRequestInvalid(t *testing.T) {
-	logSink := &testutil.MockLoggerSink{}
-	logSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
-	logSink.On("Error", mock.AnythingOfType("*errors.errorString"), mock.AnythingOfType("string"), mock.Anything).Return()
+	logSink := testutil.NewMockLoggerSink()
+	logSink.EnableErrorCall()
 
 	reqStr := "blah123"
 	requests := parseProfilingRequests(reqStr, logr.New(logSink))
@@ -64,9 +58,7 @@ func TestPerfTraceRequestInvalid(t *testing.T) {
 }
 
 func TestPerfTraceRequestEmpty(t *testing.T) {
-	logSink := &testutil.MockLoggerSink{}
-	logSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
-	// Not setting up any other calls, Error in particular, since we do not expect any errors.
+	logSink := testutil.NewMockLoggerSink()
 	log := logr.New(logSink)
 
 	reqStr := ""

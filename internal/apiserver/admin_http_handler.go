@@ -3,36 +3,43 @@
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/kube-openapi/pkg/validation/strfmt"
 	"k8s.io/kube-openapi/pkg/validation/validate"
 
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
+	"github.com/microsoft/usvc-apiserver/internal/notifications"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 )
 
 const (
 	AdminPathPrefix   = "/admin/"
 	ExecutionDocument = "execution"
+	PerfTraceDocument = "perftrace"
 )
 
 type adminHttpHandler struct {
-	executionData   *ApiServerExecutionData
-	requestShutdown func(ApiServerResourceCleanup)
-	mux             *http.ServeMux
-	log             logr.Logger
-	lock            *sync.Mutex
+	executionData *ApiServerExecutionData
+	runConfig     ApiServerRunConfig
+	mux           *http.ServeMux
+	log           logr.Logger
+	profilerLog   logr.Logger
+	lock          *sync.Mutex
+	lifetimeCtx   context.Context
 }
 
-func NewAdminHttpHandler(requestShutdown func(ApiServerResourceCleanup), log logr.Logger) http.Handler {
-	if requestShutdown == nil {
-		panic("requestShutdown must be provided")
+func NewAdminHttpHandler(lifetimeCtx context.Context, runConfig ApiServerRunConfig, log logr.Logger) http.Handler {
+	if runConfig.RequestShutdown == nil {
+		panic("must have a way to request API server shutdown")
 	}
 
 	mux := http.NewServeMux()
@@ -41,10 +48,12 @@ func NewAdminHttpHandler(requestShutdown func(ApiServerResourceCleanup), log log
 			Status:                  ApiServerRunning,
 			ShutdownResourceCleanup: ApiServerResourceCleanupFull,
 		},
-		requestShutdown: requestShutdown,
-		mux:             mux,
-		log:             log.WithName("adminHttpHandler"),
-		lock:            &sync.Mutex{},
+		runConfig:   runConfig,
+		mux:         mux,
+		log:         log.WithName("adminHttpHandler"),
+		profilerLog: log.WithName("profiler"),
+		lock:        &sync.Mutex{},
+		lifetimeCtx: lifetimeCtx,
 	}
 
 	mux.HandleFunc(
@@ -54,6 +63,10 @@ func NewAdminHttpHandler(requestShutdown func(ApiServerResourceCleanup), log log
 	mux.HandleFunc(
 		fmt.Sprintf("PATCH %s%s", AdminPathPrefix, ExecutionDocument),
 		func(w http.ResponseWriter, r *http.Request) { ahh.changeExecution(w, r) },
+	)
+	mux.HandleFunc(
+		fmt.Sprintf("PUT %s%s", AdminPathPrefix, PerfTraceDocument),
+		func(w http.ResponseWriter, r *http.Request) { ahh.capturePerfTrace(w, r) },
 	)
 	mux.Handle("/", http.NotFoundHandler())
 
@@ -206,9 +219,66 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Only request shutdown AFTER writing the response, so that we do not "cancel ourselves" in the middle of writing.
+
 	if changedStatus && newStatus == ApiServerStopping {
-		h.requestShutdown(h.executionData.ShutdownResourceCleanup)
+		h.runConfig.RequestShutdown(h.executionData.ShutdownResourceCleanup)
 	}
+}
+
+// PUT /admin/perftrace?duration=xx captures a performance trace for the specified duration.
+// Duration follows Go Duration format, but it must be between 1 second and 5 minutes.
+func (h *adminHttpHandler) capturePerfTrace(w http.ResponseWriter, r *http.Request) {
+	durationStr := r.URL.Query().Get("duration")
+	if durationStr == "" {
+		http.Error(w, "duration query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	duration, err := time.ParseDuration(durationStr)
+	if err != nil {
+		http.Error(w, "invalid duration format", http.StatusBadRequest)
+		return
+	}
+	if duration < time.Second || duration > 5*time.Minute {
+		http.Error(w, "duration must be between 1 second and 5 minutes", http.StatusBadRequest)
+		return
+	}
+
+	typeStr := r.URL.Query().Get("type")
+	if typeStr == "" {
+		typeStr = string(perftrace.ProfileTypeSnapshot)
+	}
+	profileType := perftrace.ProfileType(typeStr)
+	if profileType != perftrace.ProfileTypeSnapshot && profileType != perftrace.ProfileTypeSnapshotCpu {
+		http.Error(w, "invalid profile type, must be 'snapshot' or 'snapshot-cpu'", http.StatusBadRequest)
+		return
+	}
+
+	if h.runConfig.NotificationSource != nil {
+		notifyErr := h.runConfig.NotificationSource.NotifySubscribers(&notifications.PerftraceRequestNotification{
+			Duration: duration,
+		})
+		if notifyErr != nil {
+			h.log.Error(notifyErr, "could not notify subscribers about performance trace request")
+			// Best effort--do not fail the request if we cannot notify subscribers.
+		}
+	}
+
+	if h.runConfig.CollectPerfTrace == nil {
+		h.log.Info("CollectPerfTrace function is not set, cannot collect performance trace")
+		http.Error(w, "performance tracing is not supported", http.StatusNotImplemented)
+		return
+	}
+
+	profilingCtx, profilingCtxCancel := context.WithTimeout(h.lifetimeCtx, duration)
+	profileErr := h.runConfig.CollectPerfTrace(profilingCtx, profilingCtxCancel, h.profilerLog)
+	if profileErr != nil {
+		h.log.Error(profileErr, "could not start performance profiling")
+		http.Error(w, "could not start performance profiling", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 var _ http.Handler = &adminHttpHandler{}

@@ -1,15 +1,12 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
 
-	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
@@ -130,24 +127,6 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
 
-		if !serverOnly {
-			// Do not use apiServerCtx for the notification source because it is a monitor context
-			// that gets cancelled monitored process exits, triggering API server shutdown.
-			// We want to be able to send notifications throughout the shutdown process, so we use a separate context.
-			notifyCtx, notifyCtxCancel := context.WithCancel(context.Background())
-			defer notifyCtxCancel()
-
-			ns, nsErr := createNotificationSource(notifyCtx, log)
-			if nsErr == nil {
-				appmgmt.AddBeforeCleanupTask("SendCleanupStartedNotification", func() {
-					// Best effort
-					_ = ns.NotifySubscribers(cmds.Notification{Type: cmds.NotificationTypeCleanupStarted})
-				})
-				invocationFlags = append(invocationFlags, "--"+cmds.NotificationSocketPathFlagName, ns.SocketPath)
-				defer ns.Dispose()
-			}
-		}
-
 		err = bootstrap.DcpRun(
 			apiServerCtx,
 			rootDir,
@@ -159,24 +138,4 @@ func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		return err
 	}
-}
-
-func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (*cmds.NotificationSource, error) {
-	const noNotifications = "notifications will not be sent to controller process"
-
-	socketPath, socketPathErr := cmds.PrepareNotificationSocketPath("", "dcp-notify-sock-")
-	if socketPathErr != nil {
-		retErr := fmt.Errorf("failed to prepare notification socket path: %w", socketPathErr)
-		log.Error(socketPathErr, noNotifications)
-		return nil, retErr
-	}
-
-	ns, nsErr := cmds.NewNotificationSource(lifetimeCtx, socketPath, log)
-	if nsErr != nil {
-		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)
-		log.Error(nsErr, noNotifications)
-		return nil, retErr
-	}
-
-	return ns, nil
 }

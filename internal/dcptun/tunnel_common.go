@@ -31,12 +31,6 @@ var (
 	latestStreamID StreamID = invalidStreamID
 )
 
-// Make a pointer from an enum value, for the purpose of creating protobuf messages.
-// Compare with the wrappers in the google.golang.org/protobuf/proto package.
-func EnumVal[T ~int32](v T) *T {
-	return &v
-}
-
 // Holds tunnel data needed by a server-side or client-side proxy.
 type tunnelData[StreamInfo any] struct {
 	// The spec of the tunnel. Once the tunnelData instance is created, the spec is immutable.

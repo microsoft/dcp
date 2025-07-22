@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -92,7 +93,7 @@ func runClientProxy(logger logger.Logger) func(cmd *cobra.Command, args []string
 		grpcServerErrChan := make(chan error, 1)
 		go func() {
 			serveErr := controlEndpointServer.Serve(ctrlListener)
-			if serveErr != nil {
+			if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
 				log.Error(serveErr, "client-side tunnel proxy control endpoint encountered an error")
 				grpcServerErrChan <- serveErr
 			}

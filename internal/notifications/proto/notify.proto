@@ -1,0 +1,45 @@
+edition = "2023";
+
+package notify;
+
+option go_package = "github.com/microsoft/usvc-apiserver/internal/notifications/proto";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/duration.proto";
+
+// Defines an API for subscribing to notifications and receiving them.
+service Notifications {
+    // Subscribes to notifications.
+    rpc Subscribe(google.protobuf.Empty) returns (stream NotificationData);
+}
+
+// Defines data for a single notification.
+message NotificationData {
+    // The type of the notification.
+    NotificationType ntype = 1;
+
+    oneof data {
+        // For those notifications that do not carry additional data.
+        google.protobuf.Empty nothing = 2;
+
+        // Performance trace request data.
+        PerftraceRequest perftrace_request = 3;
+    }
+}
+
+// Enumerates all possible notification types.
+enum NotificationType {
+    // Required by gRPC code generator/semantics.
+    NTYPE_UNSPECIFIED = 0;
+
+    // Indicates that a shutdown cleanup of resources has started.
+    NTYPE_CLEANUP_STARTED = 1;
+
+    // Represents a request to take a performance trace.
+    NTYPE_PERFTRACE_REQUEST = 2;
+}
+
+// Describes data associated with performance trace collection request
+message PerftraceRequest {
+    google.protobuf.Duration duration = 1;
+}

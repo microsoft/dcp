@@ -2,6 +2,7 @@ package apiserver_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -16,6 +18,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
+	"github.com/microsoft/usvc-apiserver/internal/notifications"
 
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
@@ -45,7 +48,10 @@ func TestReturnsExecutionData(t *testing.T) {
 	req := httptest.NewRequestWithContext(ctx, "GET", apiserver.AdminPathPrefix+apiserver.ExecutionDocument, nil)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
-	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerResourceCleanup) {}, testutil.NewLogForTesting(t.Name()))
+	runConfig := apiserver.ApiServerRunConfig{
+		RequestShutdown: func(apiserver.ApiServerResourceCleanup) {},
+	}
+	handler := apiserver.NewAdminHttpHandler(ctx, runConfig, testutil.NewLogForTesting(t.Name()))
 	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
@@ -62,7 +68,10 @@ func TestInvalidExecutionChanges(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerResourceCleanup) {}, testutil.NewLogForTesting(t.Name()))
+	runConfig := apiserver.ApiServerRunConfig{
+		RequestShutdown: func(apiserver.ApiServerResourceCleanup) {},
+	}
+	handler := apiserver.NewAdminHttpHandler(ctx, runConfig, testutil.NewLogForTesting(t.Name()))
 	var req *http.Request
 	var w *httptest.ResponseRecorder
 	var resp *http.Response
@@ -138,7 +147,12 @@ func TestValidExecutionChanges(t *testing.T) {
 	defer cancel()
 
 	requestShutdownCalled := false
-	handler := apiserver.NewAdminHttpHandler(func(apiserver.ApiServerResourceCleanup) { requestShutdownCalled = true }, testutil.NewLogForTesting(t.Name()))
+	runConfig := apiserver.ApiServerRunConfig{
+		RequestShutdown: func(apiserver.ApiServerResourceCleanup) {
+			requestShutdownCalled = true
+		},
+	}
+	handler := apiserver.NewAdminHttpHandler(ctx, runConfig, testutil.NewLogForTesting(t.Name()))
 	var req *http.Request
 	var w *httptest.ResponseRecorder
 	var resp *http.Response
@@ -192,10 +206,13 @@ func TestCanSetResourceCleanupMode(t *testing.T) {
 	for requested, expected := range requestedVsExpected {
 		requestShutdownCalled := false
 		cleanupPerformed := apiserver.ApiServerResourceCleanupNone
-		handler := apiserver.NewAdminHttpHandler(func(cleanup apiserver.ApiServerResourceCleanup) {
-			requestShutdownCalled = true
-			cleanupPerformed = cleanup
-		}, testutil.NewLogForTesting(t.Name()+requested))
+		runConfig := apiserver.ApiServerRunConfig{
+			RequestShutdown: func(cleanup apiserver.ApiServerResourceCleanup) {
+				requestShutdownCalled = true
+				cleanupPerformed = cleanup
+			},
+		}
+		handler := apiserver.NewAdminHttpHandler(ctx, runConfig, testutil.NewLogForTesting(t.Name()+requested))
 
 		req := httptest.NewRequestWithContext(ctx, "PATCH", apiserver.AdminPathPrefix+apiserver.ExecutionDocument, nil)
 		req.Header.Set("Content-Type", "application/merge-patch+json")
@@ -417,4 +434,44 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	t.Logf("Creating Executable object '%s'...", exe.Name)
 	createErr = serverInfo.Client.Create(ctx, &exe)
 	require.Error(t, createErr, "Executable creation should fail")
+}
+
+func TestCanCapturePerfTrace(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
+	defer cancel()
+
+	perfTraceCaptured := false
+	receivedPerfTraceNotification := false
+	var onNotification notifications.NotifySubscribersFunc = func(n notifications.Notification) error {
+		if n.Kind() == notifications.NotificationKindPerftraceRequest {
+			receivedPerfTraceNotification = true
+		}
+		return nil
+	}
+
+	runConfig := apiserver.ApiServerRunConfig{
+		RequestShutdown:    func(apiserver.ApiServerResourceCleanup) {},
+		NotificationSource: onNotification,
+		CollectPerfTrace: func(context.Context, context.CancelFunc, logr.Logger) error {
+			perfTraceCaptured = true
+			return nil
+		},
+	}
+
+	handler := apiserver.NewAdminHttpHandler(ctx, runConfig, testutil.NewLogForTesting(t.Name()))
+	var req *http.Request
+	var w *httptest.ResponseRecorder
+	var resp *http.Response
+
+	req = httptest.NewRequestWithContext(ctx, "PUT", apiserver.AdminPathPrefix+apiserver.PerfTraceDocument+"?duration=10s", nil)
+	w = httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	resp = w.Result()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.True(t, perfTraceCaptured)
+	require.True(t, receivedPerfTraceNotification)
 }

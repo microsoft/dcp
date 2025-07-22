@@ -11,6 +11,8 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
 	"github.com/microsoft/usvc-apiserver/internal/hosting"
+	"github.com/microsoft/usvc-apiserver/internal/notifications"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -56,6 +58,27 @@ func DcpRun(
 	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
 	defer cancelHostCtx()
 
+	serverOnly := len(allExtensions) == 0
+	var notifySrc notifications.UnixSocketNotificationSource
+
+	if !serverOnly {
+		// Do not use apiServerCtx for the notification source because it is a monitor context
+		// that gets cancelled monitored process exits, triggering API server shutdown.
+		// We want to be able to send notifications throughout the shutdown process, so we use a separate context.
+		notifyCtx, notifyCtxCancel := context.WithCancel(context.Background())
+		defer notifyCtxCancel()
+
+		var notifySrcErr error
+		notifySrc, notifySrcErr = createNotificationSource(notifyCtx, log)
+		if notifySrcErr == nil {
+			appmgmt.AddBeforeCleanupTask("SendCleanupStartedNotification", func() {
+				// Best effort
+				_ = notifySrc.NotifySubscribers(&notifications.CleanupStartedNotification{})
+			})
+			invocationFlags = append(invocationFlags, "--"+notifications.NotificationSocketPathFlagName, notifySrc.SocketPath())
+		}
+	}
+
 	hostedServices := []hosting.Service{}
 	for _, controller := range controllers {
 		controllerService, ctrlCreationErr := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags, log)
@@ -73,10 +96,17 @@ func DcpRun(
 	var requestedResourceCleanup atomic.Value
 	requestedResourceCleanup.Store(apiserver.ApiServerResourceCleanupFull) // By default we do full cleanup on shutdown.
 
-	apiServerShutdown, apiServerErr := apiServer.Run(apiServerCtx, func(cleanup apiserver.ApiServerResourceCleanup) {
-		requestedResourceCleanup.Store(cleanup)
-		cancelCleanupCtx()
-	})
+	runConfig := apiserver.ApiServerRunConfig{
+		RequestShutdown: func(cleanup apiserver.ApiServerResourceCleanup) {
+			requestedResourceCleanup.Store(cleanup)
+			cancelCleanupCtx()
+		},
+		NotificationSource: notifySrc,
+		CollectPerfTrace: func(ctx context.Context, ctxCancel context.CancelFunc, log logr.Logger) error {
+			return perftrace.StartProfiling(ctx, ctxCancel, perftrace.ProfileTypeSnapshot, log)
+		},
+	}
+	apiServerShutdown, apiServerErr := apiServer.Run(apiServerCtx, runConfig)
 	if apiServerErr != nil {
 		return apiServerErr
 	}
@@ -111,7 +141,7 @@ func DcpRun(
 			// If we are in server-only mode (no standard controllers) such as when running tests,
 			// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
 			// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
-			if len(allExtensions) == 0 || !resourceCleanup.IsFull() {
+			if serverOnly || !resourceCleanup.IsFull() {
 				return nil // No cleanup needed, just return
 			}
 
@@ -142,4 +172,24 @@ func DcpRun(
 			}
 		}
 	}
+}
+
+func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (notifications.UnixSocketNotificationSource, error) {
+	const noNotifications = "notifications will not be sent to controller process"
+
+	socketPath, socketPathErr := notifications.PrepareNotificationSocketPath("", "dcp-notify-sock-")
+	if socketPathErr != nil {
+		retErr := fmt.Errorf("failed to prepare notification socket path: %w", socketPathErr)
+		log.Error(socketPathErr, noNotifications)
+		return nil, retErr
+	}
+
+	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, socketPath, log)
+	if nsErr != nil {
+		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)
+		log.Error(nsErr, noNotifications)
+		return nil, retErr
+	}
+
+	return ns, nil
 }

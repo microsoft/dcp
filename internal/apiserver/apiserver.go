@@ -31,6 +31,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/logs/containerlogs"
 	"github.com/microsoft/usvc-apiserver/internal/logs/stdiologs"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/usvc-apiserver/internal/notifications"
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -44,13 +45,31 @@ const (
 	DCP_RESOURCE_WATCH_TIMEOUT_SECONDS = "DCP_RESOURCE_WATCH_TIMEOUT_SECONDS"
 )
 
+// Provides additional dependencies that the API server may need during its execution.
+type ApiServerRunConfig struct {
+	// RequestShutdown() is a function that can be called to indicate that the API server should shut down.
+	// It should NOT be assumed that this is identical to the cancellation function for the API server run context.
+	// The API server will be shut down by cancelling the run context, but that in general
+	// happens asynchronously to the call to RequestShutdown().
+	// Mandatory, must not be nil.
+	RequestShutdown func(ApiServerResourceCleanup)
+
+	// The NotificationSource for sending notifications to clients of the API server (such as the controllers process).
+	// NotificationSource is optional.
+	NotificationSource notifications.NotificationSource
+
+	// CollectPerfTrace is a function that can be called to collect performance trace data.
+	// The duration of the trace is controlled by the passed (cancellable) context.
+	// CollectPerfTrace is optional.
+	CollectPerfTrace func(context.Context, context.CancelFunc, logr.Logger) error
+}
+
 type ApiServer struct {
 	name         string
 	config       *kubeconfig.Kubeconfig
 	logger       logr.Logger
 	runCompleted bool
 	builder      *tiltserverbuilder.Server
-	options      *tiltstart.TiltServerOptions
 	// Types that have data stored in the API server.
 	persistentDcpTypes []tiltresource.Object
 }
@@ -97,17 +116,6 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 	return apiServer
 }
 
-func (s *ApiServer) Options() (*tiltstart.TiltServerOptions, error) {
-	if s.options != nil {
-		return s.options, nil
-	}
-
-	options, err := s.builder.ToServerOptions()
-	s.options = options
-
-	return s.options, err
-}
-
 func (s *ApiServer) Name() string {
 	return s.name
 }
@@ -117,10 +125,8 @@ func (s *ApiServer) Name() string {
 // The passed runCtx is used to control the lifecycle of the API server. When that context is cancelled,
 // the API server should terminate all requests in progress and shut down gracefully.
 //
-// shutdownRequested is a function that can be called to indicate that the API server was requested to shut down.
-// It should NOT be assumed that this is a cancellation function for the runCtx (cancellation of the runCtx will happen
-// shortly after, but ASYNCHRONOUSLY to the call to shutdownRequested).
-func (s *ApiServer) Run(runCtx context.Context, shutdownRequested func(ApiServerResourceCleanup)) (<-chan struct{}, error) {
+
+func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<-chan struct{}, error) {
 	log := s.logger.WithName(s.name)
 
 	log.Info("Starting API server...")
@@ -166,7 +172,7 @@ func (s *ApiServer) Run(runCtx context.Context, shutdownRequested func(ApiServer
 	}
 
 	completedConfig := config.Complete()
-	stoppedCh, err := runServerFromCompletedConfig(completedConfig, runCtx, shutdownRequested, log)
+	stoppedCh, err := runServerFromCompletedConfig(completedConfig, runCtx, runConfig, log)
 	if err != nil {
 		log.Error(err, "API server execution error")
 		return nil, err
@@ -191,7 +197,7 @@ func (s *ApiServer) Dispose() error {
 }
 
 func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServerOptions, error) {
-	options, err := s.Options()
+	options, err := s.builder.ToServerOptions()
 	if err != nil {
 		err = fmt.Errorf("unable to create API server options: %w", err)
 		log.Error(err, msgApiServerStartupFailed)
@@ -341,7 +347,7 @@ func addDcpHttpHandlers(config *tiltapiserver.Config, ctx context.Context, log l
 func runServerFromCompletedConfig(
 	config tiltapiserver.CompletedConfig,
 	ctx context.Context,
-	shutdownRequested func(ApiServerResourceCleanup),
+	runConfig ApiServerRunConfig,
 	log logr.Logger,
 ) (<-chan struct{}, error) {
 	server, err := config.New()
@@ -349,7 +355,7 @@ func runServerFromCompletedConfig(
 		return nil, err
 	}
 
-	adminHandler := NewAdminHttpHandler(shutdownRequested, log)
+	adminHandler := NewAdminHttpHandler(ctx, runConfig, log)
 	server.GenericAPIServer.Handler.NonGoRestfulMux.HandlePrefix(AdminPathPrefix, adminHandler)
 
 	server.GenericAPIServer.AddPostStartHookOrDie("start-tilt-server-informers", func(context kubeapiserver.PostStartHookContext) error {

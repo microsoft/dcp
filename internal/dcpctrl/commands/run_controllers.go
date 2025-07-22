@@ -19,6 +19,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
+	"github.com/microsoft/usvc-apiserver/internal/notifications"
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
@@ -43,7 +44,7 @@ func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
 	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
 
 	cmds.AddMonitorFlags(runControllersCmd)
-	cmds.AddNotificationSocketFlag(runControllersCmd.Flags())
+	notifications.AddNotificationSocketFlag(runControllersCmd.Flags())
 
 	return runControllersCmd
 }
@@ -271,7 +272,7 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 }
 
 func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
-	notifySocketPath := cmds.GetNotificationSocketPath()
+	notifySocketPath := notifications.GetNotificationSocketPath()
 	if notifySocketPath == "" {
 		return
 	}
@@ -279,15 +280,33 @@ func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
 	log.V(1).Info("setting up notification receiver", "SocketPath", notifySocketPath)
 	nrLog := log.WithName("NotificationReceiver")
 
-	_, nrErr := cmds.NewNotificationReceiver(notifyCtx, notifySocketPath, nrLog,
-		func(note cmds.Notification) {
-			if note.Type == cmds.NotificationTypeCleanupStarted {
-				nrLog.V(1).Info("received cleanup notification, suppressing TCP stream completion errors...")
-				proxy.SilenceTcpStreamCompletionErrors.Store(true)
-			}
-		},
-	)
+	_, nrErr := notifications.NewNotificationSubscription(notifyCtx, notifySocketPath, nrLog, func(n notifications.Notification) {
+		handleNotification(notifyCtx, n, log)
+	})
 	if nrErr != nil {
 		log.Error(nrErr, "failed to create cleanup notification receiver")
+	}
+}
+
+func handleNotification(ctx context.Context, note notifications.Notification, log logr.Logger) {
+	switch note.Kind() {
+
+	case notifications.NotificationKindCleanupStarted:
+		log.V(1).Info("received cleanup notification, suppressing TCP stream completion errors...")
+		proxy.SilenceTcpStreamCompletionErrors.Store(true)
+
+	case notifications.NotificationKindPerftraceRequest:
+		perfTraceReq, ok := note.(*notifications.PerftraceRequestNotification)
+		if !ok {
+			log.Error(fmt.Errorf("invalid perfomance trace request"), "Unable to collect performance trace")
+			return
+		}
+
+		profileCtx, profileCtxCancel := context.WithTimeout(ctx, perfTraceReq.Duration)
+		profileErr := perftrace.StartProfiling(profileCtx, profileCtxCancel, perftrace.ProfileTypeSnapshot, log)
+		if profileErr != nil {
+			log.Error(profileErr, "could not start performance profiling")
+			// Best effort--do not fail the request if we cannot start profiling.
+		}
 	}
 }

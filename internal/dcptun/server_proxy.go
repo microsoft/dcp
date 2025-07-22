@@ -22,6 +22,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
 
@@ -366,10 +367,10 @@ func (sp *ServerProxy) completeStream(
 	}
 	resErr := newStreamsConn.Send(res)
 	if resErr != nil {
-		if !errors.Is(resErr, context.Canceled) {
+		if !grpcutil.IsStreamDoneErr(resErr) {
 			streamLog.Error(resErr, "Failed to send new stream result to client proxy; stream will not be established")
 		} else {
-			streamLog.V(1).Info("New streams connection context is canceled (proxy shutdown)")
+			streamLog.V(1).Info("New streams connection is closing; stream will not be established")
 		}
 		_ = connRes.serverConn.Close()
 		_ = connRes.clientDataConn.Close()
@@ -432,13 +433,13 @@ func (sp *ServerProxy) reportConnectionError(
 	res := &proto.NewStreamResult{
 		StreamRef: sr,
 		Failure: &proto.StreamFailure{
-			Error:   EnumVal(code),
+			Error:   grpcutil.EnumVal(code),
 			Message: stdproto.String(err.Error()),
 		},
 	}
 
 	responseErr := stream.Send(res)
-	if responseErr != nil && !errors.Is(responseErr, context.Canceled) {
+	if responseErr != nil && !grpcutil.IsStreamDoneErr(responseErr) {
 		sp.log.Error(responseErr, "Failed to send connection failure response to client proxy",
 			"TunnelID", sr.GetTunnelId(),
 			"StreamID", sr.GetStreamId(),

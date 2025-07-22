@@ -271,14 +271,24 @@ func setupEchoServer(t *testing.T) (net.Listener, int) {
 			go func() {
 				defer conn.Close()
 				reader := bufio.NewReader(conn)
+
+				// Do not fail a test if the network I/O operation fails, just close the connection.
+
 				for {
 					line, readErr := reader.ReadBytes('\n')
 					if readErr == io.EOF {
+						return // Client closed the connection, this is expected.
+					}
+					if readErr != nil {
+						t.Logf("Echo server: failed to read line from connection: %v", readErr)
 						return
 					}
-					require.NoError(t, readErr, "Echo server: failed to read line from connection")
+
 					_, writeErr := conn.Write(line)
-					require.NoError(t, writeErr, "Echo server: failed to write line back to connection")
+					if writeErr != nil {
+						t.Logf("Echo server: failed to write line to connection: %v", writeErr)
+						return
+					}
 				}
 			}()
 		}

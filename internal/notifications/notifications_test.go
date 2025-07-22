@@ -1,4 +1,4 @@
-package commands
+package notifications
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
@@ -19,12 +18,10 @@ const (
 
 // Verifies that a few notifications can be sent and received.
 func TestNotificationSendReceive(t *testing.T) {
-	sourceLogSink := &testutil.MockLoggerSink{}
-	sourceLogSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
+	sourceLogSink := testutil.NewMockLoggerSink()
 	sourceLog := logr.New(sourceLogSink)
 
-	receiverLogSink := &testutil.MockLoggerSink{}
-	receiverLogSink.On("Init", mock.AnythingOfType("logr.RuntimeInfo")).Return()
+	receiverLogSink := testutil.NewMockLoggerSink()
 	receiverLog := logr.New(receiverLogSink)
 
 	ctx, cancel := testutil.GetTestContext(t, defaultNotificationsTestTimeout)
@@ -32,10 +29,10 @@ func TestNotificationSendReceive(t *testing.T) {
 
 	socketPath, socketPathErr := PrepareNotificationSocketPath(testutil.TestTempDir(), "test-notification-socket-")
 	require.NoError(t, socketPathErr)
-	ns, nsErr := NewNotificationSource(ctx, socketPath, sourceLog)
+	nsi, nsErr := NewNotificationSource(ctx, socketPath, sourceLog)
 	require.NoError(t, nsErr)
-	require.NotNil(t, ns)
-	defer ns.Dispose()
+	require.NotNil(t, nsi)
+	usns := nsi.(*unixSocketNotificationSource)
 
 	const numNotifications = 10
 	notes := make(chan Notification, numNotifications)
@@ -43,11 +40,11 @@ func TestNotificationSendReceive(t *testing.T) {
 		notes <- n
 	}
 
-	nr, rcvErr := NewNotificationReceiver(ctx, socketPath, receiverLog, callback)
+	sub, rcvErr := NewNotificationSubscription(ctx, socketPath, receiverLog, callback)
 	require.NoError(t, rcvErr)
-	require.NotNil(t, nr)
+	require.NotNil(t, sub)
 
-	swait := ns.clientConnected.Wait()
+	swait := usns.clientConnected.Wait()
 	select {
 	case <-swait.Chan:
 		// Proceed
@@ -55,12 +52,8 @@ func TestNotificationSendReceive(t *testing.T) {
 		t.Fatal("Timed out waiting for notification source to receive a connection")
 	}
 
-	testNotification := Notification{
-		Type: NotificationTypeCleanupStarted,
-	}
-
 	for range numNotifications {
-		err := ns.NotifySubscribers(testNotification)
+		err := usns.NotifySubscribers(&CleanupStartedNotification{})
 		require.NoError(t, err)
 	}
 
@@ -68,7 +61,7 @@ func TestNotificationSendReceive(t *testing.T) {
 	for range numNotifications {
 		select {
 		case note := <-notes:
-			require.Equal(t, NotificationTypeCleanupStarted, note.Type)
+			require.Equal(t, NotificationKindCleanupStarted, note.Kind(), "Received notification kind does not match expected kind")
 		case <-ctx.Done():
 			t.Fatal("Timed out waiting for notification")
 		}
@@ -92,24 +85,25 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 	ns, err := NewNotificationSource(ctx, socketPath, testLog)
 	require.NoError(t, err)
 	require.NotNil(t, ns)
-	defer ns.Dispose()
+	usns := ns.(*unixSocketNotificationSource)
 
 	// Start with two receivers
 	r1Ctx, r1CtxCancel := context.WithCancel(ctx)
 	defer r1CtxCancel()
 	r1NoteEvt := concurrency.NewAutoResetEvent(false)
-	r1, r1Err := NewNotificationReceiver(r1Ctx, socketPath, testLog, func(n Notification) { r1NoteEvt.Set() })
-	require.NoError(t, r1Err)
+	sub1, sub1Err := NewNotificationSubscription(r1Ctx, socketPath, testLog, func(n Notification) { r1NoteEvt.Set() })
+	require.NoError(t, sub1Err)
+	r1 := sub1.(*notificationReceiver)
 
 	r2Ctx, r2CtxCancel := context.WithCancel(ctx)
 	defer r2CtxCancel()
 	r2NoteEvt := concurrency.NewAutoResetEvent(false)
-	_, r2Err := NewNotificationReceiver(r2Ctx, socketPath, testLog, func(n Notification) { r2NoteEvt.Set() })
-	require.NoError(t, r2Err)
+	_, sub2Err := NewNotificationSubscription(r2Ctx, socketPath, testLog, func(n Notification) { r2NoteEvt.Set() })
+	require.NoError(t, sub2Err)
 
 	// Wait for the receivers to connect
 	for range 2 {
-		swait := ns.clientConnected.Wait()
+		swait := usns.clientConnected.Wait()
 		select {
 		case <-swait.Chan:
 			// Proceed
@@ -118,7 +112,7 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 		}
 	}
 
-	notifyErr := ns.NotifySubscribers(Notification{Type: NotificationTypeCleanupStarted})
+	notifyErr := usns.NotifySubscribers(&CleanupStartedNotification{})
 	require.NoError(t, notifyErr)
 
 	// Wait for and verify the notification was received by both receivers
@@ -142,7 +136,7 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 	require.True(t, r1.connChanged.Frozen())
 
 	// Verify receiver 2 can still receive notifications
-	notifyErr = ns.NotifySubscribers(Notification{Type: NotificationTypeCleanupStarted})
+	notifyErr = usns.NotifySubscribers(&CleanupStartedNotification{})
 	require.NoError(t, notifyErr)
 
 	select {
@@ -156,10 +150,10 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 	r3Ctx, r3CtxCancel := context.WithCancel(ctx)
 	defer r3CtxCancel()
 	r3NoteEvt := concurrency.NewAutoResetEvent(false)
-	_, r3Err := NewNotificationReceiver(r3Ctx, socketPath, testLog, func(n Notification) { r3NoteEvt.Set() })
+	_, r3Err := NewNotificationSubscription(r3Ctx, socketPath, testLog, func(n Notification) { r3NoteEvt.Set() })
 	require.NoError(t, r3Err)
 
-	swait := ns.clientConnected.Wait()
+	swait := usns.clientConnected.Wait()
 	select {
 	case <-swait.Chan:
 		// Proceed
@@ -168,7 +162,7 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 	}
 
 	// Verify receivers 2 and 3 can receive notifications
-	notifyErr = ns.NotifySubscribers(Notification{Type: NotificationTypeCleanupStarted})
+	notifyErr = usns.NotifySubscribers(&CleanupStartedNotification{})
 	require.NoError(t, notifyErr)
 
 	select {

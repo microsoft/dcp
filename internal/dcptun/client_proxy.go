@@ -22,6 +22,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -229,14 +230,9 @@ func (cp *ClientProxy) NewStreamsConnection(newStreamConn grpc.BidiStreamingServ
 			streamID := StreamID(streamRef.GetStreamId())
 
 			sendErr := newStreamConn.Send(streamRef)
-			if sendErr == io.EOF {
-				cp.log.V(1).Info("New streams connection closed by server proxy")
-				_ = cp.disposeOnce()
-				return nil
-			}
 
-			if errors.Is(sendErr, context.Canceled) {
-				cp.log.V(1).Info("New streams connection context is canceled (proxy shutdown)")
+			if grpcutil.IsStreamDoneErr(sendErr) {
+				cp.log.V(1).Info("New streams connection is closing...")
 				_ = cp.disposeOnce()
 				return nil
 			}

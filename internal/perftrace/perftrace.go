@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -17,15 +18,19 @@ import (
 )
 
 const (
-	// Environment varaible that enables performance trace capture.
+	// Environment variable that enables performance trace capture.
 	DCP_PERF_TRACE = "DCP_PERF_TRACE"
 )
 
 type ProfileType string
 
 const (
-	ProfileTypeStartup  ProfileType = "startup"
-	ProfileTypeShutdown ProfileType = "shutdown"
+	ProfileTypeStartup     ProfileType = "startup"
+	ProfileTypeShutdown    ProfileType = "shutdown"
+	ProfileTypeSnapshot    ProfileType = "snapshot"
+	ProfileTypeStartupCpu  ProfileType = "startup-cpu"
+	ProfileTypeShutdownCpu ProfileType = "shutdown-cpu"
+	ProfileTypeSnapshotCpu ProfileType = "snapshot-cpu"
 )
 
 var (
@@ -48,17 +53,14 @@ func captureProfileIfRequested(ctx context.Context, pt ProfileType, log logr.Log
 		return nil // Nothing to do
 	}
 
-	// Do not defer cancel() here -- the context need to survive the function call
-	// and expire on its own, stopping the profiling.
-	// nolint:govet
-	profilingCtx, _ := context.WithTimeout(ctx, duration)
-	return StartProfiling(profilingCtx, string(pt), log)
+	profilingCtx, provilingCtxCancel := context.WithTimeout(ctx, duration)
+	return StartProfiling(profilingCtx, provilingCtxCancel, pt, log)
 }
 
 // Starts profiling the current process till the passed-in context is cancelled.
 // The profileType parameter is used as part of the profile data file name, to make it easier to identify
 // the correct profile.
-func StartProfiling(ctx context.Context, pt string, log logr.Logger) error {
+func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt ProfileType, log logr.Logger) error {
 	programName, err := getCurrentProgramName()
 	if err != nil {
 		return err
@@ -76,17 +78,41 @@ func StartProfiling(ctx context.Context, pt string, log logr.Logger) error {
 		return fmt.Errorf("failed to create profile file '%s': %w", profileFileName, err)
 	}
 
-	stopProfiling := fgprof.Start(profileOutput, fgprof.FormatPprof)
+	switch pt {
 
-	go func() {
-		<-ctx.Done()
-		if profilingErr := stopProfiling(); profilingErr != nil {
-			log.Error(profilingErr, "failed to stop profiling", "profileFileName", profileFileName)
+	case ProfileTypeStartup, ProfileTypeShutdown, ProfileTypeSnapshot:
+		stopProfiling := fgprof.Start(profileOutput, fgprof.FormatPprof)
+
+		go func() {
+			<-ctx.Done()
+			ctxCancel() // Release resources associated with the profiling context
+			if profilingErr := stopProfiling(); profilingErr != nil {
+				log.Error(profilingErr, "failed to stop profiling", "profileFileName", profileFileName)
+			}
+			if closingErr := profileOutput.Close(); closingErr != nil {
+				log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
+			}
+		}()
+
+	case ProfileTypeStartupCpu, ProfileTypeShutdownCpu, ProfileTypeSnapshotCpu:
+		err = pprof.StartCPUProfile(profileOutput)
+		if err != nil {
+			return fmt.Errorf("failed to start CPU profiling: %w", err)
 		}
-		if closingErr := profileOutput.Close(); closingErr != nil {
-			log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
-		}
-	}()
+
+		go func() {
+			<-ctx.Done()
+			ctxCancel() // Release resources associated with the profiling context
+			pprof.StopCPUProfile()
+			if closingErr := profileOutput.Close(); closingErr != nil {
+				log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
+			}
+		}()
+
+	default:
+		// Should never happen
+		return fmt.Errorf("unknown profile type: %s", pt)
+	}
 
 	return nil
 }
@@ -147,19 +173,22 @@ func parseProfilingRequests(requestStr string, log logr.Logger) map[ProfileType]
 			continue
 		}
 
-		profileType := ProfileType(requestParts[0])
-		if profileType != ProfileTypeStartup && profileType != ProfileTypeShutdown {
+		profileType := ProfileType(strings.TrimSpace(requestParts[0]))
+		switch profileType {
+
+		case ProfileTypeStartup, ProfileTypeStartupCpu, ProfileTypeShutdown, ProfileTypeShutdownCpu:
+			duration, err := time.ParseDuration(requestParts[1])
+			if err != nil {
+				log.Error(fmt.Errorf("invalid profiling request '%s' (could not determine the duration)", rawRequest), "ignoring profiling request")
+			} else if duration < time.Second || duration > 5*time.Minute {
+				log.Error(fmt.Errorf("invalid profiling request '%s' (duration must be between 1 second and 5 minutes)", rawRequest), "ignoring profiling request")
+			} else {
+				retval[profileType] = duration
+			}
+
+		default:
 			log.Error(fmt.Errorf("invalid profiling request '%s' (unknown profile type)", rawRequest), "ignoring profiling request")
-			continue
 		}
-
-		duration, err := time.ParseDuration(requestParts[1])
-		if err != nil {
-			log.Error(fmt.Errorf("invalid profiling request '%s' (could not determine the duration)", rawRequest), "ignoring profiling request")
-			continue
-		}
-
-		retval[profileType] = duration
 	}
 
 	return retval
