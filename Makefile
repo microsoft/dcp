@@ -392,7 +392,7 @@ test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(versi
 test-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
 .PHONY: test-ci-prereqs
-test-ci-prereqs: build-dcp build-dcpproc delay-tool lfwriter-tool generate-grpc
+test-ci-prereqs: generate-grpc build-dcp build-dcpproc delay-tool lfwriter-tool
 
 .PHONY: test
 ifeq ($(CGO_ENABLED),0)
