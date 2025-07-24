@@ -104,7 +104,8 @@ BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
 DCPPROC_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcpproc$(bin_exe_suffix)
-DCPTUN_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun$(bin_exe_suffix)
+DCPTUN_SERVER_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun$(bin_exe_suffix)
+DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun_c
 
 # Locations and definitions for tool binaries
 GO_BIN ?= go
@@ -324,10 +325,10 @@ release: BUILD_ARGS := $(BUILD_ARGS) -buildmode=pie -ldflags "-bindnow -s -w $(v
 release: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries with flags to reduce binary size
 
 compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
-compile: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries (skips codegen)
+compile: build-dcpproc build-dcpctrl build-dcp build-dcptun build-dcptun-containerexe ## Builds all binaries (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-compile-debug: build-dcpproc build-dcpctrl build-dcp build-dcptun ## Builds all binaries with debug symbols (good for debugging; skips codegen)
+compile-debug: build-dcpproc build-dcpctrl build-dcp build-dcptun build-dcptun-containerexe ## Builds all binaries with debug symbols (good for debugging; skips codegen)
 
 build: generate compile ## Runs codegen and builds all DCP binaries
 
@@ -349,9 +350,18 @@ $(DCPPROC_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 	$(GO_BIN) build -o $(DCPPROC_BINARY) $(BUILD_ARGS) ./cmd/dcpproc
 
 .PHONY: build-dcptun
-build-dcptun: $(DCPTUN_BINARY) ## Builds DCP reverse network tunnel binary (dcptun)
-$(DCPTUN_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	$(GO_BIN) build -o $(DCPTUN_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+build-dcptun: $(DCPTUN_SERVER_BINARY) ## Builds DCP reverse network tunnel binary for the current target OS
+$(DCPTUN_SERVER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
+	$(GO_BIN) build -o $(DCPTUN_SERVER_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+
+.PHONY: build-dcptun-containerexe
+build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
+$(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
+ifeq ($(detected_OS),windows)
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+else
+	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+endif
 
 .PHONY: clean
 clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.
