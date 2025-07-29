@@ -853,7 +853,7 @@ type ContainerStatus struct {
 	// Health status of the Container
 	HealthStatus HealthStatus `json:"healthStatus,omitempty"`
 
-	// Results of running health probes (most reacent per probe)
+	// Results of running health probes (most recent per probe)
 	// +listType=map
 	// +listMapKey=probeName
 	HealthProbeResults []HealthProbeResult `json:"healthProbeResults,omitempty"`

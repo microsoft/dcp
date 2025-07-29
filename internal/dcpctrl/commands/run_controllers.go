@@ -231,6 +231,15 @@ func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []strin
 			return err
 		}
 
+		containerNetworkTunnelProxyCtrl := controllers.NewContainerNetworkTunnelProxyReconciler(
+			mgr.GetClient(),
+			log.WithName("TunnelProxyReconciler"),
+		)
+		if err = containerNetworkTunnelProxyCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "unable to setup a ContainerNetworkTunnelProxy controller")
+			return err
+		}
+
 		mgrRunResultCh := make(chan error, 1)
 
 		// Run the controller manager in a separate goroutine to ensure that the process running controllers

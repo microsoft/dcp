@@ -15,113 +15,119 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment":               schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Container":                        schema_microsoft_usvc_apiserver_api_v1_Container(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":            schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret":             schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExec":                    schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecList":                schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec":                schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus":              schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel":                   schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                    schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                 schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig": schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionList":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkList":             schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec":             schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus":           schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort":                    schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec":                    schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus":                  schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":                  schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus":            schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem":                 schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                         schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":                     schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":                     schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus":                   schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                           schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                       schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe":                  schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":             schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":         schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec":         schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus":       schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":                 schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":               schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry":                  schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbe":                      schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult":                schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule":              schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HttpHeader":                       schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HttpProbe":                        schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.LogOptions":                       schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.LogStreamer":                      schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Service":                          schema_microsoft_usvc_apiserver_api_v1_Service(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                      schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                      schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus":                    schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.VolumeMount":                      schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                               schema_pkg_apis_meta_v1_APIGroup(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                           schema_pkg_apis_meta_v1_APIGroupList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResource":                            schema_pkg_apis_meta_v1_APIResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList":                        schema_pkg_apis_meta_v1_APIResourceList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":                            schema_pkg_apis_meta_v1_APIVersions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ApplyOptions":                           schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Condition":                              schema_pkg_apis_meta_v1_Condition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.CreateOptions":                          schema_pkg_apis_meta_v1_CreateOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.DeleteOptions":                          schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Duration":                               schema_pkg_apis_meta_v1_Duration(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldSelectorRequirement":               schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldsV1":                               schema_pkg_apis_meta_v1_FieldsV1(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GetOptions":                             schema_pkg_apis_meta_v1_GetOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupKind":                              schema_pkg_apis_meta_v1_GroupKind(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupResource":                          schema_pkg_apis_meta_v1_GroupResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersion":                           schema_pkg_apis_meta_v1_GroupVersion(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery":               schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionKind":                       schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionResource":                   schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.InternalEvent":                          schema_pkg_apis_meta_v1_InternalEvent(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector":                          schema_pkg_apis_meta_v1_LabelSelector(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement":               schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.List":                                   schema_pkg_apis_meta_v1_List(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta":                               schema_pkg_apis_meta_v1_ListMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions":                            schema_pkg_apis_meta_v1_ListOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry":                     schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime":                              schema_pkg_apis_meta_v1_MicroTime(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta":                             schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference":                         schema_pkg_apis_meta_v1_OwnerReference(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata":                  schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadataList":              schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Patch":                                  schema_pkg_apis_meta_v1_Patch(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PatchOptions":                           schema_pkg_apis_meta_v1_PatchOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Preconditions":                          schema_pkg_apis_meta_v1_Preconditions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.RootPaths":                              schema_pkg_apis_meta_v1_RootPaths(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR":              schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":                                 schema_pkg_apis_meta_v1_Status(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause":                            schema_pkg_apis_meta_v1_StatusCause(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusDetails":                          schema_pkg_apis_meta_v1_StatusDetails(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Table":                                  schema_pkg_apis_meta_v1_Table(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition":                  schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableOptions":                           schema_pkg_apis_meta_v1_TableOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRow":                               schema_pkg_apis_meta_v1_TableRow(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition":                      schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Time":                                   schema_pkg_apis_meta_v1_Time(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Timestamp":                              schema_pkg_apis_meta_v1_Timestamp(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TypeMeta":                               schema_pkg_apis_meta_v1_TypeMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.UpdateOptions":                          schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.WatchEvent":                             schema_pkg_apis_meta_v1_WatchEvent(ref),
-		"k8s.io/apimachinery/pkg/runtime.RawExtension":                                schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                                    schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
-		"k8s.io/apimachinery/pkg/runtime.Unknown":                                     schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
-		"k8s.io/apimachinery/pkg/version.Info":                                        schema_k8sio_apimachinery_pkg_version_Info(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment":                schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Container":                         schema_microsoft_usvc_apiserver_api_v1_Container(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":             schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret":              schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExec":                     schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecList":                 schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec":                 schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus":               schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel":                    schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                     schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                  schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":        schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig":  schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionList":    schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec":    schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkList":              schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus":            schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxy":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxy(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyList":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus": schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort":                     schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec":                     schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus":                   schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":                   schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":               schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":               schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus":             schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem":                  schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                          schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":                      schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":                      schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus":                    schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                            schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                        schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":                    schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":              schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":          schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec":          schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus":        schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":                    schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":                  schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":                schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry":                   schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbe":                       schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult":                 schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule":               schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HttpHeader":                        schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.HttpProbe":                         schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.LogOptions":                        schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.LogStreamer":                       schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.Service":                           schema_microsoft_usvc_apiserver_api_v1_Service(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                       schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                       schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus":                     schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.TunnelConfiguration":               schema_microsoft_usvc_apiserver_api_v1_TunnelConfiguration(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.TunnelStatus":                      schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref),
+		"github.com/microsoft/usvc-apiserver/api/v1.VolumeMount":                       schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                                schema_pkg_apis_meta_v1_APIGroup(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                            schema_pkg_apis_meta_v1_APIGroupList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResource":                             schema_pkg_apis_meta_v1_APIResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList":                         schema_pkg_apis_meta_v1_APIResourceList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":                             schema_pkg_apis_meta_v1_APIVersions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ApplyOptions":                            schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Condition":                               schema_pkg_apis_meta_v1_Condition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.CreateOptions":                           schema_pkg_apis_meta_v1_CreateOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.DeleteOptions":                           schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Duration":                                schema_pkg_apis_meta_v1_Duration(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldSelectorRequirement":                schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldsV1":                                schema_pkg_apis_meta_v1_FieldsV1(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GetOptions":                              schema_pkg_apis_meta_v1_GetOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupKind":                               schema_pkg_apis_meta_v1_GroupKind(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupResource":                           schema_pkg_apis_meta_v1_GroupResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersion":                            schema_pkg_apis_meta_v1_GroupVersion(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery":                schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionKind":                        schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionResource":                    schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.InternalEvent":                           schema_pkg_apis_meta_v1_InternalEvent(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector":                           schema_pkg_apis_meta_v1_LabelSelector(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement":                schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.List":                                    schema_pkg_apis_meta_v1_List(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta":                                schema_pkg_apis_meta_v1_ListMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions":                             schema_pkg_apis_meta_v1_ListOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry":                      schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime":                               schema_pkg_apis_meta_v1_MicroTime(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta":                              schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference":                          schema_pkg_apis_meta_v1_OwnerReference(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata":                   schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadataList":               schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Patch":                                   schema_pkg_apis_meta_v1_Patch(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PatchOptions":                            schema_pkg_apis_meta_v1_PatchOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Preconditions":                           schema_pkg_apis_meta_v1_Preconditions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.RootPaths":                               schema_pkg_apis_meta_v1_RootPaths(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR":               schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":                                  schema_pkg_apis_meta_v1_Status(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause":                             schema_pkg_apis_meta_v1_StatusCause(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusDetails":                           schema_pkg_apis_meta_v1_StatusDetails(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Table":                                   schema_pkg_apis_meta_v1_Table(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition":                   schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableOptions":                            schema_pkg_apis_meta_v1_TableOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRow":                                schema_pkg_apis_meta_v1_TableRow(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition":                       schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Time":                                    schema_pkg_apis_meta_v1_Time(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Timestamp":                               schema_pkg_apis_meta_v1_Timestamp(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TypeMeta":                                schema_pkg_apis_meta_v1_TypeMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.UpdateOptions":                           schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.WatchEvent":                              schema_pkg_apis_meta_v1_WatchEvent(ref),
+		"k8s.io/apimachinery/pkg/runtime.RawExtension":                                 schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                                     schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
+		"k8s.io/apimachinery/pkg/runtime.Unknown":                                      schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
+		"k8s.io/apimachinery/pkg/version.Info":                                         schema_k8sio_apimachinery_pkg_version_Info(ref),
 	}
 }
 
@@ -1148,6 +1154,255 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref common.Re
 	}
 }
 
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkTunnelProxy represents a tunnel proxy pair that handles multiple tunnels between a container network and host network.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkTunnelProxyList contains a list of ContainerNetworkTunnelProxy instances",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxy"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxy", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkTunnelProxySpec defines the desired state of a ContainerNetworkTunnelProxy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerNetworkName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reference to the ContainerNetwork that the client proxy should connect to. This field is required and must reference an existing ContainerNetwork resource.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tunnels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "List of tunnels to prepare. Each tunnel enables clients on the container network to connect to a server on the host (establish a tunnel stream).",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.TunnelConfiguration"),
+									},
+								},
+							},
+						},
+					},
+					"baseImage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Base container image to use for the client proxy container. Defaults to mcr.microsoft.com/azurelinux/base/core:3.0 if not specified.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"containerNetworkName"},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.TunnelConfiguration"},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkTunnelProxyStatus defines the current state of a ContainerNetworkTunnelProxy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Overall state of the tunnel proxy pair.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tunnelStatuses": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Status of individual tunnels within the proxy pair.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.TunnelStatus"),
+									},
+								},
+							},
+						},
+					},
+					"tunnelConfigurationVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Monotonically increasing version number of the tunnel configuration that was applied to the proxy pair. Can be used by clients changing tunnel configuration (Tunnels property) to learn that the new configuration has become effective.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"clientProxyContainerId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Container ID of the running client proxy container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serverProxyProcessId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Server proxy process ID.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"serverProxyStartupTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Server proxy process startup timestamp.",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
+						},
+					},
+					"serverProxyStdOutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of a temporary file that contains captured standard output data from the server proxy process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serverProxyStdErrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path of a temporary file that contains captured standard error data from the server proxy process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"clientProxyControlPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Published (host) port for client proxy control endpoint.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"clientProxyDataPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Published (host) port for client proxy data endpoint.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"serverProxyControlPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Server proxy control port (for controlling the proxy pair).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"github.com/microsoft/usvc-apiserver/api/v1.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
+	}
+}
+
 func schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -1620,7 +1875,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Results of running health probes (most reacent per probe)",
+							Description: "Results of running health probes (most recent per probe)",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -3307,6 +3562,109 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 				},
 			},
 		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_TunnelConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelConfiguration defines a single tunnel enabled by a ContainerNetworkTunnelProxy.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "User-friendly name for the tunnel (used in status reporting and debugging). Must be unique within the ContainerNetworkTunnelProxy.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serverAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address of the server on the host that clients will be tunneled to. Defaults to \"localhost\" if not specified.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"serverPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port of the server on the host that clients will be tunneled to.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"clientProxyAddress": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address that the client proxy will bind to on the container network Defaults to \"0.0.0.0\" (all interfaces) if not specified.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"clientProxyPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Port that the client proxy will use on the container network. If set to 0 or not specified, a random port will be assigned.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"name", "serverPort"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TunnelStatus represents the status of a single tunnel within the proxy pair",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the tunnel (matches TunnelConfiguration.Name).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tunnelId": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Internal tunnel ID assigned by the proxy pair.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Current state of the tunnel.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"errorMessage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Human-readable explanation for why the tunnel preparation failed (if it did).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"timestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The timestamp for the status (last update).",
+							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
+						},
+					},
+				},
+				Required: []string{"name", "state", "timestamp"},
+			},
+		},
+		Dependencies: []string{
+			"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 

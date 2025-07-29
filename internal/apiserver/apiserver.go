@@ -70,8 +70,6 @@ type ApiServer struct {
 	logger       logr.Logger
 	runCompleted bool
 	builder      *tiltserverbuilder.Server
-	// Types that have data stored in the API server.
-	persistentDcpTypes []tiltresource.Object
 }
 
 func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger) *ApiServer {
@@ -81,34 +79,16 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 		logger:       logger,
 		runCompleted: false,
 		builder:      tiltserverbuilder.NewServerBuilder(),
-		persistentDcpTypes: []tiltresource.Object{
-			&apiv1.Executable{},
-			&apiv1.Endpoint{},
-			&apiv1.ExecutableReplicaSet{},
-			&apiv1.Container{},
-			&apiv1.ContainerVolume{},
-			&apiv1.ContainerNetwork{},
-			&apiv1.ContainerNetworkConnection{},
-			&apiv1.ContainerExec{},
-			&apiv1.Service{},
-		},
 	}
 
 	// The two constants below are just metadata for Swagger UI
 	const openApiConfigrationName = "DCP"
 	var openApiConfigurationVersion = version.Version().Version
 
-	// Types that must be recognizable by the API server, but are not persisted
-	// (they are used for request processing only).
-	var additionalDcpTypes = []tiltresource.Object{
-		&apiv1.LogOptions{},
-		&apiv1.LogStreamer{},
-	}
-
-	for _, o := range apiServer.persistentDcpTypes {
+	for _, o := range apiv1.PersistentTypes {
 		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
 	}
-	for _, o := range additionalDcpTypes {
+	for _, o := range apiv1.AddtionalTypes {
 		apiServer.builder = apiServer.builder.WithResource(o)
 	}
 	apiServer.builder = apiServer.builder.WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, openapi.GetOpenAPIDefinitions)
@@ -160,7 +140,7 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 
 	addDcpHttpHandlers(config, runCtx, log)
 
-	err = configureForLogServing(config, s.persistentDcpTypes, log)
+	err = configureForLogServing(config, log)
 	if err != nil {
 		return nil, err
 	}
@@ -276,10 +256,10 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServer
 // Configures various API serving options so that requests for logs are handled correctly,
 // including body and options serialization/deserialization and marking long requests
 // as long-running, so they do not time out prematurely.
-func configureForLogServing(config *tiltapiserver.Config, persistentDcpTypes []tiltresource.Object, log logr.Logger) error {
+func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error {
 	// The following is necessary for the API server to correctly deserialize log request parameters into LogOptions instance.
 	// (the scheme in ExtraConfig contains DCP type definitions, including LogOptions).
-	disableOpenApiForLogsSubresource(config.GenericConfig, persistentDcpTypes)
+	disableOpenApiForLogsSubresource(config.GenericConfig, apiv1.PersistentTypes)
 
 	err := apiv1.RegisterLogOptionsConversions(config.ExtraConfig.Scheme)
 	if err != nil {

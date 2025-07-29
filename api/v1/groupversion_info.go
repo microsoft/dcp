@@ -9,6 +9,7 @@ import (
 	"errors"
 	"sync/atomic"
 
+	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 
@@ -65,6 +66,7 @@ var (
 			CleanUpAfter: []schema.GroupVersionResource{
 				(&Container{}).GetGroupVersionResource(),
 				(&ContainerNetworkConnection{}).GetGroupVersionResource(),
+				(&ContainerNetworkTunnelProxy{}).GetGroupVersionResource(),
 			},
 		},
 		{
@@ -72,6 +74,9 @@ var (
 			CleanUpAfter: []schema.GroupVersionResource{
 				(&Container{}).GetGroupVersionResource(),
 			},
+		},
+		{
+			GVR: (&ContainerNetworkTunnelProxy{}).GetGroupVersionResource(),
 		},
 	}
 
@@ -81,4 +86,25 @@ var (
 	// Whether new resource creation is prohibited (because the API server is shutting down)
 	ResourceCreationProhibited    = &atomic.Bool{}
 	errResourceCreationProhibited = errors.New("new resources cannot be created because the API server is shutting down")
+
+	// Types that have data stored in the API server.
+	PersistentTypes = []apiserver_resource.Object{
+		&Executable{},
+		&Endpoint{},
+		&ExecutableReplicaSet{},
+		&Container{},
+		&ContainerVolume{},
+		&ContainerNetwork{},
+		&ContainerNetworkConnection{},
+		&ContainerExec{},
+		&Service{},
+		&ContainerNetworkTunnelProxy{},
+	}
+
+	// Types that must be recognizable by the API server, but are not persisted
+	// (they are used for request processing only).
+	AddtionalTypes = []apiserver_resource.Object{
+		&LogOptions{},
+		&LogStreamer{},
+	}
 )

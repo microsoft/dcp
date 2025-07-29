@@ -168,6 +168,10 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 
 > Note: you want to use `make compile-debug` for building DCP for debugging. By default DCP is built with optimizations on, which can result in strange behavior during debugging (somewhat unpredictable order of statements, local data "disappearing" in the middle of a function etc.)
 
+> Tip: if you need to debug the API server while debugging a test (testing controller-API server interaction), opening a new VS Code window and trying to open the DCP repository does not quite work, because VS Code aggressively reuses existing windows and will switch you back to the window that is running the test. 
+>
+> To work around that use "Duplicate as workspace in new window" command from VS Code command palette. 
+
 ### I need to debug DCP controllers in the context of an Aspire (Visual Studio-based) application run
 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:

@@ -97,6 +97,7 @@ const (
 	ContainerExecController
 	VolumeController
 	ServiceController
+	ContainerNetworkTunnelProxyController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )
@@ -250,6 +251,16 @@ func StartTestEnvironment(
 		)
 		if err = serviceR.SetupWithManager(mgr, instanceTag+"-ServiceReconciler"); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
+			mgr.GetClient(),
+			log.WithName("TunnelProxyReconciler"),
+		)
+		if err = tunnelProxyR.SetupWithManager(mgr, instanceTag+"-ContainerNetworkTunnelProxyReconciler"); err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to initialize ContainerNetworkTunnelProxy reconciler: %w", err)
 		}
 	}
 
