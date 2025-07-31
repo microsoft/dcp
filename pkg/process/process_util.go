@@ -37,47 +37,30 @@ func getIDs(items []ProcessTreeItem) []Pid_t {
 // Returns the list of ID for a given process and its children
 // The list is ordered starting with the root of the hierarchy, then the children, then the grandchildren etc.
 func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
-	procs, err := ps.Processes()
+	root, err := findPsProcess(rootP.Pid, rootP.CreationTime)
 	if err != nil {
 		return nil, err
 	}
 
 	tree := []ProcessTreeItem{}
-	next := []ProcessTreeItem{rootP}
+	next := []*ps.Process{root}
 
 	for len(next) > 0 {
 		current := next[0]
 		next = next[1:]
-		tree = append(tree, current)
+		nextPid, nextPidErr := Uint32_ToPidT(uint32(current.Pid))
+		if nextPidErr != nil {
+			panic(nextPidErr)
+		}
+		tree = append(tree, ProcessTreeItem{nextPid, startTimeForProcess(current)})
 
-		children := slices.Select(procs, func(p *ps.Process) bool {
-			osPpid, osPpidErr := p.Ppid()
-			if osPpidErr != nil {
-				return false // If we cannot get the parent PID, this process isn't a child
-			}
-			ppid, ppidErr := Uint32_ToPidT(uint32(osPpid))
-			if ppidErr != nil {
-				panic(ppidErr)
-			}
+		children, childrenErr := current.Children()
+		if childrenErr != nil {
+			// If we fail to get the children, assume there are no children.
+			children = []*ps.Process{}
+		}
 
-			createTime := startTimeForProcess(p)
-
-			return ppid == current.Pid && !createTime.Before(current.CreationTime)
-		})
-
-		next = append(next, slices.Map[*ps.Process, ProcessTreeItem](children, func(p *ps.Process) ProcessTreeItem {
-			processPID, pidConversionErr := Uint32_ToPidT(uint32(p.Pid))
-			if pidConversionErr != nil {
-				panic(pidConversionErr)
-			}
-
-			creationTime := startTimeForProcess(p)
-
-			return ProcessTreeItem{
-				Pid:          processPID,
-				CreationTime: creationTime,
-			}
-		})...)
+		next = append(next, children...)
 	}
 
 	return tree, nil
@@ -155,9 +138,7 @@ func StartTimeForProcess(pid Pid_t) time.Time {
 	return startTimeForProcess(proc)
 }
 
-// Returns the process with the given PID. If the expectedStartTime is not zero,
-// the process start time is checked to match the expected start time.
-func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
+func findPsProcess(pid Pid_t, expectedStartTime time.Time) (*ps.Process, error) {
 	osPid, err := PidT_ToUint32(pid)
 	if err != nil {
 		return nil, err
@@ -184,7 +165,18 @@ func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
 		)
 	}
 
-	process, err := os.FindProcess(int(osPid))
+	return proc, nil
+}
+
+// Returns the process with the given PID. If the expectedStartTime is not zero,
+// the process start time is checked to match the expected start time.
+func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
+	proc, err := findPsProcess(pid, expectedStartTime)
+	if err != nil {
+		return nil, err
+	}
+
+	process, err := os.FindProcess(int(proc.Pid))
 	if err != nil {
 		return nil, err
 	}
