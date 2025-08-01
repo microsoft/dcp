@@ -9,6 +9,7 @@ import (
 
 	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcpctrl/commands"
+	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/telemetry"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -43,6 +44,7 @@ func main() {
 
 	err = root.ExecuteContext(ctx)
 	_ = telemetrySystem.Shutdown(ctx)
+	perftrace.WaitProfilingComplete()
 	if err != nil {
 		cmdutil.ErrorExit(log, err, errCommandError)
 	} else {

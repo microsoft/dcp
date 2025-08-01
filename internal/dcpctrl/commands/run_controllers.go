@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -30,6 +31,10 @@ import (
 
 const (
 	ControllerManagerShutdownTimeout = 60 * time.Second
+)
+
+var (
+	shutdownPerftraceStarted atomic.Bool
 )
 
 func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
@@ -294,6 +299,13 @@ func handleNotification(ctx context.Context, note notifications.Notification, lo
 	case notifications.NotificationKindCleanupStarted:
 		log.V(1).Info("received cleanup notification, suppressing TCP stream completion errors...")
 		proxy.SilenceTcpStreamCompletionErrors.Store(true)
+		if !shutdownPerftraceStarted.Swap(true) {
+			log.V(1).Info("attempting to start shutdown profiling")
+			if profileErr := perftrace.CaptureShutdownProfileIfRequested(ctx, log); profileErr != nil {
+				log.Error(profileErr, "could not start shutdown profiling")
+				// Best effort--do not fail the request if we cannot start profiling.
+			}
+		}
 
 	case notifications.NotificationKindPerftraceRequest:
 		perfTraceReq, ok := note.(*notifications.PerftraceRequestNotification)

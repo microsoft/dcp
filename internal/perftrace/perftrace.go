@@ -2,11 +2,13 @@ package perftrace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixge/fgprof"
@@ -34,15 +36,39 @@ const (
 )
 
 var (
-	profilingRequests map[ProfileType]time.Duration
+	profilingRequests  map[ProfileType]time.Duration
+	profilingWaitGroup = &sync.WaitGroup{}
+	profilingWaitLock  = &sync.Mutex{}
 )
 
+// Waits for any outstanding profiling requests to complete before exiting the program.
+// Otherwise the profiling data may not be written to disk. Not necessary in dcp.exe due to
+// the way profiling is handled there, but useful for dcpctrl and potentially other
+// executables that may use profiling.
+func WaitProfilingComplete() {
+	// This should only be called at the end of the program after the last chance
+	// for profiling to be started, but still adding a lock to ensure a race condition
+	// with the profilingWaitGroup is not possible.
+	profilingWaitLock.Lock()
+	defer profilingWaitLock.Unlock()
+
+	profilingWaitGroup.Wait()
+}
+
 func CaptureStartupProfileIfRequested(ctx context.Context, log logr.Logger) error {
-	return captureProfileIfRequested(ctx, ProfileTypeStartup, log)
+	// Attempt to start any requested startup profiling mode.
+	return errors.Join(
+		captureProfileIfRequested(ctx, ProfileTypeStartup, log),
+		captureProfileIfRequested(ctx, ProfileTypeStartupCpu, log),
+	)
 }
 
 func CaptureShutdownProfileIfRequested(ctx context.Context, log logr.Logger) error {
-	return captureProfileIfRequested(ctx, ProfileTypeShutdown, log)
+	// Attempt to start any requested shutdown profiling mode.
+	return errors.Join(
+		captureProfileIfRequested(ctx, ProfileTypeShutdown, log),
+		captureProfileIfRequested(ctx, ProfileTypeShutdownCpu, log),
+	)
 }
 
 func captureProfileIfRequested(ctx context.Context, pt ProfileType, log logr.Logger) error {
@@ -81,9 +107,14 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 	switch pt {
 
 	case ProfileTypeStartup, ProfileTypeShutdown, ProfileTypeSnapshot:
+		profilingWaitLock.Lock()
+		defer profilingWaitLock.Unlock()
+
+		profilingWaitGroup.Add(1)
 		stopProfiling := fgprof.Start(profileOutput, fgprof.FormatPprof)
 
 		go func() {
+			defer profilingWaitGroup.Done()
 			<-ctx.Done()
 			ctxCancel() // Release resources associated with the profiling context
 			if profilingErr := stopProfiling(); profilingErr != nil {
@@ -92,27 +123,36 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 			if closingErr := profileOutput.Close(); closingErr != nil {
 				log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
 			}
+			log.V(1).Info("stopped profiling", "type", pt, "file", profileFileName)
 		}()
 
 	case ProfileTypeStartupCpu, ProfileTypeShutdownCpu, ProfileTypeSnapshotCpu:
+		profilingWaitLock.Lock()
+		defer profilingWaitLock.Unlock()
+
+		profilingWaitGroup.Add(1)
 		err = pprof.StartCPUProfile(profileOutput)
 		if err != nil {
 			return fmt.Errorf("failed to start CPU profiling: %w", err)
 		}
 
 		go func() {
+			defer profilingWaitGroup.Done()
 			<-ctx.Done()
 			ctxCancel() // Release resources associated with the profiling context
 			pprof.StopCPUProfile()
 			if closingErr := profileOutput.Close(); closingErr != nil {
 				log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
 			}
+			log.V(1).Info("stopped profiling", "type", pt, "file", profileFileName)
 		}()
 
 	default:
 		// Should never happen
 		return fmt.Errorf("unknown profile type: %s", pt)
 	}
+
+	log.V(1).Info("started profiling", "type", pt, "file", profileFileName)
 
 	return nil
 }
