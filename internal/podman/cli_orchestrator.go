@@ -57,6 +57,9 @@ var (
 	// Telemetry shows there is a very long tail for Podman command completion times, so we use a conservative default.
 	ordinaryPodmanCommandTimeout = 30 * time.Second
 
+	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
+	diagnosticPodmanCommandTimeout = 1 * time.Minute
+
 	defaultBuildImageTimeout      = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
@@ -222,6 +225,23 @@ func (pco *PodmanCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 		Installed: true,
 		Running:   true,
 	}
+}
+
+func (pco *PodmanCliOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
+	cmd := makePodmanCommand("version", "--format", "json")
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "Version", cmd, nil, nil, diagnosticPodmanCommandTimeout)
+	if err != nil {
+		// If the command failed, return the error
+		return containers.ContainerDiagnostics{}, errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	var diagnostics containers.ContainerDiagnostics
+	err = unmarshalDiagnostics(outBuf.Bytes(), &diagnostics)
+	if err != nil {
+		return containers.ContainerDiagnostics{}, err
+	}
+
+	return diagnostics, nil
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
@@ -1232,6 +1252,23 @@ func asId(b *bytes.Buffer) (string, error) {
 	return string(chunks[0]), nil
 }
 
+func unmarshalDiagnostics(data []byte, info *containers.ContainerDiagnostics) error {
+	if data == nil {
+		return fmt.Errorf("the Podman command timed out without returning diagnostics data")
+	}
+
+	var pi pdomanVerion
+	err := json.Unmarshal(data, &pi)
+	if err != nil {
+		return err
+	}
+
+	info.ServerVersion = pi.ServerVersion.Version
+	info.ClientVersion = pi.ClientVersion.Version
+
+	return nil
+}
+
 func unmarshalVolume(pvi *podmanInspectedVolume, vol *containers.InspectedVolume) error {
 	vol.Name = pvi.Name
 	vol.Driver = pvi.Driver
@@ -1352,6 +1389,19 @@ func unmarshalNetwork(pcn *podmanInspectedNetwork, net *containers.InspectedNetw
 	}
 
 	return nil
+}
+
+type pdomanVerion struct {
+	ServerVersion podmanServerVersion `json:"Server"`
+	ClientVersion podmanClientVersion `json:"Client"`
+}
+
+type podmanServerVersion struct {
+	Version string `json:"Version"`
+}
+
+type podmanClientVersion struct {
+	Version string `json:"Version"`
 }
 
 type podmanInspectedVolume struct {

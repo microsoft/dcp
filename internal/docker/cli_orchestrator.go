@@ -56,6 +56,9 @@ var (
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
 
+	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
+	diagnosticDockerCommandTimeout = 1 * time.Minute
+
 	defaultBuildImageTimeout      = 10 * time.Minute
 	defaultCreateContainerTimeout = 10 * time.Minute
 	defaultRunContainerTimeout    = 10 * time.Minute
@@ -289,6 +292,23 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 	}
 
 	return newStatus
+}
+
+func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
+	cmd := makeDockerCommand("version", "--format", "{{json .}}")
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, diagnosticDockerCommandTimeout)
+	if err != nil {
+		// If the command failed, return the error
+		return containers.ContainerDiagnostics{}, errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	var diagnostics containers.ContainerDiagnostics
+	err = unmarshalDiagnostics(outBuf.Bytes(), &diagnostics)
+	if err != nil {
+		return containers.ContainerDiagnostics{}, err
+	}
+
+	return diagnostics, nil
 }
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
@@ -1281,6 +1301,23 @@ func asId(b *bytes.Buffer) (string, error) {
 	return string(chunks[0]), nil
 }
 
+func unmarshalDiagnostics(data []byte, info *containers.ContainerDiagnostics) error {
+	if data == nil {
+		return fmt.Errorf("the Docker command timed out without returning version data")
+	}
+
+	var di dockerVersion
+	err := json.Unmarshal(data, &di)
+	if err != nil {
+		return err
+	}
+
+	info.ServerVersion = di.ServerVersion.Version
+	info.ClientVersion = di.ClientVersion.Version
+
+	return nil
+}
+
 func unmarshalVolume(data []byte, vol *containers.InspectedVolume) error {
 	if data == nil {
 		return fmt.Errorf("the Docker command timed out without returning volume data")
@@ -1446,6 +1483,19 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 	}
 
 	return nil
+}
+
+type dockerVersion struct {
+	ServerVersion dockerServerVersion `json:"Server"`
+	ClientVersion dockerClientVersion `json:"Client"`
+}
+
+type dockerClientVersion struct {
+	Version string `json:"Version"`
+}
+
+type dockerServerVersion struct {
+	Version string `json:"Version"`
 }
 
 type dockerListedContainer struct {
