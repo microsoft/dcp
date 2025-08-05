@@ -62,6 +62,18 @@ type TimeoutOption struct {
 	Timeout time.Duration
 }
 
+type ContainerDiagnostics struct {
+	// Container runtime client version
+	ClientVersion string `json:"clientVersion,omitempty"`
+
+	// Container runtime server version
+	ServerVersion string `json:"serverVersion,omitempty"`
+}
+
+type GetDiagnostics interface {
+	GetDiagnostics(ctx context.Context) (ContainerDiagnostics, error)
+}
+
 type ListContainersFilters struct {
 	LabelFilters []LabelFilter
 }
@@ -403,6 +415,9 @@ type ContainerOrchestrator interface {
 
 	// Start running background checks for the runtime status
 	EnsureBackgroundStatusUpdates(ctx context.Context)
+
+	// Get container runtime diagnostic information
+	GetDiagnostics
 
 	CreateContainer
 	StartContainers

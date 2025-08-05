@@ -493,6 +493,11 @@ func (to *TestContainerOrchestrator) SetRuntimeHealth(healthy bool) {
 	to.runtimeHealthy = healthy
 }
 
+// GetDiagnostics returns an empty diagnostics object, as the test container orchestrator does not support diagnostics.
+func (to *TestContainerOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
+	return containers.ContainerDiagnostics{}, nil
+}
+
 func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,8 +17,17 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
-// Default timeout for the info command
-var timeout = 10
+const (
+	defaultTimeout           = 10 * time.Second
+	defaultDiagnosticTimeout = 90 * time.Second
+)
+
+var (
+	// Default timeout for the info command
+	timeout = defaultTimeout
+	// Should additional diagnostic information be returned?
+	diagnosticMode = false
+)
 
 func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 	infoCmd := &cobra.Command{
@@ -29,7 +39,8 @@ func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
 	}
 
 	container_flags.EnsureRuntimeFlag(infoCmd.PersistentFlags())
-	infoCmd.Flags().IntVarP(&timeout, "timeout", "t", 10, "Timeout for the command in seconds")
+	infoCmd.Flags().BoolVar(&diagnosticMode, "diagnostics", false, "Enable detailed diagnostic information")
+	infoCmd.Flags().DurationVarP(&timeout, "timeout", "t", 0, "Duration before the command times out (default 10 seconds)")
 
 	return infoCmd, nil
 }
@@ -49,18 +60,34 @@ type containerRuntime struct {
 
 	// Error message if the runtime is not installed or not running
 	Error string `json:"error,omitempty"`
+
+	// Version of the container runtime client (diagnostic mode only)
+	ClientVersion string `json:"clientVersion,omitempty"`
+
+	// Version of the container runtime server (diagnostic mode only)
+	ServerVersion string `json:"serverVersion,omitempty"`
 }
 
 type information struct {
 	version.VersionOutput `json:",inline"`
 	Containers            containerRuntime `json:"containers"`
+	OS                    string           `json:"os,omitempty"`
+	Arch                  string           `json:"architecture,omitempty"`
 }
 
 func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log := log.WithName("info")
 
-		ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(timeout)*time.Second)
+		if timeout <= 0 {
+			if diagnosticMode {
+				timeout = defaultDiagnosticTimeout
+			} else {
+				timeout = defaultTimeout
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
 
 		processExecutor := process.NewOSExecutor(log)
@@ -91,6 +118,22 @@ func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
 				Running:   status.Running,
 				Error:     status.Error,
 			},
+		}
+
+		if diagnosticMode {
+			// These values are hardcoded at build time, so no risk of PII exposure
+			info.OS = runtime.GOOS
+			info.Arch = runtime.GOARCH
+
+			if status.Installed {
+				diagnostics, diagnosticsErr := containerOrchestrator.GetDiagnostics(ctx)
+				if diagnosticsErr != nil {
+					log.Error(diagnosticsErr, "failed to get container runtime diagnostics")
+				} else {
+					info.Containers.ServerVersion = diagnostics.ServerVersion
+					info.Containers.ClientVersion = diagnostics.ClientVersion
+				}
+			}
 		}
 
 		if info, err := json.Marshal(info); err != nil {
