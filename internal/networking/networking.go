@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -504,7 +504,7 @@ func ensurePackageMruPortFile(log logr.Logger) error {
 	}
 
 	err := func() error {
-		dcpFolder, dcpFolderErr := dcppaths.EnsureDcpRootDir()
+		dcpFolder, dcpFolderErr := dcppaths.EnsureUserDcpDir()
 		if dcpFolderErr != nil {
 			return dcpFolderErr
 		}

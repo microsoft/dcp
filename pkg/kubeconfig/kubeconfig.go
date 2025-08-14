@@ -28,7 +28,7 @@ import (
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -184,7 +184,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 		kubeconfigFolder = usvc_io.DcpSessionDir()
 	} else {
 		var dcpFolderErr error
-		kubeconfigFolder, dcpFolderErr = dcppaths.EnsureDcpRootDir()
+		kubeconfigFolder, dcpFolderErr = dcppaths.EnsureUserDcpDir()
 		if dcpFolderErr != nil {
 			return "", fmt.Errorf("could not determine the path to the DCP default folder; do not know where to find or create the kubeconfig file: %w", dcpFolderErr)
 		}

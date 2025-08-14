@@ -10,7 +10,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcp/dcppaths"
+	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -64,6 +65,8 @@ func RunWatcher(
 		}
 
 		monitorCmd := exec.Command(procMonitorPath, monitorCmdArgs...)
+		monitorCmd.Env = os.Environ()    // Use DCP CLI environment
+		logger.WithSessionId(monitorCmd) // Ensure the session ID is passed to the monitor command
 		_, _, monitorErr := pe.StartAndForget(monitorCmd, process.CreationFlagsNone)
 		if monitorErr != nil {
 			log.Error(monitorErr, "failed to start process monitor", "executable", procMonitorPath, "PID", childPid)

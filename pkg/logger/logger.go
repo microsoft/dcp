@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync/atomic"
@@ -29,6 +30,9 @@ const (
 	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
 	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
 	DCP_LOG_FILE_NAME_SUFFIX   = "DCP_LOG_FILE_NAME_SUFFIX"   // Suffix to append to the log file name (defaults to process ID)
+	DCP_LOG_SESSION_ID         = "DCP_LOG_SESSION_ID"         // Session ID to include in log names
+
+	DCP_EPOCH = 1665705600 // DCP epoch is the unix timestamp at the start of the day UTC time of the first commit to the DCP repo (2022-10-14T00:00:00.000Z)
 
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
@@ -39,6 +43,8 @@ const (
 
 var (
 	defaultLogPath = filepath.Join(os.TempDir(), "dcp", "logs")
+	sessionId      string
+	startTime      time.Time
 )
 
 type Logger struct {
@@ -149,21 +155,27 @@ func New(name string) Logger {
 	// Add a stderr console logger for log output (with a minimum level set by verbosity)
 	cores = append(cores, zapcore.NewCore(consoleEncoder, consoleLog, consoleAtomicLevel))
 
-	// Determine if a debug log is enabled
+	var diagnosticsLogErr error
+	// Determine if a diagnostics log is enabled
 	if logCore, err := getDiagnosticsLogCore(name, encoderConfig); err != nil {
-		// Ignore the error if debug log isn't enabled
+		// Ignore the error if diagnostics log isn't enabled
 		if !errors.Is(err, errDebugLogNotEnabled) {
-			// If there was an error setting up the debug log, write it to stderr
-			fmt.Fprintf(os.Stderr, "failed to set up debug log: %v\n", err)
+			diagnosticsLogErr = err
 		}
 	} else {
-		// Add the debug log to the list of outputs
+		// Add the diagnostics log to the list of outputs
 		cores = append(cores, logCore)
 	}
 
 	zapLogger := zap.New(zapcore.NewTee(cores...))
 
 	logger := zapr.NewLogger(zapLogger).WithName(name)
+
+	if diagnosticsLogErr != nil {
+		// If there was an error setting up the diagnostics log, write it to the log output and stderr
+		logger.Error(diagnosticsLogErr, "failed to enable diagnostics log output")
+		fmt.Fprintf(os.Stderr, "failed to enable diagnostics log output: %v\n", diagnosticsLogErr)
+	}
 
 	if runtime.GOOS == "darwin" {
 		innerSink := logger.GetSink()
@@ -223,7 +235,7 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 		return nil, err
 	}
 
-	// Create a new log file in the output folder. The default log file name is <name>-<timestamp>-<pid>
+	// Create a new log file in the output folder. The default log file name is <sessionid>-<name>-<timestamp>-<pid>
 	// but the PID part can be overridden by setting the DCP_LOG_FILE_NAME_SUFFIX environment variable.
 	logFileNameSuffix, found := os.LookupEnv(DCP_LOG_FILE_NAME_SUFFIX)
 	if !found || len(logFileNameSuffix) == 0 {
@@ -239,9 +251,9 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 		backoff.WithMaxElapsedTime(2*time.Second),
 	)
 	logOutput, err := resiliency.RetryGet(context.Background(), b, func() (*os.File, error) {
-		atMost100kSeconds := time.Now().UnixNano() % 1e14
+		logname := fmt.Sprintf("%s-%s-%d-%s.log", sessionId, name, startTime.UnixMilli()-DCP_EPOCH*1000, logFileNameSuffix)
 		return usvc_io.OpenFile(
-			filepath.Join(logFolder, fmt.Sprintf("%s-%d-%s.log", name, atMost100kSeconds, logFileNameSuffix)),
+			filepath.Join(logFolder, logname),
 			os.O_RDWR|os.O_CREATE|os.O_EXCL,
 			osutil.PermissionOnlyOwnerReadWrite,
 		)
@@ -294,4 +306,21 @@ func GetDebugLogLevel() (zapcore.Level, error) {
 	}
 
 	return logLevel, nil
+}
+
+func SessionId() string {
+	return sessionId
+}
+
+func WithSessionId(cmd *exec.Cmd) {
+	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", DCP_LOG_SESSION_ID, SessionId()))
+}
+
+func init() {
+	startTime = time.Now()
+	if setSessionId, found := os.LookupEnv(DCP_LOG_SESSION_ID); found && setSessionId != "" {
+		sessionId = setSessionId
+	} else {
+		sessionId = fmt.Sprintf("%d%d", startTime.Unix()-DCP_EPOCH, os.Getpid())
+	}
 }

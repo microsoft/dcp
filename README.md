@@ -168,6 +168,10 @@ If you need to learn morea about Go debugging in VS Code, [VS Code Go debugging 
 
 > Note: you want to use `make compile-debug` for building DCP for debugging. By default DCP is built with optimizations on, which can result in strange behavior during debugging (somewhat unpredictable order of statements, local data "disappearing" in the middle of a function etc.)
 
+> Tip: if you need to debug the API server while debugging a test (testing controller-API server interaction), opening a new VS Code window and trying to open the DCP repository does not quite work, because VS Code aggressively reuses existing windows and will switch you back to the window that is running the test.
+>
+> To work around that use "Duplicate as workspace in new window" command from VS Code command palette.
+
 ### I need to debug DCP controllers in the context of an Aspire (Visual Studio-based) application run
 
 The following procedure can be used to debug DCP controllers when an application is run from Visual Studio:
@@ -208,6 +212,7 @@ DCP has knowledge of a number of environment variables that can change its behav
 | `DEBUG_SESSION_PORT`, `DEBUG_SESSION_TOKEN`, and `DEBUG_SESSION_SERVER_CERTIFICATE` | These are variables that configure the endpoint for running Executables via a developer IDE/under debugger. For more information see [IDE execution specification](https://github.com/dotnet/aspire/blob/main/docs/specs/IDE-execution.md). |
 | `DCP_SESSION_FOLDER` | This variable is used for isolating multiple DCP instances running concurrently on the same machine. If set (to a valid filesystem folder), DCP process(es) will create files related to their execution in this folder: the access configuration file (kubeconfig), captured Executable/Container logs, etc. |
 | `DCP_LOG_SOCKET` | If set to a Unix domain socket, DCP will write its execution logs to that socket instead of writing them to standard error stream (`stderr`). This allows programs that launch DCP to capture its output even if DCP is running in `--detach` mode. <br/> The `--detach` mode causes DCP to fork itself and break the parent-child relationship (and lifetime dependency) from the process that launched it, but the side effect of doing so is that the parent process loses ability to monitor DCP standard output and standard error streamd. |
+| `DCP_LOG_SESSION_ID` | If set, DCP will prepend this value to all diagnostics log names. If unset, a session ID will be calculated. The value is propagated to all child DCP processes. |
 | `DCP_DIAGNOSTICS_LOG_LEVEL` | If set, enabled DCP diagnostic logging. <br/> Can be set to `error`, `info`, or `debug`; for troubleshooting `debug` is recommended, although it results in the most verbose output. |
 | `DCP_DIAGNOSTICS_LOG_FOLDER` | If set to a valid filesystem folder, DCP will place the diagnostic logging files there. Otherwise (if enabled) they are written to the default temporary files folder. |
 | `DCP_LOG_FILE_NAME_SUFFIX` | Suffix to append to the log file name (defaults to process ID if not set). |
