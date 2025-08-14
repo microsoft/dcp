@@ -170,7 +170,7 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 		"start-apiserver",
 		"--server-only",
 		"--kubeconfig", info.kubeconfigPath,
-		"--test-container-log-source", tco.GetSocketFilePath(),
+		"--test-container-orchestrator-socket", tco.GetSocketFilePath(),
 		"--monitor", strconv.Itoa(os.Getpid()),
 	)
 	env := addToEnvIfPresent(os.Environ(),

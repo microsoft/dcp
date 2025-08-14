@@ -1,25 +1,17 @@
 package process_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
-	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 
@@ -251,7 +243,7 @@ func TestChildrenTerminated(t *testing.T) {
 			// for a total of 4 child processes, so the expected tree size is 5.
 			expectedProcessTreeSize := 5
 
-			ensureProcessTree(t, rootP, expectedProcessTreeSize, 10*time.Second)
+			int_testutil.EnsureProcessTree(t, rootP, expectedProcessTreeSize, 10*time.Second)
 
 			processTree, err := process.GetProcessTree(rootP)
 			require.NoError(t, err)
@@ -366,225 +358,6 @@ func TestContextCancelsWatch(t *testing.T) {
 	}
 }
 
-func TestMonitorProcessExitsWithErrorForInvalidPid(t *testing.T) {
-	t.Parallel()
-
-	dcpProc, dcpProcErr := getDcpProcExecutablePath()
-	require.NoError(t, dcpProcErr)
-
-	// Set a reasonable timeout that gives the wait polling time to see the delay process exit
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer testCancel()
-
-	dcpProcCmd := exec.CommandContext(testCtx, dcpProc)
-	err := dcpProcCmd.Run()
-	require.Error(t, err)
-}
-
-func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
-	t.Parallel()
-
-	dcpProc, dcpProcErr := getDcpProcExecutablePath()
-	require.NoError(t, dcpProcErr)
-
-	delayToolDir, toolLaunchErr := getDelayToolDir()
-	require.NoError(t, toolLaunchErr)
-
-	// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer testCancel()
-
-	// All commands will return on its own after 30 seconds. This prevents the test from launching a bunch of processes
-	// that turn into zombies.
-	parentCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
-	parentCmd.Dir = delayToolDir
-	process.DecoupleFromParent(parentCmd)
-	parentCmdErr := parentCmd.Start()
-	require.NoError(t, parentCmdErr, "command should start without error")
-
-	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	require.NoError(t, parentPidErr)
-	parentCreateTime := process.StartTimeForProcess(parentPid)
-	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
-	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentCreateTime}, 1, 5*time.Second)
-
-	childrenCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s", "--child-spec=1,1")
-	childrenCmd.Dir = delayToolDir
-	process.DecoupleFromParent(childrenCmd)
-	childrenCmdErr := childrenCmd.Start()
-	require.NoError(t, childrenCmdErr, "command should start without error")
-
-	pid, pidErr := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
-	require.NoError(t, pidErr)
-	childCreateTime := process.StartTimeForProcess(pid)
-	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
-	ensureProcessTree(t, process.ProcessTreeItem{pid, childCreateTime}, 3, 10*time.Second)
-
-	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
-		"--child", strconv.Itoa(childrenCmd.Process.Pid),
-		"--monitor-start-time", parentCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
-		"--child-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
-	)
-	dcpProcCmd.Stdout = os.Stdout
-	dcpProcCmd.Stderr = os.Stderr
-	process.DecoupleFromParent(dcpProcCmd)
-	dcpProcCmdErr := dcpProcCmd.Start()
-	require.NoError(t, dcpProcCmdErr, "command should start without error")
-
-	// Give enough time for the monitor process to start before killing the parent process
-	<-time.After(5 * time.Second)
-
-	killErr := parentCmd.Process.Kill()
-	require.NoError(t, killErr)
-	_ = parentCmd.Wait()
-
-	_ = childrenCmd.Wait()
-	require.True(t, childrenCmd.ProcessState.Exited(), "child process should have exited")
-
-	dcpWaitErr := dcpProcCmd.Wait()
-	require.NoError(t, dcpWaitErr)
-}
-
-func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
-	t.Parallel()
-
-	dcpProc, dcpProcErr := getDcpProcExecutablePath()
-	require.NoError(t, dcpProcErr)
-
-	delayToolDir, toolLaunchErr := getDelayToolDir()
-	require.NoError(t, toolLaunchErr)
-
-	// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer testCancel()
-
-	// All commands will return on its own after 30 seconds. This prevents the test from launching a bunch of processes
-	// that turn into zombies.
-	parentCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
-	parentCmd.Dir = delayToolDir
-	parentCmdErr := parentCmd.Start()
-	require.NoError(t, parentCmdErr, "command should start without error")
-	defer func() {
-		_ = parentCmd.Process.Kill()
-		_ = parentCmd.Wait()
-	}()
-
-	parentPid, parentPidErr := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	require.NoError(t, parentPidErr)
-	parentCreateTime := process.StartTimeForProcess(parentPid)
-	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
-	ensureProcessTree(t, process.ProcessTreeItem{parentPid, parentCreateTime}, 1, 5*time.Second)
-
-	childCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
-	childCmd.Dir = delayToolDir
-	childCmdErr := childCmd.Start()
-	require.NoError(t, childCmdErr, "command should start without error")
-	defer func() {
-		_ = childCmd.Process.Kill()
-		_ = childCmd.Wait()
-	}()
-
-	childPid, childPidErr := process.Uint32_ToPidT(uint32(childCmd.Process.Pid))
-	require.NoError(t, childPidErr)
-	childCreateTime := process.StartTimeForProcess(childPid)
-	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
-	ensureProcessTree(t, process.ProcessTreeItem{childPid, childCreateTime}, 1, 5*time.Second)
-
-	// Case 1: monitor start time does not match
-	stdoutBuf := new(bytes.Buffer)
-	stderrBuf := new(bytes.Buffer)
-	monitorStartTime := parentCreateTime.Add(1 * time.Second)
-	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
-		"--child", strconv.Itoa(childCmd.Process.Pid),
-		"--monitor-start-time", monitorStartTime.Format(osutil.RFC3339MiliTimestampFormat),
-		"--child-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
-	)
-	dcpProcCmd.Stdout = stdoutBuf
-	dcpProcCmd.Stderr = stderrBuf
-	dcpProcCmdErr := dcpProcCmd.Start()
-	require.NoError(t, dcpProcCmdErr, "command should start without error")
-
-	dcpWaitErr := dcpProcCmd.Wait()
-	require.Error(t, dcpWaitErr, "dcpproc should have exited with an error")
-	require.True(t,
-		strings.Contains(stderrBuf.String(), "process start time mismatch") && strings.Contains(stderrBuf.String(), "DCP process could not be monitored"),
-		"dcpproc should have reported invalid DCP process start time",
-	)
-
-	// Case 2: child start time does not match
-	stdoutBuf.Reset()
-	stderrBuf.Reset()
-	childStartTime := childCreateTime.Add(1 * time.Second)
-	dcpProcCmd = exec.CommandContext(testCtx, dcpProc,
-		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
-		"--child", strconv.Itoa(childCmd.Process.Pid),
-		"--monitor-start-time", parentCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
-		"--child-start-time", childStartTime.Format(osutil.RFC3339MiliTimestampFormat),
-	)
-	dcpProcCmd.Stdout = stdoutBuf
-	dcpProcCmd.Stderr = stderrBuf
-	dcpProcCmdErr = dcpProcCmd.Start()
-	require.NoError(t, dcpProcCmdErr, "command should start without error")
-
-	dcpWaitErr = dcpProcCmd.Wait()
-	require.NoError(t, dcpWaitErr, "dcpproc should have exited without an error")
-	require.True(t,
-		strings.Contains(stderrBuf.String(), "process start time mismatch") && strings.Contains(stderrBuf.String(), "child service process could not be monitored"),
-		"dcpproc should have reported invalid child process start time")
-}
-
 func getDelayToolDir() (string, error) {
 	return int_testutil.GetTestToolDir("delay")
-}
-
-func getDcpProcExecutablePath() (string, error) {
-	dcpExeName := "dcpproc"
-	if runtime.GOOS == "windows" {
-		dcpExeName += ".exe"
-	}
-
-	outputBin, found := os.LookupEnv("OUTPUT_BIN")
-	if found {
-		dcpPath := filepath.Join(outputBin, dcpExeName)
-		file, err := os.Stat(dcpPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to find the DCP executable: %w", err)
-		}
-		if file.IsDir() {
-			return "", fmt.Errorf("the expected path to DCP executable is a directory: %s", dcpPath)
-		}
-		return dcpPath, nil
-	}
-
-	tail := []string{dcppaths.DcpBinDir, dcppaths.DcpExtensionsDir, dcppaths.DcpBinDir, dcpExeName}
-	rootFolder, err := osutil.FindRootFor(osutil.FileTarget, tail...)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.Join(append([]string{rootFolder}, tail...)...), nil
-}
-
-func ensureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize int, timeout time.Duration) {
-	processesStartedCtx, processesStartedCancelFn := context.WithTimeout(context.Background(), timeout)
-	defer processesStartedCancelFn()
-
-	var processTreeLen int
-	err := wait.PollUntilContextCancel(
-		processesStartedCtx,
-		100*time.Millisecond,
-		true, // Don't wait before polling for the first time
-		func(_ context.Context) (bool, error) {
-			processTree, err := process.GetProcessTree(rootP)
-			if err != nil {
-				return false, err
-			}
-			processTreeLen = len(processTree)
-			return processTreeLen == expectedSize, nil
-		},
-	)
-
-	require.NoError(t, err, "expected number of 'delay' program instances not found (expected %d, actual %d)", expectedSize, processTreeLen)
 }

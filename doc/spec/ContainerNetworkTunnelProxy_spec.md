@@ -9,168 +9,7 @@ The `ContainerNetworkTunnelProxy` API provides a mechanism to create network tun
 
 ## API Definition
 
-### ContainerNetworkTunnelProxy Resource
-
-```go
-// ContainerNetworkTunnelProxy represents a tunnel proxy pair that handles multiple tunnels
-// between a container network and host network.
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +k8s:openapi-gen=true
-// +kubebuilder:resource:scope=Cluster
-type ContainerNetworkTunnelProxy struct {
-    metav1.TypeMeta   `json:",inline"`
-    metav1.ObjectMeta `json:"metadata,omitempty"`
-
-    Spec   ContainerNetworkTunnelProxySpec   `json:"spec,omitempty"`
-    Status ContainerNetworkTunnelProxyStatus `json:"status,omitempty"`
-}
-```
-
-### ContainerNetworkTunnelProxy spec
-
-```go
-// ContainerNetworkTunnelProxySpec defines the desired state of a ContainerNetworkTunnelProxy.
-// +k8s:openapi-gen=true
-type ContainerNetworkTunnelProxySpec struct {
-    // Reference to the ContainerNetwork that the client proxy should connect to.
-    // This field is required and must reference an existing ContainerNetwork resource.
-    ContainerNetworkName string `json:"containerNetworkName"`
-
-    // List of tunnels to prepare. Each tunnel enables clients on the container network 
-    // to connect to a server on the host (establish a tunnel stream).
-    // +listType=atomic
-    Tunnels []TunnelConfiguration `json:"tunnels,omitempty"`
-
-    // Base container image to use for the client proxy container.
-    // Defaults to mcr.microsoft.com/azurelinux/base/core:3.0 if not specified.
-    // +optional
-    BaseImage string `json:"baseImage,omitempty"`
-}
-
-// TunnelConfiguration defines a single tunnel enabled by a ContainerNetworkTunnelProxy.
-// +k8s:openapi-gen=true
-type TunnelConfiguration struct {
-    // User-friendly name for the tunnel (used in status reporting and debugging).
-    // Must be unique within the ContainerNetworkTunnelProxy.
-    Name string `json:"name"`
-
-    // Address of the server on the host that clients will be tunneled to.
-    // Defaults to "localhost" if not specified.
-    // +optional
-    ServerAddress string `json:"serverAddress,omitempty"`
-
-    // Port of the server on the host that clients will be tunneled to.
-    ServerPort int32 `json:"serverPort"`
-
-    // Address that the client proxy will bind to on the container network
-    // Defaults to "0.0.0.0" (all interfaces) if not specified.
-    // +optional
-    ClientProxyAddress string `json:"clientProxyAddress,omitempty"`
-
-    // Port that the client proxy will use on the container network.
-    // If set to 0 or not specified, a random port will be assigned.
-    // +optional
-    ClientProxyPort int32 `json:"clientProxyPort,omitempty"`
-}
-```
-
-### ContainerNetworkTunnelProxy status
-
-```go
-// ContainerNetworkTunnelProxyStatus defines the current state of a ContainerNetworkTunnelProxy.
-// +k8s:openapi-gen=true
-type ContainerNetworkTunnelProxyStatus struct {
-    // Overall state of the tunnel proxy pair.
-    // +kubebuilder:default:="Pending"
-    State ContainerNetworkTunnelProxyState `json:"state,omitempty"`
-
-    // Status of individual tunnels within the proxy pair.
-    // +listType=atomic
-    TunnelStatuses []TunnelStatus `json:"tunnelStatuses,omitempty"`
-
-    // Monotonically increasing version number of the tunnel configuration that was applied to the proxy pair.
-    // Can be used by clients changing tunnel configuration (Tunnels property) to learn that the new configuration has become effective.
-    TunnelConfigurationVersion int32 `json:"tunnelConfigurationVersion,omitempty"`
-
-    // Container ID of the running client proxy container.
-    ClientProxyContainerID string `json:"clientProxyContainerId,omitempty"`
-
-    // Server proxy process ID.
-    ServerProxyProcessID *int64 `json:"serverProxyProcessId,omitempty"`
-
-    // Server proxy process startup timestamp.
-    ServerProxyStartupTimestamp metav1.MicroTime `json:"serverProxyStartupTimestamp,omitempty"`
-
-    // The path of a temporary file that contains captured standard output data from the server proxy process.
-	ServerProxyStdOutFile string `json:"serverProxyStdOutFile,omitempty"`
-
-	// The path of a temporary file that contains captured standard error data from the server proxy process.
-	ServerProxyStdErrFile string `json:"serverProxyStdErrFile,omitempty"`
-
-    // Published (host) port for client proxy control endpoint.
-    ClientProxyControlPort int32 `json:"clientProxyControlPort,omitempty"`
-
-    // Published (host) port for client proxy data endpoint.  
-    ClientProxyDataPort int32 `json:"clientProxyDataPort,omitempty"`
-
-   // Server proxy control port (for controlling the proxy pair).
-    ServerProxyControlPort int32 `json:"serverProxyControlPort,omitempty"`
-
-}
-
-type ContainerNetworkTunnelProxyState string
-
-const (
-   // The same as ContainerNetworkTunnelProxyStatePending. 
-   // May be encountered when ContainerNetworkTunnelProxy status has not been initialized yet.
-    ContainerNetworkTunnelProxyStateEmpty ContainerNetworkTunnelProxyState = ""
-
-    // Initial state - proxy pair is being created.
-    ContainerNetworkTunnelProxyStatePending ContainerNetworkTunnelProxyState = "Pending"
-    
-    // Building the client proxy container image.
-    ContainerNetworkTunnelProxyStateBuildingImage ContainerNetworkTunnelProxyState = "BuildingImage"
-    
-    // Starting the proxy pair.
-    ContainerNetworkTunnelProxyStateStarting ContainerNetworkTunnelProxyState = "Starting"
-
-    // Proxy pair is ready with all tunnels operational.
-    ContainerNetworkTunnelProxyStateRunning ContainerNetworkTunnelProxyState = "Running"
-
-    // Proxy pair encountered an unrecoverable error, either during startup, or during execution.
-    ContainerNetworkTunnelProxyStateFailed ContainerNetworkTunnelProxyState = "Failed"
-)
-
-// TunnelStatus represents the status of a single tunnel within the proxy pair
-// +k8s:openapi-gen=true
-type TunnelStatus struct {
-    // Name of the tunnel (matches TunnelConfiguration.Name).
-    Name string `json:"name"`
-
-    // Internal tunnel ID assigned by the proxy pair.
-    TunnelID uint32 `json:"tunnelId,omitempty"`
-
-    // Current state of the tunnel.
-    State TunnelState `json:"state"`
-
-    // Human-readable explanation for why the tunnel preparation failed (if it did).
-    ErrorMessage string `json:"errorMessage,omitempty"`
-
-    // The timestamp for the status (last update).
-    Timestamp metav1.MicroTime `json:"timestamp"`
-}
-
-type TunnelState string
-
-const (
-    // Tunnel is ready and accepting connections.
-    TunnelStateReady TunnelState = "Ready"
-    
-    // Tunnel preparation failed, see ErrorMessage for details.
-    TunnelStateFailed TunnelState = "Failed"
-)
-```
+Refer to `(repo root)/api/v1/container_network_tunnel_proxy_types.go`
 
 ## ContainerNetworkTunnelProxy controller implementation
 
@@ -210,11 +49,9 @@ stateDiagram-v2
 1. Pending (initial) state
    
    Ensures that the object has the finalizer set.
-   Verifies that the referenced ContainerNetwork exists and its state is "Running" (i.e. it was created with the orchestrator).
-   If not, remain in Pending state and schedule additional reconciliation.
-   If the ContainerNetwork and underlying resource exists, transition to BuildingImage state.
-
-   The ContainerNetworkTunnelProxy also stays in Pending state if container runtime is unhealthy.
+   Verifies the preconditions for transitioning to BuildingImage state:
+   - Verifies that the referenced ContainerNetwork exists and its state is "Running" (i.e. it was created with the orchestrator). If true, transition to BuildingImage state. If not, remain in Pending state and schedule additional reconciliation.
+   - The ContainerNetworkTunnelProxy also stays in Pending state if container runtime is unhealthy.
 
 2. BuildingImage state
 
@@ -240,6 +77,7 @@ stateDiagram-v2
       with modified configuration.
    Update Spec.TunnelStatuses as necessary
    Watch for changes to tunnel configuration (Spec.Tunnels property) and make corresponding changes to the proxy pair as necessary.
+   Watches for changes to Services. For each tunnel configuration, to successfully prepare a tunnel, the server service must exist and be in Ready state, and the client service must exist (so that the controller can publish an Endpoint for it).
    Monitor the server and client proxies (client running as container). If either of them fails, transition to Failed state.
 
 5. Failed state.
@@ -261,7 +99,9 @@ ContainerNetworkTunnelProxy object cleanup and deletion involves following steps
 
 ### Additional considerations for ContainerNetworkTunnelProxy controller.
 
-1. Should we have a "error log" subresource for ContainerNetworkTunnelProxy, for reporting errors from proxy creation and tunnel enablement?
+1. Should we have a "system log" subresource for ContainerNetworkTunnelProxy, for reporting errors from proxy creation and tunnel enablement?
+   
+   Answer: probably yes. It will be especially helpful when handling the Pending state, where a lot of pre-conditions need to be satisfied before the tunnel gets going. 
 
 2. Should we add a user-friendly name to the tunnel request and tunnel spec Protobuf definitions (dcptun.proto), so that logs from the proxy refer to that user-friendly name and allow for easier tunnel identification?
 

@@ -361,7 +361,7 @@ func (c *containerLogStreamer) ensureContainerLogSource(requestCtx context.Conte
 	pe := contextdata.GetProcessExecutor(requestCtx)
 	hostLifetimeCtx := contextdata.GetHostLifetimeContext(requestCtx)
 
-	cls := container_flags.TryGetTestContainerLogSource(hostLifetimeCtx, c.log.WithName("TestContainerLogSource"))
+	cls := container_flags.TryGetRemoteContainerOrchestrator(hostLifetimeCtx, c.log.WithName("RemoteContainerOrchestrator"))
 	if cls == nil {
 		co, err := runtimes.FindAvailableContainerRuntime(requestCtx, c.log.WithName("ContainerOrchestrator").WithValues("ContainerRuntime", container_flags.GetRuntimeFlagValue()), pe)
 		if err != nil {

@@ -1,6 +1,6 @@
 # ContainerNetworkTunnelProxy Implementation Plan
 
-## Phase 1: API and controller skeleton
+## Phase 1: API and controller skeleton (complete)
 
 - [x] Define ContainerNetworkTunnelProxy API and add it to v1 GroupVersion and CleanupResources.
 - [x] Implement basic controller watching ContainerNetworkTunnelProxy and ContainerNetwork objects.
@@ -10,15 +10,15 @@
 - [x] Write automated integration test that ensures the ContainerNetworkTunnelProxy object will transition to running even if required ContainerNetwork does not exist initially, or is not running.
 
 
-## Phase 2: Image build
+## Phase 2: Image build (complete)
 
-- [ ] Implement client proxy container image build with associated tagging and version verification, per spec.
-- [ ] Ensure that at most one image build runs PER HOST (especially important for test scenarios which tend to run multiple DCP instaces). We have prior art for that with port allocation.
+- [x] Implement client proxy container image build with associated tagging and version verification, per spec.
+- [x] Ensure that at most one image build runs PER HOST (especially important for test scenarios which tend to run multiple DCP instances). We have prior art for that with port allocation.
 
 
 ## Phase 3: Proxy instantiation
 
-- [ ] Implement container monitoring capability for `dcpproc`.
+- [x] Implement container monitoring capability for `dcpproc`.
 - [ ] Implement support for instantiating client proxy container, including exposing ports, reading exposed ports from Docker, and starting `dcpproc` for the newly created container.
 - [ ] Implement support for starting server proxy.
 - [ ] Implement support for proxy pair cleanup during object deletion.
@@ -28,20 +28,30 @@
 
 ## Phase 4: Handling tunnel creation and deletion
 
-- [ ] Implement tunnel preparation and deletion as the Spec.Tunnels set changes.
+- [ ] Modify TunnelConfiguration definition so that both the server and the client are identified by a Service object instead of explicit address and port combination. This means ServiceAddress, ServicePort, ClientProxyAddress, and ClientProxyPort properties should be deleted and replaced by server Service name and namespace and client proxy Service name and namespace.
+- [ ] Make the ContainerNetworkTunnelProxyReconciler watches Services.
+- [ ] Implement tunnel preparation and deletion as the Spec.Tunnels set changes. Tunnel cannot be prepared until server and client Services exist and the server Service is in Ready state.
 - [ ] Ensure that TunnelStatuses are updated accordingly, including differentiation between successfully prepared tunnels vs. tunnels that failed.
 - [ ] Write automated integration test that verifies the proxies get appropriate tunnel enablement/deletion calls in result to Spec.Tunnels changes.
+- [ ] Write automated integration test that verifies tunnels get prepared/disabled depending on server Service being in Ready vs NotReady state.
+- [ ] Write automated integration test that verifies the controller creates and deletes Endpoints that are associated with client Service (for each tunnel).
 
 
 ## Phase 5: Failure handling
 
 - [ ] Ensure that failure of the server side proxy results in transition to Failed state.
-- [ ] Ensure that failure of the client side proxy (container) results in transition to failed state.
+- [ ] Ensure that failure of the client side proxy (container) results in transition to Failed state.
 - [ ] Ensure that transition to failed state results in cleanup of ContainerNetworkTunnelProxy resources and that the Status is updated accordingly.
+- [ ] Ensure that tunnels are shut down if their server Service goes from Ready to NotReady (and vice versa).
 - [ ] Write automated tests that verify all the above.
 
+## Phase 6: Observability (maybe skip)
 
-## Phase 6: End-to-end testing
+- [ ] Implement system log subresource for ContainerNetworkTunnelProxy.
+- [ ] Ensure that important lifetime changes for ContainerNetworkTunnelProxy (e.g. results of precondition checks for transitioning out of Pending state) end up logged into the system log.
+
+
+## Phase 7: End-to-end testing
 
 - [ ] Implement automated test that launches DCP API server and DCP controllers process and creates a tunnel between a server running on the host (simple echo server will suffice) and a client running as container. The client should verify that it can reach and communicate with the server and should report the result via a REST API that can be called from the test.
 

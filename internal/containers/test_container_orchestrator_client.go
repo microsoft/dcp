@@ -2,6 +2,7 @@ package containers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -220,4 +221,206 @@ func (c *TestContainerOrchestratorClient) copyStream(
 	}
 }
 
-var _ ContainerLogSource = (*TestContainerOrchestratorClient)(nil)
+func (c *TestContainerOrchestratorClient) InspectContainers(ctx context.Context, options InspectContainersOptions) ([]InspectedContainer, error) {
+	if len(options.Containers) == 0 {
+		return nil, fmt.Errorf("must specify at least one container")
+	}
+
+	var results []InspectedContainer
+	var allErrors error
+
+	// We typically inspect just one container at a time, so it is fine to loop through them one by one.
+	// If we ever need to inspect multiple containers in parallel, we can change this to use goroutines via MapConcurrent().
+
+	for _, containerId := range options.Containers {
+		containerId = strings.TrimSpace(containerId)
+		if containerId == "" {
+			allErrors = errors.Join(allErrors, fmt.Errorf("container ID is empty"))
+			continue
+		}
+
+		url := &url.URL{
+			Scheme: "http",
+			Host:   "unix", // Does not really matter
+		}
+		url.Path = fmt.Sprintf(ContainerHttpPath, containerId)
+		query := url.Query()
+		query.Set("mode", "inspect")
+		url.RawQuery = query.Encode()
+
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
+		if reqErr != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not create request for container %s: %w", containerId, reqErr))
+			continue
+		}
+
+		resp, reqErr := c.httpClient.Do(req)
+		if reqErr != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not inspect container %s: %w", containerId, reqErr))
+			continue
+		}
+
+		switch {
+
+		case resp.StatusCode == http.StatusNotFound:
+			allErrors = errors.Join(allErrors, ErrNotFound)
+
+		case resp.StatusCode != http.StatusOK:
+			allErrors = errors.Join(allErrors, fmt.Errorf("inspect container %s failed: %d %s", containerId, resp.StatusCode, resp.Status))
+
+		default:
+			var container InspectedContainer
+			if err := json.NewDecoder(resp.Body).Decode(&container); err != nil {
+				allErrors = errors.Join(allErrors, fmt.Errorf("could not decode response for container %s: %w", containerId, err))
+			} else {
+				results = append(results, container)
+			}
+
+		}
+
+		_ = resp.Body.Close()
+	}
+
+	if len(results) < len(options.Containers) {
+		allErrors = errors.Join(allErrors, errors.Join(ErrIncomplete, fmt.Errorf("not all containers were inspected, expected %d but got %d", len(options.Containers), len(results))))
+	}
+
+	return results, allErrors
+}
+
+func (c *TestContainerOrchestratorClient) StopContainers(ctx context.Context, options StopContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
+		return nil, fmt.Errorf("must specify at least one container")
+	}
+
+	var results []string
+	var allErrors error
+
+	for _, containerId := range options.Containers {
+		containerId = strings.TrimSpace(containerId)
+		if containerId == "" {
+			allErrors = errors.Join(allErrors, fmt.Errorf("container ID is empty"))
+			continue
+		}
+
+		url := &url.URL{
+			Scheme: "http",
+			Host:   "unix", // Does not really matter
+		}
+		url.Path = fmt.Sprintf(ContainerHttpPath, containerId)
+
+		// Create JSON body for merge patch request
+		body := map[string]interface{}{
+			"status": string(ContainerStatusExited),
+		}
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not marshal request body for container %s: %w", containerId, err))
+			continue
+		}
+
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPatch, url.String(), strings.NewReader(string(jsonBody)))
+		if reqErr != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not create request for container %s: %w", containerId, reqErr))
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, reqErr := c.httpClient.Do(req)
+		if reqErr != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not stop container %s: %w", containerId, reqErr))
+			continue
+		}
+
+		switch {
+
+		case resp.StatusCode == http.StatusNotFound:
+			allErrors = errors.Join(allErrors, ErrNotFound)
+
+		case resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent:
+			allErrors = errors.Join(allErrors, fmt.Errorf("stop container %s failed: %d %s", containerId, resp.StatusCode, resp.Status))
+
+		default:
+			results = append(results, containerId)
+
+		}
+
+		_ = resp.Body.Close()
+	}
+
+	if len(results) < len(options.Containers) {
+		allErrors = errors.Join(allErrors, errors.Join(ErrIncomplete, fmt.Errorf("not all containers were stopped, expected %d but got %d", len(options.Containers), len(results))))
+	}
+
+	return results, allErrors
+}
+
+func (c *TestContainerOrchestratorClient) RemoveContainers(ctx context.Context, options RemoveContainersOptions) ([]string, error) {
+	if len(options.Containers) == 0 {
+		return nil, fmt.Errorf("must specify at least one container")
+	}
+
+	var results []string
+	var allErrors error
+
+	for _, containerId := range options.Containers {
+		containerId = strings.TrimSpace(containerId)
+		if containerId == "" {
+			allErrors = errors.Join(allErrors, fmt.Errorf("container ID is empty"))
+			continue
+		}
+
+		url := &url.URL{
+			Scheme: "http",
+			Host:   "unix", // Does not really matter
+		}
+		url.Path = fmt.Sprintf(ContainerHttpPath, containerId)
+
+		if options.Force {
+			query := url.Query()
+			query.Set("force", "true")
+			url.RawQuery = query.Encode()
+		}
+
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodDelete, url.String(), nil)
+		if reqErr != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not create request for container %s: %w", containerId, reqErr))
+			continue
+		}
+
+		resp, reqErr := c.httpClient.Do(req)
+		if reqErr != nil {
+			allErrors = errors.Join(allErrors, fmt.Errorf("could not remove container %s: %w", containerId, reqErr))
+			continue
+		}
+
+		switch {
+
+		case resp.StatusCode == http.StatusNotFound:
+			allErrors = errors.Join(allErrors, ErrNotFound)
+
+		case resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent:
+			allErrors = errors.Join(allErrors, fmt.Errorf("remove container %s failed: %d %s", containerId, resp.StatusCode, resp.Status))
+
+		default:
+			results = append(results, containerId)
+		}
+
+		_ = resp.Body.Close()
+	}
+
+	if len(results) < len(options.Containers) {
+		allErrors = errors.Join(allErrors, errors.Join(ErrIncomplete, fmt.Errorf("not all containers were removed, expected %d but got %d", len(options.Containers), len(results))))
+	}
+
+	return results, allErrors
+}
+
+type RemoteContainerOrchestrator interface {
+	ContainerLogSource
+	InspectContainers
+	StopContainers
+	RemoveContainers
+}
+
+var _ RemoteContainerOrchestrator = (*TestContainerOrchestratorClient)(nil)

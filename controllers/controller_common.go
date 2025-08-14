@@ -166,7 +166,7 @@ func saveChangesWithCustomReconciliationDelay[T commonapi.ObjectStruct, PCT comm
 		}
 
 		if customReconciliationJitter > 0 {
-			customReconciliationDelay += time.Duration(mathrand.Intn(int(customReconciliationJitter)))
+			customReconciliationDelay += time.Duration(mathrand.Int63n(int64(customReconciliationJitter)))
 		}
 
 		// Apply one update per reconciliation function invocation,

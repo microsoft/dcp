@@ -44,6 +44,7 @@ func RunWatcher(
 
 		monitorPid := os.Getpid()
 		monitorCmdArgs := []string{
+			"process",
 			"--monitor", strconv.Itoa(monitorPid),
 			"--child", strconv.FormatInt(int64(childPid), 10),
 		}

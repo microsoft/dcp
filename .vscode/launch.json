@@ -74,6 +74,14 @@
         },
 
         {
+            "name": "attach to dcpproc process",
+            "type": "go",
+            "request": "attach",
+            "mode": "local",
+            "processId": "dcpproc"
+        },
+
+        {
             "name": "attach to process...",
             "type": "go",
             "request": "attach",

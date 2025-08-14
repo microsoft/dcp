@@ -40,7 +40,7 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	startApiSrvCmd.Flags().BoolVar(&serverOnly, "server-only", false, "If present, instructs DCP to start only the API server and not the controllers. This is useful for testing the API server in isolation.")
 
 	container_flags.EnsureRuntimeFlag(startApiSrvCmd.Flags())
-	container_flags.EnsureTestContainerLogSourceFlag(startApiSrvCmd.Flags())
+	container_flags.EnsureTestContainerOrchestratorSocketFlag(startApiSrvCmd.Flags())
 	cmds.AddMonitorFlags(startApiSrvCmd)
 
 	return startApiSrvCmd, nil

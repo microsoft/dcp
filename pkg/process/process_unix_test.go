@@ -9,14 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
-	"testing"
-
-	"github.com/stretchr/testify/require"
-
+	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -47,7 +46,7 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 	rootP := process.ProcessTreeItem{pid, createTime}
 
 	// Only one process should be running, so the "tree" size is 1.
-	ensureProcessTree(t, rootP, 1, 5*time.Second)
+	int_testutil.EnsureProcessTree(t, rootP, 1, 5*time.Second)
 
 	executor := process.NewOSExecutor(log)
 	start := time.Now()
