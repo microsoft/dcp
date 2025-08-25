@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -17,10 +18,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/dcptun"
 	"github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-func NewRunServerCommad(logger logger.Logger) *cobra.Command {
+func NewRunServerCommand(log logr.Logger) *cobra.Command {
 	runServerCmd := &cobra.Command{
 		Use:   "server [--server-control-address address] [--server-control-port port] client-control-address client-control-port client-data-address client-data-port",
 		Short: "Runs the server-side proxy of the DCP tunnel",
@@ -29,7 +29,7 @@ func NewRunServerCommad(logger logger.Logger) *cobra.Command {
 		Required arguments are the address and port for both the control endpoint and the data endpoint of the client-side tunnel proxy.
 		Optional arguments are the address and port for the control endpoint of the server-side proxy. If not set, "localhost" will be used for the address and a random port will be used for the port.
 		`,
-		RunE: runServerProxy(logger),
+		RunE: runServerProxy(log),
 		Args: cobra.ExactArgs(4),
 	}
 
@@ -39,9 +39,9 @@ func NewRunServerCommad(logger logger.Logger) *cobra.Command {
 	return runServerCmd
 }
 
-func runServerProxy(logger logger.Logger) func(cmd *cobra.Command, args []string) error {
+func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		log := logger.Logger.WithName("server")
+		log = log.WithName("server")
 
 		configErr := ensureServerConfig(args)
 		if configErr != nil {

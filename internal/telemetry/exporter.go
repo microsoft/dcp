@@ -19,10 +19,10 @@ import (
 )
 
 func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
-	logLevel, err := logger.GetDebugLogLevel()
+	logLevel, err := logger.GetDiagnosticsLogLevel()
 
 	if err == nil && logLevel == zapcore.DebugLevel {
-		logFolder, logFolderErr := logger.EnsureDetailedLogsFolder()
+		logFolder, logFolderErr := logger.EnsureDiagnosticsLogsFolder()
 
 		if logFolderErr != nil {
 			return nil, logFolderErr
@@ -42,7 +42,7 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {
-	logLevel, err := logger.GetDebugLogLevel()
+	logLevel, err := logger.GetDiagnosticsLogLevel()
 
 	if err == nil && logLevel == zapcore.DebugLevel {
 		return stdoutmetric.New()

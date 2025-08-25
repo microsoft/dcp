@@ -349,6 +349,11 @@ func (e *Executable) GetStdErrFile() string {
 	return e.Status.StdErrFile
 }
 
+// GetResourceId implements StdOutStreamableResource.
+func (e *Executable) GetResourceId() string {
+	return fmt.Sprintf("executable-%s", e.UID)
+}
+
 func (e *Executable) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,

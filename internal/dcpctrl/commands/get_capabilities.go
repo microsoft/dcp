@@ -1,13 +1,13 @@
 package commands
 
 import (
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/pkg/extensions"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-func NewGetCapabilitiesCommand(logger logger.Logger) *cobra.Command {
+func NewGetCapabilitiesCommand(log logr.Logger) *cobra.Command {
 	getCapabilitiesCmd := &cobra.Command{
 		Use:   "get-capabilities",
 		Short: "Returns the role for this DCP extension (controller host)",

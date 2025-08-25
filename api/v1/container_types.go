@@ -879,6 +879,10 @@ type Container struct {
 	Status ContainerStatus `json:"status,omitempty"`
 }
 
+func (c *Container) GetResourceId() string {
+	return fmt.Sprintf("container-%s", c.UID)
+}
+
 func (c *Container) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
@@ -20,7 +20,7 @@ var (
 	childProcessStartTimeStr string
 )
 
-func NewProcessCommand(log logger.Logger) (*cobra.Command, error) {
+func NewProcessCommand(log logr.Logger) (*cobra.Command, error) {
 	processCmd := &cobra.Command{
 		Use:   "process",
 		Short: "Ensures that child process is cleaned up when the monitored process exits",
@@ -44,9 +44,9 @@ DCP terminates unexpectedly.`,
 	return processCmd, nil
 }
 
-func monitorProcess(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		log := log.WithName("ProcessMonitor").WithValues(
+		log = log.WithName("ProcessMonitor").WithValues(
 			"MonitorPID", monitorPid,
 			"ChildPID", childPid,
 		)

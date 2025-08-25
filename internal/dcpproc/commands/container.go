@@ -17,7 +17,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	container_runtimes "github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -41,7 +40,7 @@ var (
 	containerPollInterval time.Duration
 )
 
-func NewContainerCommand(log logger.Logger) (*cobra.Command, error) {
+func NewContainerCommand(log logr.Logger) (*cobra.Command, error) {
 	containerCmd := &cobra.Command{
 		Use:   "container",
 		Short: "Ensures that a container is stopped and removed when the monitored process exits",
@@ -77,53 +76,53 @@ DCP terminates unexpectedly. It performs a graceful stop followed by removal of 
 	return containerCmd, nil
 }
 
-func monitorContainer(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
 		if containerID == "" {
 			return errors.New("container ID or name must be specified with --container flag")
 		}
 
-		log := log.WithName("ContainerMonitor")
-		monitorLog := log.WithValues(
-			"MonitorPID", monitorPid,
-			"Container", containerID,
-		)
+		log = log.WithName("ContainerMonitor").
+			WithValues(
+				"MonitorPID", monitorPid,
+				"Container", containerID,
+			)
 
 		monitorProcessStartTime, monitorProcessStartTimeErr := cmds.ParseProcessStartTime(monitorStartTimeStr)
 		if monitorProcessStartTimeErr != nil {
 			monitorErr := fmt.Errorf("invalid monitor process start time: %w", monitorProcessStartTimeErr)
-			monitorLog.Error(monitorErr, "Process identity could not be verified, exiting...")
+			log.Error(monitorErr, "Process identity could not be verified, exiting...")
 			return monitorErr
 		}
 
 		co, coErr := getContainerOrchestrator(cmd.Context(), log)
 		if coErr != nil {
-			monitorLog.Error(coErr, "Unable to ensure container cleanup")
+			log.Error(coErr, "Unable to ensure container cleanup")
 			return coErr
 		}
 
-		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, monitorLog)
+		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, log)
 		defer monitorCtxCancel()
 		if monitorCtxErr != nil {
 			if errors.Is(monitorCtxErr, os.ErrProcessDone) {
 				// If the monitor process is already terminated, cleanup the container immediately
-				monitorLog.Info("Monitored process already exited, cleaning up container")
-				return doCleanupContainer(cmd.Context(), containerID, monitorLog, co)
+				log.Info("Monitored process already exited, cleaning up container")
+				return doCleanupContainer(cmd.Context(), containerID, log, co)
 			} else {
-				monitorLog.Error(monitorCtxErr, "Process could not be monitored")
+				log.Error(monitorCtxErr, "Process could not be monitored")
 				return monitorCtxErr
 			}
 		}
 
-		ctrRemovedCh := pollContainerRemoved(monitorCtx, containerID, co, monitorLog)
+		ctrRemovedCh := pollContainerRemoved(monitorCtx, containerID, co, log)
 
 		select {
 		case <-ctrRemovedCh:
 			// Container was removed, we are done
 			return nil
 		case <-monitorCtx.Done():
-			monitorLog.Info("Monitored process exited, cleaning up container")
-			return doCleanupContainer(cmd.Context(), containerID, monitorLog, co)
+			log.Info("Monitored process exited, cleaning up container")
+			return doCleanupContainer(cmd.Context(), containerID, log, co)
 		}
 	}
 }

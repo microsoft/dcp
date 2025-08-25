@@ -2,6 +2,7 @@ package v1
 
 import (
 	"context"
+	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -123,6 +124,10 @@ type Service struct {
 
 	Spec   ServiceSpec   `json:"spec,omitempty"`
 	Status ServiceStatus `json:"status,omitempty"`
+}
+
+func (svc *Service) GetResourceId() string {
+	return fmt.Sprintf("service-%s", svc.UID)
 }
 
 func (svc *Service) GetGroupVersionResource() schema.GroupVersionResource {

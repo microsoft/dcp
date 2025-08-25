@@ -51,7 +51,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	log logr.Logger,
 ) error {
 	cmd := makeCommand(exe)
-	startLog := log.WithValues("Executable", cmd.Path, "Args", cmd.Args[1:])
+	startLog := log.WithValues("Cmd", cmd.Path, "Args", cmd.Args[1:])
 
 	startLog.Info("Starting process...")
 	startLog.V(1).Info("Process details", "Env", cmd.Env, "Cwd", cmd.Dir)

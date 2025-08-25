@@ -11,7 +11,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
-func NewRootCommand(log logger.Logger) (*cobra.Command, error) {
+func NewRootCommand(log *logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		SilenceErrors: true,
 		Use:           "dcpctrl",
@@ -23,26 +23,26 @@ func NewRootCommand(log logger.Logger) (*cobra.Command, error) {
 
 	dcpctrl is the host process that runs the controllers for the DCP API objects.`,
 		SilenceUsage:     true,
-		PersistentPreRun: cmds.LogVersion(log, "Starting DCPCTRL..."),
+		PersistentPreRun: cmds.LogVersion(log.Logger, "Starting DCPCTRL..."),
 	}
 
 	rootCmd.CompletionOptions.HiddenDefaultCmd = true
 
+	log.AddLevelFlag(rootCmd.PersistentFlags())
+	container_flags.EnsureRuntimeFlag(rootCmd.PersistentFlags())
+
 	var err error
 	var cmd *cobra.Command
 
-	if cmd, err = cmds.NewVersionCommand(log); err != nil {
+	if cmd, err = cmds.NewVersionCommand(log.Logger); err != nil {
 		return nil, fmt.Errorf("could not set up 'version' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
 
-	rootCmd.AddCommand(NewGetCapabilitiesCommand(log))
-	rootCmd.AddCommand(NewRunControllersCommand(log))
+	rootCmd.AddCommand(NewGetCapabilitiesCommand(log.Logger))
+	rootCmd.AddCommand(NewRunControllersCommand(log.Logger))
 
-	container_flags.EnsureRuntimeFlag(rootCmd.PersistentFlags())
-
-	log.AddLevelFlag(rootCmd.PersistentFlags())
 	ctrlruntime.SetLogger(log.V(1))
 
 	return rootCmd, nil

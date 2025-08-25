@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/logs"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
@@ -68,6 +69,8 @@ func (sls stdIoLogStreamer) StreamLogs(
 		logFilePath = resource.GetStdOutFile()
 	case string(apiv1.LogStreamSourceStderr):
 		logFilePath = resource.GetStdErrFile()
+	case string(apiv1.LogStreamSourceSystem):
+		logFilePath = logger.GetResourceLogPath(resource.GetResourceId())
 	default:
 		return apiv1.ResourceStreamStatusDone, nil, nil
 	}
@@ -79,6 +82,11 @@ func (sls stdIoLogStreamer) StreamLogs(
 
 	logFile, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
 	if fileErr != nil {
+		if os.IsNotExist(fileErr) {
+			log.V(1).Info("log file does not exist yet", "Path", logFilePath)
+			return status, nil, nil
+		}
+
 		return status, nil, fmt.Errorf("failed to open log file '%s': %w", logFilePath, fileErr)
 	}
 

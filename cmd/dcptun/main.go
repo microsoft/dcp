@@ -22,7 +22,7 @@ const (
 )
 
 func main() {
-	log := logger.New("dcptun")
+	log := logger.New("dcptun").WithName("dcptun")
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log.Logger)
 		if panicErr != nil {
