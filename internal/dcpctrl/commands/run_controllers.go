@@ -24,7 +24,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/perftrace"
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 )
@@ -37,11 +36,11 @@ var (
 	shutdownPerftraceStarted atomic.Bool
 )
 
-func NewRunControllersCommand(logger logger.Logger) *cobra.Command {
+func NewRunControllersCommand(log logr.Logger) *cobra.Command {
 	runControllersCmd := &cobra.Command{
 		Use:   "run-controllers",
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
-		RunE:  runControllers(logger),
+		RunE:  runControllers(log),
 		Args:  cobra.NoArgs,
 	}
 
@@ -91,11 +90,8 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 	return mgr, nil
 }
 
-func runControllers(rootLogger logger.Logger) func(cmd *cobra.Command, _ []string) error {
+func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		// Proper name was set and ctlrruntime.SetLogger() was already called by main()
-		log := rootLogger.Logger
-
 		err := perftrace.CaptureStartupProfileIfRequested(cmd.Context(), log)
 		if err != nil {
 			log.Error(err, "failed to capture startup profile")
@@ -283,9 +279,8 @@ func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
 	}
 
 	log.V(1).Info("setting up notification receiver", "SocketPath", notifySocketPath)
-	nrLog := log.WithName("NotificationReceiver")
 
-	_, nrErr := notifications.NewNotificationSubscription(notifyCtx, notifySocketPath, nrLog, func(n notifications.Notification) {
+	_, nrErr := notifications.NewNotificationSubscription(notifyCtx, notifySocketPath, log.WithName("NotificationReceiver"), func(n notifications.Notification) {
 		handleNotification(notifyCtx, n, log)
 	})
 	if nrErr != nil {

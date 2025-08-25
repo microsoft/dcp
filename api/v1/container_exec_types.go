@@ -104,6 +104,10 @@ func (ce *ContainerExec) GetStdOutFile() string {
 	return ce.Status.StdOutFile
 }
 
+func (ce *ContainerExec) GetResourceId() string {
+	return fmt.Sprintf("containerexec-%s", ce.UID)
+}
+
 // StdErrFile implements StdOutStreamableResource.
 func (ce *ContainerExec) GetStdErrFile() string {
 	return ce.Status.StdErrFile

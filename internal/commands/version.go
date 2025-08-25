@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/internal/version"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 )
 
 const (
@@ -24,7 +24,7 @@ var (
 	BuildTimestamp = ""
 )
 
-func NewVersionCommand(log logger.Logger) (*cobra.Command, error) {
+func NewVersionCommand(log logr.Logger) (*cobra.Command, error) {
 	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Prints version information",
@@ -36,9 +36,9 @@ func NewVersionCommand(log logger.Logger) (*cobra.Command, error) {
 	return versionCmd, nil
 }
 
-func getVersion(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+func getVersion(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		log := log.WithName("version")
+		log = log.WithName("version")
 
 		versionStr, err := versionString()
 		if err != nil {
@@ -51,7 +51,7 @@ func getVersion(log logger.Logger) func(cmd *cobra.Command, args []string) error
 	}
 }
 
-func LogVersion(log logger.Logger, programStartMsg string) func(_ *cobra.Command, _ []string) {
+func LogVersion(log logr.Logger, programStartMsg string) func(_ *cobra.Command, _ []string) {
 	return func(_ *cobra.Command, _ []string) {
 		versionString, err := versionString()
 		if err != nil {

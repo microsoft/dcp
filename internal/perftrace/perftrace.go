@@ -92,7 +92,7 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 		return err
 	}
 
-	profileFolder, err := logger.EnsureDetailedLogsFolder()
+	profileFolder, err := logger.EnsureDiagnosticsLogsFolder()
 	if err != nil {
 		return err
 	}

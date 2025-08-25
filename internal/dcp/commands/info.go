@@ -7,13 +7,13 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	container_runtimes "github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/version"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -29,7 +29,7 @@ var (
 	diagnosticMode = false
 )
 
-func NewInfoCommand(log logger.Logger) (*cobra.Command, error) {
+func NewInfoCommand(log logr.Logger) (*cobra.Command, error) {
 	infoCmd := &cobra.Command{
 		Use:   "info",
 		Short: "Prints information about the application and its most important dependencies.",
@@ -75,9 +75,9 @@ type information struct {
 	Arch                  string           `json:"architecture,omitempty"`
 }
 
-func getInfo(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+func getInfo(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		log := log.WithName("info")
+		log = log.WithName("info")
 
 		if timeout <= 0 {
 			if diagnosticMode {

@@ -29,6 +29,9 @@ type ExecutableRunInfo struct {
 	// Run ID for the Executable
 	RunID RunID
 
+	// UID of the Executable
+	UID types.UID
+
 	// Exit code of the Executable process
 	ExitCode *int32
 
@@ -41,6 +44,11 @@ type ExecutableRunInfo struct {
 	// Paths to captured standard output and standard error files
 	StdOutFile string
 	StdErrFile string
+
+	// Paths to capture debug, info, and error logs
+	DebugLogFile string
+	InfoLogFile  string
+	ErrorLogFile string
 
 	// The map of ports reserved for services that the Executable implements
 	ReservedPorts map[types.NamespacedName]int32
@@ -55,15 +63,20 @@ type ExecutableRunInfo struct {
 	stopAttemptInitiated bool
 }
 
-func NewRunInfo() *ExecutableRunInfo {
+func NewRunInfo(exe *apiv1.Executable) *ExecutableRunInfo {
 	return &ExecutableRunInfo{
 		ExeState:           "",
 		Pid:                apiv1.UnknownPID,
+		UID:                exe.UID,
 		ExitCode:           apiv1.UnknownExitCode,
 		StartupTimestamp:   metav1.MicroTime{},
 		FinishTimestamp:    metav1.MicroTime{},
 		healthProbeResults: make(map[string]apiv1.HealthProbeResult),
 	}
+}
+
+func (ri *ExecutableRunInfo) GetResourceId() string {
+	return fmt.Sprintf("executable-%s", ri.UID)
 }
 
 // Updates the runInfo object from another instance that supplies new data about the run.
@@ -105,6 +118,11 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 		updated = true
 	}
 
+	if other.UID != "" && ri.UID != other.UID {
+		ri.UID = other.UID
+		updated = true
+	}
+
 	if other.ExitCode != apiv1.UnknownExitCode && !pointers.EqualValue(ri.ExitCode, other.ExitCode) {
 		pointers.SetValueFrom(&ri.ExitCode, other.ExitCode)
 		updated = true
@@ -120,6 +138,21 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 
 	if other.StdErrFile != "" && ri.StdErrFile != other.StdErrFile {
 		ri.StdErrFile = other.StdErrFile
+		updated = true
+	}
+
+	if other.DebugLogFile != "" && ri.DebugLogFile != other.DebugLogFile {
+		ri.DebugLogFile = other.DebugLogFile
+		updated = true
+	}
+
+	if other.InfoLogFile != "" && ri.InfoLogFile != other.InfoLogFile {
+		ri.InfoLogFile = other.InfoLogFile
+		updated = true
+	}
+
+	if other.ErrorLogFile != "" && ri.ErrorLogFile != other.ErrorLogFile {
+		ri.ErrorLogFile = other.ErrorLogFile
 		updated = true
 	}
 
@@ -147,6 +180,7 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 		pointers.SetValueFrom(&retval.Pid, ri.Pid)
 	}
 	retval.RunID = ri.RunID
+	retval.UID = ri.UID
 	if ri.ExitCode != apiv1.UnknownExitCode {
 		pointers.SetValueFrom(&retval.ExitCode, ri.ExitCode)
 	}
@@ -157,6 +191,9 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	retval.FinishTimestamp = ri.FinishTimestamp
 	retval.StdOutFile = ri.StdOutFile
 	retval.StdErrFile = ri.StdErrFile
+	retval.DebugLogFile = ri.DebugLogFile
+	retval.InfoLogFile = ri.InfoLogFile
+	retval.ErrorLogFile = ri.ErrorLogFile
 	retval.healthProbeResults = stdlib_maps.Clone(ri.healthProbeResults)
 	pointers.SetValueFrom(&retval.healthProbesEnabled, ri.healthProbesEnabled)
 	retval.stopAttemptInitiated = ri.stopAttemptInitiated
@@ -219,7 +256,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	changed |= updateExecutableHealthStatus(exe, ri.ExeState, log)
 
 	if changed != noChange && log.V(1).Enabled() {
-		log.V(1).Info("Executable run changed", "CurrentRunInfo", ri.String(), "Executable", exe.NamespacedName().String())
+		log.V(1).Info("Executable run changed", "CurrentRunInfo", ri.String())
 	}
 
 	return changed

@@ -25,6 +25,7 @@ const (
 	LogStreamSourceStderr        LogStreamSource = "stderr"
 	LogStreamSourceStartupStdout LogStreamSource = "startup_stdout"
 	LogStreamSourceStartupStderr LogStreamSource = "startup_stderr"
+	LogStreamSourceSystem        LogStreamSource = "system"
 )
 
 var (
@@ -33,6 +34,7 @@ var (
 		string(LogStreamSourceStderr),
 		string(LogStreamSourceStartupStdout),
 		string(LogStreamSourceStartupStderr),
+		string(LogStreamSourceSystem),
 	}
 )
 
@@ -128,7 +130,7 @@ func (lo *LogOptions) Validate() error {
 
 	// Empty source is valid and means "stdout".
 	if lo.Source != "" && !slices.Contains(validLogStreamSources, lo.Source) {
-		retval = errors.Join(retval, fmt.Errorf("invalid log source '%s'. Supported log sources are '%s', '%s', '%s', and '%s'", lo.Source, LogStreamSourceStdout, LogStreamSourceStderr, LogStreamSourceStartupStdout, LogStreamSourceStartupStderr))
+		retval = errors.Join(retval, fmt.Errorf("invalid log source '%s'. Supported log sources are '%s', '%s', '%s', '%s', and '%s'", lo.Source, LogStreamSourceStdout, LogStreamSourceStderr, LogStreamSourceStartupStdout, LogStreamSourceStartupStderr, LogStreamSourceSystem))
 	}
 
 	if lo.Limit != nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
@@ -23,7 +24,7 @@ var (
 	serverOnly bool
 )
 
-func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
+func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 	startApiSrvCmd := &cobra.Command{
 		Use:    "start-apiserver",
 		Short:  "Starts the API server and controllers, but does not attempt to run any application",
@@ -46,9 +47,9 @@ func NewStartApiSrvCommand(log logger.Logger) (*cobra.Command, error) {
 	return startApiSrvCmd, nil
 }
 
-func startApiSrv(log logger.Logger) func(cmd *cobra.Command, _ []string) error {
+func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) error {
-		log := log.WithName("start-apiserver")
+		log = log.WithName("start-apiserver")
 
 		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log.WithName("monitor"))
 		defer apiServerCtxCancel()

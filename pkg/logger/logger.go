@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -26,8 +25,8 @@ import (
 )
 
 const (
-	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write debug logs to (defaults to a temp folder)
-	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in debug logs (defaults to none)
+	DCP_DIAGNOSTICS_LOG_FOLDER = "DCP_DIAGNOSTICS_LOG_FOLDER" // Folder to write diagnostics logs to (defaults to a temp folder)
+	DCP_DIAGNOSTICS_LOG_LEVEL  = "DCP_DIAGNOSTICS_LOG_LEVEL"  // Log level to include in diagnostics logs (defaults to none)
 	DCP_LOG_SOCKET             = "DCP_LOG_SOCKET"             // Unix socket to write console logs to instead of stderr
 	DCP_LOG_FILE_NAME_SUFFIX   = "DCP_LOG_FILE_NAME_SUFFIX"   // Suffix to append to the log file name (defaults to process ID)
 	DCP_LOG_SESSION_ID         = "DCP_LOG_SESSION_ID"         // Session ID to include in log names
@@ -38,7 +37,7 @@ const (
 	verbosityFlagShortName = "v"
 	stdOutMaxLevel         = zapcore.InfoLevel
 
-	macOsLogErrorFilter = "Could not get process start time, could not read \"/proc\": stat /proc: no such file or directory"
+	MacOsProcErrorLogFilter = "Could not get process start time, could not read \"/proc\": stat /proc: no such file or directory"
 )
 
 var (
@@ -54,73 +53,8 @@ type Logger struct {
 	flush       func()
 }
 
-type filterSink struct {
-	active    *atomic.Bool
-	maxLife   uint32
-	life      *atomic.Uint32
-	filter    string
-	innerSink logr.LogSink
-}
-
-func newFilterSink(innerSink logr.LogSink, filter string, maxLife uint32) *filterSink {
-	if maxLife == 0 {
-		panic("maxLife must be greater than 0")
-	}
-
-	fs := filterSink{
-		active:    &atomic.Bool{},
-		maxLife:   maxLife,
-		life:      &atomic.Uint32{},
-		filter:    filter,
-		innerSink: innerSink,
-	}
-
-	fs.active.Store(true)
-	return &fs
-}
-
-func (fs *filterSink) Init(info logr.RuntimeInfo) {
-	fs.innerSink.Init(info)
-}
-
-func (fs *filterSink) Enabled(level int) bool {
-	return fs.innerSink.Enabled(level)
-}
-
-func (fs *filterSink) Info(level int, msg string, keysAndValues ...any) {
-	fs.innerSink.Info(level, msg, keysAndValues...)
-}
-
-func (fs *filterSink) Error(err error, msg string, keysAndValues ...any) {
-	active := fs.active.Load()
-	if !active {
-		fs.innerSink.Error(err, msg, keysAndValues...)
-		return
-	}
-
-	if msg == fs.filter {
-		fs.active.Store(false)
-		return
-	}
-
-	life := fs.life.Add(1)
-	if life >= fs.maxLife {
-		fs.active.Store(false)
-	}
-
-	fs.innerSink.Error(err, msg, keysAndValues...)
-}
-
-func (fs *filterSink) WithValues(keysAndValues ...any) logr.LogSink {
-	return fs.innerSink.WithValues(keysAndValues...)
-}
-
-func (fs *filterSink) WithName(name string) logr.LogSink {
-	return fs.innerSink.WithName(name)
-}
-
 // New logger implementation to handle logging to stdout/debug log
-func New(name string) Logger {
+func New(name string) *Logger {
 	// Format console output to be human readable
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
@@ -159,7 +93,7 @@ func New(name string) Logger {
 	// Determine if a diagnostics log is enabled
 	if logCore, err := getDiagnosticsLogCore(name, encoderConfig); err != nil {
 		// Ignore the error if diagnostics log isn't enabled
-		if !errors.Is(err, errDebugLogNotEnabled) {
+		if !errors.Is(err, errDiagnosticsLogNotEnabled) {
 			diagnosticsLogErr = err
 		}
 	} else {
@@ -169,7 +103,7 @@ func New(name string) Logger {
 
 	zapLogger := zap.New(zapcore.NewTee(cores...))
 
-	logger := zapr.NewLogger(zapLogger).WithName(name)
+	logger := zapr.NewLogger(zapLogger)
 
 	if diagnosticsLogErr != nil {
 		// If there was an error setting up the diagnostics log, write it to the log output and stderr
@@ -177,12 +111,7 @@ func New(name string) Logger {
 		fmt.Fprintf(os.Stderr, "failed to enable diagnostics log output: %v\n", diagnosticsLogErr)
 	}
 
-	if runtime.GOOS == "darwin" {
-		innerSink := logger.GetSink()
-		logger = logger.WithSink(newFilterSink(innerSink, macOsLogErrorFilter, 1))
-	}
-
-	return Logger{
+	return &Logger{
 		Logger:      logger,
 		name:        name,
 		atomicLevel: consoleAtomicLevel,
@@ -192,28 +121,27 @@ func New(name string) Logger {
 	}
 }
 
+func (l *Logger) WithName(name string) *Logger {
+	l.Logger = l.Logger.WithName(name)
+	return l
+}
+
+func (l *Logger) WithResourceSink() *Logger {
+	l.Logger = l.Logger.WithSink(newResourceSink(l.atomicLevel, l.Logger.GetSink()))
+	return l
+}
+
+func (l *Logger) WithFilterSink(filter string, maxLife uint32) *Logger {
+	l.Logger = l.Logger.WithSink(newFilterSink(filter, maxLife, l.Logger.GetSink()))
+	return l
+}
+
 func (l *Logger) SetLevel(level zapcore.Level) {
 	l.atomicLevel.SetLevel(level)
 }
 
 func (l *Logger) Flush() {
 	l.flush()
-}
-
-func (l *Logger) BeforeExit(onPanic func(value interface{})) {
-	defer l.Flush()
-
-	value := recover()
-
-	l.V(1).Info("exiting")
-
-	if value != nil {
-		err := fmt.Errorf("%s panicked: %v", l.name, value)
-		l.Error(err, "panic")
-		fmt.Fprintln(os.Stderr, err)
-
-		onPanic(value)
-	}
 }
 
 // Add verbosity flag to enable setting stdout log levels
@@ -225,12 +153,12 @@ func (l *Logger) AddLevelFlag(fs *pflag.FlagSet) {
 }
 
 func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (zapcore.Core, error) {
-	logLevel, err := GetDebugLogLevel()
+	logLevel, err := GetDiagnosticsLogLevel()
 	if err != nil {
 		return nil, err
 	}
 
-	logFolder, err := EnsureDetailedLogsFolder()
+	logFolder, err := EnsureDiagnosticsLogsFolder()
 	if err != nil {
 		return nil, err
 	}
@@ -269,8 +197,8 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
 }
 
-// Returns the folder to write detailed logs and perf traces to.
-func EnsureDetailedLogsFolder() (string, error) {
+// Returns the folder to write diagnostics logs and perf traces to.
+func EnsureDiagnosticsLogsFolder() (string, error) {
 	logFolder, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_FOLDER)
 	if !found {
 		logFolder = defaultLogPath
@@ -290,19 +218,19 @@ func EnsureDetailedLogsFolder() (string, error) {
 	return logFolder, nil
 }
 
-var errDebugLogNotEnabled = errors.New("debug log not enabled")
+var errDiagnosticsLogNotEnabled = errors.New("diagnostics log not enabled")
 
-func GetDebugLogLevel() (zapcore.Level, error) {
-	// Determine if the debug log is enabled
-	dcpLogLevel, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_LEVEL)
+func GetDiagnosticsLogLevel() (zapcore.Level, error) {
+	// Determine if the diagnostics log is enabled
+	diagnosticsLogLevel, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_LEVEL)
 	if !found {
-		return zapcore.InvalidLevel, errDebugLogNotEnabled
+		return zapcore.InvalidLevel, errDiagnosticsLogNotEnabled
 	}
 
-	// Parse the debug log level to a zapcore level
-	logLevel, err := StringToLevel(dcpLogLevel, zapcore.ErrorLevel)
+	// Parse the diagnostics log level to a zapcore level
+	logLevel, err := StringToLevel(diagnosticsLogLevel, zapcore.ErrorLevel)
 	if err != nil {
-		return zapcore.InvalidLevel, fmt.Errorf("failed to parse log level: %v", dcpLogLevel)
+		return zapcore.InvalidLevel, fmt.Errorf("failed to parse log level: %v", diagnosticsLogLevel)
 	}
 
 	return logLevel, nil

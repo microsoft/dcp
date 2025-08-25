@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -46,7 +47,7 @@ const (
 	ignoreSigtermFlag = "ignore-sigterm"
 )
 
-func newMainCommand(log logger.Logger) *cobra.Command {
+func newMainCommand(log *logger.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delay",
 		Short: "A simple program that waits for a specified number of time before exiting.",
@@ -55,7 +56,7 @@ func newMainCommand(log logger.Logger) *cobra.Command {
 It will exit sooner if SIGTERM or SIGINT is received.
 You can also ask it to exit with a specific exit code.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runMain(log)
+			return runMain(log.Logger)
 		},
 		Args: cobra.NoArgs,
 	}
@@ -68,7 +69,7 @@ You can also ask it to exit with a specific exit code.`,
 	return cmd
 }
 
-func runMain(log logger.Logger) error {
+func runMain(log logr.Logger) error {
 	if flags.exitCode < 0 || flags.exitCode > 125 {
 		return fmt.Errorf("the exit code must be between 0 and 125 inclusive")
 	}

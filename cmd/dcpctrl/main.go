@@ -23,9 +23,14 @@ const (
 )
 
 func main() {
-	log := logger.New("dcpctrl")
+	log := logger.New("dcpctrl").
+		WithResourceSink().
+		WithFilterSink(logger.MacOsProcErrorLogFilter, 1). // Filter should run first to suppress spurious logs
+		WithName("dcpctrl")
+
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log.Logger)
+		logger.ReleaseAllResourceLogs()
 		if panicErr != nil {
 			os.Stderr.WriteString(panicErr.Error() + string(osutil.LineSep()))
 			log.Flush()

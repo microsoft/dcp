@@ -26,6 +26,7 @@ type StdIoStreamableResource interface {
 	NamespacedName() types.NamespacedName
 	GetStdOutFile() string
 	GetStdErrFile() string
+	GetResourceId() string
 	Done() bool
 
 	// This is set by Kubernetes with 1-second precision when the resource is deleted

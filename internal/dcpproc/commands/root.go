@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
@@ -22,7 +23,7 @@ var (
 	monitorInterval uint8
 )
 
-func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
+func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	rootCmd := &cobra.Command{
 		SilenceErrors: true,
 		Use:           "dcpproc",
@@ -33,9 +34,9 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	with minimum remote dependencies and maximum ease of use.
 
 	dcpproc is a monitor process responsible for cleaning up orphaned service processes.`,
-		RunE:             monitorProcess(log),
+		RunE:             monitorProcess(log.Logger),
 		SilenceUsage:     true,
-		PersistentPreRun: cmds.LogVersion(log, "Starting DCPPROC..."),
+		PersistentPreRun: cmds.LogVersion(log.Logger, "Starting DCPPROC..."),
 	}
 
 	rootCmd.Flags().Int64VarP((*int64)(&dcpMonitorPid), "monitor", "m", int64(process.UnknownPID), "Tells DCPPROC to monitor the given PID (should be DCP). Will trigger cleanup of monitored service process if the watched process exits for any reason.")
@@ -47,9 +48,9 @@ func NewRootCmd(log logger.Logger) (*cobra.Command, error) {
 	return rootCmd, nil
 }
 
-func monitorProcess(log logger.Logger) func(cmd *cobra.Command, args []string) error {
+func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
-		log := log.WithName("monitor")
+		log = log.WithName("monitor")
 
 		dcpProcessStartTime, dcpProcessStartTimeErr := cmds.ParseProcessStartTime(dcpProcessStartTimeStr)
 		if dcpProcessStartTimeErr != nil {
