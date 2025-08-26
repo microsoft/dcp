@@ -34,6 +34,7 @@ var (
 type resourceFileSink struct {
 	file   *os.File
 	logger logr.Logger
+	flush  func()
 }
 
 func GetResourceLogPath(resourceId string) string {
@@ -49,6 +50,8 @@ func ReleaseResourceLog(resourceId string) {
 	defer resourceLoggerLock.Unlock()
 
 	if sink, found := resourceSinks[resourceId]; found {
+		// Flush any buffered log entries to the file
+		sink.flush()
 		// We're making a best effort to close the file, but don't care if the operation failed
 		_ = sink.file.Close()
 		delete(resourceSinks, resourceId)
@@ -61,11 +64,23 @@ func ReleaseAllResourceLogs() {
 
 	resourceLoggerDisabled.Store(true)
 
+	resources := sync.WaitGroup{}
+
 	for resourceId, sink := range resourceSinks {
-		// We're making a best effort to close the file, but don't care if the operation failed
-		_ = sink.file.Close()
-		delete(resourceSinks, resourceId)
+		resources.Add(1)
+		go func(resourceId string, sink *resourceFileSink) {
+			defer resources.Done()
+			// Flush any buffered log entries to the file
+			sink.flush()
+			// We're making a best effort to close the file, but don't care if the operation failed
+			_ = sink.file.Close()
+		}(resourceId, sink)
 	}
+
+	// Clear out all resource sinks
+	resourceSinks = map[string]*resourceFileSink{}
+
+	resources.Wait()
 }
 
 type resourceSink struct {
@@ -206,9 +221,12 @@ func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink
 	}
 	consoleEncoder := zapcore.NewConsoleEncoder(encoderConfig)
 
+	zapLogger := zap.New(zapcore.NewCore(consoleEncoder, zapcore.AddSync(file), s.atomicLevel))
+
 	return &resourceFileSink{
 		file:   file,
-		logger: zapr.NewLogger(zap.New(zapcore.NewCore(consoleEncoder, zapcore.AddSync(file), s.atomicLevel))).WithName(s.resourceName),
+		logger: zapr.NewLogger(zapLogger).WithName(s.resourceName),
+		flush:  func() { _ = zapLogger.Sync() },
 	}, nil
 }
 
