@@ -39,6 +39,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
@@ -217,7 +218,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) er
 
 		return []string{owner.Name}
 	}); err != nil {
-		r.Log.Error(err, "failed to create index for ContainerNetworkConnection", "indexField", ownerKey)
+		r.Log.Error(err, "Failed to create index for ContainerNetworkConnection", "IndexField", ownerKey)
 		return err
 	}
 
@@ -250,17 +251,19 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.V(1).Info("the Container object was not found")
+			log.V(1).Info("The Container object was not found")
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
-			log.Error(err, "failed to Get() the Container object")
+			log.Error(err, "Failed to Get() the Container object")
 			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
 	} else {
 		getSucceededCounter.Add(ctx, 1)
 	}
+
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 
 	if container.Status.ContainerID != "" {
 		log = log.WithValues("ContainerID", GetShortId(container.Status.ContainerID))
@@ -365,13 +368,13 @@ func handleNewContainer(
 	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !status.IsHealthy() {
 		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
-		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
+		log.V(1).Info("Container runtime is not healthy, retrying reconciliation later...")
 		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
 	lifecycleKey, hasDefaultLifecycleKey, hashErr := container.Spec.GetLifecycleKey()
 	if hashErr != nil {
-		log.Error(hashErr, "could not calculate lifecycle key")
+		log.Error(hashErr, "Could not calculate lifecycle key")
 		return change | additionalReconciliationNeeded
 	}
 
@@ -384,7 +387,7 @@ func handleNewContainer(
 		// Check for an existing persistent container
 		inspected, inspectedErr := inspectContainerIfExists(ctx, r.orchestrator, container.Spec.ContainerName)
 		if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
-			log.Error(inspectedErr, "could not inspect existing container")
+			log.Error(inspectedErr, "Could not inspect existing container")
 			return change | additionalReconciliationNeeded
 		}
 
@@ -400,14 +403,14 @@ func handleNewContainer(
 				// We need to recreate this DCP managed container because the lifecycle key has changed
 				if hasDefaultLifecycleKey {
 					mounts, ports, env, other := calculatePersistentContainerChanges(rcd, inspected)
-					log.Info("found existing Container, but calculated lifecycle key doesn't match", "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
+					log.Info("Found existing Container, but calculated lifecycle key doesn't match", "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey, "MountChanges", mounts, "PortChanges", ports, "EnvChanges", env, "OtherChanges", other)
 				} else {
-					log.Info("found existing Container, but custom lifecycle key doesn't match", "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
+					log.Info("Found existing Container, but custom lifecycle key doesn't match", "OldLifecycleKey", oldLifecycleKey, "NewLifecycleKey", lifecycleKey)
 				}
 			} else if dcpManaged && inspected.Status != containers.ContainerStatusRunning {
-				log.V(1).Info("found existing Container that is not running", "ContainerStatus", inspected.Status)
+				log.V(1).Info("Found existing Container that is not running", "ContainerStatus", inspected.Status)
 			} else {
-				log.Info("found existing Container")
+				log.Info("Found existing Container")
 
 				rcd.ensureStartupLogFiles(container, log)
 				rcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)
@@ -422,9 +425,9 @@ func handleNewContainer(
 			}
 
 			if container.ShouldStart() {
-				log.V(1).Info("removing existing container")
+				log.V(1).Info("Removing existing container")
 				if removeErr := r.removeExistingContainer(ctx, containerID(inspected.Id), inspected, log); removeErr != nil {
-					log.Error(removeErr, "could not remove existing container")
+					log.Error(removeErr, "Could not remove existing container")
 					return change | additionalReconciliationNeeded
 				}
 			}
@@ -433,7 +436,7 @@ func handleNewContainer(
 
 	if !container.ShouldStart() {
 		// We should wait to create a container until the user clears Start = false
-		log.V(1).Info("waiting for the container to be started")
+		log.V(1).Info("Waiting for the container to be started")
 		return change
 	}
 
@@ -463,10 +466,10 @@ func ensureContainerBuildingState(
 		rcd.ensureStartupLogFiles(container, log)
 		r.ensureContainerWatch(container, log)
 
-		log.V(1).Info("scheduling image build")
+		log.V(1).Info("Scheduling image build")
 		err := r.startupQueue.Enqueue(r.buildImageWithOrchestrator(container, rcd.Clone(), log))
 		if err != nil {
-			log.Error(err, "image was not built, possibly because the workload is shutting down")
+			log.Error(err, "Image was not built, possibly because the workload is shutting down")
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -619,14 +622,14 @@ func ensureContainerRunningState(
 		return ensureContainerUnknownState(ctx, r, container, desiredState, nil, log)
 	}
 
-	log.V(1).Info("inspecting container resource...")
+	log.V(1).Info("Inspecting container resource...")
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
 		if errors.Is(err, containers.ErrNotFound) {
-			log.Info("container resource not found, assuming it was removed...")
+			log.Info("Container resource not found, assuming it was removed...")
 			return ensureContainerUnknownState(ctx, r, container, desiredState, rcd, log)
 		} else {
-			log.Info("container resource could not be inspected", "Error", err.Error())
+			log.Info("Container resource could not be inspected", "Error", err.Error())
 			// Could be a transient error, so for know we keep the rest of the status as-is.
 			// Don't try to reconcile again unconditionally (that might result in an infinite loop),
 			// but instead wait for another event from the container watcher.
@@ -650,7 +653,7 @@ func ensureContainerRunningState(
 		r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 	} else {
 		if inspected.Status != containers.ContainerStatusRunning {
-			log.V(1).Info("container is not running, delaying Endpoint creation...")
+			log.V(1).Info("Container is not running, delaying Endpoint creation...")
 			change |= additionalReconciliationNeeded
 		} else {
 			r.enableEndpointsAndHealthProbes(ctx, container, rcd, inspected, log)
@@ -688,10 +691,10 @@ func ensureContainerExitedState(ctx context.Context,
 	rcd.closeStartupLogFiles(log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 
-	log.V(1).Info("inspecting container resource...")
+	log.V(1).Info("Inspecting container resource...")
 	inspected, err := inspectContainer(ctx, r.orchestrator, string(rcd.containerID))
 	if err != nil {
-		log.Info("container resource could not be inspected, might have been removed...", "Error", err.Error())
+		log.Info("Container resource could not be inspected, might have been removed...", "Error", err.Error())
 		return change // Best effort--skipping the rest.
 	}
 
@@ -765,7 +768,7 @@ func ensureContainerStoppingState(
 		rcd.stopAttemptInitiated = true
 		err := r.startupQueue.Enqueue(r.stopContainerFunc(container, rcd.Clone(), log))
 		if err != nil {
-			log.Error(err, "could not stop the container")
+			log.Error(err, "Could not stop the container")
 			change |= ensureContainerUnknownState(ctx, r, container, apiv1.ContainerStateUnknown, rcd, log)
 			return change
 		}
@@ -802,17 +805,17 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 		inspected, inspectErr = inspectContainer(ctx, r.orchestrator, string(containerID))
 		if inspectErr != nil {
 			if errors.Is(inspectErr, containers.ErrNotFound) {
-				log.Info("container resource not found, assuming it was removed... ")
+				log.Info("Container resource not found, assuming it was removed... ")
 				return containers.ErrNotFound
 			}
 		}
 	}
 
 	if needsStopping() {
-		log.V(1).Info("calling container orchestrator to stop the existing container...")
+		log.V(1).Info("Calling container orchestrator to stop the existing container...")
 		stopErr := stopContainer(ctx, r.orchestrator, string(containerID))
 		if stopErr != nil {
-			log.Error(stopErr, "could not stop the running container")
+			log.Error(stopErr, "Could not stop the running container")
 		}
 		return stopErr
 	}
@@ -836,7 +839,7 @@ func (r *ContainerReconciler) removeExistingContainer(
 	removeErr := removeContainer(ctx, r.orchestrator, string(containerID))
 	if removeErr != nil {
 		// Log any unexpected error, but attempt to continue with creation of the new container
-		log.Error(removeErr, "could not remove the running container")
+		log.Error(removeErr, "Could not remove the running container")
 		return removeErr
 	}
 
@@ -854,12 +857,12 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 
 	rcd.startupAttempted = true
 
-	log.V(1).Info("scheduling container start", "image", container.SpecifiedImageNameOrDefault())
+	log.V(1).Info("Scheduling container start", "Image", container.SpecifiedImageNameOrDefault())
 
 	if containerName == "" {
 		uniqueContainerName, _, err := MakeUniqueName(container.Name)
 		if err != nil {
-			log.Error(err, "could not generate a unique container name")
+			log.Error(err, "Could not generate a unique container name")
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -873,7 +876,7 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 
 	err := r.startupQueue.Enqueue(r.startContainerWithOrchestrator(container, rcd.Clone(), containerName, log, delay))
 	if err != nil {
-		log.Error(err, "container was not started, probably because the workload is shutting down")
+		log.Error(err, "Container was not started, probably because the workload is shutting down")
 		rcd.containerState = apiv1.ContainerStateFailedToStart
 		rcd.startupError = err
 		rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -886,7 +889,7 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(buildCtx context.Context) {
 		err := func() error {
-			log.V(1).Info("building image", "Dockerfile", container.Spec.Build.Dockerfile, "Context", container.Spec.Build.Context)
+			log.V(1).Info("Building image", "Dockerfile", container.Spec.Build.Dockerfile, "Context", container.Spec.Build.Context)
 
 			rcd.runSpec.Build.Tags = append(rcd.runSpec.Build.Tags, container.SpecifiedImageNameOrDefault())
 			rcd.runSpec.Build.Labels = append(rcd.runSpec.Build.Labels, []apiv1.ContainerLabel{
@@ -914,7 +917,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			buildErr := r.orchestrator.BuildImage(buildCtx, buildOptions)
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 			if buildErr != nil {
-				log.Error(buildErr, "could not build the image")
+				log.Error(buildErr, "Could not build the image")
 				return buildErr
 			}
 
@@ -946,9 +949,9 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 	// Calculate differences in the image name
 	if rcd.runSpec.Image != inspected.Image {
 		if rcd.runSpec.Build != nil {
-			changeList = append(changeList, "container was rebuilt due to Dockerfile or context changes")
+			changeList = append(changeList, "Container was rebuilt due to Dockerfile or context changes")
 		} else {
-			changeList = append(changeList, fmt.Sprintf("container image name changed from %s to %s", inspected.Image, rcd.runSpec.Image))
+			changeList = append(changeList, fmt.Sprintf("Container image name changed from %s to %s", inspected.Image, rcd.runSpec.Image))
 		}
 	}
 
@@ -1071,7 +1074,7 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 		specCreateFilesHash := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles))))
 
 		if createFilesLabelHash != specCreateFilesHash {
-			changeList = append(changeList, "container create files entries changed")
+			changeList = append(changeList, "Container create files entries changed")
 		}
 	}
 
@@ -1094,9 +1097,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
 			if err != nil {
 				if templating.IsTransientTemplateError(err) {
-					log.Info("could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
+					log.Info("Could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
 				} else {
-					log.Error(err, "could not compute effective environment for the Container")
+					log.Error(err, "Could not compute effective environment for the Container")
 				}
 
 				return err
@@ -1105,9 +1108,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
 			if err != nil {
 				if templating.IsTransientTemplateError(err) {
-					log.Info("could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
+					log.Info("Could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
 				} else {
-					log.Error(err, "could not compute effective invocation arguments for the Container")
+					log.Error(err, "Could not compute effective invocation arguments for the Container")
 				}
 
 				return err
@@ -1130,17 +1133,17 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					if errors.Is(volErr, os.ErrNotExist) {
 						volErr = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
 						if volErr != nil {
-							log.Error(volErr, "could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
+							log.Error(volErr, "Could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
 							return volErr
 						}
 					} else if volErr != nil {
-						log.Error(volErr, "could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
+						log.Error(volErr, "Could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
 						return volErr
 					}
 				}
 			}
 
-			log.V(1).Info("starting container", "Image", container.SpecifiedImageNameOrDefault())
+			log.V(1).Info("Starting container", "Image", container.SpecifiedImageNameOrDefault())
 
 			defaultNetwork := ""
 			if rcd.runSpec.Networks != nil {
@@ -1150,7 +1153,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			lifecycleKey, _, hashErr := rcd.runSpec.GetLifecycleKey()
 			if hashErr != nil {
-				log.Error(hashErr, "could not compute lifecycle key for the container")
+				log.Error(hashErr, "Could not compute lifecycle key for the container")
 				return hashErr
 			}
 
@@ -1183,7 +1186,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			thisProcess, thisProcessErr := process.This()
 			if thisProcessErr != nil {
-				log.Error(thisProcessErr, "could not get the current process information; container will not have creator process information")
+				log.Error(thisProcessErr, "Could not get the current process information; container will not have creator process information")
 			} else {
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 					Key:   CreatorProcessIdLabel,
@@ -1247,13 +1250,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			inspected, err := createContainer(startupCtx, r.orchestrator, creationOptions)
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 			if err != nil {
-				log.Error(err, "could not create the container")
+				log.Error(err, "Could not create the container")
 				return err
 			}
 
 			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
 
-			log.V(1).Info("container created")
+			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
 
 			for _, createFileRequest := range rcd.runSpec.CreateFiles {
@@ -1274,11 +1277,11 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
 				if copyErr != nil {
-					log.Error(copyErr, "could not copy files to the container", "Destination", createFileRequest.Destination)
+					log.Error(copyErr, "Could not copy files to the container", "Destination", createFileRequest.Destination)
 					return copyErr
 				}
 
-				log.V(1).Info("files copied to the container", "Destination", createFileRequest.Destination)
+				log.V(1).Info("Files copied to the container", "Destination", createFileRequest.Destination)
 			}
 
 			if rcd.runSpec.Networks == nil {
@@ -1286,15 +1289,15 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				rcd.startAttemptFinishedAt = metav1.NowMicro()
 				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 				if err != nil {
-					log.Error(err, "could not start the container")
+					log.Error(err, "Could not start the container")
 					return err
 				}
 
 				if inspected.Status == containers.ContainerStatusRunning {
-					log.V(1).Info("container started")
+					log.V(1).Info("Container started")
 					rcd.containerState = apiv1.ContainerStateRunning
 				} else {
-					log.V(1).Info("container started and exited shortly after", "ContainerStatus", inspected.Status)
+					log.V(1).Info("Container started and exited shortly after", "ContainerStatus", inspected.Status)
 					rcd.containerState = apiv1.ContainerStateExited
 				}
 			} else {
@@ -1310,7 +1313,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					networkID := inspected.Networks[i].Id
 					err = disconnectNetwork(startupCtx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
 					if err != nil {
-						log.Error(err, "could not detach network from the container", "NetworkID", networkID)
+						log.Error(err, "Could not detach network from the container", "NetworkID", networkID)
 						return err
 					}
 				}
@@ -1344,10 +1347,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 // The passed runningContainerData should be a clone independent from what is stored in the runningContainers map.
 func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
-		log.V(1).Info("calling container orchestrator to stop the container...")
+		log.V(1).Info("Calling container orchestrator to stop the container...")
 		err := r.stopContainerIfNecessary(stopCtx, rcd.containerID, nil, log)
 		if err != nil {
-			log.Error(err, "could not stop the running container corresponding to Container object")
+			log.Error(err, "Could not stop the running container corresponding to Container object")
 			rcd.containerState = apiv1.ContainerStateUnknown
 		} else {
 			rcd.containerState = apiv1.ContainerStateExited
@@ -1377,7 +1380,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	}
 
 	if !rcd.hasValidContainerID() {
-		log.V(1).Info("container resource was never created, nothing to remove...")
+		log.V(1).Info("Container resource was never created, nothing to remove...")
 		return
 	}
 
@@ -1423,7 +1426,7 @@ func (r *ContainerReconciler) disableEndpointsAndHealthProbes(
 	log logr.Logger,
 ) {
 	if len(ctr.Spec.HealthProbes) > 0 && (rcd == nil || pointers.TrueValue(rcd.healthProbesEnabled)) {
-		log.V(1).Info("disabling health probes for Container...")
+		log.V(1).Info("Disabling health probes for Container...")
 		r.hpSet.DisableProbes(ctr)
 		if rcd != nil {
 			pointers.Make(&rcd.healthProbesEnabled, false)
@@ -1441,12 +1444,12 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 	log logr.Logger,
 ) {
 	if len(ctr.Spec.HealthProbes) > 0 && pointers.NotTrue(rcd.healthProbesEnabled) {
-		log.V(1).Info("enabling health probes for Container...")
+		log.V(1).Info("Enabling health probes for Container...")
 		pointers.Make(&rcd.healthProbesEnabled, true)
 		probeErr := r.hpSet.EnableProbes(ctr, ctr.Spec.HealthProbes)
 		if probeErr != nil {
 			// Should never happen (unless lifetime context is cancelled, but we should not be here in that case).
-			log.Error(probeErr, "could not enable health probes for Container")
+			log.Error(probeErr, "Could not enable health probes for Container")
 		}
 	}
 	ensureEndpointsForWorkload(ctx, r, ctr, nil, inspected, log)
@@ -1473,7 +1476,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 
 	// Check to see if we are connected to all the ContainerNetworks listed in the Container object spec
 	if len(connected) != len(*container.Spec.Networks) && !container.Spec.Stop && container.DeletionTimestamp.IsZero() {
-		log.V(1).Info("container not connected to expected number of networks, scheduling additional reconciliation...", "Expected", len(*container.Spec.Networks), "Connected", len(connected))
+		log.V(1).Info("Container not connected to expected number of networks, scheduling additional reconciliation...", "Expected", len(*container.Spec.Networks), "Connected", len(connected))
 		return nil, nil
 	}
 
@@ -1487,7 +1490,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 	inspected, startupErr := r.startContainerWithTimeout(ctx, container.Name, containerID, streamOptions)
 	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 	if startupErr != nil {
-		log.Error(startupErr, "failed to start Container")
+		log.Error(startupErr, "Failed to start Container")
 		return nil, startupErr
 	}
 
@@ -1506,7 +1509,7 @@ func (r *ContainerReconciler) handleContainerNetworkConnections(
 	connected, connectionErr := r.ensureContainerNetworkConnections(ctx, container, inspected, rcd, log)
 	if connectionErr != nil {
 		// The error was already logged by ensureContainerNetworkConnections()
-		log.V(1).Info("an error occurred while managing container network connections, scheduling additional reconciliation...")
+		log.V(1).Info("An error occurred while managing container network connections, scheduling additional reconciliation...")
 		return nil, additionalReconciliationNeeded
 	}
 
@@ -1516,10 +1519,10 @@ func (r *ContainerReconciler) handleContainerNetworkConnections(
 
 	notConnected, newlyConnected := slices.Diff(container.Status.Networks, connectedNetworkNames)
 	if len(notConnected) > 0 {
-		log.V(1).Info("container became disconnected from some networks, updating status...", "DisonnectedNetworks", notConnected)
+		log.V(1).Info("Container became disconnected from some networks, updating status...", "DisconnectedNetworks", notConnected)
 	}
 	if len(newlyConnected) > 0 {
-		log.V(1).Info("container become connected to new networks, updating status...", "ConnectedNetworks", newlyConnected)
+		log.V(1).Info("Container became connected to new networks, updating status...", "ConnectedNetworks", newlyConnected)
 	}
 
 	if len(notConnected) > 0 || len(newlyConnected) > 0 {
@@ -1540,13 +1543,13 @@ func (r *ContainerReconciler) removeContainerNetworkConnections(
 
 	var childNetworkConnections apiv1.ContainerNetworkConnectionList
 	if err := r.List(ctx, &childNetworkConnections, ctrl_client.InNamespace(container.GetNamespace()), ctrl_client.MatchingFields{ownerKey: string(container.Name)}); err != nil {
-		log.Error(err, "failed to list child ContainerNetworkConnection objects")
+		log.Error(err, "Failed to list child ContainerNetworkConnection objects")
 		return
 	}
 
 	for i := range childNetworkConnections.Items {
 		if err := r.Delete(ctx, &childNetworkConnections.Items[i], ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
-			log.Error(err, "could not delete ContainerNetworkConnection object", "ContainerNetworkConnection", childNetworkConnections.Items[i].NamespacedName().String())
+			log.Error(err, "Could not delete ContainerNetworkConnection object", "ContainerNetworkConnection", childNetworkConnections.Items[i].NamespacedName().String())
 		}
 	}
 }
@@ -1565,7 +1568,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 ) ([]*apiv1.ContainerNetwork, error) {
 	var childNetworkConnections apiv1.ContainerNetworkConnectionList
 	if err := r.List(ctx, &childNetworkConnections, ctrl_client.InNamespace(container.GetNamespace()), ctrl_client.MatchingFields{ownerKey: string(container.Name)}); err != nil {
-		log.Error(err, "failed to list child ContainerNetworkConnection objects")
+		log.Error(err, "Failed to list child ContainerNetworkConnection objects")
 		return []*apiv1.ContainerNetwork{}, err
 	}
 
@@ -1586,7 +1589,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 
 		if err != nil {
-			log.Error(err, "could not delete some child ContainerNetworkConnection objects")
+			log.Error(err, "Could not delete some child ContainerNetworkConnection objects")
 		}
 
 		return []*apiv1.ContainerNetwork{}, nil
@@ -1594,7 +1597,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 
 	var networks apiv1.ContainerNetworkList
 	if err := r.List(ctx, &networks, ctrl_client.InNamespace(container.GetNamespace())); err != nil {
-		log.Error(err, "failed to list ContainerNetwork objects")
+		log.Error(err, "Failed to list ContainerNetwork objects")
 		return []*apiv1.ContainerNetwork{}, err
 	}
 
@@ -1607,7 +1610,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			return []*apiv1.ContainerNetwork{}, err
 		}
 		if i, err := inspectContainer(ctx, r.orchestrator, string(containerID)); err != nil {
-			log.Error(err, "could not inspect the container")
+			log.Error(err, "Could not inspect the container")
 			return []*apiv1.ContainerNetwork{}, err
 		} else {
 			inspected = i
@@ -1664,7 +1667,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 
 		if err := r.Delete(ctx, &connection, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground)); ctrl_client.IgnoreNotFound(err) != nil {
-			log.Error(err, "could not delete ContainerNetworkConnection object", "Network", connection.Spec.ContainerNetworkName)
+			log.Error(err, "Could not delete ContainerNetworkConnection object", "Network", connection.Spec.ContainerNetworkName)
 		} else {
 			log.Info("Removed a ContainerNetworkConnection connection", "Network", connection.Spec.ContainerNetworkName)
 			delete(rcd.networkConnections, networkConnectionKey)
@@ -1701,7 +1704,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 
 		uniqueName, _, err := MakeUniqueName(fmt.Sprint(container.Name, "-", namespacedNetworkName.Name))
 		if err != nil {
-			log.Error(err, "could not generate unique name for ContainerNetworkConnection object")
+			log.Error(err, "Could not generate unique name for ContainerNetworkConnection object")
 			continue
 		}
 
@@ -1719,7 +1722,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 
 		if err = ctrl.SetControllerReference(container, connection, r.Scheme()); err != nil {
-			log.Error(err, "failed to set owner for network connection",
+			log.Error(err, "Failed to set owner for network connection",
 				"Network", namespacedNetworkName.String(),
 			)
 		}
@@ -1727,7 +1730,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		if err = r.Create(ctx, connection); err != nil {
 			// Do not log an error if resource cleanup has started.
 			if !apiv1.ResourceCreationProhibited.Load() {
-				log.Error(err, "could not persist ContainerNetworkConnection object",
+				log.Error(err, "Could not persist ContainerNetworkConnection object",
 					"Network", namespacedNetworkName.String(),
 				)
 			}
@@ -1749,13 +1752,13 @@ func (r *ContainerReconciler) createEndpoint(
 ) (*apiv1.Endpoint, error) {
 	endpointName, _, err := MakeUniqueName(owner.GetName())
 	if err != nil {
-		log.Error(err, "could not generate unique name for Endpoint object")
+		log.Error(err, "Could not generate unique name for Endpoint object")
 		return nil, err
 	}
 
 	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(owner.(*apiv1.Container), serviceProducer.Port, inspected, log)
 	if err != nil {
-		log.Error(err, "could not determine host address and port for container port")
+		log.Error(err, "Could not determine host address and port for container port")
 		return nil, err
 	}
 
@@ -1786,7 +1789,7 @@ func (r *ContainerReconciler) validateExistingEndpoint(
 ) error {
 	hostAddress, hostPort, err := r.getHostAddressAndPortForContainerPort(owner.(*apiv1.Container), serviceProducer.Port, inspected, log)
 	if err != nil {
-		log.Error(err, "could not determine host address and port for container port")
+		log.Error(err, "Could not determine host address and port for container port")
 		return err
 	}
 
@@ -1905,14 +1908,14 @@ func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, l
 	r.containerEvtWorkerStop = make(chan struct{})
 	go r.containerEventWorker(r.containerEvtWorkerStop, r.containerEvtCh.Out, r.networkEvtCh.Out)
 
-	log.V(1).Info("subscribing to container events...")
+	log.V(1).Info("Subscribing to container events...")
 	containerSub, containerSubErr := r.orchestrator.WatchContainers(r.containerEvtCh.In)
 	networkSub, networkSubErr := r.orchestrator.WatchNetworks(r.networkEvtCh.In)
 
 	err := errors.Join(containerSubErr, networkSubErr)
 
 	if err != nil {
-		log.Error(err, "could not subscribe to events")
+		log.Error(err, "Could not subscribe to events")
 		close(r.containerEvtWorkerStop)
 		r.containerEvtWorkerStop = nil
 		return
@@ -1928,7 +1931,7 @@ func (r *ContainerReconciler) releaseContainerWatch(container *apiv1.Container, 
 
 	r.watchingResources.Delete(container.UID)
 	if r.watchingResources.Empty() {
-		log.Info("no more Container resources are being watched, cancelling container watch")
+		log.Info("No more Container resources are being watched, cancelling container watch")
 		r.cancelContainerWatch()
 	}
 }
@@ -1996,7 +1999,7 @@ func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) 
 		}
 
 		if r.Log.V(1).Enabled() {
-			r.Log.V(1).Info("container event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
+			r.Log.V(1).Info("Container event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
 		}
 
 		r.scheduleContainerReconciliation(owner, containerID)
@@ -2020,7 +2023,7 @@ func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 		}
 
 		if r.Log.V(1).Enabled() {
-			r.Log.V(1).Info("network event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
+			r.Log.V(1).Info("Network event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
 		}
 
 		r.scheduleContainerReconciliation(owner, containerID)

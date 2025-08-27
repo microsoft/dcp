@@ -76,14 +76,14 @@ func (sls stdIoLogStreamer) StreamLogs(
 	}
 
 	if logFilePath == "" {
-		log.V(1).Info("resource logs didn't start streaming", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "Source", opts.Source)
+		log.V(1).Info("Resource logs didn't start streaming", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "Source", opts.Source)
 		return status, nil, nil
 	}
 
 	logFile, fileErr := usvc_io.OpenFile(logFilePath, os.O_RDONLY, 0)
 	if fileErr != nil {
 		if os.IsNotExist(fileErr) {
-			log.V(1).Info("log file does not exist yet", "Path", logFilePath)
+			log.V(1).Info("Log file does not exist yet", "Path", logFilePath)
 			return status, nil, nil
 		}
 
@@ -103,7 +103,7 @@ func (sls stdIoLogStreamer) StreamLogs(
 
 		_, copyErr := io.Copy(dest, src)
 		if copyErr != nil {
-			log.Error(copyErr, "failed to copy log file to destination")
+			log.Error(copyErr, "Failed to copy log file to destination")
 		}
 
 		return apiv1.ResourceStreamStatusDone, nil, nil
@@ -128,10 +128,10 @@ func (sls stdIoLogStreamer) StreamLogs(
 	go func() {
 		<-followWriter.Done()
 
-		log.V(1).Info("log streamer completed", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "Source", opts.Source)
+		log.V(1).Info("Log streamer completed", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "Source", opts.Source)
 
 		if followWriter.Err() != nil {
-			log.Error(followWriter.Err(), "failed to stream logs for Resource", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String())
+			log.Error(followWriter.Err(), "Failed to stream logs for Resource", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String())
 		}
 
 		sls.lock.Lock()
@@ -152,7 +152,7 @@ func (sls stdIoLogStreamer) StreamLogs(
 func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, log logr.Logger) {
 	resource, isResource := evt.Object.(apiv1.StdIoStreamableResource)
 	if !isResource {
-		log.V(1).Info("resource watcher received a resource notification for an object that is not a supported type", "ObjectKind", evt.Object.GetObjectKind().GroupVersionKind().String())
+		log.V(1).Info("Resource watcher received a resource notification for an object that is not a supported type", "ObjectKind", evt.Object.GetObjectKind().GroupVersionKind().String())
 		return
 	}
 
@@ -183,14 +183,14 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
 
 		if !resource.GetDeletionTimestamp().IsZero() {
-			stopResourceStreams("stopping log streams for resource that is being deleted")
+			stopResourceStreams("Stopping log streams for resource that is being deleted")
 		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
-			stopResourceStreams("stopping log following for resource that reached its final state")
+			stopResourceStreams("Stopping log following for resource that reached its final state")
 		}
 
 	case watch.Deleted:
-		stopResourceStreams("stopping log streams for resource that was deleted")
+		stopResourceStreams("Stopping log streams for resource that was deleted")
 	}
 }
 
