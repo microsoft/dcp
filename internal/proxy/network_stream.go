@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -83,65 +82,24 @@ func StreamNetworkData(
 			}
 	}
 
-	go func() {
-		defer east.Close()
-		defer eastWestPipe.Close()
-		n, err := io.Copy(eastWestPipe, east)
-		// Suppress errors that are expected when the connection is closed
-		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) {
+	doStream := func(from io.ReadCloser, to io.WriteCloser, resultChan chan<- networkResult) {
+		defer from.Close()
+		defer to.Close()
+		n, err := io.Copy(to, from)
+		if isExpectedConnCloseErr(err) {
 			err = nil
 		}
-		eastReadDone <- networkResult{
+		resultChan <- networkResult{
 			count:     n,
 			err:       err,
 			timestamp: time.Now(),
 		}
-	}()
+	}
 
-	go func() {
-		defer west.Close()
-		defer westEastPipe.Close()
-		n, err := io.Copy(westEastPipe, west)
-		// Suppress errors that are expected when the connection is closed
-		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) {
-			err = nil
-		}
-		westReadDone <- networkResult{
-			count:     n,
-			err:       err,
-			timestamp: time.Now(),
-		}
-	}()
-
-	go func() {
-		defer westEastPipe.Close()
-		defer west.Close()
-		n, err := io.Copy(west, westEastPipe)
-		// Suppress errors that are expected when the connection is closed
-		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) {
-			err = nil
-		}
-		westWriteDone <- networkResult{
-			count:     n,
-			err:       err,
-			timestamp: time.Now(),
-		}
-	}()
-
-	go func() {
-		defer eastWestPipe.Close()
-		defer east.Close()
-		n, err := io.Copy(east, eastWestPipe)
-		// Suppress errors that are expected when the connection is closed
-		if errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF) {
-			err = nil
-		}
-		eastWriteDone <- networkResult{
-			count:     n,
-			err:       err,
-			timestamp: time.Now(),
-		}
-	}()
+	go doStream(east, eastWestPipe, eastReadDone)
+	go doStream(west, westEastPipe, westReadDone)
+	go doStream(westEastPipe, west, westWriteDone)
+	go doStream(eastWestPipe, east, eastWriteDone)
 
 	eastReadResult := <-eastReadDone
 	westReadResult := <-westReadDone
