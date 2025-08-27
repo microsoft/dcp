@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package v1
 
 import (
@@ -24,6 +26,8 @@ const LogSubresourceName = "log"
 type StdIoStreamableResource interface {
 	GetUID() types.UID
 	NamespacedName() types.NamespacedName
+	HasStdOut() bool
+	HasStdErr() bool
 	GetStdOutFile() string
 	GetStdErrFile() string
 	GetResourceId() string

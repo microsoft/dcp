@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package v1
 
 import (
@@ -126,6 +128,43 @@ type Service struct {
 	Status ServiceStatus `json:"status,omitempty"`
 }
 
+// Done implements StdIoStreamableResource.
+func (svc *Service) Done() bool {
+	return !svc.DeletionTimestamp.IsZero()
+}
+
+// GetDeletionTimestamp implements StdIoStreamableResource.
+// Subtle: this method shadows the method (ObjectMeta).GetDeletionTimestamp of Service.ObjectMeta.
+func (svc *Service) GetDeletionTimestamp() *metav1.Time {
+	return svc.DeletionTimestamp
+}
+
+// HasStdOut implements StdOutStreamableResource.
+func (ce *Service) HasStdOut() bool {
+	return false
+}
+
+// HasStdErr implements StdOutStreamableResource.
+func (ce *Service) HasStdErr() bool {
+	return false
+}
+
+// GetStdErrFile implements StdIoStreamableResource.
+func (svc *Service) GetStdErrFile() string {
+	return ""
+}
+
+// GetStdOutFile implements StdIoStreamableResource.
+func (svc *Service) GetStdOutFile() string {
+	return ""
+}
+
+// GetUID implements StdIoStreamableResource.
+// Subtle: this method shadows the method (ObjectMeta).GetUID of Service.ObjectMeta.
+func (svc *Service) GetUID() types.UID {
+	return svc.UID
+}
+
 func (svc *Service) GetResourceId() string {
 	return fmt.Sprintf("service-%s", svc.UID)
 }
@@ -220,3 +259,4 @@ var _ apiserver_resource.ObjectWithStatusSubResource = (*Service)(nil)
 var _ apiserver_resource.StatusSubResource = (*ServiceStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Service)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Service)(nil)
+var _ StdIoStreamableResource = (*Service)(nil)
