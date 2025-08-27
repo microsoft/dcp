@@ -5,8 +5,10 @@ import (
 	"io"
 	"os"
 	"testing"
+	"time"
 
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,6 +29,13 @@ func TestResourceSink(t *testing.T) {
 	log.Info("This is a test log entry", "Key1", "Value1")
 
 	logger.flush()
+
+	// Ensure that the resource log file exists
+	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 2*time.Second, func() error {
+		_, statErr := os.Stat(expectedResourceFilePath)
+		return statErr
+	})
+	require.NoError(t, fileExistsErr)
 
 	require.FileExists(t, expectedResourceFilePath)
 
@@ -64,7 +73,12 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 
 	logger.flush()
 
-	require.FileExists(t, expectedResourceFilePath)
+	// Ensure that the resource log file exists
+	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 2*time.Second, func() error {
+		_, statErr := os.Stat(expectedResourceFilePath)
+		return statErr
+	})
+	require.NoError(t, fileExistsErr)
 
 	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
 	require.NoError(t, fileErr)
