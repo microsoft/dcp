@@ -66,9 +66,17 @@ func (sls stdIoLogStreamer) StreamLogs(
 	var logFilePath string
 	switch opts.Source {
 	case "", string(apiv1.LogStreamSourceStdout):
-		logFilePath = resource.GetStdOutFile()
+		if resource.HasStdOut() {
+			logFilePath = resource.GetStdOutFile()
+		} else {
+			return apiv1.ResourceStreamStatusDone, nil, nil
+		}
 	case string(apiv1.LogStreamSourceStderr):
-		logFilePath = resource.GetStdErrFile()
+		if resource.HasStdErr() {
+			logFilePath = resource.GetStdErrFile()
+		} else {
+			return apiv1.ResourceStreamStatusDone, nil, nil
+		}
 	case string(apiv1.LogStreamSourceSystem):
 		logFilePath = logger.GetResourceLogPath(resource.GetResourceId())
 	default:
@@ -76,7 +84,10 @@ func (sls stdIoLogStreamer) StreamLogs(
 	}
 
 	if logFilePath == "" {
-		log.V(1).Info("Resource logs didn't start streaming", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "Source", opts.Source)
+		log.V(1).Info("Resource logs didn't start streaming",
+			"Kind", obj.GetObjectKind().GroupVersionKind().String(),
+			"Name", resource.NamespacedName().String(),
+			"Source", opts.Source)
 		return status, nil, nil
 	}
 
@@ -128,10 +139,15 @@ func (sls stdIoLogStreamer) StreamLogs(
 	go func() {
 		<-followWriter.Done()
 
-		log.V(1).Info("Log streamer completed", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String(), "Source", opts.Source)
+		log.V(1).Info("Log streamer completed",
+			"Kind", obj.GetObjectKind().GroupVersionKind().String(),
+			"Name", resource.NamespacedName().String(),
+			"Source", opts.Source)
 
 		if followWriter.Err() != nil {
-			log.Error(followWriter.Err(), "Failed to stream logs for Resource", "Kind", obj.GetObjectKind().GroupVersionKind().String(), "Name", resource.NamespacedName().String())
+			log.Error(followWriter.Err(), "Failed to stream logs for Resource",
+				"Kind", obj.GetObjectKind().GroupVersionKind().String(),
+				"Name", resource.NamespacedName().String())
 		}
 
 		sls.lock.Lock()

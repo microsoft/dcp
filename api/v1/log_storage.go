@@ -236,7 +236,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 			select {
 			case <-timer.C:
 				timer.Stop()
-				log.V(1).Info("restarting parent resource watcher...")
+				log.V(1).Info("Restarting parent resource watcher...")
 				ls.mutex.Lock()
 				var oldWatcher watch.Interface
 
@@ -248,11 +248,11 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 
 					newWatcher, newWatchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
 					if newWatchErr != nil {
-						log.V(1).Info("failed to re-establish parent resource watcher", "Error", newWatchErr)
+						log.V(1).Info("Failed to re-establish parent resource watcher", "Error", newWatchErr)
 						return
 					}
 
-					log.V(1).Info("new parent resource watcher created")
+					log.V(1).Info("New parent resource watcher created")
 
 					oldWatcher = ls.watcher
 					ls.watcher = newWatcher
@@ -263,7 +263,7 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 				// so that events from the new watcher are processed expeditiously.
 				go func(w watch.Interface) {
 					stopWatcher(w)
-					log.V(1).Info("parent resource watcher restart complete")
+					log.V(1).Info("Parent resource watcher restart complete")
 					timer.Reset(watcherRestartInterval)
 				}(oldWatcher)
 
@@ -295,13 +295,13 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 	}
 
 	if evt.Type == watch.Error {
-		log.V(1).Info("saw error event for parent resource: %v", evt.Object)
+		log.V(1).Info("Saw error event for parent resource: %v", evt.Object)
 		return
 	}
 
 	apiObj, isApiObj := evt.Object.(apiserver_resource.Object)
 	if !isApiObj {
-		log.V(1).Info("parent resource was not an API object, skipping")
+		log.V(1).Info("Parent resource was not an API object, skipping")
 		return
 	}
 
@@ -334,7 +334,7 @@ func (ls *LogStorage) resourceEventHandler(evt watch.Event, log logr.Logger) {
 			return true
 		})
 		if watcherCount > 0 {
-			log.V(1).Info("completed notifying resource watchers of parent resource event",
+			log.V(1).Info("Completed notifying resource watchers of parent resource event",
 				"Event", rwevt.Type,
 				"Resource", resourceName,
 				"WatcherCount", watcherCount,
@@ -441,20 +441,20 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 			return nil, false, "", apierrors.NewInternalError(fmt.Errorf("failed to register watcher for parent resource: %w", watcherErr))
 		}
 
-		log = log.WithName("logstorage").WithValues(
+		log = log.WithName("Logstorage").WithValues(
 			"Kind", apiObj.GetObjectKind().GroupVersionKind().String(),
 			"Name", apiObj.GetObjectMeta().Name,
 			"UID", apiObj.GetObjectMeta().GetUID(),
 			"Options", options.String(),
 		)
 
-		log.V(1).Info("preparing log stream")
+		log.V(1).Info("Preparing log stream")
 
 		go func() {
 			defer func() {
 				closeErr := writer.Close()
 				if closeErr != nil {
-					log.Error(closeErr, "failed to close log stream writer")
+					log.Error(closeErr, "Failed to close log stream writer")
 				}
 			}()
 			defer watcher.Stop()
@@ -462,18 +462,18 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 			for {
 				select {
 				case <-ctx.Done():
-					log.V(1).Info("context was canceled, closing log stream")
+					log.V(1).Info("Context was canceled, closing log stream")
 					return
 				case evt := <-watcher.ResultChan():
 					if evt.Type == watch.Deleted {
-						log.V(1).Info("parent resource was deleted, closing log stream")
+						log.V(1).Info("Parent resource was deleted, closing log stream")
 						return
 					}
 
 					resourceStreamStatus, doneStreaming, logStreamErr := ls.logStreamer.StreamLogs(ctx, writer, evt.Object, options, log)
 					// There was an error attempting to stream logs, close the stream and exit
 					if logStreamErr != nil {
-						log.Error(logStreamErr, "failed to initialize log stream")
+						log.Error(logStreamErr, "Failed to initialize log stream")
 						return
 					}
 
@@ -481,26 +481,26 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 					if resourceStreamStatus == ResourceStreamStatusStreaming {
 						// Stop the watcher since we're streaming logs now (this can be called safely multiple times)
 						watcher.Stop()
-						log.V(1).Info("starting log streaming for resource")
+						log.V(1).Info("Starting log streaming for resource")
 						// Wait for streaming to complete
 						<-doneStreaming
-						log.V(1).Info("log streaming for resource completed")
+						log.V(1).Info("Log streaming for resource completed")
 						return
 					}
 
 					if resourceStreamStatus == ResourceStreamStatusDone {
-						log.V(1).Info("resource is done streaming logs")
+						log.V(1).Info("Resource is done streaming logs")
 						return
 					}
 
 					// The object wasn't ready to start streaming, but follow isn't set, so close the stream and exit
 					if resourceStreamStatus != ResourceStreamStatusStreaming && !options.Follow {
-						log.V(1).Info("resource not ready to stream logs")
+						log.V(1).Info("Resource not ready to stream logs")
 						return
 					}
 
 					// We're following logs and the parent isn't ready to stream yet, wait for an update event to try again
-					log.V(1).Info("waiting for parent resource to be ready to stream logs")
+					log.V(1).Info("Waiting for parent resource to be ready to stream logs")
 				}
 			}
 		}()

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+
 package v1
 
 import (
@@ -99,18 +101,29 @@ func (ce *ContainerExec) Done() bool {
 	return !ce.Status.FinishTimestamp.IsZero()
 }
 
+// HasStdOut implements StdOutStreamableResource.
+func (ce *ContainerExec) HasStdOut() bool {
+	return true
+}
+
+// HasStdErr implements StdOutStreamableResource.
+func (ce *ContainerExec) HasStdErr() bool {
+	return true
+}
+
 // StdOutFile implements StdOutStreamableResource.
 func (ce *ContainerExec) GetStdOutFile() string {
 	return ce.Status.StdOutFile
 }
 
-func (ce *ContainerExec) GetResourceId() string {
-	return fmt.Sprintf("containerexec-%s", ce.UID)
-}
-
 // StdErrFile implements StdOutStreamableResource.
 func (ce *ContainerExec) GetStdErrFile() string {
 	return ce.Status.StdErrFile
+}
+
+// GetResourceId implements StdOutStreamableResource.
+func (ce *ContainerExec) GetResourceId() string {
+	return fmt.Sprintf("containerexec-%s", ce.UID)
 }
 
 // GetGroupVersionResource implements resource.Object.

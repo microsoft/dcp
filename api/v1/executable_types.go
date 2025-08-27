@@ -339,6 +339,16 @@ type Executable struct {
 	Status ExecutableStatus `json:"status,omitempty"`
 }
 
+// HasStdOut implements StdOutStreamableResource.
+func (ce *Executable) HasStdOut() bool {
+	return true
+}
+
+// HasStdErr implements StdOutStreamableResource.
+func (ce *Executable) HasStdErr() bool {
+	return true
+}
+
 // StdOutFile implements StdOutStreamableResource.
 func (e *Executable) GetStdOutFile() string {
 	return e.Status.StdOutFile

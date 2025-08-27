@@ -139,7 +139,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceNamespace}
 	}); err != nil {
-		r.Log.Error(err, "failed to create serviceNamespace index for Endpoint")
+		r.Log.Error(err, "Failed to create serviceNamespace index for Endpoint")
 		return err
 	}
 
@@ -147,7 +147,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager, name string) erro
 		endpoint := rawObj.(*apiv1.Endpoint)
 		return []string{endpoint.Spec.ServiceName}
 	}); err != nil {
-		r.Log.Error(err, "failed to create serviceName index for Endpoint")
+		r.Log.Error(err, "Failed to create serviceName index for Endpoint")
 		return err
 	}
 
@@ -168,7 +168,7 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 		Name:      endpoint.Spec.ServiceName,
 	}
 
-	r.Log.V(1).Info("endpoint updated, requesting service reconciliation", "Endpoint", endpoint, "ServiceName", serviceNamespaceName)
+	r.Log.V(1).Info("Endpoint updated, requesting service reconciliation", "Endpoint", endpoint, "ServiceName", serviceNamespaceName)
 	return []reconcile.Request{
 		{
 			NamespacedName: serviceNamespaceName,
@@ -190,18 +190,20 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	svc := apiv1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
-			log.V(1).Info("the Service object does not exist yet or was deleted")
+			log.V(1).Info("The Service object does not exist yet or was deleted")
 			r.stopService(req.NamespacedName, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
-			log.Error(err, "failed to Get() the Service object")
+			log.Error(err, "Failed to Get() the Service object")
 			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
 	} else {
 		getSucceededCounter.Add(ctx, 1)
 	}
+
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(svc.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -307,9 +309,13 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 			if psd.startAttempts >= MaxServiceStartAttempts {
 				if networking.IsEphemeralPort(svc.Spec.Port) {
 					start, end, _ := networking.GetEphemeralPortRange()
-					log.Error(proxyStartErr, fmt.Sprintf("service %s proxy failed to start; the service is configured to use a port in the ephemeral range on your machine; ports in the ephemeral range are used by the system for dynamic allocation and outgoing connections.", svc.NamespacedName().Name), "Port", svc.Spec.Port, "Ephemeral Range", fmt.Sprintf("%d-%d", start, end))
+					log.Error(
+						proxyStartErr,
+						fmt.Sprintf("Service %s proxy failed to start; the service is configured to use a port in the ephemeral range on your machine; ports in the ephemeral range are used by the system for dynamic allocation and outgoing connections.", svc.NamespacedName().Name),
+						"Port", svc.Spec.Port,
+						"Ephemeral Range", fmt.Sprintf("%d-%d", start, end))
 				} else {
-					log.Error(proxyStartErr, "could not start the proxy")
+					log.Error(proxyStartErr, "Could not start the proxy")
 				}
 				if oldState != apiv1.ServiceStateNotReady {
 					return statusChanged
@@ -320,10 +326,15 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 				if psd.startAttempts > 2 && !psd.warnedUser && networking.IsEphemeralPort(svc.Spec.Port) {
 					psd.warnedUser = true
 					start, end, _ := networking.GetEphemeralPortRange()
-					log.Error(proxyStartErr, fmt.Sprintf("service %s is configured to use a port in the ephemeral range on your machine, which may cause conflicts; ports in the ephemeral range are used by the system for dynamic allocation and outgoing connections.", svc.NamespacedName().Name), "Port", svc.Spec.Port, "Ephemeral Range", fmt.Sprintf("%d-%d", start, end))
+					log.Error(
+						proxyStartErr,
+						fmt.Sprintf("Service %s is configured to use a port in the ephemeral range on your machine, which may cause conflicts; ports in the ephemeral range are used by the system for dynamic allocation and outgoing connections.", svc.NamespacedName().Name),
+						"Port", svc.Spec.Port,
+						"Ephemeral Range", fmt.Sprintf("%d-%d", start, end),
+					)
 				}
 
-				log.V(1).Info("could not start the proxy, will retry", "Attempt", psd.startAttempts, "Error", proxyStartErr.Error())
+				log.V(1).Info("Could not start the proxy, will retry", "Attempt", psd.startAttempts, "Error", proxyStartErr.Error())
 				return additionalReconciliationNeeded
 			}
 		}
@@ -348,7 +359,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		for _, proxyInstanceData := range psd.proxies {
 			configErr := proxyInstanceData.proxy.Configure(config)
 			if configErr != nil {
-				log.Error(configErr, "could not configure the proxy")
+				log.Error(configErr, "Could not configure the proxy")
 			}
 		}
 	}
@@ -357,16 +368,16 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 		// If the log level is info, we'll only log when the service becomes ready
 		logLevel, loggerErr := logger.GetDiagnosticsLogLevel()
 		if loggerErr == nil && logLevel == zapcore.DebugLevel {
-			log.V(1).Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName().Name, svc.Status.State))
+			log.V(1).Info(fmt.Sprintf("Service %s is now in state %s", svc.NamespacedName().Name, svc.Status.State))
 		} else if svc.Status.State == apiv1.ServiceStateReady {
-			log.Info(fmt.Sprintf("service %s is now in state %s", svc.NamespacedName().Name, svc.Status.State))
+			log.Info(fmt.Sprintf("Service %s is now in state %s", svc.NamespacedName().Name, svc.Status.State))
 		}
 
 		change |= statusChanged
 	}
 
 	if svc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless && (svc.Status.EffectiveAddress != oldEffectiveAddress || svc.Status.EffectivePort != oldEffectivePort) {
-		log.V(1).Info(fmt.Sprintf("service %s is now running on %s",
+		log.V(1).Info(fmt.Sprintf("Service %s is now running on %s",
 			svc.NamespacedName().Name,
 			networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort),
 		))
@@ -375,7 +386,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 
 	if svc.Spec.AddressAllocationMode == apiv1.AddressAllocationModeProxyless && (svc.Status.ProxylessEndpointNamespace != oldEndpointNamespacedName.Namespace || svc.Status.ProxylessEndpointName != oldEndpointNamespacedName.Name) {
 		if svc.Status.EffectiveAddress != "" || svc.Status.EffectivePort != 0 {
-			log.V(1).Info(fmt.Sprintf("proxyless service %s is now running on %s",
+			log.V(1).Info(fmt.Sprintf("Proxyless service %s is now running on %s",
 				svc.NamespacedName().Name,
 				networking.AddressAndPort(svc.Status.EffectiveAddress, svc.Status.EffectivePort)),
 			)
@@ -438,7 +449,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Ser
 			stopProxies(proxies, log)
 			return psd, fmt.Errorf("could not start the proxy for the service: %w", startErr)
 		} else {
-			log.V(1).Info("service proxy started",
+			log.V(1).Info("Service proxy started",
 				"ProxyListenAddress", proxyInstanceData.proxy.ListenAddress(),
 				"ProxyListenPort", proxyInstanceData.proxy.ListenPort(),
 				"ProxyEffectiveAddress", proxyInstanceData.proxy.EffectiveAddress(),
@@ -448,7 +459,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(_ context.Context, svc *apiv1.Ser
 	}
 
 	svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(proxies, requestedServiceAddress)
-	log.V(1).Info("service serving traffic",
+	log.V(1).Info("Service serving traffic",
 		"IsProxied", svc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless,
 		"EffectiveAddress", svc.Status.EffectiveAddress,
 		"EffectivePort", svc.Status.EffectivePort,
@@ -475,7 +486,7 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 	// We do not want to use the passed-in logger for the proxy because it has reconciliation-specific data
 	// which does not make sense in the context of the proxy.
 	// The resulting log name will be "dcpctrl.ServiceReconciler.Proxy".
-	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName())
+	proxyLog := r.Log.WithName("Proxy").WithValues("Service", svc.NamespacedName()).WithValues(logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
 
 	var portAllocationErr error = nil
 
@@ -510,7 +521,7 @@ func (r *ServiceReconciler) getProxyData(svc *apiv1.Service, requestedServiceAdd
 			err = networking.CheckPortAvailable(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, log)
 			if err != nil {
 				usingSamePort = false
-				log.Info("could not use the same port for all addresses associated with requested service address, service will be reachable only using specific IP address",
+				log.Info("Could not use the same port for all addresses associated with requested service address, service will be reachable only using specific IP address",
 					"AttemptedCommonPort", lastPort,
 					"RequestedServiceAddress", requestedServiceAddress,
 				)
@@ -635,7 +646,7 @@ func getRequestedServiceAddress(svc *apiv1.Service) (string, error) {
 
 func stopProxies(proxies []proxyInstanceData, log logr.Logger) {
 	if len(proxies) > 0 {
-		log.V(1).Info("stopping all proxies...")
+		log.V(1).Info("Stopping all proxies...")
 		for _, proxyInstanceData := range proxies {
 			proxyInstanceData.stopProxy()
 		}
