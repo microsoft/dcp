@@ -2992,6 +2992,13 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 							Format:      "",
 						},
 					},
+					"target": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For symlink type entries, the target of the symlink. The target must be a valid path in the container (existing or created as part of this create files set). The value can either be an absolute path or a relative path from the newly created symlink.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"contents": {
 						SchemaProps: spec.SchemaProps{
 							Description: "For file type entries, the contents of the file. Optional.",

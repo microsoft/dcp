@@ -183,8 +183,12 @@ const (
 type FileSystemEntryType string
 
 const (
-	FileSystemEntryTypeFile FileSystemEntryType = "file" // default
-	FileSystemEntryTypeDir  FileSystemEntryType = "directory"
+	FileSystemEntryTypeFile    FileSystemEntryType = "file"    // default
+	FileSystemEntryTypeOpenSSL FileSystemEntryType = "openssl" // special type for OpenSSL certificates
+	FileSystemEntryTypeDir     FileSystemEntryType = "directory"
+	// The public CreateFiles API validation doesn't allow specifying "symlink" as a FileSystemEntry
+	// type, but the internal ContainerOrchestrator.CreateFiles library does support it.
+	FileSystemEntryTypeSymlink FileSystemEntryType = "symlink"
 )
 
 // Represents part of the file structure to be created in the container
@@ -207,6 +211,10 @@ type FileSystemEntry struct {
 
 	// For file type entries, an optional path to a source file to copy. It's an error to set both a Source and Contents for a file.
 	Source string `json:"source,omitempty"`
+
+	// For symlink type entries, the target of the symlink. The target must be a valid path in the container (existing or created as
+	// part of this create files set). The value can either be an absolute path or a relative path from the newly created symlink.
+	Target string `json:"target,omitempty"`
 
 	// For file type entries, the contents of the file. Optional.
 	Contents string `json:"contents,omitempty"`
@@ -293,13 +301,13 @@ func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
 		errorList = append(errorList, field.Invalid(fieldPath.Child("group"), fse.Group, "group must be a non-negative integer"))
 	}
 
-	if fse.Type != "" && fse.Type != FileSystemEntryTypeFile && fse.Type != FileSystemEntryTypeDir {
-		errorList = append(errorList, field.Invalid(fieldPath.Child("type"), fse.Type, "type must be one of 'file' or 'directory'"))
+	if fse.GetType() != FileSystemEntryTypeFile && fse.GetType() != FileSystemEntryTypeOpenSSL && fse.GetType() != FileSystemEntryTypeDir {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("type"), fse.Type, "type must be one of 'file', 'certificate', or 'directory'"))
 	}
 
-	if fse.Type == "" || fse.Type == FileSystemEntryTypeFile {
+	if fse.GetType() == FileSystemEntryTypeFile || fse.GetType() == FileSystemEntryTypeOpenSSL {
 		if len(fse.Entries) > 0 {
-			errorList = append(errorList, field.Forbidden(fieldPath.Child("entries"), "dirEntry cannot be set for file type entries"))
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("entries"), fmt.Sprintf("dirEntry cannot be set for %s type entries", fse.GetType())))
 		}
 
 		if fse.Source != "" && fse.Contents != "" {
@@ -307,7 +315,7 @@ func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
 		}
 	}
 
-	if fse.Type == FileSystemEntryTypeDir {
+	if fse.GetType() == FileSystemEntryTypeDir {
 		if fse.Source != "" {
 			errorList = append(errorList, field.Forbidden(fieldPath.Child("source"), "source cannot be set for directory type entries"))
 		}

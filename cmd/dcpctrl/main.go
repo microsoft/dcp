@@ -25,7 +25,6 @@ const (
 func main() {
 	log := logger.New("dcpctrl").
 		WithResourceSink().
-		WithFilterSink(logger.MacOsProcErrorLogFilter, 1). // Filter should run first to suppress spurious logs
 		WithName("dcpctrl")
 
 	defer func() {
