@@ -768,12 +768,26 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 
 	tarWriter := usvc_io.NewTarWriter()
 
+	certificateHashes := []string{}
 	for _, item := range options.Entries {
-		if item.Type == apiv1.FileSystemEntryTypeDir {
+		switch item.Type {
+		case apiv1.FileSystemEntryTypeDir:
 			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
-		} else {
+		case apiv1.FileSystemEntryTypeSymlink:
+			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addSymlinkErr != nil {
+				return addSymlinkErr
+			}
+		case apiv1.FileSystemEntryTypeOpenSSL:
+			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, pco.log)
+			if addCertErr != nil {
+				return addCertErr
+			}
+
+			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
+			certificateHashes = append(certificateHashes, hash)
+		default:
 			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, pco.log); addFileErr != nil {
 				return addFileErr
 			}

@@ -22,7 +22,9 @@ const (
 )
 
 func main() {
-	log := logger.New("dcp").WithName("dcp")
+	log := logger.New("dcp").
+		WithFilterSink(logger.MacOsProcErrorLogFilter, 1).
+		WithName("dcp")
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log.Logger)
 		if panicErr != nil {
