@@ -34,6 +34,7 @@ const (
 	ResourceStreamStatusDone      ResourceStreamStatus = "done"
 	ResourceStreamStatusNotReady  ResourceStreamStatus = "not_ready"
 	watcherRestartInterval                             = 30 * time.Second
+	watcherCreationRetryInterval                       = 2 * time.Second
 )
 
 // ResourceLogStreamFactory is an entity that knows how to stream logs for a given resource.
@@ -229,8 +230,15 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 		// This can lead to the log streamer never starting streaming for a given resource. To mitigate this,
 		// we are periodically restarting the watcher to ensure we don't miss any events (the watcher always
 		// emits the current state of resources when it starts).
-		timer := time.NewTimer(watcherRestartInterval)
+
+		ls.mutex.Lock()
+		if ls.watcher == nil {
+			ls.mutex.Unlock()
+			return
+		}
 		watcherResultChan := ls.watcher.ResultChan()
+		ls.mutex.Unlock()
+		timer := time.NewTimer(watcherRestartInterval)
 
 		for {
 			select {
@@ -238,7 +246,6 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 				timer.Stop()
 				log.V(1).Info("Restarting parent resource watcher...")
 				ls.mutex.Lock()
-				var oldWatcher watch.Interface
 
 				func() {
 					defer ls.mutex.Unlock()
@@ -246,26 +253,32 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 						return
 					}
 
+					// Use a separate goroutine to stop the old watcher and drain its channel
+					// so that events from the new watcher are processed expeditiously.
+					//
+					// This has to be initiated before making a call to create a new watcher.
+					// If not, we can end up in a deadlock situation where the storage is trying to deliver
+					// a watch event (holding the watch set lock in shared mode) while at the same time
+					// we are making a call to create a new watcher (which tries to take the watch set lock
+					// in exclusive mode).
+					go func(w watch.Interface) {
+						stopWatcher(w)
+						log.V(1).Info("Old parent resource watcher stopped")
+					}(ls.watcher)
+
 					newWatcher, newWatchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
 					if newWatchErr != nil {
 						log.V(1).Info("Failed to re-establish parent resource watcher", "Error", newWatchErr)
+						timer.Reset(watcherCreationRetryInterval)
 						return
 					}
 
 					log.V(1).Info("New parent resource watcher created")
 
-					oldWatcher = ls.watcher
 					ls.watcher = newWatcher
 					watcherResultChan = newWatcher.ResultChan()
-				}()
-
-				// Use a separate goroutine to stop the old watcher and drain its channel
-				// so that events from the new watcher are processed expeditiously.
-				go func(w watch.Interface) {
-					stopWatcher(w)
-					log.V(1).Info("Parent resource watcher restart complete")
 					timer.Reset(watcherRestartInterval)
-				}(oldWatcher)
+				}()
 
 			case <-ls.disposeCh:
 				// The watcher (if any) will be stopped in the Destroy method

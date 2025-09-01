@@ -9,7 +9,6 @@ import (
 	"os"
 	"reflect"
 	"strings"
-	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"github.com/joho/godotenv"
@@ -20,9 +19,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
-	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
-	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
-	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/health"
@@ -62,11 +58,9 @@ type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo]
 
 // ExecutableReconciler reconciles a Executable object
 type ExecutableReconciler struct {
-	ctrl_client.Client
+	*ReconcilerBase[apiv1.Executable, *apiv1.Executable]
 
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	ExecutableRunners   map[apiv1.ExecutionType]ExecutableRunner
+	ExecutableRunners map[apiv1.ExecutionType]ExecutableRunner
 
 	// A map that stores information about running Executables,
 	// searchable by Executable name (first key), or run ID (second key).
@@ -77,15 +71,6 @@ type ExecutableReconciler struct {
 
 	// Channel used to receive health probe results.
 	healthProbeCh *concurrency.UnboundedChan[health.HealthProbeReport]
-
-	// Channel used to trigger reconciliation function when underlying run status changes.
-	notifyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
-
-	// Debouncer used to schedule reconciliations. No extra data is needed for the debouncer.
-	debouncer *reconcilerDebouncer[struct{}]
-
-	// Reconciler lifetime context, used to cancel operations during reconciler shutdown
-	lifetimeCtx context.Context
 
 	// A WorkQueue for operations related to stopping Executables (which might take a while).
 	stopQueue *resiliency.WorkQueue
@@ -106,21 +91,20 @@ const (
 func NewExecutableReconciler(
 	lifetimeCtx context.Context,
 	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	executableRunners map[apiv1.ExecutionType]ExecutableRunner,
 	healthProbeSet *health.HealthProbeSet,
 ) *ExecutableReconciler {
+	base := NewReconcilerBase[apiv1.Executable](client, noCacheClient, log, lifetimeCtx)
+
 	r := ExecutableReconciler{
-		Client:            client,
+		ReconcilerBase:    base,
 		ExecutableRunners: executableRunners,
 		runs:              NewObjectStateMap[RunID, ExecutableRunInfo](),
 		hpSet:             healthProbeSet,
 		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
-		notifyRunChanged:  concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
-		debouncer:         newReconcilerDebouncer[struct{}](),
-		lifetimeCtx:       lifetimeCtx,
 		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelExecutableStops),
-		Log:               log,
 	}
 
 	go r.handleHealthProbeResults()
@@ -134,12 +118,11 @@ func NewExecutableReconciler(
 }
 
 func (r *ExecutableReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
-	src := ctrl_source.Channel(r.notifyRunChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.Executable{}).
 		Owns(&apiv1.Endpoint{}).
-		WatchesRawSource(src).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
@@ -153,12 +136,7 @@ Status will be updated based on the status of the corresponding run and the run 
 the Executable is deleted.
 */
 func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"Executable", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
-
-	r.debouncer.OnReconcile(req.NamespacedName)
+	reader, log := r.StartReconciliation(req)
 
 	// Check to see if the request context has already expired
 	if ctx.Err() != nil {
@@ -168,7 +146,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Retrieve the Executable object
 	exe := apiv1.Executable{}
-	if err := r.Get(ctx, req.NamespacedName, &exe); err != nil {
+	if err := reader.Get(ctx, req.NamespacedName, &exe); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Ensure the cache of Executable to run ID is cleared
 			r.runs.DeleteByNamespacedName(req.NamespacedName)
@@ -200,7 +178,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		change = r.manageExecutable(ctx, &exe, log)
 	}
 
-	result, err := saveChanges(r, ctx, &exe, patch, change, nil, log)
+	result, err := r.SaveChanges(r, ctx, &exe, patch, change, nil, log)
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
 	}
@@ -515,7 +493,7 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 		_ = runMap.Update(name, runID, runInfo)
 	})
 
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, name, struct{}{}, r.scheduleExecutableReconciliation)
+	r.ScheduleReconciliation(name)
 }
 
 // Handle setting up process tracking once an Executable has transitioned from newly created or starting to a stable state such as running or finished.
@@ -566,7 +544,7 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 		}
 	})
 
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, struct{}{}, r.scheduleExecutableReconciliation)
+	r.ScheduleReconciliation(exeName)
 }
 
 // Stops the underlying Executable run, if any.
@@ -600,7 +578,7 @@ func (r *ExecutableReconciler) stopExecutableFunc(exe *apiv1.Executable, runInfo
 				_ = runMap.Update(exeName, runID, runInfo)
 			})
 
-			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exe.NamespacedName(), struct{}{}, r.scheduleExecutableReconciliation)
+			r.ScheduleReconciliation(exeName)
 		}
 	}
 }
@@ -691,18 +669,6 @@ func (r *ExecutableReconciler) deleteOutputFiles(exe *apiv1.Executable, log logr
 			}
 		})
 	}
-}
-
-func (r *ExecutableReconciler) scheduleExecutableReconciliation(rti reconcileTriggerInput[struct{}]) {
-	event := ctrl_event.GenericEvent{
-		Object: &apiv1.Executable{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rti.target.Name,
-				Namespace: rti.target.Namespace,
-			},
-		},
-	}
-	r.notifyRunChanged.In <- event
 }
 
 func (r *ExecutableReconciler) createEndpoint(
@@ -868,7 +834,7 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 func (r *ExecutableReconciler) handleHealthProbeResults() {
 	for {
 		select {
-		case <-r.lifetimeCtx.Done():
+		case <-r.LifetimeCtx.Done():
 			return
 
 		case report, isOpen := <-r.healthProbeCh.Out:
@@ -908,7 +874,7 @@ func (r *ExecutableReconciler) handleHealthProbeResults() {
 				_ = runMap.Update(exeName, runID, runInfo)
 			})
 
-			r.debouncer.ReconciliationNeeded(r.lifetimeCtx, exeName, struct{}{}, r.scheduleExecutableReconciliation)
+			r.ScheduleReconciliation(exeName)
 		}
 	}
 }

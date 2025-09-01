@@ -28,6 +28,8 @@ func (m *Map[Key, Value]) Load(key Key) (Value, bool) {
 	}
 }
 
+// Deletes the value for the passed key.
+// If the key has no corresponding value, the map is unchanged.
 func (m *Map[Key, Value]) Delete(key Key) {
 	m.syncMap().Delete(key)
 }

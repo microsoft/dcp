@@ -168,6 +168,7 @@ func StartTestEnvironment(
 		execR := controllers.NewExecutableReconciler(
 			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ExecutableReconciler"),
 			map[apiv1.ExecutionType]controllers.ExecutableRunner{
 				apiv1.ExecutionTypeProcess: exeRunner,
@@ -207,6 +208,7 @@ func StartTestEnvironment(
 		containerR := controllers.NewContainerReconciler(
 			ctx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ContainerReconciler"),
 			serverInfo.ContainerOrchestrator,
 			hpSet,

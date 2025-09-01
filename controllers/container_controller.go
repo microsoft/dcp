@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -24,9 +23,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
-	ctrl_event "sigs.k8s.io/controller-runtime/pkg/event"
-	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
-	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
@@ -107,13 +103,9 @@ type containerStateInitializerFunc = stateInitializerFunc[
 type runningContainersMap = ObjectStateMap[containerID, runningContainerData, *runningContainerData]
 
 type ContainerReconciler struct {
-	ctrl_client.Client
-	Log                 logr.Logger
-	reconciliationSeqNo uint32
-	orchestrator        containers.ContainerOrchestrator
+	*ReconcilerBase[apiv1.Container, *apiv1.Container]
 
-	// Channel used to trigger reconciliation when underlying containers change
-	notifyContainerChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
+	orchestrator containers.ContainerOrchestrator
 
 	// A map that stores information about containers (the real things run by the container orchestrator).
 	// It is searchable by Container object name (first key) or container ID (second key).
@@ -141,18 +133,12 @@ type ContainerReconciler struct {
 	// Channel used to receive health probe events
 	healthProbeCh *concurrency.UnboundedChan[health.HealthProbeReport]
 
-	// Debouncer used to schedule reconciliation. Extra data is the running container ID whose state changed.
-	debouncer *reconcilerDebouncer[containerID]
-
 	// Effectively a set of UIDs of the Container objects that are being watched.
 	// When this set becomes empty, we cancel the container watch.
 	watchingResources *syncmap.Map[types.UID, bool]
 
 	// Lock to protect the reconciler data that requires synchronized access
 	lock *sync.Mutex
-
-	// Reconciler lifetime context, used to cancel container watch during reconciler shutdown
-	lifetimeCtx context.Context
 
 	// Additional configuration for the reconciler
 	config ContainerReconcilerConfig
@@ -161,15 +147,17 @@ type ContainerReconciler struct {
 func NewContainerReconciler(
 	lifetimeCtx context.Context,
 	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.ContainerOrchestrator,
 	healthProbeSet *health.HealthProbeSet,
 	config ContainerReconcilerConfig,
 ) *ContainerReconciler {
+	base := NewReconcilerBase[apiv1.Container](client, noCacheClient, log, lifetimeCtx)
+
 	r := ContainerReconciler{
-		Client:                 client,
+		ReconcilerBase:         base,
 		orchestrator:           orchestrator,
-		notifyContainerChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		runningContainers:      NewObjectStateMap[containerID, runningContainerData](),
 		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, config.MaxParallelContainerStarts),
 		containerEvtSub:        nil,
@@ -179,12 +167,9 @@ func NewContainerReconciler(
 		containerEvtWorkerStop: nil,
 		hpSet:                  healthProbeSet,
 		healthProbeCh:          concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
-		debouncer:              newReconcilerDebouncer[containerID](),
 		watchingResources:      &syncmap.Map[types.UID, bool]{},
 		lock:                   &sync.Mutex{},
-		lifetimeCtx:            lifetimeCtx,
 		config:                 config,
-		Log:                    log,
 	}
 
 	go r.onShutdown()
@@ -221,24 +206,18 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) er
 		return err
 	}
 
-	src := ctrl_source.Channel(r.notifyContainerChanged.Out, &ctrl_handler.EnqueueRequestForObject{})
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv1.Container{}).
 		Owns(&apiv1.Endpoint{}).
 		Owns(&apiv1.ContainerNetworkConnection{}).
-		WatchesRawSource(src).
+		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
 }
 
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"Container", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
-
-	r.debouncer.OnReconcile(req.NamespacedName)
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -246,7 +225,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	container := apiv1.Container{}
-	err := r.Get(ctx, req.NamespacedName, &container)
+	err := reader.Get(ctx, req.NamespacedName, &container)
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -288,9 +267,12 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageContainer(ctx, &container, log)
 	}
 
-	reconciliationDelay, reconciliationJitter, finalChange := computeAdditionalReconciliationDelay(change, container.Status.State == apiv1.ContainerStateRuntimeUnhealthy)
+	additionalReconcileDelay := standardDelay
+	if container.Status.State == apiv1.ContainerStateRuntimeUnhealthy {
+		additionalReconcileDelay = longDelay
+	}
 
-	result, saveErr := saveChangesWithCustomReconciliationDelay(r.Client, ctx, &container, patch, finalChange, reconciliationDelay, reconciliationJitter, nil, log)
+	result, saveErr := r.SaveChangesWithDelay(r.Client, ctx, &container, patch, change, additionalReconcileDelay, nil, log)
 	return result, saveErr
 }
 
@@ -935,7 +917,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, id containerID) {
 			rcMap.Update(containerObjectName, id, rcd)
 		})
-		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
+		r.ScheduleReconciliation(container.NamespacedName())
 	}
 }
 
@@ -1333,7 +1315,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID) {
 			rcMap.UpdateChangingStateKey(containerObjectName, placeholderContainerID, rcd.containerID, rcd)
 		})
-		r.scheduleContainerReconciliation(container.NamespacedName(), placeholderContainerID)
+		r.ScheduleReconciliation(container.NamespacedName())
 	}
 }
 
@@ -1355,7 +1337,7 @@ func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd 
 		r.runningContainers.QueueDeferredOp(container.NamespacedName(), func(containerObjectName types.NamespacedName, containerID containerID) {
 			rcMap.Update(containerObjectName, containerID, rcd)
 		})
-		r.scheduleContainerReconciliation(container.NamespacedName(), rcd.containerID)
+		r.ScheduleReconciliation(container.NamespacedName())
 	}
 
 }
@@ -1800,7 +1782,7 @@ func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, l
 	r.lock.Lock()
 	defer r.lock.Unlock()
 
-	if r.lifetimeCtx.Err() != nil {
+	if r.LifetimeCtx.Err() != nil {
 		return // Do not start a container watch if we are done
 	}
 
@@ -1811,12 +1793,12 @@ func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, l
 	}
 
 	r.containerEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
-		r.lifetimeCtx,
+		r.LifetimeCtx,
 		containerEventChanBuffer,
 		containerEventChanBuffer,
 	)
 	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
-		r.lifetimeCtx,
+		r.LifetimeCtx,
 		containerEventChanBuffer,
 		containerEventChanBuffer,
 	)
@@ -1918,7 +1900,7 @@ func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) 
 			r.Log.V(1).Info("Container event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
 		}
 
-		r.scheduleContainerReconciliation(owner, containerID)
+		r.ScheduleReconciliation(owner)
 	}
 }
 
@@ -1942,7 +1924,7 @@ func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 			r.Log.V(1).Info("Network event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
 		}
 
-		r.scheduleContainerReconciliation(owner, containerID)
+		r.ScheduleReconciliation(owner)
 	}
 }
 
@@ -2008,7 +1990,7 @@ func updateContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerStat
 func (r *ContainerReconciler) handleHealthProbeResults() {
 	for {
 		select {
-		case <-r.lifetimeCtx.Done():
+		case <-r.LifetimeCtx.Done():
 			return
 
 		case report, isOpen := <-r.healthProbeCh.Out:
@@ -2041,7 +2023,7 @@ func (r *ContainerReconciler) handleHealthProbeResults() {
 				_ = rcMap.Update(containerName, cid, rcd)
 			})
 
-			r.scheduleContainerReconciliation(containerName, cid)
+			r.ScheduleReconciliation(containerName)
 		}
 	}
 }
@@ -2096,24 +2078,8 @@ func (r *ContainerReconciler) computeEffectiveInvocationArgs(
 	return nil
 }
 
-func (r *ContainerReconciler) scheduleContainerReconciliation(containerName types.NamespacedName, id containerID) {
-	r.debouncer.ReconciliationNeeded(r.lifetimeCtx, containerName, id, r.doReconcileContainer)
-}
-
-func (r *ContainerReconciler) doReconcileContainer(rti reconcileTriggerInput[containerID]) {
-	event := ctrl_event.GenericEvent{
-		Object: &apiv1.Container{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      rti.target.Name,
-				Namespace: rti.target.Namespace,
-			},
-		},
-	}
-	r.notifyContainerChanged.In <- event
-}
-
 func (r *ContainerReconciler) onShutdown() {
-	<-r.lifetimeCtx.Done()
+	<-r.LifetimeCtx.Done()
 
 	r.lock.Lock()
 	defer r.lock.Unlock()

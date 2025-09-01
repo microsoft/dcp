@@ -166,6 +166,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		exCtrl := controllers.NewExecutableReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
 			hpSet,
@@ -187,6 +188,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		containerCtrl := controllers.NewContainerReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
+			mgr.GetAPIReader(),
 			log.WithName("ContainerReconciler"),
 			containerOrchestrator,
 			hpSet,
