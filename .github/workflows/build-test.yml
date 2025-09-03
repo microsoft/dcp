@@ -43,6 +43,15 @@ jobs:
     - name: Build
       run: ${{ matrix.buildCommand }}
 
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Install SSL Certificates
+      run: |
+        dotnet dev-certs https --trust
+
     - name: Run tests
       id: test
       run: ${{ matrix.testCommand }}
@@ -50,6 +59,7 @@ jobs:
         TEST_CONTEXT_TIMEOUT: 180 # Increase test timeout to three minutes
         DCP_DIAGNOSTICS_LOG_LEVEL: debug
         DCP_DIAGNOSTICS_LOG_FOLDER: ${{ github.workspace }}/test-logs/${{ matrix.os }}
+        DCP_TEST_ENABLE_ADVANCED_CERTIFICATES: true # Enable advanced certificate tests that require openssl
 
     - name: Upload test logs
       uses: actions/upload-artifact@v4

@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -8,6 +9,8 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -3004,6 +3007,89 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 	require.Equal(t, 0, items[1].Uid, "copied file item owner id does not match expected value")
 	require.Equal(t, 1000, items[1].Gid, "copied file item group id does not match expected value")
 	require.Equal(t, int64(osutil.PermissionOnlyOwnerReadWrite), items[1].Mode, "copied file item mode does not match expected value")
+}
+
+func TestContainerCreateFilesCertificate(t *testing.T) {
+	testutil.SkipIfNotEnabledAdvancedCertificates(t)
+
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-create-files-certificate"
+	const imageName = testName + "-image"
+
+	tempDir := t.TempDir()
+
+	testStart := time.Now()
+
+	cmd := exec.CommandContext(ctx, "dotnet", "dev-certs", "https", "--format", "Pem", "--export-path", filepath.Join(tempDir, "cert.pem"))
+	certErr := cmd.Run()
+	require.NoError(t, certErr, "could not export the current dotnet dev-certificate")
+
+	require.FileExists(t, filepath.Join(tempDir, "cert.pem"), "the certificate file was not created")
+
+	// Read the contents of the certificate
+	cert, fileErr := os.ReadFile(filepath.Join(tempDir, "cert.pem"))
+	require.NoError(t, fileErr, "could not read the certificate file")
+
+	nameBuffer := bytes.Buffer{}
+	openSslCmd := exec.CommandContext(ctx, "openssl", "x509", "-noout", "-hash")
+	openSslCmd.Stdin = strings.NewReader(string(cert))
+	openSslCmd.Stdout = &nameBuffer
+	openSslErr := openSslCmd.Run()
+	require.NoError(t, openSslErr, "the exported certificate is not valid")
+
+	name, nameErr := nameBuffer.ReadString('\n')
+	name = strings.TrimRight(name, "\n")
+	require.NoError(t, nameErr, "could not read the certificate name")
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			CreateFiles: []apiv1.CreateFileSystem{
+				{
+					Destination: "/tmp",
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Type:     apiv1.FileSystemEntryTypeOpenSSL,
+							Name:     "hello.pem",
+							Contents: string(cert),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container object")
+
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(inspected.Id)
+	require.NoError(t, getFileErr, "could not get created files")
+
+	require.Len(t, files, 1, "expected to find a single copy file entry")
+	require.Equal(t, ctr.Spec.CreateFiles[0].Destination, files[0].Destination, "copy file destination does not match")
+	require.LessOrEqual(t, testStart, files[0].ModTime, "copy file mod time is not greater than or equal to the test start time")
+	require.Equal(t, osutil.DefaultUmaskBitmask, files[0].Umask, "copy file mode does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultOwner, "copy file owner id does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultGroup, "copy file group id does not match expected default value")
+
+	items, itemsErr := files[0].GetTarItems()
+	require.NoError(t, itemsErr, "could not get tar items")
+	require.Len(t, items, 2, "expected two tar records")
+
+	require.Equal(t, 0, items[0].Uid, "copy file item owner id does not match expected default value")
+	require.Equal(t, 0, items[0].Gid, "copy file item group id does not match expected default value")
+	require.Equal(t, int64(osutil.PermissionOwnerReadWriteOthersRead), items[0].Mode, "copy file item mode does not match expected default value")
+	require.Equal(t, uint8(tar.TypeSymlink), items[1].Typeflag, "expected symlink file type for second tar item")
+	require.Equal(t, path.Join("/tmp", fmt.Sprintf("%s.%d", name, 0)), items[1].Name, "symlink name does not match expected value")
 }
 
 // Even if Docker container stops very quickly, the state of corresponding Container should be "Exited"
