@@ -49,6 +49,12 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
+	if cmd, err = NewSessionLogCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'session-log' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
 	ctrlruntime.SetLogger(log.Logger.V(1))
 	klog.SetLogger(log.Logger.V(1))
 
