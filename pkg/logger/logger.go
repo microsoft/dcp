@@ -37,6 +37,9 @@ const (
 	verbosityFlagShortName = "v"
 	stdOutMaxLevel         = zapcore.InfoLevel
 
+	// The timestamp format used in logs (ISO8601)
+	LogTimestampFormat = "2006-01-02T15:04:05.000Z0700"
+
 	MacOsProcErrorLogFilter = "Could not get process start time, could not read \"/proc\": stat /proc: no such file or directory"
 )
 
@@ -197,12 +200,18 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 	return zapcore.NewCore(logEncoder, zapcore.AddSync(logOutput), zap.NewAtomicLevelAt(logLevel)), nil
 }
 
+// Returns the folder for diagnostics logs (and perf traces).
+func GetDiagnosticsLogFolder() string {
+	if logFolder, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_FOLDER); found {
+		return logFolder
+	} else {
+		return defaultLogPath
+	}
+}
+
 // Returns the folder to write diagnostics logs and perf traces to.
 func EnsureDiagnosticsLogsFolder() (string, error) {
-	logFolder, found := os.LookupEnv(DCP_DIAGNOSTICS_LOG_FOLDER)
-	if !found {
-		logFolder = defaultLogPath
-	}
+	logFolder := GetDiagnosticsLogFolder()
 
 	info, err := os.Stat(logFolder)
 	if errors.Is(err, fs.ErrNotExist) {
