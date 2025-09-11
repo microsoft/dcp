@@ -72,22 +72,22 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, ws)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("process stopped by SIGTERM", "pid", pid)
+			e.log.V(1).Info("Process stopped by SIGTERM", "PID", pid)
 			return waitEndedCh, nil
 		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
 		default:
-			e.log.V(1).Info("process did not stop upon SIGTERM", "pid", pid)
+			e.log.V(1).Info("Process did not stop upon SIGTERM", "PID", pid)
 		}
 	}
 
-	e.log.V(1).Info("sending SIGKILL to process...", "pid", pid)
+	e.log.V(1).Info("Sending SIGKILL to process...", "PID", pid)
 	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, ws)
 	if err != nil {
 		return nil, err
 	}
 
-	e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
+	e.log.V(1).Info("Process stopped by SIGKILL", "PID", pid)
 	return waitEndedCh, nil
 }
 

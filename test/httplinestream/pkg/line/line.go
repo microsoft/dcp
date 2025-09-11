@@ -95,7 +95,7 @@ func WriteLinesAsync(w io.Writer, opts *WriteOptions, done <-chan struct{}) {
 				_, err := w.Write(line[:split])
 				if err != nil {
 					if opts.Logger != nil {
-						opts.Logger.Error(err, "error writing first part of line")
+						opts.Logger.Error(err, "Error writing first part of line")
 					}
 					return
 				}
@@ -103,7 +103,7 @@ func WriteLinesAsync(w io.Writer, opts *WriteOptions, done <-chan struct{}) {
 				_, err = w.Write(line[split:])
 				if err != nil {
 					if opts.Logger != nil {
-						opts.Logger.Error(err, "error writing second part of line")
+						opts.Logger.Error(err, "Error writing second part of line")
 					}
 					return
 				}

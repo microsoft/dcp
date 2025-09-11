@@ -40,7 +40,7 @@ func TestReturnsErrorFromRunner(t *testing.T) {
 	t.Parallel()
 
 	runner := func(i int) (int, error) {
-		return 0, fmt.Errorf("Sorry")
+		return 0, fmt.Errorf("sorry")
 	}
 
 	const debounceDelay = time.Millisecond * 100

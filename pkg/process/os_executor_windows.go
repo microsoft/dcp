@@ -83,22 +83,22 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		err = e.signalAndWaitForExit(proc, windows.CTRL_BREAK_EVENT, ws)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("process stopped by CTRL_BREAK_EVENT", "pid", pid)
+			e.log.V(1).Info("Process stopped by CTRL_BREAK_EVENT", "PID", pid)
 			return waitEndedCh, nil
 		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
 		default:
-			e.log.V(1).Info("process did not stop upon CTRL_BREAK_EVENT", "pid", pid)
+			e.log.V(1).Info("Process did not stop upon CTRL_BREAK_EVENT", "PID", pid)
 		}
 	}
 
-	e.log.V(1).Info("sending SIGKILL to process...", "pid", pid)
+	e.log.V(1).Info("Sending SIGKILL to process...", "PID", pid)
 	err = proc.Kill()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return nil, err
 	}
 
-	e.log.V(1).Info("process stopped by SIGKILL", "pid", pid)
+	e.log.V(1).Info("Process stopped by SIGKILL", "PID", pid)
 	return waitEndedCh, nil
 }
 

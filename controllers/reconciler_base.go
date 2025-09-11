@@ -192,7 +192,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 		}
 
 		if change == noChange {
-			log.V(1).Info(fmt.Sprintf("no changes detected for %s object, continue monitoring...", kind))
+			log.V(1).Info(fmt.Sprintf("No changes detected for %s object, continue monitoring...", kind))
 			return ctrl.Result{}, nil
 		}
 
@@ -216,7 +216,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 			// Update logic already determined that additional reconciliation is needed.
 			return res, err
 		} else if (change & additionalReconciliationNeeded) != 0 {
-			log.V(1).Info(fmt.Sprintf("scheduling additional reconciliation for %s...", kind))
+			log.V(1).Info(fmt.Sprintf("Scheduling additional reconciliation for %s...", kind))
 			delayDuration := delayDuration(delay)
 			// To make additional reconciliation happen, the RequeueAfter value must be > 0.
 			if delayDuration == 0 {

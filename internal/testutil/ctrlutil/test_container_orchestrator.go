@@ -223,7 +223,7 @@ func setupSocketListener(to *TestContainerOrchestrator) error {
 	go func() {
 		serveErr := to.socketServer.Serve(socketListener)
 		if serveErr != http.ErrServerClosed {
-			to.log.Error(serveErr, "socket server closed unexpectedly")
+			to.log.Error(serveErr, "Socket server closed unexpectedly")
 		}
 	}()
 
@@ -276,11 +276,11 @@ func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, 
 		return
 	}
 	requestLog := to.log.WithValues(
-		"containerId", containerId,
-		"traceId", traceId,
-		"options", logOptions.String(),
+		"ContainerId", containerId,
+		"TraceId", traceId,
+		"Options", logOptions.String(),
 	)
-	requestLog.V(1).Info("serving container logs")
+	requestLog.V(1).Info("Serving container logs")
 	innerWriter := NewLoggingWriteCloser(requestLog, resp)
 
 	var stdoutWriter, stderrWriter usvc_io.NotifyWriteCloser
@@ -308,8 +308,8 @@ func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, 
 
 	capturingErr := to.CaptureContainerLogs(effectiveCtx, containerId, stdoutWriter, stderrWriter, containerLogOptions)
 	if capturingErr != nil {
-		requestLog.Info("failed to serve logs for container",
-			"error", capturingErr.Error(),
+		requestLog.Info("Failed to serve logs for container",
+			"Error", capturingErr.Error(),
 		)
 		http.Error(resp, capturingErr.Error(), http.StatusInternalServerError)
 		return
@@ -323,7 +323,7 @@ func (to *TestContainerOrchestrator) handleLogRequest(resp http.ResponseWriter, 
 		panic("neither stdoutWriter nor stderrWriter was set")
 	}
 
-	requestLog.Info("finished serving container logs")
+	requestLog.Info("Finished serving container logs")
 }
 
 func (to *TestContainerOrchestrator) handleContainerGetRequest(resp http.ResponseWriter, req *http.Request) {

@@ -157,7 +157,7 @@ func ExecuteTemplate(
 	commonTmpl, err := tmpl.Clone()
 	if err != nil {
 		// This should really never happen, but the Clone() API returns an error, so we need to handle it.
-		log.Error(err, fmt.Sprintf("could not clone template for %s", substitutionContext), "Input", input)
+		log.Error(err, fmt.Sprintf("Could not clone template for %s", substitutionContext), "Input", input)
 		return input, nil // We are going to use the value as-is.
 	}
 
@@ -165,7 +165,7 @@ func ExecuteTemplate(
 	if err != nil {
 		// This does not necessarily indicate a problem--the input might be a completely intentional string
 		// that happens to be un-parsable as a text template.
-		log.Info(fmt.Sprintf("substitution is not possible for %s", substitutionContext), "Input", input)
+		log.Info(fmt.Sprintf("Substitution is not possible for %s", substitutionContext), "Input", input)
 		return input, nil
 	}
 
@@ -181,7 +181,7 @@ func ExecuteTemplate(
 		// if we attempt to run the context object anyway.
 		// TODO: the error from applying the template should be reported to the user via an event
 		// (compare with https://github.com/microsoft/usvc/issues/20)
-		log.Error(err, fmt.Sprintf("could not perform substitution for %s'", substitutionContext), "Input", input)
+		log.Error(err, fmt.Sprintf("Could not perform substitution for %s'", substitutionContext), "Input", input)
 		return input, nil
 	} else {
 		return sb.String(), nil
@@ -317,7 +317,7 @@ func portForServingFromExecutableEndpoints(
 	var childEndpoints apiv1.EndpointList
 	listErr := client.List(ctx, &childEndpoints, ctrl_client.InNamespace(exe.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(exe.GetUID())})
 	if listErr != nil {
-		log.Error(listErr, "failed to list child Endpoint objects for Executable", "Executable", exe.NamespacedName().String())
+		log.Error(listErr, "Failed to list child Endpoint objects for Executable", "Executable", exe.NamespacedName().String())
 	}
 
 	for _, sp := range servicesProduced {

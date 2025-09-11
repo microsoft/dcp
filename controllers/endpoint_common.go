@@ -62,7 +62,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 
 	var childEndpoints apiv1.EndpointList
 	if err = r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
+		log.Error(err, "Failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
 	for _, serviceProducer := range serviceProducers {
@@ -102,7 +102,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 			for _, endpoint := range existingEndpoints {
 				deleteErr := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
 				if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-					log.Error(deleteErr, "could not delete Endpoint object",
+					log.Error(deleteErr, "Could not delete Endpoint object",
 						"Endpoint", endpoint.NamespacedName().String(),
 						"Workload", owner.NamespacedName().String(),
 					)
@@ -128,7 +128,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 		endpoint, err = r.createEndpoint(ctx, owner, serviceProducer, ecc, log)
 
 		if err != nil {
-			log.Error(err, "could not create Endpoint object",
+			log.Error(err, "Could not create Endpoint object",
 				"ServiceName", serviceProducer.ServiceName,
 				"Workload", owner.NamespacedName().String(),
 			)
@@ -136,7 +136,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 		}
 
 		if err = ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
-			log.Error(err, "failed to set owner for endpoint",
+			log.Error(err, "Failed to set owner for endpoint",
 				"ServiceName", serviceProducer.ServiceName,
 				"Workload", owner.NamespacedName().String(),
 			)
@@ -145,7 +145,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 		if err = r.Create(ctx, endpoint); err != nil {
 			// Do not log an error if resource cleanup has started.
 			if !apiv1.ResourceCreationProhibited.Load() {
-				log.Error(err, "could not persist Endpoint object",
+				log.Error(err, "Could not persist Endpoint object",
 					"ServiceName", serviceProducer.ServiceName,
 					"Workload", owner.NamespacedName().String(),
 				)
@@ -161,13 +161,13 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 func removeEndpointsForWorkload(r ctrl_client.Client, ctx context.Context, owner commonapi.DcpModelObject, log logr.Logger) {
 	var childEndpoints apiv1.EndpointList
 	if err := r.List(ctx, &childEndpoints, ctrl_client.InNamespace(owner.GetNamespace()), ctrl_client.MatchingFields{commonapi.WorkloadOwnerKey: string(owner.GetUID())}); err != nil {
-		log.Error(err, "failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
+		log.Error(err, "Failed to list child Endpoint objects", "Workload", owner.NamespacedName().String())
 	}
 
 	for _, endpoint := range childEndpoints.Items {
 		err := r.Delete(ctx, &endpoint, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
 		if err != nil && !apierrors.IsNotFound(err) {
-			log.Error(err, "could not delete Endpoint object",
+			log.Error(err, "Could not delete Endpoint object",
 				"Endpoint", endpoint.NamespacedName().String(),
 				"Workload", owner.NamespacedName().String(),
 			)

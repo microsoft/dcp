@@ -161,7 +161,7 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 			return fmt.Errorf("file %s exceeds max supported file size (%d bytes): %d bytes", file.Source, osutil.MaxCopyFileSize, stat.Size())
 		}
 
-		log.V(1).Info("copying file to tar", "file", file.Source, "size", stat.Size())
+		log.V(1).Info("Copying file to tar", "File", file.Source, "Size", stat.Size())
 
 		f, openErr := usvc_io.OpenFile(file.Source, os.O_RDONLY, 0)
 		if openErr != nil {

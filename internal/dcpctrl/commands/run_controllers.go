@@ -68,7 +68,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 		return ctrlruntime.NewManager(config, ctrlMgrOpts)
 	})
 	if err != nil {
-		log.Error(err, "unable to create controller manager")
+		log.Error(err, "Unable to create controller manager")
 		return nil, err
 	}
 
@@ -83,7 +83,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 		return nil, nil
 	})
 	if err != nil {
-		log.Error(err, "unable to confirm the API server is responding")
+		log.Error(err, "Unable to confirm the API server is responding")
 		return nil, err
 	}
 
@@ -155,12 +155,12 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			},
 		)
 		if err = serviceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up Service controller")
+			log.Error(err, "Unable to set up Service controller")
 			return err
 		}
 
 		if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
-			log.Error(err, "unable to set up Endpoint owner index")
+			log.Error(err, "Unable to set up Endpoint owner index")
 			return err
 		}
 
@@ -173,7 +173,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			hpSet,
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up Executable controller")
+			log.Error(err, "Unable to set up Executable controller")
 			return err
 		}
 
@@ -184,7 +184,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.WithName("ExecutableReplicaSetReconciler"),
 		)
 		if err = exReplicaSetCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up ExecutableReplicaSet controller")
+			log.Error(err, "Unable to set up ExecutableReplicaSet controller")
 			return err
 		}
 
@@ -200,7 +200,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up Container controller")
+			log.Error(err, "Unable to set up Container controller")
 			return err
 		}
 
@@ -212,7 +212,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			containerOrchestrator,
 		)
 		if err = containerExecCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up ContainerExec controller")
+			log.Error(err, "Unable to set up ContainerExec controller")
 			return err
 		}
 
@@ -224,7 +224,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			containerOrchestrator,
 		)
 		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to set up ContainerVolume controller")
+			log.Error(err, "Unable to set up ContainerVolume controller")
 			return err
 		}
 
@@ -237,7 +237,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			harvester,
 		)
 		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to setup a ContainerNetwork controller")
+			log.Error(err, "Unable to setup a ContainerNetwork controller")
 			return err
 		}
 
@@ -252,7 +252,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.WithName("TunnelProxyReconciler"),
 		)
 		if err = containerNetworkTunnelProxyCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
-			log.Error(err, "unable to setup a ContainerNetworkTunnelProxy controller")
+			log.Error(err, "Unable to setup a ContainerNetworkTunnelProxy controller")
 			return err
 		}
 
@@ -262,7 +262,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		// can exit even if controller manager Start() method does NOT return in a timely manner
 		// after context cancellation (https://github.com/microsoft/usvc/issues/195).
 		go func() {
-			log.Info("starting controller manager")
+			log.Info("Starting controller manager")
 			var mgrRunErr error
 
 			defer func() {
@@ -271,10 +271,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 					// Already logged by MakePanicError()
 					mgrRunResultCh <- panicErr
 				} else if mgrRunErr != nil {
-					log.Error(mgrRunErr, "controller manager failed")
+					log.Error(mgrRunErr, "Controller manager failed")
 					mgrRunResultCh <- mgrRunErr
 				} else {
-					log.Info("controller manager shutting down...")
+					log.Info("Controller manager shutting down...")
 					mgrRunResultCh <- nil
 				}
 				close(mgrRunResultCh)
@@ -302,13 +302,13 @@ func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
 		return
 	}
 
-	log.V(1).Info("setting up notification receiver", "SocketPath", notifySocketPath)
+	log.V(1).Info("Setting up notification receiver", "SocketPath", notifySocketPath)
 
 	_, nrErr := notifications.NewNotificationSubscription(notifyCtx, notifySocketPath, log.WithName("NotificationReceiver"), func(n notifications.Notification) {
 		handleNotification(notifyCtx, n, log)
 	})
 	if nrErr != nil {
-		log.Error(nrErr, "failed to create cleanup notification receiver")
+		log.Error(nrErr, "Failed to create cleanup notification receiver")
 	}
 }
 
@@ -316,12 +316,12 @@ func handleNotification(ctx context.Context, note notifications.Notification, lo
 	switch note.Kind() {
 
 	case notifications.NotificationKindCleanupStarted:
-		log.V(1).Info("received cleanup notification, suppressing TCP stream completion errors...")
+		log.V(1).Info("Received cleanup notification, suppressing TCP stream completion errors...")
 		proxy.SilenceTcpStreamCompletionErrors.Store(true)
 		if !shutdownPerftraceStarted.Swap(true) {
-			log.V(1).Info("attempting to start shutdown profiling")
+			log.V(1).Info("Attempting to start shutdown profiling")
 			if profileErr := perftrace.CaptureShutdownProfileIfRequested(ctx, log); profileErr != nil {
-				log.Error(profileErr, "could not start shutdown profiling")
+				log.Error(profileErr, "Could not start shutdown profiling")
 				// Best effort--do not fail the request if we cannot start profiling.
 			}
 		}
@@ -336,7 +336,7 @@ func handleNotification(ctx context.Context, note notifications.Notification, lo
 		profileCtx, profileCtxCancel := context.WithTimeout(ctx, perfTraceReq.Duration)
 		profileErr := perftrace.StartProfiling(profileCtx, profileCtxCancel, perftrace.ProfileTypeSnapshot, log)
 		if profileErr != nil {
-			log.Error(profileErr, "could not start performance profiling")
+			log.Error(profileErr, "Could not start performance profiling")
 			// Best effort--do not fail the request if we cannot start profiling.
 		}
 	}

@@ -66,7 +66,7 @@ func main() {
 	// Get and read stream
 	stream, err := r.GetStream(ctx)
 	if err != nil {
-		log.Error(err, "failed to get stream")
+		log.Error(err, "Failed to get stream")
 		os.Exit(1)
 	}
 	defer stream.Close()
@@ -74,7 +74,7 @@ func main() {
 	// Read and process stream
 	err = r.ReadStream(ctx, stream)
 	if err != nil {
-		log.Error(err, "failed to read stream")
+		log.Error(err, "Failed to read stream")
 		os.Exit(1)
 	}
 

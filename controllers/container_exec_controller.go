@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/templating"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
@@ -108,17 +109,21 @@ func (r *ContainerExecReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
-			log.V(1).Info("the ContainerExec object was deleted")
+			log.V(1).Info("The ContainerExec object was deleted")
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
-			log.Error(err, "failed to Get() the ContainerExec object")
+			log.Error(err, "Failed to Get() the ContainerExec object")
 			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
 	} else {
 		getSucceededCounter.Add(ctx, 1)
 	}
+
+	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, exec.GetResourceId())
+
+	log = log.WithValues("Container", exec.Spec.ContainerName)
 
 	var change objectChange
 	patch := ctrl_client.MergeFromWithOptions(exec.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
@@ -156,13 +161,13 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 	getContainerErr := r.Get(ctx, commonapi.AsNamespacedName(exec.Spec.ContainerName, exec.Namespace), &container)
 	if getContainerErr != nil {
 		// If we failed to find the target container, retry later
-		r.Log.V(1).Info("failed to find target Container for ContainerExec, retrying later", "Container", exec.Spec.ContainerName)
+		log.V(1).Info("Failed to find target Container for ContainerExec, retrying later")
 		return additionalReconciliationNeeded
 	}
 
 	if !container.Status.FinishTimestamp.IsZero() {
 		// The container finished running, we won't be able to run this job
-		r.Log.Info("container has already finished, can't start a new exec job", "Container", container.Name)
+		log.Info("Container has already finished, can't start a new exec job")
 		execStatus.finishTimestamp = metav1.NowMicro()
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 		return updateContainerExecStatus(exec, execStatus)
@@ -170,18 +175,18 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 
 	if container.Status.State != apiv1.ContainerStateRunning {
 		// The container isn't ready yet, schedule a retry
-		r.Log.V(1).Info("container is not ready to run an exec job, retrying later", "Container", container.Name)
+		log.V(1).Info("Container is not ready to run an exec job, retrying later")
 		return additionalReconciliationNeeded
 	}
 
 	effectiveEnv, envErr := r.computeEffectiveEnvironment(ctx, exec, &container, log)
 	if envErr != nil {
 		if templating.IsTransientTemplateError(envErr) {
-			log.V(1).Info("could not compute effective environment for the ContainerExec job, retrying startup...", "Cause", envErr.Error())
+			log.V(1).Info("Could not compute effective environment for the ContainerExec job, retrying startup...", "Cause", envErr.Error())
 			return additionalReconciliationNeeded
 		}
 
-		log.Error(envErr, "could not compute effective environment for the ContainerExec job")
+		log.Error(envErr, "Could not compute effective environment for the ContainerExec job")
 		execStatus.finishTimestamp = metav1.NowMicro()
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 		return updateContainerExecStatus(exec, execStatus)
@@ -190,11 +195,11 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 	effectiveArgs, argsErr := r.computeEffectiveInvocationArgs(ctx, exec, &container, log)
 	if argsErr != nil {
 		if templating.IsTransientTemplateError(argsErr) {
-			log.V(1).Info("could not compute effective invocation arguments for the ContainerExec job, retrying startup...", "Cause", argsErr.Error())
+			log.V(1).Info("Could not compute effective invocation arguments for the ContainerExec job, retrying startup...", "Cause", argsErr.Error())
 			return additionalReconciliationNeeded
 		}
 
-		log.Error(argsErr, "could not compute effective invocation arguments for the ContainerExec job")
+		log.Error(argsErr, "Could not compute effective invocation arguments for the ContainerExec job")
 		execStatus.finishTimestamp = metav1.NowMicro()
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 
@@ -203,14 +208,14 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 
 	stdOutFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exec.Name, exec.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing process standard output data")
+		log.Error(err, "Failed to create temporary file for capturing process standard output data")
 	} else {
 		execStatus.stdOutFile = stdOutFile.Name()
 	}
 
 	stdErrFile, err := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exec.Name, exec.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing process standard error data")
+		log.Error(err, "Failed to create temporary file for capturing process standard error data")
 	} else {
 		execStatus.stdErrFile = stdErrFile.Name()
 	}
@@ -240,7 +245,7 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 	execChan, execErr := r.orchestrator.ExecContainer(execContext, options)
 	if execErr != nil {
 		// We failed to start execution, so mark the status failed
-		log.Error(execErr, "failed to run ContainerExec job in container")
+		log.Error(execErr, "Failed to run ContainerExec job in container")
 		execStatus.state = apiv1.ExecutableStateFailedToStart
 		execStatus.finishTimestamp = metav1.NowMicro()
 
@@ -271,7 +276,11 @@ func (r *ContainerExecReconciler) ensureExec(ctx context.Context, exec *apiv1.Co
 			execStatus.state = apiv1.ExecutableStateFinished
 			execStatus.finishTimestamp = finishTimestamp
 
-			r.Log.V(1).Info("detected exec command completion, scheduling reconciliation for ContainerExec object", "ContainerExec", exec.Name)
+			r.Log.WithValues(logger.RESOURCE_LOG_STREAM_ID, exec.GetResourceId()).
+				V(1).
+				Info("Detected exec command completion, scheduling reconciliation for ContainerExec object",
+					"ContainerExec", exec.NamespacedName().String(),
+					"Container", exec.Spec.ContainerName)
 			r.ScheduleReconciliation(exec.NamespacedName())
 		}
 	}()
@@ -344,7 +353,7 @@ func (r *ContainerExecReconciler) releaseContainerExecResources(exec *apiv1.Cont
 func (r *ContainerExecReconciler) stopContainerExec(exec *apiv1.ContainerExec, log logr.Logger) {
 	execStatus, found := r.executions.Load(exec.UID)
 	if !found {
-		log.V(1).Info("run data is not available, nothing to stop")
+		log.V(1).Info("Run data is not available, nothing to stop")
 		return
 	}
 
@@ -366,7 +375,7 @@ func (r *ContainerExecReconciler) deleteOutputFiles(exec *apiv1.ContainerExec, l
 		path := exec.Status.StdOutFile
 		_ = r.stopQueue.Enqueue(func(opCtx context.Context) { // Only errors if lifetimeCtx is done
 			if err := logs.RemoveWithRetry(opCtx, path); err != nil {
-				log.Error(err, "could not remove process's standard output file", "path", path)
+				log.Error(err, "Could not remove process's standard output file", "Path", path)
 			}
 		})
 	}
@@ -375,7 +384,7 @@ func (r *ContainerExecReconciler) deleteOutputFiles(exec *apiv1.ContainerExec, l
 		path := exec.Status.StdErrFile
 		_ = r.stopQueue.Enqueue(func(opCtx context.Context) {
 			if err := logs.RemoveWithRetry(opCtx, path); err != nil {
-				log.Error(err, "could not remove process's standard error file", "path", path)
+				log.Error(err, "Could not remove process's standard error file", "Path", path)
 			}
 		})
 	}

@@ -72,7 +72,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 				args = append(args, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
 			}
 
-			log.V(1).Info("Forking command", "cmd", os.Args[0], "args", args)
+			log.V(1).Info("Forking command", "Cmd", os.Args[0], "Args", args)
 
 			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
@@ -82,14 +82,14 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			process.ForkFromParent(forked)
 
 			if err := forked.Start(); err != nil {
-				log.Error(err, "forked process failed to run")
+				log.Error(err, "Forked process failed to run")
 				return err
 			} else {
-				log.V(1).Info("Forked process started", "pid", forked.Process.Pid)
+				log.V(1).Info("Forked process started", "PID", forked.Process.Pid)
 			}
 
 			if err := forked.Process.Release(); err != nil {
-				log.Error(err, "release failed for process", "pid", forked.Process.Pid)
+				log.Error(err, "Release failed for process", "PID", forked.Process.Pid)
 				return err
 			}
 
@@ -98,7 +98,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		err := perftrace.CaptureStartupProfileIfRequested(apiServerCtx, log)
 		if err != nil {
-			log.Error(err, "failed to capture startup profile")
+			log.Error(err, "Failed to capture startup profile")
 		}
 
 		if rootDir == "" {

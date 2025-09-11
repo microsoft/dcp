@@ -123,19 +123,19 @@ func doCleanup(log logr.Logger) error {
 
 	err := perftrace.CaptureShutdownProfileIfRequested(shutdownCtx, log)
 	if err != nil {
-		log.Error(err, "failed to capture shutdown profile")
+		log.Error(err, "Failed to capture shutdown profile")
 	}
 
 	// Using shorter timeout for the client to keep the shutdown process fail time as short as possible.
 	dcpclient, err := dcpclient.NewClient(shutdownCtx, 5*time.Second)
 	if err != nil {
-		log.Error(err, "could not get the client for the API server")
+		log.Error(err, "Could not get the client for the API server")
 		return err
 	}
 
 	clusterConfig, err := config.GetConfig()
 	if err != nil {
-		log.Error(err, "could not get config")
+		log.Error(err, "Could not get config")
 		return err
 	}
 
@@ -147,7 +147,7 @@ func doCleanup(log logr.Logger) error {
 
 	dynamicClient, err := dynamic.NewForConfig(clusterConfig)
 	if err != nil {
-		log.Error(err, "could not get client")
+		log.Error(err, "Could not get client")
 		return err
 	}
 
@@ -168,9 +168,9 @@ func doCleanup(log logr.Logger) error {
 		rcr := <-resourceDone
 
 		if rcr.Error != nil {
-			log.Error(rcr.Error, "an error occurred while cleaning up a resource", "resource", rcr.GVR.String())
+			log.Error(rcr.Error, "An error occurred while cleaning up a resource", "Resource", rcr.GVR.String())
 		} else {
-			log.Info("finished cleaning up a resource", "resource", rcr.GVR.String())
+			log.Info("Finished cleaning up a resource", "Resource", rcr.GVR.String())
 		}
 
 		for _, sr := range shutdownResources {
@@ -195,7 +195,7 @@ func doCleanup(log logr.Logger) error {
 		for _, sr := range readyForCleanup {
 			sr.State = processing
 			inProgress += 1
-			log.Info("cleaning up a resource...", "resource", sr.GVR.String())
+			log.Info("Cleaning up a resource...", "Resource", sr.GVR.String())
 			go cleanupResource(shutdownCtx, dcpclient, dynamicClient, sr.GVR, log, resourceDone)
 		}
 
@@ -215,14 +215,14 @@ func doCleanup(log logr.Logger) error {
 	cleanupErrors := slices.Map[*cleanupResourceDescriptor, error](notCleanedUp, func(sr *cleanupResourceDescriptor) error {
 		switch {
 		case sr.CleanupError != nil:
-			return fmt.Errorf("Resource '%s' could not be cleaned up: %w", sr.GVR.String(), sr.CleanupError)
+			return fmt.Errorf("resource '%s' could not be cleaned up: %w", sr.GVR.String(), sr.CleanupError)
 		case len(sr.WaitingFor) > 0:
 			dependencies := slices.Map[schema.GroupVersionResource, string](sr.WaitingFor, func(gvr schema.GroupVersionResource) string {
 				return "'" + gvr.String() + "'"
 			})
-			return fmt.Errorf("Resource '%s' could not be cleaned up: still waiting for: %s", sr.GVR.String(), strings.Join(dependencies, ", "))
+			return fmt.Errorf("resource '%s' could not be cleaned up: still waiting for: %s", sr.GVR.String(), strings.Join(dependencies, ", "))
 		default:
-			return fmt.Errorf("Resource '%s' could not be cleaned up in alloted time", sr.GVR.String())
+			return fmt.Errorf("resource '%s' could not be cleaned up in alloted time", sr.GVR.String())
 		}
 	})
 
@@ -281,7 +281,7 @@ func cleanupResource(
 
 			parent := metav1.GetControllerOf(clientObj)
 			if parent != nil && parent.APIVersion == apiv1.GroupVersion.String() {
-				log.Info("object has a parent, which should handle cleanup", "gvr", gvr, "objectName", clientObj.GetName(), "namespace", clientObj.GetNamespace(), "parentKind", parent.Kind, "parentName", parent.Name)
+				log.Info("Object has a parent, which should handle cleanup", "gvr", gvr, "ObjectName", clientObj.GetName(), "Namespace", clientObj.GetNamespace(), "ParentKind", parent.Kind, "ParentName", parent.Name)
 				resourceCount.Add(-1)
 				return
 			}
@@ -308,7 +308,7 @@ func cleanupResource(
 				return // Should never happen
 			}
 			resourceCount.Add(-1)
-			log.Info("object deleted", "gvr", gvr, "resource", clientObj.GetName(), "namespace", clientObj.GetNamespace())
+			log.Info("Object deleted", "gvr", gvr, "Resource", clientObj.GetName(), "Namespace", clientObj.GetNamespace())
 		},
 	}
 
@@ -323,14 +323,14 @@ func cleanupResource(
 	close(cacheSyncDone)
 
 	if initialCount == 0 {
-		log.Info("no resource instances found", "resource", gvr.String())
+		log.Info("No resource instances found", "Resource", gvr.String())
 		resourceDone <- resourceCleanupResult{GVR: gvr, Error: nil}
 		return
 	}
 
-	log.Info("waiting for all instances of a resource to be deleted...",
-		"initialCount", initialCount,
-		"resource", gvr.String(),
+	log.Info("Waiting for all instances of a resource to be deleted...",
+		"InitialCount", initialCount,
+		"Resource", gvr.String(),
 	)
 
 	const noNewResourcesCheckInterval = 1 * time.Second
@@ -340,14 +340,14 @@ func cleanupResource(
 		select {
 
 		case <-ctx.Done():
-			log.Info("shutdown context cancelled, stopping resource cleanup", "resource", gvr.String())
+			log.Info("Shutdown context cancelled, stopping resource cleanup", "Resource", gvr.String())
 			noNewResourcesTimer.Stop()
 			resourceDone <- resourceCleanupResult{GVR: gvr, Error: ctx.Err()}
 			return
 
 		case <-noNewResourcesTimer.C:
 			if resourceCount.Load() <= 0 {
-				log.Info("all resource instances processed", "resource", gvr.String())
+				log.Info("All resource instances processed", "Resource", gvr.String())
 				deleteErrorsLock.Lock()
 				defer deleteErrorsLock.Unlock()
 				resourceDone <- resourceCleanupResult{GVR: gvr, Error: resiliency.Join(deleteErrors...)}
@@ -376,7 +376,7 @@ func deleteSingleObject(
 		}
 	}()
 
-	log.Info("deleting resource...", "gvr", gvr, "resource", clientObj.GetName(), "namespace", clientObj.GetNamespace())
+	log.Info("Deleting resource...", "gvr", gvr, "Resource", clientObj.GetName(), "Namespace", clientObj.GetNamespace())
 
 	// Limit the break between deletion attempts to 5 seconds
 	b := backoff.NewExponentialBackOff(backoff.WithMaxInterval(5 * time.Second))
@@ -400,7 +400,7 @@ func deleteSingleObject(
 	})
 
 	if retryErr != nil {
-		log.Error(retryErr, "could not delete resource", "gvr", gvr, "resource", clientObj.GetName(), "namespace", clientObj.GetNamespace())
+		log.Error(retryErr, "Could not delete resource", "GVR", gvr, "Resource", clientObj.GetName(), "Namespace", clientObj.GetNamespace())
 	}
 
 	return retryErr
@@ -413,7 +413,7 @@ func runBeforeCleanupTasks(log logr.Logger) {
 			proceed = true
 		}()
 		defer beforeCleanupTasks.Delete(name)
-		log.Info("running before cleanup task...", "name", name)
+		log.Info("Running before cleanup task...", "Name", name)
 		task()
 		return true // Always proceed to the next task
 	})

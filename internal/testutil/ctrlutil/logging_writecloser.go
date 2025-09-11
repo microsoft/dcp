@@ -38,14 +38,14 @@ func NewLoggingWriteCloser(log logr.Logger, inner io.Writer) usvc_io.WriteSyncer
 func (lwc *loggingWriteCloser) Write(p []byte) (int, error) {
 	n, err := lwc.inner.Write(p)
 	if err != nil {
-		lwc.log.Error(err, "error writing to inner writer",
-			"bytes", p,
-			"written", n,
+		lwc.log.Error(err, "Error writing to inner writer",
+			"Bytes", p,
+			"Written", n,
 		)
 	} else {
-		lwc.log.V(1).Info("write succeeded",
-			"bytes", p,
-			"written", n,
+		lwc.log.V(1).Info("Write succeeded",
+			"Bytes", p,
+			"Written", n,
 		)
 	}
 	if lwc.flusher != nil {
@@ -61,9 +61,9 @@ func (lwc *loggingWriteCloser) Close() error {
 
 	err := lwc.closer.Close()
 	if err != nil {
-		lwc.log.Error(err, "error closing inner writer")
+		lwc.log.Error(err, "Error closing inner writer")
 	} else {
-		lwc.log.V(1).Info("inner writer closed")
+		lwc.log.V(1).Info("Inner writer closed")
 	}
 	return err
 }

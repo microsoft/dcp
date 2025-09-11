@@ -122,7 +122,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 			var info infoResponse
 			unmarshalErr := json.Unmarshal(respBody, &info)
 			if unmarshalErr != nil {
-				log.Error(unmarshalErr, "failed to parse IDE info response")
+				log.Error(unmarshalErr, "Failed to parse IDE info response")
 			} else if slices.Contains(info.ProtocolsSupported, version20240423) {
 				connInfo.apiVersion = version20240423
 			} else if slices.Contains(info.ProtocolsSupported, version20240303) {
@@ -136,11 +136,11 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	}
 
 	log.V(1).Info("IDE connection info created",
-		"port", portStr,
-		"httpScheme", httpScheme,
-		"webSocketScheme", webSocketScheme,
-		"instanceId", networking.GetProgramInstanceID(),
-		"apiVersion", connInfo.apiVersion,
+		"Port", portStr,
+		"HttpScheme", httpScheme,
+		"WebSocketScheme", webSocketScheme,
+		"InstanceId", networking.GetProgramInstanceID(),
+		"ApiVersion", connInfo.apiVersion,
 	)
 
 	return &connInfo, nil

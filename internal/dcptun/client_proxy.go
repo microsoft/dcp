@@ -345,12 +345,12 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 	tid := TunnelID(binary.BigEndian.Uint32(buf[0:4]))
 	streamID := StreamID(binary.BigEndian.Uint64(buf[4:12]))
 	if tid == invalidTunnelID {
-		cp.log.Error(fmt.Errorf("Invalid tunnel ID in a stream preamble: %d", tid), "Stream data connection failed")
+		cp.log.Error(fmt.Errorf("invalid tunnel ID in a stream preamble: %d", tid), "Stream data connection failed")
 		_ = proxyConn.Close()
 		return
 	}
 	if streamID == invalidStreamID {
-		cp.log.Error(fmt.Errorf("Invalid stream ID in a stream preamble: %d", streamID), "Stream data connection failed")
+		cp.log.Error(fmt.Errorf("invalid stream ID in a stream preamble: %d", streamID), "Stream data connection failed")
 		_ = proxyConn.Close()
 		return
 	}
@@ -359,13 +359,13 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 	si := cp.getStreamInfo(tid, streamID)
 	if si == nil {
 		cp.lock.Unlock()
-		cp.log.Error(fmt.Errorf("Stream not found: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
+		cp.log.Error(fmt.Errorf("stream not found: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
 		_ = proxyConn.Close()
 		return
 	}
 	if si.proxyConn != nil {
 		cp.lock.Unlock()
-		cp.log.Error(fmt.Errorf("Stream already has a proxy connection: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
+		cp.log.Error(fmt.Errorf("stream already has a proxy connection: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
 		_ = proxyConn.Close()
 		return
 	}

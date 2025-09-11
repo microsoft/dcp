@@ -400,7 +400,7 @@ func (hps *HealthProbeSet) executeSingleProbe(executionCtx context.Context, pd *
 	}()
 
 	if executionErr != nil {
-		hps.log.Error(executionErr, "health probe execution failed",
+		hps.log.Error(executionErr, "Health probe execution failed",
 			"Probe", probe.Name,
 			"Owner", pd.ownerDescription,
 		)

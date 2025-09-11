@@ -29,8 +29,8 @@ func NewTestContainerOrchestratorClient(
 	log logr.Logger,
 	socketFilePath string,
 ) *TestContainerOrchestratorClient {
-	log.V(1).Info("initializing TestContainerOrchestratorClient",
-		"socketFilePath", socketFilePath,
+	log.V(1).Info("Initializing TestContainerOrchestratorClient",
+		"SocketFilePath", socketFilePath,
 	)
 
 	return &TestContainerOrchestratorClient{
@@ -98,20 +98,20 @@ func (c *TestContainerOrchestratorClient) getLogStream(
 
 	traceIdBytes, traceIdErr := randdata.MakeRandomString(8)
 	if traceIdErr != nil {
-		c.log.V(1).Error(traceIdErr, "could not create a trace ID for container logs request",
-			"container", container,
+		c.log.V(1).Error(traceIdErr, "Could not create a trace ID for container logs request",
+			"Container", container,
 		)
 		return fmt.Errorf("could not create a trace ID for request to get logs for container %s: %w", container, traceIdErr)
 	}
 	traceId := string(traceIdBytes)
 	requestLog := c.log.WithValues(
-		"container", container,
-		"traceId", traceId,
+		"Container", container,
+		"TraceId", traceId,
 	)
-	requestLog.V(1).Info("getting container log stream from test container orchestrator",
-		"source", source,
-		"follow", options.Follow,
-		"timestamps", options.Timestamps,
+	requestLog.V(1).Info("Getting container log stream from test container orchestrator",
+		"Source", source,
+		"Follow", options.Follow,
+		"Timestamps", options.Timestamps,
 	)
 
 	url := &url.URL{
@@ -127,20 +127,20 @@ func (c *TestContainerOrchestratorClient) getLogStream(
 
 	req, reqCreationErr := http.NewRequestWithContext(ctx, http.MethodGet, url.String(), nil)
 	if reqCreationErr != nil {
-		requestLog.Error(reqCreationErr, "could not create a request to get logs for container")
+		requestLog.Error(reqCreationErr, "Could not create a request to get logs for container")
 		return reqCreationErr
 	}
 	req.Header.Set("trace-id", traceId)
 
 	resp, reqErr := c.httpClient.Do(req)
 	if reqErr != nil {
-		requestLog.Error(reqErr, "could not get logs for container")
+		requestLog.Error(reqErr, "Could not get logs for container")
 		return reqErr
 	}
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
 		reqErr = fmt.Errorf("request for container logs failed %d %s", resp.StatusCode, resp.Status)
-		requestLog.Error(reqErr, "could not get logs for container")
+		requestLog.Error(reqErr, "Could not get logs for container")
 		return reqErr
 	}
 
@@ -149,14 +149,14 @@ func (c *TestContainerOrchestratorClient) getLogStream(
 	bodyReader := usvc_io.NewContextReader(copyContext, resp.Body, true /* leverageReadCloser */)
 	written, copyErr := c.copyStream(copyContext, requestLog, sink, bodyReader)
 	if copyErr == nil {
-		requestLog.V(1).Info("container log stream has been successfully copied")
+		requestLog.V(1).Info("Container log stream has been successfully copied")
 		return nil
 	} else if errors.Is(copyErr, context.Canceled) || errors.Is(copyErr, context.DeadlineExceeded) {
-		requestLog.V(1).Info("container log stream has been cancelled or timed out")
+		requestLog.V(1).Info("Container log stream has been cancelled or timed out")
 		return nil
 	} else {
-		requestLog.Error(copyErr, "could not copy container log stream",
-			"totalBytesWritten", written,
+		requestLog.Error(copyErr, "Could not copy container log stream",
+			"TotalBytesWritten", written,
 		)
 		return copyErr
 	}
@@ -175,19 +175,19 @@ func (c *TestContainerOrchestratorClient) copyStream(
 
 	for {
 		if ctx.Err() != nil {
-			requestLog.V(1).Info("log stream context has been cancelled")
+			requestLog.V(1).Info("Log stream context has been cancelled")
 			return totalWritten, ctx.Err()
 		}
 
 		n, readErr := source.Read(buf)
 		if readErr != nil {
-			requestLog.Error(readErr, "could not read from log stream source")
+			requestLog.Error(readErr, "Could not read from log stream source")
 			return totalWritten, readErr
 		}
 
 		if n == 0 {
-			requestLog.V(1).Info("done copying log stream",
-				"totalBytesWritten", totalWritten,
+			requestLog.V(1).Info("Done copying log stream",
+				"TotalBytesWritten", totalWritten,
 			)
 			return totalWritten, nil
 		}
@@ -197,24 +197,24 @@ func (c *TestContainerOrchestratorClient) copyStream(
 		written, writeErr := sink.Write(content)
 		totalWritten += written
 		if writeErr != nil {
-			requestLog.Error(writeErr, "could not write to log stream sink",
-				"totalBytesWritten", totalWritten,
+			requestLog.Error(writeErr, "Could not write to log stream sink",
+				"TotalBytesWritten", totalWritten,
 			)
 			return totalWritten, writeErr
 		}
 		if written < len(content) {
-			requestLog.Error(io.ErrShortWrite, "some log data was lost when writing to log sink",
-				"totalBytesWritten", totalWritten,
-				"writtenBytes", written,
-				"desiredBytes", len(content),
+			requestLog.Error(io.ErrShortWrite, "Some log data was lost when writing to log sink",
+				"TotalBytesWritten", totalWritten,
+				"WrittenBytes", written,
+				"DesiredBytes", len(content),
 			)
 			return totalWritten, io.ErrShortWrite
 		}
 		if written > len(content) {
-			requestLog.Error(errInvalidWrite, "invalid write occurred when writing to log sink",
-				"totalBytesWritten", totalWritten,
-				"writtenBytes", written,
-				"desiredBytes", len(content),
+			requestLog.Error(errInvalidWrite, "Invalid write occurred when writing to log sink",
+				"TotalBytesWritten", totalWritten,
+				"WrittenBytes", written,
+				"DesiredBytes", len(content),
 			)
 			return totalWritten, errInvalidWrite
 		}

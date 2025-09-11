@@ -132,17 +132,17 @@ func (k *Kubeconfig) Save() error {
 func (k *Kubeconfig) GetData() (net.IP, int, string, *certificateData, error) {
 	kubeContext, found := k.Config.Contexts[k.Config.CurrentContext]
 	if !found {
-		return nil, networking.InvalidPort, "", nil, fmt.Errorf("Kubeconfig file is invalid; the context named '%s' (current context) does not exist", k.Config.CurrentContext)
+		return nil, networking.InvalidPort, "", nil, fmt.Errorf("kubeconfig file is invalid; the context named '%s' (current context) does not exist", k.Config.CurrentContext)
 	}
 
 	user, found := k.Config.AuthInfos[kubeContext.AuthInfo]
 	if !found {
-		return nil, networking.InvalidPort, "", nil, fmt.Errorf("Kubeconfig file is invalid; the user named '%s' (referred by current context) does not exist", kubeContext.AuthInfo)
+		return nil, networking.InvalidPort, "", nil, fmt.Errorf("kubeconfig file is invalid; the user named '%s' (referred by current context) does not exist", kubeContext.AuthInfo)
 	}
 
 	cluster, found := k.Config.Clusters[kubeContext.Cluster]
 	if !found {
-		return nil, networking.InvalidPort, "", nil, fmt.Errorf("Kubeconfig file is invalid; the user named '%s' (referred by current context) does not exist", kubeContext.AuthInfo)
+		return nil, networking.InvalidPort, "", nil, fmt.Errorf("kubeconfig file is invalid; the user named '%s' (referred by current context) does not exist", kubeContext.AuthInfo)
 	}
 
 	clusterUrl, err := url.Parse(cluster.Server)

@@ -54,11 +54,11 @@ func (rh *resourceHarvester) MockHarvest(
 ) {
 	select {
 	case <-time.After(sleepDuration):
-		log.V(1).Info("mock resource harvester completed")
+		log.V(1).Info("Mock resource harvester completed")
 		rh.done.Store(true)
 		return
 	case <-ctx.Done():
-		log.V(1).Info("mock resource harvester cancelled")
+		log.V(1).Info("Mock resource harvester cancelled")
 		return
 	}
 }
@@ -102,16 +102,16 @@ func (rh *resourceHarvester) Harvest(
 
 	defer rh.done.Store(true)
 
-	log.V(1).Info("unused container resource harvester started...")
+	log.V(1).Info("Unused container resource harvester started...")
 
 	harvestedContainers, harvestErr := rh.harvestAbandonedContainers(ctx, co, log)
 	if harvestErr != nil {
-		log.Info("could not harvest all abandoned containers", "Error", harvestErr)
+		log.Info("Could not harvest all abandoned containers", "Error", harvestErr)
 	}
 
 	harvestErr = rh.harvestAbandonedNetworks(ctx, co, harvestedContainers, log)
 	if harvestErr != nil {
-		log.Info("could not harvest all abandoned container networks", "Error", harvestErr)
+		log.Info("Could not harvest all abandoned container networks", "Error", harvestErr)
 	}
 }
 
@@ -167,10 +167,10 @@ func (rh *resourceHarvester) harvestAbandonedContainers(
 	if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
 		// Some containers could not be removed, but we still want to continue harvesting networks.
 		// Log the error at Info level, but do not return it.
-		log.Info("could not remove some abandoned containers.", "Error", removeErr)
+		log.Info("Could not remove some abandoned containers.", "Error", removeErr)
 	}
 
-	log.V(1).Info("removed containers", "Containers", removedContainerIds)
+	log.V(1).Info("Removed containers", "Containers", removedContainerIds)
 
 	return usvc_maps.SliceToMap(removedContainerIds, func(id string) (string, bool) { return id, true }), nil
 }
@@ -222,12 +222,12 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 	})
 
 	if errors.Is(inspectErr, containers.ErrIncomplete) {
-		log.Info("could not inspect all running networks", "Error", inspectErr)
+		log.Info("Could not inspect all running networks", "Error", inspectErr)
 	}
 
 	lockErr := rh.networkHarvestLock.Lock(ctx)
 	if lockErr != nil {
-		log.Info("could not acquire network harvest lock, skipping network harvesting", "Error", lockErr)
+		log.Info("Could not acquire network harvest lock, skipping network harvesting", "Error", lockErr)
 		return lockErr // We could not acquire the lock, so we cannot harvest networks.
 	}
 	defer rh.networkHarvestLock.Unlock()
@@ -267,7 +267,7 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 		Force:    true,
 	})
 
-	log.V(1).Info("removed networks", "Networks", removed)
+	log.V(1).Info("Removed networks", "Networks", removed)
 
 	return removeErr
 }

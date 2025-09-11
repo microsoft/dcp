@@ -458,7 +458,7 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 			return matched
 		})
 		if matchErr != nil {
-			return false, fmt.Errorf("Error occurred while matching logs: %w", matchErr)
+			return false, fmt.Errorf("error occurred while matching logs: %w", matchErr)
 		}
 
 		return allLinesMatch, nil
@@ -493,12 +493,12 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 		}
 
 		if scanner.Err() == nil && ctx.Err() == nil {
-			return fmt.Errorf("Log stream ended before expected logs arrived for %s '%s'. Logs written so far: %s",
+			return fmt.Errorf("log stream ended before expected logs arrived for %s '%s'. Logs written so far: %s",
 				obj.GetObjectKind().GroupVersionKind().Kind,
 				obj.GetObjectMeta().Name,
 				string(bytes.Join(logLines, osutil.LineSep())))
 		} else {
-			return fmt.Errorf("An error occurred while reading logs from %s '%s': %w. Logs written so far: %s",
+			return fmt.Errorf("an error occurred while reading logs from %s '%s': %w. Logs written so far: %s",
 				obj.GetObjectKind().GroupVersionKind().Kind,
 				obj.GetObjectMeta().Name,
 				errors.Join(scanner.Err(), ctx.Err()),
@@ -540,14 +540,14 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 		err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, hasExpectedLogLines)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return fmt.Errorf("Timeout occurred while waiting for expected logs from %s '%s'. Last log contents:\n%s\nExpected log contents:\n%s",
+				return fmt.Errorf("timeout occurred while waiting for expected logs from %s '%s', last log contents:\n%s\nExpected log contents:\n%s",
 					obj.GetObjectKind().GroupVersionKind().Kind,
 					obj.GetObjectMeta().Name,
 					string(lastLogContents),
 					string(bytes.Join(expectedLines, osutil.LineSep())),
 				)
 			} else {
-				return fmt.Errorf("Expected logs could not be retrieved: %w", err)
+				return fmt.Errorf("expected logs could not be retrieved: %w", err)
 			}
 		}
 		return nil

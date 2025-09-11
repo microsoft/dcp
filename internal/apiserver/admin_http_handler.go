@@ -93,7 +93,7 @@ func (h *adminHttpHandler) getExecutionData(w http.ResponseWriter, r *http.Reque
 	}()
 	if err != nil {
 		// Should never happen
-		h.log.Error(err, "could not serialize API server execution data")
+		h.log.Error(err, "Could not serialize API server execution data")
 		http.Error(w, "could not serialize API server execution data", http.StatusInternalServerError)
 		return
 	}
@@ -101,7 +101,7 @@ func (h *adminHttpHandler) getExecutionData(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	_, writeErr := w.Write(resp)
 	if writeErr != nil {
-		h.log.Error(writeErr, "could not write API server execution data")
+		h.log.Error(writeErr, "Could not write API server execution data")
 	}
 }
 
@@ -202,7 +202,7 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 	h.lock.Unlock()
 	if err != nil {
 		// Should never happen
-		h.log.Error(err, "could not serialize API server execution data")
+		h.log.Error(err, "Could not serialize API server execution data")
 		http.Error(w, "could not serialize API server execution data", http.StatusInternalServerError)
 		return
 	}
@@ -215,7 +215,7 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	_, writeErr := w.Write(resp)
 	if writeErr != nil {
-		h.log.Error(writeErr, "could not write API server execution data")
+		h.log.Error(writeErr, "Could not write API server execution data")
 	}
 
 	// Only request shutdown AFTER writing the response, so that we do not "cancel ourselves" in the middle of writing.
@@ -259,7 +259,7 @@ func (h *adminHttpHandler) capturePerfTrace(w http.ResponseWriter, r *http.Reque
 			Duration: duration,
 		})
 		if notifyErr != nil {
-			h.log.Error(notifyErr, "could not notify subscribers about performance trace request")
+			h.log.Error(notifyErr, "Could not notify subscribers about performance trace request")
 			// Best effort--do not fail the request if we cannot notify subscribers.
 		}
 	}
@@ -273,7 +273,7 @@ func (h *adminHttpHandler) capturePerfTrace(w http.ResponseWriter, r *http.Reque
 	profilingCtx, profilingCtxCancel := context.WithTimeout(h.lifetimeCtx, duration)
 	profileErr := h.runConfig.CollectPerfTrace(profilingCtx, profilingCtxCancel, h.profilerLog)
 	if profileErr != nil {
-		h.log.Error(profileErr, "could not start performance profiling")
+		h.log.Error(profileErr, "Could not start performance profiling")
 		http.Error(w, "could not start performance profiling", http.StatusInternalServerError)
 		return
 	}

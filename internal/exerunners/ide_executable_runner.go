@@ -98,7 +98,7 @@ func (r *IdeExecutableRunner) StartRun(
 	})
 
 	if workEnqueueErr != nil {
-		log.Error(workEnqueueErr, "could not enqueue ide executable start operation; workload is shutting down")
+		log.Error(workEnqueueErr, "Could not enqueue ide executable start operation; workload is shutting down")
 		runInfo.ExeState = apiv1.ExecutableStateFailedToStart
 		runInfo.FinishTimestamp = metav1.NowMicro()
 	} else {
@@ -156,7 +156,7 @@ func (r *IdeExecutableRunner) doStartRun(
 
 	stdOutFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing standard output data")
+		log.Error(err, "Failed to create temporary file for capturing standard output data")
 		stdOutFile = nil
 	} else {
 		runInfo.StdOutFile = stdOutFile.Name()
@@ -164,7 +164,7 @@ func (r *IdeExecutableRunner) doStartRun(
 
 	stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
-		log.Error(err, "failed to create temporary file for capturing standard error data")
+		log.Error(err, "Failed to create temporary file for capturing standard error data")
 		stdErrFile = nil
 	} else {
 		runInfo.StdErrFile = stdErrFile.Name()
@@ -180,7 +180,7 @@ func (r *IdeExecutableRunner) doStartRun(
 	resp, err = r.connectionInfo.GetClient().Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Error(err, fmt.Sprintf("timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", ideEndpointRequestTimeout.Seconds()))
+			log.Error(err, fmt.Sprintf("Timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", ideEndpointRequestTimeout.Seconds()))
 		} else {
 			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
 		}
@@ -247,7 +247,7 @@ func (r *IdeExecutableRunner) doStartRun(
 	defer rd.IncreaseChangeHandlerReadiness()
 	err = rd.SetOutputWriters(stdOutFile, stdErrFile)
 	if err != nil {
-		log.Error(err, "failed to set output writers to capture stdout/stderr") // Should never happen
+		log.Error(err, "Failed to set output writers to capture stdout/stderr") // Should never happen
 	}
 	rd.changeHandler = runChangeHandler
 	startWaitForRunCompletion := func() {
@@ -420,7 +420,7 @@ func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {
 	}
 
 	if err != nil {
-		r.log.Error(err, "failed to persist a log message")
+		r.log.Error(err, "Failed to persist a log message")
 	}
 }
 

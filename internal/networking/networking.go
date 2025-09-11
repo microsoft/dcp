@@ -238,7 +238,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 
 	if portFileErr != nil {
 		// Error will be logged by ensurePackageMruPortFile()
-		log.V(1).Info("warning: port allocation check: could not check the most recently used ports file for conflicts")
+		log.V(1).Info("Warning: port allocation check: could not check the most recently used ports file for conflicts")
 		return bestEffortPortAllocation(portFileErr)
 	}
 
@@ -255,7 +255,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 		}
 		defer func() {
 			if unlockErr := packageMruPortFile.Unlock(); unlockErr != nil {
-				log.Error(unlockErr, "could not unlock the most recently used ports file") // Should never happen
+				log.Error(unlockErr, "Could not unlock the most recently used ports file") // Should never happen
 				if packageMruPortFile.params.failOnPortFileError {
 					panic(unlockErr)
 				}
@@ -280,7 +280,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 					Instance:       programInstanceID,
 				})
 				if writeErr := packageMruPortFile.WriteAndUnlock(ctx, usedPorts); writeErr != nil {
-					log.Error(writeErr, "could not write to the most recently used ports file")
+					log.Error(writeErr, "Could not write to the most recently used ports file")
 					if packageMruPortFile.params.failOnPortFileError {
 						return false, writeErr
 					}
@@ -295,8 +295,8 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 	if pollWaitErr == nil {
 		return allocatedPort, nil
 	} else {
-		log.V(1).Info("warning: port allocation check: could not check the most recently used ports file for conflicts",
-			"error", pollWaitErr.Error())
+		log.V(1).Info("Warning: port allocation check: could not check the most recently used ports file for conflicts",
+			"Error", pollWaitErr.Error())
 		return bestEffortPortAllocation(pollWaitErr)
 	}
 }
@@ -330,14 +330,14 @@ func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32,
 
 	usedPorts, usedPortsErr := packageMruPortFile.tryLockAndRead(mruPortsCheckCtx)
 	if usedPortsErr != nil {
-		log.V(1).Info("warning: port availability check: could not check the most recently used ports file for conflicts", "error", usedPortsErr.Error())
+		log.V(1).Info("Warning: port availability check: could not check the most recently used ports file for conflicts", "Error", usedPortsErr.Error())
 		return bestEffortCheck(usedPortsErr)
 	}
 
 	// Since we are not going to write anything to the file, we can unlock it immediately
 	unlockErr := packageMruPortFile.Unlock()
 	if unlockErr != nil {
-		log.Error(unlockErr, "could not unlock the most recently used ports file") // Should never happen
+		log.Error(unlockErr, "Could not unlock the most recently used ports file") // Should never happen
 	}
 
 	desired := AddressAndPort(address, port)
@@ -530,7 +530,7 @@ func ensurePackageMruPortFile(log logr.Logger) error {
 
 	if err != nil && !portFileErrorReported {
 		portFileErrorReported = true
-		log.Error(err, "could not create the most recently used ports file; network port conflicts may occur")
+		log.Error(err, "Could not create the most recently used ports file; network port conflicts may occur")
 	}
 
 	return err

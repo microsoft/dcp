@@ -257,7 +257,7 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 
 		// Skip the info check if the user explicitly declared the runtime to be Docker
 		if flags.GetRuntimeFlagValue() == flags.DockerRuntime {
-			dco.log.V(1).Info("docker runtime explicitly specified, skipping alias detection")
+			dco.log.V(1).Info("Docker runtime explicitly specified, skipping alias detection")
 			isDockerCh <- true
 			return
 		}
@@ -278,7 +278,7 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 
 		isValidAlias := strings.EqualFold(filepath.Base(linkedDockerPath), filepath.Base(dockerPath))
 		if !isValidAlias {
-			dco.log.V(1).Info("docker runtime appears to be a symlink to a different runtime", "MatchedBinary", filepath.Base(linkedDockerPath))
+			dco.log.V(1).Info("Docker runtime appears to be a symlink to a different runtime", "MatchedBinary", filepath.Base(linkedDockerPath))
 		}
 
 		// If this is just a symlink to the Docker binary, assume it's valid. Otherwise, assume it's a different runtime.
@@ -713,7 +713,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
 		if err != nil && !errors.Is(err, context.Canceled) {
-			dco.log.Error(err, "unexpected error during container exec command", "Command", cmd.String())
+			dco.log.Error(err, "Unexpected error during container exec command", "Command", cmd.String())
 		}
 		exitCh <- exitCode
 		close(exitCh)
@@ -934,14 +934,14 @@ func (dco *DockerCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 		// Wait for the command to finish and clean up any resources
 		exitErr := <-exitCh
 		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
-			dco.log.Error(err, "capturing container logs failed", "Container", container)
+			dco.log.Error(err, "Capturing container logs failed", "Container", container)
 		}
 
 		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
-			dco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
+			dco.log.Error(stdOutCloseErr, "Closing stdout log destination failed", "Container", container)
 		}
 		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
-			dco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
+			dco.log.Error(stdErrCloseErr, "Closing stderr log destination failed", "Container", container)
 		}
 	}()
 
@@ -1111,14 +1111,14 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 			var evtMessage containers.EventMessage
 			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
 			if unmarshalErr != nil {
-				dco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", evtData)
+				dco.log.Error(unmarshalErr, "Container event data could not be parsed", "EventData", evtData)
 			} else {
 				ss.Notify(evtMessage)
 			}
 		}
 
 		if scanner.Err() != nil {
-			dco.log.Error(scanner.Err(), "scanning for container events resulted in an error")
+			dco.log.Error(scanner.Err(), "Scanning for container events resulted in an error")
 		}
 	}()
 
@@ -1130,7 +1130,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// but we won't try to restart it.
 	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
-		dco.log.Error(err, "could not execute 'docker events' command; container events unavailable")
+		dco.log.Error(err, "Could not execute 'docker events' command; container events unavailable")
 		return
 	}
 
@@ -1146,7 +1146,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		dco.log.V(1).Info("stopping 'docker events' command", "pid", pid)
+		dco.log.V(1).Info("Stopping 'docker events' command", "pid", pid)
 	}
 }
 
@@ -1170,14 +1170,14 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 			var evtMessage containers.EventMessage
 			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
 			if unmarshalErr != nil {
-				dco.log.Error(unmarshalErr, "network event data could not be parsed", "EventData", scanner.Text())
+				dco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", scanner.Text())
 			} else {
 				ss.Notify(evtMessage)
 			}
 		}
 
 		if scanner.Err() != nil {
-			dco.log.Error(scanner.Err(), "scanning for network events resulted in an error")
+			dco.log.Error(scanner.Err(), "Scanning for network events resulted in an error")
 		}
 	}()
 
@@ -1189,7 +1189,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// but we won't try to restart it.
 	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
-		dco.log.Error(err, "could not execute 'docker events' command; network events unavailable")
+		dco.log.Error(err, "Could not execute 'docker events' command; network events unavailable")
 		return
 	}
 
@@ -1205,7 +1205,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		dco.log.V(1).Info("stopping 'docker events' command", "pid", pid)
+		dco.log.V(1).Info("Stopping 'docker events' command", "PID", pid)
 	}
 }
 
