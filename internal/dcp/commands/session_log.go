@@ -47,7 +47,7 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 		if outputFileName != "" {
 			outputFile, outputFileErr := usvc_io.OpenFile(outputFileName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
 			if outputFileErr != nil {
-				log.Error(outputFileErr, "error opening output file", "File", outputFileName)
+				log.Error(outputFileErr, "Error opening output file", "File", outputFileName)
 				return outputFileErr
 			}
 			defer outputFile.Close()
@@ -74,7 +74,7 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 
 		if len(sessionLogPaths) == 0 {
 			err := fmt.Errorf("no logs found for session %s", sessionId)
-			log.Error(err, "no logs found", "SessionID", sessionId, "SearchDirectory", diagnosticsDirectory)
+			log.Error(err, "No logs found", "SessionID", sessionId, "SearchDirectory", diagnosticsDirectory)
 			return err
 		}
 
@@ -83,7 +83,7 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 		for _, logFile := range sessionLogPaths {
 			f, err := os.OpenFile(logFile, os.O_RDONLY, 0)
 			if err != nil {
-				log.Error(err, "error opening session log", "File", logFile)
+				log.Error(err, "Error opening session log", "File", logFile)
 				return err
 			}
 			defer f.Close()
@@ -92,7 +92,7 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 		}
 
 		if unifyErr := unifyLogs(outputWriter, sessionLogs...); unifyErr != nil {
-			log.Error(unifyErr, "error unifying session logs")
+			log.Error(unifyErr, "Error unifying session logs")
 			return unifyErr
 		}
 

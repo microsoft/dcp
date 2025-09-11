@@ -93,14 +93,14 @@ func VerifyHealthResults(expected map[string]apiv1.HealthProbeOutcome, results [
 		}
 
 		if result.Outcome != expectedOutcome {
-			err = errors.Join(err, fmt.Errorf("Unexpected health probe outcome for probe '%s': expected %s, got %s", result.ProbeName, expectedOutcome, result.Outcome))
+			err = errors.Join(err, fmt.Errorf("unexpected health probe outcome for probe '%s': expected %s, got %s", result.ProbeName, expectedOutcome, result.Outcome))
 		}
 		seen = append(seen, result.ProbeName)
 	}
 
 	unseen, _ := slices.Diff(maps.Keys(expected), seen)
 	if len(unseen) > 0 {
-		err = errors.Join(err, fmt.Errorf("Results for the following probes are missing: %v", unseen))
+		err = errors.Join(err, fmt.Errorf("results for the following probes are missing: %v", unseen))
 	}
 
 	return err
@@ -137,7 +137,7 @@ func VerifyHealthReports(expected map[commonapi.NamespacedNameWithKind]map[strin
 
 	unseen := slices.DiffFunc(maps.Keys(expected), seen, func(a, b commonapi.NamespacedNameWithKind) bool { return a == b })
 	if len(unseen) > 0 {
-		err = errors.Join(err, fmt.Errorf("Results for the following owners are missing: %v", unseen))
+		err = errors.Join(err, fmt.Errorf("results for the following owners are missing: %v", unseen))
 	}
 
 	return err

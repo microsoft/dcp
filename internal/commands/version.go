@@ -42,7 +42,7 @@ func getVersion(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 
 		versionStr, err := versionString()
 		if err != nil {
-			log.Error(err, "could not serialize version information")
+			log.Error(err, "Could not serialize version information")
 			return err
 		} else {
 			fmt.Println(string(versionStr))
@@ -66,10 +66,10 @@ func LogVersion(log logr.Logger, programStartMsg string) func(_ *cobra.Command, 
 		args := os.Args[1:]
 
 		log.V(1).Info(programStartMsg,
-			"pid", os.Getpid(),
-			"exe", launchPath,
-			"args", args,
-			"version", versionString,
+			"PID", os.Getpid(),
+			"Exe", launchPath,
+			"Args", args,
+			"Version", versionString,
 		)
 
 		logContext, found := os.LookupEnv(DCP_LOGGING_CONTEXT)

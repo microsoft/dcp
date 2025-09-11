@@ -286,20 +286,20 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 
 func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log logr.Logger) {
 	if rcd.startupStdoutLog != nil || rcd.startupStderrLog != nil {
-		log.V(1).Info("startup output files already created")
+		log.V(1).Info("Startup output files already created")
 		return
 	}
 
 	stdoutLog, stdoutLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStdout)
 	if stdoutLogErr != nil {
-		log.Error(stdoutLogErr, "failed to create temporary file for capturing container startup standard output data", "Container", ctr.NamespacedName().String())
+		log.Error(stdoutLogErr, "Failed to create temporary file for capturing container startup standard output data", "Container", ctr.NamespacedName().String())
 	} else {
 		rcd.startupStdoutLog = stdoutLog
 	}
 
 	stderrLog, stderrLogErr := newStartupLog(ctr, apiv1.LogStreamSourceStartupStderr)
 	if stderrLogErr != nil {
-		log.Error(stderrLogErr, "failed to create temporary file for capturing container startup standard error data", "Container", ctr.NamespacedName().String())
+		log.Error(stderrLogErr, "Failed to create temporary file for capturing container startup standard error data", "Container", ctr.NamespacedName().String())
 	} else {
 		rcd.startupStderrLog = stderrLog
 	}
@@ -310,7 +310,7 @@ func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 	if stdoutLog != nil {
 		closeErr := stdoutLog.Close()
 		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.Error(closeErr, "failed to close startup standard output file")
+			log.Error(closeErr, "Failed to close startup standard output file")
 		}
 	}
 
@@ -318,7 +318,7 @@ func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 	if stderrLog != nil {
 		closeErr := stderrLog.Close()
 		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.Error(closeErr, "failed to close startup standard error file")
+			log.Error(closeErr, "Failed to close startup standard error file")
 		}
 	}
 }

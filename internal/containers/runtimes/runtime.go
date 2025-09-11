@@ -78,7 +78,7 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 		return nil, errNoRuntimeFound
 	}
 
-	log.V(1).Info("runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
+	log.V(1).Info("Runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
 
 	return availableRuntime.orchestrator, nil
 }

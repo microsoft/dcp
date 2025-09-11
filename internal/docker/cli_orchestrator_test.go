@@ -334,7 +334,7 @@ func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessag
 
 	err := wait.PollUntilContextCancel(actionCtx, actionPoll, pollImmediately, receivedEvent)
 	if err != nil {
-		return ct.EventMessage{}, fmt.Errorf("Failed to receive container event message: %w", err)
+		return ct.EventMessage{}, fmt.Errorf("failed to receive container event message: %w", err)
 	} else {
 		return retval, nil
 	}

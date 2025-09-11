@@ -640,7 +640,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 		// We only care about the exit code, not the error. The only scenario where we should get an error
 		// is if the context for an exec command is canceled during DCP shutdown, in which case that's expected.
 		if err != nil && !errors.Is(err, context.Canceled) {
-			pco.log.Error(err, "unexpected error during container exec command", "Command", cmd.String())
+			pco.log.Error(err, "Unexpected error during container exec command", "Command", cmd.String())
 		}
 		exitCh <- exitCode
 		close(exitCh)
@@ -866,14 +866,14 @@ func (pco *PodmanCliOrchestrator) CaptureContainerLogs(ctx context.Context, cont
 		// Wait for the command to finish and clean up any resources
 		exitErr := <-exitCh
 		if exitErr != nil && !errors.Is(exitErr, context.Canceled) && !errors.Is(exitErr, context.DeadlineExceeded) {
-			pco.log.Error(err, "capturing container logs failed", "Container", container)
+			pco.log.Error(err, "Capturing container logs failed", "Container", container)
 		}
 
 		if stdOutCloseErr := stdout.Close(); stdOutCloseErr != nil {
-			pco.log.Error(stdOutCloseErr, "closing stdout log destination failed", "Container", container)
+			pco.log.Error(stdOutCloseErr, "Closing stdout log destination failed", "Container", container)
 		}
 		if stdErrCloseErr := stderr.Close(); stdErrCloseErr != nil {
-			pco.log.Error(stdErrCloseErr, "closing stderr log destination failed", "Container", container)
+			pco.log.Error(stdErrCloseErr, "Closing stderr log destination failed", "Container", container)
 		}
 	}()
 
@@ -1043,14 +1043,14 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 			var evtMessage podmanEventMessage
 			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
 			if unmarshalErr != nil {
-				pco.log.Error(unmarshalErr, "container event data could not be parsed", "EventData", scanner.Text())
+				pco.log.Error(unmarshalErr, "Container event data could not be parsed", "EventData", scanner.Text())
 			} else {
 				ss.Notify((&evtMessage).ToEventMessage())
 			}
 		}
 
 		if scanner.Err() != nil {
-			pco.log.Error(scanner.Err(), "scanning for container events resulted in an error")
+			pco.log.Error(scanner.Err(), "Scanning for container events resulted in an error")
 		}
 	}()
 
@@ -1062,7 +1062,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// but we won't try to restart it.
 	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
-		pco.log.Error(err, "could not execute 'podman events' command; container events unavailable")
+		pco.log.Error(err, "Could not execute 'podman events' command; container events unavailable")
 		return
 	}
 
@@ -1078,7 +1078,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		pco.log.V(1).Info("stopping 'podman events' command", "pid", pid)
+		pco.log.V(1).Info("Stopping 'podman events' command", "PID", pid)
 	}
 }
 
@@ -1103,14 +1103,14 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 			var evtMessage containers.EventMessage
 			unmarshalErr := json.Unmarshal(scanner.Bytes(), &evtMessage)
 			if unmarshalErr != nil {
-				pco.log.Error(unmarshalErr, "network event data could not be parsed", "EventData", evtData)
+				pco.log.Error(unmarshalErr, "Network event data could not be parsed", "EventData", evtData)
 			} else {
 				ss.Notify(evtMessage)
 			}
 		}
 
 		if scanner.Err() != nil {
-			pco.log.Error(scanner.Err(), "scanning for network events resulted in an error")
+			pco.log.Error(scanner.Err(), "Scanning for network events resulted in an error")
 		}
 	}()
 
@@ -1122,7 +1122,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// but we won't try to restart it.
 	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
-		pco.log.Error(err, "could not execute 'podman events' command; network events unavailable")
+		pco.log.Error(err, "Could not execute 'podman events' command; network events unavailable")
 		return
 	}
 
@@ -1138,7 +1138,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		pco.log.V(1).Info("stopping 'podman events' command", "pid", pid)
+		pco.log.V(1).Info("Stopping 'podman events' command", "PID", pid)
 	}
 }
 
@@ -1172,7 +1172,7 @@ func (pco *PodmanCliOrchestrator) streamPodmanCommand(
 		}
 	}
 
-	pco.log.V(1).Info("running podman command", "Command", cmd.String())
+	pco.log.V(1).Info("Running podman command", "Command", cmd.String())
 	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)

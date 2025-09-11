@@ -333,7 +333,7 @@ func WaitApiServerStatus(
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return false, fmt.Errorf("Expected status code 200 OK, but got %d", resp.StatusCode)
+			return false, fmt.Errorf("expected status code 200 OK, but got %d", resp.StatusCode)
 		}
 
 		body, bodyErr := io.ReadAll(resp.Body)

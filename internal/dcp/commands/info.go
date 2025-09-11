@@ -128,7 +128,7 @@ func getInfo(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 			if status.Installed {
 				diagnostics, diagnosticsErr := containerOrchestrator.GetDiagnostics(ctx)
 				if diagnosticsErr != nil {
-					log.Error(diagnosticsErr, "failed to get container runtime diagnostics")
+					log.Error(diagnosticsErr, "Failed to get container runtime diagnostics")
 				} else {
 					info.Containers.ServerVersion = diagnostics.ServerVersion
 					info.Containers.ClientVersion = diagnostics.ClientVersion
@@ -137,7 +137,7 @@ func getInfo(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 		}
 
 		if info, err := json.Marshal(info); err != nil {
-			log.Error(err, "could not serialize application information")
+			log.Error(err, "Could not serialize application information")
 			return err
 		} else {
 			fmt.Println(string(info))

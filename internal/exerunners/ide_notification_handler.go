@@ -185,7 +185,7 @@ func (nh *ideNotificationHandler) tryConnecting() {
 		if err == nil {
 			return conn, nil
 		} else {
-			nh.log.V(1).Error(err, "failed to connect to IDE run session notification endpoint, retrying...")
+			nh.log.V(1).Error(err, "Failed to connect to IDE run session notification endpoint, retrying...")
 			return nil, err
 		}
 	})
@@ -193,7 +193,7 @@ func (nh *ideNotificationHandler) tryConnecting() {
 	if retryErr != nil {
 		// We are shutting down, or a permanent error has occurred.
 		if !errors.Is(retryErr, context.Canceled) && !errors.Is(retryErr, context.DeadlineExceeded) {
-			nh.log.Error(retryErr, "failed to connect to IDE run session notification endpoint")
+			nh.log.Error(retryErr, "Failed to connect to IDE run session notification endpoint")
 		}
 		_ = nh.setState(handlerStateAny, handlerStateDisposed)
 	} else {
@@ -217,12 +217,12 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 			time.Now().Add(100*time.Millisecond),
 		)
 		if closeMsgErr != nil {
-			nh.log.V(1).Info("failed to send close message to IDE run session notification endpoint", "Error", closeMsgErr)
+			nh.log.V(1).Info("Failed to send close message to IDE run session notification endpoint", "Error", closeMsgErr)
 		}
 
 		closeErr := wsConn.Close()
 		if closeErr != nil {
-			nh.log.V(1).Info("failed to close IDE run session notification endpoint", "Error", closeErr)
+			nh.log.V(1).Info("Failed to close IDE run session notification endpoint", "Error", closeErr)
 		}
 	}
 
@@ -255,7 +255,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 
 	setupErr := wsConn.SetReadDeadline(time.Now().Add(ideNotificationEndpointTimeout))
 	if setupErr != nil {
-		reportErrorAndReconnect(setupErr, "failed to set read deadline on IDE run session notification endpoint, recycling connection...")
+		reportErrorAndReconnect(setupErr, "Failed to set read deadline on IDE run session notification endpoint, recycling connection...")
 		return
 	}
 
@@ -281,7 +281,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 		}
 
 		if msgReadErr != nil {
-			reportErrorAndReconnect(msgReadErr, "failed to read message from IDE run session notification endpoint, recycling connection...")
+			reportErrorAndReconnect(msgReadErr, "Failed to read message from IDE run session notification endpoint, recycling connection...")
 			return
 		}
 
@@ -293,7 +293,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 		// We received a message successfully and we are not asked to reconnect, so we can reset the read deadline.
 		deadlineResetErr := wsConn.SetReadDeadline(time.Now().Add(ideNotificationEndpointTimeout))
 		if deadlineResetErr != nil {
-			reportErrorAndReconnect(deadlineResetErr, "failed to reset read deadline on IDE run session notification endpoint, recycling connection...")
+			reportErrorAndReconnect(deadlineResetErr, "Failed to reset read deadline on IDE run session notification endpoint, recycling connection...")
 			return
 		}
 
@@ -305,12 +305,12 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 			var basicNotification ideSessionNotificationBase
 			unmarshalErr := json.Unmarshal(msg, &basicNotification)
 			if unmarshalErr != nil {
-				reportErrorAndReconnect(unmarshalErr, "invalid IDE basic session notification received, recycling connection...")
+				reportErrorAndReconnect(unmarshalErr, "Invalid IDE basic session notification received, recycling connection...")
 				return
 			}
 
 			if basicNotification.SessionID == "" {
-				reportErrorAndReconnect(fmt.Errorf("received IDE run session notification with empty session ID"), "recycling connection...")
+				reportErrorAndReconnect(fmt.Errorf("received IDE run session notification with empty session ID"), "Recycling connection...")
 				return
 			}
 
@@ -319,7 +319,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 				var pcn ideRunSessionProcessChangedNotification
 				unmarshalErr = json.Unmarshal(msg, &pcn)
 				if unmarshalErr != nil {
-					reportErrorAndReconnect(unmarshalErr, "invalid IDE run session notification received, recycling connection...")
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session notification received, recycling connection...")
 					return
 				} else {
 					nh.notificationReceiver.HandleSessionChange(pcn)
@@ -329,7 +329,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 				var stn ideRunSessionTerminatedNotification
 				unmarshalErr = json.Unmarshal(msg, &stn)
 				if unmarshalErr != nil {
-					reportErrorAndReconnect(unmarshalErr, "invalid IDE run session notification received, recycling connection...")
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session notification received, recycling connection...")
 					return
 				} else {
 					nh.notificationReceiver.HandleSessionTermination(stn)
@@ -339,7 +339,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 				var nsl ideSessionLogNotification
 				unmarshalErr = json.Unmarshal(msg, &nsl)
 				if unmarshalErr != nil {
-					reportErrorAndReconnect(unmarshalErr, "invalid IDE run session notification received, recycling connection...")
+					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session notification received, recycling connection...")
 					return
 				} else {
 					nh.notificationReceiver.HandleServiceLogs(nsl)
@@ -347,7 +347,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 			}
 
 		default:
-			nh.log.Info("unexpected message type '%c' received from session notification endpoint, ignoring...", msgType)
+			nh.log.Info("Unexpected message type received from session notification endpoint, ignoring...", "MessageType", msgType)
 		}
 	}
 }
@@ -375,7 +375,7 @@ func (nh *ideNotificationHandler) doPinging(connCtx context.Context, wsConn *web
 		case <-pingTimer.C:
 			pingErr := wsConn.WriteMessage(websocket.PingMessage, nil)
 			if pingErr != nil {
-				nh.log.V(1).Error(pingErr, "failed to send ping message to IDE run session notification endpoint")
+				nh.log.V(1).Error(pingErr, "Failed to send ping message to IDE run session notification endpoint")
 			}
 		}
 	}

@@ -56,12 +56,12 @@ func mainCommand() *cobra.Command {
 func executeMain(cmd *cobra.Command, args []string) error {
 	path := args[0]
 	if len(path) == 0 {
-		return fmt.Errorf("Path to lock file must be provided")
+		return fmt.Errorf("path to lock file must be provided")
 	}
 
 	lf, err := lockfile.NewLockfile(path)
 	if err != nil {
-		return fmt.Errorf("Failed to create lockfile: %w", err)
+		return fmt.Errorf("failed to create lockfile: %w", err)
 	}
 	defer func() {
 		_ = lf.Close()
@@ -83,12 +83,12 @@ func executeMain(cmd *cobra.Command, args []string) error {
 			if lockErr == context.DeadlineExceeded {
 				break // the program ran its course
 			} else if lockErr != nil {
-				return fmt.Errorf("Failed to lock file: %w", lockErr)
+				return fmt.Errorf("failed to lock file: %w", lockErr)
 			}
 
 			truncateErr := lf.Truncate(0)
 			if truncateErr != nil {
-				return fmt.Errorf("Failed to truncate file: %w", truncateErr)
+				return fmt.Errorf("failed to truncate file: %w", truncateErr)
 			}
 
 			// No need to unlock because we are about to write into the file
@@ -104,7 +104,7 @@ func executeMain(cmd *cobra.Command, args []string) error {
 	}
 
 	if updateCount == 0 {
-		return fmt.Errorf("No updates were made to the file")
+		return fmt.Errorf("no updates were made to the file")
 	}
 
 	return nil
@@ -115,30 +115,30 @@ func updateFile(ctx context.Context, lf *lockfile.Lockfile) error {
 	if lockErr == context.DeadlineExceeded {
 		return nil // the program ran its course
 	} else if lockErr != nil {
-		return fmt.Errorf("Failed to lock file: %w", lockErr)
+		return fmt.Errorf("failed to lock file: %w", lockErr)
 	}
 
 	defer func() {
 		unlockErr := lf.Unlock()
 		if unlockErr != nil {
-			panic(fmt.Errorf("Failed to unlock file: %w", unlockErr))
+			panic(fmt.Errorf("failed to unlock file: %w", unlockErr))
 		}
 	}()
 
 	_, seekErr := lf.Seek(0, io.SeekStart)
 	if seekErr != nil {
-		return fmt.Errorf("Failed to seek to start of file: %w", seekErr)
+		return fmt.Errorf("failed to seek to start of file: %w", seekErr)
 	}
 
 	num, readErr := getLastNumber(lf)
 	if readErr != nil {
-		return fmt.Errorf("Failed to read last number: %w", readErr)
+		return fmt.Errorf("failed to read last number: %w", readErr)
 	}
 
 	num++
 	_, writeErr := fmt.Fprintf(lf, "%d %s\n", num, flags.instanceName)
 	if writeErr != nil {
-		return fmt.Errorf("Failed to write number: %w", writeErr)
+		return fmt.Errorf("failed to write number: %w", writeErr)
 	}
 
 	return nil
@@ -153,7 +153,7 @@ func getLastNumber(r io.Reader) (int, error) {
 		parts := strings.SplitN(string(line), " ", 2)
 		num, parseErr := strconv.ParseInt(parts[0], 10, 32)
 		if parseErr != nil {
-			return -1, fmt.Errorf("Failed to parse number: %w", parseErr)
+			return -1, fmt.Errorf("failed to parse number: %w", parseErr)
 		}
 		if int(num) > retval {
 			retval = int(num)

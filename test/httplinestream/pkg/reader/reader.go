@@ -145,7 +145,7 @@ func (r *Reader) ProcessLine(lineData []byte, row int64, bytesConsumed int64) er
 	expected := line.FormatLine(row, false)
 	if !bytes.Equal(lineData, expected) {
 		err := fmt.Errorf("reader line was corrupted at row %d, ~%d bytes", row, bytesConsumed)
-		r.logger.Error(err, "read corrupted line", "row", row, "bytesConsumed", bytesConsumed)
+		r.logger.Error(err, "Read corrupted line", "Row", row, "BytesConsumed", bytesConsumed)
 		return err
 	}
 	return nil

@@ -37,13 +37,13 @@ func main() {
 		defer shutdownCancel()
 
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Error(err, "failed to shut down server gracefully")
+			log.Error(err, "Failed to shut down server gracefully")
 		}
 	}()
 
 	// Start the server
 	log.Info("Starting server")
 	if err := server.Start(); err != nil {
-		log.Error(err, "server failed")
+		log.Error(err, "Server failed")
 	}
 }

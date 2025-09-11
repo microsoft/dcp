@@ -101,7 +101,7 @@ func (host *Host) Run(ctx context.Context, lifecycleMsgs chan<- LifecycleMessage
 				if value != nil {
 					// Log here to force the original call stack to be logged.
 					err := fmt.Errorf("service %s panicked: %v", service.Name(), value)
-					host.Logger.Error(err, "recovered from panic")
+					host.Logger.Error(err, "Recovered from panic")
 					messages <- LifecycleMessage{ServiceName: service.Name(), Err: err}
 				}
 			}()

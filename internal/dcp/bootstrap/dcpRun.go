@@ -118,7 +118,7 @@ func DcpRun(
 
 		shutdownErr := <-shutdownErrors
 		if shutdownErr != nil {
-			log.Error(shutdownErr, "one or more hosted services failed to shut down gracefully")
+			log.Error(shutdownErr, "One or more hosted services failed to shut down gracefully")
 			allErrors = errors.Join(allErrors, shutdownErr)
 		}
 
@@ -175,7 +175,7 @@ func DcpRun(
 }
 
 func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (notifications.UnixSocketNotificationSource, error) {
-	const noNotifications = "notifications will not be sent to controller process"
+	const noNotifications = "Notifications will not be sent to controller process"
 
 	socketPath, socketPathErr := notifications.PrepareNotificationSocketPath("", "dcp-notify-sock-")
 	if socketPathErr != nil {

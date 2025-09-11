@@ -110,11 +110,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if err != nil {
 		if apimachinery_errors.IsNotFound(err) {
-			log.V(1).Info("the ContainerVolume object was deleted")
+			log.V(1).Info("The ContainerVolume object was deleted")
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
-			log.Error(err, "failed to Get() the ContainerVolume object")
+			log.Error(err, "Failed to Get() the ContainerVolume object")
 			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
@@ -153,11 +153,11 @@ func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1
 
 	err := removeVolume(ctx, r.orchestrator, vol.Spec.Name)
 	if err != nil && !errors.Is(err, containers.ErrNotFound) {
-		log.Error(err, "could not remove a container volume")
+		log.Error(err, "Could not remove a container volume")
 		return additionalReconciliationNeeded
 	}
 
-	log.V(1).Info("volume removed")
+	log.V(1).Info("Volume removed")
 	change := deleteFinalizer(vol, volumeFinalizer, log)
 	r.volumeData.DeleteByNamespacedName(vol.NamespacedName())
 	return change
@@ -190,7 +190,7 @@ func handleNewContainerVolume(
 ) objectChange {
 	runtimeStatus := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !runtimeStatus.IsHealthy() {
-		log.V(1).Info("container runtime is not healthy, retrying reconciliation later...")
+		log.V(1).Info("Container runtime is not healthy, retrying reconciliation later...")
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStateRuntimeUnhealthy) | additionalReconciliationNeeded
 	}
 
@@ -208,23 +208,23 @@ func handleNewContainerVolume(
 
 	_, inspectErr := inspectContainerVolumeIfExists(ctx, r.orchestrator, vol.Spec.Name)
 	if inspectErr == nil {
-		log.V(1).Info("container volume already exists")
+		log.V(1).Info("Container volume already exists")
 		volData.state = apiv1.ContainerVolumeStateReady
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
 	} else if !errors.Is(inspectErr, containers.ErrNotFound) {
-		log.Error(inspectErr, "could not determine whether container volume exists")
+		log.Error(inspectErr, "Could not determine whether container volume exists")
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}
 
 	// Need to create the volume
 	_, createErr := createVolume(ctx, r.orchestrator, vol.Spec.Name)
 	if createErr != nil {
-		log.Error(createErr, "could not create a container volume")
+		log.Error(createErr, "Could not create a container volume")
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}
 
-	log.V(1).Info("container volume created")
+	log.V(1).Info("Container volume created")
 	volData.state = apiv1.ContainerVolumeStateReady
 	r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 	return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)

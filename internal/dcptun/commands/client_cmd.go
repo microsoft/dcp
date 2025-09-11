@@ -55,8 +55,8 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		ctrlListener, ctrlListenerErr := lc.Listen(clientProxyCtx, "tcp", networking.AddressAndPort(tunnelConfig.ClientControlAddress, tunnelConfig.ClientControlPort))
 		if ctrlListenerErr != nil {
 			log.Error(ctrlListenerErr, "Failed to create TCP listener for the control endpoint of the client-side tunnel proxy",
-				"address", tunnelConfig.ClientControlAddress,
-				"port", tunnelConfig.ClientControlPort,
+				"Address", tunnelConfig.ClientControlAddress,
+				"Port", tunnelConfig.ClientControlPort,
 			)
 			return ctrlListenerErr
 		}
@@ -69,8 +69,8 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		dataListener, dataListenerErr := lc.Listen(clientProxyCtx, "tcp", networking.AddressAndPort(tunnelConfig.ClientDataAddress, tunnelConfig.ClientDataPort))
 		if dataListenerErr != nil {
 			log.Error(dataListenerErr, "Failed to create TCP listener for the data endpoint of the client-side tunnel proxy",
-				"address", tunnelConfig.ClientDataAddress,
-				"port", tunnelConfig.ClientDataPort,
+				"Address", tunnelConfig.ClientDataAddress,
+				"Port", tunnelConfig.ClientDataPort,
 			)
 			return dataListenerErr
 		}
@@ -94,12 +94,12 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		go func() {
 			serveErr := controlEndpointServer.Serve(ctrlListener)
 			if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) {
-				log.Error(serveErr, "client-side tunnel proxy control endpoint encountered an error")
+				log.Error(serveErr, "Client-side tunnel proxy control endpoint encountered an error")
 				grpcServerErrChan <- serveErr
 			}
 		}()
 
-		log.V(1).Info("Client-side tunnel proxy is listening", "config", configJson)
+		log.V(1).Info("Client-side tunnel proxy is listening", "Config", configJson)
 		fmt.Fprintln(os.Stdout, string(configJson))
 
 		select {
@@ -127,19 +127,19 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 
 func ensureClientConfig() error {
 	if len(tunnelConfig.ClientControlAddress) == 0 {
-		return fmt.Errorf("Client proxy control address must not be empty")
+		return fmt.Errorf("client proxy control address must not be empty")
 	}
 
 	if !networking.IsValidPort(int(tunnelConfig.ClientControlPort)) {
-		return fmt.Errorf("Client proxy control port must be a valid port number (1-65535), not %d", tunnelConfig.ClientControlPort)
+		return fmt.Errorf("client proxy control port must be a valid port number (1-65535), not %d", tunnelConfig.ClientControlPort)
 	}
 
 	if len(tunnelConfig.ClientDataAddress) == 0 {
-		return fmt.Errorf("Client proxy data address must not be empty")
+		return fmt.Errorf("client proxy data address must not be empty")
 	}
 
 	if !networking.IsValidPort(int(tunnelConfig.ClientDataPort)) {
-		return fmt.Errorf("Client proxy data port must be a valid port number (1-65535), not %d", tunnelConfig.ClientDataPort)
+		return fmt.Errorf("client proxy data port must be a valid port number (1-65535), not %d", tunnelConfig.ClientDataPort)
 	}
 
 	return nil

@@ -94,7 +94,7 @@ func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 
 	finalizers = append(finalizers, finalizer)
 	obj.SetFinalizers(finalizers)
-	log.V(1).Info("added finalizer", "Finalizer", finalizer)
+	log.V(1).Info("Added finalizer", "Finalizer", finalizer)
 	return metadataChanged
 }
 
@@ -107,7 +107,7 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 
 	finalizers = append(finalizers[:i], finalizers[i+1:]...)
 	obj.SetFinalizers(finalizers)
-	log.V(1).Info("removed finalizer", "Finalizer", finalizer)
+	log.V(1).Info("Removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
 }
 

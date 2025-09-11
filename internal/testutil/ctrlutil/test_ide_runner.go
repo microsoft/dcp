@@ -103,7 +103,7 @@ func (r *TestIdeRunner) StartRun(
 		if asea, ok := exe.Annotations[AutoStartExecutableAnnotation]; ok && asea == "true" {
 			pid, err := randdata.MakeRandomInt64(math.MaxInt64 - 1)
 			if err != nil {
-				log.Error(err, "failed to generate random PID for run")
+				log.Error(err, "Failed to generate random PID for run")
 				return err
 			}
 
@@ -111,7 +111,7 @@ func (r *TestIdeRunner) StartRun(
 			go func() {
 				startErr := r.SimulateSuccessfulRunStart(runID, process.Pid_t(pid))
 				if startErr != nil {
-					log.Error(startErr, "failed to simulate run start")
+					log.Error(startErr, "Failed to simulate run start")
 				}
 			}()
 		}

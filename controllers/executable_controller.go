@@ -111,7 +111,7 @@ func NewExecutableReconciler(
 	_, subscriptionErr := r.hpSet.Subscribe(r.healthProbeCh.In, executableKind)
 	if subscriptionErr != nil {
 		// Should never happen
-		log.Error(subscriptionErr, "could not subscribe to health probe results, the health of Executables will never be correctly reported")
+		log.Error(subscriptionErr, "Could not subscribe to health probe results, the health of Executables will never be correctly reported")
 	}
 
 	return &r
@@ -154,7 +154,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		} else {
-			log.Error(err, "Failed to Get() the Executable", "exe", exe)
+			log.Error(err, "Failed to Get() the Executable", "Exe", exe)
 			getFailedCounter.Add(ctx, 1)
 			return ctrl.Result{}, err
 		}
@@ -515,17 +515,14 @@ func (r *ExecutableReconciler) OnStartupCompleted(
 		startingRunID, ri := r.runs.BorrowByNamespacedName(exeName)
 		if ri == nil {
 			// Should never happen
-			log.Error(
-				fmt.Errorf("could not find starting run data after Executable start attempt"),
-				"No valid Executable run info could be found",
+			log.Error(fmt.Errorf("could not find starting run data after Executable start attempt"), "No valid Executable run info could be found",
 				"NewState", startedRunInfo.ExeState,
 				"NewExitCode", startedRunInfo.ExitCode,
 			)
 			return
 		}
 
-		log.V(1).Info(
-			"Executable completed startup",
+		log.V(1).Info("Executable completed startup",
 			"NewState", startedRunInfo.ExeState,
 			"NewExitCode", startedRunInfo.ExitCode,
 		)

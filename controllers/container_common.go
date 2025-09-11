@@ -502,7 +502,7 @@ func getHostAddressAndPortForContainerPort(
 	if found && matchedPort.HostPort != 0 {
 		hostAddress := normalizeHostAddress(matchedPort.HostIP)
 		// If the spec contains a port matching the desired container port, just use that
-		log.V(1).Info("found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP, "EffectiveHostAddress", hostAddress)
+		log.V(1).Info("Found matching port in Container spec", "ServiceProducerPort", serviceProducerPort, "HostPort", matchedPort.HostPort, "HostIP", matchedPort.HostIP, "EffectiveHostAddress", hostAddress)
 		return hostAddress, matchedPort.HostPort, nil
 	}
 
@@ -534,7 +534,7 @@ func getHostAddressAndPortForContainerPort(
 	}
 
 	hostAddress := normalizeHostAddress(matchedHostPort.HostIp)
-	log.V(1).Info("matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp, "EffectiveHostAddress", hostAddress)
+	log.V(1).Info("Matched service producer port to one of the container host ports", "ServiceProducerPort", serviceProducerPort, "HostPort", hostPort, "HostIP", matchedHostPort.HostIp, "EffectiveHostAddress", hostAddress)
 	return hostAddress, int32(hostPort), nil
 }
 

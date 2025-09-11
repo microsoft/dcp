@@ -177,7 +177,7 @@ func NewContainerReconciler(
 	_, subErr := r.hpSet.Subscribe(r.healthProbeCh.In, containerKind)
 	if subErr != nil {
 		// Should never happen
-		log.Error(subErr, "could not subscribe to health probe results, the health of Containers will never be correctly reported")
+		log.Error(subErr, "Could not subscribe to health probe results, the health of Containers will never be correctly reported")
 	}
 
 	return &r

@@ -107,7 +107,7 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			}
 		}()
 
-		log.V(1).Info("Server-side tunnel proxy is listening", "config", configJson)
+		log.V(1).Info("Server-side tunnel proxy is listening", "Config", configJson)
 		fmt.Fprintln(os.Stdout, string(configJson))
 
 		select {
@@ -135,43 +135,43 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 
 func ensureServerConfig(args []string) error {
 	if len(args) != 4 {
-		return fmt.Errorf("Expected exactly four arguments: client-control-address, client-control-port, client-data-address and client-data-port, but got %d arguments instead", len(args))
+		return fmt.Errorf("expected exactly four arguments: client-control-address, client-control-port, client-data-address and client-data-port, but got %d arguments instead", len(args))
 	}
 
 	if len(args[0]) == 0 {
-		return fmt.Errorf("Client proxy control address must not be empty")
+		return fmt.Errorf("client proxy control address must not be empty")
 	}
 	tunnelConfig.ClientControlAddress = args[0]
 
 	portVal, portErr := strconv.ParseInt(args[1], 10, 32)
 	if portErr != nil {
-		return fmt.Errorf("Client proxy control port must be a valid integer, got %s: %w", args[1], portErr)
+		return fmt.Errorf("client proxy control port must be a valid integer, got %s: %w", args[1], portErr)
 	}
 	if !networking.IsValidPort(int(portVal)) {
-		return fmt.Errorf("Client proxy control port must be a valid port number (1-65535), not %d", portVal)
+		return fmt.Errorf("client proxy control port must be a valid port number (1-65535), not %d", portVal)
 	}
 	tunnelConfig.ClientControlPort = int32(portVal)
 
 	if len(args[2]) == 0 {
-		return fmt.Errorf("Client proxy data address must not be empty")
+		return fmt.Errorf("client proxy data address must not be empty")
 	}
 	tunnelConfig.ClientDataAddress = args[2]
 
 	portVal, portErr = strconv.ParseInt(args[3], 10, 32)
 	if portErr != nil {
-		return fmt.Errorf("Client proxy data port must be a valid integer, got %s: %w", args[3], portErr)
+		return fmt.Errorf("client proxy data port must be a valid integer, got %s: %w", args[3], portErr)
 	}
 	if !networking.IsValidPort(int(portVal)) {
-		return fmt.Errorf("Client proxy data port must be a valid port number (1-65535), not %d", portVal)
+		return fmt.Errorf("client proxy data port must be a valid port number (1-65535), not %d", portVal)
 	}
 	tunnelConfig.ClientDataPort = int32(portVal)
 
 	if len(tunnelConfig.ServerControlAddress) == 0 {
-		return fmt.Errorf("Server proxy control address must not be empty")
+		return fmt.Errorf("server proxy control address must not be empty")
 	}
 
 	if !networking.IsBindablePort(int(tunnelConfig.ServerControlPort)) {
-		return fmt.Errorf("Server proxy port must be a valid port number (1-65535) or 0, not %d", tunnelConfig.ServerControlPort)
+		return fmt.Errorf("server proxy port must be a valid port number (1-65535) or 0, not %d", tunnelConfig.ServerControlPort)
 	}
 
 	return nil

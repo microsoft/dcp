@@ -247,7 +247,7 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 	// Wait until the config has been loaded the first time before accepting any connections
 	config := <-p.endpointConfigLoadedChannel.Out
 	p.configurationApplied.Set()
-	p.log.V(1).Info("initial endpoint configuration loaded", "Config", config.String())
+	p.log.V(1).Info("Initial endpoint configuration loaded", "Config", config.String())
 
 	// Make a channel that will receive a connection when one is accepted
 	connectionChannel := concurrency.NewUnboundedChan[net.Conn](p.lifetimeCtx)
@@ -262,7 +262,7 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 			if errors.Is(err, net.ErrClosed) {
 				// Normal shutdown pathway, don't log
 			} else if err != nil {
-				p.log.Info("Error accepting TCP connection: %s", err)
+				p.log.Info("Error accepting TCP connection", "Error", err)
 			} else {
 				connectionChannel.In <- incoming
 			}
@@ -279,7 +279,7 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 				return
 			}
 			p.configurationApplied.Set()
-			p.log.V(1).Info("endpoint configuration changed; new configuration will be applied to future connections...", "Config", config.String())
+			p.log.V(1).Info("Endpoint configuration changed; new configuration will be applied to future connections...", "Config", config.String())
 
 			if len(config.Endpoints) >= 0 {
 				for _, conn := range parkedConnections {
@@ -454,7 +454,7 @@ func (p *netProxy) runUDP(udpListener net.PacketConn) {
 	// Wait until the config file has been loaded the first time before accepting any packets
 	config := <-p.endpointConfigLoadedChannel.Out
 	p.configurationApplied.Set()
-	p.log.V(1).Info("initial endpoint configuration loaded", "Config", config.String())
+	p.log.V(1).Info("Initial endpoint configuration loaded", "Config", config.String())
 
 	buffer := make([]byte, UdpPacketBufferSize)
 
@@ -477,7 +477,7 @@ func (p *netProxy) runUDP(udpListener net.PacketConn) {
 		}
 
 		if err := udpListener.SetReadDeadline(time.Now().Add(p.readTimeout)); err != nil {
-			p.log.Error(err, "Error setting read deadline for proxy UDP connection", err)
+			p.log.Error(err, "Error setting read deadline for proxy UDP connection")
 			return
 		}
 
@@ -489,7 +489,7 @@ func (p *netProxy) runUDP(udpListener net.PacketConn) {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			continue
 		} else if err != nil {
-			p.log.Info("Error reading UDP packet from proxy UDP connection", err)
+			p.log.Info("Error reading UDP packet from proxy UDP connection", "Error", err)
 		} else {
 			q := p.getPacketQueue(addr, udpListener, config)
 			q.Enqueue(bytes.Clone(buffer[:bytesRead]))

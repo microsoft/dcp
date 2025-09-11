@@ -110,7 +110,7 @@ func New(name string) *Logger {
 
 	if diagnosticsLogErr != nil {
 		// If there was an error setting up the diagnostics log, write it to the log output and stderr
-		logger.Error(diagnosticsLogErr, "failed to enable diagnostics log output")
+		logger.Error(diagnosticsLogErr, "Failed to enable diagnostics log output")
 		fmt.Fprintf(os.Stderr, "failed to enable diagnostics log output: %v\n", diagnosticsLogErr)
 	}
 

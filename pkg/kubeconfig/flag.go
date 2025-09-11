@@ -58,7 +58,7 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
-		return "", fmt.Errorf("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
+		return "", fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
 	if port < 0 || port > 65535 {
@@ -95,7 +95,7 @@ func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
-		return nil, fmt.Errorf("Unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
+		return nil, fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
 	}
 
 	if port < 0 || port > 65535 {

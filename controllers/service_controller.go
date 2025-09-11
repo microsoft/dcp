@@ -359,7 +359,7 @@ func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Con
 func (r *ServiceReconciler) getServiceEndpoints(ctx context.Context, svc *apiv1.Service, log logr.Logger) (apiv1.EndpointList, error) {
 	var serviceEndpoints apiv1.EndpointList
 	if err := r.List(ctx, &serviceEndpoints, ctrl_client.MatchingFields{".metadata.serviceNamespace": svc.ObjectMeta.Namespace}, ctrl_client.MatchingFields{".metadata.serviceName": svc.ObjectMeta.Name}); err != nil {
-		log.Error(err, "could not get associated endpoints")
+		log.Error(err, "Could not get associated endpoints")
 		return apiv1.EndpointList{}, fmt.Errorf("could not get associated endpoints: %w", err)
 	} else {
 		return serviceEndpoints, nil

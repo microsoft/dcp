@@ -21,7 +21,7 @@ type PasswordComposition struct {
 func Generate(cmp PasswordComposition) (string, error) {
 	length := cmp.NumLowercase + cmp.NumUppercase + cmp.NumDigits + cmp.NumSymbols
 	if length == 0 {
-		return "", fmt.Errorf("Empty passwords are insecure")
+		return "", fmt.Errorf("empty passwords are insecure")
 	}
 
 	chars := make([]byte, length)

@@ -118,12 +118,12 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 			<-ctx.Done()
 			ctxCancel() // Release resources associated with the profiling context
 			if profilingErr := stopProfiling(); profilingErr != nil {
-				log.Error(profilingErr, "failed to stop profiling", "profileFileName", profileFileName)
+				log.Error(profilingErr, "Failed to stop profiling", "ProfileFileName", profileFileName)
 			}
 			if closingErr := profileOutput.Close(); closingErr != nil {
-				log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
+				log.Error(closingErr, "Failed to close profile file", "ProfileFileName", profileFileName)
 			}
-			log.V(1).Info("stopped profiling", "type", pt, "file", profileFileName)
+			log.V(1).Info("Stopped profiling", "Type", pt, "File", profileFileName)
 		}()
 
 	case ProfileTypeStartupCpu, ProfileTypeShutdownCpu, ProfileTypeSnapshotCpu:
@@ -142,9 +142,9 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 			ctxCancel() // Release resources associated with the profiling context
 			pprof.StopCPUProfile()
 			if closingErr := profileOutput.Close(); closingErr != nil {
-				log.Error(closingErr, "failed to close profile file", "profileFileName", profileFileName)
+				log.Error(closingErr, "Failed to close profile file", "ProfileFileName", profileFileName)
 			}
-			log.V(1).Info("stopped profiling", "type", pt, "file", profileFileName)
+			log.V(1).Info("Stopped profiling", "Type", pt, "File", profileFileName)
 		}()
 
 	default:
@@ -152,7 +152,7 @@ func StartProfiling(ctx context.Context, ctxCancel context.CancelFunc, pt Profil
 		return fmt.Errorf("unknown profile type: %s", pt)
 	}
 
-	log.V(1).Info("started profiling", "type", pt, "file", profileFileName)
+	log.V(1).Info("Started profiling", "Type", pt, "File", profileFileName)
 
 	return nil
 }
@@ -209,7 +209,7 @@ func parseProfilingRequests(requestStr string, log logr.Logger) map[ProfileType]
 	for _, rawRequest := range rawRequests {
 		requestParts := strings.Split(rawRequest, "=")
 		if len(requestParts) != 2 {
-			log.Error(fmt.Errorf("invalid profiling request '%s'", rawRequest), "ignoring profiling request")
+			log.Error(fmt.Errorf("invalid profiling request '%s'", rawRequest), "Ignoring profiling request")
 			continue
 		}
 
@@ -219,15 +219,15 @@ func parseProfilingRequests(requestStr string, log logr.Logger) map[ProfileType]
 		case ProfileTypeStartup, ProfileTypeStartupCpu, ProfileTypeShutdown, ProfileTypeShutdownCpu:
 			duration, err := time.ParseDuration(requestParts[1])
 			if err != nil {
-				log.Error(fmt.Errorf("invalid profiling request '%s' (could not determine the duration)", rawRequest), "ignoring profiling request")
+				log.Error(fmt.Errorf("invalid profiling request '%s' (could not determine the duration)", rawRequest), "Ignoring profiling request")
 			} else if duration < time.Second || duration > 5*time.Minute {
-				log.Error(fmt.Errorf("invalid profiling request '%s' (duration must be between 1 second and 5 minutes)", rawRequest), "ignoring profiling request")
+				log.Error(fmt.Errorf("invalid profiling request '%s' (duration must be between 1 second and 5 minutes)", rawRequest), "Ignoring profiling request")
 			} else {
 				retval[profileType] = duration
 			}
 
 		default:
-			log.Error(fmt.Errorf("invalid profiling request '%s' (unknown profile type)", rawRequest), "ignoring profiling request")
+			log.Error(fmt.Errorf("invalid profiling request '%s' (unknown profile type)", rawRequest), "Ignoring profiling request")
 		}
 	}
 

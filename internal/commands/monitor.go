@@ -38,7 +38,7 @@ func MonitorPid(
 
 	monitorProc, monitorProcErr := process.FindWaitableProcess(pid, expectedProcessStartTime)
 	if monitorProcErr != nil {
-		logger.Info("error finding process", "pid", pid)
+		logger.Info("Error finding process", "PID", pid)
 		monitorCtxCancel()
 		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}
@@ -51,12 +51,12 @@ func MonitorPid(
 		defer monitorCtxCancel()
 		if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
-				logger.V(1).Info("monitoring cancelled by context", "pid", pid)
+				logger.V(1).Info("Monitoring cancelled by context", "PID", pid)
 			} else {
-				logger.Error(waitErr, "error waiting for process", "pid", pid)
+				logger.Error(waitErr, "Error waiting for process", "PID", pid)
 			}
 		} else {
-			logger.Info("monitor process exited, shutting down", "pid", pid)
+			logger.Info("Monitor process exited, shutting down", "PID", pid)
 		}
 	}()
 
@@ -78,7 +78,7 @@ func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (contex
 
 	processStartTime, startTimeErr := ParseProcessStartTime(monitorPrcessStartTimeStr)
 	if startTimeErr != nil {
-		logger.Error(startTimeErr, "error parsing monitor start time, process to monitor could not be verified")
+		logger.Error(startTimeErr, "Error parsing monitor start time, process to monitor could not be verified")
 		monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
 		monitorCtxCancel()
 		return monitorCtx, monitorCtxCancel

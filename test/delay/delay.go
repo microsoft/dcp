@@ -111,7 +111,7 @@ func runMain(log logr.Logger) error {
 		log.Info("Ran to completion")
 		fmt.Fprintln(os.Stdout, "Ran to completion")
 	default:
-		log.Error(ctx.Err(), "unexpected context copletion")
+		log.Error(ctx.Err(), "Unexpected context copletion")
 		fmt.Fprintf(os.Stdout, "Unexpected context completion: %v\n", ctx.Err())
 	}
 
