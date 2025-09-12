@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -27,7 +26,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 
 	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	"github.com/microsoft/usvc-apiserver/internal/pubsub"
@@ -189,112 +187,55 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 }
 
 func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.ContainerRuntimeStatus {
-	// Check the status of the Docker runtime
-	statusCh := make(chan containers.ContainerRuntimeStatus, 1)
-	go func() {
-		defer close(statusCh)
-		// Run a simple command to check if the Docker CLI is installed and responsive
-		cmd := makeDockerCommand("container", "ls", "-l")
-		_, stdErr, err := dco.runBufferedDockerCommand(ctx, "Status", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	// Docker always includes default networks and formats its response in a consistent way, so we can use this to ensure we're talking to Docker
+	// and not a symlinked runtime like Podman.
+	_, err := dco.ListNetworks(ctx, containers.ListNetworksOptions{})
 
-		if errors.Is(err, exec.ErrNotFound) {
-			// Try to get the inner error if this is an exec.ErrNotFound error
-			if unwrapErr := errors.Unwrap(err); errors.Is(unwrapErr, exec.ErrNotFound) {
-				err = unwrapErr
-			}
+	var invalidUnmarshalError *json.InvalidUnmarshalError
+	var unmarshalTypeError *json.UnmarshalTypeError
 
-			// Couldn't find the Docker CLI, so it's not installed
-			statusCh <- containers.ContainerRuntimeStatus{
-				Installed: false,
-				Running:   false,
-				Error:     err.Error(),
-			}
-
-			return
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			// Timed out, assume Docker is not responsive but available
-			statusCh <- containers.ContainerRuntimeStatus{
-				Installed: true,
-				Running:   false,
-				Error:     "Docker CLI timed out while checking status. Ensure Docker CLI is functioning correctly and try again.",
-			}
-
-			return
-		} else if err != nil {
-			var stdErrString string
-
-			// Prefer returning any stderr from the runtime command, but if that is empty, use the error message from the error object.
-			// The goal is to make it easy for users to diagnose underlying container runtime issues based on the error message.
-			if stdErr != nil {
-				stdErrString = strings.TrimSpace(stdErr.String())
-			}
-
-			if stdErrString == "" {
-				stdErrString = err.Error()
-			}
-
-			// Error response from the Docker command, assume runtime isn't available
-			statusCh <- containers.ContainerRuntimeStatus{
-				Installed: true,
-				Running:   false,
-				Error:     stdErrString,
-			}
-
-			return
+	if errors.Is(err, exec.ErrNotFound) {
+		// Try to get the inner error if this is an exec.ErrNotFound error
+		// The outer error is potentially a "DCP" error and not the actual error from exec
+		// which makes it harder for users to understand that the error is simply that we
+		// couldn't find the Docker binary on their path.
+		if unwrapErr := errors.Unwrap(err); errors.Is(unwrapErr, exec.ErrNotFound) {
+			err = unwrapErr
 		}
 
-		// Info command returned successfully, assume runtime is ready
-		statusCh <- containers.ContainerRuntimeStatus{
+		// Couldn't find the Docker CLI, so it's not installed
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     err.Error(),
+		}
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		// Timed out, assume Docker is not responsive but available
+		return containers.ContainerRuntimeStatus{
 			Installed: true,
-			Running:   true,
+			Running:   false,
+			Error:     "Docker CLI timed out while checking status. Ensure Docker CLI is functioning correctly and try again.",
 		}
-	}()
-
-	// Some users create a "docker" alias to different runtimes, try to detect that case
-	isDockerCh := make(chan bool, 1)
-	go func() {
-		defer close(isDockerCh)
-
-		// Skip the info check if the user explicitly declared the runtime to be Docker
-		if flags.GetRuntimeFlagValue() == flags.DockerRuntime {
-			dco.log.V(1).Info("Docker runtime explicitly specified, skipping alias detection")
-			isDockerCh <- true
-			return
+	} else if errors.As(err, &invalidUnmarshalError) || errors.As(err, &unmarshalTypeError) {
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     "Output from Docker CLI didn't match the expected format. The Docker CLI found on your PATH may not be a valid Docker installation.",
 		}
-
-		dockerPath, err := exec.LookPath("docker")
-		if err != nil {
-			// We didn't find the Docker CLI, but our other check will catch that and report an error
-			isDockerCh <- false
-			return
+	} else if err != nil {
+		// Error response from the Docker command, assume runtime isn't available
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     err.Error(),
 		}
-
-		linkedDockerPath, linkErr := filepath.EvalSymlinks(dockerPath)
-		if linkErr != nil {
-			// Failed to resolve symlinks, assume it's the actual Docker binary
-			isDockerCh <- true
-			return
-		}
-
-		isValidAlias := strings.EqualFold(filepath.Base(linkedDockerPath), filepath.Base(dockerPath))
-		if !isValidAlias {
-			dco.log.V(1).Info("Docker runtime appears to be a symlink to a different runtime", "MatchedBinary", filepath.Base(linkedDockerPath))
-		}
-
-		// If this is just a symlink to the Docker binary, assume it's valid. Otherwise, assume it's a different runtime.
-		isDockerCh <- isValidAlias
-	}()
-
-	newStatus := <-statusCh
-	isDocker := <-isDockerCh
-
-	if newStatus.Installed && newStatus.Running && !isDocker {
-		newStatus.Installed = false
-		newStatus.Running = false
-		newStatus.Error = "docker command appears to be aliased to a different container runtime"
 	}
 
-	return newStatus
+	// Info command returned successfully, assume runtime is ready
+	return containers.ContainerRuntimeStatus{
+		Installed: true,
+		Running:   true,
+	}
 }
 
 func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
