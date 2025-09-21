@@ -13,6 +13,7 @@ import (
 	stdproto "google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -537,6 +538,24 @@ func TestTunnelProxyMultipleTunnels(t *testing.T) {
 		require.True(t, found, "Missing status for tunnel '%s'", td.tunnelName)
 		validateTunnel(t, ctx, ts, td, serverInfo.Client, teInfo.TestTunnelControlClient)
 	}
+
+	// Delete one of the tunnels and verify tunnel statuses etc. are updated accordingly
+	tunnelToDelete := tunnelData[1]
+	t.Logf("Deleting tunnel '%s' from ContainerNetworkTunnelProxy '%s'", tunnelToDelete.tunnelName, tunnelProxy.ObjectMeta.Name)
+	patchErr := retryOnConflictEx(ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(patchCtx context.Context, tp *apiv1.ContainerNetworkTunnelProxy) error {
+		tunnelProxyPatch := updatedProxy.DeepCopy()
+		tunnelProxyPatch.Spec.Tunnels = slices.Select(tunnelProxyPatch.Spec.Tunnels, func(tnc apiv1.TunnelConfiguration) bool {
+			return tnc.Name != tunnelToDelete.tunnelName
+		})
+		return serverInfo.Client.Patch(patchCtx, tunnelProxyPatch, ctrl_client.MergeFromWithOptions(updatedProxy, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, patchErr, "Could not patch ContainerNetworkTunnelProxy to remove tunnel")
+
+	t.Logf("Waiting for ContainerNetworkTunnelProxy '%s' to have expected number of TunnelStatuses after tunnel deletion...", tunnelProxy.ObjectMeta.Name)
+	_ = waitAllTunnelsReady(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount-1)
+
+	t.Logf("Verifying tunnel '%s' has been cleaned up...", tunnelToDelete.tunnelName)
+	validateTunnelDeleted(t, ctx, tunnelToDelete, serverInfo.Client, teInfo.TestTunnelControlClient)
 }
 
 // The tunnel controller will try to create a server-side proxy
@@ -692,6 +711,28 @@ func validateTunnel(
 
 	t.Logf("Waiting for Service '%s' to become ready...", td.clientServiceName)
 	_ = waitServiceReadyEx(t, ctx, apiClient, td.clientServiceNamespacedName)
+}
+
+func validateTunnelDeleted(
+	t *testing.T,
+	ctx context.Context,
+	td testTunnelData,
+	apiClient ctrl_client.Client,
+	tunnelControlClient *ctrl_testutil.TestTunnelControlClient,
+) {
+	pollInterval := 200 * time.Millisecond
+	err := wait.PollUntilContextCancel(ctx, pollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		return tunnelControlClient.GetTunnelSpec(td.fingerprint) == nil, nil
+	})
+	require.NoError(t, err, "Timed out waiting for tunnel controller to delete tunnel '%s'", td.tunnelName)
+
+	t.Logf("Verifying client Service for tunnel '%s' has no endpoints...", td.tunnelName)
+	waitEndpointCountEx(t, ctx, apiClient, td.clientServiceName, 0)
+
+	t.Logf("Verifying client Service for tunnel '%s' is in 'NotReady' state...", td.tunnelName)
+	_ = waitObjectAssumesStateEx(t, ctx, apiClient, td.clientServiceNamespacedName, func(svc *apiv1.Service) (bool, error) {
+		return svc.Status.State == apiv1.ServiceStateNotReady, nil
+	})
 }
 
 func waitAllTunnelsReady(

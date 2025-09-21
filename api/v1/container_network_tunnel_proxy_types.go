@@ -107,16 +107,6 @@ type TunnelStatus struct {
 
 	// The timestamp for the status (last update).
 	Timestamp metav1.MicroTime `json:"timestamp"`
-
-	// The number of preparation attempts made for this tunnel.
-	// If the tunnel cannot be prepared after maximum number of attempts (currently 20)
-	// it will be marked as failed.
-	PreparationAttempts uint32 `json:"preparationAttempts,omitempty"`
-
-	// Timestamp for the next preparation attempt (the next attempt must be made no earlier than this time).
-	// This is necessary because PreparationAttempts update counts as a change to the object,
-	// which means whenever PreparationAttempts is updated, another reconciliation is triggered shortly after.
-	NextPreparationNoEarilerThan *metav1.MicroTime `json:"nextPreparationNoEarlierThan,omitempty"`
 }
 
 func (ts TunnelStatus) Equal(other TunnelStatus) bool {
@@ -125,7 +115,6 @@ func (ts TunnelStatus) Equal(other TunnelStatus) bool {
 		ts.State == other.State &&
 		ts.ErrorMessage == other.ErrorMessage &&
 		ts.Timestamp.Equal(&other.Timestamp) &&
-		ts.PreparationAttempts == other.PreparationAttempts &&
 		ts.ClientProxyPort == other.ClientProxyPort
 	if !allmostEqual {
 		return false

@@ -397,8 +397,8 @@ func waitServiceReady(t *testing.T, ctx context.Context, svcName types.Namespace
 	return waitServiceReadyEx(t, ctx, client, svcName)
 }
 
-func waitServiceReadyEx(t *testing.T, ctx context.Context, cl ctrl_client.Client, svcName types.NamespacedName) *apiv1.Service {
-	updatedSvc := waitObjectAssumesStateEx(t, ctx, cl, svcName, func(svc *apiv1.Service) (bool, error) {
+func waitServiceReadyEx(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, svcName types.NamespacedName) *apiv1.Service {
+	updatedSvc := waitObjectAssumesStateEx(t, ctx, apiClient, svcName, func(svc *apiv1.Service) (bool, error) {
 		return svc.Status.State == apiv1.ServiceStateReady, nil
 	})
 	return updatedSvc

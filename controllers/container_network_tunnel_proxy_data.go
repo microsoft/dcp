@@ -4,12 +4,53 @@ import (
 	"cmp"
 	"os"
 	std_slices "slices"
+	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"k8s.io/apimachinery/pkg/types"
 )
+
+type tunnelExtraData struct {
+	// The number of preparation attempts made for this tunnel.
+	// If the tunnel cannot be prepared after maximum number of attempts (currently 20)
+	// it will be marked as failed.
+	preparationAttempts uint32
+
+	// Timestamp for the next preparation attempt (the next attempt must be made no earlier than this time).
+	// This is necessary because when we make any changes to ContainerNetworkTunnelProxy,
+	// they count as changes to the object and trigger another reconciliation loop shortly after the change.
+	// We want to avoid making preparation attempts too frequently.
+	nextPreparationNoEarlierThan time.Time
+
+	// The names of client service Endpoints that have been created for this tunnel.
+	clientServiceEndpointNames []types.NamespacedName
+}
+
+func (ted tunnelExtraData) Clone() tunnelExtraData {
+	copy := tunnelExtraData{
+		preparationAttempts:          ted.preparationAttempts,
+		nextPreparationNoEarlierThan: ted.nextPreparationNoEarlierThan,
+		clientServiceEndpointNames:   std_slices.Clone(ted.clientServiceEndpointNames),
+	}
+	return copy
+}
+
+func (ted tunnelExtraData) Equal(other tunnelExtraData) bool {
+	if ted.preparationAttempts != other.preparationAttempts {
+		return false
+	}
+	if !ted.nextPreparationNoEarlierThan.Equal(other.nextPreparationNoEarlierThan) {
+		return false
+	}
+	if !std_slices.Equal(ted.clientServiceEndpointNames, other.clientServiceEndpointNames) {
+		return false
+	}
+	return true
+}
 
 // Data we keep in memory for ContainerNetworkTunnelProxy instances.
 type containerNetworkTunnelProxyData struct {
@@ -31,6 +72,18 @@ type containerNetworkTunnelProxyData struct {
 	// Standard error file for the server proxy process.
 	// Note: this is a file descriptor, and is not "cloned" when Clone() is called.
 	serverStderr *os.File
+
+	// Additional in-memory state for tunnels, keyed by tunnel name.
+	tunnelExtra map[string]tunnelExtraData
+}
+
+func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyState) *containerNetworkTunnelProxyData {
+	return &containerNetworkTunnelProxyData{
+		ContainerNetworkTunnelProxyStatus: apiv1.ContainerNetworkTunnelProxyStatus{
+			State: state,
+		},
+		tunnelExtra: make(map[string]tunnelExtraData),
+	}
 }
 
 func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxyData {
@@ -40,7 +93,9 @@ func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxy
 		cleanupScheduled:                  tpd.cleanupScheduled,
 		serverStdout:                      tpd.serverStdout,
 		serverStderr:                      tpd.serverStderr,
+		tunnelExtra:                       maps.Map[string, tunnelExtraData, tunnelExtraData](tpd.tunnelExtra, tunnelExtraData.Clone),
 	}
+
 	return &clone
 }
 
@@ -129,6 +184,17 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 	if tpd.serverStderr != other.serverStderr {
 		tpd.serverStderr = other.serverStderr
 		updated = true
+	}
+
+	for k, v := range other.tunnelExtra {
+		existing, found := tpd.tunnelExtra[k]
+		if !found {
+			tpd.tunnelExtra[k] = v.Clone()
+			updated = true
+		} else if !existing.Equal(v) {
+			tpd.tunnelExtra[k] = v.Clone()
+			updated = true
+		}
 	}
 
 	return updated

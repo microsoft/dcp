@@ -294,7 +294,11 @@ func verifyContainerEndpoint(
 }
 
 func waitEndpointCount(t *testing.T, ctx context.Context, serviceName string, expectedCount int) {
-	ctrl_testutil.WaitObjectCount[apiv1.Endpoint, apiv1.EndpointList](t, ctx, client, expectedCount,
+	waitEndpointCountEx(t, ctx, client, serviceName, expectedCount)
+}
+
+func waitEndpointCountEx(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, serviceName string, expectedCount int) {
+	ctrl_testutil.WaitObjectCount[apiv1.Endpoint, apiv1.EndpointList](t, ctx, apiClient, expectedCount,
 		fmt.Sprintf("counting endpoints for service '%s'", serviceName), func(e *apiv1.Endpoint) bool {
 			return e.Spec.ServiceName == serviceName
 		})
@@ -304,6 +308,6 @@ func waitEndpointExists(t *testing.T, ctx context.Context, contextStr string, se
 	return waitEndpointExistsEx(t, ctx, client, contextStr, selector)
 }
 
-func waitEndpointExistsEx(t *testing.T, ctx context.Context, cl ctrl_client.Client, contextStr string, selector func(e *apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
-	return ctrl_testutil.WaitObjectExists[apiv1.Endpoint, apiv1.EndpointList](t, ctx, cl, contextStr, selector)
+func waitEndpointExistsEx(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, contextStr string, selector func(e *apiv1.Endpoint) (bool, error)) *apiv1.Endpoint {
+	return ctrl_testutil.WaitObjectExists[apiv1.Endpoint, apiv1.EndpointList](t, ctx, apiClient, contextStr, selector)
 }

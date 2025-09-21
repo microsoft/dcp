@@ -13,8 +13,13 @@ type MapFunc[K comparable, V any, T any] interface {
 // Transforms a map[K]V into a map[K]T using given mapping function.
 // Keys are preserved, but values are replaced with the result of the mapping
 func Map[K comparable, V any, T any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, mapping MF) map[K]T {
-	if len(m) == 0 {
+	if m == nil {
 		return nil
+	}
+
+	res := make(map[K]T, len(m))
+	if len(m) == 0 {
+		return res
 	}
 
 	f := func(k K, v V) T {
@@ -28,10 +33,10 @@ func Map[K comparable, V any, T any, MF MapFunc[K, V, T], MM ~map[K]V](m MM, map
 		}
 	}
 
-	res := make(map[K]T, len(m))
 	for k, v := range m {
 		res[k] = f(k, v)
 	}
+
 	return res
 }
 
@@ -59,6 +64,7 @@ func MapToSlice[T any, K comparable, V any, MF MapFunc[K, V, T], MM ~map[K]V](m 
 		res[i] = f(k, v)
 		i++
 	}
+
 	return res
 }
 
@@ -70,16 +76,19 @@ type KeyValFunc[T any, K comparable, V any] interface {
 // may override entries produced by earlier elements (if keys are equal).
 // So in general case it should NOT be assumed that the resulting map will contain as many elements
 // as the original slice.
+// SliceToMap(nil,..) returns an empty map, not nil. This is to make the code using this function less error-prone.
+// Nil slices are quite usable (e.g. appending to nil slice works fine). Not so with nil maps.
 func SliceToMap[T any, K comparable, V any, KVF KeyValFunc[T, K, V], S ~[]T](s S, f KVF) map[K]V {
+	res := make(map[K]V, len(s))
 	if len(s) == 0 {
-		return nil
+		return res
 	}
 
-	res := make(map[K]V, len(s))
 	for _, t := range s {
 		k, v := f(t)
 		res[k] = v
 	}
+
 	return res
 }
 

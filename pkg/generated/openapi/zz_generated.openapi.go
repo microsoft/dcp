@@ -3701,19 +3701,6 @@ func schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref common.ReferenceCal
 							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
 						},
 					},
-					"preparationAttempts": {
-						SchemaProps: spec.SchemaProps{
-							Description: "The number of preparation attempts made for this tunnel. If the tunnel cannot be prepared after maximum number of attempts (currently 20) it will be marked as failed.",
-							Type:        []string{"integer"},
-							Format:      "int64",
-						},
-					},
-					"nextPreparationNoEarlierThan": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Timestamp for the next preparation attempt (the next attempt must be made no earlier than this time). This is necessary because PreparationAttempts update counts as a change to the object, which means whenever PreparationAttempts is updated, another reconciliation is triggered shortly after.",
-							Ref:         ref("k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"),
-						},
-					},
 				},
 				Required: []string{"name", "state", "timestamp"},
 			},

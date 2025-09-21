@@ -409,11 +409,7 @@ func ensureTunnelProxyBuildingImageState(
 
 	if pd == nil {
 		log.V(1).Info("Making sure the container proxy image is up to date...")
-		pd = &containerNetworkTunnelProxyData{
-			ContainerNetworkTunnelProxyStatus: apiv1.ContainerNetworkTunnelProxyStatus{
-				State: apiv1.ContainerNetworkTunnelProxyStateBuildingImage,
-			},
-		}
+		pd = newContainerNetworkTunnelProxyData(apiv1.ContainerNetworkTunnelProxyStateBuildingImage)
 
 		startImgCheckErr := r.workQueue.Enqueue(r.ensureContainerProxyImage(tunnelProxy, pd.Clone(), log))
 		if startImgCheckErr != nil {
@@ -523,7 +519,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageTunnels(
 		tlog := log.WithValues("TunnelName", tunnelName)
 		tlog.V(1).Info("Deleting tunnel that is no longer in spec...")
 
-		if r.deleteTunnel(ctx, tunnelProxy, tunnelStatus, tlog) {
+		if r.deleteTunnel(ctx, tunnelProxy, tunnelStatus, pd, tlog) {
 			pd.removeTunnelStatus(tunnelName)
 			change |= statusChanged
 		} else {
@@ -573,7 +569,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
 	pd *containerNetworkTunnelProxyData,
 	tlog logr.Logger,
 ) objectChange {
-	if now := metav1.NowMicro(); now.Before(originalTunnelStatus.NextPreparationNoEarilerThan) {
+	te, found := pd.tunnelExtra[tunnelConfig.Name]
+	if found && !te.nextPreparationNoEarlierThan.IsZero() && time.Now().Before(te.nextPreparationNoEarlierThan) {
 		// We do not want to busy-loop on preparation attempts
 		return additionalReconciliationNeeded
 	}
@@ -585,6 +582,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
 
 	// CONSIDER: having a spec property for choosing server proxy control address
 	// (the one that server proxy listens on for control commands)
+
+	te.preparationAttempts++
+	if te.preparationAttempts > maxTunnelPreparationAttempts {
+		tlog.Error(errors.New("maximum number of preparation attempts reached"), "Failed to prepare tunnel")
+		pd.setTunnelStatus(failedTunnelStatus(originalTunnelStatus, "Failed to prepare tunnel (maximum number of preparation attempts reached)"))
+		return statusChanged
+	}
+
+	// Set the next preparation earliest time to 90% of the standard delay for additional reconciliation.
+	te.nextPreparationNoEarlierThan = time.Now().Add(delayDuration(StandardDelay) / 9 * 10)
+	pd.tunnelExtra[tunnelConfig.Name] = te
+	r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
 
 	serverProxyClient, serverProxyClientErr := r.createProxyClient(tunnelProxy)
 	if serverProxyClientErr != nil {
@@ -604,20 +613,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
 	defer prepareCtxCancel()
 	tSpec, prepareErr := serverProxyClient.PrepareTunnel(prepareCtx, tunnelReq, grpc.WaitForReady(true))
 	if prepareErr != nil {
-		if originalTunnelStatus.PreparationAttempts >= maxTunnelPreparationAttempts {
-			tlog.Error(prepareErr, "Failed to prepare tunnel (maximum number of preparation attempts reached)")
-			pd.setTunnelStatus(failedTunnelStatus(originalTunnelStatus, fmt.Sprintf("Failed to prepare tunnel (maximum number of preparation attempts reached); last error was: %v ", prepareErr)))
-			return statusChanged
-		} else {
-			tlog.Error(prepareErr, "Failed to prepare tunnel, will retry...")
-			ts := originalTunnelStatus.Clone()
-			ts.PreparationAttempts++
-			// Set the next preparation earliest time to 90% of the standard delay for additional reconciliation.
-			earliestPrepTime := metav1.NewMicroTime(time.Now().Add(delayDuration(StandardDelay) / 9 * 10))
-			ts.NextPreparationNoEarilerThan = &earliestPrepTime
-			pd.setTunnelStatus(ts)
-			return statusChanged | additionalReconciliationNeeded
-		}
+		tlog.Error(prepareErr, "Failed to prepare tunnel, will retry...")
+		return additionalReconciliationNeeded
 	}
 
 	tlog.V(1).Info("Tunnel prepared successfully")
@@ -627,9 +624,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
 	ts.Timestamp = metav1.NewMicroTime(time.Now())
 	ts.ClientProxyAddresses = tSpec.GetClientProxyAddresses()
 	ts.ClientProxyPort = tSpec.GetClientProxyPort()
-	ts.PreparationAttempts++
-	ts.NextPreparationNoEarilerThan = nil
 	pd.setTunnelStatus(ts)
+
+	te.preparationAttempts = 0
+	te.nextPreparationNoEarlierThan = time.Time{}
+	pd.tunnelExtra[tunnelConfig.Name] = te
+	r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
 
 	return statusChanged
 }
@@ -640,6 +640,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) deleteTunnel(
 	ctx context.Context,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
 	tunnelStatus apiv1.TunnelStatus,
+	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) bool {
 	serverProxyClient, serverProxyClientErr := r.createProxyClient(tunnelProxy)
@@ -657,6 +658,31 @@ func (r *ContainerNetworkTunnelProxyReconciler) deleteTunnel(
 		log.Error(deleteErr, "Failed to delete a tunnel")
 		return false
 	}
+
+	// We also need to remove the Endpoint objects created for this tunnel.
+	// ensureEndpointsForWorkload() will not do this because the TunnelConfiguration no longer exists in the spec
+	// and our DynamicEndpointProducer will not say that this ContainerNetworkTunnelProxy produces
+	// the Service associated with deleted TunnelConfiguration.
+
+	te := pd.tunnelExtra[tunnelStatus.Name]
+	endpoints := te.clientServiceEndpointNames
+	for _, epNN := range endpoints {
+		ep := &apiv1.Endpoint{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      epNN.Name,
+				Namespace: epNN.Namespace,
+			},
+		}
+
+		epErr := r.Client.Delete(ctx, ep, ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground))
+		if epErr != nil && !apimachinery_errors.IsNotFound(epErr) {
+			log.Error(epErr, "Failed to delete Endpoint associated with deleted tunnel", "Endpoint", epNN.String())
+			return false
+		}
+	}
+
+	// Successfully deleted all endpoints, we can now delete the tunnel extra data
+	delete(pd.tunnelExtra, tunnelStatus.Name)
 
 	return true
 }
@@ -703,7 +729,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServices(
 
 func failedTunnelStatus(original apiv1.TunnelStatus, errorMessage string) apiv1.TunnelStatus {
 	ts := original.Clone()
-	ts.PreparationAttempts++
 	ts.ErrorMessage = errorMessage
 	ts.Timestamp = metav1.NewMicroTime(time.Now())
 	ts.State = apiv1.TunnelStateFailed
@@ -1192,6 +1217,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) createEndpoints(
 					Port:             t.ClientProxyPort,
 				},
 			})
+
+			te := pd.tunnelExtra[t.Name]
+			endpointNN := types.NamespacedName{Name: endpointName, Namespace: tunnelProxy.Namespace}
+			if !slices.Contains(te.clientServiceEndpointNames, endpointNN) {
+				te.clientServiceEndpointNames = append(te.clientServiceEndpointNames, endpointNN)
+				pd.tunnelExtra[t.Name] = te
+				r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
+			}
 		}
 
 	}

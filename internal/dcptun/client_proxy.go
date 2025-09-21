@@ -218,20 +218,21 @@ func (cp *ClientProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 	defer cp.lock.Unlock()
 	td, found := cp.tunnels[tid]
 	if !found {
-		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
-	} else {
-		td.deleted.Store(true)
-
-		for tf, id := range cp.tunnelRequests {
-			if id == tid {
-				delete(cp.tunnelRequests, tf)
-				break
-			}
-		}
-
-		cp.log.V(1).Info("Tunnel deleted", "TunnelID", tid)
+		// Do not error (idempotency)
 		return &emptypb.Empty{}, nil
 	}
+
+	td.deleted.Store(true)
+
+	for tf, id := range cp.tunnelRequests {
+		if id == tid {
+			delete(cp.tunnelRequests, tf)
+			break
+		}
+	}
+
+	cp.log.V(1).Info("Tunnel deleted", "TunnelID", tid)
+	return &emptypb.Empty{}, nil
 }
 
 // Shuts down the client-side proxy. This will close all tunnels and their streams,
