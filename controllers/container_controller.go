@@ -353,17 +353,6 @@ func handleNewContainer(
 		return r.setContainerState(container, apiv1.ContainerStateRuntimeUnhealthy)
 	}
 
-	lifecycleKey, hasDefaultLifecycleKey, hashErr := container.Spec.GetLifecycleKey()
-	if hashErr != nil {
-		log.Error(hashErr, "Could not calculate lifecycle key")
-		return change | additionalReconciliationNeeded
-	}
-
-	if container.Status.LifecycleKey == "" {
-		container.Status.LifecycleKey = lifecycleKey
-		change |= statusChanged
-	}
-
 	if container.Spec.Persistent {
 		// Check for an existing persistent container
 		inspected, inspectedErr := inspectContainerIfExists(ctx, r.orchestrator, container.Spec.ContainerName)
@@ -373,8 +362,43 @@ func handleNewContainer(
 		}
 
 		if inspected != nil {
+			// Produce a candidate RCD; this will only be persisted if we find an existing valid container.
 			rcd := newRunningContainerData(container)
-			rcd.updateFromInspectedContainer(inspected)
+
+			// We compute the effective environment and invocation args here because we need them
+			// to generate a stable lifecycle key.
+			envErr := r.computeEffectiveEnvironment(ctx, container, rcd, log)
+			if envErr != nil {
+				if templating.IsTransientTemplateError(envErr) {
+					log.Info("Could not compute effective environment for the Container, retrying startup...", "Cause", envErr.Error())
+					return change | additionalReconciliationNeeded
+				} else {
+					log.Error(envErr, "Could not compute effective environment for the Container")
+					return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+				}
+			}
+
+			invocErr := r.computeEffectiveInvocationArgs(ctx, container, rcd, log)
+			if invocErr != nil {
+				if templating.IsTransientTemplateError(invocErr) {
+					log.Info("Could not compute effective invocation arguments for the Container, retrying startup...", "Cause", invocErr.Error())
+					return change | additionalReconciliationNeeded
+				} else {
+					log.Error(invocErr, "Could not compute effective invocation arguments for the Container")
+					return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+				}
+			}
+
+			lifecycleKey, hasDefaultLifecycleKey, hashErr := rcd.runSpec.GetLifecycleKey()
+			if hashErr != nil {
+				log.Error(hashErr, "Could not calculate lifecycle key")
+				return change | additionalReconciliationNeeded
+			}
+
+			if container.Status.LifecycleKey == "" {
+				container.Status.LifecycleKey = lifecycleKey
+				change |= statusChanged
+			}
 
 			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
 
@@ -392,6 +416,8 @@ func handleNewContainer(
 				log.V(1).Info("Found existing Container that is not running", "ContainerStatus", inspected.Status)
 			} else {
 				log.Info("Found existing Container")
+
+				rcd.updateFromInspectedContainer(inspected)
 
 				rcd.ensureStartupLogFiles(container, log)
 				rcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)

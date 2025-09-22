@@ -680,10 +680,8 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 
 	t.Logf("Ensure Container '%s' state is still 'starting'...", ctr.ObjectMeta.Name)
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
-		return (c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStateStarting) && c.Status.LifecycleKey != "", nil
+		return (c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStateStarting) && c.Status.LifecycleKey == "", nil
 	})
-
-	initialLifecycleKey := updatedCtr.Status.LifecycleKey
 
 	shouldStart = true
 	t.Logf("Patching Container '%s' to start...", ctr.ObjectMeta.Name)
@@ -698,7 +696,7 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 	updatedCtr, inspectedCtr := ensureContainerRunning(t, ctx, updatedCtr)
 	require.Equal(t, inspectedCtr.Status, containers.ContainerStatusRunning, "expected the container to be in 'running' state")
 
-	require.Equal(t, initialLifecycleKey, updatedCtr.Status.LifecycleKey, "reported lifecycle key should not change")
+	initialLifecycleKey := updatedCtr.Status.LifecycleKey
 
 	calculatedLifecycleKey, _, hashErr := updatedCtr.Spec.GetLifecycleKey()
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
