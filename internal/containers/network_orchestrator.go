@@ -134,9 +134,6 @@ type DisconnectNetwork interface {
 // ListNetworks command types
 
 type ListedNetwork struct {
-	// Creation timestamp for the network
-	Created time.Time
-
 	// Driver that created the network
 	Driver string
 

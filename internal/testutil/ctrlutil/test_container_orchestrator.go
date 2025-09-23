@@ -1088,7 +1088,6 @@ func (to *TestContainerOrchestrator) ListNetworks(ctx context.Context, options c
 		filteredNetworks,
 		func(network *containerNetwork) containers.ListedNetwork {
 			return containers.ListedNetwork{
-				Created:  network.created,
 				Driver:   network.driver,
 				ID:       network.ID,
 				IPv6:     network.ipv6,

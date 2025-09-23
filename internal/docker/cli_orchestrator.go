@@ -1589,39 +1589,13 @@ type dockerInspectedNetworkIpamConfig struct {
 	Gateway string `json:"Gateway,omitempty"`
 }
 
-// Docker is using a nonstandard time format for network creation time,
-// so we need to use a custom type to unmarshal it correctly.
-type DockerListedNetworkTimestamp time.Time
-
-const dockerListedNetworkTimestampLayout = "2006-01-02 15:04:05.999999999 -0700 UTC"
-
-func (dlt DockerListedNetworkTimestamp) MarshalJSON() ([]byte, error) {
-	return json.Marshal(time.Time(dlt).Format(dockerListedNetworkTimestampLayout))
-}
-
-func (dlt *DockerListedNetworkTimestamp) UnmarshalJSON(b []byte) error {
-	// GO json library leaves the quotes surrounding the value as part of the input to this method, so we need to remove them... :-/
-	if len(b) < 2 || b[0] != '"' || b[len(b)-1] != '"' {
-		return fmt.Errorf("invalid timestamp format: %s", string(b))
-	}
-	b = b[1 : len(b)-1]
-
-	t, err := time.Parse(dockerListedNetworkTimestampLayout, string(b))
-	if err != nil {
-		return err
-	}
-	*dlt = DockerListedNetworkTimestamp(t)
-	return nil
-}
-
 type dockerListedNetwork struct {
-	CreatedAt DockerListedNetworkTimestamp `json:"CreatedAt,omitempty"`
-	Driver    string                       `json:"Driver,omitempty"`
-	ID        string                       `json:"ID"`
-	IPv6      string                       `json:"IPv6,omitempty"`
-	Internal  string                       `json:"Internal,omitempty"`
-	Labels    string                       `json:"Labels,omitempty"`
-	Name      string                       `json:"Name"`
+	Driver   string `json:"Driver,omitempty"`
+	ID       string `json:"ID"`
+	IPv6     string `json:"IPv6,omitempty"`
+	Internal string `json:"Internal,omitempty"`
+	Labels   string `json:"Labels,omitempty"`
+	Name     string `json:"Name"`
 }
 
 func unmarshalListedNetwork(data []byte, net *containers.ListedNetwork) error {
@@ -1635,7 +1609,6 @@ func unmarshalListedNetwork(data []byte, net *containers.ListedNetwork) error {
 		return err
 	}
 
-	net.Created = time.Time(dln.CreatedAt)
 	net.Driver = dln.Driver
 	net.ID = dln.ID
 	if dln.IPv6 == "true" {

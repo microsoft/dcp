@@ -1580,7 +1580,6 @@ type podmanListedNetwork struct {
 	Name     string            `json:"name"`
 	Id       string            `json:"id"`
 	Driver   string            `json:"driver,omitempty"`
-	Created  time.Time         `json:"created,omitempty"`
 	IPv6     bool              `json:"ipv6_enabled,omitempty"`
 	Internal bool              `json:"internal,omitempty"`
 	Labels   map[string]string `json:"labels,omitempty"`
@@ -1590,7 +1589,6 @@ func unmarshalListedNetwork(pln *podmanListedNetwork, net *containers.ListedNetw
 	net.Name = pln.Name
 	net.ID = pln.Id
 	net.Driver = pln.Driver
-	net.Created = pln.Created
 	net.IPv6 = pln.IPv6
 	net.Internal = pln.Internal
 	net.Labels = pln.Labels
