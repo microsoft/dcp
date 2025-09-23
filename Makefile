@@ -210,10 +210,12 @@ ifeq ($(build_os),windows)
 	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/dcp/versioninfo.json ## Generates version information for Windows binaries
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
 	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpproc/resource.syso
+	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcptun/resource.syso
 else
 	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
 	-$(rm_f) $(repo_dir)/cmd/dcpctrl/resource.syso
 	-$(rm_f) $(repo_dir)/cmd/dcpproc/resource.syso
+	-$(rm_f) $(repo_dir)/cmd/dcptun/resource.syso
 endif
 
 .PHONY: generate-grpc
