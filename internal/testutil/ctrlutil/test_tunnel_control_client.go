@@ -74,7 +74,7 @@ func (t *TestTunnelControlClient) GetTunnelSpec(rf dcptunproto.TunnelRequestFing
 		return nil
 	}
 
-	return tunnelSpec
+	return stdproto.CloneOf(tunnelSpec)
 }
 
 //
@@ -96,7 +96,7 @@ func (t *TestTunnelControlClient) PrepareTunnel(ctx context.Context, req *dcptun
 	}
 	if tunnelSpec.TunnelRef.TunnelId != nil {
 		// Tunnel already prepared.
-		return tunnelSpec, nil
+		return stdproto.CloneOf(tunnelSpec), nil
 	}
 
 	tunnelSpec.TunnelRef.TunnelId = stdproto.Uint32(t.nextTunnelId)
@@ -118,7 +118,7 @@ func (t *TestTunnelControlClient) PrepareTunnel(ctx context.Context, req *dcptun
 	tunnelSpec.ClientProxyPort = &port
 
 	t.tunnels[f] = tunnelSpec
-	return tunnelSpec, nil
+	return stdproto.CloneOf(tunnelSpec), nil
 }
 
 func (t *TestTunnelControlClient) DeleteTunnel(ctx context.Context, tr *dcptunproto.TunnelRef, opts ...grpc.CallOption) (*emptypb.Empty, error) {
