@@ -30,11 +30,11 @@
 
 - [x] Modify TunnelConfiguration definition so that both the server and the client are identified by a Service object instead of explicit address and port combination. This means ServiceAddress, ServicePort, ClientProxyAddress, and ClientProxyPort properties should be deleted and replaced by server Service name and namespace and client proxy Service name and namespace.
 - [x] Make the ContainerNetworkTunnelProxyReconciler watches Services.
-- [ ] Implement tunnel preparation and deletion as the Spec.Tunnels set changes. Tunnel cannot be prepared until server and client Services exist and the server Service is in Ready state.
-- [ ] Ensure that TunnelStatuses are updated accordingly, including differentiation between successfully prepared tunnels vs. tunnels that failed.
-- [ ] Write automated integration test that verifies the proxies get appropriate tunnel enablement/deletion calls in result to Spec.Tunnels changes.
-- [ ] Write automated integration test that verifies tunnels get prepared/disabled depending on server Service being in Ready vs NotReady state.
-- [ ] Write automated integration test that verifies the controller creates and deletes Endpoints that are associated with client Service (for each tunnel).
+- [x] Implement tunnel preparation and deletion as the Spec.Tunnels set changes. Tunnel cannot be prepared until server and client Services exist and the server Service is in Ready state.
+- [x] Ensure that TunnelStatuses are updated accordingly, including differentiation between successfully prepared tunnels vs. tunnels that failed.
+- [x] Write automated integration test that verifies the proxies get appropriate tunnel enablement/deletion calls in result to Spec.Tunnels changes.
+- [x] Write automated integration test that verifies tunnels get prepared/disabled depending on server Service being in Ready vs NotReady state.
+- [x] Write automated integration test that verifies the controller creates and deletes Endpoints that are associated with client Service (for each tunnel).
 
 ## Phase 5: Support for DNS names ("aliases") for container-side proxy.
 

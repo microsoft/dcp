@@ -208,7 +208,8 @@ func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.Container
 		change |= statusChanged
 	}
 
-	if len(tpd.TunnelStatuses) > 0 && !std_slices.EqualFunc(tpd.TunnelStatuses, tunnelProxy.Status.TunnelStatuses, apiv1.TunnelStatus.Equal) {
+	// Do not check if len(tpd.TunnelStatuses) == 0 because we want to be able to clear the list of tunnel statuses.
+	if !std_slices.EqualFunc(tpd.TunnelStatuses, tunnelProxy.Status.TunnelStatuses, apiv1.TunnelStatus.Equal) {
 		tunnelProxy.Status.TunnelStatuses = slices.Map[apiv1.TunnelStatus, apiv1.TunnelStatus](tpd.TunnelStatuses, apiv1.TunnelStatus.Clone)
 		change |= statusChanged
 	}

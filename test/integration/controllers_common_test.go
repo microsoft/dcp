@@ -278,9 +278,10 @@ func StartTestEnvironment(
 
 	tcc := ctrl_testutil.NewTestTunnelControlClient()
 	tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-		Orchestrator:            serverInfo.ContainerOrchestrator,
-		ProcessExecutor:         pe,
-		MakeTunnelControlClient: func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+		Orchestrator:                 serverInfo.ContainerOrchestrator,
+		ProcessExecutor:              pe,
+		MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+		MaxTunnelPreparationAttempts: 2,
 	}
 	if testTempDir != NoSeparateWorkingDir {
 		tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")

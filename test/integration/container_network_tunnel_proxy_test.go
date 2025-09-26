@@ -459,6 +459,198 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
 }
 
+// Verifies that when tunnel preparation fails after maximum attempts, the tunnel status indicates failure.
+func TestTunnelProxyTunnelFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-tunnel-failure"
+	log := testutil.NewLogForTesting(t.Name())
+
+	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+			t.Error("Test API server failed to shut down cleanly")
+		}
+	}()
+
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	const serverControlPort int32 = 33456
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+
+	const tunnelCount = 1
+	const serverServicePort int32 = 29381
+	ts := prepareTunnelServices(t, ctx, serverInfo.Client, teInfo.TestTunnelControlClient, tunnelCount, testName, serverServicePort)
+	tunnelData := ts[0]
+
+	// Disable the tunnel in the test control client to simulate preparation failure
+	t.Logf("Disabling tunnel with fingerprint %v to simulate preparation failure", tunnelData.fingerprint)
+	disabled := teInfo.TestTunnelControlClient.DisableTunnel(tunnelData.fingerprint)
+	require.True(t, disabled, "Expected tunnel to be disabled successfully")
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", testName)
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:              tunnelData.tunnelName,
+					ServerServiceName: tunnelData.serverServiceName,
+					ClientServiceName: tunnelData.clientServiceName,
+				},
+			},
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Logf("Waiting for ContainerNetworkTunnelProxy '%s' to transition to Running state with failed tunnel...", tunnelProxy.ObjectMeta.Name)
+	_ = waitForTunnelFailure(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelData.tunnelName)
+}
+
+// Verifies that tunnel status is updated when server Service transitions from Ready to NotReady and vice versa.
+func TestTunnelProxyServerServiceTransition(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-server-service-transition"
+	log := testutil.NewLogForTesting(t.Name())
+
+	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+			t.Error("Test API server failed to shut down cleanly")
+		}
+	}()
+
+	// Create network referenced by tunnel proxy
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	// Simulate server proxy process
+	const serverControlPort int32 = 34567
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+
+	// Create tunnel services and setup
+	const tunnelCount = 1
+	const serverServicePort int32 = 30123
+	tunnelDataList := prepareTunnelServices(t, ctx, serverInfo.Client, teInfo.TestTunnelControlClient, tunnelCount, testName, serverServicePort)
+	tunnelData := tunnelDataList[0]
+
+	// Step 1: Set up ContainerNetworkTunnelProxy with single tunnel and verify it's live
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", testName)
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:              tunnelData.tunnelName,
+					ServerServiceName: tunnelData.serverServiceName,
+					ClientServiceName: tunnelData.clientServiceName,
+				},
+			},
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Logf("Waiting for ContainerNetworkTunnelProxy '%s' to transition to Running state and complete tunnel preparation...", tunnelProxy.ObjectMeta.Name)
+	updatedProxy := waitAllTunnelsReady(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount)
+
+	t.Logf("Validating tunnel '%s' is initially prepared and live...", tunnelData.tunnelName)
+	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+
+	t.Logf("Deleting server Service Endpoint '%s' to trigger Service transition to NotReady...", tunnelData.serverServiceEndpointName)
+	serverEndpointNamespacedName := types.NamespacedName{Name: tunnelData.serverServiceEndpointName, Namespace: metav1.NamespaceNone}
+	err = retryOnConflictEx(ctx, serverInfo.Client, serverEndpointNamespacedName, func(ctx context.Context, endpoint *apiv1.Endpoint) error {
+		return serverInfo.Client.Delete(ctx, endpoint)
+	})
+	require.NoError(t, err, "Could not delete server Service Endpoint")
+
+	t.Logf("Waiting for server Service '%s' to transition to NotReady state...", tunnelData.serverServiceName)
+	serverServiceNamespacedName := types.NamespacedName{Name: tunnelData.serverServiceName, Namespace: metav1.NamespaceNone}
+	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, serverServiceNamespacedName, func(svc *apiv1.Service) (bool, error) {
+		return svc.Status.State == apiv1.ServiceStateNotReady, nil
+	})
+
+	t.Logf("Waiting for tunnel '%s' to be cleaned up due to server Service being NotReady...", tunnelData.tunnelName)
+	validateTunnelDeleted(t, ctx, tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+
+	t.Logf("Verifying ContainerNetworkTunnelProxy '%s' tunnel is no longer ready...", tunnelProxy.ObjectMeta.Name)
+	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		for _, ts := range tp.Status.TunnelStatuses {
+			if ts.Name == tunnelData.tunnelName && ts.State == apiv1.TunnelStateNotReady {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+
+	t.Logf("Re-creating server Service Endpoint '%s' to trigger Service transition back to Ready...", tunnelData.serverServiceEndpointName)
+	serverEndpoint := apiv1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tunnelData.serverServiceEndpointName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.EndpointSpec{
+			ServiceName:      tunnelData.serverServiceName,
+			ServiceNamespace: metav1.NamespaceNone,
+			Address:          networking.IPv4LocalhostDefaultAddress,
+			Port:             serverServicePort,
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &serverEndpoint)
+	require.NoError(t, err, "Could not re-create server Service Endpoint '%s'", tunnelData.serverServiceEndpointName)
+
+	t.Logf("Waiting for server Service '%s' to transition back to Ready state...", tunnelData.serverServiceName)
+	_ = waitServiceReadyEx(t, ctx, serverInfo.Client, serverServiceNamespacedName)
+
+	t.Logf("Waiting for tunnel '%s' to be prepared again...", tunnelData.tunnelName)
+	restoredProxy := waitAllTunnelsReady(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount)
+
+	t.Logf("Validating tunnel '%s' is restored and live again...", tunnelData.tunnelName)
+	validateTunnel(t, ctx, restoredProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+}
+
 // Verifies that multiple tunnels can be created and deleted for a single ContainerNetworkTunnelProxy object.
 func TestTunnelProxyMultipleTunnels(t *testing.T) {
 	t.Parallel()
@@ -592,6 +784,7 @@ func simulateServerProxy(
 type testTunnelData struct {
 	tunnelName                  string
 	serverServiceName           string
+	serverServiceEndpointName   string
 	clientServiceName           string
 	clientServiceNamespacedName types.NamespacedName
 	fingerprint                 dcptunproto.TunnelRequestFingerprint
@@ -675,6 +868,7 @@ func prepareTunnelServices(
 		tunnels = append(tunnels, testTunnelData{
 			tunnelName:                  tunnelName,
 			serverServiceName:           serverSvcName,
+			serverServiceEndpointName:   serverEndpointName,
 			clientServiceName:           clientSvcName,
 			clientServiceNamespacedName: clientSvc.NamespacedName(),
 			fingerprint:                 fingerprint,
@@ -722,7 +916,8 @@ func validateTunnelDeleted(
 ) {
 	pollInterval := 200 * time.Millisecond
 	err := wait.PollUntilContextCancel(ctx, pollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		return tunnelControlClient.GetTunnelSpec(td.fingerprint) == nil, nil
+		ts := tunnelControlClient.GetTunnelSpec(td.fingerprint)
+		return ts.GetTunnelRef().GetTunnelId() == ctrl_testutil.InvalidTunnelID, nil
 	})
 	require.NoError(t, err, "Timed out waiting for tunnel controller to delete tunnel '%s'", td.tunnelName)
 
@@ -757,5 +952,29 @@ func waitAllTunnelsReady(
 		})
 
 		return allReady, nil
+	})
+}
+
+func waitForTunnelFailure(
+	t *testing.T,
+	ctx context.Context,
+	apiClient ctrl_client.Client,
+	tunnelProxyName types.NamespacedName,
+	tunnelName string,
+) *apiv1.ContainerNetworkTunnelProxy {
+	return waitObjectAssumesStateEx(t, ctx, apiClient, tunnelProxyName, func(tp *apiv1.ContainerNetworkTunnelProxy) (bool, error) {
+		if tp.Status.State != apiv1.ContainerNetworkTunnelProxyStateRunning {
+			return false, nil
+		}
+
+		// Look for the specific tunnel and check if it has failed
+		for _, ts := range tp.Status.TunnelStatuses {
+			if ts.Name == tunnelName && ts.State == apiv1.TunnelStateFailed {
+				require.False(t, ts.Timestamp.IsZero(), "Tunnel status should have timestamp")
+				return true, nil
+			}
+		}
+
+		return false, nil
 	})
 }

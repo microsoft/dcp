@@ -51,6 +51,17 @@ func (t *TestTunnelControlClient) EnableTunnel(tunnelSpec *dcptunproto.TunnelSpe
 	t.tunnels[rf] = tunnelSpec
 }
 
+// Disables a tunnel, making the subsequent PrepareTunnel calls for the tunnel's fingerprint fail.
+// Returns true if the tunnel was found and disabled, false otherwise (i.e. it was not previously enabled, or known).
+func (t *TestTunnelControlClient) DisableTunnel(rf dcptunproto.TunnelRequestFingerprint) bool {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+
+	_, found := t.tunnels[rf]
+	delete(t.tunnels, rf)
+	return found
+}
+
 // Gets the tunnel spec for the specified fingerprint.
 // Can be used to verify that a tunnel has been prepared by the ContainerNetworkTunnelProxy controller
 // (by checking if the tunnel ID has been assigned to the tunnel spec).
@@ -62,9 +73,7 @@ func (t *TestTunnelControlClient) GetTunnelSpec(rf dcptunproto.TunnelRequestFing
 	if !found {
 		return nil
 	}
-	if tunnelSpec.TunnelRef == nil || tunnelSpec.TunnelRef.TunnelId == nil {
-		return nil
-	}
+
 	return tunnelSpec
 }
 
@@ -121,22 +130,24 @@ func (t *TestTunnelControlClient) DeleteTunnel(ctx context.Context, tr *dcptunpr
 	}
 
 	found := false
-	var foundRF dcptunproto.TunnelRequestFingerprint
 
 	for rf, tunnelSpec := range t.tunnels {
 		if tunnelSpec.GetTunnelRef().GetTunnelId() == *tr.TunnelId {
 			found = true
-			foundRF = rf
+			// Reset the tunnel spec to unprepared state, but keep it enabled.
+			tunnelSpec.TunnelRef.TunnelId = nil
+			tunnelSpec.ClientProxyAddresses = nil
+			tunnelSpec.ClientProxyPort = nil
+			t.tunnels[rf] = tunnelSpec
 			break
 		}
 	}
 
 	if !found {
 		return nil, status.Errorf(codes.NotFound, "DeleteTunnel request for unknown tunnel ID: %d", *tr.TunnelId)
+	} else {
+		return &emptypb.Empty{}, nil
 	}
-
-	delete(t.tunnels, foundRF)
-	return &emptypb.Empty{}, nil
 }
 
 func (t *TestTunnelControlClient) Shutdown(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*emptypb.Empty, error) {

@@ -54,6 +54,9 @@ const (
 
 	// Initial state -- no attempt to prepare the tunnel have been made yet.
 	TunnelStateEmpty TunnelState = ""
+
+	// Tunnel is being prepared, or is waiting for required services to become ready.
+	TunnelStateNotReady TunnelState = "NotReady"
 )
 
 // TunnelConfiguration defines a single tunnel enabled by a ContainerNetworkTunnelProxy.

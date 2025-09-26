@@ -70,7 +70,7 @@ const (
 	// Timeout for tunnel operations (like preparation or deletion of a tunnel)
 	tunnelOperationTimeout = 5 * time.Second
 
-	maxTunnelPreparationAttempts = 20
+	defaultMaxTunnelPreparationAttempts uint32 = 20
 
 	// Annotation for an Endpoint object that links it to a specific tunnel that serves it.
 	TunnelIdAnnotation = "container-network-tunnel-proxy.usvc-dev.developer.microsoft.com/tunnel-id"
@@ -101,6 +101,10 @@ type ContainerNetworkTunnelProxyReconcilerConfig struct {
 	// Overrides the most recent image builds file path.
 	// Used primarily for testing purposes.
 	MostRecentImageBuildsFilePath string
+
+	// Specifies how many attempts to prepare a tunnel will be made before giving up and marking the tunnel as failed.
+	// Defaults to defaultMaxTunnelPreparationAttempts, but much lower value is used for tests to simulate failures quickly.
+	MaxTunnelPreparationAttempts uint32
 }
 
 type ContainerNetworkTunnelProxyReconciler struct {
@@ -130,6 +134,9 @@ func NewContainerNetworkTunnelProxyReconciler(
 	}
 	if config.MakeTunnelControlClient == nil {
 		panic("ContainerNetworkTunnelProxyReconcilerConfig.TunnelControlClientFactory must not be nil")
+	}
+	if config.MaxTunnelPreparationAttempts == 0 {
+		config.MaxTunnelPreparationAttempts = defaultMaxTunnelPreparationAttempts
 	}
 
 	base := NewReconcilerBase[apiv1.ContainerNetworkTunnelProxy](client, noCacheClient, log, lifetimeCtx)
@@ -534,20 +541,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageTunnels(
 		tunnelStatus, found := currentTunnels[tunnelName]
 
 		if found {
-			if tunnelStatus.State == apiv1.TunnelStateEmpty {
-				tlog.V(1).Info("Attempting to prepare exiting tunnel...")
-				change |= r.prepareTunnel(ctx, tunnelProxy, tunnelConfig, tunnelStatus, pd, tlog)
-			}
+			tlog.V(1).Info("Making sure exiting tunnel is ready to server traffic...")
+			change |= r.manageSingleTunnel(ctx, tunnelProxy, tunnelConfig, tunnelStatus, pd, tlog)
 		} else {
 			tlog.V(1).Info("Preparing new tunnel...")
 			tunnelStatus = apiv1.TunnelStatus{
 				Name:      tunnelName,
-				State:     apiv1.TunnelStateEmpty,
+				State:     apiv1.TunnelStateNotReady,
 				Timestamp: metav1.NewMicroTime(time.Now()),
 			}
 			pd.setTunnelStatus(tunnelStatus)
 			change |= statusChanged // Added new tunnel, so we definitively have a status change
-			change |= r.prepareTunnel(ctx, tunnelProxy, tunnelConfig, tunnelStatus, pd, tlog)
+			change |= r.manageSingleTunnel(ctx, tunnelProxy, tunnelConfig, tunnelStatus, pd, tlog)
 		}
 	}
 
@@ -559,9 +564,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageTunnels(
 	return change
 }
 
-// Attempts to prepare a tunnel by checking required services and calling the tunnel proxy's PrepareTunnel API.
+// Manages a single tunnel, which involves two main use cases:
+//
+//  1. For tunnels that are not ready: attempt to prepare a tunnel by checking required services
+//     and calling the tunnel proxy's PrepareTunnel API.
+//  2. For tunnels that are ready: check that the server service is still ready, otherwise delete the tunnel.
+//
 // Returns objectChange value indicating whether any changes have been made to tunnel status.
-func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
+func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 	ctx context.Context,
 	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
 	tunnelConfig apiv1.TunnelConfiguration,
@@ -569,14 +579,42 @@ func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
 	pd *containerNetworkTunnelProxyData,
 	tlog logr.Logger,
 ) objectChange {
-	te, found := pd.tunnelExtra[tunnelConfig.Name]
-	if found && !te.nextPreparationNoEarlierThan.IsZero() && time.Now().Before(te.nextPreparationNoEarlierThan) {
-		// We do not want to busy-loop on preparation attempts
+	if originalTunnelStatus.State == apiv1.TunnelStateFailed {
+		// Failed is a final state; we do not attempt to recover from it.
+		// Failed tunnels must be deleted and recreated to be retried.
+		return noChange
+	}
+
+	serverSvc, serverServiceReady := r.getTunnelServerService(ctx, tunnelConfig, tlog)
+
+	if originalTunnelStatus.State == apiv1.TunnelStateReady {
+		if serverServiceReady {
+			return noChange // All good, nothing to do
+		}
+
+		tlog.V(1).Info("Server service is no longer ready, deleting the tunnel...")
+
+		if r.deleteTunnel(ctx, tunnelProxy, originalTunnelStatus, pd, tlog) {
+			pd.setTunnelStatus(apiv1.TunnelStatus{
+				Name:      originalTunnelStatus.Name,
+				State:     apiv1.TunnelStateNotReady,
+				Timestamp: metav1.NewMicroTime(time.Now()),
+			})
+			return statusChanged
+		} else {
+			return additionalReconciliationNeeded
+		}
+	}
+
+	// The rest of the method handles the main use case: the tunnel is NOT READY and we need to prepare it.
+
+	if !serverServiceReady {
 		return additionalReconciliationNeeded
 	}
 
-	serverSvc, _, servicesReady := r.getTunnelServices(ctx, tunnelConfig, tlog)
-	if !servicesReady {
+	te, found := pd.tunnelExtra[tunnelConfig.Name]
+	if found && !te.nextPreparationNoEarlierThan.IsZero() && time.Now().Before(te.nextPreparationNoEarlierThan) {
+		// We do not want to busy-loop on preparation attempts
 		return additionalReconciliationNeeded
 	}
 
@@ -584,7 +622,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) prepareTunnel(
 	// (the one that server proxy listens on for control commands)
 
 	te.preparationAttempts++
-	if te.preparationAttempts > maxTunnelPreparationAttempts {
+	if te.preparationAttempts > r.config.MaxTunnelPreparationAttempts {
 		tlog.Error(errors.New("maximum number of preparation attempts reached"), "Failed to prepare tunnel")
 		pd.setTunnelStatus(failedTunnelStatus(originalTunnelStatus, "Failed to prepare tunnel (maximum number of preparation attempts reached)"))
 		return statusChanged
@@ -687,14 +725,12 @@ func (r *ContainerNetworkTunnelProxyReconciler) deleteTunnel(
 	return true
 }
 
-// Checks if the Services used by the tunnel exist and are in the correct state.
-// Returns both services (if available), and a flag indicating whether both services
-// meet requirements for preparing the tunnel.
-func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServices(
+// Checks if the server Service used by the tunnel exists and is in the correct state.
+func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServerService(
 	ctx context.Context,
 	tunnelConfig apiv1.TunnelConfiguration,
 	tlog logr.Logger,
-) (*apiv1.Service, *apiv1.Service, bool) {
+) (*apiv1.Service, bool) {
 	serverSvcNN := types.NamespacedName{Name: tunnelConfig.ServerServiceName, Namespace: tunnelConfig.ServerServiceNamespace}
 	serverService := apiv1.Service{}
 	err := r.Get(ctx, serverSvcNN, &serverService)
@@ -704,27 +740,15 @@ func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServices(
 		} else {
 			tlog.Error(err, "Failed to get information about server service required by the tunnel", "ServerService", serverSvcNN.String())
 		}
-		return nil, nil, false
+		return nil, false
 	}
 
 	if serverService.Status.State != apiv1.ServiceStateReady {
 		tlog.V(1).Info("Server service required by the tunnel is not in Ready state", "ServerService", serverSvcNN.String())
-		return &serverService, nil, false
+		return &serverService, false
 	}
 
-	clientServiceNN := types.NamespacedName{Name: tunnelConfig.ClientServiceName, Namespace: tunnelConfig.ClientServiceNamespace}
-	clientService := apiv1.Service{}
-	err = r.Get(ctx, clientServiceNN, &clientService)
-	if err != nil {
-		if apimachinery_errors.IsNotFound(err) {
-			tlog.V(1).Info("Client service required by the tunnel not found", "ClientService", clientServiceNN.String())
-		} else {
-			tlog.Error(err, "Failed to get information about client service required by the tunnel", "ClientService", clientServiceNN.String())
-		}
-		return &serverService, nil, false
-	}
-
-	return &serverService, &clientService, true
+	return &serverService, true
 }
 
 func failedTunnelStatus(original apiv1.TunnelStatus, errorMessage string) apiv1.TunnelStatus {
