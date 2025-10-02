@@ -28,7 +28,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/internal/pubsub"
 	"github.com/microsoft/usvc-apiserver/internal/templating"
 	"github.com/microsoft/usvc-apiserver/internal/version"
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
@@ -41,11 +40,9 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
 )
 
 const (
-	containerEventChanBuffer                = 20 // Container events tend to come in bursts, so we can help a bit with buffering
 	DefaultMaxParallelContainerStarts uint8 = 6
 
 	startupRetryDelay  = 1 * time.Second
@@ -104,6 +101,7 @@ type runningContainersMap = ObjectStateMap[containerID, runningContainerData, *r
 
 type ContainerReconciler struct {
 	*ReconcilerBase[apiv1.Container, *apiv1.Container]
+	*ContainerWatcher[apiv1.Container]
 
 	orchestrator containers.ContainerOrchestrator
 
@@ -117,25 +115,10 @@ type ContainerReconciler struct {
 	// which are long-running operations that we do in parallel, with limited concurrency.
 	startupQueue *resiliency.WorkQueue
 
-	// Container events subscription
-	containerEvtSub *pubsub.Subscription[containers.EventMessage]
-	// Network events subscription
-	networkEvtSub *pubsub.Subscription[containers.EventMessage]
-	// Channel to receive container change events
-	containerEvtCh *concurrency.UnboundedChan[containers.EventMessage]
-	// Channel to receive network change events
-	networkEvtCh *concurrency.UnboundedChan[containers.EventMessage]
-	// Channel to stop the event worker
-	containerEvtWorkerStop chan struct{}
-
 	// Health probe set used to execute health probes on containers.
 	hpSet *health.HealthProbeSet
 	// Channel used to receive health probe events
 	healthProbeCh *concurrency.UnboundedChan[health.HealthProbeReport]
-
-	// Effectively a set of UIDs of the Container objects that are being watched.
-	// When this set becomes empty, we cancel the container watch.
-	watchingResources *syncmap.Map[types.UID, bool]
 
 	// Lock to protect the reconciler data that requires synchronized access
 	lock *sync.Mutex
@@ -153,24 +136,23 @@ func NewContainerReconciler(
 	healthProbeSet *health.HealthProbeSet,
 	config ContainerReconcilerConfig,
 ) *ContainerReconciler {
+	lock := &sync.Mutex{}
 	base := NewReconcilerBase[apiv1.Container](client, noCacheClient, log, lifetimeCtx)
+	containerWatcher := NewContainerWatcher[apiv1.Container](orchestrator, lock, lifetimeCtx)
 
 	r := ContainerReconciler{
-		ReconcilerBase:         base,
-		orchestrator:           orchestrator,
-		runningContainers:      NewObjectStateMap[containerID, runningContainerData](),
-		startupQueue:           resiliency.NewWorkQueue(lifetimeCtx, config.MaxParallelContainerStarts),
-		containerEvtSub:        nil,
-		networkEvtSub:          nil,
-		containerEvtCh:         nil,
-		networkEvtCh:           nil,
-		containerEvtWorkerStop: nil,
-		hpSet:                  healthProbeSet,
-		healthProbeCh:          concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
-		watchingResources:      &syncmap.Map[types.UID, bool]{},
-		lock:                   &sync.Mutex{},
-		config:                 config,
+		ReconcilerBase:    base,
+		ContainerWatcher:  containerWatcher,
+		orchestrator:      orchestrator,
+		runningContainers: NewObjectStateMap[containerID, runningContainerData](),
+		startupQueue:      resiliency.NewWorkQueue(lifetimeCtx, config.MaxParallelContainerStarts),
+		hpSet:             healthProbeSet,
+		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
+		lock:              lock,
+		config:            config,
 	}
+	containerWatcher.ProcessContainerEvent = r.processContainerEvent
+	containerWatcher.ProcessNetworkEvent = r.processNetworkEvent
 
 	go r.onShutdown()
 	go r.handleHealthProbeResults()
@@ -424,7 +406,7 @@ func handleNewContainer(
 				rcd.containerState = apiv1.ContainerStateRunning
 
 				r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd)
-				r.ensureContainerWatch(container, log)
+				r.EnsureContainerWatchForResource(container.UID, log)
 
 				change |= rcd.applyTo(container, log)
 
@@ -471,7 +453,7 @@ func ensureContainerBuildingState(
 		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateBuilding
 		rcd.ensureStartupLogFiles(container, log)
-		r.ensureContainerWatch(container, log)
+		r.EnsureContainerWatchForResource(container.UID, log)
 
 		log.V(1).Info("Scheduling image build")
 		err := r.startupQueue.Enqueue(r.buildImageWithOrchestrator(container, rcd.Clone(), log))
@@ -515,7 +497,7 @@ func ensureContainerStartingState(
 		rcd.ensureStartupLogFiles(container, log)
 
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd.Clone())
-		r.ensureContainerWatch(container, log)
+		r.EnsureContainerWatchForResource(container.UID, log)
 		r.scheduleContainerCreation(container, rcd, log, startupWithNoDelay)
 
 		// We need to update the runningContainers map with the new data here
@@ -1401,7 +1383,7 @@ func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, con
 // Does not attempt to remove the actual running container, or any orchestrator-managed resource.
 func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, container *apiv1.Container, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, container, nil, log)
-	r.releaseContainerWatch(container, log)
+	r.ReleaseContainerWatchForResource(container.UID, log)
 }
 
 func (r *ContainerReconciler) startContainerWithTimeout(
@@ -1481,14 +1463,14 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 		return nil, nil
 	}
 
-	containerID := rcd.containerID
+	cID := rcd.containerID
 	startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 	streamOptions := containers.StreamCommandOptions{
 		StdOutStream: startupStdoutWriter,
 		StdErrStream: startupStderrWriter,
 	}
 
-	inspected, startupErr := r.startContainerWithTimeout(ctx, container.Name, containerID, streamOptions)
+	inspected, startupErr := r.startContainerWithTimeout(ctx, container.Name, cID, streamOptions)
 	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 	if startupErr != nil {
 		log.Error(startupErr, "Failed to start Container")
@@ -1602,15 +1584,15 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		return []*apiv1.ContainerNetwork{}, err
 	}
 
-	containerID := rcd.containerID
+	cID := rcd.containerID
 
 	if inspected == nil {
-		if containerID == "" {
+		if cID == "" {
 			err := fmt.Errorf("could not ensure ContainerNetworkConnections because the data about running container is missing")
 			log.Error(err, "")
 			return []*apiv1.ContainerNetwork{}, err
 		}
-		if i, err := inspectContainer(ctx, r.orchestrator, string(containerID)); err != nil {
+		if i, err := inspectContainer(ctx, r.orchestrator, string(cID)); err != nil {
 			log.Error(err, "Could not inspect the container")
 			return []*apiv1.ContainerNetwork{}, err
 		} else {
@@ -1717,7 +1699,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			},
 			Spec: apiv1.ContainerNetworkConnectionSpec{
 				ContainerNetworkName: namespacedNetworkName.String(),
-				ContainerID:          string(containerID),
+				ContainerID:          string(cID),
 				Aliases:              network.Aliases,
 			},
 		}
@@ -1816,128 +1798,21 @@ func (r *ContainerReconciler) validateExistingEndpoints(
 	return valid, invalid, nil
 }
 
-// CONTAINER RESOURCE MANAGEMENT METHODS
-
-func (r *ContainerReconciler) ensureContainerWatch(container *apiv1.Container, log logr.Logger) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
-	if r.LifetimeCtx.Err() != nil {
-		return // Do not start a container watch if we are done
-	}
-
-	_, _ = r.watchingResources.LoadOrStore(container.UID, true)
-
-	if r.containerEvtSub != nil {
-		return // We're already watching container events, nothing to do
-	}
-
-	r.containerEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
-		r.LifetimeCtx,
-		containerEventChanBuffer,
-		containerEventChanBuffer,
-	)
-	r.networkEvtCh = concurrency.NewUnboundedChanBuffered[containers.EventMessage](
-		r.LifetimeCtx,
-		containerEventChanBuffer,
-		containerEventChanBuffer,
-	)
-
-	r.containerEvtWorkerStop = make(chan struct{})
-	go r.containerEventWorker(r.containerEvtWorkerStop, r.containerEvtCh.Out, r.networkEvtCh.Out)
-
-	log.V(1).Info("Subscribing to container events...")
-	containerSub, containerSubErr := r.orchestrator.WatchContainers(r.containerEvtCh.In)
-	networkSub, networkSubErr := r.orchestrator.WatchNetworks(r.networkEvtCh.In)
-
-	err := errors.Join(containerSubErr, networkSubErr)
-
-	if err != nil {
-		log.Error(err, "Could not subscribe to events")
-		close(r.containerEvtWorkerStop)
-		r.containerEvtWorkerStop = nil
-		return
-	}
-
-	r.containerEvtSub = containerSub
-	r.networkEvtSub = networkSub
-}
-
-func (r *ContainerReconciler) releaseContainerWatch(container *apiv1.Container, log logr.Logger) {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
-	r.watchingResources.Delete(container.UID)
-	if r.watchingResources.Empty() {
-		log.Info("No more Container resources are being watched, cancelling container watch")
-		r.cancelContainerWatch()
-	}
-}
-
-func (r *ContainerReconciler) cancelContainerWatch() {
-	if r.containerEvtWorkerStop != nil {
-		close(r.containerEvtWorkerStop)
-		r.containerEvtWorkerStop = nil
-	}
-	if r.containerEvtSub != nil {
-		r.containerEvtSub.Cancel()
-		r.containerEvtSub = nil
-	}
-	if r.networkEvtSub != nil {
-		r.networkEvtSub.Cancel()
-		r.networkEvtSub = nil
-	}
-}
-
-func (r *ContainerReconciler) containerEventWorker(
-	stopCh chan struct{},
-	containerEvtCh <-chan containers.EventMessage,
-	networkEvtCh <-chan containers.EventMessage,
-) {
-	for {
-		select {
-		case cem, isOpen := <-containerEvtCh:
-			if !isOpen {
-				containerEvtCh = nil
-				continue
-			}
-
-			if cem.Source != containers.EventSourceContainer {
-				continue
-			}
-
-			r.processContainerEvent(cem)
-		case nem, isOpen := <-networkEvtCh:
-			if !isOpen {
-				networkEvtCh = nil
-				continue
-			}
-
-			if nem.Source != containers.EventSourceNetwork {
-				continue
-			}
-
-			r.processNetworkEvent(nem)
-
-		case <-stopCh:
-			return
-		}
-	}
-}
+// DOCKER/PODMAN CONTAINER MANAGEMENT METHODS
 
 func (r *ContainerReconciler) processContainerEvent(em containers.EventMessage) {
 	switch em.Action {
 	// Any event that means the container has been started, stopped, or was removed, is interesting
 	case containers.EventActionCreate, containers.EventActionDestroy, containers.EventActionDie, containers.EventActionDied, containers.EventActionKill, containers.EventActionOom, containers.EventActionStop, containers.EventActionRestart, containers.EventActionStart, containers.EventActionPrune, containers.EventActionExecDie, containers.EventActionHealthStatus:
-		containerID := containerID(em.Actor.ID)
-		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
+		cID := containerID(em.Actor.ID)
+		owner, rcd := r.runningContainers.BorrowByStateKey(cID)
 		if rcd == nil {
 			// We are not tracking this container
 			return
 		}
 
 		if r.Log.V(1).Enabled() {
-			r.Log.V(1).Info("Container event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
+			r.Log.V(1).Info("Container event received, scheduling reconciliation", "ContainerID", GetShortId(string(cID)), "Event", em.String())
 		}
 
 		r.ScheduleReconciliation(owner)
@@ -1952,16 +1827,16 @@ func (r *ContainerReconciler) processNetworkEvent(em containers.EventMessage) {
 			// We could not identify the container this event applies to
 			return
 		}
-		containerID := containerID(val)
+		cID := containerID(val)
 
-		owner, rcd := r.runningContainers.BorrowByStateKey(containerID)
+		owner, rcd := r.runningContainers.BorrowByStateKey(cID)
 		if rcd == nil {
 			// We are not tracking this container
 			return
 		}
 
 		if r.Log.V(1).Enabled() {
-			r.Log.V(1).Info("Network event received, scheduling reconciliation", "ContainerID", GetShortId(string(containerID)), "Event", em.String())
+			r.Log.V(1).Info("Network event received, scheduling reconciliation", "ContainerID", GetShortId(string(cID)), "Event", em.String())
 		}
 
 		r.ScheduleReconciliation(owner)

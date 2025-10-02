@@ -11,6 +11,7 @@ import (
 
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,13 +44,16 @@ func TestResourceSink(t *testing.T) {
 
 	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
 	require.NoError(t, fileErr)
-
-	contents, readErr := io.ReadAll(file)
-	require.NoError(t, readErr)
 	defer file.Close()
 
-	require.Contains(t, string(contents), "This is a test log entry")
-	require.Contains(t, string(contents), "{\"Key1\": \"Value1\"}")
+	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
+	require.EventuallyWithTf(t, func(c *assert.CollectT) {
+		contents, readErr := io.ReadAll(file)
+		require.NoError(c, readErr)
+
+		require.Contains(c, string(contents), "This is a test log entry")
+		require.Contains(c, string(contents), "{\"Key1\": \"Value1\"}")
+	}, 10*time.Second, 200*time.Millisecond, "Expected to find log entry in resource log file")
 }
 
 func TestResourceSinkNoResourceId(t *testing.T) {
@@ -84,13 +88,16 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 
 	file, fileErr := usvc_io.OpenFile(expectedResourceFilePath, os.O_RDONLY, 0)
 	require.NoError(t, fileErr)
-
-	contents, readErr := io.ReadAll(file)
-	require.NoError(t, readErr)
 	defer file.Close()
 
-	require.Contains(t, string(contents), "info\tresource-sink-no-resource-id-log\tThis is a resource with an id\t{\"Key1\": \"Value1\", \"Key2\": \"Value2\"}")
-	require.Contains(t, string(contents), "error\tresource-sink-no-resource-id-log\tThis is an error record\t{\"Key1\": \"Value1\", \"error\": \"error of some sort\"}")
+	// logger.flush() does not guarantee that subsequent reads will see all the data immediately
+	require.EventuallyWithTf(t, func(c *assert.CollectT) {
+		contents, readErr := io.ReadAll(file)
+		require.NoError(c, readErr)
+
+		require.Contains(c, string(contents), "info\tresource-sink-no-resource-id-log\tThis is a resource with an id\t{\"Key1\": \"Value1\", \"Key2\": \"Value2\"}")
+		require.Contains(c, string(contents), "error\tresource-sink-no-resource-id-log\tThis is an error record\t{\"Key1\": \"Value1\", \"error\": \"error of some sort\"}")
+	}, 10*time.Second, 200*time.Millisecond, "Expected to find a data and a log entry in resource log file")
 }
 
 func TestMain(m *testing.M) {

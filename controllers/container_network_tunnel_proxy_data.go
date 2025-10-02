@@ -178,12 +178,12 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 		updated = true
 	}
 
-	if tpd.serverStdout != other.serverStdout {
+	if other.serverStdout != nil && tpd.serverStdout != other.serverStdout {
 		tpd.serverStdout = other.serverStdout
 		updated = true
 	}
 
-	if tpd.serverStderr != other.serverStderr {
+	if other.serverStderr != nil && tpd.serverStderr != other.serverStderr {
 		tpd.serverStderr = other.serverStderr
 		updated = true
 	}

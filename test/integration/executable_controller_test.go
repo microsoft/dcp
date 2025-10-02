@@ -463,7 +463,9 @@ func TestExecutableStartupFailureProcess(t *testing.T) {
 		Condition: internal_testutil.ProcessSearchCriteria{
 			Command: []string{exe.Spec.ExecutablePath},
 		},
-		StartupError: fmt.Errorf("simulated startup failure for Executable '%s'", exeName),
+		StartupError: func(_ *internal_testutil.ProcessExecution) error {
+			return fmt.Errorf("simulated startup failure for Executable '%s'", exeName)
+		},
 	})
 	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 		Command: []string{exe.Spec.ExecutablePath},
@@ -2571,7 +2573,9 @@ func TestExecutableHealthBasic(t *testing.T) {
 					Condition: internal_testutil.ProcessSearchCriteria{
 						Command: []string{exe.Spec.ExecutablePath},
 					},
-					StartupError: fmt.Errorf("simulated statup failure for Executable '%s'", tc.exeName),
+					StartupError: func(_ *internal_testutil.ProcessExecution) error {
+						return fmt.Errorf("simulated statup failure for Executable '%s'", tc.exeName)
+					},
 				})
 				defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
 					Command: []string{exe.Spec.ExecutablePath},
@@ -2993,7 +2997,9 @@ func TestExecutableStopFailureCausesUnknownState(t *testing.T) {
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			return 0 // Is not going to be used really, because of StopError
 		},
-		StopError: fmt.Errorf("simulated stop failure for Executable '%s'", exeName),
+		StopError: func(_ *internal_testutil.ProcessExecution) error {
+			return fmt.Errorf("simulated stop failure for Executable '%s'", exeName)
+		},
 	})
 	defer testProcessExecutor.RemoveAutoExecution(psc)
 

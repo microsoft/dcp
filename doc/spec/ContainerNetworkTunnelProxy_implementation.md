@@ -40,17 +40,17 @@
 
 - [x] Add facility for specifying multiple aliases for a new container in generic container orchestrator interfaces.
 - [x] Implement support for container aliases in Docker and Podman container orchestrators.
-- [ ] Modify ContainerNetworkTunnelProxy spec to include ability to specify aliases for client-side (container) proxy.
+- [x] Modify ContainerNetworkTunnelProxy spec to include ability to specify aliases for client-side (container) proxy.
 - [x] Change ContainerNetworkTunnelProxy controller so that it uses aliases in the spec when creating client-side proxy container.
 - [x] Write automated integration tests that verifies the controller applies aliases to client-side proxy container when requested by ContainerNetworkTunnelProxy spec.
 
 ## Phase 6: Failure handling
 
-- [ ] Ensure that failure of the server side proxy results in transition to Failed state.
-- [ ] Ensure that failure of the client side proxy (container) results in transition to Failed state.
-- [ ] Ensure that transition to failed state results in cleanup of ContainerNetworkTunnelProxy resources and that the Status is updated accordingly.
-- [ ] Ensure that tunnels are shut down if their server Service goes from Ready to NotReady (and vice versa).
-- [ ] Write automated tests that verify all the above.
+- [x] Ensure that failure of the server side proxy results in transition to Failed state.
+- [x] Ensure that failure of the client side proxy (container) results in transition to Failed state.
+- [x] Ensure that transition to failed state results in cleanup of ContainerNetworkTunnelProxy resources and that the Status is updated accordingly.
+- [x] Ensure that tunnels are shut down if their server Service goes from Ready to NotReady (and vice versa).
+- [x] When ContainerNetworkTunnelProxy transitions to Failed state, all existing tunnels should be marked as failed too.
 
 ## Phase 7 Observability (maybe skip)
 

@@ -52,6 +52,8 @@ const (
 
 	// Full path to the client proxy binary inside the container image.
 	ClientProxyBinaryPath = "/usr/local/bin/" + ClientBinaryName
+
+	ClientProxyContainerImageNamePrefix = "dcptun_developer_ms"
 )
 
 var (
@@ -180,7 +182,7 @@ func EnsureClientProxyImage(
 // clientProxyImageName() determines the name of the client proxy container image,
 // based on the current version of the DCP binaries.
 func clientProxyImageName(dcpTunClientPath string) (string, error) {
-	imageName := "dcptun_developer_ms"
+	imageName := ClientProxyContainerImageNamePrefix
 
 	tag := version.Version().Version
 

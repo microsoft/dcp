@@ -278,17 +278,22 @@ func StartTestEnvironment(
 		}
 	}
 
-	tcc := ctrl_testutil.NewTestTunnelControlClient()
-	tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-		Orchestrator:                 serverInfo.ContainerOrchestrator,
-		ProcessExecutor:              pe,
-		MakeTunnelControlClient:      func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
-		MaxTunnelPreparationAttempts: 2,
-	}
-	if testTempDir != NoSeparateWorkingDir {
-		tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
-	}
+	var tcc *ctrl_testutil.TestTunnelControlClient
+
 	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
+		tcc = ctrl_testutil.NewTestTunnelControlClient()
+		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
+			Orchestrator:                    serverInfo.ContainerOrchestrator,
+			ProcessExecutor:                 pe,
+			MakeTunnelControlClient:         func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
+			MaxTunnelPreparationAttempts:    2,
+			ContainerStartupTimeoutOverride: 2 * time.Second,
+		}
+
+		if testTempDir != NoSeparateWorkingDir {
+			tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
+		}
+
 		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
 			ctx,
 			mgr.GetClient(),

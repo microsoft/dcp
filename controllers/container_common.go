@@ -25,6 +25,8 @@ const (
 	volumeInspectionTimeout = 6 * time.Second
 )
 
+type containerID string
+
 // Container orchestrators, especially Docker, can be flakey (report errors that are not real problems).
 // See https://github.com/dotnet/aspire/issues/5109 for customer report that led us to start using retries when calling the orchestrator.
 

@@ -26,12 +26,12 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/testutil"
 )
 
-func TestCreateNetworkInstance(t *testing.T) {
+func TestNetworkCreateInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "test-create-network-instance"
+	const testName = "test-network-create-instance"
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -47,12 +47,12 @@ func TestCreateNetworkInstance(t *testing.T) {
 	_ = ensureNetworkCreated(t, ctx, &net)
 }
 
-func TestRemoveNetworkInstance(t *testing.T) {
+func TestNetworkRemoveInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "test-remove-network-instance"
+	const testName = "test-network-remove-instance"
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -84,12 +84,12 @@ func TestRemoveNetworkInstance(t *testing.T) {
 	require.NoError(t, err, "network was not removed")
 }
 
-func TestCreatePersistentNetworkInstance(t *testing.T) {
+func TestNetworkCreatePersistentInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "test-create-persistent-network-instance"
+	const testName = "test-network-create-persistent-instance"
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -109,12 +109,12 @@ func TestCreatePersistentNetworkInstance(t *testing.T) {
 	_ = ensureNetworkCreated(t, ctx, &net)
 }
 
-func TestCreateExistingPersistentNetworkInstance(t *testing.T) {
+func TestNetworkCreateExistingPersistentInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "test-create-existing-persistent-network-instance"
+	const testName = "test-network-create-existing-persistent-instance"
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -140,12 +140,12 @@ func TestCreateExistingPersistentNetworkInstance(t *testing.T) {
 	require.Equal(t, id, updatedNetwork.Status.ID, "network ID did not match expected value")
 }
 
-func TestRemovePersistentNetworkInstance(t *testing.T) {
+func TestNetworkRemovePersistentInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "test-remove-persistent-network-instance"
+	const testName = "test-network-remove-persistent-instance"
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{

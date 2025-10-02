@@ -86,8 +86,6 @@ type containerNetworkConnectionKey struct {
 	Network   types.NamespacedName
 }
 
-type containerID string
-
 // Data that we keep, in memory, about running containers.
 type runningContainerData struct {
 	// The most recent state that we set on the Container object.

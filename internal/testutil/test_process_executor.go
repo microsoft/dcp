@@ -133,10 +133,10 @@ type AutoExecution struct {
 
 	// If not nil, this is the error that will be returned by the Executor from StartProcess() call.
 	// RunCommand will not be called in this case.
-	StartupError error
+	StartupError func(*ProcessExecution) error
 
 	// If not nil, the process will fail to stop with the specified error.
-	StopError error
+	StopError func(*ProcessExecution) error
 }
 
 type TestProcessExecutor struct {
@@ -287,7 +287,7 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 		for _, ae := range e.AutoExecutions {
 			if ae.Condition.Matches(pe) {
 				if ae.StartupError != nil {
-					return ae.StartupError
+					return ae.StartupError(pe)
 				} else {
 					eeChan := make(chan struct{})
 					pe.ExecutionEnded = eeChan
@@ -444,7 +444,7 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 
 			if ae.StopError != nil {
 				e.m.Unlock()
-				return ae.StopError
+				return ae.StopError(pe)
 			}
 
 			if pe.Signal != nil {
