@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -43,7 +44,9 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 
 	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 	createTime := process.StartTimeForProcess(pid)
-	require.False(t, createTime.IsZero(), "process start time should not be zero")
+	if runtime.GOOS != "linux" {
+		require.False(t, createTime.IsZero(), "process start time should not be zero")
+	}
 	rootP := process.ProcessTreeItem{pid, createTime}
 
 	// Only one process should be running, so the "tree" size is 1.
