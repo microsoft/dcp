@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"runtime"
 	"testing"
 	"time"
 
@@ -203,18 +202,14 @@ func TestChildrenTerminated(t *testing.T) {
 			require.NoError(t, err, "could not start the 'delay' test program")
 			pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
 			creationTime := process.StartTimeForProcess(pid)
-			if runtime.GOOS != "linux" {
-				require.False(t, creationTime.IsZero(), "process start time should not be zero")
-			}
+			require.False(t, creationTime.IsZero(), "process start time should not be zero")
 			return process.ProcessTreeItem{pid, creationTime}
 		}},
 		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			creationTime := process.StartTimeForProcess(pid)
-			if runtime.GOOS != "linux" {
-				require.False(t, creationTime.IsZero(), "process start time should not be zero")
-			}
+			require.False(t, creationTime.IsZero(), "process start time should not be zero")
 			return process.ProcessTreeItem{pid, creationTime}
 		}},
 		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
@@ -222,9 +217,7 @@ func TestChildrenTerminated(t *testing.T) {
 			require.NoError(t, err, "could not start the 'delay' test program")
 			startWaitForProcessExit()
 			creationTime := process.StartTimeForProcess(pid)
-			if runtime.GOOS != "linux" {
-				require.False(t, creationTime.IsZero(), "process start time should not be zero")
-			}
+			require.False(t, creationTime.IsZero(), "process start time should not be zero")
 			return process.ProcessTreeItem{pid, creationTime}
 		}},
 	}
