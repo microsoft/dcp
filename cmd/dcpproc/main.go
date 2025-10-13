@@ -22,7 +22,10 @@ const (
 )
 
 func main() {
-	log := logger.New("dcpproc").WithName("dcpproc")
+	log := logger.New("dcpproc").
+		WithResourceSink().
+		WithName("dcpproc")
+
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log.Logger)
 		if panicErr != nil {

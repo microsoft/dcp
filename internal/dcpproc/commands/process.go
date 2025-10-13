@@ -4,20 +4,22 @@ package commands
 
 import (
 	"errors"
-	"fmt"
 	"os"
+	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
+	"github.com/microsoft/usvc-apiserver/internal/flags"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
 var (
-	childPid                 process.Pid_t = process.UnknownPID
-	childProcessStartTimeStr string
+	childPid              process.Pid_t = process.UnknownPID
+	childProcessStartTime time.Time
 )
 
 func NewProcessCommand(log logr.Logger) (*cobra.Command, error) {
@@ -39,7 +41,7 @@ DCP terminates unexpectedly.`,
 		return nil, flagErr // Should never happen--the only error would be if the flag was not found
 	}
 
-	processCmd.Flags().StringVar(&childProcessStartTimeStr, "child-start-time", "", "If present, specifies the start time of the child process. This is used to ensure the correct process will be shut down. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	processCmd.Flags().Var(flags.NewTimeFlag(&childProcessStartTime, osutil.RFC3339MiliTimestampFormat), "child-start-time", "If present, specifies the start time of the child process. This is used to ensure the correct process will be shut down. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 
 	return processCmd, nil
 }
@@ -51,18 +53,8 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			"ChildPID", childPid,
 		)
 
-		monitorProcessStartTime, monitorProcessStartTimeErr := cmds.ParseProcessStartTime(monitorStartTimeStr)
-		if monitorProcessStartTimeErr != nil {
-			monitorErr := fmt.Errorf("invalid monitor process start time: %w", monitorProcessStartTimeErr)
-			log.Error(monitorErr, "Monitored process identity could not be verified, exiting...")
-			return monitorErr
-		}
-
-		childProcessStartTime, childProcessStartTimeErr := cmds.ParseProcessStartTime(childProcessStartTimeStr)
-		if childProcessStartTimeErr != nil {
-			childErr := fmt.Errorf("invalid child process start time: %w", childProcessStartTimeErr)
-			log.Error(childErr, "Child service process identity could not be verified, exiting...")
-			return childErr
+		if resourceId != "" {
+			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
 		}
 
 		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, log)

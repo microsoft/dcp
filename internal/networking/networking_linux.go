@@ -1,4 +1,4 @@
-//go:build !windows && !darwin
+//go:build linux
 
 // Copyright (c) Microsoft Corporation. All rights reserved.
 

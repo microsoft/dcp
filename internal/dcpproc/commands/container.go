@@ -17,6 +17,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
 	container_runtimes "github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
+	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 )
 
@@ -88,11 +89,8 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 				"Container", containerID,
 			)
 
-		monitorProcessStartTime, monitorProcessStartTimeErr := cmds.ParseProcessStartTime(monitorStartTimeStr)
-		if monitorProcessStartTimeErr != nil {
-			monitorErr := fmt.Errorf("invalid monitor process start time: %w", monitorProcessStartTimeErr)
-			log.Error(monitorErr, "Process identity could not be verified, exiting...")
-			return monitorErr
+		if resourceId != "" {
+			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
 		}
 
 		co, coErr := getContainerOrchestrator(cmd.Context(), log)

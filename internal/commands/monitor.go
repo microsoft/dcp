@@ -8,20 +8,21 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/microsoft/usvc-apiserver/internal/flags"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/process"
 	"github.com/spf13/cobra"
 )
 
 var (
-	monitorPid                process.Pid_t = process.UnknownPID
-	monitorPrcessStartTimeStr string
-	monitorInterval           uint8
+	monitorPid              process.Pid_t = process.UnknownPID
+	monitorProcessStartTime time.Time
+	monitorInterval         uint8
 )
 
 func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Int64VarP((*int64)(&monitorPid), "monitor", "m", int64(process.UnknownPID), "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
-	cmd.Flags().StringVar(&monitorPrcessStartTimeStr, "monitor-start-time", "", "If present, specifies the start time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-start-time", "If present, specifies the start time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
@@ -78,24 +79,7 @@ func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (contex
 		return context.WithCancel(ctx) // No process to monitor
 	}
 
-	processStartTime, startTimeErr := ParseProcessStartTime(monitorPrcessStartTimeStr)
-	if startTimeErr != nil {
-		logger.Error(startTimeErr, "Error parsing monitor start time, process to monitor could not be verified")
-		monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
-		monitorCtxCancel()
-		return monitorCtx, monitorCtxCancel
-	}
-
 	// Ignore errors as they're logged by MonitorPid and we always return a valid context
-	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, monitorPid, processStartTime, monitorInterval, logger)
+	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, monitorPid, monitorProcessStartTime, monitorInterval, logger)
 	return monitorCtx, monitorCtxCancel
-}
-
-func ParseProcessStartTime(timeStr string) (time.Time, error) {
-	if timeStr == "" {
-		// Not specified, return zero-time to indicate process start time should be disregarded
-		return time.Time{}, nil
-	}
-
-	return time.Parse(osutil.RFC3339MiliTimestampFormat, timeStr)
 }
