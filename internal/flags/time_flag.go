@@ -31,7 +31,7 @@ func (t *TimeFlag) Set(timeStr string) error {
 		return err
 	}
 
-	t.value = &parsedTime
+	*t.value = parsedTime
 	return nil
 }
 
