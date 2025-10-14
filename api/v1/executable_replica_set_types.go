@@ -85,7 +85,7 @@ func (ers *ExecutableReplicaSet) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "template", "spec", "stop"), ers.Spec.Template.Spec.Stop, "replicas with Stop==true will never run"))
 	}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && ers.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 

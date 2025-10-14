@@ -10,16 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	std_slices "slices"
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
-	"google.golang.org/grpc"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,11 +25,7 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/controllers"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
-	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/exerunners"
-	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
@@ -71,7 +63,7 @@ func TestMain(m *testing.M) {
 	}
 	client = serverInfo.Client
 	restClient = serverInfo.RestClient
-	containerOrchestrator = serverInfo.ContainerOrchestrator
+	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
 	ideRunner = teInfo.TestIdeRunner
 
@@ -90,239 +82,6 @@ func TestMain(m *testing.M) {
 	}()
 
 	code = m.Run()
-}
-
-type IncludedController uint32
-
-const (
-	ExecutableController IncludedController = 1 << iota
-	ExecutableReplicaSetController
-	NetworkController
-	ContainerController
-	ContainerExecController
-	VolumeController
-	ServiceController
-	ContainerNetworkTunnelProxyController
-	NoControllers  IncludedController = 0
-	AllControllers IncludedController = ^NoControllers
-)
-
-const (
-	NoSeparateWorkingDir = ""
-)
-
-// TestEnvironmentInfo provides information about the test environment created via StartTestEnvironment().
-type TestEnvironmentInfo struct {
-	*internal_testutil.TestProcessExecutor
-	*ctrl_testutil.TestIdeRunner
-	*ctrl_testutil.TestTunnelControlClient
-}
-
-// Starts the DCP API server (separate process) and standard controllers (in-proc).
-func StartTestEnvironment(
-	ctx context.Context,
-	inclCtrl IncludedController,
-	instanceTag string,
-	testTempDir string,
-	log logr.Logger,
-) (
-	*ctrl_testutil.ApiServerInfo,
-	*TestEnvironmentInfo,
-	error,
-) {
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, log)
-	if serverErr != nil {
-		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
-	}
-
-	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	exeRunner := exerunners.NewProcessExecutableRunner(pe)
-	ir := ctrl_testutil.NewTestIdeRunner(ctx)
-
-	// Run the harvester in a separate goroutine to ensure that it does not block controller startup
-	harvester := controllers.NewResourceHarvester()
-	go harvester.MockHarvest(ctx, 2*time.Second, log.WithName("ResourceCleanup"))
-
-	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
-	// but we will reset when the manager starts.
-	managerDone := concurrency.NewAutoResetEvent(true)
-
-	_ = context.AfterFunc(ctx, func() {
-		// We are going to stop the API server only after all the controller manager is done.
-		// This avoids a bunch of shutdown errors from the manager.
-		<-managerDone.Wait()
-
-		tpeCloseErr := pe.Close()
-		if tpeCloseErr != nil {
-			log.Error(tpeCloseErr, "Failed to close the test process executor")
-		}
-
-		serverInfo.Dispose()
-	})
-
-	opts := controllers.NewControllerManagerOptions(ctx, serverInfo.Client.Scheme(), log)
-	mgr, err := ctrl.NewManager(serverInfo.ClientConfig, opts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize controller manager: %w", err)
-	}
-
-	hpSet := health.NewHealthProbeSet(
-		ctx,
-		log.WithName("HealthProbeSet"),
-		map[apiv1.HealthProbeType]health.HealthProbeExecutor{
-			apiv1.HealthProbeTypeHttp: health.NewHttpProbeExecutor(mgr.GetClient(), log.WithName("HttpProbeExecutor")),
-		},
-	)
-
-	if inclCtrl&ExecutableController != 0 {
-		execR := controllers.NewExecutableReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("ExecutableReconciler"),
-			map[apiv1.ExecutionType]controllers.ExecutableRunner{
-				apiv1.ExecutionTypeProcess: exeRunner,
-				apiv1.ExecutionTypeIDE:     ir,
-			},
-			hpSet,
-		)
-		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
-		}
-	}
-
-	if inclCtrl&ExecutableReplicaSetController != 0 {
-		execrsR := controllers.NewExecutableReplicaSetReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("ExecutableReplicaSetReconciler"),
-		)
-		if err = execrsR.SetupWithManager(mgr, instanceTag+"-ExecutableReplicaSetReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize ExecutableReplicaSet reconciler: %w", err)
-		}
-	}
-
-	if inclCtrl&NetworkController != 0 {
-		networkR := controllers.NewNetworkReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("NetworkReconciler"),
-			serverInfo.ContainerOrchestrator,
-			harvester,
-		)
-		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
-		}
-	}
-
-	if inclCtrl&ContainerController != 0 {
-		containerR := controllers.NewContainerReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("ContainerReconciler"),
-			serverInfo.ContainerOrchestrator,
-			hpSet,
-			controllers.ContainerReconcilerConfig{
-				MaxParallelContainerStarts:      math.MaxUint8,
-				ContainerStartupTimeoutOverride: 2 * time.Second,
-			},
-		)
-		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
-		}
-	}
-
-	if inclCtrl&ContainerExecController != 0 {
-		containerExecR := controllers.NewContainerExecReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("ContainerExecReconciler"),
-			serverInfo.ContainerOrchestrator,
-		)
-		if err = containerExecR.SetupWithManager(mgr, instanceTag+"-ContainerExecReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize ContainerExec reconciler: %w", err)
-		}
-	}
-
-	if inclCtrl&VolumeController != 0 {
-		volumeR := controllers.NewVolumeReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("VolumeReconciler"),
-			serverInfo.ContainerOrchestrator,
-		)
-		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
-		}
-	}
-
-	if inclCtrl&ServiceController != 0 {
-		serviceR := controllers.NewServiceReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			log.WithName("ServiceReconciler"),
-			controllers.ServiceReconcilerConfig{
-				ProcessExecutor:               pe,
-				CreateProxy:                   ctrl_testutil.NewTestProxy,
-				AdditionalReconciliationDelay: controllers.TestDelay,
-			},
-		)
-		if err = serviceR.SetupWithManager(mgr, instanceTag+"-ServiceReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize Service reconciler: %w", err)
-		}
-	}
-
-	var tcc *ctrl_testutil.TestTunnelControlClient
-
-	if inclCtrl&ContainerNetworkTunnelProxyController != 0 {
-		tcc = ctrl_testutil.NewTestTunnelControlClient()
-		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
-			Orchestrator:                    serverInfo.ContainerOrchestrator,
-			ProcessExecutor:                 pe,
-			MakeTunnelControlClient:         func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
-			MaxTunnelPreparationAttempts:    2,
-			ContainerStartupTimeoutOverride: 2 * time.Second,
-		}
-
-		if testTempDir != NoSeparateWorkingDir {
-			tprOpts.MostRecentImageBuildsFilePath = filepath.Join(testTempDir, instanceTag+".imglist")
-		}
-
-		tunnelProxyR := controllers.NewContainerNetworkTunnelProxyReconciler(
-			ctx,
-			mgr.GetClient(),
-			mgr.GetAPIReader(),
-			tprOpts,
-			log.WithName("TunnelProxyReconciler"),
-		)
-		if err = tunnelProxyR.SetupWithManager(mgr, instanceTag+"-ContainerNetworkTunnelProxyReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize ContainerNetworkTunnelProxy reconciler: %w", err)
-		}
-	}
-
-	if err = controllers.SetupEndpointIndexWithManager(mgr); err != nil {
-		return nil, nil, fmt.Errorf("failed to initialize Endpoint index: %w", err)
-	}
-
-	// Starts the controller manager and all the associated controllers
-	managerDone.Clear()
-	go func() {
-		_ = mgr.Start(ctx)
-		managerDone.Set()
-	}()
-
-	teInfo := &TestEnvironmentInfo{
-		TestProcessExecutor:     pe,
-		TestIdeRunner:           ir,
-		TestTunnelControlClient: tcc,
-	}
-	return serverInfo, teInfo, nil
 }
 
 func waitObjectAssumesState[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
@@ -364,7 +123,7 @@ func retryOnConflict[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 	name types.NamespacedName,
 	action func(context.Context, PT) error,
 ) error {
-	return retryOnConflictEx[T, PT](ctx, client, name, action)
+	return retryOnConflictEx(ctx, client, name, action)
 }
 
 func retryOnConflictEx[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](

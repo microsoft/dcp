@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -30,7 +29,7 @@ import (
 
 const (
 	// Default base image for client proxy containers
-	defaultBaseImage = "mcr.microsoft.com/azurelinux/base/core:3.0"
+	DefaultBaseImage = "mcr.microsoft.com/azurelinux/base/core:3.0"
 
 	// The interval at which we check whether the client proxy image has been built
 	// (assuming another instance is building it).
@@ -41,6 +40,8 @@ const (
 
 	// The label containing the base image digest used for the client proxy image build.
 	baseImageDigestLabel = "com.microsoft.developer.usvc-dev.base-image-digest"
+
+	dockerfileName = "Dockerfile"
 )
 
 const (
@@ -108,7 +109,7 @@ func EnsureClientProxyImage(
 	}
 
 	if opts.BaseImage == "" {
-		opts.BaseImage = defaultBaseImage
+		opts.BaseImage = DefaultBaseImage
 	}
 
 	dcpTunClientPath, clientPathErr := dcptunClientBinaryPath()
@@ -151,7 +152,7 @@ func EnsureClientProxyImage(
 	buildOptions := containers.BuildImageOptions{
 		ContainerBuildContext: &apiv1.ContainerBuildContext{
 			Context:    buildContext,
-			Dockerfile: "Dockerfile",
+			Dockerfile: filepath.Join(buildContext, dockerfileName),
 			Tags:       []string{imageName},
 			Labels: []apiv1.ContainerLabel{
 				{
@@ -336,39 +337,29 @@ func setupImageBuildContext(dcpTunClientPath string, opts BuildClientProxyImageO
 	}
 
 	// Make the client proxy binary appear the build context
+	// One would think that creating a symlink would be the right thing to do here,
+	// but Docker build does not follow symlinks outside the build context.
+	// So we have to copy the binary instead.
+	// If this turns to be a performance issue, we can look into using Docker buildkit
+	// with "additional", external context pointing to the bin folder.
 	destBinaryPath := filepath.Join(tempDir, ClientBinaryName)
-	if osutil.IsWindows() {
-		// Windows requires SeCreateSymbolicLinkPrivilege to create symlinks, which is off by default.
-		// Also, syscall.Symlink() is defined, but not implemented on Windows.
-		if copyErr := copyFile(dcpTunClientPath, destBinaryPath, osutil.PermissionOnlyOwnerReadWriteExecute); copyErr != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("failed to copy binary to build context: %w", copyErr)
-		}
-	} else {
-		symlinkErr := syscall.Symlink(dcpTunClientPath, destBinaryPath)
-		if symlinkErr != nil {
-			cleanup()
-			return "", nil, fmt.Errorf("failed to create symlink for client proxy binary in build context: %w", symlinkErr)
-		}
+	if copyErr := copyFile(dcpTunClientPath, destBinaryPath, osutil.PermissionOnlyOwnerReadWriteExecute); copyErr != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("failed to copy binary to build context: %w", copyErr)
 	}
-
-	// Create Dockerfile content
 
 	dockerfileContent := fmt.Sprintf(`
 FROM %s
 
 # Copy the dcptun client binary
-COPY %s %[3]s
-
-# Set the binary as executable (redundant but explicit)
-RUN chmod +x %[3]s
+COPY --chmod=0755 %s %[3]s
 
 # Set the entrypoint to the dcptun client
 ENTRYPOINT ["%[3]s"]
 `, opts.BaseImage, ClientBinaryName, ClientProxyBinaryPath)
 
 	// Write Dockerfile
-	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
+	dockerfilePath := filepath.Join(tempDir, dockerfileName)
 	if err := usvc_io.WriteFile(dockerfilePath, []byte(dockerfileContent), osutil.PermissionOnlyOwnerReadWrite); err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("failed to write Dockerfile: %w", err)

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"fmt"
+	"hash/fnv"
 	mathrand "math/rand"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	apivalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
@@ -245,4 +247,18 @@ func setTimestampIfAfterOrUnknown(source metav1.MicroTime, target *metav1.MicroT
 	} else {
 		return false
 	}
+}
+
+// Computes a valid Kubernetes label value from an arbitrary string.
+// If the passed string is a valid label value, it is returned unchanged.
+// Otherwise, a hash of the string is computed and the returned value is the hash in hexadecimal form,
+// prefixed with "x-".
+func MakeValidLabelValue(s string) string {
+	if errs := apivalidation.IsValidLabelValue(s); len(errs) == 0 {
+		return s
+	}
+
+	fnvHash := fnv.New128()
+	fnvHash.Write([]byte(s))
+	return fmt.Sprintf("x-%x", fnvHash.Sum(nil))
 }

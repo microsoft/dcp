@@ -147,9 +147,11 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 
 	h.lock.Lock()
 
-	changingCleanupInProgressOrAfterCompleted := patch.ShutdownResourceCleanup != "" &&
-		patch.ShutdownResourceCleanup != h.executionData.ShutdownResourceCleanup &&
-		h.executionData.Status != ApiServerRunning
+	changingCleanupInProgressOrAfterCompleted :=
+		patch.ShutdownResourceCleanup != ApiServerResourceCleanupNone &&
+			patch.ShutdownResourceCleanup != "" &&
+			patch.ShutdownResourceCleanup != h.executionData.ShutdownResourceCleanup &&
+			h.executionData.Status != ApiServerRunning
 	if changingCleanupInProgressOrAfterCompleted {
 		h.lock.Unlock()
 		http.Error(w, "execution patch request cannot change resource cleanup type when cleanup is in progress or already done", http.StatusUnprocessableEntity)

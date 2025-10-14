@@ -909,50 +909,50 @@ func (c *Container) GetStatus() apiserver_resource.StatusSubResource {
 	return c.Status
 }
 
-func (e *Container) New() runtime.Object {
+func (_ *Container) New() runtime.Object {
 	return &Container{}
 }
 
-func (e *Container) NewList() runtime.Object {
+func (_ *Container) NewList() runtime.Object {
 	return &ContainerList{}
 }
 
-func (e *Container) IsStorageVersion() bool {
+func (_ *Container) IsStorageVersion() bool {
 	return true
 }
 
-func (e *Container) NamespaceScoped() bool {
+func (_ *Container) NamespaceScoped() bool {
 	return false
 }
 
-func (e *Container) ShortNames() []string {
+func (_ *Container) ShortNames() []string {
 	return []string{"ctr"}
 }
 
-func (e *Container) NamespacedName() types.NamespacedName {
+func (c *Container) NamespacedName() types.NamespacedName {
 	return types.NamespacedName{
-		Name:      e.Name,
-		Namespace: e.Namespace,
+		Name:      c.Name,
+		Namespace: c.Namespace,
 	}
 }
 
-func (e *Container) Validate(ctx context.Context) field.ErrorList {
+func (c *Container) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && c.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
-	if e.Spec.Build == nil && e.Spec.Image == "" {
+	if c.Spec.Build == nil && c.Spec.Image == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
 	}
 
-	if e.Spec.Build != nil {
-		if e.Spec.Build.Context == "" {
+	if c.Spec.Build != nil {
+		if c.Spec.Build.Context == "" {
 			errorList = append(errorList, field.Required(field.NewPath("spec", "build", "context"), "context must be set to a non-empty value when build is specified"))
 		}
 
-		for i, secret := range e.Spec.Build.Secrets {
+		for i, secret := range c.Spec.Build.Secrets {
 			if secret.Type != "" && secret.Type != FileSecret && secret.Type != EnvSecret {
 				errorList = append(errorList, field.Invalid(field.NewPath("spec", "build", "secrets").Index(i).Child("type"), secret.Type, "type must be one of 'file' or 'env'"))
 			}
@@ -966,7 +966,7 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 			}
 		}
 
-		for i, label := range e.Spec.Build.Labels {
+		for i, label := range c.Spec.Build.Labels {
 			// TODO: Validate key format?
 			if label.Key == "" {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "labels").Index(i).Child("name"), "name must be set to a non-empty value"))
@@ -978,7 +978,7 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 		}
 	}
 
-	for i, label := range e.Spec.Labels {
+	for i, label := range c.Spec.Labels {
 		// TODO: Validate key format?
 		if label.Key == "" {
 			errorList = append(errorList, field.Required(field.NewPath("spec", "labels").Index(i).Child("name"), "name must be set to a non-empty value"))
@@ -990,20 +990,20 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 	}
 
 	// Validate the object name to ensure it is a valid container name
-	if e.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(e.Spec.ContainerName) {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), e.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
+	if c.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(c.Spec.ContainerName) {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), c.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
 
-	if e.Spec.Persistent && e.Spec.ContainerName == "" {
+	if c.Spec.Persistent && c.Spec.ContainerName == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
 	}
 
 	healthProbesPath := field.NewPath("spec", "healthProbes")
-	for i, probe := range e.Spec.HealthProbes {
+	for i, probe := range c.Spec.HealthProbes {
 		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
 	}
 
-	for i, createFile := range e.Spec.CreateFiles {
+	for i, createFile := range c.Spec.CreateFiles {
 		if createFile.Destination != "" && !path.IsAbs(createFile.Destination) {
 			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("destination"), createFile.Destination, "destination must be absolute"))
 		}
@@ -1032,72 +1032,72 @@ func (e *Container) Validate(ctx context.Context) field.ErrorList {
 	return errorList
 }
 
-func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
+func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	oldContainer := obj.(*Container)
 
 	// The image property cannot be changed after the resource is first created
-	if oldContainer.Spec.Image != e.Spec.Image {
+	if oldContainer.Spec.Image != c.Spec.Image {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "image"), "image cannot be changed"))
 	}
 
-	if !oldContainer.Spec.Build.Equal(e.Spec.Build) {
+	if !oldContainer.Spec.Build.Equal(c.Spec.Build) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "build"), "build cannot be changed"))
 	}
 
 	// A container name cannot be changed after it's created
-	if oldContainer.Spec.ContainerName != e.Spec.ContainerName {
+	if oldContainer.Spec.ContainerName != c.Spec.ContainerName {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "containerName"), "containerName cannot be changed"))
 	}
 
-	if oldContainer.Spec.Networks != nil && e.Spec.Networks == nil {
+	if oldContainer.Spec.Networks != nil && c.Spec.Networks == nil {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "networks cannot be set to null if it was initialized with a list value"))
 	}
 
-	if oldContainer.Spec.Networks == nil && e.Spec.Networks != nil {
+	if oldContainer.Spec.Networks == nil && c.Spec.Networks != nil {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "networks"), "networks cannot be set to a list value if it was initialized as null"))
 	}
 
 	// Make sure start isn't changed to false after the container was created
-	if (oldContainer.Spec.Start == nil || *oldContainer.Spec.Start) && (e.Spec.Start != nil && !*e.Spec.Start) {
+	if (oldContainer.Spec.Start == nil || *oldContainer.Spec.Start) && (c.Spec.Start != nil && !*c.Spec.Start) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "start"), "start cannot be set to false after container creation"))
 	}
 
 	// Make sure stop isn't set to false after having been set to true
-	if oldContainer.Spec.Stop && e.Spec.Stop != oldContainer.Spec.Stop {
+	if oldContainer.Spec.Stop && c.Spec.Stop != oldContainer.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "stop cannot be set to false once it has been set to true"))
 	}
 
 	// Make sure Persistent isn't changed after the container is created
-	if oldContainer.Spec.Persistent != e.Spec.Persistent {
+	if oldContainer.Spec.Persistent != c.Spec.Persistent {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
 	}
 
 	// Forbid changing labels after the resource is created
-	if !slices.Equal(oldContainer.Spec.Labels, e.Spec.Labels) {
+	if !slices.Equal(oldContainer.Spec.Labels, c.Spec.Labels) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "labels"), "labels cannot be changed"))
 	}
 
-	if len(oldContainer.Spec.HealthProbes) != len(e.Spec.HealthProbes) {
+	if len(oldContainer.Spec.HealthProbes) != len(c.Spec.HealthProbes) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes"), "Health probes cannot be changed once a Container is created."))
 	} else {
 		for i, probe := range oldContainer.Spec.HealthProbes {
-			if !probe.Equal(&e.Spec.HealthProbes[i]) {
+			if !probe.Equal(&c.Spec.HealthProbes[i]) {
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "healthProbes").Index(i), "Health probes cannot be changed once a Container is created."))
 			}
 		}
 	}
 
-	if oldContainer.Spec.PullPolicy != e.Spec.PullPolicy {
+	if oldContainer.Spec.PullPolicy != c.Spec.PullPolicy {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pullPolicy"), "pullPolicy cannot be changed"))
 	}
 
-	if len(oldContainer.Spec.CreateFiles) != len(e.Spec.CreateFiles) {
+	if len(oldContainer.Spec.CreateFiles) != len(c.Spec.CreateFiles) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "createFiles"), "created files cannot be changed once a Container is created."))
 	} else {
 		for i, item := range oldContainer.Spec.CreateFiles {
-			if !item.Equal(&e.Spec.CreateFiles[i]) {
+			if !item.Equal(&c.Spec.CreateFiles[i]) {
 				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "createFiles").Index(i), "created files cannot be changed once a Container is created."))
 			}
 		}
@@ -1106,7 +1106,7 @@ func (e *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	return errorList
 }
 
-// Equivalence check for ContainerBuildContex for use in validation
+// Equivalence check for ContainerBuildContext for use in validation
 func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
 	if c1 == c2 {
 		return true

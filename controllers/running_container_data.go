@@ -235,7 +235,7 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 		updated = true
 	}
 
-	if !rcd.finishTimestamp.Equal(&other.finishTimestamp) {
+	if !osutil.MicroEqual(rcd.finishTimestamp, other.finishTimestamp) {
 		rcd.finishTimestamp = other.finishTimestamp
 		updated = true
 	}

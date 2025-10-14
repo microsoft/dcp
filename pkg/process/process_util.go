@@ -28,6 +28,10 @@ type ProcessTreeItem struct {
 
 var (
 	This func() (ProcessTreeItem, error)
+
+	// Essentially the same as ps.ErrorProcessNotRunning, but we do not want to
+	// expose the ps package outside of this package.
+	ErrorProcessNotFound = errors.New("process does not exist")
 )
 
 func getIDs(items []ProcessTreeItem) []Pid_t {
@@ -140,7 +144,7 @@ func findPsProcess(pid Pid_t, expectedStartTime time.Time) (*ps.Process, error) 
 		if !errors.Is(procErr, ps.ErrorProcessNotRunning) {
 			return nil, procErr
 		} else {
-			return nil, fmt.Errorf("process with pid %d does not exist", pid)
+			return nil, fmt.Errorf("process with pid %d does not exist: %w", pid, ErrorProcessNotFound)
 		}
 	}
 

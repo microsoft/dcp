@@ -44,7 +44,7 @@ var (
 	unableToConnectRegEx           = regexp.MustCompile(`(?i)unable to connect to Podman socket:`)
 	volumeInUseRegEx               = regexp.MustCompile(`(?i)volume is being used`)
 	volumeAlreadyExistsRegEx       = regexp.MustCompile(`(?i)volume already exists`)
-	imageNotFoundRegEx             = regexp.MustCompile(`(?i)is not found`)
+	imageNotFoundRegEx             = regexp.MustCompile(`(?i)(is not found|image not known)`)
 
 	newContainerNotFoundErrorMatch         = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch            = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
@@ -406,20 +406,21 @@ func (pco *PodmanCliOrchestrator) InspectImages(ctx context.Context, options con
 		return nil, fmt.Errorf("must specify at least one image")
 	}
 
+	var inspectedImages []containers.InspectedImage
+
 	cmd := makePodmanCommand(append(
-		[]string{"image", "inspect", "--format", "{{json .}}"},
+		[]string{"image", "inspect", "--format", "json"},
 		options.Images...)...,
 	)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
-		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Images))))
-	}
+		err = errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch.MaxObjects(len(options.Images))))
+	} else {
+		inspectedImages, err = asObjects(outBuf, unmarshalImage)
 
-	inspectedImages, unmarshalErr := asObjects(outBuf, unmarshalImage)
-	err = errors.Join(err, unmarshalErr)
-
-	if len(inspectedImages) < len(options.Images) {
-		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all images were inspected, expected %d but got %d", len(options.Images), len(inspectedImages))))
+		if len(inspectedImages) < len(options.Images) {
+			err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all images were inspected, expected %d but got %d", len(options.Images), len(inspectedImages))))
+		}
 	}
 
 	return inspectedImages, err
@@ -1270,7 +1271,8 @@ func asObjects[T any, V any](b *bytes.Buffer, unmarshalFn func(*V, *T) error) ([
 	retval := []T{}
 
 	var unmarshalRaw []V
-	err := json.Unmarshal(b.Bytes(), &unmarshalRaw)
+	rawBytes := b.Bytes()
+	err := json.Unmarshal(rawBytes, &unmarshalRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -1468,6 +1470,7 @@ type podmanInspectedVolume struct {
 
 // podmanInspectedImageXxx correspond to data returned by "podman image inspect" command.
 // The definition only includes data that we care about.
+// For reference see https://github.com/containers/podman/blob/main/pkg/inspect/inspect.go
 type podmanInspectedImage struct {
 	Id       string                     `json:"Id"`
 	Config   podmanInspectedImageConfig `json:"Config,omitempty"`
@@ -1475,6 +1478,7 @@ type podmanInspectedImage struct {
 	Digest   string                     `json:"Digest,omitempty"`
 }
 
+// For reference see https://github.com/opencontainers/image-spec/blob/main/specs-go/v1/config.go
 type podmanInspectedImageConfig struct {
 	Labels map[string]string `json:"Labels,omitempty"`
 }

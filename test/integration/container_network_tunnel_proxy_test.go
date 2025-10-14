@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	std_slices "slices"
@@ -23,6 +25,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/apiserver"
 	"github.com/microsoft/usvc-apiserver/internal/containers"
 	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/internal/dcptun"
@@ -30,6 +33,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/networking"
 	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
 	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
+	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
@@ -52,16 +56,7 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -127,16 +122,7 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	// Create the ContainerNetworkTunnelProxy object WITHOUT creating the ContainerNetwork first
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
@@ -200,16 +186,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -306,16 +283,7 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	controllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -410,15 +378,7 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-			t.Error("Test API server failed to shut down cleanly")
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -478,15 +438,7 @@ func TestTunnelProxyTunnelFailure(t *testing.T) {
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-			t.Error("Test API server failed to shut down cleanly")
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -548,15 +500,7 @@ func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-			t.Error("Test API server failed to shut down cleanly")
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -667,14 +611,7 @@ func TestTunnelProxyMultipleTunnels(t *testing.T) {
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -761,16 +698,7 @@ func TestTunnelProxyClientProxyAliases(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-
-		// Wait for the API server cleanup to complete.
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -836,14 +764,7 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -921,14 +842,7 @@ func TestTunnelProxyClientContainerStartupFailure(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -944,7 +858,9 @@ func TestTunnelProxyClientContainerStartupFailure(t *testing.T) {
 	containerStarted, containerRemoved := watchContainerLifeEvents(t, ctx, serverInfo.ContainerOrchestrator)
 
 	t.Log("Configuring test orchestrator to fail client proxy container startup...")
-	serverInfo.ContainerOrchestrator.FailMatchingContainers(ctx, dcptun.ClientProxyContainerImageNamePrefix, 1, "simulated client proxy container startup failure")
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+	tco.FailMatchingContainers(ctx, dcptun.ClientProxyContainerImageNamePrefix, 1, "simulated client proxy container startup failure")
 
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -990,14 +906,7 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1092,14 +1001,7 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
 	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
-
-	defer func() {
-		cancel()
-		select {
-		case <-serverInfo.ApiServerDisposalComplete.Wait():
-		case <-time.After(5 * time.Second):
-		}
-	}()
+	defer shutdownTestEnvironment(serverInfo, cancel)
 
 	network := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1169,7 +1071,9 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateNotReady)
 
 	t.Logf("Simulating client proxy container exit with code 5 (container ID: %s)...", clientContainerID)
-	simulateErr := serverInfo.ContainerOrchestrator.SimulateContainerExit(ctx, clientContainerID, 5)
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+	simulateErr := tco.SimulateContainerExit(ctx, clientContainerID, 5)
 	require.NoError(t, simulateErr, "Should be able to simulate container exit")
 
 	t.Log("Waiting for ContainerNetworkTunnelProxy to transition to Failed state...")
@@ -1189,6 +1093,205 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 
 	t.Log("Verifying all tunnels are in Failed state...")
 	_ = waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), len(tunnelProxy.Spec.Tunnels), apiv1.TunnelStateFailed)
+}
+
+// Verifies that a ContainerNetworkTunnelProxy really works with real container orchestrator (Docker or Podman).
+// This is an advanced test that is not included in routine test runs.
+// Requires DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR environment variable to be set to "true".
+func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
+	testutil.SkipIfTrueContainerOrchestratorNotEnabled(t)
+
+	t.Parallel()
+
+	const testTimeout = 6 * time.Minute
+	const parrotTimeout = 3 * time.Minute
+
+	ctx, cancel := testutil.GetTestContext(t, testTimeout)
+	defer cancel()
+	const testName = "test-tunnel-proxy-with-real-orchestrator"
+	log := testutil.NewLogForTesting(t.Name())
+	dcppaths.EnableTestPathProbing()
+
+	serverInfo, pe, startupErr := StartAdvancedTestEnvironment(ctx, AllControllers, t.Name(), t.TempDir(), log)
+	require.NoError(t, startupErr, "Failed to start the API server")
+	t.Logf("API server started with PID %d", serverInfo.ApiServerPID)
+	defer pe.Dispose()
+	defer shutdownAdvancedTestEnvironment(t, ctx, cancel, serverInfo)
+
+	serverSvc := &apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "parrot-server-service",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol:              apiv1.TCP,
+			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", serverSvc.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, serverSvc)
+	require.NoError(t, err, "Could not create the parrot server Service")
+
+	const parrotConversations = 5
+	parrotToolDir, toolDirErr := internal_testutil.GetTestToolDir("parrot")
+	require.NoError(t, toolDirErr, "Could not get parrot tool directory")
+	parrotToolPath := filepath.Join(parrotToolDir, "parrot")
+	if osutil.IsWindows() {
+		parrotToolPath += ".exe"
+	}
+
+	serverExe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "parrot-server",
+			Namespace: metav1.NamespaceNone,
+			Annotations: map[string]string{
+				commonapi.ServiceProducerAnnotation: fmt.Sprintf(`[{"serviceName":"%s"}]`, serverSvc.ObjectMeta.Name),
+			},
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: parrotToolPath,
+			Args: []string{
+				"server",
+				"--port", fmt.Sprintf(`{{- portForServing "%s" -}}`, serverSvc.ObjectMeta.Name),
+				"--conversations", fmt.Sprintf("%d", parrotConversations),
+				"--timeout", parrotTimeout.String(),
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", serverExe.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, serverExe)
+	require.NoError(t, err, "Could not create the parrot server Executable")
+
+	clientSvc := &apiv1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "parrot-client-service",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ServiceSpec{
+			Protocol:              apiv1.TCP,
+			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+		},
+	}
+
+	t.Logf("Creating Service '%s'", clientSvc.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, clientSvc)
+	require.NoError(t, err, "Could not create the parrot client Service")
+
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	const proxyAlias = "parrot"
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:              "parrot-tunnel",
+					ServerServiceName: serverSvc.Name,
+					ClientServiceName: clientSvc.Name,
+				},
+			},
+			Aliases: []string{proxyAlias},
+		},
+	}
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", tunnelProxy.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	// Compare with PARROT_TOOL_CONTAINER_BINARY in Makefile
+	parrotContainerBinaryPath := filepath.Join(parrotToolDir, "parrot_c")
+
+	parrotImage, parrotContainerPath, parrotImageErr := ensureParrotContainerImage(ctx, parrotContainerBinaryPath, serverInfo.ContainerOrchestrator)
+	require.NoError(t, parrotImageErr, "Could not ensure parrot container image")
+
+	clientCtr := &apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "parrot-client",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:   parrotImage,
+			Command: parrotContainerPath,
+			Args: []string{
+				"client",
+				"--address", proxyAlias,
+				"--port", fmt.Sprintf(`{{- portFor "%s" -}}`, clientSvc.ObjectMeta.Name),
+				"--conversations", fmt.Sprintf("%d", parrotConversations),
+				"--timeout", parrotTimeout.String(),
+			},
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+				{
+					Name: network.Name,
+				},
+			},
+			// Enable ability to do pings etc. from within container, for debugging purposes.
+			RunArgs: []string{"--cap-add=NET_RAW"},
+		},
+	}
+
+	t.Logf("Creating parrot client Container '%s'...", clientCtr.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, clientCtr)
+	require.NoError(t, err, "Could not create the parrot client Container")
+
+	t.Log("Waiting for parrot client container to complete...")
+	updatedClientCtr := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, clientCtr.NamespacedName(), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited && c.Status.ExitCode != nil, nil
+	})
+	require.Equal(t, int32(0), *updatedClientCtr.Status.ExitCode, "Parrot client container should exit with code 0 indicating successful completion of all conversations")
+
+	t.Log("Waiting for parrot server executable to complete...")
+	updatedServerExe := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, serverExe.NamespacedName(), func(e *apiv1.Executable) (bool, error) {
+		return e.Status.State == apiv1.ExecutableStateFinished && e.Status.ExitCode != nil, nil
+	})
+	require.Equal(t, int32(0), *updatedServerExe.Status.ExitCode, "Parrot server executable should exit with code 0 indicating successful completion of all conversations")
+}
+
+func shutdownTestEnvironment(serverInfo *ctrl_testutil.ApiServerInfo, cancel context.CancelFunc) {
+	serverInfo.Dispose()
+
+	// Wait for the API server cleanup to complete (with timeout)
+	select {
+	case <-serverInfo.ApiServerDisposalComplete.Wait():
+	case <-time.After(20 * time.Second):
+	}
+
+	cancel()
+}
+
+func shutdownAdvancedTestEnvironment(
+	t *testing.T,
+	ctx context.Context,
+	cancel context.CancelFunc,
+	serverInfo *ctrl_testutil.ApiServerInfo,
+) {
+	req, reqCreationErr := ctrl_testutil.MakeResourceCleanupRequest(ctx, serverInfo)
+	require.NoError(t, reqCreationErr)
+
+	client := ctrl_testutil.GetApiServerClient(t, serverInfo)
+	resp, respErr := client.Do(req)
+	require.NoError(t, respErr, "Failed to submit request to start resource cleanup")
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	t.Logf("Waiting for API server to complete cleanup...")
+	waitErr := ctrl_testutil.WaitApiServerStatus(ctx, client, serverInfo, apiserver.ApiServerCleanupComplete)
+	require.NoError(t, waitErr, "Failed to wait for API server to complete cleanup")
+
+	shutdownTestEnvironment(serverInfo, cancel)
 }
 
 // The tunnel controller will try to create a server-side proxy
@@ -1291,7 +1394,10 @@ func prepareTunnelServices(
 				Name:      clientSvcName,
 				Namespace: metav1.NamespaceNone,
 			},
-			Spec: apiv1.ServiceSpec{Protocol: apiv1.TCP},
+			Spec: apiv1.ServiceSpec{
+				Protocol:              apiv1.TCP,
+				AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
+			},
 		}
 		t.Logf("Creating client Service '%s' for tunnel %d", clientSvcName, i)
 		createClientSvcErr := apiClient.Create(ctx, &clientSvc)
@@ -1425,7 +1531,7 @@ func sorted[S ~[]E, E cmp.Ordered](s S) S {
 func watchContainerLifeEvents(
 	t *testing.T,
 	ctx context.Context,
-	co *ctrl_testutil.TestContainerOrchestrator,
+	co containers.ContainerOrchestrator,
 ) (created, deleted *atomic.Uint32) {
 	ctrEvtCh := concurrency.NewUnboundedChan[containers.EventMessage](ctx)
 	sub, subErr := co.WatchContainers(ctrEvtCh.In)
@@ -1460,4 +1566,93 @@ func watchContainerLifeEvents(
 	}()
 
 	return containerStarted, containerRemoved
+}
+
+// Ensures that a container image for the parrot utility is built.
+// Returns the full image name with tag and the path to parrot binary inside the container.
+func ensureParrotContainerImage(
+	ctx context.Context,
+	parrotBinaryPath string,
+	ior containers.ImageOrchestrator,
+) (string, string, error) {
+	const parrotContainerPath = "/usr/local/bin/parrot"
+	dateTag := time.Now().Format("20060102")
+	imageName := fmt.Sprintf("dcp_parrot_test_utility:%s", dateTag)
+
+	// Check if image already exists - if so, assume it's fresh
+	images, inspectErr := ior.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{imageName},
+	})
+	if inspectErr == nil && len(images) > 0 {
+		return imageName, parrotContainerPath, nil
+	}
+
+	// Create temporary directory for build context
+	tempDir, tempDirErr := os.MkdirTemp("", "parrot-build-*")
+	if tempDirErr != nil {
+		return "", "", fmt.Errorf("failed to create temporary directory: %w", tempDirErr)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Copy the parrot binary to build context
+	destBinaryPath := filepath.Join(tempDir, "parrot")
+	if copyErr := copyFileForImageBuild(parrotBinaryPath, destBinaryPath); copyErr != nil {
+		return "", "", fmt.Errorf("failed to copy parrot binary to build context: %w", copyErr)
+	}
+
+	// Create Dockerfile content
+
+	dockerfileContent := fmt.Sprintf(`
+FROM %s
+
+# Copy the parrot binary
+COPY --chmod=0755 parrot %[2]s
+
+# Set the entrypoint to the parrot binary
+ENTRYPOINT ["%[2]s"]
+`, "busybox:latest", parrotContainerPath)
+	// Using busybox as the base image helps with debugging.
+
+	// Write Dockerfile
+	dockerfilePath := filepath.Join(tempDir, "Dockerfile")
+	if writeErr := os.WriteFile(dockerfilePath, []byte(dockerfileContent), osutil.PermissionOnlyOwnerReadWrite); writeErr != nil {
+		return "", "", fmt.Errorf("failed to write Dockerfile: %w", writeErr)
+	}
+
+	// Build the image
+	buildOptions := containers.BuildImageOptions{
+		ContainerBuildContext: &apiv1.ContainerBuildContext{
+			Context:    tempDir,
+			Dockerfile: dockerfilePath,
+			Tags:       []string{imageName},
+		},
+	}
+
+	buildErr := ior.BuildImage(ctx, buildOptions)
+	if buildErr != nil {
+		return "", "", fmt.Errorf("failed to build parrot container image: %w", buildErr)
+	}
+
+	return imageName, parrotContainerPath, nil
+}
+
+// copyFileForImageBuild copies a file from src to dst for image building purposes
+func copyFileForImageBuild(src, dst string) error {
+	sourceFile, sourceErr := os.Open(src)
+	if sourceErr != nil {
+		return sourceErr
+	}
+	defer func() { _ = sourceFile.Close() }()
+
+	destFile, destErr := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWriteExecute)
+	if destErr != nil {
+		return destErr
+	}
+
+	if _, copyErr := io.Copy(destFile, sourceFile); copyErr != nil {
+		_ = destFile.Close()
+		return copyErr
+	}
+
+	return destFile.Close()
 }

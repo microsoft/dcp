@@ -252,13 +252,13 @@ func (sp *ServerProxy) streamsCreationWorker() {
 
 	for {
 		if sp.lifetimeCtx.Err() != nil || sp.dispose.IsDone() {
-			sp.log.V(1).Info("Server proxy lifetime context is done or proxy is disposed; stopping streams creation worker")
+			sp.log.Info("Server proxy lifetime context is done or proxy is disposed; stopping streams creation worker")
 			return
 		}
 
 		sr, recvErr := newStreamsConn.Recv()
 		if recvErr == io.EOF || status.Code(recvErr) == codes.Canceled {
-			sp.log.V(1).Info("New streams connection closed by client proxy")
+			sp.log.Info("New streams connection closed by client proxy, exiting...")
 			sp.disposeOnce()
 			return
 		}

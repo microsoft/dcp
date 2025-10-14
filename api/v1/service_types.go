@@ -215,7 +215,7 @@ func (svc *Service) NamespacedName() types.NamespacedName {
 func (svc *Service) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && svc.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 

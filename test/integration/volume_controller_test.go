@@ -309,7 +309,9 @@ func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
 	}
 
 	t.Logf("Setting container runtime to unhealthy...")
-	serverInfo.ContainerOrchestrator.SetRuntimeHealth(false)
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+	tco.SetRuntimeHealth(false)
 
 	t.Logf("Creating ContainerVolume object '%s'...", vol.ObjectMeta.Name)
 	err := serverInfo.Client.Create(ctx, &vol)
@@ -321,7 +323,7 @@ func TestContainerVolumeRuntimeUnhealthy(t *testing.T) {
 	})
 
 	t.Logf("Setting container runtime to healthy...")
-	serverInfo.ContainerOrchestrator.SetRuntimeHealth(true)
+	tco.SetRuntimeHealth(true)
 
 	t.Logf("Ensure that ContainerVolume '%s' has a corresponding Docker volume created...", vol.ObjectMeta.Name)
 	_ = ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &vol)

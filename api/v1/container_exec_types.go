@@ -173,7 +173,7 @@ func (ce *ContainerExec) NamespacedName() types.NamespacedName {
 func (ce *ContainerExec) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && ce.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 

@@ -19,21 +19,46 @@ const (
 	// that evaluate network performance against a baseline (these are unreliable on CI machines).
 	// This is disabled by default because on Windows it causes a security prompt every time the tests are run.
 	DCP_TEST_ENABLE_ADVANCED_NETWORKING = "DCP_TEST_ENABLE_ADVANCED_NETWORKING"
+
 	// Set to true to enable advanced certificate file tests such as those that require openssl installed to
 	// verify behavior.
 	DCP_TEST_ENABLE_ADVANCED_CERTIFICATES = "DCP_TEST_ENABLE_ADVANCED_CERTIFICATES"
+
+	// Set to true to enable tests that require real container orchestrator (Docker or Podman).
+	DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR = "DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR"
+
+	// Used by VS Code to disable skipping tests when they are run with the debugger.
+	DCP_TEST_VS_CODE_DEBUGGER = "DCP_TEST_VS_CODE_DEBUGGER"
 )
 
 func SkipIfNotEnableAdvancedNetworking(t *testing.T) {
-	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ADVANCED_NETWORKING) {
-		t.Skipf("Skipping test because %s is not set to 'true'", DCP_TEST_ENABLE_ADVANCED_NETWORKING)
+	if osutil.EnvVarSwitchEnabled(DCP_TEST_VS_CODE_DEBUGGER) {
+		return
 	}
+	if osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ADVANCED_NETWORKING) {
+		return
+	}
+	t.Skipf("Skipping test because %s is not set to 'true'", DCP_TEST_ENABLE_ADVANCED_NETWORKING)
 }
 
 func SkipIfNotEnabledAdvancedCertificates(t *testing.T) {
-	if !osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ADVANCED_CERTIFICATES) {
-		t.Skipf("Skipping test because %s is not set to 'true'", DCP_TEST_ENABLE_ADVANCED_CERTIFICATES)
+	if osutil.EnvVarSwitchEnabled(DCP_TEST_VS_CODE_DEBUGGER) {
+		return
 	}
+	if osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_ADVANCED_CERTIFICATES) {
+		return
+	}
+	t.Skipf("Skipping test because %s is not set to 'true'", DCP_TEST_ENABLE_ADVANCED_CERTIFICATES)
+}
+
+func SkipIfTrueContainerOrchestratorNotEnabled(t *testing.T) {
+	if osutil.EnvVarSwitchEnabled(DCP_TEST_VS_CODE_DEBUGGER) {
+		return
+	}
+	if osutil.EnvVarSwitchEnabled(DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR) {
+		return
+	}
+	t.Skipf("Skipping test because %s is not set to 'true'", DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR)
 }
 
 func GetTestContext(t *testing.T, testTimeout time.Duration) (context.Context, context.CancelFunc) {
