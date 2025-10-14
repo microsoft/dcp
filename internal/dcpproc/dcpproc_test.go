@@ -113,6 +113,10 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	t.Parallel()
 
+	if runtime.GOOS == "linux" {
+		t.Skip("Skipping test on Linux because process start time is not available")
+	}
+
 	dcpProc, dcpProcErr := getDcpProcExecutablePath()
 	require.NoError(t, dcpProcErr)
 

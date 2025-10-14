@@ -67,8 +67,6 @@ func (_ *LevelFlagValue) Type() string {
 	return "level"
 }
 
-var _ pflag.Value = &LevelFlagValue{}
-
 func GetLevelFlagValue(fs *pflag.FlagSet) (*LevelFlagValue, bool) {
 	if fs == nil {
 		return nil, false
@@ -94,3 +92,5 @@ func GetVerbosityArg(fs *pflag.FlagSet) string {
 		return ""
 	}
 }
+
+var _ pflag.Value = &LevelFlagValue{}

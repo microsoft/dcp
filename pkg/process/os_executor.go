@@ -183,9 +183,6 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid
 	)
 
 	processStartTime := StartTimeForProcess(pid)
-	if processStartTime.IsZero() {
-		startLog.Error(fmt.Errorf("could not get process start time for PID %d", pid), "could not get process start time", "PID", pid)
-	}
 
 	startCompletionErr := e.completeProcessStart(cmd, pid, processStartTime, flags)
 	if startCompletionErr != nil {

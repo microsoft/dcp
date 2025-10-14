@@ -39,6 +39,15 @@ func EnvVarIntVal(varName string) (int, bool) {
 	return int(val), true
 }
 
+func EnvVarStringWithDefault(varName string, defaultVal string) string {
+	val, found := os.LookupEnv(varName)
+	if !found || strings.TrimSpace(val) == "" {
+		return defaultVal
+	} else {
+		return val
+	}
+}
+
 func EnvVarIntValWithDefault(varName string, defaultVal int) int {
 	val, found := EnvVarIntVal(varName)
 	if !found {

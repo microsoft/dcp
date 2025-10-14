@@ -60,9 +60,11 @@ func ThisExecutablePath() (string, error) {
 		return "", fmt.Errorf(errFmt, err)
 	}
 
-	ex, err = filepath.EvalSymlinks(ex)
-	if err != nil {
-		return "", fmt.Errorf(errFmt, err)
+	// Try to resolve symlinks, but if that fails, just return the original path.
+	// This is a best-effort attempt to get the canonical path.
+	resolved, err := filepath.EvalSymlinks(ex)
+	if err == nil {
+		return resolved, nil
 	}
 
 	return ex, nil

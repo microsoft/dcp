@@ -110,15 +110,6 @@ func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int3
 // We serialize timestamps with millisecond precision, so a maximum couple of milliseconds of difference works well.
 const ProcessStartTimestampMaximumDifference = 2 * time.Millisecond
 
-func startTimeForProcess(proc *ps.Process) time.Time {
-	createTimestamp, err := proc.CreateTime()
-	if err != nil {
-		return time.Time{}
-	}
-
-	return time.UnixMilli(createTimestamp)
-}
-
 // Returns the creation time as a time.Time for a process.
 // If the creation time cannot be retrieved, an error is returned.
 func StartTimeForProcess(pid Pid_t) time.Time {
