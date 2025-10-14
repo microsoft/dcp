@@ -64,4 +64,6 @@
 
     - The test requires a real container orchestrator so it should be considered an "extended" test (only runnable from test-extended Makefile target and not during normal test run).
 
+## Phase 9: security
 
+- [ ] Make sure that ContainerNetworkTunnelProxy is using secure endpoints for control connections. This probably means auto-generated certificates, just like we do for kubeconfig files.

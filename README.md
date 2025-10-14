@@ -192,9 +192,13 @@ The same steps can also be used to:
 
 ### Advanced tests
 
-Not all tests are run by default. A small subset of tests aren't suitable for running in a CI/CD pipeline due to their nature (they require a specific environment or are too slow). In addition, some networking tests will trigger firewall prompts when run on Windows. These tests are skipped by the `test` and `test-ci` Make targets.
+Not all tests are run by default. A small subset of tests aren't suitable for running in a CI/CD pipeline due to their nature (they require a specific environment or are too slow). In addition, some networking tests will trigger firewall prompts when run on Windows. These tests are skipped by the `test` and `test-ci` `make` targets by default, but you can enable them (for `make`-based and `go test`-based runs) via environment variables:
 
-Run `make test-extended` to execute the full test suite including these advanced test scenarios.
+| Variable | Tests enabled |
+| --- | --------- |
+| `DCP_TEST_ENABLE_ADVANCED_NETWORKING` | Set to true to enable advanced networking tests such as those that require access to all network interfaces and try to open ports that are accessible to requests originating from outside of the machine, or tests that evaluate network performance against a baseline (these are unreliable on CI machines). |
+| `DCP_TEST_ENABLE_ADVANCED_CERTIFICATES`| Set to true to enable advanced certificate file tests such as those that require openssl installed to verify behavior. |
+| `DCP_TEST_ENABLE_TRUE_CONTAINER_ORCHESTRATOR` | Set to true to enable tests that require real container orchestrator (Docker or Podman). |
 
 > You may need to install [Azure Artifacts Credentials Provider](https://github.com/microsoft/artifacts-credprovider#azure-artifacts-credential-provider) to be able to build some of the test artifacts for tests in this set.
 

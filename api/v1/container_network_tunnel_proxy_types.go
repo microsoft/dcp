@@ -19,6 +19,7 @@ import (
 
 	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -119,7 +120,7 @@ func (ts TunnelStatus) Equal(other TunnelStatus) bool {
 		ts.TunnelID == other.TunnelID &&
 		ts.State == other.State &&
 		ts.ErrorMessage == other.ErrorMessage &&
-		ts.Timestamp.Equal(&other.Timestamp) &&
+		osutil.MicroEqual(ts.Timestamp, other.Timestamp) &&
 		ts.ClientProxyPort == other.ClientProxyPort
 	if !allmostEqual {
 		return false
@@ -267,7 +268,7 @@ func (cntp *ContainerNetworkTunnelProxy) NamespacedName() types.NamespacedName {
 func (cntp *ContainerNetworkTunnelProxy) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && cntp.ObjectMeta.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 

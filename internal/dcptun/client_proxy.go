@@ -263,7 +263,7 @@ func (cp *ClientProxy) NewStreamsConnection(newStreamConn grpc.BidiStreamingServ
 			sendErr := newStreamConn.Send(streamRef)
 
 			if grpcutil.IsStreamDoneErr(sendErr) {
-				cp.log.V(1).Info("New streams connection is closing...")
+				cp.log.Info("New streams connection closed, exiting...")
 				_ = cp.disposeOnce()
 				return nil
 			}
@@ -276,13 +276,13 @@ func (cp *ClientProxy) NewStreamsConnection(newStreamConn grpc.BidiStreamingServ
 
 			res, rcvErr := newStreamConn.Recv()
 			if rcvErr == io.EOF || status.Code(rcvErr) == codes.Canceled {
-				cp.log.V(1).Info("New streams connection closed by server proxy")
+				cp.log.Info("New streams connection closed by server proxy, exiting...")
 				_ = cp.disposeOnce()
 				return nil
 			}
 
 			if errors.Is(rcvErr, context.Canceled) {
-				cp.log.V(1).Info("New streams connection context is canceled (proxy shutdown)")
+				cp.log.Info("New streams connection context is canceled (proxy shutdown)")
 				_ = cp.disposeOnce()
 				return nil
 			}

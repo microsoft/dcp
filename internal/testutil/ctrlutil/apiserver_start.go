@@ -32,6 +32,8 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/internal/apiserver"
+	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
 	"github.com/microsoft/usvc-apiserver/internal/dcpclient"
 	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
@@ -68,7 +70,10 @@ type ApiServerInfo struct {
 	ClientConfig *clientgorest.Config
 
 	// Container orchestrator used by the API server.
-	ContainerOrchestrator *TestContainerOrchestrator
+	ContainerOrchestrator containers.ContainerOrchestrator
+
+	// The process ID for the API server process.
+	ApiServerPID process.Pid_t
 
 	// NON-CONTRACT MEMBERS (used internally by the startApiServer function)
 
@@ -82,8 +87,19 @@ type ApiServerInfo struct {
 	lock *sync.Mutex
 }
 
+type ApiServerFlag uint32
+
+const (
+	ApiServerFlagsNone                    ApiServerFlag = 0
+	ApiServerUseTrueContainerOrchestrator ApiServerFlag = 1
+)
+
 // Starts the API server in a separate process.
-func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo, error) {
+func StartApiServer(
+	testRunCtx context.Context,
+	flags ApiServerFlag,
+	log logr.Logger,
+) (*ApiServerInfo, error) {
 	info := ApiServerInfo{
 		lock:                      &sync.Mutex{},
 		ApiServerExited:           concurrency.NewAutoResetEvent(false),
@@ -101,10 +117,12 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 		defer info.ApiServerDisposalComplete.SetAndFreeze()
 
 		if info.ContainerOrchestrator != nil {
-			co := info.ContainerOrchestrator
+			tco, isTCO := info.ContainerOrchestrator.(*TestContainerOrchestrator)
 			info.ContainerOrchestrator = nil
-			if coCloseErr := co.Close(); coCloseErr != nil {
-				log.Error(coCloseErr, "Failed to close the test container orchestrator")
+			if isTCO {
+				if coCloseErr := tco.Close(); coCloseErr != nil {
+					log.Error(coCloseErr, "Failed to close the test container orchestrator")
+				}
 			}
 		}
 
@@ -153,28 +171,43 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 		dcpCtxCancel()
 	}
 
-	// From here on we need to do cleanup if something goes wrong.
-
-	tco, tcoErr := NewTestContainerOrchestrator(
-		info.dcpCtx,
-		log.WithName("TestContainerOrchestrator"),
-		TcoOptionEnableSocketListener,
-	)
-	if tcoErr != nil {
-		cleanup()
-		return nil, fmt.Errorf("failed to create test container orchestrator: %w", tcoErr)
-	}
-	info.ContainerOrchestrator = tco
-
-	// Do not use exec.CommandContext() because on Unix-like OSes it will kill the process DEAD
-	// immediately after the context is cancelled, preventing dcp from cleaning up properly.
-	cmd := exec.Command(dcpPath,
+	dcpArgs := []string{
 		"start-apiserver",
 		"--server-only",
 		"--kubeconfig", info.kubeconfigPath,
-		"--test-container-orchestrator-socket", tco.GetSocketFilePath(),
 		"--monitor", strconv.Itoa(os.Getpid()),
-	)
+	}
+
+	pe := process.NewOSExecutor(log)
+
+	// From here on we need to do cleanup if something goes wrong.
+
+	if (flags & ApiServerUseTrueContainerOrchestrator) != 0 {
+		co, coErr := runtimes.FindAvailableContainerRuntime(testRunCtx, log.WithName("ContainerOrchestrator"), pe)
+		if coErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("failed to create a container orchestrator to use for the tests: %w", coErr)
+		}
+		info.ContainerOrchestrator = co
+		// Start watching the status of the container orchestrator in the background
+		co.EnsureBackgroundStatusUpdates(testRunCtx)
+	} else {
+		tco, tcoErr := NewTestContainerOrchestrator(
+			info.dcpCtx,
+			log.WithName("TestContainerOrchestrator"),
+			TcoOptionEnableSocketListener,
+		)
+		if tcoErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("failed to create test container orchestrator: %w", tcoErr)
+		}
+		info.ContainerOrchestrator = tco
+		dcpArgs = append(dcpArgs, "--test-container-orchestrator-socket", tco.GetSocketFilePath())
+	}
+
+	// Do not use exec.CommandContext() because on Unix-like OSes it will kill the process DEAD
+	// immediately after the context is cancelled, preventing dcp from cleaning up properly.
+	cmd := exec.Command(dcpPath, dcpArgs...)
 	env := addToEnvIfPresent(os.Environ(),
 		logger.DCP_DIAGNOSTICS_LOG_FOLDER,
 		logger.DCP_DIAGNOSTICS_LOG_LEVEL,
@@ -202,14 +235,14 @@ func StartApiServer(testRunCtx context.Context, log logr.Logger) (*ApiServerInfo
 		info.ApiServerExited.SetAndFreeze()
 	})
 
-	pe := process.NewOSExecutor(log)
-	_, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone)
+	apiServerPID, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone)
 	if dcpStartErr != nil {
 		info.ApiServerExited.SetAndFreeze()
 		cleanup()
 		return nil, fmt.Errorf("failed to start the API server process: %w", dcpStartErr)
 	}
 	startWaitForProcessExit()
+	info.ApiServerPID = apiServerPID
 
 	// Using generous timeout because AzDO pipeline machines can be very slow at times.
 	const configCreationTimeout = 70 * time.Second
@@ -357,4 +390,16 @@ func WaitApiServerStatus(
 	})
 
 	return waitErr
+}
+
+func MakeResourceCleanupRequest(ctx context.Context, serverInfo *ApiServerInfo) (*http.Request, error) {
+	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
+	req, reqCreationErr := http.NewRequestWithContext(ctx, "PATCH", adminDocUrl, nil)
+	if reqCreationErr != nil {
+		return nil, reqCreationErr
+	}
+	req.Header.Set("Content-Type", "application/merge-patch+json")
+	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
+	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
+	return req, nil
 }

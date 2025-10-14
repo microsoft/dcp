@@ -126,7 +126,7 @@ func (cv *ContainerVolume) GetStatus() apiserver_resource.StatusSubResource {
 func (cv *ContainerVolume) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && cv.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 

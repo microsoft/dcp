@@ -1,7 +1,8 @@
 {
     // Enables much longer timeout when running/debugging tests from VS Code
     "go.testEnvVars": {
-        "TEST_CONTEXT_TIMEOUT":  "3600" // 60 minutes in seconds
+        "TEST_CONTEXT_TIMEOUT":  "3600", // 60 minutes in seconds
+        "DCP_TEST_VS_CODE_DEBUGGER": "true" // Let the test now it is being debugged in VS Code
     },
     "dotnet.defaultSolution": "disable"
 }

@@ -45,7 +45,7 @@ func ensureContainerRunning(t *testing.T, ctx context.Context, container *apiv1.
 	return ensureContainerRunningEx(t, ctx, client, containerOrchestrator, container)
 }
 
-func ensureContainerRunningEx(t *testing.T, ctx context.Context, client ctrl_client.Client, co *ctrl_testutil.TestContainerOrchestrator, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
+func ensureContainerRunningEx(t *testing.T, ctx context.Context, client ctrl_client.Client, co containers.ContainerOrchestrator, container *apiv1.Container) (*apiv1.Container, containers.InspectedContainer) {
 	updated := ensureContainerState(t, ctx, client, container, apiv1.ContainerStateRunning)
 
 	inspectedContainers, err := co.InspectContainers(ctx, containers.InspectContainersOptions{
@@ -308,7 +308,9 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	}
 
 	t.Logf("Setting container runtime to unhealthy...")
-	serverInfo.ContainerOrchestrator.SetRuntimeHealth(false)
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+	tco.SetRuntimeHealth(false)
 
 	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
 	err := serverInfo.Client.Create(ctx, &ctr)
@@ -320,7 +322,7 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	})
 
 	t.Logf("Setting container runtime to healthy...")
-	serverInfo.ContainerOrchestrator.SetRuntimeHealth(true)
+	tco.SetRuntimeHealth(true)
 
 	t.Logf("Ensure Container '%s' is running...", ctr.ObjectMeta.Name)
 	_, _ = ensureContainerRunningEx(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &ctr)

@@ -294,7 +294,6 @@ func (e *OSExecutor) releaseLock() {
 func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
 	tree, err := GetProcessTree(ProcessTreeItem{pid, processStartTime})
 	if err != nil {
-		e.log.Error(err, "Could not get process tree", "PID", pid)
 		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
 	}
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -47,6 +49,13 @@ var (
 // Ensures two given timestamps are within a given duration of each other.
 func Within(a, b time.Time, max time.Duration) bool {
 	return a.Sub(b).Abs() <= max
+}
+
+// Checks whether two metav1.MicroTime values can be considered equal.
+// Due to serialization/deserialization, the values may have different represenation,
+// and thus Equal() may return false even if they represent essentially the same time.
+func MicroEqual(a, b metav1.MicroTime) bool {
+	return Within(a.Time, b.Time, 2*time.Microsecond)
 }
 
 // Formats a duration into a human readable string.

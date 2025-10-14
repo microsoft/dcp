@@ -37,6 +37,8 @@ func NewRunClientCommand(log logr.Logger) *cobra.Command {
 	runClientCmd.Flags().StringVar(&tunnelConfig.ClientDataAddress, "client-data-address", "localhost", "The address the client-side tunnel proxy should listen on for its data endpoint. Defaults to localhost.")
 	runClientCmd.Flags().Int32Var(&tunnelConfig.ClientDataPort, "client-data-port", 0, "The port the client-side tunnel proxy should listen on for its data endpoint. If not specified, a random port will be used.")
 
+	cmdutil.AddMonitorFlags(runClientCmd)
+
 	return runClientCmd
 }
 

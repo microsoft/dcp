@@ -38,8 +38,7 @@ import (
 )
 
 const (
-	networkEventChanInitialCapacity = 20
-	NetworkResourceNameField        = ".metadata.networkResourceName"
+	NetworkResourceNameField = ".metadata.networkResourceName"
 
 	networkInspectionTimeout = 6 * time.Second
 
@@ -144,7 +143,7 @@ func NewNetworkReconciler(
 	orchestrator containers.ContainerOrchestrator,
 	harvester *resourceHarvester,
 ) *NetworkReconciler {
-	base := NewReconcilerBase[apiv1.ContainerNetwork, *apiv1.ContainerNetwork](client, noCacheClient, log, lifetimeCtx)
+	base := NewReconcilerBase[apiv1.ContainerNetwork](client, noCacheClient, log, lifetimeCtx)
 
 	r := NetworkReconciler{
 		ReconcilerBase:       base,

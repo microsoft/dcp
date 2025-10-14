@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/health"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 )
 
@@ -299,11 +300,11 @@ func DiffString(r1, r2 *ExecutableRunInfo) string {
 		sb.WriteString(fmt.Sprintf("exitCode=%s->%s, ", logger.IntPtrValToString(r1.ExitCode), logger.IntPtrValToString(r2.ExitCode)))
 	}
 
-	if !r1.StartupTimestamp.Equal(&r2.StartupTimestamp) {
+	if !osutil.MicroEqual(r1.StartupTimestamp, r2.StartupTimestamp) {
 		sb.WriteString(fmt.Sprintf("startupTimestamp=%s->%s, ", logger.FriendlyMetav1Timestamp(r1.StartupTimestamp), logger.FriendlyMetav1Timestamp(r2.StartupTimestamp)))
 	}
 
-	if !r1.FinishTimestamp.Equal(&r2.FinishTimestamp) {
+	if !osutil.MicroEqual(r1.FinishTimestamp, r2.FinishTimestamp) {
 		sb.WriteString(fmt.Sprintf("finishTimestamp=%s->%s, ", logger.FriendlyMetav1Timestamp(r1.FinishTimestamp), logger.FriendlyMetav1Timestamp(r2.FinishTimestamp)))
 	}
 

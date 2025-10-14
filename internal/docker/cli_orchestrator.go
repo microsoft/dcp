@@ -42,7 +42,7 @@ var (
 	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
 	dockerNotRunningRegEx      = regexp.MustCompile(`(?i)error during connect:`)
 	volumeInUseRegEx           = regexp.MustCompile(`(?i)volume is in use`)
-	imageNotFoundRegEx         = regexp.MustCompile(`(?i)not found`)
+	imageNotFoundRegEx         = regexp.MustCompile(`(?i)(not found|no such image)`)
 
 	newContainerNotFoundErrorMatch     = containers.NewCliErrorMatch(containerNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("container not found")))
 	newVolumeNotFoundErrorMatch        = containers.NewCliErrorMatch(volumeNotFoundRegEx, errors.Join(containers.ErrNotFound, fmt.Errorf("volume not found")))
@@ -420,6 +420,8 @@ func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, options con
 		return nil, fmt.Errorf("must specify at least one image")
 	}
 
+	var inspectedImages []containers.InspectedImage
+
 	cmd := makeDockerCommand(append(
 		[]string{"image", "inspect", "--format", "{{json .}}"},
 		options.Images...)...,
@@ -427,14 +429,13 @@ func (dco *DockerCliOrchestrator) InspectImages(ctx context.Context, options con
 
 	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "InspectImages", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
-		err = errors.Join(err, normalizeCliErrors(errBuf, newContainerNotFoundErrorMatch.MaxObjects(len(options.Images))))
-	}
+		err = errors.Join(err, normalizeCliErrors(errBuf, imageNotFoundErrorMatch.MaxObjects(len(options.Images))))
+	} else {
+		inspectedImages, err = asObjects(outBuf, unmarshalImage)
 
-	inspectedImages, unmarshalErr := asObjects(outBuf, unmarshalImage)
-	err = errors.Join(err, unmarshalErr)
-
-	if len(inspectedImages) < len(options.Images) {
-		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v images were successfully inspected", len(inspectedImages), len(options.Images))))
+		if len(inspectedImages) < len(options.Images) {
+			err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("only %v out of %v images were successfully inspected", len(inspectedImages), len(options.Images))))
+		}
 	}
 
 	return inspectedImages, err

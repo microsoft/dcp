@@ -236,7 +236,7 @@ func TestCannotChangeExecutionWhenNotAuthenticated(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		serverInfo.Dispose()
@@ -275,7 +275,7 @@ func TestCanStopApiServer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server
@@ -313,7 +313,7 @@ func TestCanRunCleanupWithoutStoppingApiServer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server
@@ -325,12 +325,8 @@ func TestCanRunCleanupWithoutStoppingApiServer(t *testing.T) {
 		}
 	}()
 
-	adminDocUrl := serverInfo.ClientConfig.Host + apiserver.AdminPathPrefix + apiserver.ExecutionDocument
-	req, reqCreationErr := http.NewRequestWithContext(ctx, "PATCH", adminDocUrl, nil)
+	req, reqCreationErr := ctrl_testutil.MakeResourceCleanupRequest(ctx, serverInfo)
 	require.NoError(t, reqCreationErr)
-	req.Header.Set("Content-Type", "application/merge-patch+json")
-	req.Body = io.NopCloser(bytes.NewBufferString(`{"status":"CleaningResources"}`))
-	req.Header.Set("Authorization", "Bearer "+serverInfo.ClientConfig.BearerToken)
 
 	client := ctrl_testutil.GetApiServerClient(t, serverInfo)
 	resp, respErr := client.Do(req)
@@ -378,7 +374,7 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server

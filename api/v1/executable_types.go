@@ -241,10 +241,6 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
-		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
-	}
-
 	if es.ExecutablePath == "" {
 		errorList = append(errorList, field.Invalid(specPath.Child("executablePath"), es.ExecutablePath, "Executable path is required."))
 	}
@@ -409,6 +405,10 @@ func (e *Executable) NamespacedName() types.NamespacedName {
 
 func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
+
+	if ResourceCreationProhibited.Load() && e.DeletionTimestamp.IsZero() {
+		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
+	}
 
 	errorList = append(errorList, e.Spec.Validate(field.NewPath("spec"))...)
 

@@ -28,7 +28,7 @@ const (
 
 	errMsgProxyDisposed = "tunnel proxy has been disposed, no further operations are allowed"
 
-	// Binary name for the client proxy (Linux executable)
+	// Binary name for the client proxy (Linux executable). Compare with DCPTUN_CLIENT_BINARY in Makefile.
 	ClientBinaryName = "dcptun_c"
 )
 

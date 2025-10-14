@@ -86,7 +86,7 @@ func (cn *ContainerNetworkConnection) NamespacedName() types.NamespacedName {
 func (cn *ContainerNetworkConnection) Validate(ctx context.Context) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if ResourceCreationProhibited.Load() {
+	if ResourceCreationProhibited.Load() && cn.DeletionTimestamp.IsZero() {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 

@@ -58,6 +58,25 @@
         },
 
         {
+            "name": "dcpproc process (lauch)",
+            "type": "go",
+            "request": "launch",
+            "mode": "exec",
+            "program": "${workspaceFolder}/bin/ext/bin/dcpproc",
+            "args": [
+                "process",
+                "--monitor", "${input:monitored-process-pid}",
+                "--child", "${input:child-process-pid}",
+                "--monitor-start-time", "${input:monitored-process-start-time}",
+                "--child-start-time", "${input:child-process-start-time}",
+            ],
+            "windows": {
+                "program": "${workspaceFolder}/bin/ext/bin/dcpproc",
+            },
+            "preLaunchTask": "compile-debug"
+        },
+
+        {
             "name": "attach to controllers process",
             "type": "go",
             "request": "attach",
@@ -87,6 +106,29 @@
             "request": "attach",
             "mode": "local",
             "processId": "${command:pickProcess}"
+        }
+    ],
+
+    "inputs": [
+        {
+            "id": "monitored-process-pid",
+            "description": "Enter the PID of the monitored process",
+            "type": "promptString",
+        },
+        {
+            "id": "child-process-pid",
+            "description": "Enter the PID of the child process",
+            "type": "promptString",
+        },
+        {
+            "id": "monitored-process-start-time",
+            "description": "Enter the start time of the monitored process (RFC 3339 format)",
+            "type": "promptString",
+        },
+        {
+            "id": "child-process-start-time",
+            "description": "Enter the start time of the child process (RFC 3339 format)",
+            "type": "promptString",
         }
     ]
 }

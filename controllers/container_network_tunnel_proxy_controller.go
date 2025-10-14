@@ -454,7 +454,7 @@ func ensureTunnelProxyStartingState(
 	change := noChange
 
 	if pd == nil { // Should never happen when we reach this state
-		log.Error(fmt.Errorf("Data about ContainerNetworkTunnelProxy object is missing"), "",
+		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
 			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateStarting,
 		)
 		return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateFailed)
@@ -485,7 +485,7 @@ func ensureTunnelProxyRunningState(
 	log logr.Logger,
 ) objectChange {
 	if pd == nil { // Should never happen when we reach this state
-		log.Error(fmt.Errorf("Data about ContainerNetworkTunnelProxy object is missing"), "",
+		log.Error(fmt.Errorf("data about ContainerNetworkTunnelProxy object is missing"), "",
 			"CurrentState", apiv1.ContainerNetworkTunnelProxyStateRunning,
 		)
 		return r.setTunnelProxyState(tunnelProxy, apiv1.ContainerNetworkTunnelProxyStateFailed)
@@ -596,6 +596,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 		return noChange
 	}
 
+	clientSvc := r.getTunnelClientService(ctx, tunnelConfig, tlog)
+	if clientSvc == nil {
+		// The Service may be created later.
+		return additionalReconciliationNeeded
+	}
+	if clientSvc.Spec.AddressAllocationMode != apiv1.AddressAllocationModeProxyless {
+		// The client service is not usable--as of today, we do not have proxies running in container space,
+		// so the service must be proxyless.
+		tlog.Info("Client service is not proxyless, cannot use it with a container network tunnel", "AddressAllocationMode", clientSvc.Spec.AddressAllocationMode)
+		return additionalReconciliationNeeded
+	}
+
 	serverSvc, serverServiceReady := r.getTunnelServerService(ctx, tunnelConfig, tlog)
 
 	if originalTunnelStatus.State == apiv1.TunnelStateReady {
@@ -646,7 +658,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 	pd.tunnelExtra[tunnelConfig.Name] = te
 	r.proxyData.Update(tunnelProxy.NamespacedName(), tunnelProxy.NamespacedName(), pd)
 
-	serverProxyClient, serverProxyClientErr := r.createProxyClient(tunnelProxy)
+	serverProxyClient, serverProxyClientErr := r.createProxyClient(pd)
 	if serverProxyClientErr != nil {
 		// This should really never happen. No I/O is performed here; the error most likely indicates misconfiguration of the gRPC client.
 		tlog.Error(serverProxyClientErr, "Failed to create gRPC connection to server proxy control endpoint")
@@ -694,7 +706,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) deleteTunnel(
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) bool {
-	serverProxyClient, serverProxyClientErr := r.createProxyClient(tunnelProxy)
+	serverProxyClient, serverProxyClientErr := r.createProxyClient(pd)
 	if serverProxyClientErr != nil {
 		// This should really never happen. No I/O is performed here; the error most likely indicates misconfiguration of the gRPC client.
 		log.Error(serverProxyClientErr, "Failed to create gRPC connection to server proxy control endpoint")
@@ -780,6 +792,27 @@ func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServerService(
 	return &serverService, true
 }
 
+// Returns the client Service used by the tunnel.
+func (r *ContainerNetworkTunnelProxyReconciler) getTunnelClientService(
+	ctx context.Context,
+	tunnelConfig apiv1.TunnelConfiguration,
+	tlog logr.Logger,
+) *apiv1.Service {
+	clientSvcNN := types.NamespacedName{Name: tunnelConfig.ClientServiceName, Namespace: tunnelConfig.ClientServiceNamespace}
+	clientService := apiv1.Service{}
+	err := r.Get(ctx, clientSvcNN, &clientService)
+	if err != nil {
+		if apimachinery_errors.IsNotFound(err) {
+			tlog.V(1).Info("Client service required by the tunnel not found", "ClientService", clientSvcNN.String())
+		} else {
+			tlog.Error(err, "Failed to get information about client service required by the tunnel", "ClientService", clientSvcNN.String())
+		}
+		return nil
+	}
+
+	return &clientService
+}
+
 func failedTunnelStatus(original apiv1.TunnelStatus, errorMessage string) apiv1.TunnelStatus {
 	ts := original.Clone()
 	ts.ErrorMessage = errorMessage
@@ -789,10 +822,10 @@ func failedTunnelStatus(original apiv1.TunnelStatus, errorMessage string) apiv1.
 }
 
 func (r *ContainerNetworkTunnelProxyReconciler) createProxyClient(
-	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	pd *containerNetworkTunnelProxyData,
 ) (dcptunproto.TunnelControlClient, error) {
 	serverProxyConn, serverProxyErr := grpc.NewClient(
-		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, tunnelProxy.Status.ServerProxyControlPort),
+		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, pd.ServerProxyControlPort),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if serverProxyErr != nil {
@@ -990,7 +1023,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, NoDelay
 	}
 
-	cncName, _, nameErr := MakeUniqueName(fmt.Sprintf("%s-%s", tunnelProxy.Name, tunnelProxy.Spec.ContainerNetworkName))
+	cncName, _, nameErr := MakeUniqueName(fmt.Sprintf("%s", tunnelProxy.Name))
 	if nameErr != nil {
 		// Should never happen
 		log.Error(nameErr, "Failed to create a unique name for the ContainerNetworkConnection object")
@@ -1002,7 +1035,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 			Name:      cncName,
 			Namespace: tunnelProxy.Namespace,
 			Labels: map[string]string{
-				ContainerIdLabel: created.Id, // for easier lookup during cleanup
+				ContainerIdLabel: MakeValidLabelValue(created.Id), // for easier lookup during cleanup
 			},
 		},
 		Spec: apiv1.ContainerNetworkConnectionSpec{
@@ -1021,7 +1054,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 
 	cncErr := r.Client.Create(ctx, cnc)
 	if cncErr != nil {
-		log.Error(cncErr, "Failed to create ContainerNetworkConnection object for client proxy container")
+		if !apiv1.ResourceCreationProhibited.Load() {
+			log.Error(cncErr, "Failed to create ContainerNetworkConnection object for client proxy container")
+		}
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		return false, NoDelay
 	}
@@ -1267,8 +1302,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 
 		log.V(1).Info("Stopping server proxy process...")
 
+		// The process may have already exited because the client container has been stopped.
+
 		stopErr := r.config.ProcessExecutor.StopProcess(pid, startTime)
-		if stopErr != nil {
+		if stopErr != nil && !errors.Is(stopErr, process.ErrorProcessNotFound) {
 			log.Error(stopErr, "Failed to stop server proxy process")
 		} else {
 			log.V(1).Info("Successfully stopped server proxy process")
@@ -1309,7 +1346,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupClientContainer(
 		&apiv1.ContainerNetworkConnection{},
 		ctrl_client.PropagationPolicy(metav1.DeletePropagationBackground),
 		ctrl_client.MatchingLabels{
-			ContainerIdLabel: containerID,
+			ContainerIdLabel: MakeValidLabelValue(containerID),
 		},
 	)
 

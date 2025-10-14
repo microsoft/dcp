@@ -117,6 +117,8 @@ OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
 GOVERSIONINFO_GEN ?= $(GOTOOL_BIN) github.com/josephspurrier/goversioninfo/cmd/goversioninfo
 DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
+PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
+PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
@@ -316,6 +318,21 @@ lfwriter-tool: $(LFWRITER_TOOL)
 $(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/usvc-apiserver/test/lfwriter
 
+# parrot tool is used for testing network connectivity
+.PHONY: parrot-tool
+parrot-tool: $(PARROT_TOOL)
+$(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/usvc-apiserver/test/parrot
+
+.PHONY: parrot-tool-containerexe
+parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) ## Builds parrot tool binary suitable for use inside containers
+$(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+ifeq ($(detected_OS),windows)
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+else
+	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+endif
+
 .PHONY: httpcontent-stream-repro
 httpcontent-stream-repro:
 	dotnet build test/HttpContentStreamRepro.Server/HttpContentStreamRepro.Server.csproj
@@ -403,9 +420,9 @@ endif
 ##@ Test targets
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool
+TEST_PREREQS := generate-grpc build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
 endif
 
 .PHONY: test-prereqs
@@ -429,16 +446,6 @@ test: test-prereqs ## Run all tests in the repository
 .PHONY: test-ci
 test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)
-
-.PHONY: test-extended
-test-extended: test-prereqs httpcontent-stream-repro ## Run all tests, including tests that require special environment setup
-ifeq ($(detected_OS),windows)
-	$$env:DCP_TEST_ENABLE_ADVANCED_NETWORKING = "true"; $(GO_BIN) test ./... -count 1; $$env:DCP_TEST_ENABLE_ADVANCED_NETWORKING = $$null;
-else ifeq ($(CGO_ENABLED),1)
-	DCP_TEST_ENABLE_ADVANCED_NETWORKING="true" $(GO_BIN) test ./... -count 1 -race
-else
-	DCP_TEST_ENABLE_ADVANCED_NETWORKING="true" $(GO_BIN) test ./... -count 1
-endif
 
 ## Development and test support targets
 
