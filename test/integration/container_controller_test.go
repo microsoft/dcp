@@ -3095,6 +3095,67 @@ func TestContainerCreateFilesCertificate(t *testing.T) {
 	require.Equal(t, path.Join("/tmp", fmt.Sprintf("%s.%d", name, 0)), items[1].Name, "symlink name does not match expected value")
 }
 
+func TestContainerCreateFilesContinueOnError(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-create-files-continue-on-error"
+	const imageName = testName + "-image"
+
+	testStart := time.Now()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			CreateFiles: []apiv1.CreateFileSystem{
+				{
+					Destination: "/tmp",
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Name:     "hello.txt",
+							Contents: "hello!",
+						},
+						{
+							Name:            "badcert.pem",
+							Contents:        "this is not a valid certificate",
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							ContinueOnError: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container object")
+
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(inspected.Id)
+	require.NoError(t, getFileErr, "could not get created files")
+
+	require.Len(t, files, 1, "expected to find a single copied file")
+	require.Equal(t, ctr.Spec.CreateFiles[0].Destination, files[0].Destination, "copied file destination does not match")
+	require.LessOrEqual(t, testStart, files[0].ModTime, "copied file mod time is not greater than or equal to the test start time")
+	require.Equal(t, osutil.DefaultUmaskBitmask, files[0].Umask, "copied file mode does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultOwner, "copied file owner id does not match expected default value")
+	require.Equal(t, int32(0), files[0].DefaultGroup, "copied file group id does not match expected default value")
+
+	items, itemsErr := files[0].GetTarItems()
+	require.NoError(t, itemsErr, "could not get tar items")
+	require.Len(t, items, 1, "expected a single tar record")
+
+	require.Equal(t, 0, items[0].Uid, "copied file item owner id does not match expected default value")
+	require.Equal(t, 0, items[0].Gid, "copied file item group id does not match expected default value")
+	require.Equal(t, int64(osutil.PermissionOwnerReadWriteOthersRead), items[0].Mode, "copied file item mode does not match expected default value")
+}
+
 // Even if Docker container stops very quickly, the state of corresponding Container should be "Exited"
 // (and not something else, in particular not "FailedToStart").
 func TestContainerFastExiting(t *testing.T) {

@@ -221,6 +221,9 @@ type FileSystemEntry struct {
 	// For file type entries, the contents of the file. Optional.
 	Contents string `json:"contents,omitempty"`
 
+	// For file type entries, if true, errors creating this file will be logged, but will not cause the overall CreateFiles operation to fail.
+	ContinueOnError bool `json:"continueOnError,omitempty"`
+
 	// For directory type entries, the child entries (files or directories). Optional.
 	// +listType=atomic
 	Entries []FileSystemEntry `json:"entries,omitempty"`
@@ -268,6 +271,10 @@ func (cfi *FileSystemEntry) Equal(other *FileSystemEntry) bool {
 	}
 
 	if cfi.Contents != other.Contents {
+		return false
+	}
+
+	if cfi.ContinueOnError != other.ContinueOnError {
 		return false
 	}
 

@@ -3026,6 +3026,13 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 							Format:      "",
 						},
 					},
+					"continueOnError": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, if true, errors creating this file will be logged, but will not cause the overall CreateFiles operation to fail.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"entries": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{

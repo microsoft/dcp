@@ -1983,19 +1983,31 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 			}
 		case apiv1.FileSystemEntryTypeSymlink:
 			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addSymlinkErr != nil {
-				return addSymlinkErr
+				if item.ContinueOnError {
+					to.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, but continueOnError is set", "SymLink", item)
+				} else {
+					return addSymlinkErr
+				}
 			}
 		case apiv1.FileSystemEntryTypeOpenSSL:
 			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, to.log)
 			if addCertErr != nil {
-				return addCertErr
+				if item.ContinueOnError {
+					to.log.Error(addCertErr, "Failed to add certificate to tar archive, but continueOnError is set", "Certificate", item)
+				} else {
+					return addCertErr
+				}
 			}
 
 			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
 			certificateHashes = append(certificateHashes, hash)
 		default:
 			if addFileErr := containers.AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addFileErr != nil {
-				return addFileErr
+				if item.ContinueOnError {
+					to.log.Error(addFileErr, "Failed to add file to tar archive, but continueOnError is set", "File", item)
+				} else {
+					return addFileErr
+				}
 			}
 		}
 	}

@@ -94,13 +94,6 @@ func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner in
 		contents = []byte(certificate.Contents)
 	}
 
-	log.V(1).Info("Writing certificate to tar", "Certificate", certPath)
-
-	writeErr := tarWriter.WriteFile(contents, certPath, owner, group, mode, modTime, modTime, modTime)
-	if writeErr != nil {
-		return "", writeErr
-	}
-
 	block, _ := pem.Decode(contents)
 	if block == nil {
 		return "", fmt.Errorf("could not decode PEM block from certificate %s", certPath)
@@ -128,8 +121,13 @@ func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner in
 		}
 	}
 
-	log.V(1).Info("Writing subject hash symlink", "Certificate", certPath, "Hash", shortHash, "Collisions", hashCollisions)
+	log.V(1).Info("Writing certificate to tar", "Certificate", certPath)
+	writeErr := tarWriter.WriteFile(contents, certPath, owner, group, mode, modTime, modTime, modTime)
+	if writeErr != nil {
+		return "", writeErr
+	}
 
+	log.V(1).Info("Writing subject hash symlink", "Certificate", certPath, "Hash", shortHash, "Collisions", hashCollisions)
 	return shortHash, tarWriter.WriteSymlink(path.Join(basePath, fmt.Sprintf("%s.%d", shortHash, hashCollisions)), "./"+certificate.Name, owner, group, modTime, modTime, modTime)
 }
 
@@ -230,12 +228,20 @@ func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int3
 			}
 		case apiv1.FileSystemEntryTypeSymlink:
 			if addSymlinkErr := AddSymlinkToTar(tarWriter, basePath, owner, group, umask, item, modTime, log); addSymlinkErr != nil {
-				return addSymlinkErr
+				if item.ContinueOnError {
+					log.Error(addSymlinkErr, "Failed to add a symlink to the tar file, but continueOnError is set", "SymLink", item)
+				} else {
+					return addSymlinkErr
+				}
 			}
 		case apiv1.FileSystemEntryTypeOpenSSL:
 			hash, addCertErr := AddCertificateToTar(tarWriter, basePath, owner, group, umask, item, modTime, certificateHashes, log)
 			if addCertErr != nil {
-				return addCertErr
+				if item.ContinueOnError {
+					log.Error(addCertErr, "Failed to add a certificate to the tar file, but continueOnError is set", "Certificate", item)
+				} else {
+					return addCertErr
+				}
 			}
 
 			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
@@ -243,7 +249,11 @@ func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int3
 		default:
 			// Catchall for specific file types (generic files or certificates)
 			if addFileErr := AddFileToTar(tarWriter, basePath, owner, group, umask, item, modTime, log); addFileErr != nil {
-				return addFileErr
+				if item.ContinueOnError {
+					log.Error(addFileErr, "Failed to add a file to the tar file, but continueOnError is set", "File", item)
+				} else {
+					return addFileErr
+				}
 			}
 		}
 	}
