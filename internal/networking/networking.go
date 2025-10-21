@@ -120,6 +120,12 @@ func LookupIP(host string) ([]net.IP, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), NetworkOpTimeout)
 		defer cancel()
 
+		// Ensure that any address that ends with ".localhost" is resolved as "localhost"
+		// Not all DNS servers resolve *.localhost names to loopback addresses correctly
+		if strings.HasSuffix(strings.ToLower(host), ".localhost") {
+			host = Localhost
+		}
+
 		switch host {
 		case Localhost:
 			// If this is localhost, resolve it to all loopback addresses
