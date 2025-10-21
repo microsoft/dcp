@@ -31,7 +31,7 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 1. Either leave the previous tag as auto or manually select the previous release tag and click `Generate release notes` (if the generated changelog doesn't look correct and you used automatic tag detection, you may have to try creating the release again and manually selecting the previous release).
 1. Ensure `Set as a pre-release` is unchecked and `Set as the latest release` is checked.
 1. Click `Publish release`.
-1. Go to the [official AzDO pipeline](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=19235&_a=summary) and start a new build for the tag you just created (`refs/tags/v<major>.<minor>.<patch>`).
+1. Go to the [official AzDO pipeline](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=19235&_a=summary) and verify that a build is running for the newly created tag. This should be automatically triggered. If a build doesn't automatically start after a short time, you can manually start a new build for the tag you just created (`refs/tags/v<major>.<minor>.<patch>`).
 1. Once this build completes, download the binary .zip/.tar.gz files from the `build_archive` artifact and upload each individual binary archive to the GitHub release you just created (click the edit icon in the top right corner of the release and drag the files into the drop zone at the bottom of the edit box).
 1. Click `Update release` to save the changes.
 
