@@ -404,12 +404,16 @@ install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) $(BIN_DIR) ## Installs all binar
 	$(install) $(DCPPROC_BINARY) $(BIN_DIR)
 	$(install) $(DCPCTRL_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCP_BINARY) $(DCP_DIR)
+	$(install) $(DCPTUN_SERVER_BINARY) $(BIN_DIR)
+	$(install) $(DCPTUN_CLIENT_BINARY) $(BIN_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
 	$(rm_f) $(BIN_DIR)/dcpproc$(bin_exe_suffix)
 	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
+	$(rm_f) $(BIN_DIR)/dcptun$(bin_exe_suffix)
+	$(rm_f) $(BIN_DIR)/dcptun_c
 
 ifneq ($(detected_OS),windows)
 .PHONY: link-dcp
