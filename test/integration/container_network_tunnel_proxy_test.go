@@ -488,7 +488,7 @@ func TestTunnelProxyTunnelFailure(t *testing.T) {
 	_ = waitForTunnelFailure(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelData.tunnelName)
 }
 
-// Verifies that tunnel status is updated when server Service transitions from Ready to NotReady and vice versa.
+// Verifies that tunnel status is updated when server Service transitions from having a valid address to not having one.
 func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -547,7 +547,7 @@ func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	t.Logf("Validating tunnel '%s' is initially prepared and live...", tunnelData.tunnelName)
 	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
 
-	t.Logf("Deleting server Service Endpoint '%s' to trigger Service transition to NotReady...", tunnelData.serverServiceEndpointName)
+	t.Logf("Deleting server Service Endpoint '%s' to trigger Service transition to NotReady state...", tunnelData.serverServiceEndpointName)
 	serverEndpointNamespacedName := types.NamespacedName{Name: tunnelData.serverServiceEndpointName, Namespace: metav1.NamespaceNone}
 	err = retryOnConflictEx(ctx, serverInfo.Client, serverEndpointNamespacedName, func(ctx context.Context, endpoint *apiv1.Endpoint) error {
 		return serverInfo.Client.Delete(ctx, endpoint)
@@ -557,10 +557,10 @@ func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	t.Logf("Waiting for server Service '%s' to transition to NotReady state...", tunnelData.serverServiceName)
 	serverServiceNamespacedName := types.NamespacedName{Name: tunnelData.serverServiceName, Namespace: metav1.NamespaceNone}
 	_ = waitObjectAssumesStateEx(t, ctx, serverInfo.Client, serverServiceNamespacedName, func(svc *apiv1.Service) (bool, error) {
-		return svc.Status.State == apiv1.ServiceStateNotReady, nil
+		return svc.Status.State == apiv1.ServiceStateNotReady && svc.Status.EffectiveAddress == "" && svc.Status.EffectivePort == 0, nil
 	})
 
-	t.Logf("Waiting for tunnel '%s' to be cleaned up due to server Service being NotReady...", tunnelData.tunnelName)
+	t.Logf("Waiting for tunnel '%s' to be cleaned up due to server Service losing its effective address and port...", tunnelData.tunnelName)
 	validateTunnelDeleted(t, ctx, serverInfo.Client, tunnelData, teInfo.TestTunnelControlClient)
 
 	t.Logf("Verifying ContainerNetworkTunnelProxy '%s' tunnel is no longer ready...", tunnelProxy.ObjectMeta.Name)

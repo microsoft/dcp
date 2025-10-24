@@ -608,10 +608,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 		return additionalReconciliationNeeded
 	}
 
-	serverSvc, serverServiceReady := r.getTunnelServerService(ctx, tunnelConfig, tlog)
+	serverSvc, serverServiceHasAddress := r.getTunnelServerService(ctx, tunnelConfig, tlog)
 
 	if originalTunnelStatus.State == apiv1.TunnelStateReady {
-		if serverServiceReady {
+		if serverServiceHasAddress {
 			return noChange // All good, nothing to do
 		}
 
@@ -633,7 +633,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 
 	// The rest of the method handles the main use case: the tunnel is NOT READY and we need to prepare it.
 
-	if !serverServiceReady {
+	if !serverServiceHasAddress {
 		return additionalReconciliationNeeded
 	}
 
@@ -766,7 +766,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) failAllExistingTunnels(
 	return change
 }
 
-// Checks if the server Service used by the tunnel exists and is in the correct state.
+// Checks if the server Service used by the tunnel exists and has effective address and port assigned.
+// Note that we do not check if the Service is actually in ready state. This allows us to complete tunnel preparation
+// as the Server service becomes ready and relaxes the dependency between tunnels (and tunnel client services) and server services.
 func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServerService(
 	ctx context.Context,
 	tunnelConfig apiv1.TunnelConfiguration,
@@ -784,8 +786,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) getTunnelServerService(
 		return nil, false
 	}
 
-	if serverService.Status.State != apiv1.ServiceStateReady {
-		tlog.V(1).Info("Server service required by the tunnel is not in Ready state", "ServerService", serverSvcNN.String())
+	if serverService.Status.EffectiveAddress == "" || !networking.IsValidPort((int)(serverService.Status.EffectivePort)) {
+		tlog.V(1).Info("Server service required by the tunnel does not have a valid address yet", "ServerService", serverSvcNN.String())
 		return &serverService, false
 	}
 

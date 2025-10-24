@@ -43,7 +43,7 @@ func (_ imageBuildRecordMarshaller) Unmarshal(line []byte) (imageBuildRecord, er
 		return imageBuildRecord{}, fmt.Errorf("the most recent image builds file is corrupted (invalid record, the line read was '%s'): %w", line, scanErr)
 	}
 	if n != 4 {
-		return imageBuildRecord{}, fmt.Errorf("the most recent image builds file is corrupted (invalid record, expected 3 fields but got %d, the line was '%s')", n, line)
+		return imageBuildRecord{}, fmt.Errorf("the most recent image builds file is corrupted (invalid record, expected 4 fields but got %d, the line was '%s')", n, line)
 	}
 
 	timestamp, timestampParseErr := time.Parse(time.RFC3339Nano, timestampStr)
