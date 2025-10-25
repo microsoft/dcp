@@ -93,11 +93,12 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
 		}
 
-		co, coErr := getContainerOrchestrator(cmd.Context(), log)
+		co, pe, coErr := getContainerOrchestrator(cmd.Context(), log)
 		if coErr != nil {
 			log.Error(coErr, "Unable to ensure container cleanup")
 			return coErr
 		}
+		defer pe.Dispose()
 
 		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, log)
 		defer monitorCtxCancel()
@@ -125,9 +126,8 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 	}
 }
 
-func getContainerOrchestrator(ctx context.Context, log logr.Logger) (inspectStopRemoveContainers, error) {
+func getContainerOrchestrator(ctx context.Context, log logr.Logger) (inspectStopRemoveContainers, process.Executor, error) {
 	pe := process.NewOSExecutor(log.WithName("ProcessExecutor"))
-	defer pe.Dispose()
 
 	co := container_flags.TryGetRemoteContainerOrchestrator(ctx, log.WithName("RemoteContainerOrchestrator"))
 	if co == nil {
@@ -138,12 +138,12 @@ func getContainerOrchestrator(ctx context.Context, log logr.Logger) (inspectStop
 		)
 		if scoErr != nil {
 			log.Error(scoErr, "Failed to find available container runtime")
-			return nil, scoErr
+			return nil, nil, scoErr
 		}
 		co = sco
 	}
 
-	return co, nil
+	return co, pe, nil
 }
 
 func doCleanupContainer(
