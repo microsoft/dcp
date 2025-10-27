@@ -21,7 +21,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
@@ -386,6 +386,13 @@ func setupListener(t *testing.T, port int32) (net.Listener, int) {
 }
 
 func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.TunnelControlClient, context.CancelFunc) {
+	securityConfig, securityConfigErr := NewTunnelProxySecurityConfig()
+	require.NoError(t, securityConfigErr, "Failed to create tunnel proxy security configuration")
+	clientCertPool, clientCertPoolErr := securityConfig.GetClientPool()
+	require.NoError(t, clientCertPoolErr, "Failed to get client CA certificate pool")
+	tlsConfig, tlsConfigErr := securityConfig.GetTlsConfig()
+	require.NoError(t, tlsConfigErr, "Failed to create TLS configuration")
+
 	clientControlListener, clientControlPort := setupListener(t, autoAllocatePort)
 
 	clientDataListener, clientDataPort := setupListener(t, autoAllocatePort)
@@ -394,7 +401,7 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 	clientLog := log.WithName("ClientProxy")
 	clientProxy := NewClientProxy(clientProxyCtx, clientDataListener, clientProxyCtxCancel, clientLog)
 
-	clientGrpcServer := grpc.NewServer()
+	clientGrpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 	proto.RegisterTunnelControlServer(clientGrpcServer, clientProxy)
 
 	go func() {
@@ -406,7 +413,7 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 
 	clientProxyConn, clientProxyErr := grpc.NewClient(
 		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, int32(clientControlPort)),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(clientCertPool, "")),
 	)
 	require.NoError(t, clientProxyErr, "Failed to connect to client-side proxy")
 
@@ -424,7 +431,7 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 	)
 	require.NotNil(t, serverProxy)
 
-	serverGrpcServer := grpc.NewServer()
+	serverGrpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 	proto.RegisterTunnelControlServer(serverGrpcServer, serverProxy)
 
 	go func() {
@@ -432,10 +439,9 @@ func createProxyPair(t *testing.T, ctx context.Context, log logr.Logger) (proto.
 		require.NoError(t, serverErr, "Server proxy gRPC server failed")
 	}()
 
-	// Step 4: Create gRPC client to talk to server-side proxy
 	serverProxyConn, serverProxyErr := grpc.NewClient(
 		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, int32(serverControlPort)),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(clientCertPool, "")),
 	)
 	require.NoError(t, serverProxyErr)
 

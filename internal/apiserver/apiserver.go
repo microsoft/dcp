@@ -232,7 +232,7 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServer
 		if certErr != nil {
 			return nil, fmt.Errorf("unable to obtain certificate data: %w", certErr)
 		}
-		key, keyErr := certificateData.Key()
+		key, keyErr := certificateData.ServerPrivateKey()
 		if keyErr != nil {
 			return nil, fmt.Errorf("unable to obtain key data: %w", keyErr)
 		}

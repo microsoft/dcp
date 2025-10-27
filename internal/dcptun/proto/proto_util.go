@@ -5,6 +5,8 @@ package proto
 import (
 	"fmt"
 	"slices"
+
+	stdproto "google.golang.org/protobuf/proto"
 )
 
 func (s *TunnelSpec) Same(other *TunnelSpec) bool {
@@ -16,6 +18,12 @@ func (s *TunnelSpec) Same(other *TunnelSpec) bool {
 		s.GetServerAddress() == other.GetServerAddress() &&
 		s.GetClientProxyPort() == other.GetClientProxyPort() &&
 		slices.Equal(s.GetClientProxyAddresses(), other.GetClientProxyAddresses())
+}
+
+func (s *TunnelSpec) LogString() string {
+	logTS := stdproto.CloneOf(s)
+	logTS.DataConnectionToken = []byte("<redacted>")
+	return logTS.String()
 }
 
 // TunnelRequestFingerprint is a set of fields that uniquely identify a tunnel request.
