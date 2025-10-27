@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	"github.com/microsoft/usvc-apiserver/internal/dcptun"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
 	"github.com/microsoft/usvc-apiserver/pkg/pointers"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
@@ -77,6 +78,12 @@ type containerNetworkTunnelProxyData struct {
 
 	// Additional in-memory state for tunnels, keyed by tunnel name.
 	tunnelExtra map[string]tunnelExtraData
+
+	// Certificates for securing the tunnel control connection.
+	// Generated when starting the server proxy and used by both server and client proxies.
+	// Note: this is not "cloned" when Clone() is called, as the securityConfig is created once during the startup
+	// and is used for the lifetime of the proxy pair.
+	securityConfig *dcptun.TunnelProxySecurityConfig
 }
 
 func newContainerNetworkTunnelProxyData(state apiv1.ContainerNetworkTunnelProxyState) *containerNetworkTunnelProxyData {
@@ -96,6 +103,7 @@ func (tpd *containerNetworkTunnelProxyData) Clone() *containerNetworkTunnelProxy
 		serverStdout:                      tpd.serverStdout,
 		serverStderr:                      tpd.serverStderr,
 		tunnelExtra:                       maps.Map[string, tunnelExtraData, tunnelExtraData](tpd.tunnelExtra, tunnelExtraData.Clone),
+		securityConfig:                    tpd.securityConfig,
 	}
 
 	return &clone
@@ -197,6 +205,11 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 			tpd.tunnelExtra[k] = v.Clone()
 			updated = true
 		}
+	}
+
+	if other.securityConfig != nil && tpd.securityConfig != other.securityConfig {
+		tpd.securityConfig = other.securityConfig
+		updated = true
 	}
 
 	return updated

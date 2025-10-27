@@ -73,6 +73,10 @@ message TunnelSpec {
 
   // The port that the client network proxy will use;
   int32 client_proxy_port = 5;
+
+  // The bearer token that will be used by the server proxy to authenticate
+  // to the client proxy when a new data connection is established.
+  bytes data_connection_token = 6;
 }
 
 // Carries data that uniquely identifies a tunnel.

@@ -14,6 +14,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
 	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
@@ -24,7 +25,7 @@ import (
 
 func NewRunServerCommand(log logr.Logger) *cobra.Command {
 	runServerCmd := &cobra.Command{
-		Use:   "server [--server-control-address address] [--server-control-port port] client-control-address client-control-port client-data-address client-data-port",
+		Use:   "server [--server-control-address address] [--server-control-port port] " + securityFlagsUsage + " client-control-address client-control-port client-data-address client-data-port",
 		Short: "Runs the server-side proxy of the DCP tunnel",
 		Long: `Runs the server-side proxy of the DCP tunnel.
 
@@ -37,6 +38,7 @@ func NewRunServerCommand(log logr.Logger) *cobra.Command {
 
 	runServerCmd.Flags().StringVar(&tunnelConfig.ServerControlAddress, "server-control-address", "localhost", "The address the server-side tunnel proxy should listen on for its control endpoint. Defaults to localhost.")
 	runServerCmd.Flags().Int32Var(&tunnelConfig.ServerControlPort, "server-control-port", 0, "The port the server-side tunnel proxy should listen on for its control endpoint. If not specified, a random port will be used.")
+	addSecurityFlags(runServerCmd)
 
 	cmdutil.AddMonitorFlags(runServerCmd)
 
@@ -56,9 +58,24 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		serverProxyCtx, cancelServerProxyCtx := cmdutil.GetMonitorContextFromFlags(cmd.Context(), log)
 		defer cancelServerProxyCtx()
 
+		var clientProxyConnOpts []grpc.DialOption
+		if tunnelConfig.HasCompleteCertificateData() {
+			clientCertPool, clientCertPoolErr := tunnelConfig.GetClientPool()
+			if clientCertPoolErr != nil {
+				log.Error(clientCertPoolErr, "Failed to create TLS client certificate pool")
+				return clientCertPoolErr
+			}
+
+			clientProxyConnOpts = append(clientProxyConnOpts, grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(clientCertPool, "")))
+			log.V(1).Info("Using secure gRPC connection to client proxy")
+		} else {
+			clientProxyConnOpts = append(clientProxyConnOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			log.V(1).Info("Using insecure gRPC connection to client proxy")
+		}
+
 		clientProxyConn, clientProxyErr := grpc.NewClient(
 			networking.AddressAndPort(tunnelConfig.ClientControlAddress, tunnelConfig.ClientControlPort),
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			clientProxyConnOpts...,
 		)
 		if clientProxyErr != nil {
 			log.Error(clientProxyErr, "Failed to connect to the client-side proxy",
@@ -99,7 +116,22 @@ func runServerProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			cancelServerProxyCtx,
 			log,
 		)
-		controlEndpointServer := grpc.NewServer()
+
+		var grpcServerOpts []grpc.ServerOption
+		if tunnelConfig.HasCompleteCertificateData() {
+			tlsConfig, tlsConfigErr := tunnelConfig.GetTlsConfig()
+			if tlsConfigErr != nil {
+				log.Error(tlsConfigErr, "Failed to create TLS configuration")
+				return tlsConfigErr
+			}
+
+			grpcServerOpts = append(grpcServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+			log.V(1).Info("Using secure gRPC server for control endpoint")
+		} else {
+			log.V(1).Info("Using insecure gRPC server for control endpoint")
+		}
+
+		controlEndpointServer := grpc.NewServer(grpcServerOpts...)
 		proto.RegisterTunnelControlServer(controlEndpointServer, serverProxy)
 
 		grpcServerErrChan := make(chan error, 1)
@@ -178,5 +210,5 @@ func ensureServerConfig(args []string) error {
 		return fmt.Errorf("server proxy port must be a valid port number (1-65535) or 0, not %d", tunnelConfig.ServerControlPort)
 	}
 
-	return nil
+	return validateSecurityFlagValues()
 }

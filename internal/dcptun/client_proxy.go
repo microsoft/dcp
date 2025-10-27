@@ -3,6 +3,7 @@
 package dcptun
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -25,6 +26,7 @@ import (
 	"github.com/microsoft/usvc-apiserver/internal/proxy"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
+	"github.com/microsoft/usvc-apiserver/pkg/security"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
 
@@ -155,7 +157,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	if tid, alreadyRequested := cp.tunnelRequests[tf]; alreadyRequested {
 		if ctd, found := cp.tunnels[tid]; found && !ctd.deleted.Load() {
 			cp.lock.Unlock()
-			cp.log.V(1).Info("Returning existing tunnel for request", "TunnelID", tid, "TunnelSpec", ctd.spec.String())
+			cp.log.V(1).Info("Returning existing tunnel for request", "TunnelID", tid, "TunnelSpec", ctd.spec.LogString())
 			return ctd.spec, nil
 		}
 		// The tunnel was deleted, so remove it from the requests map and continue to create a new one
@@ -178,6 +180,12 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 		return nil, status.Errorf(codes.Internal, "failed to listen on client proxy address %s:%d: %s", tr.GetClientProxyAddress(), tr.GetClientProxyPort(), tlErr.Error())
 	}
 
+	authToken, tokenErr := security.MakeBearerToken()
+	if tokenErr != nil {
+		cp.log.Error(tokenErr, "Failed to generate authentication token for tunnel")
+		return nil, status.Errorf(codes.Internal, "failed to generate authentication token for tunnel: %s", tokenErr.Error())
+	}
+
 	// This is looking good, let's allocate a new tunnel ID and prepare the tunnel spec.
 
 	listenerAddr := tunnelListener.Addr().(*net.TCPAddr)
@@ -191,6 +199,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 		ServerPort:           stdproto.Int32(int32(tr.GetServerPort())),
 		ClientProxyAddresses: slices.Map[net.IP, string](effectiveAddresses, func(ip net.IP) string { return networking.IpToString(ip) }),
 		ClientProxyPort:      stdproto.Int32(int32(listenerAddr.Port)),
+		DataConnectionToken:  authToken,
 	}
 	ctd := &clientTunnelData{
 		tunnelData:      *newTunnelData[*streamInfo](ts),
@@ -204,7 +213,7 @@ func (cp *ClientProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	cp.lock.Unlock()
 
 	go cp.handleClientConnections(tunnelCtx, tid, tunnelListener)
-	cp.log.V(1).Info("Tunnel prepared", "TunnelSpec", ts.String())
+	cp.log.V(1).Info("Tunnel prepared", "TunnelSpec", ts.LogString())
 	return ts, nil
 }
 
@@ -364,7 +373,7 @@ func (cp *ClientProxy) handleProxyConnections() {
 }
 
 func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
-	const preambleSize = 12 // 4 bytes for tunnel ID, 8 bytes for stream ID.
+	const preambleSize = 12 + security.BearerTokenLength // 4 bytes for tunnel ID, 8 bytes for stream ID, and the size of the auth token.
 	buf := make([]byte, preambleSize)
 	_, preambleErr := io.ReadFull(proxyConn, buf)
 	if preambleErr != nil {
@@ -375,6 +384,7 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 
 	tid := TunnelID(binary.BigEndian.Uint32(buf[0:4]))
 	streamID := StreamID(binary.BigEndian.Uint64(buf[4:12]))
+	authToken := buf[12 : 12+security.BearerTokenLength]
 	if tid == invalidTunnelID {
 		cp.log.Error(fmt.Errorf("invalid tunnel ID in a stream preamble: %d", tid), "Stream data connection failed")
 		_ = proxyConn.Close()
@@ -387,7 +397,7 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 	}
 
 	cp.lock.Lock()
-	si := cp.getStreamInfo(tid, streamID)
+	si, td := cp.getStreamInfo(tid, streamID)
 	if si == nil {
 		cp.lock.Unlock()
 		cp.log.Error(fmt.Errorf("stream not found: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
@@ -397,6 +407,12 @@ func (cp *ClientProxy) runTunnelStream(proxyConn net.Conn) {
 	if si.proxyConn != nil {
 		cp.lock.Unlock()
 		cp.log.Error(fmt.Errorf("stream already has a proxy connection: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
+		_ = proxyConn.Close()
+		return
+	}
+	if !bytes.Equal(authToken, td.spec.GetDataConnectionToken()) {
+		cp.lock.Unlock()
+		cp.log.Error(fmt.Errorf("invalid authentication token for stream: TunnelID=%d, StreamID=%d", tid, streamID), "Stream data connection failed")
 		_ = proxyConn.Close()
 		return
 	}
@@ -556,7 +572,7 @@ func (cp *ClientProxy) shutDownAllTunnels() {
 	cp.lock.Unlock()
 
 	for tid, td := range tunnels {
-		cp.log.V(1).Info("Shutting down tunnel", "TunnelID", tid, "TunnelSpec", td.spec.String())
+		cp.log.V(1).Info("Shutting down tunnel", "TunnelID", tid, "TunnelSpec", td.spec.LogString())
 		td.tunnelCtxCancel()
 		_ = td.listener.Close()
 
@@ -584,28 +600,27 @@ func (cp *ClientProxy) disposeOnce() bool {
 	return true
 }
 
-func (cp *ClientProxy) getStreamInfo(tid TunnelID, streamID StreamID) *streamInfo {
+func (cp *ClientProxy) getStreamInfo(tid TunnelID, streamID StreamID) (*streamInfo, *clientTunnelData) {
 	// Assumes cp.lock is held by the caller.
 
 	td, found := cp.tunnels[tid]
 	if !found {
-		return nil
+		return nil, nil
 	}
 
 	streamInfo, infoFound := td.streams[streamID]
 	if !infoFound {
-		return nil
+		return nil, nil
 	}
 
-	return streamInfo
+	return streamInfo, td
 }
 
 func (cp *ClientProxy) forgetStream(tid TunnelID, streamID StreamID) {
 	cp.lock.Lock()
-	si := cp.getStreamInfo(tid, streamID)
+	si, ctd := cp.getStreamInfo(tid, streamID)
 	if si != nil {
 		si.dispose()
-		ctd := cp.tunnels[tid]
 		delete(ctd.streams, streamID)
 
 		if len(ctd.streams) == 0 && ctd.deleted.Load() {

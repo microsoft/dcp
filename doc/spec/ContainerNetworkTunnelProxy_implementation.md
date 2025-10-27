@@ -66,4 +66,4 @@
 
 ## Phase 9: security
 
-- [ ] Make sure that ContainerNetworkTunnelProxy is using secure endpoints for control connections. This probably means auto-generated certificates, just like we do for kubeconfig files.
+- [x] Make sure that ContainerNetworkTunnelProxy is using secure endpoints for control connections. This probably means auto-generated certificates, just like we do for kubeconfig files.

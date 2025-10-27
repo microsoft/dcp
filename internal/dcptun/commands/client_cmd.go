@@ -13,6 +13,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
 	"github.com/microsoft/usvc-apiserver/internal/dcptun"
@@ -22,20 +23,18 @@ import (
 
 func NewRunClientCommand(log logr.Logger) *cobra.Command {
 	runClientCmd := &cobra.Command{
-		Use:   "client [--client-control-address addr] [--client-control-port port] [--client-data-address addr] [--client-data-port port]",
+		Use:   "client [--client-control-address addr] [--client-control-port port] [--client-data-address addr] [--client-data-port port] " + securityFlagsUsage,
 		Short: "Runs the client-side proxy of the DCP tunnel",
-		Long: `Runs the client-side proxy of the DCP tunnel.
-
-		Optional arguments are the address and port for both the control endpoint and the data endpoint of the client-side tunnel proxy.
-		`,
-		RunE: runClientProxy(log),
-		Args: cobra.NoArgs,
+		Long:  "Runs the client-side proxy of the DCP tunnel",
+		RunE:  runClientProxy(log),
+		Args:  cobra.NoArgs,
 	}
 
 	runClientCmd.Flags().StringVar(&tunnelConfig.ClientControlAddress, "client-control-address", "localhost", "The address the client-side tunnel proxy should listen on for its control endpoint. Defaults to localhost.")
 	runClientCmd.Flags().Int32Var(&tunnelConfig.ClientControlPort, "client-control-port", 0, "The port the client-side tunnel proxy should listen on for its control endpoint. If not specified, a random port will be used.")
 	runClientCmd.Flags().StringVar(&tunnelConfig.ClientDataAddress, "client-data-address", "localhost", "The address the client-side tunnel proxy should listen on for its data endpoint. Defaults to localhost.")
 	runClientCmd.Flags().Int32Var(&tunnelConfig.ClientDataPort, "client-data-port", 0, "The port the client-side tunnel proxy should listen on for its data endpoint. If not specified, a random port will be used.")
+	addSecurityFlags(runClientCmd)
 
 	cmdutil.AddMonitorFlags(runClientCmd)
 
@@ -91,7 +90,22 @@ func runClientProxy(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		}
 
 		clientProxy := dcptun.NewClientProxy(clientProxyCtx, dataListener, cancelClientProxyCtx, log)
-		controlEndpointServer := grpc.NewServer()
+
+		var grpcServerOpts []grpc.ServerOption
+		if tunnelConfig.HasCompleteCertificateData() {
+			tlsConfig, tlsConfigErr := tunnelConfig.GetTlsConfig()
+			if tlsConfigErr != nil {
+				log.Error(tlsConfigErr, "Failed to create TLS configuration")
+				return tlsConfigErr
+			}
+
+			grpcServerOpts = append(grpcServerOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+			log.V(1).Info("Using secure gRPC server for control endpoint")
+		} else {
+			log.V(1).Info("Using insecure gRPC server for control endpoint")
+		}
+
+		controlEndpointServer := grpc.NewServer(grpcServerOpts...)
 		proto.RegisterTunnelControlServer(controlEndpointServer, clientProxy)
 
 		grpcServerErrChan := make(chan error, 1)
@@ -146,5 +160,5 @@ func ensureClientConfig() error {
 		return fmt.Errorf("client proxy data port must be a valid port number (1-65535), not %d", tunnelConfig.ClientDataPort)
 	}
 
-	return nil
+	return validateSecurityFlagValues()
 }

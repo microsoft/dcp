@@ -19,7 +19,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -701,7 +701,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 // Returns true if the tunnel was successfully deleted, false if retry is needed.
 func (r *ContainerNetworkTunnelProxyReconciler) deleteTunnel(
 	ctx context.Context,
-	tunnelProxy *apiv1.ContainerNetworkTunnelProxy,
+	_ *apiv1.ContainerNetworkTunnelProxy,
 	tunnelStatus apiv1.TunnelStatus,
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
@@ -826,13 +826,23 @@ func failedTunnelStatus(original apiv1.TunnelStatus, errorMessage string) apiv1.
 func (r *ContainerNetworkTunnelProxyReconciler) createProxyClient(
 	pd *containerNetworkTunnelProxyData,
 ) (dcptunproto.TunnelControlClient, error) {
+	if pd.securityConfig == nil {
+		return nil, fmt.Errorf("cannot create tunnel proxy client: security configuration is missing") // Should never happen
+	}
+
+	clientCertPool, certPoolErr := pd.securityConfig.GetClientPool()
+	if certPoolErr != nil {
+		return nil, certPoolErr
+	}
+
 	serverProxyConn, serverProxyErr := grpc.NewClient(
 		networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, pd.ServerProxyControlPort),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(credentials.NewClientTLSFromCert(clientCertPool, "")),
 	)
 	if serverProxyErr != nil {
 		return nil, serverProxyErr
 	}
+
 	serverProxyClient := r.config.MakeTunnelControlClient(serverProxyConn)
 	return serverProxyClient, nil
 }
@@ -889,20 +899,29 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 	log logr.Logger,
 ) func(context.Context) {
 	return func(ctx context.Context) {
-		clientCtrCreated, reconciliationDelay := r.startClientProxy(ctx, tunnelProxy, pd, log)
+		nn := tunnelProxy.NamespacedName()
+		reconciliationDelay := NoDelay
 
-		if clientCtrCreated {
-			// Start server proxy now that client proxy ports are known
-			serverStarted := r.startServerProxy(ctx, tunnelProxy, pd, log)
-			if serverStarted {
-				log.V(1).Info("Server proxy started successfully, scheduling reconciliation")
-				pd.State = apiv1.ContainerNetworkTunnelProxyStateRunning
-			} else {
-				reconciliationDelay = StandardDelay
+		certErr := r.createProxyConnectionCertificates(pd, log)
+		if certErr != nil {
+			log.Error(certErr, "Failed to create tunnel proxy connection certificates")
+			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		} else {
+			var clientCtrCreated bool
+			clientCtrCreated, reconciliationDelay = r.startClientProxy(ctx, tunnelProxy, pd, log)
+
+			if clientCtrCreated {
+				// Start server proxy now that client proxy ports are known
+				serverStarted := r.startServerProxy(ctx, tunnelProxy, pd, log)
+				if serverStarted {
+					log.V(1).Info("Server proxy started successfully, scheduling reconciliation")
+					pd.State = apiv1.ContainerNetworkTunnelProxyStateRunning
+				} else {
+					reconciliationDelay = StandardDelay
+				}
 			}
 		}
 
-		nn := tunnelProxy.NamespacedName()
 		pd.startupScheduled = false // Reset startupScheduled flag to allow retries
 		pdMap := r.proxyData
 		pdMap.QueueDeferredOp(nn, func(_ types.NamespacedName, _ types.NamespacedName) {
@@ -910,6 +929,50 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 		})
 		r.ScheduleReconciliationWithDelay(nn, reconciliationDelay)
 	}
+}
+
+// Creates certificates for security tunnel proxy control connection.
+// The passed containerNetworkTunnelProxy data will be updated with the created certificates if the method is successful.
+// Regardless of the outcome, the caller should schedule a reconciliation of the given tunnel proxy object.
+func (r *ContainerNetworkTunnelProxyReconciler) createProxyConnectionCertificates(
+	pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) error {
+	if pd.securityConfig != nil {
+		log.V(1).Info("Tunnel proxy connection certificates are already available, nothing to do...")
+		return nil
+	}
+
+	securityConfig, secConfErr := dcptun.NewTunnelProxySecurityConfig()
+	if secConfErr != nil {
+		log.Error(secConfErr, "Failed to create security configuration for tunnel proxy connection")
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		return secConfErr
+	}
+
+	pd.securityConfig = &securityConfig
+	return nil
+}
+
+func (r *ContainerNetworkTunnelProxyReconciler) createProxySecurityArgs(
+	pd *containerNetworkTunnelProxyData,
+	log logr.Logger,
+) []string {
+	certArgs := []string{}
+
+	if pd.securityConfig != nil {
+		certArgs = []string{
+			"--ca-cert", pd.securityConfig.CACertBase64,
+			"--server-cert", pd.securityConfig.ServerCertBase64,
+			"--server-key", pd.securityConfig.ServerKeyBase64,
+		}
+		log.V(1).Info("Configuring client proxy with TLS certificates for secure control connection")
+	} else {
+		// Should never happen
+		log.Error(fmt.Errorf("tunnel certificates are missing"), "Client proxy will use insecure control connection")
+	}
+
+	return certArgs
 }
 
 // Starts the client proxy container.
@@ -964,13 +1027,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		ContainerSpec: apiv1.ContainerSpec{
 			Image:   pd.ClientProxyContainerImage,
 			Command: dcptun.ClientProxyBinaryPath,
-			Args: []string{
+			Args: append([]string{
 				"client",
 				"--client-control-address", networking.IPv4AllInterfaceAddress,
 				"--client-control-port", strconv.Itoa(dcptun.DefaultContainerProxyControlPort),
 				"--client-data-address", networking.IPv4AllInterfaceAddress,
 				"--client-data-port", strconv.Itoa(dcptun.DefaultContainerProxyDataPort),
-			},
+			}, r.createProxySecurityArgs(pd, log)...),
 			Ports: []apiv1.ContainerPort{
 				{ContainerPort: dcptun.DefaultContainerProxyControlPort},
 				{ContainerPort: dcptun.DefaultContainerProxyDataPort},
@@ -1170,14 +1233,14 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		pd.serverStderr = stderrFile
 	}
 
-	args := []string{
+	args := append([]string{
 		"server",
 		// We rely on the defaults for server control address and port (localhost:0, i.e. auto-allocated port), so not specifying them here.
 		networking.IPv4LocalhostDefaultAddress, // Client control address--as exposed by container orchestrator
 		strconv.Itoa(int(pd.ClientProxyControlPort)),
 		networking.IPv4LocalhostDefaultAddress, // Client data address--as exposed by container orchestrator
 		strconv.Itoa(int(pd.ClientProxyDataPort)),
-	}
+	}, r.createProxySecurityArgs(pd, log)...)
 
 	cmd := exec.Command(dcptunPath, args...)
 	cmd.Stdout = stdoutFile

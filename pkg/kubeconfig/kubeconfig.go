@@ -3,26 +3,15 @@
 package kubeconfig
 
 import (
-	"bytes"
-	cryptorand "crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/asn1"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	iofs "io/fs"
-	"math/big"
-	"math/rand"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
@@ -35,54 +24,16 @@ import (
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/usvc-apiserver/pkg/security"
 )
 
 const (
-	caKeyLength           = 4096
-	keyLength             = 2048
-	defaultExpirationDays = 7
-	PlaceholderToken      = "<placeholder>"
+	PlaceholderToken = "<placeholder>"
 )
-
-type certificateData struct {
-	caCertificate     []byte
-	serverCertificate []byte
-	serverKey         *rsa.PrivateKey
-}
-
-func (c *certificateData) CA() ([]byte, error) {
-	caBuffer := bytes.Buffer{}
-	if err := pem.Encode(&caBuffer, &pem.Block{Type: "CERTIFICATE", Bytes: c.caCertificate}); err != nil {
-		return nil, err
-	}
-
-	return caBuffer.Bytes(), nil
-}
-
-func (c *certificateData) Certificate() ([]byte, error) {
-	certBuffer := bytes.Buffer{}
-	if err := pem.Encode(&certBuffer, &pem.Block{Type: "CERTIFICATE", Bytes: c.serverCertificate}); err != nil {
-		return nil, err
-	}
-	if err := pem.Encode(&certBuffer, &pem.Block{Type: "CERTIFICATE", Bytes: c.caCertificate}); err != nil {
-		return nil, err
-	}
-
-	return certBuffer.Bytes(), nil
-}
-
-func (c *certificateData) Key() ([]byte, error) {
-	keyBuffer := bytes.Buffer{}
-	if err := pem.Encode(&keyBuffer, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(c.serverKey)}); err != nil {
-		return nil, err
-	}
-
-	return keyBuffer.Bytes(), nil
-}
 
 type Kubeconfig struct {
 	Config          *clientcmd_api.Config
-	certificateData *certificateData
+	certificateData *security.ServerCertificateData
 	path            string
 }
 
@@ -131,7 +82,7 @@ func (k *Kubeconfig) Save() error {
 
 // Reads Kubeconfig data and returns the address, port and security token of the current context,
 // to be used to configure/connect to API server
-func (k *Kubeconfig) GetData() (net.IP, int, string, *certificateData, error) {
+func (k *Kubeconfig) GetData() (net.IP, int, string, *security.ServerCertificateData, error) {
 	kubeContext, found := k.Config.Contexts[k.Config.CurrentContext]
 	if !found {
 		return nil, networking.InvalidPort, "", nil, fmt.Errorf("kubeconfig file is invalid; the context named '%s' (current context) does not exist", k.Config.CurrentContext)
@@ -202,7 +153,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
-	var certificateData *certificateData
+	var certificateData *security.ServerCertificateData
 	if err != nil {
 		if !errors.Is(err, iofs.ErrNotExist) {
 			return nil, fmt.Errorf("error retrieving kubeconfig file '%s': %w", kubeconfigPath, err)
@@ -230,70 +181,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 	}, nil
 }
 
-func generateCertificates(ip net.IP) (*certificateData, error) {
-	// Generate keys for the CA certificate; do not persist after creating the certificates
-	caKey, caKeyErr := rsa.GenerateKey(cryptorand.Reader, caKeyLength)
-	if caKeyErr != nil {
-		return nil, caKeyErr
-	}
-
-	// Generate keys for the server certificate
-	serverKey, serverKeyErr := rsa.GenerateKey(cryptorand.Reader, keyLength)
-	if serverKeyErr != nil {
-		return nil, serverKeyErr
-	}
-
-	// Template for the CA certificate
-	ca := &x509.Certificate{
-		SerialNumber: big.NewInt(rand.Int63()),
-		Subject: pkix.Name{
-			CommonName: ip.String(),
-		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(0, 0, defaultExpirationDays),
-		IsCA:                  true,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
-		BasicConstraintsValid: true,
-	}
-
-	caBytes, caErr := x509.CreateCertificate(cryptorand.Reader, ca, ca, &caKey.PublicKey, caKey)
-	if caErr != nil {
-		return nil, caErr
-	}
-
-	// Generate the subject ID for the server certificate as a SHA256 hash of the server public key
-	serverPublicKeyBytes, serverPublicKeyBytesErr := asn1.Marshal(*serverKey.Public().(*rsa.PublicKey))
-	if serverPublicKeyBytesErr != nil {
-		return nil, serverPublicKeyBytesErr
-	}
-	serverPublicKeySubjectId := sha256.Sum256(serverPublicKeyBytes)
-
-	// Template for the server certificate
-	server := &x509.Certificate{
-		SerialNumber: big.NewInt(rand.Int63()),
-		Subject:      pkix.Name{},
-		IPAddresses:  []net.IP{ip},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().AddDate(0, 0, defaultExpirationDays),
-		SubjectKeyId: serverPublicKeySubjectId[:],
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-	}
-
-	serverBytes, serverErr := x509.CreateCertificate(cryptorand.Reader, server, ca, &serverKey.PublicKey, caKey)
-	if serverErr != nil {
-		return nil, serverErr
-	}
-
-	return &certificateData{
-		caCertificate:     caBytes,
-		serverCertificate: serverBytes,
-		serverKey:         serverKey,
-	}, nil
-}
-
-func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log logr.Logger) (*clientcmd_api.Config, *certificateData, error) {
+func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	ips, err := networking.GetPreferredHostIps(networking.Localhost)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
@@ -314,24 +202,21 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log lo
 		Server: "https://" + networking.AddressAndPort(address, port),
 	}
 
-	var certificateData *certificateData
+	var certificateData security.ServerCertificateData
 	var certificateErr error
 	if useCertifiate {
 		// Generate certificates to secure the connection
-		certificateData, certificateErr = generateCertificates(ip)
+		certificateData, certificateErr = security.GenerateServerCertificate(ip)
 		if certificateErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not generate certificates: %w", certificateErr)
 		}
 
-		caPEM := new(bytes.Buffer)
-		// PEM encode the CA certificate
-		certificateErr = pem.Encode(caPEM, &pem.Block{Type: "CERTIFICATE", Bytes: certificateData.caCertificate})
-		if certificateErr != nil {
-			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not encode certificates: %w", certificateErr)
+		caPEM, caErr := certificateData.CA()
+		if caErr != nil {
+			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not encode CA certificate: %w", caErr)
 		}
-
 		// We're generating a certificate, so we need to tell the client how to verify it
-		cluster.CertificateAuthorityData = caPEM.Bytes()
+		cluster.CertificateAuthorityData = caPEM
 	} else {
 		// If we aren't generating certificates, we need to skip TLS verification
 		cluster.InsecureSkipTLSVerify = true
@@ -339,8 +224,7 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log lo
 
 	user := clientcmd_api.AuthInfo{}
 	if generateToken {
-		const authTokenLength = 32
-		token, tokenErr := randdata.MakeRandomString(authTokenLength)
+		token, tokenErr := security.MakeBearerToken()
 		if tokenErr != nil {
 			return nil, nil, fmt.Errorf("could not generate authentication token for the DCP API server: %w", tokenErr)
 		}
@@ -367,5 +251,5 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log lo
 			"apiserver": &context,
 		},
 		CurrentContext: "apiserver",
-	}, certificateData, nil
+	}, &certificateData, nil
 }

@@ -97,7 +97,7 @@ func NewServerProxy(
 		lock:                      &sync.Mutex{},
 		dispose:                   concurrency.NewOneTimeJob[struct{}](),
 	}
-	sp.streamConnectionCreator = resiliency.NewAsyncWorker[*proto.StreamRef, streamConnectionResult](ctx, sp.createStreamConnections, resiliency.DefaultConcurrency)
+	sp.streamConnectionCreator = resiliency.NewAsyncWorker(ctx, sp.createStreamConnections, resiliency.DefaultConcurrency)
 
 	go sp.streamsCreationWorker()
 	context.AfterFunc(ctx, sp.disposeOnce)
@@ -138,7 +138,8 @@ func (sp *ServerProxy) PrepareTunnel(ctx context.Context, tr *proto.TunnelReq) (
 	if !hasTd {
 		sp.tunnels[tid] = newTunnelData[stopStreamFn](ts)
 	}
-	sp.log.V(1).Info("Tunnel prepared", "TunnelSpec", ts.String())
+
+	sp.log.V(1).Info("Tunnel prepared", "TunnelSpec", ts.LogString())
 
 	return ts, nil
 }
@@ -158,7 +159,7 @@ func (sp *ServerProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 		return nil, status.Errorf(codes.NotFound, "tunnel with ID %d does not exist", tid)
 	}
 
-	sp.log.V(1).Info("Deleting tunnel..", "tunnel_spec", td.spec.String())
+	sp.log.V(1).Info("Deleting tunnel..", "tunnel_spec", td.spec.LogString())
 
 	// Always call the client proxy to facilitate retries.
 	_, clientDeleteErr := sp.clientProxy.DeleteTunnel(ctx, tr)
@@ -173,11 +174,11 @@ func (sp *ServerProxy) DeleteTunnel(ctx context.Context, tr *proto.TunnelRef) (*
 	} else {
 		td.deleted.Store(true)
 		sp.lock.Unlock()
-		sp.log.V(1).Info("Tunnel deleted", "tunnel_spec", td.spec.String())
+		sp.log.V(1).Info("Tunnel deleted", "tunnel_spec", td.spec.LogString())
 	}
 
 	if clientDeleteErr != nil {
-		sp.log.Error(clientDeleteErr, "Failed to delete tunnel with client proxy", "tunnel_spec", td.spec.String())
+		sp.log.Error(clientDeleteErr, "Failed to delete tunnel with client proxy", "tunnel_spec", td.spec.LogString())
 		return nil, status.Errorf(codes.Internal, "failed to delete tunnel with client proxy: %s", clientDeleteErr.Error())
 	} else {
 		return &emptypb.Empty{}, nil
@@ -422,6 +423,7 @@ func (sp *ServerProxy) completeStream(
 		var buf bytes.Buffer
 		_ = binary.Write(&buf, binary.BigEndian, tid)
 		_ = binary.Write(&buf, binary.BigEndian, streamID)
+		_, _ = buf.Write(td.spec.GetDataConnectionToken())
 		sp.runTunnelStream(streamCtx, buf.Bytes(), connRes.serverConn, connRes.clientDataConn, streamLog)
 	}()
 }
@@ -453,13 +455,13 @@ func (sp *ServerProxy) reportConnectionError(
 
 func (sp *ServerProxy) runTunnelStream(
 	ctx context.Context,
-	preaamble []byte,
+	preamble []byte,
 	serverConn net.Conn,
 	clientDataConn net.Conn,
 	streamLog logr.Logger,
 ) {
-	// Write the tunnel ID and stream ID as the first data to the data connection.
-	_, writeErr := clientDataConn.Write(preaamble)
+	// Write the tunnel ID, stream ID, and the authentication token as the first data to the data connection.
+	_, writeErr := clientDataConn.Write(preamble)
 	if writeErr != nil {
 		streamLog.Error(writeErr, "Failed to write tunnel ID and connection ID to client data connection")
 		return
@@ -491,7 +493,7 @@ func (sp *ServerProxy) shutDownAllTunnels() {
 	sp.lock.Unlock()
 
 	for tid, td := range tunnels {
-		sp.log.V(1).Info("Shutting down tunnel", "TunnelID", tid, "TunnelSpec", td.spec.String())
+		sp.log.V(1).Info("Shutting down tunnel", "TunnelID", tid, "TunnelSpec", td.spec.LogString())
 
 		for streamID, stopStream := range td.streams {
 			if stopStream != nil {
