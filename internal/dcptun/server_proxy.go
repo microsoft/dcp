@@ -6,9 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -251,6 +249,8 @@ func (sp *ServerProxy) streamsCreationWorker() {
 		}
 	}()
 
+	b := grpcutil.StreamRetryBackoff()
+
 	for {
 		if sp.lifetimeCtx.Err() != nil || sp.dispose.IsDone() {
 			sp.log.Info("Server proxy lifetime context is done or proxy is disposed; stopping streams creation worker")
@@ -258,23 +258,19 @@ func (sp *ServerProxy) streamsCreationWorker() {
 		}
 
 		sr, recvErr := newStreamsConn.Recv()
-		if recvErr == io.EOF || status.Code(recvErr) == codes.Canceled {
-			sp.log.Info("New streams connection closed by client proxy, exiting...")
-			sp.disposeOnce()
-			return
-		}
-
-		if errors.Is(recvErr, context.Canceled) {
-			sp.log.V(1).Info("New streams connection context is canceled (proxy shutdown)")
+		if grpcutil.IsStreamDoneErr(recvErr) {
+			sp.log.Info("New streams connection is done, exiting...")
 			sp.disposeOnce()
 			return
 		}
 
 		if recvErr != nil {
 			sp.log.Error(recvErr, "Failed to receive stream reference from client proxy")
+			time.Sleep(b.NextBackOff())
 			continue
 		}
 
+		b.Reset()
 		// Only fails if the lifetime context is done, and we do not want to start new stream in that case.
 		_ = sp.streamConnectionCreator.Enqueue(sr)
 	}
@@ -360,6 +356,7 @@ func (sp *ServerProxy) completeStream(
 	}
 	if connRes.clientDataDialErr != nil {
 		sp.reportConnectionError(connRes.streamRef, proto.StreamErr_STREAM_ERR_DATA_CONNECTION_FAILED, connRes.clientDataDialErr, newStreamsConn)
+		return
 	}
 
 	// All connections are established successfully, so we can send the result to the client proxy.

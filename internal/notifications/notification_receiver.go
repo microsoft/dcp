@@ -4,19 +4,16 @@ package notifications
 
 import (
 	"context"
-	"errors"
-	"io"
 	"time"
 
 	"github.com/go-logr/logr"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/microsoft/usvc-apiserver/internal/notifications/proto"
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
 )
 
 type notificationReceiver struct {
@@ -76,6 +73,8 @@ func (nr *notificationReceiver) receiveNotifications(conn *grpc.ClientConn) {
 		return
 	}
 
+	b := grpcutil.StreamRetryBackoff()
+
 	for {
 		select {
 		case <-nr.lifetimeCtx.Done():
@@ -84,27 +83,25 @@ func (nr *notificationReceiver) receiveNotifications(conn *grpc.ClientConn) {
 		default:
 			nd, recvErr := stream.Recv()
 
-			if recvErr == io.EOF || status.Code(recvErr) == codes.Canceled {
-				nr.log.V(1).Info("Notification stream closed by the source")
-				return
-			}
-
-			if errors.Is(recvErr, context.Canceled) {
-				nr.log.V(1).Info("Notification stream context expired, shutting down NotificationReceiver...")
+			if grpcutil.IsStreamDoneErr(recvErr) {
+				nr.log.V(1).Info("Notification stream is done")
 				return
 			}
 
 			if recvErr != nil {
 				nr.log.Error(recvErr, "Failed to receive notification from stream")
+				time.Sleep(b.NextBackOff())
 				continue
 			}
 
 			n, convErr := asNotification(nd)
 			if convErr != nil {
-				nr.log.Error(convErr, "Recieved notification is not valid")
+				nr.log.Error(convErr, "Received notification is not valid")
+				time.Sleep(b.NextBackOff())
 				continue
 			}
 
+			b.Reset()
 			nr.callback(n)
 		}
 	}
