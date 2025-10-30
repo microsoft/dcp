@@ -43,7 +43,7 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 
 type ideRunSessionTerminatedNotification struct {
 	ideRunSessionProcessChangedNotification
-	ExitCode *int32 `json:"exit_code,omitempty"`
+	ExitCode *uint32 `json:"exit_code,omitempty"`
 }
 
 type ideSessionLogNotification struct {

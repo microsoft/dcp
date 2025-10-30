@@ -392,7 +392,7 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 	exitCode := apiv1.UnknownExitCode
 	if stn.ExitCode != nil {
 		exitCode = new(int32)
-		*exitCode = *stn.ExitCode
+		*exitCode = int32(*stn.ExitCode)
 	}
 	r.log.V(1).Info("IDE run session terminated", "RunID", runID, "PID", stn.PID, "ExitCode", exitCode)
 
