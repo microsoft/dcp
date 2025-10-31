@@ -53,7 +53,8 @@ func TestTCPModeProxy(t *testing.T) {
 	// Set up a proxy
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	proxy := setupTcpProxy(t, ctx)
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 
 	// Feed the config to the proxy
 	config := ProxyConfig{
@@ -82,7 +83,8 @@ func TestTCPConfigurationChange(t *testing.T) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
 
-	proxy := setupTcpProxy(t, ctx)
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 
 	// Feed config to the proxy, targeting the first server
 	config := ProxyConfig{
@@ -119,7 +121,8 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	// Set up a proxy
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	proxy := setupTcpProxy(t, ctx)
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 	proxy.connectionTimeout = 500 * time.Millisecond
 
 	// Write some data to the proxy
@@ -130,7 +133,20 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	_, err = clientConn.Write(msg)
 	require.NoError(t, err)
 
-	// Configure the proxy
+	// Configure the proxy with no endpoints several times
+	const emptyConfigTries = 3
+	emptyConfig := ProxyConfig{
+		Endpoints: []Endpoint{},
+	}
+	for i := 0; i < emptyConfigTries; i++ {
+		err = proxy.Configure(emptyConfig)
+		require.NoError(t, err)
+
+		// Delay a bit to make sure empty configuration have been seen by the proxy but do not cause proxy errors
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Configure the proxy with valid endpoint
 	port, err := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, err)
 	config := ProxyConfig{
@@ -173,7 +189,8 @@ func TestUDPModeProxy(t *testing.T) {
 	// Set up a proxy
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	proxy := setupUdpProxy(t, ctx)
+	proxy, logSink := setupUdpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 
 	// Feed the config to the proxy
 	config := ProxyConfig{
@@ -200,7 +217,8 @@ func TestUDPTwoEndpoints(t *testing.T) {
 	// Set up a proxy
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
-	proxy := setupUdpProxy(t, ctx)
+	proxy, logSink := setupUdpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 
 	// Feed the config to the proxy
 	config := ProxyConfig{
@@ -315,7 +333,8 @@ func TestTCPProxyConnectionThroughput(t *testing.T) {
 	ctx, cancelFunc := testutil.GetTestContext(t, 30*time.Second)
 	defer cancelFunc()
 
-	proxy := setupTcpProxy(t, ctx)
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 
 	// Feed the config to the proxy
 	config := ProxyConfig{
@@ -432,7 +451,8 @@ func TestTCPProxyContinuousStream(t *testing.T) {
 	// Set up a proxy
 	ctx, cancelFunc := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancelFunc()
-	proxy := setupTcpProxy(t, ctx)
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
 
 	rootDir, findRootErr := osutil.FindRootFor(osutil.DirTarget, "test")
 	require.NoError(t, findRootErr, "Failed to find root directory for ./test")
@@ -485,16 +505,16 @@ func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
 	return serverListener, effectivePort
 }
 
-func setupTcpProxy(t *testing.T, ctx context.Context) *netProxy {
-	// For debugging you can replace logr.Discard() with "log" and set DCP_DIAGNOSTICS_LOG_LEVEL=debug
-	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+func setupTcpProxy(t *testing.T, ctx context.Context) (*netProxy, *testutil.MockLoggerSink) {
+	logSink := testutil.NewMockLoggerSink()
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
 	require.NoError(t, err)
 	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress())
 	require.Greater(t, proxy.EffectivePort(), int32(0))
-	return proxy
+	return proxy, logSink
 }
 
 func verifiyProxiedTcpConnection(t *testing.T, proxy *netProxy, server net.Listener) {
@@ -532,15 +552,16 @@ func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
 	return serverConn, effectivePort
 }
 
-func setupUdpProxy(t *testing.T, ctx context.Context) *netProxy {
-	proxy := newNetProxy(apiv1.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+func setupUdpProxy(t *testing.T, ctx context.Context) (*netProxy, *testutil.MockLoggerSink) {
+	logSink := testutil.NewMockLoggerSink()
+	proxy := newNetProxy(apiv1.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
 	require.NoError(t, err)
 	require.Equal(t, networking.IPv4LocalhostDefaultAddress, proxy.EffectiveAddress())
 	require.Greater(t, proxy.EffectivePort(), int32(0))
-	return proxy
+	return proxy, logSink
 }
 
 func verifyProxiedUdpConnection(t *testing.T, proxy *netProxy, serverConn net.PacketConn) {

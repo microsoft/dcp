@@ -244,10 +244,12 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 	defer p.configurationApplied.SetAndFreeze() // Make sure that Configure() calls return after the proxy has stopped
 	defer p.stop(tcpListener)
 
+	configVal := &atomic.Value{} // Holds ProxyConfig
 	// Wait until the config has been loaded the first time before accepting any connections
-	config := <-p.endpointConfigLoadedChannel.Out
+	newConfig := <-p.endpointConfigLoadedChannel.Out
+	configVal.Store(newConfig)
 	p.configurationApplied.Set()
-	p.log.V(1).Info("Initial endpoint configuration loaded", "Config", config.String())
+	p.log.V(1).Info("Initial endpoint configuration loaded", "Config", newConfig.String())
 
 	// Make a channel that will receive a connection when one is accepted
 	connectionChannel := concurrency.NewUnboundedChan[net.Conn](p.lifetimeCtx)
@@ -274,16 +276,17 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 		case <-p.lifetimeCtx.Done():
 			return
 
-		case config = <-p.endpointConfigLoadedChannel.Out:
+		case newConfig = <-p.endpointConfigLoadedChannel.Out:
 			if p.lifetimeCtx.Err() != nil {
 				return
 			}
+			configVal.Store(newConfig)
 			p.configurationApplied.Set()
-			p.log.V(1).Info("Endpoint configuration changed; new configuration will be applied to future connections...", "Config", config.String())
+			p.log.V(1).Info("Endpoint configuration changed; new configuration will be applied to future connections...", "Config", newConfig.String())
 
-			if len(config.Endpoints) >= 0 {
+			if len(newConfig.Endpoints) > 0 {
 				for _, conn := range parkedConnections {
-					go p.handleTCPConnection(config, conn)
+					go p.handleTCPConnection(configVal, conn)
 				}
 				parkedConnections = nil
 			}
@@ -294,29 +297,27 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 				return
 			}
 
-			if len(config.Endpoints) == 0 {
+			currentConfig, haveConfig := configVal.Load().(ProxyConfig)
+			if haveConfig && len(currentConfig.Endpoints) > 0 {
+				go p.handleTCPConnection(configVal, incoming)
+			} else {
 				p.log.V(1).Info("No endpoints configured, parking connection...")
 				parkedConnections = append(parkedConnections, incoming)
-			} else {
-				// Pass the config (copy value) to the goroutine to avoid data races.
-				go p.handleTCPConnection(config, incoming)
 			}
 		}
 	}
 }
 
-var errTcpDialFailed = errors.New("Could not establish TCP connection to endpoint")
-
-func (p *netProxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.Conn) {
+func (p *netProxy) handleTCPConnection(config *atomic.Value, incoming net.Conn) {
 	err := resiliency.RetryExponential(p.lifetimeCtx, func() error {
-		streamErr := p.startTCPStream(incoming, &currentConfig)
-		if errors.Is(streamErr, errTcpDialFailed) {
-			// Retry-able error, incoming connection still alive
-			return streamErr
-		} else {
-			// Fatal error, incoming connection is closed
-			return resiliency.Permanent(streamErr)
+		currentConfig, haveConfig := config.Load().(ProxyConfig)
+		if !haveConfig {
+			// This should not really happen, as we should have waited until we have SOME config,
+			// but we can return an error to trigger a retry just in case.
+			return fmt.Errorf("no configuration available yet")
 		}
+
+		return p.startTCPStream(incoming, &currentConfig)
 	})
 
 	if err != nil {
@@ -324,6 +325,10 @@ func (p *netProxy) handleTCPConnection(currentConfig ProxyConfig, incoming net.C
 	}
 }
 
+// Attempts to start a TCP stream between the incoming connection and one of the configured endpoints.
+// Normally the returned error results in a retry of the operation.
+// Fatal errors should be wrapped in resiliency.Permanent and will not be retried.
+// In the current implementation all errors are retry-able.
 func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error {
 	if p.lifetimeCtx.Err() != nil {
 		_ = incoming.Close()
@@ -332,7 +337,8 @@ func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error 
 
 	endpoint, err := chooseEndpoint(config)
 	if err != nil {
-		return errors.Join(err, incoming.Close())
+		// Endpoints may become available later. Do not close the incoming connection
+		return err
 	}
 
 	if p.log.V(1).Enabled() {
@@ -352,7 +358,7 @@ func (p *netProxy) startTCPStream(incoming net.Conn, config *ProxyConfig) error 
 	if dialErr != nil {
 		p.log.V(1).Info(fmt.Sprintf("Error establishing TCP connection to %s (%s), will try another endpoint", ap, dialErr.Error()))
 		// Do not close incoming connection
-		return fmt.Errorf("%w: tried address %s but received the following error: %w", errTcpDialFailed, ap, dialErr)
+		return fmt.Errorf("tried address %s but received the following error: %w", ap, dialErr)
 	}
 
 	streamCtx, streamCtxCancel := context.WithCancel(p.lifetimeCtx)
