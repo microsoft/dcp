@@ -36,7 +36,7 @@ func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string,
 	// This allows us, upon reception of Ctrl-C, to delay the shutdown
 	// of DCP API server and controllers processes, and perform application shutdown/cleanup
 	// before terminating the API server.
-	process.DecoupleFromParent(cmd)
+	process.ForkFromParent(cmd)
 
 	hostingOpts := hosting.CommandServiceRunOptionShowStderr
 	if isProcessMonitor {
