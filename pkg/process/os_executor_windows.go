@@ -152,7 +152,7 @@ func (e *OSExecutor) prepareProcessStart(cmd *exec.Cmd, flags ProcessCreationFla
 	DecoupleFromParent(cmd)
 
 	if !cleanupJobDisabled() && (flags&CreationFlagEnsureKillOnDispose) == CreationFlagEnsureKillOnDispose {
-		// cmd.SysProcAttr is allocated already because we called ForkFromParent()
+		// cmd.SysProcAttr is allocated already because we called DecoupleFromParent()
 		cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
 	}
 }

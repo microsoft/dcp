@@ -20,6 +20,7 @@ func DecoupleFromParent(cmd *exec.Cmd) {
 	}
 	sysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
 	sysProcAttr.CreationFlags |= windows.CREATE_NEW_CONSOLE
+	sysProcAttr.HideWindow = true
 	cmd.SysProcAttr = sysProcAttr
 }
 
