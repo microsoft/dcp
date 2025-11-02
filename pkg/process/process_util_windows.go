@@ -18,9 +18,8 @@ func DecoupleFromParent(cmd *exec.Cmd) {
 	if sysProcAttr == nil {
 		sysProcAttr = &syscall.SysProcAttr{}
 	}
-	sysProcAttr.CreationFlags |= syscall.CREATE_NEW_PROCESS_GROUP
-	sysProcAttr.CreationFlags |= windows.CREATE_NEW_CONSOLE
-	sysProcAttr.HideWindow = true
+	creationFlags := uint32(syscall.CREATE_NEW_PROCESS_GROUP)
+	sysProcAttr.CreationFlags |= creationFlags
 	cmd.SysProcAttr = sysProcAttr
 }
 

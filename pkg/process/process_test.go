@@ -245,9 +245,7 @@ func TestChildrenTerminated(t *testing.T) {
 
 			// We ask for launching two children, with a single (grand)child each,
 			// for a total of 4 child processes, so the expected tree size is 5.
-			expectedProcessTreeSize := 5
-
-			int_testutil.EnsureProcessTree(t, rootP, expectedProcessTreeSize, 10*time.Second)
+			int_testutil.EnsureProcessTree(t, rootP, 5, 10*time.Second)
 
 			processTree, err := process.GetProcessTree(rootP)
 			require.NoError(t, err)
