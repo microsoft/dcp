@@ -22,12 +22,13 @@ import (
 )
 
 var (
-	outputFileName string
+	outputFileName  string
+	sourceDirectory string
 )
 
 func NewSessionLogCommand(log logr.Logger) (*cobra.Command, error) {
 	sessionLogCommand := &cobra.Command{
-		Use:   "session-log",
+		Use:   "session-log session-id",
 		Short: "Outputs a unified session log.",
 		Long:  `Outputs a unified log for all diagnostic logs with a given session ID.`,
 		RunE:  getSessionLog(log),
@@ -35,6 +36,7 @@ func NewSessionLogCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	sessionLogCommand.Flags().StringVarP(&outputFileName, "output", "o", "", "Output file for the session log (default is stdout)")
+	sessionLogCommand.Flags().StringVarP(&sourceDirectory, "source", "s", "", "Source directory for diagnostic logs (default is the DCP diagnostics log folder)")
 
 	return sessionLogCommand, nil
 }
@@ -57,8 +59,10 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 			outputWriter = outputFile
 		}
 
-		diagnosticsDirectory := logger.GetDiagnosticsLogFolder()
-		entries, dirErr := os.ReadDir(diagnosticsDirectory)
+		if sourceDirectory == "" {
+			sourceDirectory = logger.GetDiagnosticsLogFolder()
+		}
+		entries, dirErr := os.ReadDir(sourceDirectory)
 		if dirErr != nil {
 			return dirErr
 		}
@@ -70,13 +74,13 @@ func getSessionLog(log logr.Logger) func(cmd *cobra.Command, args []string) erro
 			}
 
 			if strings.HasPrefix(entry.Name(), fmt.Sprintf("%s-", sessionId)) {
-				sessionLogPaths = append(sessionLogPaths, filepath.Join(diagnosticsDirectory, entry.Name()))
+				sessionLogPaths = append(sessionLogPaths, filepath.Join(sourceDirectory, entry.Name()))
 			}
 		}
 
 		if len(sessionLogPaths) == 0 {
 			err := fmt.Errorf("no logs found for session %s", sessionId)
-			log.Error(err, "No logs found", "SessionID", sessionId, "SearchDirectory", diagnosticsDirectory)
+			log.Error(err, "No logs found", "SessionID", sessionId, "SourceDirectory", sourceDirectory)
 			return err
 		}
 

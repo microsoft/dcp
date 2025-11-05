@@ -250,21 +250,17 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 				func() {
 					defer ls.mutex.Unlock()
 					if ls.disposed {
+						log.V(1).Info("LogStorage is disposed, giving up on refreshing parent resource watcher")
 						return
 					}
 
-					// Use a separate goroutine to stop the old watcher and drain its channel
-					// so that events from the new watcher are processed expeditiously.
-					//
 					// This has to be initiated before making a call to create a new watcher.
 					// If not, we can end up in a deadlock situation where the storage is trying to deliver
 					// a watch event (holding the watch set lock in shared mode) while at the same time
 					// we are making a call to create a new watcher (which tries to take the watch set lock
 					// in exclusive mode).
-					go func(w watch.Interface) {
-						stopWatcher(w)
-						log.V(1).Info("Old parent resource watcher stopped")
-					}(ls.watcher)
+					stopWatcher(ls.watcher)
+					log.V(1).Info("Old parent resource watcher stopped")
 
 					newWatcher, newWatchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
 					if newWatchErr != nil {
