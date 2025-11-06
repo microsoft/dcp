@@ -1,6 +1,6 @@
 module github.com/microsoft/usvc-apiserver
 
-go 1.24.9
+go 1.24.10
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0
