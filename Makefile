@@ -139,6 +139,9 @@ version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.Produ
 # CGO_ENABLED has to be enabled (set to 1) for FIPS compliant builds
 export CGO_ENABLED ?= 0
 
+# Microsoft Go toolset requires some specific environment settings related to crypto
+export MS_GO_TOOLSET ?= 0
+
 ifeq ($(detected_OS),windows)
 	GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
 	TYPE_SOURCES := $(shell Get-ChildItem -Path './api/v1/*' -Include '*.go' -Exclude 'zz_generated*' -File | Select-Object -ExpandProperty FullName)
@@ -329,7 +332,11 @@ $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) ## Builds parrot tool binary suitable for use inside containers
 $(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
+ifeq ($(MS_GO_TOOLSET),1)
 	$$env:GOOS = "linux"; $$env:GOEXPERIMENT = "nosystemcrypto"; $$env:CGO_ENABLED = "0"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+else
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+endif
 else
 	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
 endif
@@ -381,7 +388,11 @@ $(DCPTUN_SERVER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
 $(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $$env:GOEXPERIMENT = "nosystemcrypto"; $$env:CGO_ENABLED = "0"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+ifeq ($(MS_GO_TOOLSET),1)
+	$$env:GOOS = "linux";  $$env:GOEXPERIMENT = "nosystemcrypto"; $$env:CGO_ENABLED = "0"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+else
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+endif
 else
 	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 endif
