@@ -123,9 +123,9 @@ GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v2.1.6
-PROTOC_VERSION ?= 31.1
-GO_LICENSES_VERSION ?= 706c3b73c1f289c2f9f174651e3452a2ec4cfd57
+GOLANGCI_LINT_VERSION ?= v2.6.1
+PROTOC_VERSION ?= 33.0
+GO_LICENSES_VERSION ?= a8e910054a1e8bc3104cbe074fb7b2251b377a28
 
 # DCP Version information
 VERSION ?= dev
@@ -284,16 +284,17 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 # # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244.
 # The awk script converts the output of `go list std` (line separated modules) to the input that `--ignore` expects
 .PHONY: generate-dependency-notices
+generate-dependency-notices: STDPACKAGES := $(shell go list -f '{{if .Standard}}{{.ImportPath}}{{end}}' all | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }')
 generate-dependency-notices: go-licenses
 ifeq ($(detected_OS),windows)
-	$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.windows
+	$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.darwin
+	$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 else
-	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.windows
+	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.darwin
+	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 endif
 
