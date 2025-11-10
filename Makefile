@@ -287,9 +287,9 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 generate-dependency-notices: STDPACKAGES := $(shell go list -f '{{if .Standard}}{{.ImportPath}}{{end}}' all | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }')
 generate-dependency-notices: go-licenses
 ifeq ($(detected_OS),windows)
-	$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.windows
-	$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.darwin
-	$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.linux
+	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.windows
+	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.darwin
+	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 else
 	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(STDPACKAGES) > NOTICE.windows
@@ -329,7 +329,7 @@ $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) ## Builds parrot tool binary suitable for use inside containers
 $(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+	$$env:GOOS = "linux"; $$env:GOEXPERIMENT = "nosystemcrypto"; $$env:CGO_ENABLED = "0"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
 else
 	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
 endif
@@ -381,7 +381,7 @@ $(DCPTUN_SERVER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
 $(DCPTUN_CLIENT_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
+	$$env:GOOS = "linux"; $$env:GOEXPERIMENT = "nosystemcrypto"; $$env:CGO_ENABLED = "0"; $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 else
 	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 endif
