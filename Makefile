@@ -125,7 +125,7 @@ PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 # Tool Versions
 GOLANGCI_LINT_VERSION ?= v2.1.6
 PROTOC_VERSION ?= 31.1
-GO_LICENSES_VERSION ?= 706c3b73c1f289c2f9f174651e3452a2ec4cfd57
+GO_LICENSES_VERSION ?= a8e910054a1e8bc3104cbe074fb7b2251b377a28
 
 # DCP Version information
 VERSION ?= dev
