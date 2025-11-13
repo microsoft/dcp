@@ -25,7 +25,9 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	co, coErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
 	require.NoError(t, coErr, "could not create a test container orchestrator")
-	defer require.NoError(t, co.Close())
+	defer func() {
+		require.NoError(t, co.Close())
+	}()
 
 	procNonExistent := nonExistentProcess(t)
 

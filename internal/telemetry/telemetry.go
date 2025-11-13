@@ -20,6 +20,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 )
 
 type TelemetrySystem struct {
@@ -35,9 +37,13 @@ var once sync.Once
 func GetTelemetrySystem() *TelemetrySystem {
 	once.Do(func() {
 		logName := filepath.Base(os.Args[0])
+		if osutil.IsWindows() {
+			logName = logName[:len(logName)-len(filepath.Ext(logName))]
+		}
 		spanExp, err := newTraceExporter(logName)
 		if err != nil {
-			panic(err)
+			// TODO: report error
+			spanExp = discardExporter{}
 		}
 
 		tp := sdktrace.NewTracerProvider(
@@ -47,7 +53,8 @@ func GetTelemetrySystem() *TelemetrySystem {
 
 		metricExp, err := newMetricExporter()
 		if err != nil {
-			panic(err)
+			// TODO: report error
+			metricExp = discardExporter{}
 		}
 
 		mp := sdkmetric.NewMeterProvider(

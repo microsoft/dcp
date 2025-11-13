@@ -358,7 +358,11 @@ compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
 compile: $(COMPILE_PREREQS) ## Builds all binaries (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-compile-debug: $(COMPILE_PREREQS) ## Builds all binaries with debug symbols (good for debugging; skips codegen)
+ifneq ($(detected_OS),windows)
+compile-debug: BUILD_ARGS := $(BUILD_ARGS) -race
+compile-debug: CGO_ENABLED := 1
+endif
+compile-debug: $(COMPILE_PREREQS) ## Builds all binaries with debug symbols (good for debugging; skips codegen; enables automatic race detection if possible)
 
 build: generate compile ## Runs codegen and builds all DCP binaries
 

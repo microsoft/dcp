@@ -4,8 +4,10 @@ package logger
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io/fs"
 	"net"
 	"os"
@@ -37,7 +39,6 @@ const (
 
 	verbosityFlagName      = "verbosity"
 	verbosityFlagShortName = "v"
-	stdOutMaxLevel         = zapcore.InfoLevel
 
 	// The timestamp format used in logs (ISO8601)
 	LogTimestampFormat = "2006-01-02T15:04:05.000Z0700"
@@ -48,7 +49,6 @@ const (
 var (
 	defaultLogPath = filepath.Join(os.TempDir(), "dcp", "logs")
 	sessionId      string
-	startTime      time.Time
 )
 
 type Logger struct {
@@ -168,11 +168,13 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 		return nil, err
 	}
 
-	// Create a new log file in the output folder. The default log file name is <sessionid>-<name>-<timestamp>-<pid>
-	// but the PID part can be overridden by setting the DCP_LOG_FILE_NAME_SUFFIX environment variable.
+	// Create a new log file in the output folder. The default log file name is <session id>-<name>-<process moment hash>
+	// but the name can be augmented by setting the DCP_LOG_FILE_NAME_SUFFIX environment variable.
 	logFileNameSuffix, found := os.LookupEnv(DCP_LOG_FILE_NAME_SUFFIX)
 	if !found || len(logFileNameSuffix) == 0 {
-		logFileNameSuffix = fmt.Sprintf("%d", os.Getpid())
+		logFileNameSuffix = ""
+	} else {
+		logFileNameSuffix = "-" + logFileNameSuffix
 	}
 
 	// If custom log file name suffix is used, there's a chance that the file using the resulting name
@@ -182,9 +184,10 @@ func getDiagnosticsLogCore(name string, encoderConfig zapcore.EncoderConfig) (za
 		backoff.WithInitialInterval(20*time.Millisecond),
 		backoff.WithMaxInterval(100*time.Millisecond),
 		backoff.WithMaxElapsedTime(2*time.Second),
+		backoff.WithRandomizationFactor(0.1),
 	)
 	logOutput, err := resiliency.RetryGet(context.Background(), b, func() (*os.File, error) {
-		logname := fmt.Sprintf("%s-%s-%d-%s.log", sessionId, name, startTime.UnixMilli()-DCP_EPOCH*1000, logFileNameSuffix)
+		logname := fmt.Sprintf("%s-%s-%s%s.log", sessionId, name, ProcessMomentHash(PlainHash), logFileNameSuffix)
 		return usvc_io.OpenFile(
 			filepath.Join(logFolder, logname),
 			os.O_RDWR|os.O_CREATE|os.O_EXCL,
@@ -255,11 +258,34 @@ func WithSessionId(cmd *exec.Cmd) {
 	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", DCP_LOG_SESSION_ID, SessionId()))
 }
 
+type MomentHashFlavor int
+
+const (
+	PlainHash MomentHashFlavor = iota
+	TimeSortableHash
+)
+
+// Computes a reasonably-unique, not-too-long value that represents  "this moment in time, from the perspective of the current process".
+// It is a hash of current timestamp and current process ID.
+func ProcessMomentHash(flavor MomentHashFlavor) string {
+	h := fnv.New32a()
+	now := time.Now()
+	startTime := now.UnixMicro() - DCP_EPOCH*1000*1000
+	// Writing to a hash never returns an error, and neither does converting int32/int64 to binary.
+	_ = binary.Write(h, binary.NativeEndian, startTime)
+	_ = binary.Write(h, binary.NativeEndian, int32(os.Getpid()))
+	val := fmt.Sprintf("%x", h.Sum32())
+	if flavor == PlainHash {
+		return val
+	}
+	dayHourMinutesSeconds := now.Format("02150405")
+	return fmt.Sprintf("%s_%s", dayHourMinutesSeconds, val)
+}
+
 func init() {
-	startTime = time.Now()
 	if setSessionId, found := os.LookupEnv(DCP_LOG_SESSION_ID); found && setSessionId != "" {
 		sessionId = setSessionId
 	} else {
-		sessionId = fmt.Sprintf("%d%d", startTime.Unix()-DCP_EPOCH, os.Getpid())
+		sessionId = ProcessMomentHash(TimeSortableHash)
 	}
 }
