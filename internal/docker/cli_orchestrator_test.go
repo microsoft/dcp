@@ -168,7 +168,9 @@ func TestReportsContainerEvents(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	defer require.NoError(t, pe.Close())
+	defer func() {
+		require.NoError(t, pe.Close())
+	}()
 	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
@@ -212,7 +214,9 @@ func TestDoesNotReportEventsWhenSubscriptionCancelled(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	defer require.NoError(t, pe.Close())
+	defer func() {
+		require.NoError(t, pe.Close())
+	}()
 	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)
@@ -259,7 +263,9 @@ func TestStartsAndStopsEventWatcher(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	defer require.NoError(t, pe.Close())
+	defer func() {
+		require.NoError(t, pe.Close())
+	}()
 	dco := NewDockerCliOrchestrator(testr.New(t), pe)
 
 	sub, evtC := subscribe(t, ctx, dco)

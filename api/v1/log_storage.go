@@ -259,9 +259,11 @@ func (ls *LogStorage) watchResourceEvents(log logr.Logger) error {
 					// a watch event (holding the watch set lock in shared mode) while at the same time
 					// we are making a call to create a new watcher (which tries to take the watch set lock
 					// in exclusive mode).
+					log.V(1).Info("Stopping old parent resource watcher...")
 					stopWatcher(ls.watcher)
 					log.V(1).Info("Old parent resource watcher stopped")
 
+					log.V(1).Info("Creating new parent resource watcher...")
 					newWatcher, newWatchErr := ls.parentKindStorage.Watch(context.Background(), &listOpts)
 					if newWatchErr != nil {
 						log.V(1).Info("Failed to re-establish parent resource watcher", "Error", newWatchErr)
@@ -443,6 +445,9 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 		}
 
 		log := contextdata.GetContextLogger(ctx)
+		log = log.WithName("Logstorage").WithValues(
+			"Kind", apiObj.GetObjectKind().GroupVersionKind().String(),
+		)
 
 		reader, writer := io.Pipe()
 		watcher, watcherErr := ls.watchResource(apiObj.GetObjectMeta().GetUID(), log)
@@ -450,13 +455,11 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 			return nil, false, "", apierrors.NewInternalError(fmt.Errorf("failed to register watcher for parent resource: %w", watcherErr))
 		}
 
-		log = log.WithName("Logstorage").WithValues(
-			"Kind", apiObj.GetObjectKind().GroupVersionKind().String(),
+		log = log.WithValues(
 			"Name", apiObj.GetObjectMeta().Name,
 			"UID", apiObj.GetObjectMeta().GetUID(),
 			"Options", options.String(),
 		)
-
 		log.V(1).Info("Preparing log stream")
 
 		go func() {

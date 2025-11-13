@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
@@ -30,7 +29,7 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 			return nil, logFolderErr
 		}
 
-		telemetryFileName := fmt.Sprintf("telemetry-%s-%d-%d.json", logName, time.Now().Unix(), os.Getpid())
+		telemetryFileName := fmt.Sprintf("%s-%s-telemetry-%s.json", logger.SessionId(), logName, logger.ProcessMomentHash(logger.PlainHash))
 		telemetryFile, logFileErr := usvc_io.OpenFile(filepath.Join(logFolder, telemetryFileName), os.O_RDWR|os.O_CREATE|os.O_EXCL|os.O_TRUNC, osutil.PermissionOnlyOwnerReadWrite)
 
 		if logFileErr != nil {
@@ -78,3 +77,6 @@ func (discardExporter) Aggregation(ik sdkmetric.InstrumentKind) sdkmetric.Aggreg
 func (discardExporter) Temporality(ik sdkmetric.InstrumentKind) metricdata.Temporality {
 	return sdkmetric.DefaultTemporalitySelector(ik)
 }
+
+var _ sdktrace.SpanExporter = discardExporter{}
+var _ sdkmetric.Exporter = discardExporter{}
