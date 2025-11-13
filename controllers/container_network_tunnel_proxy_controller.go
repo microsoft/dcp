@@ -1149,20 +1149,16 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, NoDelay
 	}
 
-	_, controlEndpointHostPort, controlEndpointErr := getHostAddressAndPortForContainerPort(
-		createOpts.ContainerSpec, dcptun.DefaultContainerProxyControlPort, started, log,
-	)
+	_, controlEndpointHostPort, controlEndpointErr := getHostAddressAndPortForContainerPort(createOpts.ContainerSpec, dcptun.DefaultContainerProxyControlPort, started, log)
 	if controlEndpointErr != nil {
-		// Error already logged
+		log.Error(controlEndpointErr, "Failed to determine control connection host port for the client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		return false, NoDelay
 	}
 
-	_, dataEndpointHostPort, dataEndpointErr := getHostAddressAndPortForContainerPort(
-		createOpts.ContainerSpec, dcptun.DefaultContainerProxyDataPort, started, log,
-	)
+	_, dataEndpointHostPort, dataEndpointErr := getHostAddressAndPortForContainerPort(createOpts.ContainerSpec, dcptun.DefaultContainerProxyDataPort, started, log)
 	if dataEndpointErr != nil {
-		// Error already logged
+		log.Error(dataEndpointErr, "Failed to determine data connection host port for the client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		return false, NoDelay
 	}
