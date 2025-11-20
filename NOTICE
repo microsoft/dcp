@@ -10135,8 +10135,8 @@ limitations under the License.
 
 ----------------------------------------------------------
 
-golang.org/x/crypto/cryptobyte v0.43.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/crypto/+/v0.43.0:LICENSE
+golang.org/x/crypto/cryptobyte v0.45.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/crypto/+/v0.45.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10205,8 +10205,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/net v0.46.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/net/+/v0.46.0:LICENSE
+golang.org/x/net v0.47.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/net/+/v0.47.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10275,8 +10275,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/sync v0.17.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sync/+/v0.17.0:LICENSE
+golang.org/x/sync v0.18.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sync/+/v0.18.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10310,8 +10310,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/sys/unix v0.37.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.37.0:LICENSE
+golang.org/x/sys/unix v0.38.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.38.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10345,8 +10345,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/term v0.36.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/term/+/v0.36.0:LICENSE
+golang.org/x/term v0.37.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/term/+/v0.37.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10380,8 +10380,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/text v0.30.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/text/+/v0.30.0:LICENSE
+golang.org/x/text v0.31.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/text/+/v0.31.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -16385,8 +16385,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------------------------
 
-golang.org/x/sys/windows v0.37.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.37.0:LICENSE
+golang.org/x/sys/windows v0.38.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.38.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
