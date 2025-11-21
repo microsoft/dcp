@@ -306,36 +306,6 @@ else
 	[[ -s $(GO_LICENSES) ]] || GOBIN=$(TOOL_BIN) $(CLEAR_GOARGS) $(GO_BIN) install github.com/danegsta/go-licenses/v2@$(GO_LICENSES_VERSION)
 endif
 
-# delay-tool is used for process package testing
-.PHONY: delay-tool
-delay-tool: $(DELAY_TOOL)
-$(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/usvc-apiserver/test/delay
-
-# lfwriter tool is used for testing lockfile package
-.PHONY: lfwriter-tool
-lfwriter-tool: $(LFWRITER_TOOL)
-$(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/usvc-apiserver/test/lfwriter
-
-# parrot tool is used for testing network connectivity
-.PHONY: parrot-tool
-parrot-tool: $(PARROT_TOOL)
-$(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/usvc-apiserver/test/parrot
-
-.PHONY: parrot-tool-containerexe
-parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) ## Builds parrot tool binary suitable for use inside containers
-$(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
-ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
-else
-	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
-endif
-
-.PHONY: httpcontent-stream-repro
-httpcontent-stream-repro:
-	dotnet build test/HttpContentStreamRepro.Server/HttpContentStreamRepro.Server.csproj
 
 ##@ Development
 
@@ -500,3 +470,36 @@ $(PROTOC): | $(TOOL_BIN)
 		&& unzip -q -o -DD '$(TOOL_BIN)/$(PROTOC_ZIP)' -d '$(TOOL_BIN)/protoc'; \
 	}
 endif
+
+# delay-tool is used for process package testing
+.PHONY: delay-tool
+delay-tool: $(DELAY_TOOL)
+$(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/usvc-apiserver/test/delay
+
+# lfwriter tool is used for testing lockfile package
+.PHONY: lfwriter-tool
+lfwriter-tool: $(LFWRITER_TOOL)
+$(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/usvc-apiserver/test/lfwriter
+
+# parrot tool is used for testing network connectivity
+.PHONY: parrot-tool
+parrot-tool: $(PARROT_TOOL)
+$(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/usvc-apiserver/test/parrot
+
+# Builds parrot tool binary suitable for use inside containers
+.PHONY: parrot-tool-containerexe
+parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) 
+$(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
+ifeq ($(detected_OS),windows)
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+else
+	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+endif
+
+.PHONY: httpcontent-stream-repro
+httpcontent-stream-repro:
+	dotnet build test/HttpContentStreamRepro.Server/HttpContentStreamRepro.Server.csproj
+

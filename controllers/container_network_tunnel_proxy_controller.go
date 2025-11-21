@@ -1007,7 +1007,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		pd.startupScheduled = false
 		return false, StandardDelay
 	}
-	if containerNetwork.Status.State != apiv1.ContainerNetworkStateRunning || containerNetwork.Status.ID == "" {
+	if containerNetwork.Status.State != apiv1.ContainerNetworkStateRunning || containerNetwork.Status.ID == "" || containerNetwork.Status.NetworkName == "" {
 		log.V(1).Info("Referenced ContainerNetwork is not in Running state, cannot start the client proxy container")
 		pd.startupScheduled = false
 		return false, StandardDelay
@@ -1018,7 +1018,8 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	// if it does not see the corresponding ContainerNetworkConnection object.
 	// And we cannot create the ContainerNetworkConnection without having a container ID (sort of a chicken-vs-egg problem).
 	// So we do the same trick as the Container controller does: create the client proxy container
-	// with a default network connection, then create the ContainerNetworkConnection object, then disconnect the default network.
+	// with a default network connection, disconnect the default network, then create a ContainerNetworkConnection object.
+	// that binds the container to the target network.
 	// The network controller will then connect the client proxy container to target ContainerNetwork.
 
 	log.V(1).Info("Starting client proxy container...")
@@ -1126,6 +1127,26 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, NoDelay
 	}
 
+	log.V(1).Info("Waiting for client proxy container to be connected to target network...")
+	connectionWaitErr := resiliency.RetryExponential(ctx, func() error {
+		inspected, inspectedErr := inspectContainer(ctx, r.config.Orchestrator, created.Id)
+		if inspectedErr != nil {
+			return inspectedErr
+		}
+		isTargetNetwork := func(n containers.InspectedContainerNetwork) bool {
+			return n.Name == containerNetwork.Status.NetworkName
+		}
+		if slices.Any(inspected.Networks, isTargetNetwork) {
+			return nil
+		}
+		return fmt.Errorf("client proxy container '%s' (id: %s) is not yet connected to target network '%s'", created.Name, created.Id, containerNetworkName.String())
+	})
+	if connectionWaitErr != nil {
+		log.Error(connectionWaitErr, "Error waiting for client proxy container to be connected to target network")
+		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		return false, NoDelay
+	}
+
 	containerStartCtx := ctx
 	if r.config.ContainerStartupTimeoutOverride > 0 {
 		var containerStartCtxCancel context.CancelFunc
@@ -1135,16 +1156,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	started, startErr := startContainer(containerStartCtx, r.config.Orchestrator, clientProxyCtrName, created.Id, containers.StreamCommandOptions{})
 	if startErr != nil {
 		log.Error(startErr, "Failed to start client proxy container")
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		return false, NoDelay
-	}
-
-	log.V(1).Info("Waiting for client proxy container to be connected to target network...")
-	_, connectionWaitErr := commonapi.WaitObjectAssumesState(ctx, r.Client, containerNetwork.NamespacedName(), func(currentNetwork *apiv1.ContainerNetwork) (bool, error) {
-		return slices.Contains(currentNetwork.Status.ContainerIDs, created.Id), nil
-	})
-	if connectionWaitErr != nil {
-		log.Error(connectionWaitErr, "Error waiting for client proxy container to be connected to target network")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 		return false, NoDelay
 	}
