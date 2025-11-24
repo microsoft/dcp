@@ -10135,8 +10135,8 @@ limitations under the License.
 
 ----------------------------------------------------------
 
-golang.org/x/crypto/cryptobyte v0.38.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/crypto/+/v0.38.0:LICENSE
+golang.org/x/crypto/cryptobyte v0.45.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/crypto/+/v0.45.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10205,8 +10205,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/net v0.40.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/net/+/v0.40.0:LICENSE
+golang.org/x/net v0.47.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/net/+/v0.47.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10240,8 +10240,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/oauth2 v0.29.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/oauth2/+/v0.29.0:LICENSE
+golang.org/x/oauth2 v0.30.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/oauth2/+/v0.30.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10275,8 +10275,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/sync v0.14.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sync/+/v0.14.0:LICENSE
+golang.org/x/sync v0.18.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sync/+/v0.18.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10310,8 +10310,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/sys/unix v0.37.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.37.0:LICENSE
+golang.org/x/sys/unix v0.38.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.38.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10345,8 +10345,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/term v0.32.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/term/+/v0.32.0:LICENSE
+golang.org/x/term v0.37.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/term/+/v0.37.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10380,8 +10380,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/text v0.25.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/text/+/v0.25.0:LICENSE
+golang.org/x/text v0.31.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/text/+/v0.31.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10659,8 +10659,8 @@ https://github.com/gomodules/jsonpatch/blob/v2.4.0/LICENSE
 
 ----------------------------------------------------------
 
-google.golang.org/genproto/googleapis/api v0.0.0-20250303144028-a0af3efb3deb - Apache-2.0
-https://github.com/googleapis/go-genproto/blob/a0af3efb3deb/googleapis/api/LICENSE
+google.golang.org/genproto/googleapis/api v0.0.0-20250804133106-a7a43d27e69b - Apache-2.0
+https://github.com/googleapis/go-genproto/blob/a7a43d27e69b/googleapis/api/LICENSE
 
 
                                  Apache License
@@ -10869,8 +10869,8 @@ https://github.com/googleapis/go-genproto/blob/a0af3efb3deb/googleapis/api/LICEN
 
 ----------------------------------------------------------
 
-google.golang.org/genproto/googleapis/rpc v0.0.0-20250303144028-a0af3efb3deb - Apache-2.0
-https://github.com/googleapis/go-genproto/blob/a0af3efb3deb/googleapis/rpc/LICENSE
+google.golang.org/genproto/googleapis/rpc v0.0.0-20250804133106-a7a43d27e69b - Apache-2.0
+https://github.com/googleapis/go-genproto/blob/a7a43d27e69b/googleapis/rpc/LICENSE
 
 
                                  Apache License
@@ -11079,8 +11079,8 @@ https://github.com/googleapis/go-genproto/blob/a0af3efb3deb/googleapis/rpc/LICEN
 
 ----------------------------------------------------------
 
-google.golang.org/grpc v1.72.2 - Apache-2.0
-https://github.com/grpc/grpc-go/blob/v1.72.2/LICENSE
+google.golang.org/grpc v1.76.0 - Apache-2.0
+https://github.com/grpc/grpc-go/blob/v1.76.0/LICENSE
 
 
                                  Apache License
@@ -11289,8 +11289,8 @@ https://github.com/grpc/grpc-go/blob/v1.72.2/LICENSE
 
 ----------------------------------------------------------
 
-google.golang.org/protobuf v1.36.6 - BSD-3-Clause
-https://github.com/protocolbuffers/protobuf-go/blob/v1.36.6/LICENSE
+google.golang.org/protobuf v1.36.10 - BSD-3-Clause
+https://github.com/protocolbuffers/protobuf-go/blob/v1.36.10/LICENSE
 
 Copyright (c) 2018 The Go Authors. All rights reserved.
 
@@ -16385,8 +16385,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------------------------
 
-golang.org/x/sys/windows v0.37.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.37.0:LICENSE
+golang.org/x/sys/windows v0.38.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.38.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
