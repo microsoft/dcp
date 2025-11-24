@@ -218,8 +218,11 @@ type FileSystemEntry struct {
 	// part of this create files set). The value can either be an absolute path or a relative path from the newly created symlink.
 	Target string `json:"target,omitempty"`
 
-	// For file type entries, the contents of the file. Optional.
+	// For file type entries, the string contents of the file. Optional.
 	Contents string `json:"contents,omitempty"`
+
+	// For file type entries, the Base64 encoded byte contents of the file. Optional
+	RawContents string `json:"rawContents,omitempty"`
 
 	// For file type entries, if true, errors creating this file will be logged, but will not cause the overall CreateFiles operation to fail.
 	ContinueOnError bool `json:"continueOnError,omitempty"`
@@ -274,6 +277,10 @@ func (cfi *FileSystemEntry) Equal(other *FileSystemEntry) bool {
 		return false
 	}
 
+	if cfi.RawContents != other.RawContents {
+		return false
+	}
+
 	if cfi.ContinueOnError != other.ContinueOnError {
 		return false
 	}
@@ -322,6 +329,14 @@ func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
 		if fse.Source != "" && fse.Contents != "" {
 			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "source and contents cannot be set at the same time"))
 		}
+
+		if fse.Source != "" && fse.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "source and rawContents cannot be set at the same time"))
+		}
+
+		if fse.Contents != "" && fse.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "contents and rawContents cannot be set at the same time"))
+		}
 	}
 
 	if fse.GetType() == FileSystemEntryTypeDir {
@@ -331,6 +346,10 @@ func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
 
 		if fse.Contents != "" {
 			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "contents cannot be set for directory type entries"))
+		}
+
+		if fse.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "rawContents cannot be set for directory type entries"))
 		}
 
 		for i, entry := range fse.Entries {

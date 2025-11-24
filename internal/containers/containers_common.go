@@ -4,6 +4,7 @@ package containers
 
 import (
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -90,8 +91,15 @@ func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner in
 		if readErr != nil {
 			return "", fmt.Errorf("could not read contents of %s: %w", certificate.Source, readErr)
 		}
-	} else {
+	} else if certificate.Contents != "" {
 		contents = []byte(certificate.Contents)
+	} else {
+		// Decode the Base64 encoded byte array
+		decoded, decodeErr := base64.StdEncoding.DecodeString(certificate.RawContents)
+		if decodeErr != nil {
+			return "", fmt.Errorf("could not decode rawContents for certificate %s: %w", certPath, decodeErr)
+		}
+		contents = decoded
 	}
 
 	block, _ := pem.Decode(contents)
@@ -169,8 +177,15 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 		}
 		defer f.Close()
 		return tarWriter.CopyFile(f, stat.Size(), basePath, owner, group, mode, stat.ModTime(), stat.ModTime(), stat.ModTime())
-	} else {
+	} else if file.Contents != "" {
 		return tarWriter.WriteFile([]byte(file.Contents), basePath, owner, group, mode, modTime, modTime, modTime)
+	} else {
+		// Decode the Base64 encoded byte array
+		decoded, decodeErr := base64.StdEncoding.DecodeString(file.RawContents)
+		if decodeErr != nil {
+			return fmt.Errorf("could not decode rawContents for file %s: %w", basePath, decodeErr)
+		}
+		return tarWriter.WriteFile(decoded, basePath, owner, group, mode, modTime, modTime, modTime)
 	}
 }
 

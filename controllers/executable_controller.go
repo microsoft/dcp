@@ -355,7 +355,7 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 	}
 
 	if exe.Spec.PemCertificates != nil {
-		certsTempFolder, certsTempFolderErr := usvc_io.CreateTempFolder(filepath.Join(exe.Name, "certs"), osutil.PermissionOnlyOwnerReadWrite)
+		certsTempFolder, certsTempFolderErr := usvc_io.CreateTempFolder(filepath.Join(exe.Name, "certs"), osutil.PermissionOnlyOwnerReadWriteTraverse)
 		if certsTempFolderErr != nil {
 			if !errors.Is(certsTempFolderErr, os.ErrExist) {
 				if exe.Spec.PemCertificates.ContinueOnError {

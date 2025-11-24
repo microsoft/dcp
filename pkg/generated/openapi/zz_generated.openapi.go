@@ -3145,7 +3145,14 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 					},
 					"contents": {
 						SchemaProps: spec.SchemaProps{
-							Description: "For file type entries, the contents of the file. Optional.",
+							Description: "For file type entries, the string contents of the file. Optional.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"rawContents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, the Base64 encoded byte contents of the file. Optional",
 							Type:        []string{"string"},
 							Format:      "",
 						},
