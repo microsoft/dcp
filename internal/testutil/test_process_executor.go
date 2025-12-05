@@ -36,7 +36,8 @@ type ProcessExecution struct {
 	ExitHandler        process.ProcessExitHandler
 	ExitCode           int32
 	ExecutionEnded     chan struct{}
-	Signal             chan syscall.Signal // Channel to send simulated signals to the process
+	Signal             chan syscall.Signal  // Channel to send simulated signals to the process
+	Executor           *TestProcessExecutor // The reference to the executor that created this process execution.
 
 	// Set to true when the process stop is initiated, enabling proper resource cleanup.
 	stopInitiated bool
@@ -208,6 +209,7 @@ func (e *TestProcessExecutor) StartProcess(
 		StartedAt:          startTimestamp,
 		ExitHandler:        handler,
 		StartWaitingCalled: false,
+		Executor:           e,
 	}
 
 	// For testing purposes make sure that stdout and stderr are always captured.
@@ -263,6 +265,7 @@ func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCre
 		PID:                pid,
 		StartedAt:          startTimestamp,
 		StartWaitingCalled: false,
+		Executor:           e,
 	}
 
 	// For testing purposes make sure that stdout and stderr are always captured.

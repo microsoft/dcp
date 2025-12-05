@@ -5,11 +5,7 @@ package main
 //go:generate goversioninfo
 
 import (
-	"context"
 	"os"
-	"os/signal"
-	"runtime"
-	"syscall"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
@@ -43,19 +39,7 @@ func main() {
 		}
 	}()
 
-	var ctx context.Context
-	if runtime.GOOS == "windows" {
-		ctx = context.Background()
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			for range c {
-				// Suppressing signals to avoid children stopping dcp processes
-			}
-		}()
-	} else {
-		ctx = kubeapiserver.SetupSignalContext()
-	}
+	ctx := kubeapiserver.SetupSignalContext()
 
 	telemetrySystem := telemetry.GetTelemetrySystem()
 

@@ -54,10 +54,15 @@ DCP terminates unexpectedly. It performs a graceful stop followed by removal of 
 		Args:         cobra.NoArgs,
 	}
 
-	containerCmd.Flags().StringVar(&containerID, "containerID", "", "The container ID or name to monitor and clean up when DCP exits")
-	flagErr := containerCmd.MarkFlagRequired("containerID")
+	flagErr := addMonitorFlags(containerCmd)
 	if flagErr != nil {
-		return nil, flagErr // Should never happen--the only error would be if the flag was not found
+		return nil, flagErr
+	}
+
+	containerCmd.Flags().StringVar(&containerID, "containerID", "", "The container ID or name to monitor and clean up when DCP exits")
+	flagErr = containerCmd.MarkFlagRequired("containerID")
+	if flagErr != nil {
+		return nil, flagErr
 	}
 
 	// Mostly for testing purposes.
@@ -65,7 +70,7 @@ DCP terminates unexpectedly. It performs a graceful stop followed by removal of 
 		"How often to poll the container status to check if it has been removed. Default is 30 seconds.")
 	flagErr = containerCmd.Flags().MarkHidden("containerPollInterval")
 	if flagErr != nil {
-		return nil, flagErr // Should never happen
+		return nil, flagErr
 	}
 
 	// Add container runtime flag

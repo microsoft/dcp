@@ -53,8 +53,14 @@ func (r *ProcessExecutableRunner) StartRun(
 	log logr.Logger,
 ) error {
 	cmd := makeCommand(exe)
-	startLog := log.WithValues("Cmd", cmd.Path, "Args", cmd.Args[1:])
+	if osutil.IsWindows() {
+		// On Windows we have seen some apps (e.g. Python uvicorn runner) sending Ctrl-C to the whole console group
+		// to facilitate app reload after code change. This kills the DCP controller process unless we run the app
+		// in an isolated manner, which includes a separate console.
+		process.ForkFromParent(cmd)
+	}
 
+	startLog := log.WithValues("Cmd", cmd.Path, "Args", cmd.Args[1:])
 	startLog.Info("Starting process...")
 	startLog.V(1).Info("Process details", "Env", cmd.Env, "Cwd", cmd.Dir)
 
@@ -130,7 +136,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	return nil
 }
 
-func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
+func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	runState, found := r.runningProcesses.LoadAndDelete(runID)
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
@@ -148,7 +154,15 @@ func (r *ProcessExecutableRunner) StopRun(_ context.Context, runID controllers.R
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- r.pe.StopProcess(runIdToPID(runID), runState.startTime)
+		if osutil.IsWindows() {
+			// See StartRun() for why we need to use separate console for the app process on Windows.
+			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
+			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
+			defer stopCtxCancel()
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runIdToPID(runID), runState.startTime, stopLog)
+		} else {
+			errCh <- r.pe.StopProcess(runIdToPID(runID), runState.startTime)
+		}
 	}()
 
 	var stopErr error = nil

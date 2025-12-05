@@ -49,67 +49,109 @@ func TestMonitorProcessExitsWithErrorForInvalidPid(t *testing.T) {
 }
 
 func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
+	type testcase struct {
+		description        string
+		prepareChildCmd    func(*exec.Cmd)
+		expectedChildCount int
+	}
+
+	// One parent, one child, and one grandchild for a total of 3 processes.
+	const childSpecFlag = "--child-spec=1,1"
+	getExpectedChildCount := func(useForkFromParent bool) int {
+		if useForkFromParent && osutil.IsWindows() {
+			return 4 // Account for "conhost" process hosting separate console for the child process tree
+		} else {
+			return 3
+		}
+	}
+
+	testCases := []testcase{
+		{
+			description:        "decouple from parent",
+			prepareChildCmd:    process.DecoupleFromParent,
+			expectedChildCount: getExpectedChildCount(false),
+		},
+		{
+			description:        "fork from parent",
+			prepareChildCmd:    process.ForkFromParent,
+			expectedChildCount: getExpectedChildCount(true),
+		},
+	}
+
 	t.Parallel()
 
-	dcpProc, dcpProcErr := getDcpProcExecutablePath()
-	require.NoError(t, dcpProcErr)
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			dcpProc, dcpProcErr := getDcpProcExecutablePath()
+			require.NoError(t, dcpProcErr)
 
-	delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
-	require.NoError(t, toolLaunchErr)
+			delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
+			require.NoError(t, toolLaunchErr)
 
-	// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer testCancel()
+			// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
+			const testTimeout = time.Second * 30
+			testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
+			defer testCancel()
 
-	// All commands will return on its own after 30 seconds. This prevents the test from launching a bunch of processes
-	// that turn into zombies.
-	parentCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
-	parentCmd.Dir = delayToolDir
-	process.DecoupleFromParent(parentCmd)
-	parentCmdErr := parentCmd.Start()
-	require.NoError(t, parentCmdErr, "command should start without error")
+			// All commands will return on its own after 30 seconds.
+			// This prevents the test from launching a bunch of processes that turn into zombies.
+			delayFlag := fmt.Sprintf("--delay=%s", testTimeout.String())
 
-	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
-	parentCreateTime := process.StartTimeForProcess(parentPid)
-	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, CreationTime: parentCreateTime}, 1, 5*time.Second)
+			parentCmd := exec.CommandContext(testCtx, "./delay", delayFlag)
+			parentCmd.Dir = delayToolDir
+			process.DecoupleFromParent(parentCmd)
+			parentCmdErr := parentCmd.Start()
+			require.NoError(t, parentCmdErr, "command should start without error")
 
-	childrenCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s", "--child-spec=1,1")
-	childrenCmd.Dir = delayToolDir
-	process.DecoupleFromParent(childrenCmd)
-	childrenCmdErr := childrenCmd.Start()
-	require.NoError(t, childrenCmdErr, "command should start without error")
+			parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
+			parentCreateTime := process.StartTimeForProcess(parentPid)
+			require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
+			int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, CreationTime: parentCreateTime}, 1, testTimeout/3)
 
-	pid := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
-	childCreateTime := process.StartTimeForProcess(pid)
-	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: pid, CreationTime: childCreateTime}, 3, 10*time.Second)
+			childrenCmd := exec.CommandContext(testCtx, "./delay", delayFlag, childSpecFlag)
+			childrenCmd.Dir = delayToolDir
+			tc.prepareChildCmd(childrenCmd)
+			childrenCmdErr := childrenCmd.Start()
+			require.NoError(t, childrenCmdErr, "command should start without error")
 
-	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"process",
-		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
-		"--child", strconv.Itoa(childrenCmd.Process.Pid),
-		"--monitor-start-time", parentCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
-		"--child-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
-	)
-	dcpProcCmd.Stdout = os.Stdout
-	dcpProcCmd.Stderr = os.Stderr
-	process.DecoupleFromParent(dcpProcCmd)
-	dcpProcCmdErr := dcpProcCmd.Start()
-	require.NoError(t, dcpProcCmdErr, "command should start without error")
+			pid := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
+			childCreateTime := process.StartTimeForProcess(pid)
+			require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
+			int_testutil.EnsureProcessTree(
+				t,
+				process.ProcessTreeItem{Pid: pid, CreationTime: childCreateTime},
+				tc.expectedChildCount,
+				testTimeout/3,
+			)
 
-	// Give enough time for the monitor process to start before killing the parent process
-	<-time.After(5 * time.Second)
+			dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
+				"process",
+				"--monitor", strconv.Itoa(parentCmd.Process.Pid),
+				"--child", strconv.Itoa(childrenCmd.Process.Pid),
+				"--monitor-start-time", parentCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
+				"--child-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
+			)
+			dcpProcCmd.Stdout = os.Stdout
+			dcpProcCmd.Stderr = os.Stderr
+			process.DecoupleFromParent(dcpProcCmd)
+			dcpProcCmdErr := dcpProcCmd.Start()
+			require.NoError(t, dcpProcCmdErr, "command should start without error")
 
-	killErr := parentCmd.Process.Kill()
-	require.NoError(t, killErr)
-	_ = parentCmd.Wait()
+			// Give enough time for the monitor process to start before killing the parent process
+			<-time.After(testTimeout / 4)
 
-	_ = childrenCmd.Wait()
-	require.True(t, childrenCmd.ProcessState.Exited(), "child process should have exited")
+			killErr := parentCmd.Process.Kill()
+			require.NoError(t, killErr)
+			_ = parentCmd.Wait()
 
-	dcpWaitErr := dcpProcCmd.Wait()
-	require.NoError(t, dcpWaitErr)
+			childErr := childrenCmd.Wait()
+			require.NoError(t, childErr) // dcpproc should terminate processes gracefully
+			require.True(t, childrenCmd.ProcessState.Exited(), "child process should have exited")
+
+			dcpWaitErr := dcpProcCmd.Wait()
+			require.NoError(t, dcpWaitErr)
+		})
+	}
 }
 
 func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
@@ -126,12 +168,15 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	require.NoError(t, toolLaunchErr)
 
 	// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Second*30)
+	const testTimeout = time.Second * 30
+	testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
 	defer testCancel()
 
-	// All commands will return on its own after 30 seconds. This prevents the test from launching a bunch of processes
-	// that turn into zombies.
-	parentCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
+	// All commands will return on its own after 30 seconds.
+	// This prevents the test from launching a bunch of processes that turn into zombies.
+	delayFlag := fmt.Sprintf("--delay=%s", testTimeout.String())
+
+	parentCmd := exec.CommandContext(testCtx, "./delay", delayFlag)
 	parentCmd.Dir = delayToolDir
 	parentCmdErr := parentCmd.Start()
 	require.NoError(t, parentCmdErr, "command should start without error")
@@ -143,9 +188,9 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentCreateTime := process.StartTimeForProcess(parentPid)
 	require.False(t, parentCreateTime.IsZero(), "parent process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, CreationTime: parentCreateTime}, 1, 5*time.Second)
+	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, CreationTime: parentCreateTime}, 1, testTimeout/3)
 
-	childCmd := exec.CommandContext(testCtx, "./delay", "--delay=30s")
+	childCmd := exec.CommandContext(testCtx, "./delay", delayFlag)
 	childCmd.Dir = delayToolDir
 	childCmdErr := childCmd.Start()
 	require.NoError(t, childCmdErr, "command should start without error")
@@ -157,7 +202,7 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	childPid := process.Uint32_ToPidT(uint32(childCmd.Process.Pid))
 	childCreateTime := process.StartTimeForProcess(childPid)
 	require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: childPid, CreationTime: childCreateTime}, 1, 5*time.Second)
+	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: childPid, CreationTime: childCreateTime}, 1, testTimeout/3)
 
 	// Case 1: monitor start time does not match
 	stdoutBuf := new(bytes.Buffer)
@@ -375,6 +420,92 @@ func TestMonitorContainerExitWhenContainerRemoved(t *testing.T) {
 		require.NoError(t, dcpProcResult, "dcpproc should exit cleanly when container is removed")
 	case <-testCtx.Done():
 		require.Fail(t, "dcpproc did not exit after container removal")
+	}
+}
+
+func TestStopProcessTreeWorks(t *testing.T) {
+	type testcase struct {
+		description        string
+		prepareChildCmd    func(*exec.Cmd)
+		expectedChildCount int
+	}
+
+	// One parent, one child, and one grandchild for a total of 3 processes.
+	const childSpecFlag = "--child-spec=1,1"
+	getExpectedChildCount := func(useForkFromParent bool) int {
+		if useForkFromParent && osutil.IsWindows() {
+			return 4 // Account for "conhost" process hosting separate console for the child process tree
+		} else {
+			return 3
+		}
+	}
+
+	testCases := []testcase{
+		{
+			description:        "decouple from parent",
+			prepareChildCmd:    process.DecoupleFromParent,
+			expectedChildCount: getExpectedChildCount(false),
+		},
+		{
+			description:        "fork from parent",
+			prepareChildCmd:    process.ForkFromParent,
+			expectedChildCount: getExpectedChildCount(true),
+		},
+	}
+
+	t.Parallel()
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			dcpProc, dcpProcErr := getDcpProcExecutablePath()
+			require.NoError(t, dcpProcErr)
+
+			delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
+			require.NoError(t, toolLaunchErr)
+
+			// Set a reasonable timeout that ensures we can see all expected processes exit before their delay time
+			const testTimeout = time.Second * 30
+			testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
+			defer testCancel()
+
+			// All commands will return on its own after 30 seconds.
+			// This prevents the test from launching a bunch of processes that turn into zombies.
+			delayFlag := fmt.Sprintf("--delay=%s", testTimeout.String())
+
+			childrenCmd := exec.CommandContext(testCtx, "./delay", delayFlag, childSpecFlag)
+			childrenCmd.Dir = delayToolDir
+			tc.prepareChildCmd(childrenCmd)
+			childrenCmdErr := childrenCmd.Start()
+			require.NoError(t, childrenCmdErr, "command should start without error")
+
+			pid := process.Uint32_ToPidT(uint32(childrenCmd.Process.Pid))
+			childCreateTime := process.StartTimeForProcess(pid)
+			require.False(t, childCreateTime.IsZero(), "child process start time should not be zero")
+			int_testutil.EnsureProcessTree(
+				t,
+				process.ProcessTreeItem{Pid: pid, CreationTime: childCreateTime},
+				tc.expectedChildCount,
+				testTimeout/3,
+			)
+
+			dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
+				"stop-process-tree",
+				"--pid", strconv.Itoa(childrenCmd.Process.Pid),
+				"--process-start-time", childCreateTime.Format(osutil.RFC3339MiliTimestampFormat),
+			)
+			dcpProcCmd.Stdout = os.Stdout
+			dcpProcCmd.Stderr = os.Stderr
+			process.DecoupleFromParent(dcpProcCmd)
+			dcpProcCmdErr := dcpProcCmd.Start()
+			require.NoError(t, dcpProcCmdErr, "command should start without error")
+
+			dcpWaitErr := dcpProcCmd.Wait()
+			require.NoError(t, dcpWaitErr)
+
+			childErr := childrenCmd.Wait()
+			require.NoError(t, childErr) // dcpproc should terminate processes gracefully
+			require.True(t, childrenCmd.ProcessState.Exited(), "child process should have exited")
+		})
 	}
 }
 
