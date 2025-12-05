@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
 	"github.com/microsoft/usvc-apiserver/controllers"
+	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
 	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
 	"github.com/microsoft/usvc-apiserver/internal/exerunners"
 	"github.com/microsoft/usvc-apiserver/internal/health"
@@ -48,8 +49,16 @@ func StartTestEnvironment(
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
-	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	exeRunner := exerunners.NewProcessExecutableRunner(pe)
+	pex := internal_testutil.NewTestProcessExecutor(ctx)
+	// On Windows the process Executable runner will use dcpproc to stop processes, so we need to simulate that.
+	pex.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"dcpproc", "stop-process-tree"},
+		},
+		RunCommand: dcpproc.SimulateStopProcessTreeCommand,
+	})
+
+	exeRunner := exerunners.NewProcessExecutableRunner(pex)
 	ir := ctrl_testutil.NewTestIdeRunner(ctx)
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
@@ -61,7 +70,7 @@ func StartTestEnvironment(
 		// This avoids a bunch of shutdown errors from the manager.
 		<-managerDone.Wait()
 
-		tpeCloseErr := pe.Close()
+		tpeCloseErr := pex.Close()
 		if tpeCloseErr != nil {
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
 		}
@@ -181,7 +190,7 @@ func StartTestEnvironment(
 			mgr.GetAPIReader(),
 			log.WithName("ServiceReconciler"),
 			controllers.ServiceReconcilerConfig{
-				ProcessExecutor:               pe,
+				ProcessExecutor:               pex,
 				CreateProxy:                   ctrl_testutil.NewTestProxy,
 				AdditionalReconciliationDelay: controllers.TestDelay,
 			},
@@ -197,7 +206,7 @@ func StartTestEnvironment(
 		tcc = ctrl_testutil.NewTestTunnelControlClient()
 		tprOpts := controllers.ContainerNetworkTunnelProxyReconcilerConfig{
 			Orchestrator:                    serverInfo.ContainerOrchestrator,
-			ProcessExecutor:                 pe,
+			ProcessExecutor:                 pex,
 			MakeTunnelControlClient:         func(_ grpc.ClientConnInterface) dcptunproto.TunnelControlClient { return tcc },
 			MaxTunnelPreparationAttempts:    2,
 			ContainerStartupTimeoutOverride: 2 * time.Second,
@@ -231,7 +240,7 @@ func StartTestEnvironment(
 	}()
 
 	teInfo := &TestEnvironmentInfo{
-		TestProcessExecutor:     pe,
+		TestProcessExecutor:     pex,
 		TestIdeRunner:           ir,
 		TestTunnelControlClient: tcc,
 	}

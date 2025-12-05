@@ -5,11 +5,7 @@ package main
 //go:generate goversioninfo
 
 import (
-	"context"
 	"os"
-	"os/signal"
-	"runtime"
-	"syscall"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
@@ -41,19 +37,7 @@ func main() {
 	}()
 	defer usvc_io.CleanupSessionFolderIfNeeded()
 
-	var ctx context.Context
-	if runtime.GOOS == "windows" {
-		ctx = context.Background()
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			for range c {
-				// Suppressing signals to avoid children stopping dcp processes
-			}
-		}()
-	} else {
-		ctx = kubeapiserver.SetupSignalContext()
-	}
+	ctx := kubeapiserver.SetupSignalContext()
 
 	root, err := commands.NewRootCmd(log)
 	if err != nil {

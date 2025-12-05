@@ -35,10 +35,15 @@ DCP terminates unexpectedly.`,
 		Args:         cobra.NoArgs,
 	}
 
-	processCmd.Flags().Int64VarP((*int64)(&childPid), "child", "p", int64(process.UnknownPID), "Tells DCPPROC the PID for the process that needs to be shut down (child process) when the monitored process exits for any reason.")
-	flagErr := processCmd.MarkFlagRequired("child")
+	flagErr := addMonitorFlags(processCmd)
 	if flagErr != nil {
-		return nil, flagErr // Should never happen--the only error would be if the flag was not found
+		return nil, flagErr
+	}
+
+	processCmd.Flags().Int64VarP((*int64)(&childPid), "child", "p", int64(process.UnknownPID), "Tells DCPPROC the PID for the process that needs to be shut down (child process) when the monitored process exits for any reason.")
+	flagErr = processCmd.MarkFlagRequired("child")
+	if flagErr != nil {
+		return nil, flagErr
 	}
 
 	processCmd.Flags().Var(flags.NewTimeFlag(&childProcessStartTime, osutil.RFC3339MiliTimestampFormat), "child-start-time", "If present, specifies the start time of the child process. This is used to ensure the correct process will be shut down. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
@@ -83,6 +88,12 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			// Log as Info--we might leak the child process if regular cleanup fails, but this should be rare.
 			log.Info("Child process could not be monitored", "Error", childMonitorErr)
 			return nil
+		}
+
+		attachErr := attachToTargetProcessConsole(log, childPid)
+		if attachErr != nil {
+			// Error already logged in attachToTargetProcessConsole
+			return attachErr
 		}
 
 		select {
