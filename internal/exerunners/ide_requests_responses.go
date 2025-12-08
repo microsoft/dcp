@@ -43,7 +43,11 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 
 type ideRunSessionTerminatedNotification struct {
 	ideRunSessionProcessChangedNotification
-	ExitCode *uint32 `json:"exit_code,omitempty"`
+
+	// The spec says exit_code is an unsigned 32-bit integer, but we use an int64 here just to be more resilient
+	// in case someone sends us a negative value, or a value outside uint32 range.
+	// This way we have a higher chance of deserializing the notification and correctly processing session termination.
+	ExitCode *int64 `json:"exit_code,omitempty"`
 }
 
 type ideSessionLogNotification struct {

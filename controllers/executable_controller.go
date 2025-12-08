@@ -514,13 +514,13 @@ func (r *ExecutableReconciler) startExecutable(ctx context.Context, exe *apiv1.E
 }
 
 func (r *ExecutableReconciler) OnMainProcessChanged(runID RunID, pid process.Pid_t) {
-	r.processRunChangeNotification(runID, pid, apiv1.UnknownExitCode, nil, func(ri *ExecutableRunInfo) {
+	r.processRunChangeNotification("Run process changed", runID, pid, apiv1.UnknownExitCode, nil, func(ri *ExecutableRunInfo) {
 		ri.ExeState = apiv1.ExecutableStateRunning
 	})
 }
 
 func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode *int32, err error) {
-	r.processRunChangeNotification(runID, process.UnknownPID, exitCode, err, func(ri *ExecutableRunInfo) {
+	r.processRunChangeNotification("Run completed", runID, process.UnknownPID, exitCode, err, func(ri *ExecutableRunInfo) {
 		ri.ExeState = apiv1.ExecutableStateFinished
 		ri.FinishTimestamp = metav1.NowMicro()
 	})
@@ -530,6 +530,7 @@ func (r *ExecutableReconciler) OnRunCompleted(runID RunID, exitCode *int32, err 
 // This function runs outside of the reconciliation loop, so we just memorize the PID and process exit code
 // (if available) in the run status map, and not attempt to modify any Executable object data.
 func (r *ExecutableReconciler) processRunChangeNotification(
+	runChangeDescription string,
 	runID RunID,
 	pid process.Pid_t,
 	exitCode *int32,
@@ -551,6 +552,7 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 		"Executable", name.String(),
 		"RunID", runID,
 		"LastState", runInfo.ExeState,
+		"RunChange", runChangeDescription,
 	)
 
 	var effectiveExitCode *int32

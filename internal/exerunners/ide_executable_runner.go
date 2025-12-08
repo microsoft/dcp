@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -391,8 +392,17 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 	runID := controllers.RunID(stn.SessionID)
 	exitCode := apiv1.UnknownExitCode
 	if stn.ExitCode != nil {
-		exitCode = new(int32)
-		*exitCode = int32(*stn.ExitCode)
+		if math.MinInt32 <= *stn.ExitCode && *stn.ExitCode <= math.MaxUint32 {
+			// If the exit code can be represented as int32 without data loss, use it.
+			// A reinterpretation of uint32 value will occur if the code > math.MaxInt32, but that is acceptable.
+			exitCode = new(int32)
+			*exitCode = int32(*stn.ExitCode)
+		} else {
+			r.log.Info("Received IDE run session termination notification with exit code outside uint32 range; will treat exit code as 'unknown'.",
+				"RunID", runID,
+				"ReceivedExitCode", *stn.ExitCode,
+			)
+		}
 	}
 	r.log.V(1).Info("IDE run session terminated", "RunID", runID, "PID", stn.PID, "ExitCode", exitCode)
 
