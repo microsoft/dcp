@@ -67,8 +67,8 @@
                 "process",
                 "--monitor", "${input:monitored-process-pid}",
                 "--child", "${input:child-process-pid}",
-                "--monitor-start-time", "${input:monitored-process-start-time}",
-                "--child-start-time", "${input:child-process-start-time}",
+                "--monitor-identity-time", "${input:monitored-process-start-time}",
+                "--child-identity-time", "${input:child-process-start-time}",
             ],
             "windows": {
                 "program": "${workspaceFolder}/bin/ext/bin/dcpproc",

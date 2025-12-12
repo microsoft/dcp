@@ -18,7 +18,7 @@ import (
 
 var clockTicks int = 100 // Default to 100 if we can't get the actual value
 
-func startTimeForProcess(proc *ps.Process) time.Time {
+func processIdentityTime(proc *ps.Process) time.Time {
 	hostProc := osutil.EnvVarStringWithDefault("HOST_PROC", "/proc")
 	stat := filepath.Join(hostProc, strconv.Itoa(int(proc.Pid)), "stat")
 	contents, err := os.ReadFile(stat)

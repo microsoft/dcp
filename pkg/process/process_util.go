@@ -23,7 +23,7 @@ import (
 
 type ProcessTreeItem struct {
 	Pid          Pid_t
-	CreationTime time.Time
+	IdentityTime time.Time // Used to distinguish between different instances of processes with the same PID, may not be a valid wall-clock time.
 }
 
 var (
@@ -43,7 +43,7 @@ func getIDs(items []ProcessTreeItem) []Pid_t {
 // Returns the list of ID for a given process and its children
 // The list is ordered starting with the root of the hierarchy, then the children, then the grandchildren etc.
 func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
-	root, err := findPsProcess(rootP.Pid, rootP.CreationTime)
+	root, err := findPsProcess(rootP.Pid, rootP.IdentityTime)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +55,7 @@ func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
 		current := next[0]
 		next = next[1:]
 		nextPid := Uint32_ToPidT(uint32(current.Pid))
-		tree = append(tree, ProcessTreeItem{nextPid, startTimeForProcess(current)})
+		tree = append(tree, ProcessTreeItem{nextPid, processIdentityTime(current)})
 
 		children, childrenErr := current.Children()
 		if childrenErr != nil {
@@ -114,10 +114,11 @@ func RunWithTimeout(ctx context.Context, executor Executor, cmd *exec.Cmd) (int3
 }
 
 // We serialize timestamps with millisecond precision, so a maximum couple of milliseconds of difference works well.
-const ProcessStartTimestampMaximumDifference = 2 * time.Millisecond
+const ProcessIdentityTimeMaximumDifference = 2 * time.Millisecond
 
 // Returns the creation time as a time.Time for a process.
-// If the creation time cannot be retrieved, an error is returned.
+// This time is intended for display purposes and may differ from the raw start time used to verify
+// process identity and the value returned can change due to clock adjustments etc.
 func StartTimeForProcess(pid Pid_t) time.Time {
 	osPid, osPidErr := PidT_ToUint32(pid)
 	if osPidErr != nil {
@@ -129,10 +130,32 @@ func StartTimeForProcess(pid Pid_t) time.Time {
 		return time.Time{}
 	}
 
-	return startTimeForProcess(proc)
+	createTimestamp, err := proc.CreateTime()
+	if err != nil {
+		return time.Time{}
+	}
+
+	return time.UnixMilli(createTimestamp)
 }
 
-func findPsProcess(pid Pid_t, expectedStartTime time.Time) (*ps.Process, error) {
+// Gets the raw start time for the process, used to verify process identity.
+// This time may not match the wall clock time returned by StartTimeForProcess() on all OS platforms and
+// should not be used for display purposes, but is stable across system clock changes.
+func ProcessIdentityTime(pid Pid_t) time.Time {
+	osPid, osPidErr := PidT_ToUint32(pid)
+	if osPidErr != nil {
+		return time.Time{}
+	}
+
+	proc, procErr := ps.NewProcess(int32(osPid))
+	if procErr != nil {
+		return time.Time{}
+	}
+
+	return processIdentityTime(proc)
+}
+
+func findPsProcess(pid Pid_t, expectedIdentityTime time.Time) (*ps.Process, error) {
 	osPid, err := PidT_ToUint32(pid)
 	if err != nil {
 		return nil, err
@@ -148,14 +171,14 @@ func findPsProcess(pid Pid_t, expectedStartTime time.Time) (*ps.Process, error) 
 		}
 	}
 
-	if !HasExpectedStartTime(proc, expectedStartTime) {
-		actualStartTime := startTimeForProcess(proc)
+	if !HasExpectedIdentityTime(proc, expectedIdentityTime) {
+		actualIdentityTime := processIdentityTime(proc)
 
 		return nil, fmt.Errorf(
 			"process start time mismatch, pid might have been reused: pid %d, expected start time %s, actual start time %s",
 			pid,
-			expectedStartTime.Format(osutil.RFC3339MiliTimestampFormat),
-			actualStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+			expectedIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+			actualIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		)
 	}
 
@@ -212,12 +235,12 @@ func StringToPidT(val string) (Pid_t, error) {
 	return convertPid[uint64, Pid_t](u64val)
 }
 
-func HasExpectedStartTime(proc *ps.Process, expectedStartTime time.Time) bool {
-	if expectedStartTime.IsZero() {
+func HasExpectedIdentityTime(proc *ps.Process, expectedIdentityTime time.Time) bool {
+	if expectedIdentityTime.IsZero() {
 		return true
 	} else {
-		creationTime := startTimeForProcess(proc)
-		return osutil.Within(expectedStartTime, creationTime, ProcessStartTimestampMaximumDifference)
+		identityTime := processIdentityTime(proc)
+		return osutil.Within(expectedIdentityTime, identityTime, ProcessIdentityTimeMaximumDifference)
 	}
 }
 
@@ -301,7 +324,7 @@ func init() {
 	This = sync.OnceValues(func() (ProcessTreeItem, error) {
 		retval := ProcessTreeItem{
 			Pid:          UnknownPID,
-			CreationTime: time.Time{},
+			IdentityTime: time.Time{},
 		}
 
 		osPid := os.Getpid()
@@ -312,10 +335,10 @@ func init() {
 			return retval, findProcessErr
 		}
 
-		startTime := startTimeForProcess(pp)
+		identityTime := processIdentityTime(pp)
 
 		retval.Pid = pid
-		retval.CreationTime = startTime
+		retval.IdentityTime = identityTime
 
 		return retval, nil
 	})

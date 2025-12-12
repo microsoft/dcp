@@ -55,7 +55,7 @@ func RunProcessWatcher(
 		"--child", strconv.FormatInt(int64(childPid), 10),
 	}
 	if !childStartTime.IsZero() {
-		cmdArgs = append(cmdArgs, "--child-start-time", childStartTime.Format(osutil.RFC3339MiliTimestampFormat))
+		cmdArgs = append(cmdArgs, "--child-identity-time", childStartTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
 
@@ -161,9 +161,9 @@ func getMonitorCmdArgs() []string {
 
 	// Add monitor start time if available
 	rootPid := process.Uint32_ToPidT(uint32(monitorPid))
-	monitorTime := process.StartTimeForProcess(rootPid)
-	if !monitorTime.IsZero() {
-		cmdArgs = append(cmdArgs, "--monitor-start-time", monitorTime.Format(osutil.RFC3339MiliTimestampFormat))
+	identityTime := process.ProcessIdentityTime(rootPid)
+	if !identityTime.IsZero() {
+		cmdArgs = append(cmdArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 
 	return cmdArgs

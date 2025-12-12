@@ -426,7 +426,7 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 	}
 
 	if !processStartTime.IsZero() {
-		if !osutil.Within(processStartTime, e.Executions[i].StartedAt, process.ProcessStartTimestampMaximumDifference) {
+		if !osutil.Within(processStartTime, e.Executions[i].StartedAt, process.ProcessIdentityTimeMaximumDifference) {
 			e.m.Unlock()
 			return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
 				pid,

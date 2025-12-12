@@ -399,7 +399,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		log.Error(thisProcessErr, "Could not get the current process information; container network will not have creator process information")
 	} else {
 		createOptions.Labels[CreatorProcessIdLabel] = fmt.Sprintf("%d", thisProcess.Pid)
-		createOptions.Labels[CreatorProcessStartTimeLabel] = thisProcess.CreationTime.Format(osutil.RFC3339MiliTimestampFormat)
+		createOptions.Labels[CreatorProcessStartTimeLabel] = thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)
 	}
 
 	cnet, err := createNetwork(ctx, r.orchestrator, createOptions)

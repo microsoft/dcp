@@ -16,7 +16,6 @@ import (
 	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
 	"github.com/microsoft/usvc-apiserver/pkg/logger"
 	"github.com/microsoft/usvc-apiserver/pkg/maps"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
 	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
 	"github.com/microsoft/usvc-apiserver/pkg/slices"
 )
@@ -64,14 +63,14 @@ func (e *OSExecutor) StartProcess(
 	}
 	e.releaseLock()
 
-	pid, processStartTime, err := e.startProcess(cmd, flags)
+	pid, processIdentityTime, err := e.startProcess(cmd, flags)
 	if err != nil {
 		return UnknownPID, time.Time{}, nil, err
 	}
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	ws, _ := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd, flags}, waitReasonNone)
+	ws, _ := e.tryStartWaiting(pid, processIdentityTime, waitableCmd{cmd, flags}, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
@@ -86,7 +85,7 @@ func (e *OSExecutor) StartProcess(
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd, flags}, waitReasonStopping)
+			_, shouldStopProcess := e.tryStartWaiting(pid, processIdentityTime, waitableCmd{cmd, flags}, waitReasonStopping)
 			var stopProcessErr error = nil
 
 			if shouldStopProcess {
@@ -97,7 +96,7 @@ func (e *OSExecutor) StartProcess(
 					"Args", cmd.Args[1:],
 				)
 				log.Info("Context expired, stopping process...")
-				stopProcessErr = e.stopProcessInternal(pid, processStartTime, optIsResponsibleForStopping)
+				stopProcessErr = e.stopProcessInternal(pid, processIdentityTime, optIsResponsibleForStopping)
 				if stopProcessErr != nil {
 					log.Error(stopProcessErr, "Could not stop process upon context expiration")
 					if handler != nil {
@@ -120,10 +119,10 @@ func (e *OSExecutor) StartProcess(
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _ = e.tryStartWaiting(pid, processStartTime, waitableCmd{cmd, flags}, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(pid, processIdentityTime, waitableCmd{cmd, flags}, waitReasonMonitoring)
 	}
 
-	return pid, processStartTime, startWaitingForProcessExit, nil
+	return pid, processIdentityTime, startWaitingForProcessExit, nil
 }
 
 func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid_t, time.Time, error) {
@@ -167,6 +166,7 @@ func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
 	return e.stopProcessInternal(pid, processStartTime, optNone)
 }
 
+// Returns the PID, process identity time (to distinguish between process instances with the same PID), and error.
 func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid_t, time.Time, error) {
 	e.prepareProcessStart(cmd, flags)
 
@@ -184,23 +184,23 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pid
 		"CreationFlags", flags,
 	)
 
-	processStartTime := StartTimeForProcess(pid)
+	processIdentityTime := ProcessIdentityTime(pid)
 
-	startCompletionErr := e.completeProcessStart(cmd, pid, processStartTime, flags)
+	startCompletionErr := e.completeProcessStart(cmd, pid, processIdentityTime, flags)
 	if startCompletionErr != nil {
 		startLog.Error(startCompletionErr, "Could not complete process start")
 
 		// If we could not complete the process start, we need to stop the process.
 		// Do not try graceful stop (no optTrySignal), just kill it immediately.
-		if stopErr := e.stopProcessInternal(pid, processStartTime, optIsResponsibleForStopping); stopErr != nil {
+		if stopErr := e.stopProcessInternal(pid, processIdentityTime, optIsResponsibleForStopping); stopErr != nil {
 			startLog.Error(stopErr, "Could not stop process after failed start")
 		}
 
 		return UnknownPID, time.Time{}, fmt.Errorf("could not complete process start: %w", startCompletionErr)
 	}
 
-	startLog.V(1).Info("Process started successfully", "PID", pid, "StartTime", processStartTime.Format(osutil.RFC3339MiliTimestampFormat))
-	return pid, processStartTime, nil
+	startLog.V(1).Info("Process started successfully", "PID", pid)
+	return pid, processIdentityTime, nil
 }
 
 // Atomically starts waiting on the passed waitable if noting is already waiting in association with the process
@@ -341,7 +341,7 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 		retryErr := resiliency.RetryExponentialWithTimeout(context.Background(), childStopTimeout, func() error {
 			childLog.V(1).Info("Stopping child process...")
 
-			_, childStopErr := e.stopSingleProcess(p.Pid, p.CreationTime, opts&^optNotFoundIsError)
+			_, childStopErr := e.stopSingleProcess(p.Pid, p.IdentityTime, opts&^optNotFoundIsError)
 			if childStopErr != nil {
 				childLog.V(1).Info("Error stopping child process", "Error", childStopErr.Error())
 			} else {

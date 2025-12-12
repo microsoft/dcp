@@ -9,8 +9,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	ps "github.com/shirou/gopsutil/v4/process"
 )
 
 const (
@@ -107,17 +105,4 @@ func (p *WaitableProcess) Signal(signal syscall.Signal) error {
 
 func (p *WaitableProcess) Kill() error {
 	return p.process.Kill()
-}
-
-func (p *WaitableProcess) StartTime() (time.Time, error) {
-	procInfo, err := ps.NewProcess(int32(p.process.Pid))
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	startTime := startTimeForProcess(procInfo)
-	if startTime.IsZero() {
-		return time.Time{}, errors.New("process start time could not be determined")
-	}
-	return startTime, nil
 }

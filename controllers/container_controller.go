@@ -1209,7 +1209,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				})
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 					Key:   CreatorProcessStartTimeLabel,
-					Value: thisProcess.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+					Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				})
 			}
 

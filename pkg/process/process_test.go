@@ -132,6 +132,42 @@ func TestRunWithTimeout(t *testing.T) {
 	}
 }
 
+// Tests that StartTimeForProcess returns a time that is roughly equivalent to the current time.
+func TestStartTimeForProcess(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, err := getDelayToolDir()
+	require.NoError(t, err)
+
+	// Command returns on its own after 10 seconds to prevent hanging
+	cmd := exec.Command("./delay", "-d", "10s")
+	cmd.Dir = delayToolDir
+	process.DecoupleFromParent(cmd)
+
+	err = cmd.Start()
+	require.NoError(t, err, "could not start the 'delay' test program")
+
+	now := time.Now()
+
+	// Ensure cleanup
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
+
+	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
+	creationTime := process.StartTimeForProcess(pid)
+
+	require.False(t, creationTime.IsZero(), "process start time should not be zero")
+
+	// Verify the creation time is close to the current time
+	// Allow up to 2 seconds of tolerance to account for system scheduling and timing variations
+	require.True(t, osutil.Within(creationTime, now, 2*time.Second),
+		"process creation time %v should be roughly equivalent to current time %v",
+		creationTime, now)
+}
+
 // Tests that process is terminated when the context that was used to start the process is manually cancelled.
 func TestRunCancelled(t *testing.T) {
 	t.Parallel()
@@ -201,24 +237,24 @@ func TestChildrenTerminated(t *testing.T) {
 			err := cmd.Start()
 			require.NoError(t, err, "could not start the 'delay' test program")
 			pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-			creationTime := process.StartTimeForProcess(pid)
-			require.False(t, creationTime.IsZero(), "process start time should not be zero")
-			return process.ProcessTreeItem{pid, creationTime}
+			identityTime := process.ProcessIdentityTime(pid)
+			require.False(t, identityTime.IsZero(), "process identity time should not be zero")
+			return process.ProcessTreeItem{pid, identityTime}
 		}},
 		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
-			creationTime := process.StartTimeForProcess(pid)
-			require.False(t, creationTime.IsZero(), "process start time should not be zero")
-			return process.ProcessTreeItem{pid, creationTime}
+			identityTime := process.ProcessIdentityTime(pid)
+			require.False(t, identityTime.IsZero(), "process identity time should not be zero")
+			return process.ProcessTreeItem{pid, identityTime}
 		}},
 		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
 			pid, _, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			startWaitForProcessExit()
-			creationTime := process.StartTimeForProcess(pid)
-			require.False(t, creationTime.IsZero(), "process start time should not be zero")
-			return process.ProcessTreeItem{pid, creationTime}
+			identityTime := process.ProcessIdentityTime(pid)
+			require.False(t, identityTime.IsZero(), "process identity time should not be zero")
+			return process.ProcessTreeItem{pid, identityTime}
 		}},
 	}
 
@@ -250,7 +286,7 @@ func TestChildrenTerminated(t *testing.T) {
 			processTree, err := process.GetProcessTree(rootP)
 			require.NoError(t, err)
 
-			err = executor.StopProcess(rootP.Pid, rootP.CreationTime)
+			err = executor.StopProcess(rootP.Pid, rootP.IdentityTime)
 			require.NoError(t, err)
 
 			// Wait up to 10 seconds for all processes to exit. This guarantees that the test will only pass if StopProcess()

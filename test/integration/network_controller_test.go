@@ -214,7 +214,7 @@ func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
 		if !slices.Contains(pids, candidate) {
 			return process.ProcessTreeItem{
 				Pid:          candidate,
-				CreationTime: time.Now().Add(-time.Minute),
+				IdentityTime: time.Now().Add(-time.Minute),
 			}
 		}
 	}
