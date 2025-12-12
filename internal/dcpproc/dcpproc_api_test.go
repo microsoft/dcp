@@ -43,7 +43,7 @@ func TestRunProcessWatcher(t *testing.T) {
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--child", "Should include --child flag")
 	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(testPid), 10), "Should include child PID")
-	require.Equal(t, dcpProc.Cmd.Args[4], "--child-start-time", "Should include --child-start-time flag")
+	require.Equal(t, dcpProc.Cmd.Args[4], "--child-identity-time", "Should include --child-identity-time flag")
 	require.Equal(t, dcpProc.Cmd.Args[5], testStartTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted child start time")
 	require.Equal(t, dcpProc.Cmd.Args[6], "--monitor", "Should include --monitor flag")
 	require.Equal(t, dcpProc.Cmd.Args[7], strconv.FormatInt(int64(os.Getpid()), 10), "Should include current process PID as monitored PID")

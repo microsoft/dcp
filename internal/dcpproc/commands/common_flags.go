@@ -25,7 +25,7 @@ func addMonitorFlags(cmd *cobra.Command) error {
 		return flagErr // Should never happen--the only error would be if the flag was not found
 	}
 
-	cmd.PersistentFlags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-start-time", "If present, specifies the start time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	cmd.PersistentFlags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-identity-time", "If present, specifies the identity time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 
 	cmd.PersistentFlags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor process exit.")
 

@@ -22,7 +22,7 @@ var (
 
 func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Int64VarP((*int64)(&monitorPid), "monitor", "m", int64(process.UnknownPID), "If present, tells DCP to monitor a given process ID (PID) and gracefully shutdown if the monitored process exits for any reason.")
-	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-start-time", "If present, specifies the start time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	cmd.Flags().Var(flags.NewTimeFlag(&monitorProcessStartTime, osutil.RFC3339MiliTimestampFormat), "monitor-identity-time", "If present, specifies the identity time of the process to monitor. This is used to ensure the correct process is being monitored. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
@@ -67,7 +67,7 @@ func MonitorPid(
 }
 
 // Returns a context (derived from the passed parent context) that will be cancelled when
-// the process specified by the monitor flags (--monitor and --monitor-start-time) exits .
+// the process specified by the monitor flags (--monitor and --monitor-identity-time) exits .
 // If the flags are not present at startup, the returned context is just a regular cancellable context
 // with no additional semantics.
 // If an error occurs (e.g. the process cannot be found, or the monitor flag values are invalid),

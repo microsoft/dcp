@@ -42,9 +42,9 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 	}()
 
 	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	createTime := process.StartTimeForProcess(pid)
-	require.False(t, createTime.IsZero(), "process start time should not be zero")
-	rootP := process.ProcessTreeItem{pid, createTime}
+	identityTime := process.ProcessIdentityTime(pid)
+	require.False(t, identityTime.IsZero(), "process start time should not be zero")
+	rootP := process.ProcessTreeItem{pid, identityTime}
 
 	// Only one process should be running, so the "tree" size is 1.
 	int_testutil.EnsureProcessTree(t, rootP, 1, 5*time.Second)

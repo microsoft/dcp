@@ -45,7 +45,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "true",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -57,7 +57,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "true",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -80,7 +80,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procThis.Pid),
-			controllers.CreatorProcessStartTimeLabel: procThis.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procThis.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -92,7 +92,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -118,7 +118,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -138,7 +138,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 					},
 					{
 						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 					},
 				},
 			},
@@ -160,7 +160,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -180,7 +180,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 					},
 					{
 						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 					},
 				},
 			},
@@ -195,7 +195,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -215,7 +215,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 					},
 					{
 						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 					},
 				},
 			},
@@ -238,7 +238,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 					},
 					{
 						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 					},
 				},
 			},
@@ -253,7 +253,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)
@@ -265,7 +265,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		Labels: map[string]string{
 			controllers.PersistentLabel:              "false",
 			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", procNonExistent.Pid),
-			controllers.CreatorProcessStartTimeLabel: procNonExistent.CreationTime.Format(osutil.RFC3339MiliTimestampFormat),
+			controllers.CreatorProcessStartTimeLabel: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		},
 	})
 	require.NoError(t, netCreateErr)

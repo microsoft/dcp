@@ -27,10 +27,10 @@ import (
 )
 
 type processRunState struct {
-	startTime  time.Time
-	stdOutFile *os.File
-	stdErrFile *os.File
-	cmdInfo    string // Command line used to start the process, for logging purposes
+	identityTime time.Time
+	stdOutFile   *os.File
+	stdErrFile   *os.File
+	cmdInfo      string // Command line used to start the process, for logging purposes
 }
 
 type ProcessExecutableRunner struct {
@@ -102,7 +102,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	})
 
 	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
-	pid, startTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
+	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
 		runInfo.FinishTimestamp = metav1.NowMicro()
@@ -117,19 +117,19 @@ func (r *ProcessExecutableRunner) StartRun(
 	}
 
 	// Use original log here, the watcher is a different process.
-	dcpproc.RunProcessWatcher(r.pe, pid, startTime, log)
+	dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
 
 	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-		startTime:  startTime,
-		stdOutFile: stdOutFile,
-		stdErrFile: stdErrFile,
-		cmdInfo:    cmd.String(),
+		identityTime: processIdentityTime,
+		stdOutFile:   stdOutFile,
+		stdErrFile:   stdErrFile,
+		cmdInfo:      cmd.String(),
 	})
 
 	runInfo.RunID = pidToRunID(pid)
 	pointers.SetValue(&runInfo.Pid, int64(pid))
 	runInfo.ExeState = apiv1.ExecutableStateRunning
-	runInfo.StartupTimestamp = metav1.NewMicroTime(startTime)
+	runInfo.StartupTimestamp = metav1.NewMicroTime(process.StartTimeForProcess(pid))
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), runInfo, startWaitForProcessExit)
 
@@ -159,9 +159,9 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
 			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
 			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runIdToPID(runID), runState.startTime, stopLog)
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runIdToPID(runID), runState.identityTime, stopLog)
 		} else {
-			errCh <- r.pe.StopProcess(runIdToPID(runID), runState.startTime)
+			errCh <- r.pe.StopProcess(runIdToPID(runID), runState.identityTime)
 		}
 	}()
 
