@@ -49,17 +49,6 @@ const (
 	RunMessageLevelError RunMessageLevel = "error"
 )
 
-// Note: run start outcome (success or failure) is reported via combination of ExecutableRunInfo data passed to StartRun() method
-// (synchronous run startup) or OnStartupCompleted() method of RunChangeHandler (asynchronous run startup).
-// ExecutableRunner implementation should modify ONLY the following ExectuableRunInfo fields to report run start outcome:
-//   - RunID (must be set for successful runs)
-//   - Pid (if available, for successful runs)
-//   - ExeState (to Running, FailedToStart, or Finished state)
-//   - StdOutFile and StdErrFile
-//  -- startupState.lastStartupAttemptTimestamp
-// An ExecutableRunner SHOULD NOT modify any other fields; in particular it should not set StartTimestamp or FinishTimestamp fields
-// (these are managed by the controller and are set when all applicable ExecutableRunners had a chance to start the run).
-
 type RunChangeHandler interface {
 	// Called when the main process of the run changes (is started or re-started).
 	//
