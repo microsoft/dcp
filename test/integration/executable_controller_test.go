@@ -1277,6 +1277,53 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 	require.True(t, slices.Contains(effectiveEnv, "CONSUMED_SVC_PORT=26021"), "The Executable '%s' effective environment does not contain expected port information (CONSUMED_SVC_PORT variable). The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
 }
 
+// Verify that an Executable in Starting state can be deleted.
+// This test creates an Executable that references a non-existent Service via a template function,
+// which causes the Executable to remain in Starting state indefinitely.
+// The test then attempts to delete the Executable and verifies it gets deleted within the timeout period.
+func TestExecutableDeletionWhileStarting(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-executable-deletion-while-starting"
+	const nonExistentSvcName = testName + "-nonexistent-svc"
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "SVC_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, nonExistentSvcName),
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s' that references non-existent Service '%s'...", exe.ObjectMeta.Name, nonExistentSvcName)
+	createErr := client.Create(ctx, &exe)
+	require.NoError(t, createErr, "Could not create Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Waiting for Executable '%s' to reach Starting state...", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateStarting, nil
+	})
+
+	t.Logf("Deleting Executable '%s' while it is in Starting state...", exe.ObjectMeta.Name)
+	deleteErr := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	})
+	require.NoError(t, deleteErr, "Could not delete Executable '%s'", exe.ObjectMeta.Name)
+
+	t.Logf("Waiting for Executable '%s' to be deleted...", exe.ObjectMeta.Name)
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+}
+
 func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
