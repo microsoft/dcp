@@ -372,40 +372,11 @@ func (r *ExecutableReconciler) startExecutable(
 	}
 
 	if ri.startupStage == StartupStageCertificateDataReady {
-		// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
-		reservedServicePorts := make(map[types.NamespacedName]int32)
-
-		err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
-		if templating.IsTransientTemplateError(err) {
-			log.Info("Could not compute effective environment for the Executable, retrying startup...",
-				"Cause", err.Error())
-			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
-		} else if err != nil {
-			log.Error(err, "Could not compute effective environment for the Executable")
-			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-			return statusChanged
+		oc := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		if oc != noChange {
+			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
+			return oc
 		}
-
-		err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
-		if templating.IsTransientTemplateError(err) {
-			log.Info("Could not compute effective invocation arguments for the Executable, retrying startup...",
-				"Cause", err.Error())
-			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
-		} else if err != nil {
-			log.Error(err, "Could not compute effective invocation arguments for the Executable")
-			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-			return statusChanged
-		}
-
-		if len(reservedServicePorts) > 0 {
-			log.V(1).Info("Reserving service ports...",
-				"Services", maps.Keys(reservedServicePorts),
-				"Ports", maps.Values(reservedServicePorts),
-			)
-		}
-		ri.ReservedPorts = reservedServicePorts
-		ri.startupStage = StartupStageDataInitialized
-		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}
 
 	if ri.startupStage >= StartupStageDefaultRunner && len(ri.startResults) == 0 { // Should never happen
@@ -1008,6 +979,69 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 
 	exe.Status.EffectiveArgs = effectiveArgs
 	return nil
+}
+
+// Computes effective environment and invocation arguments for the Executable.
+// Returned objectChange indicates whether the method was successful or not.
+// noChange means environment was computed successfully and we can proceed with startup.
+// Any other value means there was an error and the caller should return allow another reconciliation loop iteration.
+// This method is called from the reconciliation loop.
+func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) objectChange {
+	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
+	reservedServicePorts := make(map[types.NamespacedName]int32)
+
+	markExecutableFailed := func() {
+		ri.ExeState = apiv1.ExecutableStateFailedToStart
+		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
+		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	err := r.computeEffectiveEnvironment(ctx, exe, reservedServicePorts, log)
+	if templating.IsTransientTemplateError(err) {
+		if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
+			log.Info("Executable is being deleted while waiting to compute effective environment, aborting startup",
+				"Cause", err.Error())
+			markExecutableFailed()
+			return statusChanged
+		} else {
+			log.Info("Could not compute effective environment for the Executable, retrying startup...",
+				"Cause", err.Error())
+			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
+		}
+	} else if err != nil {
+		log.Error(err, "Could not compute effective environment for the Executable")
+		markExecutableFailed()
+		return statusChanged
+	}
+
+	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
+	if templating.IsTransientTemplateError(err) {
+		if exe.DeletionTimestamp != nil && !exe.DeletionTimestamp.IsZero() {
+			log.Info("Executable is being deleted while waiting to compute effective invocation arguments, aborting startup",
+				"Cause", err.Error())
+			markExecutableFailed()
+			return statusChanged
+		} else {
+			log.Info("Could not compute effective invocation arguments for the Executable, retrying startup...",
+				"Cause", err.Error())
+			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
+		}
+	} else if err != nil {
+		log.Error(err, "Could not compute effective invocation arguments for the Executable")
+		markExecutableFailed()
+		return statusChanged
+	}
+
+	if len(reservedServicePorts) > 0 {
+		log.V(1).Info("Reserving service ports...",
+			"Services", maps.Keys(reservedServicePorts),
+			"Ports", maps.Values(reservedServicePorts),
+		)
+	}
+	ri.ReservedPorts = reservedServicePorts
+	ri.startupStage = StartupStageDataInitialized
+	r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
+	return noChange
 }
 
 func (r *ExecutableReconciler) prepareCertificateFiles(
