@@ -320,7 +320,7 @@ compile: BUILD_ARGS := $(BUILD_ARGS) -ldflags "$(version_values)"
 compile: $(COMPILE_PREREQS) ## Builds all binaries (skips codegen)
 
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
-ifneq ($(detected_OS),windows)
+ifeq ($(detected_OS),linux)
 compile-debug: BUILD_ARGS := $(BUILD_ARGS) -race
 compile-debug: CGO_ENABLED := 1
 endif
