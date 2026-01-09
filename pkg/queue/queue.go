@@ -1,4 +1,7 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
 
 // Package queue implements a generic, thread-safe, bounded queue using single lock and a circular buffer, dynamically sized.
 // CONSIDER: a lock-free implementation might perform better.
