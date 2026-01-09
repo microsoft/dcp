@@ -15,9 +15,9 @@ import (
 
 	"github.com/emirpasic/gods/queues/priorityqueue"
 	"github.com/go-logr/logr"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/spf13/cobra"
 )
 

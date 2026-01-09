@@ -15,9 +15,9 @@ import (
 	stdproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const InvalidTunnelID uint32 = 0

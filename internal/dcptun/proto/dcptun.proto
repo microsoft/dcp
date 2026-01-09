@@ -2,7 +2,7 @@ edition = "2023";
 
 package dcptun;
 
-option go_package = "github.com/microsoft/usvc-apiserver/internal/dcptun/proto";
+option go_package = "github.com/microsoft/dcp/internal/dcptun/proto";
 
 import "google/protobuf/empty.proto";
 

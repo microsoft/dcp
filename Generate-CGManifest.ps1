@@ -13,7 +13,7 @@ foreach ($dep in $rootDeps) {
 foreach ($dep in $inderectDeps) {
     $registration = @{component = @{type = "go"; go = @{name = $dep.Path; version = $dep.Version}; dependencyRoots = @()}}
     $why = go mod why -m $dep.Path
-    $why = $why | Select-Object -Skip 1 | where {$_ -notmatch "^github.com/microsoft/usvc-apiserver/"}
+    $why = $why | Select-Object -Skip 1 | where {$_ -notmatch "^github.com/microsoft/dcp/"}
     foreach ($root in $why) {
         $registration.component.dependencyRoots += $root
     }

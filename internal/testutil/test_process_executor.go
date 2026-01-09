@@ -20,10 +20,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 type ProcessExecution struct {

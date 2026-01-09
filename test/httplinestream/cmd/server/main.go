@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/test/httplinestream/pkg/web"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/test/httplinestream/pkg/web"
 )
 
 func main() {

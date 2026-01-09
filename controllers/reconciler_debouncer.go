@@ -8,8 +8,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 // ReconcilerDebouncer helps debounce calls that trigger reconciliation. Useful for processing external events

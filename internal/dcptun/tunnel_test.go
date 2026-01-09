@@ -24,12 +24,12 @@ import (
 	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const autoAllocatePort = 0

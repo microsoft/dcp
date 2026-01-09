@@ -6,8 +6,8 @@ import (
 	"context"
 	"time"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // HealthProbeDescriptor contains data necessary to run and report results of a health probe.

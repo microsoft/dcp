@@ -5,7 +5,7 @@ package controllers
 import (
 	"go.opentelemetry.io/otel/metric"
 
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
+	"github.com/microsoft/dcp/internal/telemetry"
 )
 
 var (

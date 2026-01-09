@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/usvc-apiserver/internal/contextdata"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/internal/contextdata"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 func withDcpContextValues(handler http.Handler, lifetimeCtx context.Context, log logr.Logger) http.Handler {

@@ -17,12 +17,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
-	"github.com/microsoft/usvc-apiserver/internal/notifications/proto"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/notifications/proto"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/grpcutil"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/randdata"
 )
 
 type NotificationKind string

@@ -14,15 +14,15 @@ import (
 	"google.golang.org/grpc"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/controllers"
-	"github.com/microsoft/usvc-apiserver/internal/dcpproc"
-	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/exerunners"
-	"github.com/microsoft/usvc-apiserver/internal/health"
-	internal_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/dcpproc"
+	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/health"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/concurrency"
 )
 
 // TestEnvironmentInfo provides information about the test environment created via StartTestEnvironment().

@@ -13,10 +13,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/pkg/io"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/dcp/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 var (

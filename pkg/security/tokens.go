@@ -3,7 +3,7 @@
 package security
 
 import (
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
+	"github.com/microsoft/dcp/pkg/randdata"
 )
 
 const BearerTokenLength = 32

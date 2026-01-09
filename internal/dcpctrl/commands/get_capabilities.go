@@ -6,7 +6,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	"github.com/microsoft/usvc-apiserver/pkg/extensions"
+	"github.com/microsoft/dcp/pkg/extensions"
 )
 
 func NewGetCapabilitiesCommand(log logr.Logger) *cobra.Command {

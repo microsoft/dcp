@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/pkg/slices"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
 

@@ -19,14 +19,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
-	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
-	"github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	int_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestMonitorProcessExitsWithErrorForInvalidPid(t *testing.T) {

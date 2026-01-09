@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestWorkQueueLimitsConcurrency(t *testing.T) {

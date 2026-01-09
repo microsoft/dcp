@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	usvc_maps "github.com/microsoft/usvc-apiserver/pkg/maps"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	usvc_maps "github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	usvc_slices "github.com/microsoft/dcp/pkg/slices"
 )
 
 type resourceHarvester struct {

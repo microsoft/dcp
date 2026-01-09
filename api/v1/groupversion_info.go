@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/scheme"
 
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 // +k8s:deepcopy-gen=false

@@ -10,14 +10,14 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/bootstrap"
-	"github.com/microsoft/usvc-apiserver/internal/perftrace"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	cmds "github.com/microsoft/dcp/internal/commands"
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
+	"github.com/microsoft/dcp/internal/dcp/bootstrap"
+	"github.com/microsoft/dcp/internal/perftrace"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/kubeconfig"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 var (

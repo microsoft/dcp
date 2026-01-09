@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 // ResponseSpec describes how HTTP test server should reply to a single request.

@@ -10,8 +10,8 @@ import (
 	"os/exec"
 
 	"github.com/go-logr/logr"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 type CommandServiceRunOptions uint32

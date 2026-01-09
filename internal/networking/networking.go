@@ -17,11 +17,11 @@ import (
 	"golang.org/x/net/nettest"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/randdata"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 type IpVersionPreference string

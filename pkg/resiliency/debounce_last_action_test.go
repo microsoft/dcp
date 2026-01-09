@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/concurrency"
 )
 
 func TestExecutesActionRunnerAfterDelay(t *testing.T) {

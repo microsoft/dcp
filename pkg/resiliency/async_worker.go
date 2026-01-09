@@ -5,7 +5,7 @@ package resiliency
 import (
 	"context"
 
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/concurrency"
 )
 
 // Async worker is a worker that runs asynchronously, processing items from a work queue

@@ -52,7 +52,7 @@ Place new code in the correct location according to the project's structure:
 - When logging, start the log message with an uppercase letter.
 
 ## File handling
-- Use `OpenFile()`, or (for temporary files) `OpenTempFile()` functions from github.com/microsoft/usvc-apiserver/pkg/io package to open files. This function takes care of using appropriate file permissions in a cross-platform way.
+- Use `OpenFile()`, or (for temporary files) `OpenTempFile()` functions from github.com/microsoft/dcp/pkg/io package to open files. This function takes care of using appropriate file permissions in a cross-platform way.
 - Always close files after no longer needed, either by calling `Close()` from the method that opened the file (with `defer` statement), or when the lifetime context.Context of the file owner expires.
 
 ## Code generation

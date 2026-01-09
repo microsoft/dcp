@@ -134,7 +134,7 @@ VERSION_MINOR ?= 0
 VERSION_PATCH ?= 0
 COMMIT ?= $(shell git rev-parse HEAD)
 
-version_values := -X 'github.com/microsoft/usvc-apiserver/internal/version.ProductVersion=$(VERSION)' -X 'github.com/microsoft/usvc-apiserver/internal/version.CommitHash=$(COMMIT)' -X 'github.com/microsoft/usvc-apiserver/internal/version.BuildTimestamp=$(BUILD_TIMESTAMP)'
+version_values := -X 'github.com/microsoft/dcp/internal/version.ProductVersion=$(VERSION)' -X 'github.com/microsoft/dcp/internal/version.CommitHash=$(COMMIT)' -X 'github.com/microsoft/dcp/internal/version.BuildTimestamp=$(BUILD_TIMESTAMP)'
 
 # CGO_ENABLED has to be enabled (set to 1) for FIPS compliant builds
 export CGO_ENABLED ?= 0
@@ -192,7 +192,7 @@ $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 	--output-dir "$(repo_dir)" \
 	--report-filename - \
 	$(OPENAPI_GEN_OPTS) \
-	github.com/microsoft/usvc-apiserver/api/v1 \
+	github.com/microsoft/dcp/api/v1 \
 	k8s.io/apimachinery/pkg/apis/meta/v1 k8s.io/apimachinery/pkg/runtime k8s.io/apimachinery/pkg/version
 endef
 
@@ -286,14 +286,14 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
 ifeq ($(detected_OS),windows)
-	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
+	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
+	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 else
-	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/usvc-apiserver --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
+	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
+	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 endif
 
@@ -475,28 +475,28 @@ endif
 .PHONY: delay-tool
 delay-tool: $(DELAY_TOOL)
 $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/usvc-apiserver/test/delay
+	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/dcp/test/delay
 
 # lfwriter tool is used for testing lockfile package
 .PHONY: lfwriter-tool
 lfwriter-tool: $(LFWRITER_TOOL)
 $(LFWRITER_TOOL): $(wildcard ./test/lfwriter/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/usvc-apiserver/test/lfwriter
+	$(GO_BIN) build -o $(LFWRITER_TOOL) github.com/microsoft/dcp/test/lfwriter
 
 # parrot tool is used for testing network connectivity
 .PHONY: parrot-tool
 parrot-tool: $(PARROT_TOOL)
 $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/usvc-apiserver/test/parrot
+	$(GO_BIN) build -o $(PARROT_TOOL) github.com/microsoft/dcp/test/parrot
 
 # Builds parrot tool binary suitable for use inside containers
 .PHONY: parrot-tool-containerexe
 parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) 
 $(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
-	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 else
-	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/usvc-apiserver/test/parrot
+	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 endif
 
 .PHONY: httpcontent-stream-repro

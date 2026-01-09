@@ -9,12 +9,12 @@ import (
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
-	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/internal/dcp/commands"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	cmdutil "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/internal/dcp/commands"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (

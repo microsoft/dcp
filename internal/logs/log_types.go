@@ -5,7 +5,7 @@ package logs
 import (
 	"k8s.io/apimachinery/pkg/types"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 type LogStreamID uint64

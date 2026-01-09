@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (

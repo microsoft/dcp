@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
 

@@ -16,7 +16,7 @@ import (
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 const (

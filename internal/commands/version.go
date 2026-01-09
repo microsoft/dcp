@@ -10,7 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	"github.com/microsoft/usvc-apiserver/internal/version"
+	"github.com/microsoft/dcp/internal/version"
 )
 
 const (

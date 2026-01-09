@@ -26,7 +26,7 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 
 ### Starting a final release build
 
-1. Once you have a release candidate build that you're ready to release as a final build, [start a new GitHub release](https://github.com/microsoft/usvc-apiserver/releases/new).
+1. Once you have a release candidate build that you're ready to release as a final build, [start a new GitHub release](https://github.com/microsoft/dcp/releases/new).
 1. Set the release tag to the appropriate `v<major>.<minor>.<patch>` (eg. `v0.2.3`) and the target branch to either the release branch you're releasing from (eg. `release/0.2`) if the latest commit in the branch is the new release build or to the specific commit from the release branch.
 1. Either leave the previous tag as auto or manually select the previous release tag and click `Generate release notes` (if the generated changelog doesn't look correct and you used automatic tag detection, you may have to try creating the release again and manually selecting the previous release).
 1. Ensure `Set as a pre-release` is unchecked and `Set as the latest release` is checked.

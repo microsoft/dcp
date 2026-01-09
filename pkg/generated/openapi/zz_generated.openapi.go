@@ -15,126 +15,126 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment":                schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Container":                         schema_microsoft_usvc_apiserver_api_v1_Container(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext":             schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret":              schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExec":                     schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecList":                 schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec":                 schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus":               schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel":                    schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerList":                     schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork":                  schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection":        schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig":  schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionList":    schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec":    schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkList":              schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec":              schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus":            schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxy":       schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxy(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyList":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec":   schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus": schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPemCertificates":          schema_microsoft_usvc_apiserver_api_v1_ContainerPemCertificates(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerPort":                     schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec":                     schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus":                   schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume":                   schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeList":               schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec":               schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus":             schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem":                  schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Endpoint":                          schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointList":                      schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec":                      schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus":                    schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.EnvVar":                            schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Executable":                        schema_microsoft_usvc_apiserver_api_v1_Executable(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableList":                    schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutablePemCertificates":         schema_microsoft_usvc_apiserver_api_v1_ExecutablePemCertificates(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe":                   schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet":              schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetList":          schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec":          schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus":        schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec":                    schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus":                  schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate":                schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry":                   schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbe":                       schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult":                 schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule":               schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HttpHeader":                        schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.HttpProbe":                         schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.LogOptions":                        schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.LogStreamer":                       schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.PemCertificate":                    schema_microsoft_usvc_apiserver_api_v1_PemCertificate(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.Service":                           schema_microsoft_usvc_apiserver_api_v1_Service(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceList":                       schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec":                       schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus":                     schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.TunnelConfiguration":               schema_microsoft_usvc_apiserver_api_v1_TunnelConfiguration(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.TunnelStatus":                      schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref),
-		"github.com/microsoft/usvc-apiserver/api/v1.VolumeMount":                       schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                                schema_pkg_apis_meta_v1_APIGroup(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                            schema_pkg_apis_meta_v1_APIGroupList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResource":                             schema_pkg_apis_meta_v1_APIResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList":                         schema_pkg_apis_meta_v1_APIResourceList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":                             schema_pkg_apis_meta_v1_APIVersions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ApplyOptions":                            schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Condition":                               schema_pkg_apis_meta_v1_Condition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.CreateOptions":                           schema_pkg_apis_meta_v1_CreateOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.DeleteOptions":                           schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Duration":                                schema_pkg_apis_meta_v1_Duration(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldSelectorRequirement":                schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldsV1":                                schema_pkg_apis_meta_v1_FieldsV1(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GetOptions":                              schema_pkg_apis_meta_v1_GetOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupKind":                               schema_pkg_apis_meta_v1_GroupKind(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupResource":                           schema_pkg_apis_meta_v1_GroupResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersion":                            schema_pkg_apis_meta_v1_GroupVersion(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery":                schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionKind":                        schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionResource":                    schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.InternalEvent":                           schema_pkg_apis_meta_v1_InternalEvent(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector":                           schema_pkg_apis_meta_v1_LabelSelector(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement":                schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.List":                                    schema_pkg_apis_meta_v1_List(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta":                                schema_pkg_apis_meta_v1_ListMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions":                             schema_pkg_apis_meta_v1_ListOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry":                      schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime":                               schema_pkg_apis_meta_v1_MicroTime(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta":                              schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference":                          schema_pkg_apis_meta_v1_OwnerReference(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata":                   schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadataList":               schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Patch":                                   schema_pkg_apis_meta_v1_Patch(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.PatchOptions":                            schema_pkg_apis_meta_v1_PatchOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Preconditions":                           schema_pkg_apis_meta_v1_Preconditions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.RootPaths":                               schema_pkg_apis_meta_v1_RootPaths(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR":               schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":                                  schema_pkg_apis_meta_v1_Status(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause":                             schema_pkg_apis_meta_v1_StatusCause(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusDetails":                           schema_pkg_apis_meta_v1_StatusDetails(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Table":                                   schema_pkg_apis_meta_v1_Table(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition":                   schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableOptions":                            schema_pkg_apis_meta_v1_TableOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRow":                                schema_pkg_apis_meta_v1_TableRow(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition":                       schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Time":                                    schema_pkg_apis_meta_v1_Time(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.Timestamp":                               schema_pkg_apis_meta_v1_Timestamp(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.TypeMeta":                                schema_pkg_apis_meta_v1_TypeMeta(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.UpdateOptions":                           schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		"k8s.io/apimachinery/pkg/apis/meta/v1.WatchEvent":                              schema_pkg_apis_meta_v1_WatchEvent(ref),
-		"k8s.io/apimachinery/pkg/runtime.RawExtension":                                 schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                                     schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
-		"k8s.io/apimachinery/pkg/runtime.Unknown":                                      schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
-		"k8s.io/apimachinery/pkg/version.Info":                                         schema_k8sio_apimachinery_pkg_version_Info(ref),
+		"github.com/microsoft/dcp/api/v1.AmbientEnvironment":                schema_microsoft_dcp_api_v1_AmbientEnvironment(ref),
+		"github.com/microsoft/dcp/api/v1.Container":                         schema_microsoft_dcp_api_v1_Container(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerBuildContext":             schema_microsoft_dcp_api_v1_ContainerBuildContext(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerBuildSecret":              schema_microsoft_dcp_api_v1_ContainerBuildSecret(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerExec":                     schema_microsoft_dcp_api_v1_ContainerExec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerExecList":                 schema_microsoft_dcp_api_v1_ContainerExecList(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerExecSpec":                 schema_microsoft_dcp_api_v1_ContainerExecSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerExecStatus":               schema_microsoft_dcp_api_v1_ContainerExecStatus(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerLabel":                    schema_microsoft_dcp_api_v1_ContainerLabel(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerList":                     schema_microsoft_dcp_api_v1_ContainerList(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetwork":                  schema_microsoft_dcp_api_v1_ContainerNetwork(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnection":        schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig":  schema_microsoft_dcp_api_v1_ContainerNetworkConnectionConfig(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionList":    schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionSpec":    schema_microsoft_dcp_api_v1_ContainerNetworkConnectionSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkList":              schema_microsoft_dcp_api_v1_ContainerNetworkList(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkSpec":              schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkStatus":            schema_microsoft_dcp_api_v1_ContainerNetworkStatus(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxy":       schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyList":   schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxySpec":   schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyStatus": schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerPemCertificates":          schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerPort":                     schema_microsoft_dcp_api_v1_ContainerPort(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerSpec":                     schema_microsoft_dcp_api_v1_ContainerSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerStatus":                   schema_microsoft_dcp_api_v1_ContainerStatus(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerVolume":                   schema_microsoft_dcp_api_v1_ContainerVolume(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerVolumeList":               schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerVolumeSpec":               schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ContainerVolumeStatus":             schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref),
+		"github.com/microsoft/dcp/api/v1.CreateFileSystem":                  schema_microsoft_dcp_api_v1_CreateFileSystem(ref),
+		"github.com/microsoft/dcp/api/v1.Endpoint":                          schema_microsoft_dcp_api_v1_Endpoint(ref),
+		"github.com/microsoft/dcp/api/v1.EndpointList":                      schema_microsoft_dcp_api_v1_EndpointList(ref),
+		"github.com/microsoft/dcp/api/v1.EndpointSpec":                      schema_microsoft_dcp_api_v1_EndpointSpec(ref),
+		"github.com/microsoft/dcp/api/v1.EndpointStatus":                    schema_microsoft_dcp_api_v1_EndpointStatus(ref),
+		"github.com/microsoft/dcp/api/v1.EnvVar":                            schema_microsoft_dcp_api_v1_EnvVar(ref),
+		"github.com/microsoft/dcp/api/v1.Executable":                        schema_microsoft_dcp_api_v1_Executable(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableList":                    schema_microsoft_dcp_api_v1_ExecutableList(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutablePemCertificates":         schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableProbe":                   schema_microsoft_dcp_api_v1_ExecutableProbe(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSet":              schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetList":          schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetSpec":          schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetStatus":        schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableSpec":                    schema_microsoft_dcp_api_v1_ExecutableSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableStatus":                  schema_microsoft_dcp_api_v1_ExecutableStatus(ref),
+		"github.com/microsoft/dcp/api/v1.ExecutableTemplate":                schema_microsoft_dcp_api_v1_ExecutableTemplate(ref),
+		"github.com/microsoft/dcp/api/v1.FileSystemEntry":                   schema_microsoft_dcp_api_v1_FileSystemEntry(ref),
+		"github.com/microsoft/dcp/api/v1.HealthProbe":                       schema_microsoft_dcp_api_v1_HealthProbe(ref),
+		"github.com/microsoft/dcp/api/v1.HealthProbeResult":                 schema_microsoft_dcp_api_v1_HealthProbeResult(ref),
+		"github.com/microsoft/dcp/api/v1.HealthProbeSchedule":               schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
+		"github.com/microsoft/dcp/api/v1.HttpHeader":                        schema_microsoft_dcp_api_v1_HttpHeader(ref),
+		"github.com/microsoft/dcp/api/v1.HttpProbe":                         schema_microsoft_dcp_api_v1_HttpProbe(ref),
+		"github.com/microsoft/dcp/api/v1.LogOptions":                        schema_microsoft_dcp_api_v1_LogOptions(ref),
+		"github.com/microsoft/dcp/api/v1.LogStreamer":                       schema_microsoft_dcp_api_v1_LogStreamer(ref),
+		"github.com/microsoft/dcp/api/v1.PemCertificate":                    schema_microsoft_dcp_api_v1_PemCertificate(ref),
+		"github.com/microsoft/dcp/api/v1.Service":                           schema_microsoft_dcp_api_v1_Service(ref),
+		"github.com/microsoft/dcp/api/v1.ServiceList":                       schema_microsoft_dcp_api_v1_ServiceList(ref),
+		"github.com/microsoft/dcp/api/v1.ServiceSpec":                       schema_microsoft_dcp_api_v1_ServiceSpec(ref),
+		"github.com/microsoft/dcp/api/v1.ServiceStatus":                     schema_microsoft_dcp_api_v1_ServiceStatus(ref),
+		"github.com/microsoft/dcp/api/v1.TunnelConfiguration":               schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
+		"github.com/microsoft/dcp/api/v1.TunnelStatus":                      schema_microsoft_dcp_api_v1_TunnelStatus(ref),
+		"github.com/microsoft/dcp/api/v1.VolumeMount":                       schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroup":                     schema_pkg_apis_meta_v1_APIGroup(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIGroupList":                 schema_pkg_apis_meta_v1_APIGroupList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResource":                  schema_pkg_apis_meta_v1_APIResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIResourceList":              schema_pkg_apis_meta_v1_APIResourceList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.APIVersions":                  schema_pkg_apis_meta_v1_APIVersions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ApplyOptions":                 schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Condition":                    schema_pkg_apis_meta_v1_Condition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.CreateOptions":                schema_pkg_apis_meta_v1_CreateOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.DeleteOptions":                schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Duration":                     schema_pkg_apis_meta_v1_Duration(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldSelectorRequirement":     schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.FieldsV1":                     schema_pkg_apis_meta_v1_FieldsV1(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GetOptions":                   schema_pkg_apis_meta_v1_GetOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupKind":                    schema_pkg_apis_meta_v1_GroupKind(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupResource":                schema_pkg_apis_meta_v1_GroupResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersion":                 schema_pkg_apis_meta_v1_GroupVersion(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionForDiscovery":     schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionKind":             schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.GroupVersionResource":         schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.InternalEvent":                schema_pkg_apis_meta_v1_InternalEvent(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelector":                schema_pkg_apis_meta_v1_LabelSelector(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.LabelSelectorRequirement":     schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.List":                         schema_pkg_apis_meta_v1_List(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta":                     schema_pkg_apis_meta_v1_ListMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ListOptions":                  schema_pkg_apis_meta_v1_ListOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ManagedFieldsEntry":           schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime":                    schema_pkg_apis_meta_v1_MicroTime(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta":                   schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.OwnerReference":               schema_pkg_apis_meta_v1_OwnerReference(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadata":        schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PartialObjectMetadataList":    schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Patch":                        schema_pkg_apis_meta_v1_Patch(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.PatchOptions":                 schema_pkg_apis_meta_v1_PatchOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Preconditions":                schema_pkg_apis_meta_v1_Preconditions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.RootPaths":                    schema_pkg_apis_meta_v1_RootPaths(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.ServerAddressByClientCIDR":    schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Status":                       schema_pkg_apis_meta_v1_Status(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusCause":                  schema_pkg_apis_meta_v1_StatusCause(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.StatusDetails":                schema_pkg_apis_meta_v1_StatusDetails(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Table":                        schema_pkg_apis_meta_v1_Table(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableColumnDefinition":        schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableOptions":                 schema_pkg_apis_meta_v1_TableOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRow":                     schema_pkg_apis_meta_v1_TableRow(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TableRowCondition":            schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Time":                         schema_pkg_apis_meta_v1_Time(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.Timestamp":                    schema_pkg_apis_meta_v1_Timestamp(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.TypeMeta":                     schema_pkg_apis_meta_v1_TypeMeta(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.UpdateOptions":                schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		"k8s.io/apimachinery/pkg/apis/meta/v1.WatchEvent":                   schema_pkg_apis_meta_v1_WatchEvent(ref),
+		"k8s.io/apimachinery/pkg/runtime.RawExtension":                      schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		"k8s.io/apimachinery/pkg/runtime.TypeMeta":                          schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
+		"k8s.io/apimachinery/pkg/runtime.Unknown":                           schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
+		"k8s.io/apimachinery/pkg/version.Info":                              schema_k8sio_apimachinery_pkg_version_Info(ref),
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_AmbientEnvironment(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -153,7 +153,7 @@ func schema_microsoft_usvc_apiserver_api_v1_AmbientEnvironment(ref common.Refere
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_Container(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_Container(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -183,24 +183,24 @@ func schema_microsoft_usvc_apiserver_api_v1_Container(ref common.ReferenceCallba
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerSpec", "github.com/microsoft/dcp/api/v1.ContainerStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -254,7 +254,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -273,7 +273,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerBuildSecret"),
 									},
 								},
 							},
@@ -302,7 +302,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerLabel"),
 									},
 								},
 							},
@@ -313,11 +313,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildContext(ref common.Ref
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildSecret", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+			"github.com/microsoft/dcp/api/v1.ContainerBuildSecret", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.EnvVar"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerBuildSecret(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -359,7 +359,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerBuildSecret(ref common.Refe
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerExec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -389,24 +389,24 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExec(ref common.ReferenceCa
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerExecSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerExecStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerExecSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerExecStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerExecSpec", "github.com/microsoft/dcp/api/v1.ContainerExecStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerExecList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -440,7 +440,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref common.Referen
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerExec"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerExec"),
 									},
 								},
 							},
@@ -451,11 +451,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecList(ref common.Referen
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerExec", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerExec", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerExecSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -486,7 +486,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref common.Referen
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -552,11 +552,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecSpec(ref common.Referen
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar"},
+			"github.com/microsoft/dcp/api/v1.EnvVar"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerExecStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -619,7 +619,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref common.Refer
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -649,11 +649,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerExecStatus(ref common.Refer
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
+			"github.com/microsoft/dcp/api/v1.EnvVar", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerLabel(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -682,7 +682,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerLabel(ref common.ReferenceC
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -716,7 +716,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.Container"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.Container"),
 									},
 								},
 							},
@@ -727,11 +727,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerList(ref common.ReferenceCa
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.Container", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.Container", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetwork(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -761,24 +761,24 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetwork(ref common.Referenc
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerNetworkSpec", "github.com/microsoft/dcp/api/v1.ContainerNetworkStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -808,18 +808,18 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnection(ref commo
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionSpec"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionSpec", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkConnectionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -860,7 +860,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionConfig(ref
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -894,7 +894,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref c
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkConnection"),
 									},
 								},
 							},
@@ -905,11 +905,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionList(ref c
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnection", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerNetworkConnection", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkConnectionSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -959,7 +959,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkConnectionSpec(ref c
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -993,7 +993,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref common.Refe
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetwork"),
 									},
 								},
 							},
@@ -1004,11 +1004,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkList(ref common.Refe
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetwork", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerNetwork", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1042,7 +1042,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkSpec(ref common.Refe
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1157,7 +1157,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkStatus(ref common.Re
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxy(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1187,24 +1187,24 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxy(ref comm
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxySpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxySpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxyStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxySpec", "github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1238,7 +1238,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxy"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxy"),
 									},
 								},
 							},
@@ -1249,11 +1249,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyList(ref 
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkTunnelProxy", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxy", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1301,7 +1301,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.TunnelConfiguration"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.TunnelConfiguration"),
 									},
 								},
 							},
@@ -1319,11 +1319,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxySpec(ref 
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.TunnelConfiguration"},
+			"github.com/microsoft/dcp/api/v1.TunnelConfiguration"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1350,7 +1350,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(re
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.TunnelStatus"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.TunnelStatus"),
 									},
 								},
 							},
@@ -1429,11 +1429,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerNetworkTunnelProxyStatus(re
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
+			"github.com/microsoft/dcp/api/v1.TunnelStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerPemCertificates(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1453,7 +1453,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerPemCertificates(ref common.
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.PemCertificate"),
 									},
 								},
 							},
@@ -1497,11 +1497,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerPemCertificates(ref common.
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"},
+			"github.com/microsoft/dcp/api/v1.PemCertificate"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1543,7 +1543,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerPort(ref common.ReferenceCa
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1560,7 +1560,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 					"build": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Optional build context to use to build the container image",
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ContainerBuildContext"),
 						},
 					},
 					"containerName": {
@@ -1583,7 +1583,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.VolumeMount"),
 									},
 								},
 							},
@@ -1602,7 +1602,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerPort"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerPort"),
 									},
 								},
 							},
@@ -1624,7 +1624,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -1711,7 +1711,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig"),
 									},
 								},
 							},
@@ -1760,7 +1760,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerLabel"),
 									},
 								},
 							},
@@ -1779,7 +1779,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbe"),
 									},
 								},
 							},
@@ -1812,7 +1812,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.CreateFileSystem"),
 									},
 								},
 							},
@@ -1821,18 +1821,18 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerSpec(ref common.ReferenceCa
 					"pemCertificates": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PEM formatted public certificates to be created in the container",
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerPemCertificates"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ContainerPemCertificates"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerBuildContext", "github.com/microsoft/usvc-apiserver/api/v1.ContainerLabel", "github.com/microsoft/usvc-apiserver/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPemCertificates", "github.com/microsoft/usvc-apiserver/api/v1.ContainerPort", "github.com/microsoft/usvc-apiserver/api/v1.CreateFileSystem", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe", "github.com/microsoft/usvc-apiserver/api/v1.VolumeMount"},
+			"github.com/microsoft/dcp/api/v1.ContainerBuildContext", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/dcp/api/v1.ContainerPemCertificates", "github.com/microsoft/dcp/api/v1.ContainerPort", "github.com/microsoft/dcp/api/v1.CreateFileSystem", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbe", "github.com/microsoft/dcp/api/v1.VolumeMount"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -1916,7 +1916,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -1985,7 +1985,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbeResult"),
 									},
 								},
 							},
@@ -2002,11 +2002,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerStatus(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
+			"github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerVolume(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2036,24 +2036,24 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolume(ref common.Reference
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerVolumeSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerVolumeStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeSpec", "github.com/microsoft/usvc-apiserver/api/v1.ContainerVolumeStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerVolumeSpec", "github.com/microsoft/dcp/api/v1.ContainerVolumeStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerVolumeList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2087,7 +2087,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref common.Refer
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerVolume"),
 									},
 								},
 							},
@@ -2098,11 +2098,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeList(ref common.Refer
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ContainerVolume", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.ContainerVolume", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2131,7 +2131,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeSpec(ref common.Refer
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2151,7 +2151,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ContainerVolumeStatus(ref common.Ref
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_CreateFileSystem(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2199,7 +2199,7 @@ func schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref common.Referenc
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.FileSystemEntry"),
 									},
 								},
 							},
@@ -2209,11 +2209,11 @@ func schema_microsoft_usvc_apiserver_api_v1_CreateFileSystem(ref common.Referenc
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"},
+			"github.com/microsoft/dcp/api/v1.FileSystemEntry"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_Endpoint(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2243,24 +2243,24 @@ func schema_microsoft_usvc_apiserver_api_v1_Endpoint(ref common.ReferenceCallbac
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.EndpointSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.EndpointStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EndpointSpec", "github.com/microsoft/usvc-apiserver/api/v1.EndpointStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.EndpointSpec", "github.com/microsoft/dcp/api/v1.EndpointStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_EndpointList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2294,7 +2294,7 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref common.ReferenceCal
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.Endpoint"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.Endpoint"),
 									},
 								},
 							},
@@ -2305,11 +2305,11 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointList(ref common.ReferenceCal
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.Endpoint", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.Endpoint", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_EndpointSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2355,7 +2355,7 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointSpec(ref common.ReferenceCal
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_EndpointStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2366,7 +2366,7 @@ func schema_microsoft_usvc_apiserver_api_v1_EndpointStatus(ref common.ReferenceC
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_EnvVar(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2395,7 +2395,7 @@ func schema_microsoft_usvc_apiserver_api_v1_EnvVar(ref common.ReferenceCallback)
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_Executable(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_Executable(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2425,24 +2425,24 @@ func schema_microsoft_usvc_apiserver_api_v1_Executable(ref common.ReferenceCallb
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec", "github.com/microsoft/usvc-apiserver/api/v1.ExecutableStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ExecutableSpec", "github.com/microsoft/dcp/api/v1.ExecutableStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2476,7 +2476,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref common.ReferenceC
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.Executable"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.Executable"),
 									},
 								},
 							},
@@ -2487,11 +2487,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableList(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.Executable", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.Executable", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutablePemCertificates(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2511,7 +2511,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutablePemCertificates(ref common
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.PemCertificate"),
 									},
 								},
 							},
@@ -2528,11 +2528,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutablePemCertificates(ref common
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.PemCertificate"},
+			"github.com/microsoft/dcp/api/v1.PemCertificate"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2543,7 +2543,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref common.Reference
 						SchemaProps: spec.SchemaProps{
 							Description: "Template for creating the Executable that performs the health check",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableTemplate"),
 						},
 					},
 				},
@@ -2551,11 +2551,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableProbe(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate"},
+			"github.com/microsoft/dcp/api/v1.ExecutableTemplate"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2585,24 +2585,24 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSet(ref common.Refe
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableReplicaSetSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableReplicaSetStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetSpec", "github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSetStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetSpec", "github.com/microsoft/dcp/api/v1.ExecutableReplicaSetStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2636,7 +2636,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref common.
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableReplicaSet"),
 									},
 								},
 							},
@@ -2647,11 +2647,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetList(ref common.
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableReplicaSet", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.ExecutableReplicaSet", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2677,7 +2677,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref common.
 						SchemaProps: spec.SchemaProps{
 							Description: "Template describing the configuration of child Executable objects created by the ExecutableReplicaSet",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableTemplate"),
 						},
 					},
 				},
@@ -2685,11 +2685,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetSpec(ref common.
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableTemplate"},
+			"github.com/microsoft/dcp/api/v1.ExecutableTemplate"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2750,7 +2750,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableReplicaSetStatus(ref commo
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2808,7 +2808,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -2865,7 +2865,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 						SchemaProps: spec.SchemaProps{
 							Description: "Controls behavior of environment variables inherited from the controller process.",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.AmbientEnvironment"),
 						},
 					},
 					"stop": {
@@ -2888,7 +2888,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbe"),
 									},
 								},
 							},
@@ -2897,7 +2897,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 					"pemCertificates": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PEM formatted certificates to be written for the Executable",
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutablePemCertificates"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutablePemCertificates"),
 						},
 					},
 				},
@@ -2905,11 +2905,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableSpec(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.AmbientEnvironment", "github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.ExecutablePemCertificates", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbe"},
+			"github.com/microsoft/dcp/api/v1.AmbientEnvironment", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.ExecutablePemCertificates", "github.com/microsoft/dcp/api/v1.HealthProbe"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -2988,7 +2988,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.EnvVar"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
 									},
 								},
 							},
@@ -3037,7 +3037,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbeResult"),
 									},
 								},
 							},
@@ -3048,11 +3048,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableStatus(ref common.Referenc
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.EnvVar", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
+			"github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbeResult", "k8s.io/apimachinery/pkg/apis/meta/v1.MicroTime"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ExecutableTemplate(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3094,7 +3094,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref common.Refere
 						SchemaProps: spec.SchemaProps{
 							Description: "Spec for child Executables",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableSpec"),
 						},
 					},
 				},
@@ -3102,11 +3102,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ExecutableTemplate(ref common.Refere
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableSpec"},
+			"github.com/microsoft/dcp/api/v1.ExecutableSpec"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_FileSystemEntry(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3197,7 +3197,7 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.FileSystemEntry"),
 									},
 								},
 							},
@@ -3208,11 +3208,11 @@ func schema_microsoft_usvc_apiserver_api_v1_FileSystemEntry(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.FileSystemEntry"},
+			"github.com/microsoft/dcp/api/v1.FileSystemEntry"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_HealthProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3238,20 +3238,20 @@ func schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref common.ReferenceCall
 					"executableProbe": {
 						SchemaProps: spec.SchemaProps{
 							Description: "For Executable-type health probes, the configuration for the Executable health probe.",
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableProbe"),
 						},
 					},
 					"httpProbe": {
 						SchemaProps: spec.SchemaProps{
 							Description: "For HTTP-type health probes, the configuration for the HTTP health probe.",
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.HttpProbe"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.HttpProbe"),
 						},
 					},
 					"schedule": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Schedule for running the probe",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule"),
+							Ref:         ref("github.com/microsoft/dcp/api/v1.HealthProbeSchedule"),
 						},
 					},
 					"annotations": {
@@ -3275,11 +3275,11 @@ func schema_microsoft_usvc_apiserver_api_v1_HealthProbe(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ExecutableProbe", "github.com/microsoft/usvc-apiserver/api/v1.HealthProbeSchedule", "github.com/microsoft/usvc-apiserver/api/v1.HttpProbe"},
+			"github.com/microsoft/dcp/api/v1.ExecutableProbe", "github.com/microsoft/dcp/api/v1.HealthProbeSchedule", "github.com/microsoft/dcp/api/v1.HttpProbe"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_HealthProbeResult(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3324,7 +3324,7 @@ func schema_microsoft_usvc_apiserver_api_v1_HealthProbeResult(ref common.Referen
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3365,7 +3365,7 @@ func schema_microsoft_usvc_apiserver_api_v1_HealthProbeSchedule(ref common.Refer
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_HttpHeader(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3394,7 +3394,7 @@ func schema_microsoft_usvc_apiserver_api_v1_HttpHeader(ref common.ReferenceCallb
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_HttpProbe(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3425,7 +3425,7 @@ func schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref common.ReferenceCallba
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.HttpHeader"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.HttpHeader"),
 									},
 								},
 							},
@@ -3436,11 +3436,11 @@ func schema_microsoft_usvc_apiserver_api_v1_HttpProbe(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.HttpHeader"},
+			"github.com/microsoft/dcp/api/v1.HttpHeader"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3523,7 +3523,7 @@ func schema_microsoft_usvc_apiserver_api_v1_LogOptions(ref common.ReferenceCallb
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_LogStreamer(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3558,7 +3558,7 @@ func schema_microsoft_usvc_apiserver_api_v1_LogStreamer(ref common.ReferenceCall
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_PemCertificate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_PemCertificate(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3588,7 +3588,7 @@ func schema_microsoft_usvc_apiserver_api_v1_PemCertificate(ref common.ReferenceC
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_Service(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_Service(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3618,24 +3618,24 @@ func schema_microsoft_usvc_apiserver_api_v1_Service(ref common.ReferenceCallback
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ServiceSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus"),
+							Ref:     ref("github.com/microsoft/dcp/api/v1.ServiceStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.ServiceSpec", "github.com/microsoft/usvc-apiserver/api/v1.ServiceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
+			"github.com/microsoft/dcp/api/v1.ServiceSpec", "github.com/microsoft/dcp/api/v1.ServiceStatus", "k8s.io/apimachinery/pkg/apis/meta/v1.ObjectMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ServiceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3669,7 +3669,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref common.ReferenceCall
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/usvc-apiserver/api/v1.Service"),
+										Ref:     ref("github.com/microsoft/dcp/api/v1.Service"),
 									},
 								},
 							},
@@ -3680,11 +3680,11 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceList(ref common.ReferenceCall
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/usvc-apiserver/api/v1.Service", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
+			"github.com/microsoft/dcp/api/v1.Service", "k8s.io/apimachinery/pkg/apis/meta/v1.ListMeta"},
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ServiceSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3725,7 +3725,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceSpec(ref common.ReferenceCall
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_ServiceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3787,7 +3787,7 @@ func schema_microsoft_usvc_apiserver_api_v1_ServiceStatus(ref common.ReferenceCa
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_TunnelConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_TunnelConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3839,7 +3839,7 @@ func schema_microsoft_usvc_apiserver_api_v1_TunnelConfiguration(ref common.Refer
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -3918,7 +3918,7 @@ func schema_microsoft_usvc_apiserver_api_v1_TunnelStatus(ref common.ReferenceCal
 	}
 }
 
-func schema_microsoft_usvc_apiserver_api_v1_VolumeMount(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_microsoft_dcp_api_v1_VolumeMount(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{

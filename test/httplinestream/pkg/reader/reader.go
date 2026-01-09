@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/test/httplinestream/pkg/line"
-	"github.com/microsoft/usvc-apiserver/test/httplinestream/pkg/stream"
+	"github.com/microsoft/dcp/test/httplinestream/pkg/line"
+	"github.com/microsoft/dcp/test/httplinestream/pkg/stream"
 )
 
 // StreamSource defines the source of the stream

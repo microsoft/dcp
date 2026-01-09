@@ -14,11 +14,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 
-	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	int_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 var log logr.Logger

@@ -2,7 +2,7 @@ edition = "2023";
 
 package notify;
 
-option go_package = "github.com/microsoft/usvc-apiserver/internal/notifications/proto";
+option go_package = "github.com/microsoft/dcp/internal/notifications/proto";
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/duration.proto";

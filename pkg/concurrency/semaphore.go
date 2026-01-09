@@ -5,7 +5,7 @@ package concurrency
 import (
 	"sync"
 
-	"github.com/microsoft/usvc-apiserver/pkg/container"
+	"github.com/microsoft/dcp/pkg/container"
 )
 
 type waiterHandle uint64

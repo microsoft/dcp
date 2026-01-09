@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 func TestMultipleRwOps(t *testing.T) {

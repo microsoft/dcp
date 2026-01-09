@@ -12,12 +12,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
-	"github.com/microsoft/usvc-apiserver/internal/dcptun"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/dcptun"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/slices"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Verifies that the client proxy image can be built successfully and has the expected tag prefix.

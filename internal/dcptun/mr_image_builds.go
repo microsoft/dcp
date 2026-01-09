@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
-	"github.com/microsoft/usvc-apiserver/internal/lockfile"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/lockfile"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const (

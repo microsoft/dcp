@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
-// Keep in sync with https://github.com/microsoft/usvc-apiserver/schemas/v1.0/capabilities.json
+// Keep in sync with https://github.com/microsoft/dcp/schemas/v1.0/capabilities.json
 type ExtensionCapability string
 
 const (

@@ -10,7 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
-	"github.com/microsoft/usvc-apiserver/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/pointers"
 )
 
 type HealthStatus string

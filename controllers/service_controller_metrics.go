@@ -8,8 +8,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/net/nettest"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/telemetry"
 )
 
 var (

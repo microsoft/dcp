@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	apiserver "github.com/tilt-dev/tilt-apiserver/pkg/server/apiserver"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"

@@ -27,16 +27,16 @@ import (
 	tiltresource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	tiltstart "github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/logs/containerlogs"
-	"github.com/microsoft/usvc-apiserver/internal/logs/stdiologs"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/internal/notifications"
-	"github.com/microsoft/usvc-apiserver/internal/version"
-	"github.com/microsoft/usvc-apiserver/pkg/generated/openapi"
-	"github.com/microsoft/usvc-apiserver/pkg/kubeconfig"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/logs/containerlogs"
+	"github.com/microsoft/dcp/internal/logs/stdiologs"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/notifications"
+	"github.com/microsoft/dcp/internal/version"
+	"github.com/microsoft/dcp/pkg/generated/openapi"
+	"github.com/microsoft/dcp/pkg/kubeconfig"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const (

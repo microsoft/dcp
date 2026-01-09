@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 // Returns the folder containing desired test tool (executable).

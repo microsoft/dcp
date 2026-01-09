@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/dcp/internal/containers"
 )
 
 func TestInspectedContainerDeserialization(t *testing.T) {

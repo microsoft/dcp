@@ -7,7 +7,7 @@ package commands
 import (
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) error {

@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 func TestRunSessionRequestCreation(t *testing.T) {

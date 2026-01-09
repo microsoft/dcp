@@ -17,9 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/randdata"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const (

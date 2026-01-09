@@ -21,10 +21,10 @@ import (
 	ctrl_handler "sigs.k8s.io/controller-runtime/pkg/handler"
 	ctrl_source "sigs.k8s.io/controller-runtime/pkg/source"
 
-	"github.com/microsoft/usvc-apiserver/internal/telemetry"
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
+	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 type ReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStruct[T]] struct {

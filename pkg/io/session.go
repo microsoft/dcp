@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 const (

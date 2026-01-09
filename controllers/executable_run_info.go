@@ -10,12 +10,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/health"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
-	"github.com/microsoft/usvc-apiserver/pkg/pointers"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 // The startup stage for an Executable run. Non-negative values

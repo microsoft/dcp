@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	cmds "github.com/microsoft/dcp/internal/commands"
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
+	"github.com/microsoft/dcp/pkg/logger"
 )
 
 func NewRootCommand(logger *logger.Logger) (*cobra.Command, error) {

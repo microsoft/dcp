@@ -9,7 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/dcp/pkg/logger"
 )
 
 func NewLogForTesting(name string) logr.Logger {

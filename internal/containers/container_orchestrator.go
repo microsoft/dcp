@@ -8,9 +8,9 @@ import (
 	"io/fs"
 	"time"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/pubsub"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/pubsub"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 type ContainerStatus string

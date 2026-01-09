@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 func EnsureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize int, timeout time.Duration) {

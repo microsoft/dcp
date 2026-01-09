@@ -8,7 +8,7 @@ import (
 
 var apiServerExecutionDataSpec = spec.Schema{
 	SchemaProps: spec.SchemaProps{
-		ID:          "github.com/microsoft/usvc-apiserver/api/v1.ApiServerExecutionData",
+		ID:          "github.com/microsoft/dcp/api/v1.ApiServerExecutionData",
 		Description: "Represents the API server execution state and allows for limited changes to that state.",
 		Type:        []string{"object"},
 		Properties: map[string]spec.Schema{

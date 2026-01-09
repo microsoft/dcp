@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 const (

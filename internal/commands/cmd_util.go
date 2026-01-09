@@ -5,7 +5,7 @@ package commands
 import (
 	"os"
 
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	"github.com/microsoft/dcp/pkg/logger"
 )
 
 func ErrorExit(log *logger.Logger, err error, exitCode int) {

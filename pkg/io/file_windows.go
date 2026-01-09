@@ -10,7 +10,7 @@ import (
 	"os"
 	"unsafe"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"golang.org/x/sys/windows"
 )
 

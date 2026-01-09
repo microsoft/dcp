@@ -6,7 +6,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/internal/pubsub"
+	"github.com/microsoft/dcp/internal/pubsub"
 )
 
 // CreateNetwork command types

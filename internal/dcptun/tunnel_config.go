@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/pkg/security"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/security"
 )
 
 type TunnelProxySecurityConfig struct {

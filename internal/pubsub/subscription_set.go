@@ -6,7 +6,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/dcp/pkg/maps"
 )
 
 type NotifierFunc[NotificationT any] func(ctx context.Context, ss *SubscriptionSet[NotificationT])

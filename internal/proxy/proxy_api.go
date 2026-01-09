@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/networking"
 )
 
 type Endpoint struct {

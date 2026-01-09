@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/stretchr/testify/require"
 )
 

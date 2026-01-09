@@ -8,11 +8,11 @@ import (
 	"strconv"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/internal/hosting"
-	"github.com/microsoft/usvc-apiserver/pkg/extensions"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/internal/hosting"
+	"github.com/microsoft/dcp/pkg/extensions"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 func NewDcpExtensionService(appRootDir string, ext DcpExtension, command string, invocationFlags []string, log logr.Logger) (*hosting.CommandService, error) {

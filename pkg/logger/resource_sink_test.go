@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/randdata"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/randdata"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 func TestResourceSink(t *testing.T) {

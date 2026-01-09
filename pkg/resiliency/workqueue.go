@@ -7,7 +7,7 @@ import (
 	"math"
 	"runtime"
 
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/concurrency"
 )
 
 const DefaultConcurrency uint8 = 0

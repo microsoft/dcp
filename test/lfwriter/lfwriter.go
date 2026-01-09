@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/microsoft/usvc-apiserver/internal/lockfile"
+	"github.com/microsoft/dcp/internal/lockfile"
 )
 
 func main() {

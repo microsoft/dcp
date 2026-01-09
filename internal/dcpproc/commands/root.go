@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	cmds "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/pkg/logger"
 )
 
 var (

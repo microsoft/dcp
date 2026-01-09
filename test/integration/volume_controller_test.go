@@ -17,12 +17,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/apiserver"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/pointers"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/apiserver"
+	"github.com/microsoft/dcp/internal/containers"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func ensureVolumeCreated(

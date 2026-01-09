@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestPerfTraceRequestParsed(t *testing.T) {

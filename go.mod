@@ -1,4 +1,4 @@
-module github.com/microsoft/usvc-apiserver
+module github.com/microsoft/dcp
 
 go 1.24.11
 

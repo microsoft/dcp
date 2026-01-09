@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 // BufferWriter is an implementation of io.WriteCloser that writes to a (dynamically expanding) buffer.

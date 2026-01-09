@@ -10,8 +10,8 @@ import (
 	"google.golang.org/grpc/status"
 	stdproto "google.golang.org/protobuf/proto"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
+	"github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/networking"
 )
 
 type StreamID uint64

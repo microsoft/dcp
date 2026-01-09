@@ -15,7 +15,7 @@ import (
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // ContainerNetworkConnectionSpec defines the desired state of a ContainerNetworkConnection

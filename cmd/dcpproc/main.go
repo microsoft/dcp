@@ -6,11 +6,11 @@ import (
 	"context"
 	"os"
 
-	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/internal/dcpproc/commands"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	cmdutil "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/internal/dcpproc/commands"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 //go:generate goversioninfo

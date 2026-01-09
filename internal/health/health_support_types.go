@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // HealthProbeReport represents a result of a single health probe execution.

@@ -11,9 +11,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/microsoft/usvc-apiserver/internal/notifications/proto"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
+	"github.com/microsoft/dcp/internal/notifications/proto"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/grpcutil"
 )
 
 type notificationReceiver struct {

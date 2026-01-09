@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/go-logr/logr"
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 // LoggingWriteCloser is an implementation of io.WriteCloser that also logs results of all writes

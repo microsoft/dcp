@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	apiv1 "github.com/microsoft/dcp/api/v1"
 )
 
 func requireSortedByName(t *testing.T, statuses []apiv1.TunnelStatus) {

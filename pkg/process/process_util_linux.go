@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 	ps "github.com/shirou/gopsutil/v4/process"
 	"github.com/tklauser/go-sysconf"
 )

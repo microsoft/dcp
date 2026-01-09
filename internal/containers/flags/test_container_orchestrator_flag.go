@@ -10,7 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 
-	"github.com/microsoft/usvc-apiserver/internal/containers"
+	"github.com/microsoft/dcp/internal/containers"
 )
 
 const TestContainerOrchestratorSocketFlagName = "test-container-orchestrator-socket"

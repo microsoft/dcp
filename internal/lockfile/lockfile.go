@@ -13,8 +13,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 // Represents a file that can be locked and unlocked.

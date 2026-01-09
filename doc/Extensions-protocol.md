@@ -53,7 +53,7 @@ The extension should reply with a JSON document that declares its capabilities, 
 }
 ```
 
-The value of the `name` property will be used by DCP CLI in any prompts or error messages when referring to the extension. The extension identifier (`id` property) is used when referring to the extension via command-line arguments (e.g. `--app-type` argument of the DCP `up` command). The output document should conform to [capabilities document schema](https://github.com/microsoft/usvc-apiserver/schemas/v1.0/capabilities.json).
+The value of the `name` property will be used by DCP CLI in any prompts or error messages when referring to the extension. The extension identifier (`id` property) is used when referring to the extension via command-line arguments (e.g. `--app-type` argument of the DCP `up` command). The output document should conform to [capabilities document schema](https://github.com/microsoft/dcp/schemas/v1.0/capabilities.json).
 
 If there is an error, a non-zero exit code should be used, and the error message should be written to `stderr`. If an executable program placed in the extensions directory does not declare its capabilites as expected, DCP CLI will warn about it, but continue execution using other extensions.
 
@@ -100,6 +100,6 @@ The renderer communicates the result of the analysis via exit code a JSON docume
 }
 ```
 
-The output document should conform to [`can-render` command response schema](https://github.com/microsoft/usvc-apiserver/blob/main/schemas/v1.0/can-render.json). The `reason` property is optional if the result is positive, but it is mandatory if the result is negative (workload rendering is impossible).
+The output document should conform to [`can-render` command response schema](https://github.com/microsoft/dcp/blob/main/schemas/v1.0/can-render.json). The `reason` property is optional if the result is positive, but it is mandatory if the result is negative (workload rendering is impossible).
 
 If an error occurs during analysis, the extension should write the error message to standard error and exit with non-zero exit code. Depending on verbosity level (see [common parameters](#common-parameters)), the extension might write diagnostic/informational messages to standard error.

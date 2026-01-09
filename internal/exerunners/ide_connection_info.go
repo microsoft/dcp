@@ -18,8 +18,8 @@ import (
 	"github.com/gorilla/websocket"
 	netutil "k8s.io/apimachinery/pkg/util/net"
 
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 // A set of data related to how IDE requests are formed.

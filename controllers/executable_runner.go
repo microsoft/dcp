@@ -8,9 +8,9 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	apiv1 "github.com/microsoft/dcp/api/v1"
 
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 type RunID string

@@ -15,10 +15,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	cmdutil "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/internal/dcptun"
-	"github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
+	cmdutil "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/internal/dcptun"
+	"github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/networking"
 )
 
 func NewRunClientCommand(log logr.Logger) *cobra.Command {

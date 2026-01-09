@@ -5,7 +5,7 @@ package containers
 import (
 	"context"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
+	apiv1 "github.com/microsoft/dcp/api/v1"
 )
 
 // InspectImages command types

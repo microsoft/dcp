@@ -7,8 +7,8 @@ package queue
 import (
 	"sync"
 
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/container"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/container"
 )
 
 type ConcurrentBoundedQueue[T any] struct {

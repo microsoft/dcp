@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/test/httplinestream/pkg/line"
+	"github.com/microsoft/dcp/test/httplinestream/pkg/line"
 )
 
 // Server implements an HTTP server that streams lines

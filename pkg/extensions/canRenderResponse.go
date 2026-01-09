@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// Keep in sync with https://github.com/microsoft/usvc-apiserver/schemas/v1.0/can-render.json
+// Keep in sync with https://github.com/microsoft/dcp/schemas/v1.0/can-render.json
 type CanRenderResult string
 
 const (

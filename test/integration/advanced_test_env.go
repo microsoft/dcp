@@ -11,14 +11,14 @@ import (
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/controllers"
-	dcptunproto "github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/exerunners"
-	"github.com/microsoft/usvc-apiserver/internal/health"
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/controllers"
+	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/health"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 // Starts an test environment for advanced tests that use real process executor and true container orchestrator (Docker or Podman).

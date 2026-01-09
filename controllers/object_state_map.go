@@ -7,8 +7,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	"github.com/microsoft/usvc-apiserver/pkg/maps"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/maps"
 )
 
 type Cloner[T any] interface {

@@ -7,11 +7,11 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	"github.com/microsoft/usvc-apiserver/internal/containers/flags"
-	"github.com/microsoft/usvc-apiserver/internal/docker"
-	"github.com/microsoft/usvc-apiserver/internal/podman"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/containers/flags"
+	"github.com/microsoft/dcp/internal/docker"
+	"github.com/microsoft/dcp/internal/podman"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 type ContainerOrchestratorFactory func(log logr.Logger, executor process.Executor) containers.ContainerOrchestrator

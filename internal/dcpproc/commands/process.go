@@ -10,11 +10,11 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/internal/flags"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	cmds "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/internal/flags"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 var (

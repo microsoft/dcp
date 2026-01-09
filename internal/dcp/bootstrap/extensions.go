@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"github.com/microsoft/usvc-apiserver/internal/dcppaths"
-	"github.com/microsoft/usvc-apiserver/pkg/extensions"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/pkg/extensions"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 type DcpExtension struct {

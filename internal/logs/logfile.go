@@ -5,7 +5,7 @@ package logs
 import (
 	"sync/atomic"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 type logfile struct {

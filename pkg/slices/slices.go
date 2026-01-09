@@ -8,7 +8,7 @@ import (
 	stdslices "slices"
 	"sync"
 
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 func Contains[T comparable, S ~[]T](ss S, s T) bool {

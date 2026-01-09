@@ -7,7 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 
-	"github.com/microsoft/usvc-apiserver/internal/openssl"
+	"github.com/microsoft/dcp/internal/openssl"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 

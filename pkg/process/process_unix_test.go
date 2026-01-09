@@ -17,10 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 	wait "k8s.io/apimachinery/pkg/util/wait"
 
-	int_testutil "github.com/microsoft/usvc-apiserver/internal/testutil"
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	int_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 // Tests that processes that ignore SIGTERM can still be terminated.

@@ -18,12 +18,12 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	apiv1 "github.com/microsoft/usvc-apiserver/api/v1"
-	"github.com/microsoft/usvc-apiserver/internal/apiserver"
-	"github.com/microsoft/usvc-apiserver/internal/notifications"
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/apiserver"
+	"github.com/microsoft/dcp/internal/notifications"
 
-	ctrl_testutil "github.com/microsoft/usvc-apiserver/internal/testutil/ctrlutil"
-	"github.com/microsoft/usvc-apiserver/pkg/testutil"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const (

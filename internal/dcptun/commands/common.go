@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcptun"
+	"github.com/microsoft/dcp/internal/dcptun"
 )
 
 const (

@@ -16,9 +16,9 @@ import (
 	"k8s.io/kube-openapi/pkg/validation/strfmt"
 	"k8s.io/kube-openapi/pkg/validation/validate"
 
-	"github.com/microsoft/usvc-apiserver/internal/appmgmt"
-	"github.com/microsoft/usvc-apiserver/internal/notifications"
-	"github.com/microsoft/usvc-apiserver/internal/perftrace"
+	"github.com/microsoft/dcp/internal/appmgmt"
+	"github.com/microsoft/dcp/internal/notifications"
+	"github.com/microsoft/dcp/internal/perftrace"
 )
 
 const (

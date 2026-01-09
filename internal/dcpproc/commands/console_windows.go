@@ -8,7 +8,7 @@ import (
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
 
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) error {

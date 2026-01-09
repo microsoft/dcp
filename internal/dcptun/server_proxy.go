@@ -18,12 +18,12 @@ import (
 	stdproto "google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/microsoft/usvc-apiserver/internal/dcptun/proto"
-	"github.com/microsoft/usvc-apiserver/internal/networking"
-	"github.com/microsoft/usvc-apiserver/internal/proxy"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/grpcutil"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
+	"github.com/microsoft/dcp/internal/dcptun/proto"
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/proxy"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/grpcutil"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 // We only need a cancellation function to stop a tunnel stream;

@@ -5,7 +5,7 @@ package testutil
 import (
 	"io"
 
-	usvc_io "github.com/microsoft/usvc-apiserver/pkg/io"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 // The maximum number of entries in the timeline

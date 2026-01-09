@@ -21,8 +21,8 @@ import (
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	usvc_slices "github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_slices "github.com/microsoft/dcp/pkg/slices"
 )
 
 type objectChange int

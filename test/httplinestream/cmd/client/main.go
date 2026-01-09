@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/test/httplinestream/pkg/reader"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/test/httplinestream/pkg/reader"
 )
 
 func main() {

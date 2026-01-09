@@ -17,8 +17,8 @@ import (
 
 	ps "github.com/shirou/gopsutil/v4/process"
 
-	"github.com/microsoft/usvc-apiserver/pkg/osutil"
-	"github.com/microsoft/usvc-apiserver/pkg/slices"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 type ProcessTreeItem struct {

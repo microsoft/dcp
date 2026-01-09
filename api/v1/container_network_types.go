@@ -5,7 +5,7 @@ package v1
 import (
 	"context"
 
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"

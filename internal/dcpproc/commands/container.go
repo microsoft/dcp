@@ -13,12 +13,12 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
-	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/internal/containers"
-	container_flags "github.com/microsoft/usvc-apiserver/internal/containers/flags"
-	container_runtimes "github.com/microsoft/usvc-apiserver/internal/containers/runtimes"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
-	"github.com/microsoft/usvc-apiserver/pkg/process"
+	cmds "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/internal/containers"
+	container_flags "github.com/microsoft/dcp/internal/containers/flags"
+	container_runtimes "github.com/microsoft/dcp/internal/containers/runtimes"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 type inspectStopRemoveContainers interface {

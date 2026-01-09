@@ -449,7 +449,7 @@ func (r *XxxReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 The `GenericEvent` instance needs to include the Kubernetes object name and namespace (`NamespacedName`) that will be a parameter to reconciliation function. It is up to the controller to make sure that it keeps enough context to know which Kubernetes object should be associated with every real-world entity it is watching. Most often that information is stored in the Kubernetes object status.
 
-The controller also needs to take care that it does not trigger too many reconciliation invocations. If real-world is changing rapidly, it can be beneficial to batch or debounce reconciliations for corresponding Kubernetes objects. DCP has  [`resiliency` package](https://github.com/microsoft/usvc-apiserver/tree/main/internal/resiliency) that can help with that.
+The controller also needs to take care that it does not trigger too many reconciliation invocations. If real-world is changing rapidly, it can be beneficial to batch or debounce reconciliations for corresponding Kubernetes objects. DCP has  [`resiliency` package](https://github.com/microsoft/dcp/tree/main/internal/resiliency) that can help with that.
 
 ## Deleting Kubernetes objects
 

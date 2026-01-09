@@ -9,8 +9,8 @@ import (
 	"k8s.io/klog/v2"
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
-	cmds "github.com/microsoft/usvc-apiserver/internal/commands"
-	"github.com/microsoft/usvc-apiserver/pkg/logger"
+	cmds "github.com/microsoft/dcp/internal/commands"
+	"github.com/microsoft/dcp/pkg/logger"
 )
 
 func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {

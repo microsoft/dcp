@@ -20,11 +20,11 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	registry_rest "k8s.io/apiserver/pkg/registry/rest"
 
-	"github.com/microsoft/usvc-apiserver/internal/contextdata"
-	"github.com/microsoft/usvc-apiserver/pkg/commonapi"
-	"github.com/microsoft/usvc-apiserver/pkg/concurrency"
-	"github.com/microsoft/usvc-apiserver/pkg/resiliency"
-	"github.com/microsoft/usvc-apiserver/pkg/syncmap"
+	"github.com/microsoft/dcp/internal/contextdata"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 type ResourceStreamStatus string
