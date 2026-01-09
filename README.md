@@ -56,10 +56,10 @@ scoop install golangci-lint
 ```
 
 ### Go module system setup
-Until DCP project becomes public (no plans for that currently), the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
+Until DCP project becomes public, the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
 
 ```shell
-go env -w 'GOPRIVATE=github.com/microsoft/usvc-*'
+go env -w 'GOPRIVATE=github.com/microsoft/usvc-*,github.com/microsoft/dcp'
 ```
 
 This setting applies to your Go installation (is shared between all repositories cloned onto your development machine). For more information see [Go private modules documentation](https://go.dev/ref/mod#private-modules).
