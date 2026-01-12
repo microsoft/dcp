@@ -52,7 +52,7 @@ func CreateTestSessionDir() (string, error) {
 	if randErr != nil {
 		return "", fmt.Errorf("failed to generate random suffix for session directory: %w", randErr)
 	}
-	dirName := fmt.Sprintf("usvc-test-%s", suffix)
+	dirName := fmt.Sprintf("dcp-test-%s", suffix)
 	sessionDir := filepath.Join(testRoot, dirName)
 
 	if err := os.MkdirAll(sessionDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {

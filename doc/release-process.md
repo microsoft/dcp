@@ -41,7 +41,7 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 Once the production branch is updated and tagged, the Aspire repository should be updated automatically. To verify this happened:
 
 1.  Ensure that [official build](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=19235&_a=summary) for the updated `release` branch tag has completed.
-1.  Watch for a PR titled "Update dependencies microsoft/usvc-apiserver", which updates
+1.  Watch for a PR titled "Update dependencies microsoft/dcp", which updates
 [eng/Versions.props](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) and [eng/Version.Details.xml](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) files.
     * When the PR shows up, review and approve. Once the automatic checks pass, the PR should auto-merge.
     * If the PR build is not showing up for some reason, you can check the [Build Promotion Pipeline](https://dev.azure.com/devdiv/DevDiv/_build?definitionId=12603&_a=summary) which is dotnet infrastructure that handles the actual publishing of builds to feeds. A run should have been started by our build's deploy stage.

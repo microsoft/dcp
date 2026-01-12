@@ -16,7 +16,7 @@ permissions:
   pull-requests: write
 
 env:
-  GOPRIVATE: github.com/microsoft/usvc-*
+  GOPRIVATE: github.com/microsoft/usvc-*,github.com/microsoft/dcp
 
 jobs:
   validate:
