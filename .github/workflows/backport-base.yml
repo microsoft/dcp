@@ -142,6 +142,17 @@ jobs:
           const wrap_in_code_block = (language, content) => `\`\`\`${language}\n${content}\n\`\`\``;
           const wrap_in_details_block = (summary, content) => `<details>\n<summary>${summary}</summary>\n\n${content}\n</details>`;
 
+          // Post a comment on the PR and return the comment URL
+          async function postComment(body) {
+            const { data: comment } = await github.rest.issues.createComment({
+              owner: repo_owner,
+              repo: repo_name,
+              issue_number: pr_number,
+              body
+            });
+            return comment.html_url;
+          }
+
           try {
             // verify the comment user is a repo collaborator
             try {
@@ -310,15 +321,9 @@ jobs:
               });
             }
           } catch (error) {
-            // post failure to GitHub comment
-            const unknown_error_body = `@${comment_user} an error occurred while backporting to ${target_branch}, please check the run log for details!\n\n${error.message}`;
-            await github.rest.issues.createComment({
-              owner: repo_owner,
-              repo: repo_name,
-              issue_number: pr_number,
-              body: unknown_error_body
-            });
-
+            const body = `@${comment_user} an error occurred while backporting to \`${target_branch}\`. See the [workflow output](${workflow_run_url}) for details.`;
+            const comment_url = await postComment(body);
+            console.log(`Posted comment: ${comment_url}`);
             core.setFailed(error);
           }
 
