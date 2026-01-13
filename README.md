@@ -23,8 +23,10 @@
   - [Environment variables affecting DCP behavior](#environment-variables-affecting-dcp-behavior)
 
 This repository contains the core components of the Developer Control Plane tool:
--  `dcp` CLI that users invoke to run applications and for other, related tasks. If invoked with `start-apiserver` it will act as the API server that holds the workload model used by controllers, workload renderers, and API providers to create a workload definition, run it, and expose information about it. The API server is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
+-  `dcp` CLI that users invoke to run applications and for other, related tasks. If invoked with `start-apiserver` it will act as the API server that holds the workload model used by controllers and API providers to create a workload definition, run it, and expose information about it. The API server is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
 -  `dcpctrl` is the core DCP controllers that implement the standard behavior for DCP workload models.
+- `dcpproc` is a tool for ensuring that a given process or container is stopped when monitored "parent" process exits. It provides additional assurance that no workload resoures are abandoned and left behind after an application run.
+- `dcptun` is a program that implements a reverse network tunnel. It is driven by Kubernetes API and tigtly integrated with the rest of DCP.
 
 
 ## Development environment setup
@@ -54,15 +56,6 @@ scoop install gawk
 scoop install curl
 scoop install golangci-lint
 ```
-
-### Go module system setup
-Until DCP project becomes public, the Go module system needs to be told that repositories under this project are private and global proxies/checksums should not be used for them:
-
-```shell
-go env -w 'GOPRIVATE=github.com/microsoft/usvc-*,github.com/microsoft/dcp'
-```
-
-This setting applies to your Go installation (is shared between all repositories cloned onto your development machine). For more information see [Go private modules documentation](https://go.dev/ref/mod#private-modules).
 
 ### GitHub authentication setup
 If you are using SSH to authenticate to GitHub, you want the following in your `~/.gitconfig` file:
@@ -124,7 +117,8 @@ Aspire tooling is invoking DCP in "session" mode, which creates a separate `kube
 
 `kk` script will search for DCP process(es) running on the system and extract the `kubeconfig` path from its launch parameters. It will also extract the security token if DCP is using one externally supplied. Then the script will launch `kubectl` with the parameters you provided, but also pointing it to the DCP (session) `kubeconfig` file and supplying the security token, if any. For example, to display a list of running Executable objects do `kk get exe`.
 
-> Note : for debugging Aspire tests (part of `CloudApplicationTests` suite) the name of the relevant process that started DCP is `testhost`.
+> Hint: to list all available types of DCP objects, do `kk api-resources`.
+
 
 ### After `make generate-openapi` the generated file is empty (almost all contents has been removed).
 Looks like the OpenAPI code generator failed. Run `make generate-openapi-debug` to enable debug output and check if it contains any clues.
@@ -158,7 +152,7 @@ For the change to take effect, you might need to rebuild the AppHost project in 
 
 ### Need to get detailed logs from DCP run
 
-Set the `DCP_DIAGNOSTICS_LOG_LEVEL` environment variable to `debug`. The logs will be put to `${TEMP}/dcp/logs`, although you can change the destination by setting `DCP_DIAGNOSTICS_LOG_FOLDER` environment variable.
+Set the `DCP_DIAGNOSTICS_LOG_LEVEL` environment variable to `debug`. The logs will be put to `${TEMP}/dcp/logs`. You can change the destination for the log files by setting `DCP_DIAGNOSTICS_LOG_FOLDER` environment variable.
 
 ### I need to debug DCP
 
