@@ -42,7 +42,7 @@ Once the production branch is updated and tagged, an official build needs to be 
 1.  Watch for a PR titled "Update dependencies microsoft/dcp", which updates
 [eng/Versions.props](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) and [eng/Version.Details.xml](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) files.
     * When the PR shows up, review and approve. Once the automatic checks pass, the PR should auto-merge.
-1.  The final check is to verify the correct version of DCP is coming with the workload. Follow the [Aspire daily build usage instructions](https://github.com/dotnet/aspire/blob/main/docs/using-latest-daily.md#install-the-net-aspire-dotnet-workload) to get the workload updated on your machine, and then run `dcp.exe version` from the Aspire hosting orchestration Nuget package. Verify that the version reported is the version that was published.
+1.  The final check is to verify the correct version of DCP is included in the Aspire nugets. Follow the [Aspire daily build usage instructions](https://github.com/dotnet/aspire/blob/main/docs/using-latest-daily.md) to get the updated build on your machine, and then run `dcp.exe version` from the Aspire hosting orchestration Nuget package. Verify that the version reported is the version that was published.
 
     * The path to DCP binary should be something similar to `<user home>\.nuget\packages\aspire.hosting.orchestration.win-x64\<version>\tools` (replace the name of the package as necessary depending on your platform).
     * You might have different versions of this package, so make sure you do the verification using the latest one.
