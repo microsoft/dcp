@@ -25,7 +25,7 @@
 This repository contains the core components of the Developer Control Plane tool:
 -  `dcp` CLI that users invoke to run applications and for other, related tasks. If invoked with `start-apiserver` it will act as the API server that holds the workload model used by controllers and API providers to create a workload definition, run it, and expose information about it. The API server is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
 -  `dcpctrl` is the core DCP controllers that implement the standard behavior for DCP workload models.
-- `dcpproc` is a tool for ensuring that a given process or container is stopped when monitored "parent" process exits. It provides additional assurance that no workload resoures are abandoned and left behind after an application run.
+- `dcpproc` is a tool for ensuring that a given process or container is stopped when monitored "parent" process exits. It provides additional assurance that no workload resources are abandoned and left behind after an application run.
 - `dcptun` is a program that implements a reverse network tunnel. It is driven by Kubernetes API and tightly integrated with the rest of DCP.
 
 
