@@ -36,7 +36,7 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 
 ### Updating the DCP build in Aspire
 
-Once the production branch is updated and tagged, the Aspire repository should be updated automatically. To verify this happened:
+Once the production branch is updated and tagged, an official build needs to be started for that tagged version:
 
 1.  Ensure that official build for the updated `release` branch tag has completed.
 1.  Watch for a PR titled "Update dependencies microsoft/dcp", which updates
