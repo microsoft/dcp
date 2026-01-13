@@ -4,7 +4,7 @@
 We are open to all ideas and we want to get rid of bugs! Use the Issues section to either report a new issue, provide your ideas or contribute to existing threads.
 
 ## Learning about DCP
-The **doc** contains several documents describing various aspects of DCP architecture and working. At its core, DCP is an Kubernetes-compatible API server and a set of custom Kubernetes types and controllers tailored for running multi-service applications on a developer machine. If you are new to authoring Kubernets types and controllers, a good starting point is [Authoring DCP Controllers page](/doc/authoring-dcp-controllers.md). 
+The **doc** contains several documents describing various aspects of DCP architecture and working. At its core, DCP is an Kubernetes-compatible API server and a set of custom Kubernetes types and controllers tailored for running multi-service applications on a developer machine. If you are new to authoring Kubernetes types and controllers, a good starting point is [Authoring DCP Controllers page](/doc/authoring-dcp-controllers.md). 
 
 ## Legal
 
