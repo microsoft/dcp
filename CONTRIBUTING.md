@@ -64,7 +64,7 @@ On Windows open the Environment Variables applet and add `$USERPROFILE\.dcp` to 
 `make test` will install all dependencies and run all the tests.
 
 ### Running subsets of tests from command line
-Now you can run `go test` commands to run selected tests, including integration tests. for example, to run just Endpoint controller tests in verbose mode with race detection:
+Now you can run `go test` commands to run selected tests, including integration tests. For example, to run just Endpoint controller tests in verbose mode with race detection:
 
 ```shell
  go test -race -count 1 -run TestEndpoint -v ./test/integration/...
