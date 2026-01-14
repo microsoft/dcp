@@ -23,10 +23,16 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
         - os: ubuntu-latest
-          buildCommand: make build-ci
+          prereqsCommand: ''
+          testCommand: make test-ci
+        - os: windows-latest
+          prereqsCommand: choco install make mingw -y
+          testCommand: make test-ci
+        - os: macos-latest
+          prereqsCommand: ''
           testCommand: make test-ci
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -40,15 +46,16 @@ jobs:
         go-version-file: 'go.mod'
         architecture: 'x64'
 
-    - name: Build
-      run: ${{ matrix.buildCommand }}
+    - name: Setup prerequisites
+      run: ${{ matrix.prereqsCommand }}
+      if: ${{ matrix.prereqsCommand != '' }}
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v3
       with:
         dotnet-version: '9.0.x'
 
-    - name: Install SSL Certificates
+    - name: Install SSL certificates
       run: |
         dotnet dev-certs https --trust
 
