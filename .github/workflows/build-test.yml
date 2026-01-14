@@ -27,12 +27,15 @@ jobs:
         include:
         - os: ubuntu-latest
           prereqsCommand: ''
+          trustDevCert: true
           testCommand: make test-ci
         - os: windows-latest
           prereqsCommand: choco install make mingw -y
+          trustDevCert: false
           testCommand: make test-ci
         - os: macos-latest
           prereqsCommand: ''
+          trustDevCert: false
           testCommand: make test-ci
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -47,15 +50,17 @@ jobs:
         architecture: 'x64'
 
     - name: Setup prerequisites
-      run: ${{ matrix.prereqsCommand }}
       if: ${{ matrix.prereqsCommand != '' }}
+      run: ${{ matrix.prereqsCommand }}
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v3
+      if: ${{ matrix.trustDevCert == true }}
       with:
         dotnet-version: '9.0.x'
 
     - name: Install SSL certificates
+      if: ${{ matrix.trustDevCert == true }}
       run: |
         dotnet dev-certs https --trust
 
