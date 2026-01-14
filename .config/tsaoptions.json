@@ -1,0 +1,10 @@
+{
+    "instanceUrl": "https://devdiv.visualstudio.com/",
+    "template": "TFSDEVDIV",
+    "projectName": "DEVDIV",
+    "areaPath": "DevDiv\\VS Azure Tools\\Container Tools",
+    "iterationPath": "DevDiv",
+    "notificationAliases": [ "DockerToolsTeam@microsoft.com" ],
+    "codebaseName": "dcp",
+    "serviceTreeId": "6e21af9f-054b-4ed9-a856-e34c73d843d1"
+}
