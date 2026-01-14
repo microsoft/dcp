@@ -20,12 +20,10 @@ Kubernetes resource kinds are organized into named groups, the idea being that r
 
 Resource kinds can have multiple versions (also called **API versions**). Every object in the system has its version information stored with it; this version is called "storage version" for this object. Kubernetes design guidelines emphasize that clients should be able, to the largest extent possible, use their preferred API version when working with an object, even if the storage version is different than the client API version. Kubernetes has facilities to support this scenario, but it requires additional effort by the programmer to translate versions on the fly as necessary.
 
-> In DCP all resources have a single version, `v1`.
-
 ---
 
 # API server and data store
-The part of Kubernetes that orchestrates all the work performed by a Kubernetes cluster is called control plane. You can read [Kubernetes control plane conceptual overview](https://kubernetes.io/docs/concepts/overview/components/#control-plane-components) to learn more about Kubernetes control plane and all its components. The most important control plane components are the API server and the data store (also called backing store).
+The part of Kubernetes that orchestrates all the work performed by a Kubernetes cluster is called **control plane**. You can read [Kubernetes control plane conceptual overview](https://kubernetes.io/docs/concepts/overview/components/#control-plane-components) to learn more about Kubernetes control plane and all its components. The most important control plane components are the **API server** and the **data store** (also called backing store).
 
 ## API server
 The **API server** is the control plane component that exposes the Kubernetes API and handles requests that query and modify resources.
@@ -35,7 +33,7 @@ The **API server** is the control plane component that exposes the Kubernetes AP
 ## Data store
 The **data store** manages resource data. Kubernetes uses [etcd](https://etcd.io/docs/) as its default data store, a consistent and highly available key-value database.
 
-> DCP does not need the high availability of etcd, and does not need to persist data beyond the lifetime of the dcp daemon, so it uses an in-memory data store instead. In future, if workload data persistence is required, DCP could switch to a single-node etcd instance for storing workload data on disk.
+> DCP does not need the high availability of etcd, and does not need to persist data beyond the lifetime of the dcp daemon, so it uses an in-memory data store instead. In future, if workload data persistence is required, DCP could switch to a single-node etcd instance, or another kind of low-overhead, single-machine data store, for storing workload data on disk.
 
 ---
 
@@ -80,7 +78,7 @@ A full list of object metadata properties can be found [in Kubernetes documentat
 
 ## The spec
 
-The spec part of object data represents **the desired state of the world**. This data is specific to the object kind and is meant to be set by clients. Controllers usually do not modify any spec data; they just read it and react to changes.
+The spec part of object data represents **the desired state of the world**. This data is specific to the object kind and is meant to be set by clients (entities that create object instances). Controllers usually do not modify any spec data; they just read it and react to changes.
 
 ## The status
 
@@ -89,6 +87,8 @@ The status represents **how the world actually is**. More precisely, status is t
 Status data should be created and modified by controllers. Clients read the status to get information about the world, but do not modify status data.
 
 Kubernetes does not prescribe the format for spec and status, but there are some conventions that Kubernetes tools rely on to make the status information more user-friendly. For more information about these conventions refer to [relevant chapter in the Kubernetes API conventions document](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#spec-and-status).
+
+> A good design principle is to ensure that only a single controller modifies the status of a given object instance. Having more than one controller changing the status of same object, almost certainly will introduce write conflicts because object instances are generally versioned as a whole. It can also lead to consistency problems. Kubernetes has some support for carefully designed case of multiple controllers operating on disjoint sets of fields, but it is an advanced technique ("server-side apply patch") that should be used only if necessary. This and more is discussed in detail in the [chapter on updating Kubernetes objects](#updating-kubernetes-objects).
 
 ---
 
@@ -208,6 +208,23 @@ instructs the `openapi-gen` generator to generate OpenAPI schema for the followi
 ### Objects are always slightly stale
 All standard Kubernetes client libraries use a cache, so objects that the client sees can always be somewhat out of date. Moreover, Kubernetes does not make any guarantees in terms of how soon controllers will be notified about a change to objects they are watching, so even if the cache is bypassed, there is still no such thing as "object data that is guaranteed fresh" in Kubernetes. The best approach is to keep a mindset that all data "seen" by controller code is <u>a snapshot</u> from (hopefully near) past.
 
+## Object queries, labels, and indexes
+
+To retrieve a single object with a given name, `controller-runtime` provides a `Get()` method on the `Client` interface. This method is typically called by the controller at the beginning of the reconciliation function to learn the last-known state of the object to be reconciled.
+
+The `List()` method of the `controller-runtime`'s `Client` interface is the primary means of retrieving sets of objects of particular kind. `ListOptions` parameter can be used to constrain the objects returned; the most commonly used options are:
+
+| `ListOption` | Effect |
+| --- | --------- |
+| `InNamespace` | Returns only objects belonging to given namespace. |
+| `MatchingLabels` | Returns only objects that are decorated with matching labels (label name and value both match). |
+| `MatchingFields` | Returns only objects that have matching index fields. Because index values are sets, an index field is considered a match if the value set contains the value specified by `MatchingFields` list option. |
+
+Labels are single-valued and stored with the rest of object metadata by the API server. All clients can create them, retrieve their values, and delete them.
+
+Indexes are client-side mechanism that is implemented by the object cache (see below). They are created in-memory, by specific client, and are not reflected in the object data stored in the API server. For more information on how to create indexes see [tracking changes to related objects paragraph](#tracking-changes-to-related-objects).
+
+
 ## Working with the object data cache
 
 ### The startup cache sync
@@ -219,22 +236,24 @@ There are a few mechanisms in `controller-runtime` that allow changing the defau
 - When creating a `DelegatingClient`, certain object kinds can be configured to always be read directly from the API server.
 - `Watches` can be restricted to a give set of namespaces by using `cache.MultiNamesapceCacheBuilder`, or setting `cache.Options.Namespace`.
 - Watches can be filtered (e.g. by label) per object kind by using `cache.Options.SelectorsByObject`.
-- `APIReader` can be used for ad-hoc, cache-bypassing queries (although the need for that should be rare). Also keep in mind that the `APIReader` call will result in a quorum-read from the underlying etcd storage, which might be costly with a heavily-used cluster, and especially if a lot of data is returned, so always use namespace and label filters if possible.
+- `APIReader` (returned by `GetAPIReader()` method of the `Cluster`) interface can be used for ad-hoc, cache-bypassing queries (although the need for that should be rare). Also keep in mind that the `APIReader` call will result in a quorum-read from the underlying etcd storage, which might be costly with a heavily-used cluster, and especially if a lot of data is returned, so always use namespace and label filters if possible.
 
 ### Object updates and the cache
-The cache is not used for data-modification functions (`Create`, `Update`, `Patch`, and `Delete`). This means you should usually do the update towards the end of the reconciliation function, and then return. Do not use `Client` APIs to read the object again, because most likely the cache will not be updated yet and you will read stale data. If you need the updated object data (e.g. generation number), the data-modification functions will save these (new) data into the object passed to them.
+The cache is not used for data-modification functions (`Create`, `Update`, `Patch`, and `Delete`). This means you should usually do the update towards the end of the reconciliation function, and then return. Do not use `Client` APIs to read the object again, because most likely the cache will not be updated yet and you will read stale data. If you need the updated object data (e.g. generation number), the data-modification functions will save these (new) data into the object passed to them and you can read them back once the modification completes successfully.
 
 Another point to remember is that even if a particular update initiate by a controller is the last update that has been applied to an object, the object data may not be *exactly the same* as what the controller sent, due to the presence of mutating webhooks. We do not use mutating webhooks in DCP, but this is true for regular Kubernetes clusters.
 
-An advanced technique employed by some controllers is to anticipate `Watcher` events for newly created or updated objects by storing expected event data about them (context) in memory and processing them in a simplified manner. For example, a controller might create a bunch of child objects of a kind that it also watches; it can expect receiving a reconciliation function call for each created child object. This controller also "knows" that a bunch of children have been just created, so it can take this information into account when deciding whether to create more children, even if the cache has not been updated yet with the new child data.
+An advanced technique employed by some controllers is to anticipate `Watcher` events for newly created or updated objects by storing expected event data about them (context) in memory and processing them in a simplified manner. For example, a controller might create a bunch of child objects of a kind that it also watches; it can expect receiving a reconciliation function call for each created child object. This controller also "knows" that a bunch of children have been just created, so it can take this information into account when deciding whether to create more children, even if the cache has not been updated yet with the new child data. We use this technique in DCP extensively, see [DCP-specific controller techniques chapter](#dcp-specific-controller-techniques) for more information.
 
-### `SharedInformerFactory` does not produce globally shared `Informers`
-Although `controller-runtime` uses `client-go` primitives under the covers, it does not use `client-go` default object cache and pool of `Informers`. In particular, `Informers` created by `SharedInformerFactory` that is part of `client-go` will not be using the `controller-runtime` object cache, and are completely separate from `Informers` used by `controller-runtime`.
+> CAVEAT: `client-go` and `controller-runtime` data caches are separate!
+>
+> Although `controller-runtime` uses `client-go` primitives under the covers, it does not use `client-go` default object cache and pool of `Informers`. In particular, `Informers` created by `SharedInformerFactory` that is part of `client-go` will not be using the `controller-runtime` object cache, and are completely separate from `Informers` used by `controller-runtime`.
+>
+> A rule of thumb to avoid such issues is to consistently use single data retrieval library: either `client-go`, or `controller-runtime`, but not both.
 
-A rule of thumb to avoid such issues is to consistently use for data retrieval either `client-go`, or `controller-runtime`, but not both.
 
 
-## Metadata-only queries
+### Metadata-only queries
 
 `controller-runtime` clients can be used to easily retrieve metadata-only objects and lists. This is useful for efficiently checking if at least one object of a given kind exists, or retrieving metadata of an object if one is not interested in the rest (e.g., spec/status). This saves network traffic and cpu/memory load on the API server and client side. If the client fully lists all objects of a given kind including their spec/status, the resulting list can be quite large and consume a lot of memory. That's why it's important to carefully check, if a full list is actually needed or if metadata-only list can be used instead. For example:
 
@@ -261,7 +280,7 @@ if len(podList.Items) > 0 {
 ## Updating Kubernetes objects
 
 ### Modifying objects returned by `Client` API is safe
-The `obj Object` parameter used by `controller-runtime` client APIs is actually a pointer to an object structure. It means the client will modify the object as necessary and no copy will be made. It also means the object is owned by the code that called the `Client` API and can be modified freely, and the modifications will not affect any data cached by the `controller-runtime` library.
+The `obj Object` parameter used by `controller-runtime` client APIs is a pointer to an object structure provided by the caller. It means the client will modify the object as necessary and no copy will be made. It also means the object is owned by the code that called the `Client` API and can be modified freely, and the modifications will not affect any data cached by the `controller-runtime` library.
 
 This pattern of passing objects "by reference" is commonly used in controller code, not just when calling client APIs, but also for passing objects between functions belonging to controller code. It is efficient and results in straightforward code, but is not goroutine-safe. If multiple goroutines need to work on the same object, one must use synchronization techniques to ensure proper happens-before relationships, or make a deep copy of the object.
 
@@ -275,10 +294,12 @@ Kubernetes controllers should always assume that some other client might have ch
 
 If the update is urgent, one can test if the error was a conflict (HTTP status code 409) via [`errors.IsConflict`](https://pkg.go.dev/k8s.io/apimachinery/pkg/api/errors#IsConflict) and retry. There is also a [`RetryOnConflict`](https://pkg.go.dev/k8s.io/client-go/util/retry#RetryOnConflict) utility function that can wrap the (get data--compute changes--update) sequence, retrying it with exponential back-off, but given "objects are always slightly stale" general rule, retry-on-conflict should be reserved for special, well-defined cases.
 
+> In DCP the controllers notice objects that experience failure updates due to conflics and request another round of reconciliation for them, with exponential backoff. The object reader for these objects is also temporarily swapped for a non-caching one. This gives controllers best chance to adapt to a surge of object changes and reach consistent, steady state eventually.
+
 ### Objects owned by a controller
 A special situation arises if a controller creates objects that are not meant to be updated by anything else. These objects are "owned" by the controller. A common example is a need to create "children" objects for the root object the controller manages (for example, the standard Kubernetes Deployment controller creates ReplicaSet objects for deployments).
 
-In case of objects fully owned by a controller, it can be beneficial to update them by patching the spec without optimistic concurrency control (not including `resourceVersion` metadata). Since there is only one writer, this is safe, and avoids unnecessary retries. A separate controller can still update the status. As long as there is clear division of responsibility, the data will always remain consistent.
+In case of objects fully owned by a controller, it can be beneficial to update them by patching the spec (ONLY the spec) without optimistic concurrency control (not including `resourceVersion` metadata). Since there is only one writer, this is safe, and avoids unnecessary retries. A separate controller can still update the status. As long as there is clear division of responsibility, the data will always remain consistent.
 
 Another way of dealing with optimistic concurrency is to use <u>immutable child objects</u> with deterministic names. This involves a naming convention, where children are named according to formula `(parent name)-(hash of parent data)-(sequence number)`, where `(hash of parent data)` is the hash of parent data that is relevant to the child. These children never change once created, and it is enough to compare the hash of parent data with the child name to know, which ones are current, and which one are stale. Again, this assumes that a controller fully owns the child objects and will be the only entity that modifies their spec.
 
@@ -293,18 +314,18 @@ var (
   obj   *apiv1.SomeObject
 )
 
-// update
+// Direct update (last write wins)
 obj.Spec.SomeProperty = "alpha"
-// more changes to obj...
+// Make more changes to obj, then...
 err := c.Update(ctx, obj.DeepCopy())
 
-// merge patch
-patch := client.MergeFrom(obj.DeepCopy()) // Establish baseline
+// Merge patch with optimistic concurrency
+patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{}) // Establish baseline
 obj.Spec.SomeProperty = "alpha"  // Change that needs to be included in the patch
-// more changes to obj...
+// Make more changes to obj, then...
 err = c.Patch(ctx, obj.DeepCopy(), patch)
 
-// server-side apply patch
+// Server-side apply patch (see "Server-side apply patch" paragraph below for description and rationale)
 obj.Spec.SomeProperty = "alpha"  // Change that needs to be included in the patch
 // more changes to obj...
 err = c.Patch(ctx, obj.DeepCopy(), client.Apply, client.ForceOwnership, client.FieldOwner("controller-name"))
@@ -313,7 +334,7 @@ err = c.Patch(ctx, obj.DeepCopy(), client.Apply, client.ForceOwnership, client.F
 Note that:
 - Patch request only contains changes made to the object between the call to `*MergeFrom()` and the call to `Patch()`. This is also why the code should pass a deep copy of the object to `*MergeFrom()`--otherwise there will be no "object delta" at the time when `Patch()` is called.
 - Merge patch requests conform to RFC 7396 JSON Merge Patch spec (see [JSON Patch and JSON Merge Patch overview](https://erosb.github.io/post/json-patch-vs-merge-patch/) for introductory information). The most important caveat about JSON Merge Patch is that if a list is included in the patch, entire list will be replaced; there is no way to insert/update/delete individual elements.
-- `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. By default, `Patch()` requests do not include `resourceVersion` and do not participate in optimistic concurrency, but it can be explicitly enabled for merge patch:
+- `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. The simplest variant of `Patch()` request (the result of `MergeFrom()` call) does not include `resourceVersion` and does not participate in optimistic concurrency. This is why we DO NOT use it anywhere in DCP code and instead use `Merge
     ```go
     // json merge patch + optimistic locking
     patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})
@@ -337,7 +358,7 @@ obj.Status.SomeProperty = "bravo"
 err := c.Status().Update(ctx, &obj)
 
 // merge patch
-patch := client.MergeFrom(obj.DeepCopy()) // Establish baseline
+patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})  // Establish baseline
 obj.Status.SomeProperty = "bravo"  // Change that needs to be included in the patch
 // more changes to obj.Status (only) ...
 err = c.Status().Patch(ctx, obj.DeepCopy(), patch)
@@ -357,7 +378,7 @@ var (
 )
 
 // This uses merge patch only; full update would use the same sequence.
-patch := client.MergeFrom(obj.DeepCopy()) // Establish baseline
+patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})  // Establish baseline
 obj.SomeProperty = 42 // Change that needs to be included in the patch
 // more changes to object data ...
 
@@ -382,7 +403,7 @@ if err != nil {
 // obj still contains "desired state" of the object
 // "update" now contains the (fully) saved object data.
 ```
-If necessary, the copy of the
+> DCP controllers leverage a common `ReconcilerBase` type that makes sure appropriate update APIs are called in correct order and that update conflicts are handled by retrying reconciliation with exponential backoff. The controller only needs to supply the baseline object and the patch (which can contain both spec and status changes), and `ReconcilerBase` will do the rest.
 
 ### Server-side apply patch
 The [server-side apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/) type of patch is a newer option that leverages the concept of field ownership for concurrency control. Essentially, each actor that modifies the object can mark the fields it "owns" via `managedFields` metadata property. When another actor tries to update an owned field to a different value, an update conflict will occur. The actor can then choose to either:
@@ -399,15 +420,17 @@ The advantages of a server-side apply patch method are:
 - Individual list items or map/object elements can be owned and updated by different actors.
 - The object does not need to be read to construct a patch--it is enough to start with an object in its blank (default) state and apply necessary changes. The patch can then be submitted and per-field concurrency checks will be applied by the server.
 
-> Another mechanism for granular object updates is/was a "strategic merge patch". It can still be found in `controller-runtime` APIs, but it could only be used with built-in Kubernetes object kinds, and is considered obsolete.
+In DCP we do not currently have a case where multiple controllers routinely operate on the same object, and thus we do not use server-side apply patch techniqe.
+
+> Another mechanism for granular object updates was a "strategic merge patch". It can still be found in `controller-runtime` APIs, but it could only be used with built-in Kubernetes object kinds, and is considered obsolete.
 
 ### Choosing the object method update
 In general, there are no hard rules for choosing the API to update objects, but here are some thoughts to consider:
 - Patching is often preferable to updating because it is less error-prone and reduces the amount of network traffic. Updating involves sending all the object data, and increases the possibility of changing something inadvertently.
 - Updates are always subject to optimistic concurrency, but with patching the controller has a choice.
 - A JSON merge patch with optimistic locking is a good compromise and a safe default.
-- Server-side apply patch has been designed for the scenario when multiple actors update different portions of object data.
-- When a change that involves most/all object data, a full update might make sense.
+- Server-side apply patch has been designed for the scenario when multiple actors/controllers update different portions of object data.
+- When a change that involves most/all object data, a full update might make most sense.
 
 
 ## Reacting to external (real-world) changes
@@ -451,6 +474,12 @@ The `GenericEvent` instance needs to include the Kubernetes object name and name
 
 The controller also needs to take care that it does not trigger too many reconciliation invocations. If real-world is changing rapidly, it can be beneficial to batch or debounce reconciliations for corresponding Kubernetes objects. DCP has  [`resiliency` package](https://github.com/microsoft/dcp/tree/main/internal/resiliency) that can help with that.
 
+## Tracking changes to related objects
+
+Many controllers have a need to react to changes to objects that are not their "primary" objects (the kind that they reconcile). For example, a container tunnel enables Containers to access a Service implemented on host network; if that Service is deleted, the corresponding tunnel(s) need to be shut down. This is a job of the ContainerNetworkTunnelProxy controller that manages container tunnels and needs to be notified about Service deletion. It also needs to efficiently find all container tunnels that are affected.
+
+Kubernetes provides two main mechanisms for object tracking: watches and indexes.
+
 ## Deleting Kubernetes objects
 
 In the simplest case, when a client deletes a Kubernetes object, that object immediately disappears from the Kubernetes data store. The controller (if any) will receive a change notification and its reconciliation function will be run, but an attempt to `Get()` the object will result in `NotFound` error. The object data is gone. If the controller needs to do any cleanup work, all it has is the deleted object name and namespace. In case this is insufficient, the controller needs to employ a finalizer.
@@ -481,3 +510,9 @@ For more information refer to [Garbage Collection topic](https://kubernetes.io/d
 The presence of finalizers can make the orchestration of object hierarchy deletion quite complicated. The most straightforward tactics is often to limit the scope of auto-deletion by relying on finalizers and owner object controllers to delete children as appropriate. This works well if it is the parent object controller that creates the children (think ReplicaSet and its Replicas).
 
 Another possibility for object hierarchy deletion is to have child controllers watch the parent objects and delete children when the parent gets removed. This option is useful if it is the parent controller is not involved in child creation.
+
+## DCP-specific controller techniques
+
+### Controllers and concurrency
+
+### In-memory object state and dual-key maps
