@@ -23,11 +23,14 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
         - os: ubuntu-latest
-          buildCommand: make build-ci
-          testCommand: make test-ci
+          prereqsCommand: ''
+        - os: windows-latest
+          prereqsCommand: choco install make mingw -y
+        - os: macos-latest
+          prereqsCommand: ''
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
@@ -40,21 +43,13 @@ jobs:
         go-version-file: 'go.mod'
         architecture: 'x64'
 
-    - name: Build
-      run: ${{ matrix.buildCommand }}
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v3
-      with:
-        dotnet-version: '9.0.x'
-
-    - name: Install SSL Certificates
-      run: |
-        dotnet dev-certs https --trust
+    - name: Setup prerequisites
+      if: ${{ matrix.prereqsCommand != '' }}
+      run: ${{ matrix.prereqsCommand }}
 
     - name: Run tests
       id: test
-      run: ${{ matrix.testCommand }}
+      run: make test-ci
       env:
         TEST_CONTEXT_TIMEOUT: 180 # Increase test timeout to three minutes
         DCP_DIAGNOSTICS_LOG_LEVEL: debug
