@@ -27,16 +27,10 @@ jobs:
         include:
         - os: ubuntu-latest
           prereqsCommand: ''
-          trustDevCert: true
-          testCommand: make test-ci
         - os: windows-latest
           prereqsCommand: choco install make mingw -y
-          trustDevCert: false
-          testCommand: make test-ci
         - os: macos-latest
           prereqsCommand: ''
-          trustDevCert: false
-          testCommand: make test-ci
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
@@ -53,20 +47,9 @@ jobs:
       if: ${{ matrix.prereqsCommand != '' }}
       run: ${{ matrix.prereqsCommand }}
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v3
-      if: ${{ matrix.trustDevCert == true }}
-      with:
-        dotnet-version: '9.0.x'
-
-    - name: Install SSL certificates
-      if: ${{ matrix.trustDevCert == true }}
-      run: |
-        dotnet dev-certs https --trust
-
     - name: Run tests
       id: test
-      run: ${{ matrix.testCommand }}
+      run: make test-ci
       env:
         TEST_CONTEXT_TIMEOUT: 180 # Increase test timeout to three minutes
         DCP_DIAGNOSTICS_LOG_LEVEL: debug
