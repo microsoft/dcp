@@ -20,6 +20,8 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -3104,6 +3106,20 @@ func TestContainerCreateFilesCertificate(t *testing.T) {
 	require.Equal(t, 0, items[0].Gid, "copy file item group id does not match expected default value")
 	require.Equal(t, int64(osutil.PermissionOwnerReadWriteOthersRead), items[0].Mode, "copy file item mode does not match expected default value")
 	require.Equal(t, uint8(tar.TypeSymlink), items[1].Typeflag, "expected symlink file type for second tar item")
+
+	opensslPath, opensslLookupErr := exec.LookPath("openssl")
+	if opensslLookupErr != nil {
+		t.Logf("Skipping OpenSSL hash validation: %v", opensslLookupErr)
+	} else {
+		hashCmd := exec.CommandContext(ctx, opensslPath, "x509", "-hash", "-noout")
+		hashCmd.Stdin = bytes.NewReader(buffer.Bytes())
+		hashOutput, hashCmdErr := hashCmd.Output()
+		require.NoError(t, hashCmdErr, "could not compute certificate hash with openssl")
+
+		certificateHash := strings.TrimSpace(string(hashOutput))
+		expectedSymlinkName := path.Join(ctr.Spec.CreateFiles[0].Destination, fmt.Sprintf("%s.0", certificateHash))
+		require.Equal(t, expectedSymlinkName, items[1].Name, "certificate symlink name does not match openssl subject hash")
+	}
 }
 
 func TestContainerCreateFilesContinueOnError(t *testing.T) {
