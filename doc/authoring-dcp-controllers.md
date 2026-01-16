@@ -545,7 +545,7 @@ Another way of adding correlation data to an object is to use an *index*. This i
 	}
 ```
 
-Note that (unlike labels), indexes are set-valued. When using `MatchingFields` predicate against an index field, the object is considered a "match" if the field value (set) contains the predicate parameter value. 
+Note that (unlike labels), indexes are set-valued. When using `MatchingFields` predicate against an index field, the object is considered a "match" if the field value (set) contains the predicate parameter value.
 
 ## Deleting Kubernetes objects
 
