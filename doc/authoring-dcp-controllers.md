@@ -620,10 +620,33 @@ Even with reconciliation concurrency enabled, controller authors should ensure t
 
 #### Example: background processing for Container startup
 
-blah
-Maximum-concurrency work queue
+A Docker or Podman container startup can take a long time (several seconds, or even minutes), especially if the container image is not cached locally. Here is a (simplified, illustrative) description how Container controller handles a Docker container startup ensuring system responsiveness and minimizing time spent running reconciliation function:
 
-### Channel-based interfaces
+1. The Container controller (its reconciliation function) is called to reconcile a Container object. The controller notices the object was just created and is in Initial state.
+1. The controller creates in-memory state for the Container object, transitions it to Starting state, and schedules the startup work item to the internal, limited-concurrency work queue. Object data is saved. The reconciliation function returns and the controller is ready to reconcile another Container object.
+1. The queue worker goroutine picks up the container startup work. It borrows the state from the Container controller `ObjectStateMap` and goes through all steps involved in starting a Docker container (fetching/bulding an image, preparing certificate material, creating the container instance, attaching it to desired networks, and finally starting it). 
+1. Assuming all startup work is successful, the worker posts a deferred update operation to Container `ObjectStateMap` and schedules another reconciliation for the container.
+1. The Container controller is invoked again. It applies the deferred operation(s) to the in-memory state and notices that the Docker container has been created and is now running. It transitions the Container object to Running state and saves the updated object.
 
-One of Go language's call to fame is the built-in [channel mechanism](https://go.dev/ref/spec#Channel_types) for communicating between concurrently executing functions. This mechanims is extensively used  
-The pitfals of using channel-based interfaces
+
+### Pitfalls of channel-based interfaces
+
+One of Go language's call to fame is the built-in [channel mechanism](https://go.dev/ref/spec#Channel_types) for communicating between concurrently executing functions. This mechanims is commonly used by various libraries, including having library functions accept and/or return channels. In most cases, channel send and channel read operations involove synchronization between two functions. They are blocking "rendezvous" operations, not asynchronous "invoke and get a promise" operations. When one function does a channel send, it blocks until another function does a read on the same channel (or the channel is closed).
+
+The potential pitfal here, associated with blocking nature of channel operations, is not specific to DCP, or Kubernetes controllers, but it is important to watch for it because channels are commonly used for delivering Kubernetes object update notifications. One of the potential problematic scenarios is the following:
+
+1. A client subscribes to object update notifications and receives a channel that will act as notification source.
+
+1. The client uses the channel, reading from it in a loop... 
+
+1. Some time later, the client decides it no longer needs the notifications. It cancels the subscription and abandons the channel.
+
+1. The problem is the subscription cancellation came in the middle of the notification subsystem trying to deliver (channel send) another notification. If the subsystem is not goroutine-safe in terms of subscription cancellations, it will be stuck forever trying to deliver the remaining notification. It may also stop delivering notifications to all other clients.
+
+To avoid such problems, DCP tends to use channels defensively. The follwing rules and mechanisms are applied:
+
+1. For all applicable cases, channel read and channel send SHOULD handle the cases when the chanel is closed, or the operation takes longer than a reasonable timeout.
+
+1. DCP has an "unbounded channel" (`UnboundedChan`) library type. This channel-like type guarantees that the send operation will complete within short time span (as controlled by Go goroutine scheduler), regardless whether the consumer reads from the channel or not. To achieve this the unbounded channel is using an auto-expanding buffer and a separate buffer-processing goroutine, so it should be used sparingly, but it does provide a significant additional level of decoupling between the producer and consumer of data.
+
+1. For any channel-based subscription (like the problematic scenario described above), cancellation of the subscription should be accompanied by *draining* the subscription channel in a separate goroutine (until the channel is closed by the subscription manager). This provides additional assurance that the subscription manager will continue to serve other (live) subscriptions. 
