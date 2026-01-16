@@ -597,7 +597,7 @@ For all these reasons, most controllers keep in-memory state about objects they 
 
 ### Handling real-world entity changes
 
-Real-world entity changes often happen independently from-, and concurrently with reconciliations. For example, a process associated with Executable object may quit at any time after it is started.
+Real-world entity changes often happen independently from reconciliations, and concurrently with them. For example, a process associated with Executable object may quit at any time after it is started.
 
 The reconciliation function looks at Kubernetes object data and real-world entity data, and then decides what action to take against the real-world entity, and what changes to make to the Kubernetes object (status). This often requires a significant amount of processing, spread across several functions, and taking considerable time (at least milliseconds). To function correctly, the reconciliation function needs **a stable view of the Kubernetes object and the real-world entity**. If any of these two changes in the middle of the reconciliation function, bad things usually happen (for example, the real-world entity is left in undesired state, object status is not updated correctly etc).
 
