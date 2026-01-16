@@ -403,7 +403,10 @@ if err != nil {
 // obj still contains "desired state" of the object
 // "update" now contains the (fully) saved object data.
 ```
-> DCP controllers leverage a common `ReconcilerBase` type that makes sure appropriate update APIs are called in correct order and that update conflicts are handled by retrying reconciliation with exponential backoff. The controller only needs to supply the baseline object and the patch (which can contain both spec and status changes), and `ReconcilerBase` will do the rest.
+
+In practice, a good implementation rule is to **never try to update both object spec/metadata AND object status at the same time**. One risks ending with inconsistent data if one of the updates fails (non-atomic update). A much safer way is to give preference to status updates first, and then let the reconciliation function run again and have it update the object metadata in the second run. This ensures that the controller updates the object in an atomic way, always keeping it in consistent state.
+
+> DCP controllers leverage a common `ReconcilerBase` type that makes sure appropriate update APIs are called in correct order and that update conflicts are handled by retrying reconciliation with exponential backoff. The controller only needs to supply the baseline object and the patch (which can contain both spec and status changes), and `ReconcilerBase` will do "the right thing".
 
 ### Server-side apply patch
 The [server-side apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/) type of patch is a newer option that leverages the concept of field ownership for concurrency control. Essentially, each actor that modifies the object can mark the fields it "owns" via `managedFields` metadata property. When another actor tries to update an owned field to a different value, an update conflict will occur. The actor can then choose to either:
@@ -557,8 +560,29 @@ The presence of finalizers can make the orchestration of object hierarchy deleti
 
 Another possibility for object hierarchy deletion is to have child controllers watch the parent objects and delete children when the parent gets removed. This option is useful if it is the parent controller is not involved in child creation.
 
-## DCP-specific controller techniques
+## Concurrency and data handling in controllers
 
-### Controllers and concurrency
+The job of most DCP controllers is to keep the state of a Kubernetes object in sync with a "real world" entity the object represents. For example, the Executable controller starts and manages processes, the Container controller manages Docker/Podman containers, and so on. The controller needs to react to Kubernetes object changes (creation, deletion, spec change) *and* to changes to real world entities (e.g. process writing logs to `stdout`, process exiting). These changes happen **independently and concurrently**. Controllers must ensure that whatever action is taken, both the Kubernetss object and the real world entity remain in consisten state individually, and that the overall state of the pair is eventually consistent too. This chapter discusses some of the techniques that we use to make it happen. 
 
-### In-memory object state and dual-key maps
+### In-memory object state 
+
+Depending on the character of the real-world entity, there might be data associated with it that needs to be kept in-memory by the controller. There are two main reasons for this (as opposed to keeping this data as Kubernetes object status, labels, or annotations):
+
+- The data is awkward at best to serialize, and there is no benefit in doing so (e.g. open file descriptors).
+- The controller logic becomes very difficult to implement if there is no guarantee that it always has access to the most fresh real-world entity data. Unfortunately [Kubernetes objects are always a bit stale](#objects-are-always-slightly-stale) and the controllers cannot assume that read-your-writes always work.
+
+This is why most controllers keep in-memory state about objects they handle. The state is created when the object is reconciled for the first time, and keapt around until the object is deleted. `controller-runtime` guarantees that reconciliation function is never called more than once for a given object (as identified by its namespaced name), so one would think that plain records stored in a concurrent map would suffice as object store, but this is not the case.
+
+### Handling real-world entity changes
+
+Cloneable state, deferred ops
+Similar to reducers in Redux https://redux.js.org/tutorials/fundamentals/part-1-overview#data-flow and Store in Tilt https://github.com/tilt-dev/tilt/blob/master/internal/store/store.go
+
+### Concurrent reconciliations
+
+Default vs WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles})
+
+### Background processing
+
+Maximum-concurrency work queue
+The pitfals of using channel-based interfaces
