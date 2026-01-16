@@ -6,7 +6,7 @@ Developer Control Plane controllers are, for all practical purposes, Kubernetes 
 
 At the highest level of abstraction Kubernetes can be thought as a document database. Various kinds of documents, or **resource kinds** in Kubernetes lingo, can be stored in the database and accessed via a RESTful API. Kubernetes ships with a bunch of built-in, [standard resource types (kinds)](https://kubernetes.io/docs/reference/kubernetes-api/) such as Pod, ReplicaSet, Service, and others, but it is an extensible system, and users can define their own types of resources via Custom Resource Definitions, or CRDs. These CRDs make Kubernetes "understand" new types of resources, and expose them for querying and editing via the API endpoint exactly like standard resources.
 
-Instances of resources are created simply "resources", or "objects". The latter term is especially popular in the context of accessing Kubernetes via API.
+Instances of resources are called simply "resources", or "objects". The latter term is especially popular in the context of accessing Kubernetes via API.
 
 > Kubernetes convention is to start the names of resource kinds with uppercase letter (a Pod, Service, Executable etc). This makes it clear whether we are talking about a resource kind (e.g. Executable) vs an instance of a kind (executable = "some specific executable").
 
@@ -47,7 +47,7 @@ The part of DCP that is responsible for making the developer workload correspond
 
 This two-way synchronization between the Kubernetes object model and "the real world" (the running workload in DCP case) is called **reconciliation**. The main part of every controller code is a "reconciliation function" that is called whenever a change is detected, either to the model, or the real world.
 
-> Although the reconciliation function is typically triggered by a change, there is no guarantee that the function will be called within any specific amount of time. Consequently, the controller should not assume that the change that triggered reconciliation accurately represents the latest state of the model, or the real world. In other words, it is *not true* that Kubernetes will present the controller with a complete history of changes for every object the controller is interested in. In Kubernetes documentation this assumption is called **edge-based behavior** and is listed specifically listed as a mistake.
+> Although the reconciliation function is typically triggered by a change, there is no guarantee that the function will be called within any specific amount of time. Consequently, the controller should not assume that the change that triggered reconciliation accurately represents the latest state of the model, or the real world. In other words, it is *not true* that Kubernetes will present the controller with a complete history of changes for every object the controller is interested in. In Kubernetes documentation this assumption is called **edge-based behavior** and is specifically listed as a mistake.
 >
 > Instead, the controller should ensure that it has the most recent information about both the model and the world, and only then decide what the next action (if any) should be. In Kubernetes documentation this is referred to as **level-based** behavior.
 
@@ -103,7 +103,7 @@ DCP API server and its core controllers are implemented in Go. Users of Go have 
 | [kubebuilder](https://book.kubebuilder.io/introduction.html) | `kubebuilder` is a code generation scaffolding tool that leverages `controller-runtime`. It is meant to get you quickly started with your controller implementation and allow rapid iteration when your spec- and/or status data change. |
 | [Operator Framework](https://operatorframework.io) | Operator Framework is a set of developer tools and Kubernetes components that aid in operator development, handling such tasks as operator installation, update and management. It leverages `kubebuilder` and other tools. |
 
-In DCP we rely mostly on `container-runtime` and associated code generation tools. We also use types and functions form `client-go` library.
+In DCP we rely mostly on `controller-runtime` and associated code generation tools. We also use types and functions from `client-go` library.
 
 ## Most important library primitives
 
@@ -152,7 +152,7 @@ type StatusClient interface {
 ### Informers
 An `Informer` combines the ability to receive and handle notifications about changes to objects of a particular kind with an in-memory cache with indexed lookup. This places minimal load on the API server and increases performance. Under the covers the Informer fills its object cache upon startup and then signs up for change notifications for the desired object kinds. It will also handle connection failures and various kinds of common API server errors.
 
-> Caveat: unlike `controller-runtime` `Client` objects, objects returned by `Informers`, `Listers` and `Watchers` are direct pointers to client cache content. The controller cone must make a copy before modifying them.
+> Caveat: unlike `controller-runtime` `Client` objects, objects returned by `Informers`, `Listers` and `Watchers` are direct pointers to client cache content. The controller code must make a copy before modifying them.
 
 ### Scheme and RESTMapper
 These two types play a role of configuration/helper data that enable calling Kubernetes API server REST endpoint.
@@ -235,7 +235,7 @@ There are a few mechanisms in `controller-runtime` that allow changing the defau
 
 - When creating a `DelegatingClient`, certain object kinds can be configured to always be read directly from the API server.
 
-- `Watches` can be restricted to a give set of namespaces by using `cache.MultiNamesapceCacheBuilder`, or setting `cache.Options.Namespace`.
+- `Watches` can be restricted to a given set of namespaces by using `cache.MultiNamespacedCacheBuilder`, or setting `cache.Options.Namespaces`.
 
 - Watches can be filtered (e.g. by label) per object kind by using `cache.Options.SelectorsByObject`.
 
@@ -244,7 +244,7 @@ There are a few mechanisms in `controller-runtime` that allow changing the defau
 ### Object updates and the cache
 The cache is not used for data-modification functions (`Create`, `Update`, `Patch`, and `Delete`). This means you should usually do the update towards the end of the reconciliation function, and then return. Do not use `Client` APIs to read the object again, because most likely the cache will not be updated yet and you will read stale data. If you need the updated object data (e.g. generation number), the data-modification functions will save these (new) data into the object passed to them and you can read them back once the modification completes successfully.
 
-Another point to remember is that even if a particular update initiate by a controller is the last update that has been applied to an object, the object data may not be *exactly the same* as what the controller sent, due to the presence of mutating webhooks. We do not use mutating webhooks in DCP, but this is true for regular Kubernetes clusters.
+Another point to remember is that even if a particular update initiated by a controller is the last update that has been applied to an object, the object data may not be *exactly the same* as what the controller sent, due to the presence of mutating webhooks. We do not use mutating webhooks in DCP, but this is true for regular Kubernetes clusters.
 
 An advanced technique employed by some controllers is to anticipate `Watcher` events for newly created or updated objects by storing expected event data about them (context) in memory and processing them in a simplified manner. For example, a controller might create a bunch of child objects of a kind that it also watches; it can expect receiving a reconciliation function call for each created child object. This controller also "knows" that a bunch of children have been just created, so it can take this information into account when deciding whether to create more children, even if the cache has not been updated yet with the new child data. We use this technique in DCP extensively, see [DCP-specific controller techniques chapter](#dcp-specific-controller-techniques) for more information.
 
@@ -297,7 +297,7 @@ Kubernetes controllers should always assume that some other client might have ch
 
 If the update is urgent, one can test if the error was a conflict (HTTP status code 409) via [`errors.IsConflict`](https://pkg.go.dev/k8s.io/apimachinery/pkg/api/errors#IsConflict) and retry. There is also a [`RetryOnConflict`](https://pkg.go.dev/k8s.io/client-go/util/retry#RetryOnConflict) utility function that can wrap the (get data--compute changes--update) sequence, retrying it with exponential back-off, but given "objects are always slightly stale" general rule, retry-on-conflict should be reserved for special, well-defined cases.
 
-> In DCP the controllers notice objects that experience failure updates due to conflics and request another round of reconciliation for them, with exponential backoff. The object reader for these objects is also temporarily swapped for a non-caching one. This gives controllers best chance to adapt to a surge of object changes and reach consistent, steady state eventually.
+> In DCP the controllers notice objects that experience failed updates due to conflicts and request another round of reconciliation for them, with exponential backoff. The object reader for these objects is also temporarily swapped for a non-caching one. This gives controllers the best chance to adapt to a surge of object changes and reach a consistent, steady state eventually.
 
 ### Objects owned by a controller
 A special situation arises if a controller creates objects that are not meant to be updated by anything else. These objects are "owned" by the controller. A common example is a need to create "children" objects for the root object the controller manages (for example, the standard Kubernetes Deployment controller creates ReplicaSet objects for deployments).
@@ -433,7 +433,7 @@ The advantages of a server-side apply patch method are:
 
 - The object does not need to be read to construct a patch--it is enough to start with an object in its blank (default) state and apply necessary changes. The patch can then be submitted and per-field concurrency checks will be applied by the server.
 
-In DCP we do not currently have a case where multiple controllers routinely operate on the same object, and thus we do not use server-side apply patch techniqe.
+In DCP we do not currently have a case where multiple controllers routinely operate on the same object, and thus we do not use the server-side apply patch technique.
 
 > Another mechanism for granular object updates was a "strategic merge patch". It can still be found in `controller-runtime` APIs, but it could only be used with built-in Kubernetes object kinds, and is considered obsolete.
 
@@ -464,17 +464,18 @@ type XxxReconciler struct {
 }
 
 func NewXxxReconciler(...) *XxxReconciler {
-  r := XxxReconciler {
+  r := &XxxReconciler {
     //... reconciler data initialization
 
     // allocate change notification channel
-    r.changeNotify: make(chan ctrl_event.GenericEvent)
+    changeNotify: make(chan ctrl_event.GenericEvent),
   }
+  return r
 }
 
 func (r *XxxReconciler) SetupWithManager(mgr ctrl.Manager) error {
   src := ctrl_source.Channel{
-    Source: r.notifyProcessChanged,
+    Source: r.changeNotify,
   }
 
   return ctrl.NewControllerManagedBy(mgr).
@@ -503,19 +504,19 @@ The DCP controller host (`dcpctrl`) registers each controller with *controller m
 
 | Watch configuration method | Description |
 | --- | --------- |
-| `For(<object kind>)` | Defines the object kind being *reconciled*. Any change to an instance of the kind (including creation or deletion) will cause a call to the controller main reconcilaition method (passing the object name as the invocation parameter). |
+| `For(<object kind>)` | Defines the object kind being *reconciled*. Any change to an instance of the kind (including creation or deletion) will cause a call to the controller main reconciliation method (passing the object name as the invocation parameter). |
 | `Owns(<object kind>)` | Specifies that the controller will be *creating* objects of the given kind. If an object of that kind is changed AND that instance has an `OwnerReference` pointing to another object of the kind that the controller reconciles (as configured by `For()` call), the controller manager will make a call into the controller to reconcile *the owner* object. <br/><br/> The default behavior reconciles only the first controller-type `OwnerReference` of the given type. Use `Owns(object, builder.MatchEveryOwner)` to reconcile all owners. |
-| `Watches(<object kind>, <handler>, <predicate>)` | This is a more "low-level", granular way of handling object changes, where a change to an object instace that maches given predicates will cause a handler function to be invoked. <br/><br/> The handler can do anything (there is no default behavior). Most commonly used handler is `EnqueueRequestFromMapFunc()` which expects a mapping function; that function is supposed to turn the provided object reference passed into a reconciliation request (for the related object kind that is managed by given controller), which is then used to invoke the controller reconciliation method. <br/><br/> See below for more information on types of predicates and handlers that we use in DCP codebase. |
-| `WatchesRawSource(<event source>)` | This method allows triggering reconciliation requests at will, by sourcing `GenericEvent` instances that point to specific Kubernetes objects. It is particularly useful for reacting to "real world" changes that need to be reflected in Kubernetes object status. <br/> <br/> In DCP we almose always use here a `Channel` event source provided by `controller-runtime` library; it uses a channel provided by the caller as a source of events. This allows us to trigger reconciliation requests asynchronously, in a goroutine-safe manner. |
+| `Watches(<object kind>, <handler>, <predicate>)` | This is a more "low-level", granular way of handling object changes, where a change to an object instance that matches given predicates will cause a handler function to be invoked. <br/><br/> The handler can do anything (there is no default behavior). Most commonly used handler is `EnqueueRequestFromMapFunc()` which expects a mapping function; that function is supposed to turn the provided object reference passed into a reconciliation request (for the related object kind that is managed by given controller), which is then used to invoke the controller reconciliation method. <br/><br/> See below for more information on types of predicates and handlers that we use in DCP codebase. |
+| `WatchesRawSource(<event source>)` | This method allows triggering reconciliation requests at will, by sourcing `GenericEvent` instances that point to specific Kubernetes objects. It is particularly useful for reacting to "real world" changes that need to be reflected in Kubernetes object status. <br/> <br/> In DCP we almost always use here a `Channel` event source provided by `controller-runtime` library; it uses a channel provided by the caller as a source of events. This allows us to trigger reconciliation requests asynchronously, in a goroutine-safe manner. |
 
 The predicates passed to `Watches()` method determine what changes to the object result in reconciliation function call. Most commonly used predicates are:
 - `ResourceVersionChangedPredicate` results in a reconciliation whenever the `resourceVersion` of the object changes (which is when *any* object data changes).
 
-- `GenerationChangedPredicate` results in a reconcilaition whenever the `generation` value of the object changes. Generation is changed only if the object specification is changed; changes to status do not trigger reconciliation.
+- `GenerationChangedPredicate` results in a reconciliation whenever the `generation` value of the object changes. Generation is changed only if the object specification is changed; changes to status do not trigger reconciliation.
 
-- `AnnotationChangedPredicate` results in a reconcilaition whenever one of the object annotation changes.
+- `AnnotationChangedPredicate` results in a reconciliation whenever one of the object annotations changes.
 
-- `LabalChangedPredicate` results in a reconciliation whenever one of the object labels changes.
+- `LabelChangedPredicate` results in a reconciliation whenever one of the object labels changes.
 
 ### Correlating objects via labels and indexes
 
@@ -567,7 +568,7 @@ Kubernetes objects can form a hierarchy (actually, a directed graph) via `ownerR
 
 Kubernetes does not implement a true auto-deletion of orphaned children. The deletion is always facilitated by some controller; however, Kubernetes has ability to specify the intent for how children should be deleted as part of parent deletion request. This is known as "propagation policy". Kubernetes recognizes three different policies:
 
-- `Background` (the default): the owner deletion is completed first; its children are deleted afterwards, asychronously. This means any client looking for the owner object will see the owner and all its childern, or receive a `NotFound` error.
+- `Background` (the default): the owner deletion is completed first; its children are deleted afterwards, asynchronously. This means any client looking for the owner object will see the owner and all its children, or receive a `NotFound` error.
 
 - `Foreground`: with this policy, children that have an `ownerReference` with `blockOwnerDeletion` flag set to true must be deleted first, before the owner is garbage-collected. For clients it means that they may observe the owner in a "being deleted" state, with some children deleted, but others not (yet).
 
@@ -577,32 +578,32 @@ For more information refer to [Garbage Collection topic](https://kubernetes.io/d
 
 The presence of finalizers can make the orchestration of object hierarchy deletion quite complicated. The most straightforward tactics is often to limit the scope of auto-deletion by relying on finalizers and owner object controllers to delete children as appropriate. This works well if it is the parent object controller that creates the children (think ReplicaSet and its Replicas).
 
-Another possibility for object hierarchy deletion is to have child controllers watch the parent objects and delete children when the parent gets removed. This option is useful if it is the parent controller is not involved in child creation.
+Another possibility for object hierarchy deletion is to have child controllers watch the parent objects and delete children when the parent gets removed. This option is useful if the parent controller is not involved in child creation.
 
 ## Concurrency and data handling in controllers
 
-The job of most DCP controllers is to keep the state of a Kubernetes object in sync with a "real world" entity the object represents. For example, the Executable controller starts and manages processes, the Container controller manages Docker/Podman containers, and so on. The controller needs to react to Kubernetes object changes (creation, deletion, spec change) *and* to changes to real world entities (e.g. process writing logs to `stdout`, process exiting). These changes happen **independently and concurrently**. Controllers must ensure that whatever action is taken, both the Kubernetss object and the real world entity remain in consisten state individually, and that the overall state of the pair is eventually consistent too. This chapter discusses some of the techniques that we use to make it happen. 
+The job of most DCP controllers is to keep the state of a Kubernetes object in sync with a "real world" entity the object represents. For example, the Executable controller starts and manages processes, the Container controller manages Docker/Podman containers, and so on. The controller needs to react to Kubernetes object changes (creation, deletion, spec change) *and* to changes to real world entities (e.g. process writing logs to `stdout`, process exiting). These changes happen **independently and concurrently**. Controllers must ensure that whatever action is taken, both the Kubernetes object and the real world entity remain in consistent state individually, and that the overall state of the pair is eventually consistent too. This chapter discusses some of the techniques that we use to make it happen. 
 
 ### In-memory object state 
 
 Many real-world entities require the controller to keep some data associated with the entity in memory (as opposed to saving it in object status, labels, or annotations). There are 3 main reasons for this:
 
-1. The object data save may fail, for example due to optimistic concurrency conflict. As described in the [Handling conflicts paragraph](#handling-conflicts), the best way to handle a conflict is to retry the reconciliaton. But the controller might have made a change to the real-world entity (e.g. started a process for an Executable object) and that fact needs to be memorized somewhere, or else the same change will be attempted again during next reconciliation. So the real-world entity data needs to be memorized reliably regardless whether the Kubernetes object update is successfully persisted, or not.
+1. The object data save may fail, for example due to optimistic concurrency conflict. As described in the [Handling conflicts paragraph](#handling-conflicts), the best way to handle a conflict is to retry the reconciliation. But the controller might have made a change to the real-world entity (e.g. started a process for an Executable object) and that fact needs to be memorized somewhere, or else the same change will be attempted again during next reconciliation. So the real-world entity data needs to be memorized reliably regardless whether the Kubernetes object update is successfully persisted, or not.
 
 1. The controller logic becomes very difficult to implement if there is no guarantee that it always has access to the most fresh real-world entity data. Unfortunately [Kubernetes objects are always a bit stale](#objects-are-always-slightly-stale), and the controllers cannot assume that the `Get()` operation issued shortly after `Patch()` will always see the effect of the `Patch()` (read-your-writes does not always hold), especially when object data cache is in use.
 1. The data is awkward at best to serialize, and there is no benefit in doing so (e.g. open file descriptors).
 
-For all these reasons, most controllers keep in-memory state about objects they handle. The state is created when the object is reconciled for the first time, and keapt around until the object is deleted. 
+For all these reasons, most controllers keep in-memory state about objects they handle. The state is created when the object is reconciled for the first time, and kept around until the object is deleted. 
 
 ### Handling real-world entity changes
 
 Real-world entity changes often happen independently from-, and concurrently with reconciliations. For example, a process associated with Executable object may quit at any time after it is started.
 
-Reconciliation function looks at Kubernetes object data and real-world entity data, and then decides what action to take agains the real-world entity, and what changes to make to the Kubernetes object (status). This often requires a significant amount of processing, spread across several functions, and taking considerable time (at lea milliseconds). To function correctly, the reconciliation function needs **a stable view of the Kubernetes object and the real-world entity**. If any of these two changes in the middle of reconciliation function, bad things usually happen (for example, the real-world entity is left in undesired state, object status is not updated correctly etc).
+Reconciliation function looks at Kubernetes object data and real-world entity data, and then decides what action to take against the real-world entity, and what changes to make to the Kubernetes object (status). This often requires a significant amount of processing, spread across several functions, and taking considerable time (at least milliseconds). To function correctly, the reconciliation function needs **a stable view of the Kubernetes object and the real-world entity**. If any of these two changes in the middle of reconciliation function, bad things usually happen (for example, the real-world entity is left in undesired state, object status is not updated correctly etc).
 
 DCP is using the following mechanisms to ensure that reconciliation functions have stable data to work with:
 
-1. The object data is stored in goroutine-safe, dual-key `ObjectStateMap`. The first key used for the state is the Kubernetes object name (with namespace); the second key is whatever uniquely identifies the real-world entity associated with the object. Example of the second key include process ID with process startup timestamp for Execuatables and container ID for Containers. This dual-key nature allows all parts of the controller (reconcilaition function and real-world entity event handlers) to quickly locate the right in-menory data for the given object or entity.
+1. The object data is stored in goroutine-safe, dual-key `ObjectStateMap`. The first key used for the state is the Kubernetes object name (with namespace); the second key is whatever uniquely identifies the real-world entity associated with the object. Example of the second key include process ID with process startup timestamp for Executables and container ID for Containers. This dual-key nature allows all parts of the controller (reconciliation function and real-world entity event handlers) to quickly locate the right in-memory data for the given object or entity.
 
 1. The in-memory object state is required to be *cloneable*. When a piece of code (including reconciliation function) needs the state, it *borrows* it from the `ObjectStateMap`, which returns a clone. Updates are made explicitly via (goroutine-safe) calls to one of the `Update()` methods exposed by the map.
 
@@ -624,16 +625,16 @@ A Docker or Podman container startup can take a long time (several seconds, or e
 
 1. The Container controller (its reconciliation function) is called to reconcile a Container object. The controller notices the object was just created and is in Initial state.
 1. The controller creates in-memory state for the Container object, transitions it to Starting state, and schedules the startup work item to the internal, limited-concurrency work queue. Object data is saved. The reconciliation function returns and the controller is ready to reconcile another Container object.
-1. The queue worker goroutine picks up the container startup work. It borrows the state from the Container controller `ObjectStateMap` and goes through all steps involved in starting a Docker container (fetching/bulding an image, preparing certificate material, creating the container instance, attaching it to desired networks, and finally starting it). 
+1. The queue worker goroutine picks up the container startup work. It borrows the state from the Container controller `ObjectStateMap` and goes through all steps involved in starting a Docker container (fetching/building an image, preparing certificate material, creating the container instance, attaching it to desired networks, and finally starting it). 
 1. Assuming all startup work is successful, the worker posts a deferred update operation to Container `ObjectStateMap` and schedules another reconciliation for the container.
 1. The Container controller is invoked again. It applies the deferred operation(s) to the in-memory state and notices that the Docker container has been created and is now running. It transitions the Container object to Running state and saves the updated object.
 
 
 ### Pitfalls of channel-based interfaces
 
-One of Go language's call to fame is the built-in [channel mechanism](https://go.dev/ref/spec#Channel_types) for communicating between concurrently executing functions. This mechanims is commonly used by various libraries, including having library functions accept and/or return channels. In most cases, channel send and channel read operations involove synchronization between two functions. They are blocking "rendezvous" operations, not asynchronous "invoke and get a promise" operations. When one function does a channel send, it blocks until another function does a read on the same channel (or the channel is closed).
+One of Go language's claim to fame is the built-in [channel mechanism](https://go.dev/ref/spec#Channel_types) for communicating between concurrently executing functions. This mechanism is commonly used by various libraries, including having library functions accept and/or return channels. In most cases, channel send and channel read operations involve synchronization between two functions. They are blocking "rendezvous" operations, not asynchronous "invoke and get a promise" operations. When one function does a channel send, it blocks until another function does a read on the same channel (or the channel is closed).
 
-The potential pitfal here, associated with blocking nature of channel operations, is not specific to DCP, or Kubernetes controllers, but it is important to watch for it because channels are commonly used for delivering Kubernetes object update notifications. One of the potential problematic scenarios is the following:
+The potential pitfall here, associated with blocking nature of channel operations, is not specific to DCP, or Kubernetes controllers, but it is important to watch for it because channels are commonly used for delivering Kubernetes object update notifications. One of the potential problematic scenarios is the following:
 
 1. A client subscribes to object update notifications and receives a channel that will act as notification source.
 
@@ -643,9 +644,9 @@ The potential pitfal here, associated with blocking nature of channel operations
 
 1. The problem is the subscription cancellation came in the middle of the notification subsystem trying to deliver (channel send) another notification. If the subsystem is not goroutine-safe in terms of subscription cancellations, it will be stuck forever trying to deliver the remaining notification. It may also stop delivering notifications to all other clients.
 
-To avoid such problems, DCP tends to use channels defensively. The follwing rules and mechanisms are applied:
+To avoid such problems, DCP tends to use channels defensively. The following rules and mechanisms are applied:
 
-1. For all applicable cases, channel read and channel send SHOULD handle the cases when the chanel is closed, or the operation takes longer than a reasonable timeout.
+1. For all applicable cases, channel read and channel send SHOULD handle the cases when the channel is closed, or the operation takes longer than a reasonable timeout.
 
 1. DCP has an "unbounded channel" (`UnboundedChan`) library type. This channel-like type guarantees that the send operation will complete within short time span (as controlled by Go goroutine scheduler), regardless whether the consumer reads from the channel or not. To achieve this the unbounded channel is using an auto-expanding buffer and a separate buffer-processing goroutine, so it should be used sparingly, but it does provide a significant additional level of decoupling between the producer and consumer of data.
 
