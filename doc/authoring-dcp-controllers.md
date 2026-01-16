@@ -216,7 +216,7 @@ The `List()` method of the `controller-runtime`'s `Client` interface is the prim
 
 | `ListOption` | Effect |
 | --- | --------- |
-| `InNamespace` | Returns only objects belonging to given namespace. |
+| `InNamespace` | Returns only objects belonging to a given namespace. |
 | `MatchingLabels` | Returns only objects that are decorated with matching labels (label name and value both match). |
 | `MatchingFields` | Returns only objects that have matching index fields. Because index values are sets, an index field is considered a match if the value set contains the value specified by `MatchingFields` list option. |
 
