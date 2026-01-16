@@ -603,7 +603,7 @@ Reconciliation function looks at Kubernetes object data and real-world entity da
 
 DCP is using the following mechanisms to ensure that reconciliation functions have stable data to work with:
 
-1. The object data is stored in goroutine-safe, dual-key `ObjectStateMap`. The first key used for the state is the Kubernetes object name (with namespace); the second key is whatever uniquely identifies the real-world entity associated with the object. Example of the second key include process ID with process startup timestamp for Executables and container ID for Containers. This dual-key nature allows all parts of the controller (reconciliation function and real-world entity event handlers) to quickly locate the right in-memory data for the given object or entity.
+1. The object data is stored in goroutine-safe, dual-key `ObjectStateMap`. The first key used for the state is the Kubernetes object name (with namespace); the second key is whatever uniquely identifies the real-world entity associated with the object. Examples of the second key include process ID with process startup timestamp for Executables and container ID for Containers. This dual-key nature allows all parts of the controller (reconciliation function and real-world entity event handlers) to quickly locate the right in-memory data for the given object or entity.
 
 1. The in-memory object state is required to be *cloneable*. When a piece of code (including reconciliation function) needs the state, it *borrows* it from the `ObjectStateMap`, which returns a clone. Updates are made explicitly via (goroutine-safe) calls to one of the `Update()` methods exposed by the map.
 
