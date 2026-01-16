@@ -339,7 +339,7 @@ Note that:
 
 - Merge patch requests conform to RFC 7396 JSON Merge Patch spec (see [JSON Patch and JSON Merge Patch overview](https://erosb.github.io/post/json-patch-vs-merge-patch/) for introductory information). The most important caveat about JSON Merge Patch is that if a list is included in the patch, entire list will be replaced; there is no way to insert/update/delete individual elements.
 
-- `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. The simplest variant of `Patch()` request (the result of `MergeFrom()` call) does not include `resourceVersion` and does not participate in optimistic concurrency. This is why we DO NOT use it anywhere in DCP code and instead use `Merge
+- `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. The simplest variant of `Patch()` request (the result of `MergeFrom()` call) does not include `resourceVersion` and does not participate in optimistic concurrency. This is why we DO NOT use it anywhere in DCP code and instead use `MergeFromWithOptions()` with `MergeFromWithOptimisticLock` to enable optimistic concurrency:
     ```go
     // json merge patch + optimistic locking
     patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})
