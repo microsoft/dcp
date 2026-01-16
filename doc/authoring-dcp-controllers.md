@@ -522,7 +522,7 @@ The predicates passed to `Watches()` method determine what changes to the object
 
 Kubernetes offers two effective ways of correlating object instances. One is through *labels*. The API server has built-in support for filtering out object list queries based on labels (`MatchingLabels` predicate described in [object queries paragraph](#object-queries-labels-and-indexes)). Correlation data saved this way is visible to all API server users. This can be an advantage or a disadvantage, depending on whether the correlation data is useful to other actors in the system, or is intended for internal controller use only. Also, every correlation data save triggers a reconciliation, which brings some inefficiency.
 
-Another way of adding correlation data to an object is to use an *index*. This is client-only mechanism: the index is automatically updated by `controller-runtime` object cache. The only part that the controller author must provide is how to compute index values for a given object instance. For example, here is how container tunnel controller computes which `Services` a particular tunnel instance depends on:
+Another way of adding correlation data to an object is to use an *index*. This is a client-only mechanism: the index is automatically updated by `controller-runtime` object cache. The only part that the controller author must provide is how to compute index values for a given object instance. For example, here is how container tunnel controller computes which `Services` a particular tunnel instance depends on:
 
 ```go
   indexer := mgr.GetFieldIndexer() // Get field indexer from controller manager.
