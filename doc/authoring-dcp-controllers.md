@@ -88,7 +88,7 @@ Status data should be created and modified by controllers. Clients read the stat
 
 Kubernetes does not prescribe the format for spec and status, but there are some conventions that Kubernetes tools rely on to make the status information more user-friendly. For more information about these conventions refer to [relevant chapter in the Kubernetes API conventions document](https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#spec-and-status).
 
-> A good design principle is to ensure that only a single controller modifies the status of a given object instance. Having more than one controller changing the status of same object, almost certainly will introduce write conflicts because object instances are generally versioned as a whole. It can also lead to consistency problems. Kubernetes has some support for carefully designed case of multiple controllers operating on disjoint sets of fields, but it is an advanced technique ("server-side apply patch") that should be used only if necessary. This and more is discussed in detail in the [chapter on updating Kubernetes objects](#updating-kubernetes-objects).
+> A good design principle is to ensure that only a single controller modifies the status of a given object instance. Having more than one controller changing the status of same object, almost certainly will introduce write conflicts because object instances are generally versioned as a whole. It can also lead to consistency problems. Kubernetes has some support for a carefully designed case of multiple controllers operating on disjoint sets of fields, but it is an advanced technique ("server-side apply patch") that should be used only if necessary. This and more is discussed in detail in the [chapter on updating Kubernetes objects](#updating-kubernetes-objects).
 
 ---
 
@@ -222,7 +222,7 @@ The `List()` method of the `controller-runtime`'s `Client` interface is the prim
 
 Labels are single-valued and stored with the rest of object metadata by the API server. All clients can create them, retrieve their values, and delete them.
 
-Indexes are client-side mechanism that is implemented by the object cache (see below). They are created in-memory, by specific client, and are not reflected in the object data stored in the API server. For more information on how to create indexes see [tracking changes to related objects paragraph](#tracking-changes-to-related-objects).
+Indexes are a client-side mechanism that is implemented by the object cache (see below). They are created in-memory, by specific client, and are not reflected in the object data stored in the API server. For more information on how to create indexes see [tracking changes to related objects paragraph](#tracking-changes-to-related-objects).
 
 
 ## Working with the object data cache
@@ -252,7 +252,7 @@ An advanced technique employed by some controllers is to anticipate `Watcher` ev
 >
 > Although `controller-runtime` uses `client-go` primitives under the covers, it does not use `client-go` default object cache and pool of `Informers`. In particular, `Informers` created by `SharedInformerFactory` that is part of `client-go` will not be using the `controller-runtime` object cache, and are completely separate from `Informers` used by `controller-runtime`.
 >
-> A rule of thumb to avoid such issues is to consistently use single data retrieval library: either `client-go`, or `controller-runtime`, but not both.
+> A rule of thumb to avoid such issues is to consistently use a single data retrieval library: either `client-go`, or `controller-runtime`, but not both.
 
 
 
@@ -339,7 +339,7 @@ Note that:
 
 - Merge patch requests conform to RFC 7396 JSON Merge Patch spec (see [JSON Patch and JSON Merge Patch overview](https://erosb.github.io/post/json-patch-vs-merge-patch/) for introductory information). The most important caveat about JSON Merge Patch is that if a list is included in the patch, entire list will be replaced; there is no way to insert/update/delete individual elements.
 
-- `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. The simplest variant of `Patch()` request (the result of `MergeFrom()` call) does not include `resourceVersion` and does not participate in optimistic concurrency. This is why we DO NOT use it anywhere in DCP code and instead use `MergeFromWithOptions()` with `MergeFromWithOptimisticLock` to enable optimistic concurrency:
+- `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. The simplest variant of `Patch()` request (the result of `MergeFrom()` call) does not include `resourceVersion` and does not participate in optimistic concurrency. This is why we DO NOT use it anywhere in DCP code and instead use `MergeFromWithOptions()` with `MergeFromWithOptimisticLock` option to enable optimistic concurrency:
     ```go
     // json merge patch + optimistic locking
     patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})
@@ -447,7 +447,7 @@ In general, there are no hard rules for choosing the API to update objects, but 
 
 - Server-side apply patch has been designed for the scenario when multiple actors/controllers update different portions of object data.
 
-- When a change that involves most/all object data, a full update might make most sense.
+- When a change involves most/all object data, a full update might make most sense.
 
 
 ## Reacting to external (real-world) changes
@@ -611,7 +611,7 @@ DCP is using the following mechanisms to ensure that reconciliation functions ha
 
 > The deferred operation concept in DCP is similar to reducer concept in [Redux library](https://redux.js.org/tutorials/fundamentals/part-1-overview#data-flow). The Tilt project takes this concept further by implementing [a Store component](https://github.com/tilt-dev/tilt/blob/master/internal/store/store.go) that is very much like Redux data store, but optimized for Kubernetes controller use.
 
-Taken together, these mechanisms ensure that reconciliation functions have stable, up-to-date in-memory object state. It also eliminates most of the race conditions, because state updates are done by reconciliation functions only, and `controller-runtime` library guarantees that reconciliation functions are never called concurrently for specific object (as identified by its namespaced name).
+Taken together, these mechanisms ensure that reconciliation functions have stable, up-to-date in-memory object state. It also eliminates most of the race conditions, because state updates are done by reconciliation functions only, and `controller-runtime` library guarantees that reconciliation functions are never called concurrently for a specific object (as identified by its namespaced name).
 
 ### Performance considerations and background processing
 
