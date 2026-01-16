@@ -527,7 +527,7 @@ Another way of adding correlation data to an object is to use an *index*. This i
 ```go
   indexer := mgr.GetFieldIndexer() // Get field indexer from controller manager.
 
-	err = indexer.IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, serviceReferencesKey, func(rawObj ctrl_client.Object) []string {
+  err = indexer.IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, serviceReferencesKey, func(rawObj ctrl_client.Object) []string {
 		cntp := rawObj.(*apiv1.ContainerNetworkTunnelProxy)
 		if len(cntp.Spec.Tunnels) == 0 {
 			return nil
