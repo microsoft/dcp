@@ -234,8 +234,11 @@ Objects retrieved via `controller-runtime` `Client` APIs are fetched through the
 There are a few mechanisms in `controller-runtime` that allow changing the default caching behavior:
 
 - When creating a `DelegatingClient`, certain object kinds can be configured to always be read directly from the API server.
+
 - `Watches` can be restricted to a give set of namespaces by using `cache.MultiNamesapceCacheBuilder`, or setting `cache.Options.Namespace`.
+
 - Watches can be filtered (e.g. by label) per object kind by using `cache.Options.SelectorsByObject`.
+
 - `APIReader` (returned by `GetAPIReader()` method of the `Cluster`) interface can be used for ad-hoc, cache-bypassing queries (although the need for that should be rare). Also keep in mind that the `APIReader` call will result in a quorum-read from the underlying etcd storage, which might be costly with a heavily-used cluster, and especially if a lot of data is returned, so always use namespace and label filters if possible.
 
 ### Object updates and the cache
@@ -333,13 +336,16 @@ err = c.Patch(ctx, obj.DeepCopy(), client.Apply, client.ForceOwnership, client.F
 
 Note that:
 - Patch request only contains changes made to the object between the call to `*MergeFrom()` and the call to `Patch()`. This is also why the code should pass a deep copy of the object to `*MergeFrom()`--otherwise there will be no "object delta" at the time when `Patch()` is called.
+
 - Merge patch requests conform to RFC 7396 JSON Merge Patch spec (see [JSON Patch and JSON Merge Patch overview](https://erosb.github.io/post/json-patch-vs-merge-patch/) for introductory information). The most important caveat about JSON Merge Patch is that if a list is included in the patch, entire list will be replaced; there is no way to insert/update/delete individual elements.
+
 - `Update()` requests involve the whole object, including metadata, so they participate in optimistic concurrency by definition. The simplest variant of `Patch()` request (the result of `MergeFrom()` call) does not include `resourceVersion` and does not participate in optimistic concurrency. This is why we DO NOT use it anywhere in DCP code and instead use `Merge
     ```go
     // json merge patch + optimistic locking
     patch := client.MergeFromWithOptions(obj.DeepCopy(), client.MergeFromWithOptimisticLock{})
     // ...
     ```
+
 - Update methods (both `Update()` and `Patch()`) take a copy of the current object data (`DeepCopy()` is used to create the copy). Why this is helpful will be explained in the next paragraph, about updating sub-resources.
 
 ### Updating sub-resources
@@ -411,7 +417,9 @@ In practice, a good implementation rule is to **never try to update both object 
 ### Server-side apply patch
 The [server-side apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/) type of patch is a newer option that leverages the concept of field ownership for concurrency control. Essentially, each actor that modifies the object can mark the fields it "owns" via `managedFields` metadata property. When another actor tries to update an owned field to a different value, an update conflict will occur. The actor can then choose to either:
 1. Force the update and grab the ownership of the field, or
+
 2. Remove the field from the patch content and retry, or
+
 3. Keep the field in the patch content, but set it to the latest value reported by the API server and assume "shared ownership" of the field, then retry.
 
 Controllers typically use option (1); options (2) and (3) are reserved for human administrators using tools such as `kubectl`.
@@ -420,7 +428,9 @@ The limitation of server-side apply patch is that there is no way to delete any 
 
 The advantages of a server-side apply patch method are:
 - Because concurrency checks are made per-field, multiple actors can update different fields without conflicts or retries.
+
 - Individual list items or map/object elements can be owned and updated by different actors.
+
 - The object does not need to be read to construct a patch--it is enough to start with an object in its blank (default) state and apply necessary changes. The patch can then be submitted and per-field concurrency checks will be applied by the server.
 
 In DCP we do not currently have a case where multiple controllers routinely operate on the same object, and thus we do not use server-side apply patch techniqe.
@@ -430,9 +440,13 @@ In DCP we do not currently have a case where multiple controllers routinely oper
 ### Choosing the object method update
 In general, there are no hard rules for choosing the API to update objects, but here are some thoughts to consider:
 - Patching is often preferable to updating because it is less error-prone and reduces the amount of network traffic. Updating involves sending all the object data, and increases the possibility of changing something inadvertently.
+
 - Updates are always subject to optimistic concurrency, but with patching the controller has a choice.
+
 - A JSON merge patch with optimistic locking is a good compromise and a safe default.
+
 - Server-side apply patch has been designed for the scenario when multiple actors/controllers update different portions of object data.
+
 - When a change that involves most/all object data, a full update might make most sense.
 
 
@@ -496,8 +510,11 @@ The DCP controller host (`dcpctrl`) registers each controller with *controller m
 
 The predicates passed to `Watches()` method determine what changes to the object result in reconciliation function call. Most commonly used predicates are:
 - `ResourceVersionChangedPredicate` results in a reconciliation whenever the `resourceVersion` of the object changes (which is when *any* object data changes).
+
 - `GenerationChangedPredicate` results in a reconcilaition whenever the `generation` value of the object changes. Generation is changed only if the object specification is changed; changes to status do not trigger reconciliation.
+
 - `AnnotationChangedPredicate` results in a reconcilaition whenever one of the object annotation changes.
+
 - `LabalChangedPredicate` results in a reconciliation whenever one of the object labels changes.
 
 ### Correlating objects via labels and indexes
@@ -551,7 +568,9 @@ Kubernetes objects can form a hierarchy (actually, a directed graph) via `ownerR
 Kubernetes does not implement a true auto-deletion of orphaned children. The deletion is always facilitated by some controller; however, Kubernetes has ability to specify the intent for how children should be deleted as part of parent deletion request. This is known as "propagation policy". Kubernetes recognizes three different policies:
 
 - `Background` (the default): the owner deletion is completed first; its children are deleted afterwards, asychronously. This means any client looking for the owner object will see the owner and all its childern, or receive a `NotFound` error.
+
 - `Foreground`: with this policy, children that have an `ownerReference` with `blockOwnerDeletion` flag set to true must be deleted first, before the owner is garbage-collected. For clients it means that they may observe the owner in a "being deleted" state, with some children deleted, but others not (yet).
+
 - `Orphan`: this policy effectively ignores the owner references, decoupling the lifetime of the owner from its children.
 
 For more information refer to [Garbage Collection topic](https://kubernetes.io/docs/concepts/architecture/garbage-collection/) in Kubernetes documentation and [Using Finalizers to Control Deletion](https://kubernetes.io/blog/2021/05/14/using-finalizers-to-control-deletion/) Kubernetes blog post.
@@ -566,23 +585,45 @@ The job of most DCP controllers is to keep the state of a Kubernetes object in s
 
 ### In-memory object state 
 
-Depending on the character of the real-world entity, there might be data associated with it that needs to be kept in-memory by the controller. There are two main reasons for this (as opposed to keeping this data as Kubernetes object status, labels, or annotations):
+Many real-world entities require the controller to keep some data associated with the entity in memory (as opposed to saving it in object status, labels, or annotations). There are 3 main reasons for this:
 
-- The data is awkward at best to serialize, and there is no benefit in doing so (e.g. open file descriptors).
-- The controller logic becomes very difficult to implement if there is no guarantee that it always has access to the most fresh real-world entity data. Unfortunately [Kubernetes objects are always a bit stale](#objects-are-always-slightly-stale) and the controllers cannot assume that read-your-writes always work.
+1. The object data save may fail, for example due to optimistic concurrency conflict. As described in the [Handling conflicts paragraph](#handling-conflicts), the best way to handle a conflict is to retry the reconciliaton. But the controller might have made a change to the real-world entity (e.g. started a process for an Executable object) and that fact needs to be memorized somewhere, or else the same change will be attempted again during next reconciliation. So the real-world entity data needs to be memorized reliably regardless whether the Kubernetes object update is successfully persisted, or not.
 
-This is why most controllers keep in-memory state about objects they handle. The state is created when the object is reconciled for the first time, and keapt around until the object is deleted. `controller-runtime` guarantees that reconciliation function is never called more than once for a given object (as identified by its namespaced name), so one would think that plain records stored in a concurrent map would suffice as object store, but this is not the case.
+1. The controller logic becomes very difficult to implement if there is no guarantee that it always has access to the most fresh real-world entity data. Unfortunately [Kubernetes objects are always a bit stale](#objects-are-always-slightly-stale), and the controllers cannot assume that the `Get()` operation issued shortly after `Patch()` will always see the effect of the `Patch()` (read-your-writes does not always hold), especially when object data cache is in use.
+1. The data is awkward at best to serialize, and there is no benefit in doing so (e.g. open file descriptors).
+
+For all these reasons, most controllers keep in-memory state about objects they handle. The state is created when the object is reconciled for the first time, and keapt around until the object is deleted. 
 
 ### Handling real-world entity changes
 
-Cloneable state, deferred ops
-Similar to reducers in Redux https://redux.js.org/tutorials/fundamentals/part-1-overview#data-flow and Store in Tilt https://github.com/tilt-dev/tilt/blob/master/internal/store/store.go
+Real-world entity changes often happen independently from-, and concurrently with reconciliations. For example, a process associated with Executable object may quit at any time after it is started.
 
-### Concurrent reconciliations
+Reconciliation function looks at Kubernetes object data and real-world entity data, and then decides what action to take agains the real-world entity, and what changes to make to the Kubernetes object (status). This often requires a significant amount of processing, spread across several functions, and taking considerable time (at lea milliseconds). To function correctly, the reconciliation function needs **a stable view of the Kubernetes object and the real-world entity**. If any of these two changes in the middle of reconciliation function, bad things usually happen (for example, the real-world entity is left in undesired state, object status is not updated correctly etc).
 
-Default vs WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles})
+DCP is using the following mechanisms to ensure that reconciliation functions have stable data to work with:
 
-### Background processing
+1. The object data is stored in goroutine-safe, dual-key `ObjectStateMap`. The first key used for the state is the Kubernetes object name (with namespace); the second key is whatever uniquely identifies the real-world entity associated with the object. Example of the second key include process ID with process startup timestamp for Execuatables and container ID for Containers. This dual-key nature allows all parts of the controller (reconcilaition function and real-world entity event handlers) to quickly locate the right in-menory data for the given object or entity.
 
+1. The in-memory object state is required to be *cloneable*. When a piece of code (including reconciliation function) needs the state, it *borrows* it from the `ObjectStateMap`, which returns a clone. Updates are made explicitly via (goroutine-safe) calls to one of the `Update()` methods exposed by the map.
+
+1. Object state updates are done **only by the reconciliation function** (and other functions that reconciliation function calls *synchronously*). Other parts of the system (real-world entity event handlers and background workers) that need to update the in-memory object state do not do so directly; instead, they *queue deferred update operations* on the map. Then, at the beginning of each run, the reconciliation function runs the deferred update operations for the object to be reconciled.
+
+> The deferred operation concept in DCP is similar to reducer concept in [Redux library](https://redux.js.org/tutorials/fundamentals/part-1-overview#data-flow). The Tilt project takes this concept further by implementing [a Store component](https://github.com/tilt-dev/tilt/blob/master/internal/store/store.go) that is very much like Redux data store, but optimized for Kubernetes controller use.
+
+Taken together, these mechanisms ensure that reconciliation function has stable, up-to-date in-memory object state. It also eliminates most of the race conditions, because state updates are done by reconciliation function only, and `controller-runtime` library guarantees that reconciliation function are never called concurrently for specific object (as identified by its namespaced name).
+
+### Performance considerations and background processing
+
+The `controller-runtime` library takes a conservative approach to controller concurrency by defaulting to queueing all controller calls *per object kind*. This means at most one reconciliation will be running, per object kind, at any given time. This is usually not sufficient to fully utilize even a single machine. Fortunately there is `WithOptions(controller.Options{MaxConcurrentReconciles: <number>})` call that DCP is using to enable concurrent reconciliations up to specific level of concurrency. As mentioned above, `controller-runtime` does queue all reconciliations for specific objects, which fits very well the reconciliation function interface that requires it to handle one Kubernetes object per invocation.
+
+Even with reconciliation concurrency enabled, controller authors should ensure that every invocation of reconciliation function completes quickly. A good rule of thumb for "quickly" is 10 to 20 milliseconds, and ideally less than that. Anything more increases the chances of encountering time-outs and locking issues and may make DCP look sluggish to clients. If handling real-world entities requires more time, it is usually advisable to introduce an intermediate object state and do the work as a background activity, outside of the reconciliation loop.
+
+#### Example: background processing for Container startup
+
+blah
 Maximum-concurrency work queue
+
+### Channel-based interfaces
+
+One of Go language's call to fame is the built-in [channel mechanism](https://go.dev/ref/spec#Channel_types) for communicating between concurrently executing functions. This mechanims is extensively used  
 The pitfals of using channel-based interfaces
