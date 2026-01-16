@@ -611,7 +611,7 @@ DCP is using the following mechanisms to ensure that reconciliation functions ha
 
 > The deferred operation concept in DCP is similar to reducer concept in [Redux library](https://redux.js.org/tutorials/fundamentals/part-1-overview#data-flow). The Tilt project takes this concept further by implementing [a Store component](https://github.com/tilt-dev/tilt/blob/master/internal/store/store.go) that is very much like Redux data store, but optimized for Kubernetes controller use.
 
-Taken together, these mechanisms ensure that reconciliation function has stable, up-to-date in-memory object state. It also eliminates most of the race conditions, because state updates are done by reconciliation function only, and `controller-runtime` library guarantees that reconciliation function are never called concurrently for specific object (as identified by its namespaced name).
+Taken together, these mechanisms ensure that reconciliation functions have stable, up-to-date in-memory object state. It also eliminates most of the race conditions, because state updates are done by reconciliation functions only, and `controller-runtime` library guarantees that reconciliation functions are never called concurrently for specific object (as identified by its namespaced name).
 
 ### Performance considerations and background processing
 
