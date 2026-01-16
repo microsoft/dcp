@@ -447,7 +447,7 @@ In general, there are no hard rules for choosing the API to update objects, but 
 
 - Server-side apply patch has been designed for the scenario when multiple actors/controllers update different portions of object data.
 
-- When a change that involves most/all object data, a full update might make most sense.
+- When a change involves most/all object data, a full update might make the most sense.
 
 
 ## Reacting to external (real-world) changes
