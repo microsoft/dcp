@@ -584,7 +584,7 @@ Another possibility for object hierarchy deletion is to have child controllers w
 
 The job of most DCP controllers is to keep the state of a Kubernetes object in sync with a "real world" entity the object represents. For example, the Executable controller starts and manages processes, the Container controller manages Docker/Podman containers, and so on. The controller needs to react to Kubernetes object changes (creation, deletion, spec change) *and* to changes to real world entities (e.g. process writing logs to `stdout`, process exiting). These changes happen **independently and concurrently**. Controllers must ensure that whatever action is taken, both the Kubernetes object and the real world entity remain in consistent state individually, and that the overall state of the pair is eventually consistent too. This chapter discusses some of the techniques that we use to make it happen. 
 
-### In-memory object state 
+### In-memory object state
 
 Many real-world entities require the controller to keep some data associated with the entity in memory (as opposed to saving it in object status, labels, or annotations). There are 3 main reasons for this:
 
