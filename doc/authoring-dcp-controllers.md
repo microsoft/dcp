@@ -478,7 +478,53 @@ The controller also needs to take care that it does not trigger too many reconci
 
 Many controllers have a need to react to changes to objects that are not their "primary" objects (the kind that they reconcile). For example, a container tunnel enables Containers to access a Service implemented on host network; if that Service is deleted, the corresponding tunnel(s) need to be shut down. This is a job of the ContainerNetworkTunnelProxy controller that manages container tunnels and needs to be notified about Service deletion. It also needs to efficiently find all container tunnels that are affected.
 
-Kubernetes provides two main mechanisms for object tracking: watches and indexes.
+`controller-runtime` library provides two main mechanisms for object tracking and retrieval: *watches* and *indexes*.
+
+### Reacting to changes: watches
+
+The DCP controller host (`dcpctrl`) registers each controller with *controller manager* that is provided by the `controller-runtime` library. The controller manager uses shared object cache and a set of watches to manage its work queue and invoke controllers as it learns about object changes. During registration each controller specifies exactly when its reconciliation function should be invoked. There are four major choices:
+
+| Watch configuration method | Description |
+| --- | --------- |
+| `For(<object kind>)` | Defines the object kind being *reconciled*. Any change to an instance of the kind (including creation or deletion) will cause a call to the controller main reconcilaition method (passing the object name as the invocation parameter). |
+| `Owns(<object kind>)` | Specifies that the controller will be *creating* objects of the given kind. If an object of that kind is changed AND that instance has an `OwnerReference` pointing to another object of the kind that the controller reconciles (as configured by `For()` call), the controller manager will make a call into the controller to reconcile *the owner* object. <br/><br/> The default behavior reconciles only the first controller-type `OwnerReference` of the given type. Use `Owns(object, builder.MatchEveryOwner)` to reconcile all owners. |
+| `Watches(<object kind>, <handler>, <predicate>)` | This is a more "low-level", granular way of handling object changes, where a change to an object instace that maches given predicates will cause a handler function to be invoked. <br/><br/> The handler can do anything (there is no default behavior). Most commonly used handler is `EnqueueRequestFromMapFunc()` which expects a mapping function; that function is supposed to turn the provided object reference passed into a reconciliation request (for the related object kind that is managed by given controller), which is then used to invoke the controller reconciliation method. <br/><br/> See below for more information on types of predicates and handlers that we use in DCP codebase. |
+| `WatchesRawSource(<event source>)` | This method allows triggering reconciliation requests at will, by sourcing `GenericEvent` instances that point to specific Kubernetes objects. It is particularly useful for reacting to "real world" changes that need to be reflected in Kubernetes object status. <br/> <br/> In DCP we almose always use here a `Channel` event source provided by `controller-runtime` library; it uses a channel provided by the caller as a source of events. This allows us to trigger reconciliation requests asynchronously, in a goroutine-safe manner. |
+
+The predicates passed to `Watches()` method determine what changes to the object result in reconciliation function call. Most commonly used predicates are:
+- `ResourceVersionChangedPredicate` results in a reconciliation whenever the `resourceVersion` of the object changes (which is when *any* object data changes).
+- `GenerationChangedPredicate` results in a reconcilaition whenever the `generation` value of the object changes. Generation is changed only if the object specification is changed; changes to status do not trigger reconciliation.
+- `AnnotationChangedPredicate` results in a reconcilaition whenever one of the object annotation changes.
+- `LabalChangedPredicate` results in a reconciliation whenever one of the object labels changes.
+
+### Correlating objects via labels and indexes
+
+Kubernetes offers two effective ways of correlating object instances. One is through *labels*. The API server has built-in support for filtering out object list queries based on labels (`MatchingLabels` predicate described in [object queries paragraph](#object-queries-labels-and-indexes)). Correlation data saved this way is visible to all API server users. This can be an advantage or a disadvantage, depending on whether the correlation data is useful to other actors in the system, or is intended to internal controller use only. Also, every correlation data save triggers a reconciliation, which brings some inefficiency.
+
+Another way of adding correlation data to an object is to use an *index*. This is client-only mechanism: the index is automatically updated by `controller-runtime` object cache. The only part that the controller author must provide is how to compute index values for a given object instance. For example, here is how container tunnel controller computes which `Services` a particular tunnel instance depends on:
+
+```go
+  indexer := mgr.GetFieldIndexer() // Get field indexer from controller manager.
+
+	err = indexer.IndexField(context.Background(), &apiv1.ContainerNetworkTunnelProxy{}, serviceReferencesKey, func(rawObj ctrl_client.Object) []string {
+		cntp := rawObj.(*apiv1.ContainerNetworkTunnelProxy)
+		if len(cntp.Spec.Tunnels) == 0 {
+			return nil
+		}
+
+		serverServiceNames := slices.Map[string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ServerServiceName })
+		clientServiceNames := slices.Map[string](cntp.Spec.Tunnels, func(t apiv1.TunnelConfiguration) string { return t.ClientServiceName })
+
+		svcUsed := slices.Unique(append(serverServiceNames, clientServiceNames...))
+		return svcUsed
+	})
+	if err != nil {
+		// Logs error, then...
+		return err
+	}
+```
+
+Note that (unlike labels), indexes are set-valued. When using `MatchingFields` predicate against an index field, the object is considered a "match" if the field value (set) contains the predicate parameter value. 
 
 ## Deleting Kubernetes objects
 
