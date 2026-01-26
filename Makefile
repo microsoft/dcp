@@ -300,8 +300,13 @@ endif
 
 ##@ Development
 
+ifeq ($(build_os),linux)
+COMMON_BUILD_PREREQS := build-dcp build-dcptun-containerexe
+COMPILE_PREREQS := $(COMMON_BUILD_PREREQS)
+else
 COMMON_BUILD_PREREQS := build-dcp
 COMPILE_PREREQS := $(COMMON_BUILD_PREREQS) build-dcptun-containerexe
+endif
 
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
 release: BUILD_ARGS := $(BUILD_ARGS) -buildmode=pie -ldflags "-bindnow -s -w $(version_values)"
