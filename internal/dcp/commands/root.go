@@ -63,18 +63,17 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	}
 
 	// Add dcpctrl sub-commands
-	rootCmd.AddCommand(dcpctrl_cmds.NewGetCapabilitiesCommand(log.Logger))
 	rootCmd.AddCommand(dcpctrl_cmds.NewRunControllersCommand(log.Logger))
 
 	// Add dcpproc sub-commands
 	if cmd, err = dcpproc_cmds.NewProcessCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'process' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'monitor-process' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
 
 	if cmd, err = dcpproc_cmds.NewContainerCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'container' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'monitor-container' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
