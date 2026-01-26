@@ -1,10 +1,13 @@
 # Developer Control Plane
 
-This repository contains the core components of the Developer Control Plane tool:
--  `dcp` CLI that users invoke to run applications and for other, related tasks. If invoked with `start-apiserver` it will act as the API server that holds the workload model used by controllers and API providers to create a workload definition, run it, and expose information about it. The API server is Kubernetes-compatible. It is implemented using [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver), which is built on top of standard Kubernetes libraries.
--  `dcpctrl` is the core DCP controllers that implement the standard behavior for DCP workload models.
-- `dcpproc` is a tool for ensuring that a given process or container is stopped when monitored "parent" process exits. It provides additional assurance that no workload resources are abandoned and left behind after an application run.
-- `dcptun` is a program that implements a reverse network tunnel. It is driven by Kubernetes API and tightly integrated with the rest of DCP.
+This repository contains the Developer Control Plane tool (or DCP for short). DCP is implemented as a single binary (`dcp`) that can run in one of several modes depending on how it is invoked. The main modes of operation are:
+- `dcp start-apiserver` - runs the DCP API server that holds the workload model and exposes a Kubernetes-compatible API for managing workloads using the [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver). The API server is Kubernetes-compatible but using custom resource definitions. This is the main entry point for DCP; users or other tools such as Aspire invoke DCP in this mode to launch the API server and controllers.
+- `dcp run-controllers` - runs the core DCP controllers that implement the standard behavior for DCP workload models. This mode is typically invoked as a child process of the API server.
+- `dcp monitor-process` - monitors a given process and ensures that it's cleaned up properly when a DCP session ends. This mode is typically invoked as a child process of the controllers.
+- `dcp monitor-container` - monitors a given container and ensures that it's cleaned up properly when a DCP session ends. This mode is typically invoked as a child process of the controllers.
+- `dcp stop-process-tree` - stops a given process and all its child processes. Attempts to gracefully terminate the process tree first via signals and then forcibly terminates it if the graceful termination does not complete within a timeout.
+- `dcp version` - displays version information about the DCP installation.
+- `dcp info` - displays information about the current DCP installation and identified container runtime.
 
 ### Environment variables affecting DCP behavior
 
