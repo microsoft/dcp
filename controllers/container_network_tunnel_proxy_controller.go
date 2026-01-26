@@ -14,7 +14,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -37,7 +36,6 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/dcptun"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
@@ -1196,14 +1194,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	pd *containerNetworkTunnelProxyData,
 	log logr.Logger,
 ) bool {
-	binDir, binDirErr := dcppaths.GetDcpBinDir()
-	if binDirErr != nil {
-		log.Error(binDirErr, "Failed to locate DCP bin directory for container tunnel server proxy binary")
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		return false
-	}
-	dcptunPath := filepath.Join(binDir, dcptun.ServerBinaryName)
-
 	startFailed := false
 	defer func() {
 		if !startFailed {
@@ -1244,7 +1234,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	}
 
 	args := append([]string{
-		"server",
+		"tunnel-server",
 		// We rely on the defaults for server control address and port (localhost:0, i.e. auto-allocated port), so not specifying them here.
 		networking.IPv4LocalhostDefaultAddress, // Client control address--as exposed by container orchestrator
 		strconv.Itoa(int(pd.ClientProxyControlPort)),
@@ -1252,7 +1242,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		strconv.Itoa(int(pd.ClientProxyDataPort)),
 	}, r.createProxySecurityArgs(pd, log)...)
 
-	cmd := exec.Command(dcptunPath, args...)
+	cmd := exec.Command(os.Args[0], args...)
 	cmd.Stdout = stdoutFile
 	cmd.Stderr = stderrFile
 	cmd.Env = os.Environ()

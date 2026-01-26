@@ -28,7 +28,7 @@ import (
 
 func NewRunServerCommand(log logr.Logger) *cobra.Command {
 	runServerCmd := &cobra.Command{
-		Use:   "server [--server-control-address address] [--server-control-port port] " + securityFlagsUsage + " client-control-address client-control-port client-data-address client-data-port",
+		Use:   "tunnel-server [--server-control-address address] [--server-control-port port] " + securityFlagsUsage + " client-control-address client-control-port client-data-address client-data-port",
 		Short: "Runs the server-side proxy of the DCP tunnel",
 		Long: `Runs the server-side proxy of the DCP tunnel.
 
