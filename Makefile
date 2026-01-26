@@ -102,8 +102,7 @@ DCP_DIR ?= $(home_dir)/.dcp
 EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
 BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
-DCPTUN_SERVER_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun$(bin_exe_suffix)
-DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun_c
+DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 
 # Locations and definitions for tool binaries
 GO_BIN ?= go
@@ -208,10 +207,8 @@ $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES)
 generate-goversioninfo:
 ifeq ($(build_os),windows)
 	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/win_version_info.json ## Generates version information for Windows binaries
-	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcptun/resource.syso
 else
 	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
-	-$(rm_f) $(repo_dir)/cmd/dcptun/resource.syso
 endif
 
 .PHONY: generate-grpc
@@ -303,7 +300,7 @@ endif
 
 ##@ Development
 
-COMMON_BUILD_PREREQS := build-dcp build-dcptun
+COMMON_BUILD_PREREQS := build-dcp
 COMPILE_PREREQS := $(COMMON_BUILD_PREREQS) build-dcptun-containerexe
 
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
@@ -328,11 +325,6 @@ build-ci: generate-ci release ## Runs codegen, including license/notice files, t
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
 $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
-
-.PHONY: build-dcptun
-build-dcptun: $(DCPTUN_SERVER_BINARY) ## Builds DCP reverse network tunnel binary for the current target OS
-$(DCPTUN_SERVER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	$(GO_BIN) build -o $(DCPTUN_SERVER_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 
 .PHONY: build-dcptun-containerexe
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
@@ -360,13 +352,11 @@ endif
 .PHONY: install
 install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) $(BIN_DIR) ## Installs all binaries to their destinations
 	$(install) $(DCP_BINARY) $(DCP_DIR)
-	$(install) $(DCPTUN_SERVER_BINARY) $(BIN_DIR)
 	$(install) $(DCPTUN_CLIENT_BINARY) $(BIN_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
-	$(rm_f) $(BIN_DIR)/dcptun$(bin_exe_suffix)
 	$(rm_f) $(BIN_DIR)/dcptun_c
 
 ifneq ($(detected_OS),windows)

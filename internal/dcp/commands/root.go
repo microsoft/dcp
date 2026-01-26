@@ -15,6 +15,7 @@ import (
 	cmds "github.com/microsoft/dcp/internal/commands"
 	dcpctrl_cmds "github.com/microsoft/dcp/internal/dcpctrl/commands"
 	dcpproc_cmds "github.com/microsoft/dcp/internal/dcpproc/commands"
+	dcptun_cmds "github.com/microsoft/dcp/internal/dcptun/commands"
 	"github.com/microsoft/dcp/pkg/logger"
 )
 
@@ -83,6 +84,9 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
+
+	// Add dcptun sub-commands
+	rootCmd.AddCommand(dcptun_cmds.NewRunServerCommand(log.Logger))
 
 	ctrlruntime.SetLogger(log.Logger.V(1))
 	klog.SetLogger(log.Logger.V(1))
