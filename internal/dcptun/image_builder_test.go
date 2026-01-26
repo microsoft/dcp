@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/dcptun"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -35,7 +34,8 @@ func TestClientProxyImageBuild(t *testing.T) {
 	co, coErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
 	require.NoError(t, coErr, "Failed to create test container orchestrator")
 
-	dcppaths.EnableTestPathProbing()
+	// Note: dcptunClientBinaryPath() will first look for dcptun_c next to the running binary (os.Args[0]),
+	// and if not found, will probe the filesystem from the current directory to find bin/dcptun_c.
 
 	path := filepath.Join(t.TempDir(), t.Name()+".imglist")
 	defer func() { _ = os.Remove(path) }() // Best effort cleanup
@@ -71,7 +71,8 @@ func TestConcurrentClientProxyImageBuild(t *testing.T) {
 	co, coErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
 	require.NoError(t, coErr, "Failed to create test container orchestrator")
 
-	dcppaths.EnableTestPathProbing()
+	// Note: dcptunClientBinaryPath() will first look for dcptun_c next to the running binary (os.Args[0]),
+	// and if not found, will probe the filesystem from the current directory to find bin/dcptun_c.
 
 	path := filepath.Join(t.TempDir(), t.Name()+".imglist")
 	defer func() { _ = os.Remove(path) }() // Best effort cleanup
