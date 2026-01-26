@@ -784,7 +784,7 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 	serverStartAttempted := &atomic.Bool{}
 	teInfo.TestProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{"integration.test", "tunnel-server"},
+			Command: []string{os.Args[0], "tunnel-server"},
 		},
 		StartupError: func(_ *internal_testutil.ProcessExecution) error {
 			serverStartAttempted.Store(true)
