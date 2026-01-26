@@ -1303,7 +1303,7 @@ func simulateServerProxy(
 ) {
 	tpe.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{"integration.test", "tunnel-server"},
+			Command: []string{os.Args[0], "tunnel-server"},
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			tc := dcptun.TunnelProxyConfig{
