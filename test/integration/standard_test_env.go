@@ -7,9 +7,9 @@ package integration_test
 
 import (
 	"context"
-
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -53,10 +53,10 @@ func StartTestEnvironment(
 	}
 
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
-	// On Windows the process Executable runner will use dcpproc to stop processes, so we need to simulate that.
+	// On Windows the process Executable runner uses the dcp stop-process-tree subcommand, so we need to simulate that.
 	pex.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{"dcpproc", "stop-process-tree"},
+			Command: []string{os.Args[0], "stop-process-tree"},
 		},
 		RunCommand: dcpproc.SimulateStopProcessTreeCommand,
 	})
