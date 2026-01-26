@@ -43,7 +43,7 @@ func TestMonitorProcessExitsWithErrorForInvalidPid(t *testing.T) {
 	defer testCancel()
 
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"process",
+		"monitor-process",
 		"--monitor", "aaa",
 		"--child", "bbb",
 	)
@@ -128,7 +128,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 			)
 
 			dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-				"process",
+				"monitor-process",
 				"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 				"--child", strconv.Itoa(childrenCmd.Process.Pid),
 				"--monitor-identity-time", parentIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -212,7 +212,7 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	stderrBuf := new(bytes.Buffer)
 	monitorIdentityTime := parentIdentityTime.Add(1 * time.Second)
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"process",
+		"monitor-process",
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--child", strconv.Itoa(childCmd.Process.Pid),
 		"--monitor-identity-time", monitorIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -235,7 +235,7 @@ func TestMonitorProcessNotMonitoredIfStartTimeDoesNotMatch(t *testing.T) {
 	stderrBuf.Reset()
 	childStartTime := childIdentityTime.Add(1 * time.Second)
 	dcpProcCmd = exec.CommandContext(testCtx, dcpProc,
-		"process",
+		"monitor-process",
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--child", strconv.Itoa(childCmd.Process.Pid),
 		"--monitor-identity-time", parentIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -307,7 +307,7 @@ func TestMonitorContainerTerminatesWatchedContainer(t *testing.T) {
 
 	// Start dcpproc to monitor the parent process and clean up the container when it exits
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"container",
+		"monitor-container",
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--containerID", containerID,
 		"--monitor-identity-time", parentIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -396,7 +396,7 @@ func TestMonitorContainerExitWhenContainerRemoved(t *testing.T) {
 
 	// Start dcpproc to monitor the parent process and container, with a short poll interval for the test
 	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
-		"container",
+		"monitor-container",
 		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
 		"--containerID", containerID,
 		"--monitor-identity-time", parentIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -513,7 +513,7 @@ func TestStopProcessTreeWorks(t *testing.T) {
 }
 
 func getDcpProcExecutablePath() (string, error) {
-	dcpExeName := "dcpproc"
+	dcpExeName := "dcp"
 	if runtime.GOOS == "windows" {
 		dcpExeName += ".exe"
 	}
@@ -531,7 +531,7 @@ func getDcpProcExecutablePath() (string, error) {
 		return dcpPath, nil
 	}
 
-	tail := []string{dcppaths.DcpBinDir, dcppaths.DcpExtensionsDir, dcppaths.DcpBinDir, dcpExeName}
+	tail := []string{dcppaths.DcpBinDir, dcpExeName}
 	rootFolder, err := osutil.FindRootFor(osutil.FileTarget, tail...)
 	if err != nil {
 		return "", err
