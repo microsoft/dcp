@@ -424,13 +424,13 @@ func dcptunClientBinaryPath() (string, error) {
 		return binaryPath, nil
 	}
 
-	// Fallback to the DCP bin directory (used primarily for testing)
-	binDir, binDirErr := dcppaths.GetDcpBinDir()
-	if binDirErr != nil {
-		return "", fmt.Errorf("dcptun client binary not found next to the running binary and DCP bin directory location could not be determined: %w", binDirErr)
+	// Fallback: probe for bin/dcptun_c from the current directory (used primarily for testing)
+	rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, dcppaths.DcpBinDir, ClientBinaryName)
+	if rootFindErr != nil {
+		return "", fmt.Errorf("dcptun client binary not found next to the running binary and could not be located via filesystem probing: %w", rootFindErr)
 	}
 
-	binaryPath = filepath.Join(binDir, ClientBinaryName)
+	binaryPath = filepath.Join(rootFolder, dcppaths.DcpBinDir, ClientBinaryName)
 	fi, statErr = os.Stat(binaryPath)
 
 	if statErr != nil {
