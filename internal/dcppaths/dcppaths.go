@@ -61,7 +61,7 @@ func GetDcpBinDir() (string, error) {
 
 	exePath, err := osutil.ThisExecutablePath()
 	if err == nil {
-		exeDir, _ := filepath.Split(exePath)
+		exeDir := filepath.Dir(exePath)
 		exeDir = filepath.Clean(exeDir)
 
 		return exeDir, nil
