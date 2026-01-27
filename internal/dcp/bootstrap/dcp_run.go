@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/dcp/pkg/extensions"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -50,7 +51,7 @@ func DcpRun(
 		return ctx.Err()
 	}
 
-	apiServer := apiserver.NewApiServer("apiserver", kconfig, log)
+	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), kconfig, log)
 
 	cleanupCtx, cancelCleanupCtx := context.WithCancel(ctx)
 	defer cancelCleanupCtx()
@@ -213,10 +214,22 @@ func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (not
 }
 
 func newRunControllersService(appRootDir string, invocationFlags []string, log logr.Logger) *hosting.CommandService {
+	monitorPid := os.Getpid()
+
 	allArgs := []string{"run-controllers"}
 	allArgs = append(allArgs, invocationFlags...)
-	allArgs = append(allArgs, "--monitor", strconv.Itoa(os.Getpid()))
 
+	// Add monitor PID to the command args
+	allArgs = append(allArgs, "--monitor", strconv.Itoa(monitorPid))
+
+	// Add monitor start time if available
+	rootPid := process.Uint32_ToPidT(uint32(monitorPid))
+	identityTime := process.ProcessIdentityTime(rootPid)
+	if !identityTime.IsZero() {
+		allArgs = append(allArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	}
+
+	// We assume os.Args[0] will be valid here because it is in all the scenarios we currently support.
 	cmd := exec.Command(os.Args[0], allArgs...)
 	cmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(cmd) // Ensure the session ID is passed to the command

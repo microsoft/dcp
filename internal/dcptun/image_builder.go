@@ -410,13 +410,12 @@ func computeFileHash(filePath string) (string, error) {
 
 // Returns the path to the dcptun_c binary
 func dcptunClientBinaryPath() (string, error) {
-	dcpBinaryPath, pathErr := filepath.Abs(os.Args[0])
-	if pathErr != nil {
-		return "", fmt.Errorf("failed to get absolute path to dcp binary: %w", pathErr)
+	dcpBinDir, dcpBinDirErr := dcppaths.GetDcpBinDir()
+	if dcpBinDirErr != nil {
+		return "", fmt.Errorf("failed to get DCP bin directory: %w", dcpBinDirErr)
 	}
 
-	binDir := filepath.Dir(dcpBinaryPath)
-	binaryPath := filepath.Join(binDir, ClientBinaryName)
+	binaryPath := filepath.Join(dcpBinDir, ClientBinaryName)
 	fi, statErr := os.Stat(binaryPath)
 
 	// Verify the binary exists
