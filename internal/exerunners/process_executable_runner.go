@@ -122,8 +122,8 @@ func (r *ProcessExecutableRunner) StartRun(
 			result.StdErrFile = ""
 		}
 
-		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		result.StartupError = startErr
+		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	} else {
 		// Use original log here, the watcher is a different process.
