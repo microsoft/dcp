@@ -267,7 +267,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 
 	t.Log("Verifying server proxy process has correct launch arguments...")
 	require.True(t, len(pe.Cmd.Args) >= 6, "Server proxy should have at least 6 command line arguments")
-	require.Equal(t, "server", pe.Cmd.Args[1], "First argument should be 'server'")
+	require.Equal(t, "tunnel-server", pe.Cmd.Args[1], "First argument should be 'tunnel-server'")
 	require.Equal(t, networking.IPv4LocalhostDefaultAddress, pe.Cmd.Args[2], "Second argument should be client control address")
 	require.Equal(t, fmt.Sprintf("%d", updatedTunnelProxy.Status.ClientProxyControlPort), pe.Cmd.Args[3], "Third argument should be client control port")
 	require.Equal(t, networking.IPv4LocalhostDefaultAddress, pe.Cmd.Args[4], "Fourth argument should be client data address")
@@ -780,15 +780,11 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 	err := serverInfo.Client.Create(ctx, &network)
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
-	binDir, binDirErr := dcppaths.GetDcpBinDir()
-	require.NoError(t, binDirErr)
-	dcptunPath := filepath.Join(binDir, dcptun.ServerBinaryName)
-
 	t.Log("Installing server proxy auto execution with startup error...")
 	serverStartAttempted := &atomic.Bool{}
 	teInfo.TestProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{dcptunPath, "server"},
+			Command: []string{os.Args[0], "tunnel-server"},
 		},
 		StartupError: func(_ *internal_testutil.ProcessExecution) error {
 			serverStartAttempted.Store(true)
@@ -1305,13 +1301,9 @@ func simulateServerProxy(
 	serverControlPort int32,
 	tpe *internal_testutil.TestProcessExecutor,
 ) {
-	binDir, binDirErr := dcppaths.GetDcpBinDir()
-	require.NoError(t, binDirErr)
-	dcptunPath := filepath.Join(binDir, dcptun.ServerBinaryName)
-
 	tpe.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{dcptunPath, "server"},
+			Command: []string{os.Args[0], "tunnel-server"},
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			tc := dcptun.TunnelProxyConfig{

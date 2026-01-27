@@ -46,7 +46,7 @@ var (
 
 func NewContainerCommand(log logr.Logger) (*cobra.Command, error) {
 	containerCmd := &cobra.Command{
-		Use:   "container",
+		Use:   "monitor-container",
 		Short: "Ensures that a container is stopped and removed when the monitored process exits",
 		Long: `Ensures that a container is stopped and removed when the monitored process exits.
 

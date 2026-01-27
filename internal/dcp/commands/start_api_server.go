@@ -138,6 +138,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			apiServerCtx,
 			rootDir,
 			kconfig,
+			serverOnly,
 			allExtensions,
 			invocationFlags,
 			log,

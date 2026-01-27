@@ -10,15 +10,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"time"
 
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -47,14 +44,8 @@ func RunProcessWatcher(
 
 	log = log.WithValues("ChildPID", childPid)
 
-	dcpProcPath, dcpprocPathErr := geDcpProcPath()
-	if dcpprocPathErr != nil {
-		log.Error(dcpprocPathErr, "Could not resolve path to dcpproc executable")
-		return
-	}
-
 	cmdArgs := []string{
-		"process",
+		"monitor-process",
 		"--child", strconv.FormatInt(int64(childPid), 10),
 	}
 	if !childStartTime.IsZero() {
@@ -62,9 +53,9 @@ func RunProcessWatcher(
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
 
-	startErr := startDcpProc(pe, dcpProcPath, cmdArgs)
+	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
-		log.Error(startErr, "Failed to start process monitor", "DcpProcPath", dcpProcPath)
+		log.Error(startErr, "Failed to start process monitor")
 	}
 }
 
@@ -83,21 +74,15 @@ func RunContainerWatcher(
 
 	log = log.WithValues("ContainerID", containerID)
 
-	dcpProcPath, dcpprocPathErr := geDcpProcPath()
-	if dcpprocPathErr != nil {
-		log.Error(dcpprocPathErr, "Could not resolve path to dcpproc executable")
-		return
-	}
-
 	cmdArgs := []string{
-		"container",
+		"monitor-container",
 		"--containerID", containerID,
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
 
-	startErr := startDcpProc(pe, dcpProcPath, cmdArgs)
+	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
-		log.Error(startErr, "Failed to start process monitor", "DcpProcPath", dcpProcPath)
+		log.Error(startErr, "Failed to start container monitor")
 	}
 }
 
@@ -111,12 +96,6 @@ func StopProcessTree(
 ) error {
 	log = log.WithValues("RootPID", rootPid)
 
-	dcpProcPath, dcpprocPathErr := geDcpProcPath()
-	if dcpprocPathErr != nil {
-		log.Error(dcpprocPathErr, "Could not resolve path to dcpproc executable")
-		return dcpprocPathErr
-	}
-
 	cmdArgs := []string{
 		"stop-process-tree",
 		"--pid", strconv.FormatInt(int64(rootPid), 10),
@@ -125,7 +104,7 @@ func StopProcessTree(
 		cmdArgs = append(cmdArgs, "--process-start-time", rootProcessStartTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 
-	stopProcessTreeCmd := exec.Command(dcpProcPath, cmdArgs...)
+	stopProcessTreeCmd := exec.Command(os.Args[0], cmdArgs...)
 	stopProcessTreeCmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(stopProcessTreeCmd) // Ensure the session ID is passed to the monitor command
 
@@ -134,26 +113,12 @@ func StopProcessTree(
 		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
 		return err
 	} else if exitCode != 0 {
-		err = fmt.Errorf("'dcpproc stop-process-tree --pid %d' command returned non-zero exit code: %d", rootPid, exitCode)
+		err = fmt.Errorf("'dcp stop-process-tree --pid %d' command returned non-zero exit code: %d", rootPid, exitCode)
 		log.Error(err, "Failed to stop process tree", "ExitCode", exitCode)
 		return err
 	}
 
 	return nil
-}
-
-func geDcpProcPath() (string, error) {
-	binPath, binPathErr := dcppaths.GetDcpBinDir()
-	if binPathErr != nil {
-		return "", binPathErr
-	}
-
-	dcpProcPath := filepath.Join(binPath, "dcpproc")
-	if runtime.GOOS == "windows" {
-		dcpProcPath += ".exe"
-	}
-
-	return dcpProcPath, nil
 }
 
 func getMonitorCmdArgs() []string {
@@ -172,8 +137,8 @@ func getMonitorCmdArgs() []string {
 	return cmdArgs
 }
 
-func startDcpProc(pe process.Executor, dcpProcPath string, cmdArgs []string) error {
-	dcpProcCmd := exec.Command(dcpProcPath, cmdArgs...)
+func startDcpProc(pe process.Executor, cmdArgs []string) error {
+	dcpProcCmd := exec.Command(os.Args[0], cmdArgs...)
 	dcpProcCmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(dcpProcCmd) // Ensure the session ID is passed to the monitor command
 	_, _, monitorErr := pe.StartAndForget(dcpProcCmd, process.CreationFlagsNone)

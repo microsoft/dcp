@@ -16,7 +16,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -28,21 +27,18 @@ func TestRunProcessWatcher(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	dcppaths.EnableTestPathProbing()
-	dcpProcPath, dcpProcPathErr := geDcpProcPath()
-	require.NoError(t, dcpProcPathErr, "Could not resolve path to dcpproc executable")
 
 	testPid := process.Pid_t(28869)
 	testStartTime := time.Now()
 
 	RunProcessWatcher(pe, testPid, testStartTime, log)
 
-	dcpProc, dcpProcErr := findRunningDcpProc(pe)
+	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
 
 	require.True(t, len(dcpProc.Cmd.Args) >= 8, "Command should have at least 8 arguments")
-	require.Equal(t, dcpProc.Cmd.Args[0], dcpProcPath, "Should execute dcpproc")
-	require.Equal(t, "process", dcpProc.Cmd.Args[1], "Should use 'process' subcommand")
+	require.Equal(t, dcpProc.Cmd.Args[0], os.Args[0], "Should execute dcp")
+	require.Equal(t, "monitor-process", dcpProc.Cmd.Args[1], "Should use 'monitor-process' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--child", "Should include --child flag")
 	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(testPid), 10), "Should include child PID")
@@ -57,20 +53,17 @@ func TestRunContainerWatcher(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
-	dcppaths.EnableTestPathProbing()
-	dcpProcPath, dcpProcPathErr := geDcpProcPath()
-	require.NoError(t, dcpProcPathErr, "Could not resolve path to dcpproc executable")
 
 	testContainerID := "test-container-123"
 
 	RunContainerWatcher(pe, testContainerID, log)
 
-	dcpProc, dcpProcErr := findRunningDcpProc(pe)
+	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
 
 	require.True(t, len(dcpProc.Cmd.Args) >= 5, "Command should have at least 5 arguments")
-	require.Equal(t, dcpProc.Cmd.Args[0], dcpProcPath, "Should execute dcpproc")
-	require.Equal(t, "container", dcpProc.Cmd.Args[1], "Should use 'container' subcommand")
+	require.Equal(t, dcpProc.Cmd.Args[0], os.Args[0], "Should execute dcp")
+	require.Equal(t, "monitor-container", dcpProc.Cmd.Args[1], "Should use 'monitor-container' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--containerID", "Should include --containerID flag")
 	require.Equal(t, dcpProc.Cmd.Args[3], testContainerID, "Should include container ID")
@@ -83,9 +76,6 @@ func TestStopProcessTree(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
-	dcppaths.EnableTestPathProbing()
-	dcpProcPath, dcpProcPathErr := geDcpProcPath()
-	require.NoError(t, dcpProcPathErr, "Could not resolve path to dcpproc executable")
 
 	testCmdPath := fmt.Sprintf("/usr/bin/%s", t.Name())
 	testCmd := exec.Command(testCmdPath, "arg1", "arg2")
@@ -111,7 +101,7 @@ func TestStopProcessTree(t *testing.T) {
 	var dcpProc *internal_testutil.ProcessExecution
 	pex.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{dcpProcPath},
+			Command: []string{os.Args[0]},
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			dcpProc = pe
@@ -123,9 +113,9 @@ func TestStopProcessTree(t *testing.T) {
 	require.NoError(t, stopProcessTreeErr, "Could not stop the process tree")
 	require.True(t, testProc.Finished(), "The test processed should have been stopped")
 
-	require.NotNil(t, dcpProc, "dcpproc stop-process-tree should have been invoked")
+	require.NotNil(t, dcpProc, "dcp stop-process-tree should have been invoked")
 	require.True(t, len(dcpProc.Cmd.Args) >= 5, "Command should have at least 5 arguments")
-	require.Equal(t, dcpProc.Cmd.Args[0], dcpProcPath, "Should execute dcpproc")
+	require.Equal(t, dcpProc.Cmd.Args[0], os.Args[0], "Should execute dcp")
 	require.Equal(t, "stop-process-tree", dcpProc.Cmd.Args[1], "Should use 'stop-process-tree' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--pid", "Should include --pid flag")
@@ -134,20 +124,15 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[5], startTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
 }
 
-func findRunningDcpProc(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
-	dpProcPath, dcpProcPathErr := geDcpProcPath()
-	if dcpProcPathErr != nil {
-		return nil, dcpProcPathErr
-	}
-
-	candidates := pe.FindAll([]string{dpProcPath}, "", func(pe *internal_testutil.ProcessExecution) bool {
+func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
+	candidates := pe.FindAll([]string{os.Args[0]}, "", func(pe *internal_testutil.ProcessExecution) bool {
 		return pe.Running()
 	})
 	if len(candidates) == 0 {
-		return nil, errors.New("No running dcpproc process found")
+		return nil, errors.New("no running dcp process found")
 	}
 	if len(candidates) > 1 {
-		return nil, errors.New("Multiple running dcpproc processes found")
+		return nil, errors.New("multiple running dcp processes found")
 	}
 	return candidates[0], nil
 }

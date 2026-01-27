@@ -44,13 +44,13 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	var cmd *cobra.Command
 
 	if cmd, err = NewProcessCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'process' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'monitor-process' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
 
 	if cmd, err = NewContainerCommand(log.Logger); err != nil {
-		return nil, fmt.Errorf("could not set up 'container' command: %w", err)
+		return nil, fmt.Errorf("could not set up 'monitor-container' command: %w", err)
 	} else {
 		rootCmd.AddCommand(cmd)
 	}

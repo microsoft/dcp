@@ -27,7 +27,7 @@ var (
 
 func NewProcessCommand(log logr.Logger) (*cobra.Command, error) {
 	processCmd := &cobra.Command{
-		Use:   "process",
+		Use:   "monitor-process",
 		Short: "Ensures that child process is cleaned up when the monitored process exits",
 		Long: `Monitors a child process and shuts it down when the monitored process exits.
 

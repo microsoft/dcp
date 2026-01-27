@@ -9,6 +9,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
@@ -20,6 +23,8 @@ import (
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/pkg/extensions"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
+	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
@@ -35,6 +40,7 @@ func DcpRun(
 	ctx context.Context,
 	cwd string,
 	kconfig *kubeconfig.Kubeconfig,
+	serverOnly bool,
 	allExtensions []DcpExtension,
 	invocationFlags []string,
 	log logr.Logger,
@@ -44,11 +50,7 @@ func DcpRun(
 		return ctx.Err()
 	}
 
-	controllers := slices.Select(allExtensions, func(ext DcpExtension) bool {
-		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
-	})
-
-	apiServer := apiserver.NewApiServer(string(extensions.ApiServerCapability), kconfig, log)
+	apiServer := apiserver.NewApiServer("apiserver", kconfig, log)
 
 	cleanupCtx, cancelCleanupCtx := context.WithCancel(ctx)
 	defer cancelCleanupCtx()
@@ -63,7 +65,6 @@ func DcpRun(
 	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
 	defer cancelHostCtx()
 
-	serverOnly := len(allExtensions) == 0
 	var notifySrc notifications.UnixSocketNotificationSource
 
 	if !serverOnly {
@@ -84,13 +85,25 @@ func DcpRun(
 		}
 	}
 
+	// Filter extensions that have controller capability
+	controllerExtensions := slices.Select(allExtensions, func(ext DcpExtension) bool {
+		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
+	})
+
 	hostedServices := []hosting.Service{}
-	for _, controller := range controllers {
-		controllerService, ctrlCreationErr := NewDcpExtensionService(cwd, controller, "run-controllers", invocationFlags, log)
-		if ctrlCreationErr != nil {
-			return fmt.Errorf("could not start controller '%s': %w", controller.Name, ctrlCreationErr)
-		}
+	if !serverOnly {
+		// Always run the built-in controller
+		controllerService := newRunControllersService(cwd, invocationFlags, log)
 		hostedServices = append(hostedServices, controllerService)
+
+		// Also run any extension controllers
+		for _, ext := range controllerExtensions {
+			extService, extCreationErr := NewDcpExtensionService(cwd, ext, "run-controllers", invocationFlags, log)
+			if extCreationErr != nil {
+				return fmt.Errorf("could not start controller extension '%s': %w", ext.Name, extCreationErr)
+			}
+			hostedServices = append(hostedServices, extService)
+		}
 	}
 
 	host := &hosting.Host{
@@ -197,4 +210,26 @@ func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (not
 	}
 
 	return ns, nil
+}
+
+func newRunControllersService(appRootDir string, invocationFlags []string, log logr.Logger) *hosting.CommandService {
+	allArgs := []string{"run-controllers"}
+	allArgs = append(allArgs, invocationFlags...)
+	allArgs = append(allArgs, "--monitor", strconv.Itoa(os.Getpid()))
+
+	cmd := exec.Command(os.Args[0], allArgs...)
+	cmd.Env = os.Environ()    // Use DCP CLI environment
+	logger.WithSessionId(cmd) // Ensure the session ID is passed to the command
+	cmd.Dir = appRootDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Do not share the process group with dcp CLI process.
+	// This allows us, upon reception of Ctrl-C, to delay the shutdown
+	// of DCP API server and controllers processes, and perform application shutdown/cleanup
+	// before terminating the API server.
+	process.ForkFromParent(cmd)
+
+	hostingOpts := hosting.CommandServiceRunOptionShowStderr | hosting.CommandServiceRunOptionDontTerminate
+	return hosting.NewCommandService("DCP controller host", cmd, process.NewOSExecutor(log), hostingOpts, log)
 }

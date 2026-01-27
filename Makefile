@@ -102,10 +102,7 @@ DCP_DIR ?= $(home_dir)/.dcp
 EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
 BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
-DCPCTRL_BINARY ?= $(OUTPUT_BIN)/ext/dcpctrl$(bin_exe_suffix)
-DCPPROC_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcpproc$(bin_exe_suffix)
-DCPTUN_SERVER_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun$(bin_exe_suffix)
-DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/ext/bin/dcptun_c
+DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 
 # Locations and definitions for tool binaries
 GO_BIN ?= go
@@ -210,14 +207,8 @@ $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES)
 generate-goversioninfo:
 ifeq ($(build_os),windows)
 	$(CLEAR_GOARGS) $(GOVERSIONINFO_GEN) $(GOVERSIONINFO_ARCH_FLAGS) -o $(repo_dir)/cmd/dcp/resource.syso -product-version "$(VERSION) $(COMMIT)" -ver-major=$(VERSION_MAJOR) -ver-minor=$(VERSION_MINOR) -ver-patch=$(VERSION_PATCH) -ver-build=0 $(repo_dir)/cmd/win_version_info.json ## Generates version information for Windows binaries
-	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpctrl/resource.syso
-	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcpproc/resource.syso
-	$(copy) $(repo_dir)/cmd/dcp/resource.syso $(repo_dir)/cmd/dcptun/resource.syso
 else
 	-$(rm_f) $(repo_dir)/cmd/dcp/resource.syso
-	-$(rm_f) $(repo_dir)/cmd/dcpctrl/resource.syso
-	-$(rm_f) $(repo_dir)/cmd/dcpproc/resource.syso
-	-$(rm_f) $(repo_dir)/cmd/dcptun/resource.syso
 endif
 
 .PHONY: generate-grpc
@@ -286,14 +277,14 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
 ifeq ($(detected_OS),windows)
-	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
+	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
+	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 else
-	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp ./cmd/dcpctrl ./cmd/dcpproc --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
+	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
+	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 endif
 
@@ -309,8 +300,13 @@ endif
 
 ##@ Development
 
-COMMON_BUILD_PREREQS := build-dcpproc build-dcpctrl build-dcp build-dcptun
+ifeq ($(build_os),linux)
+COMMON_BUILD_PREREQS := build-dcp build-dcptun-containerexe
+COMPILE_PREREQS := $(COMMON_BUILD_PREREQS)
+else
+COMMON_BUILD_PREREQS := build-dcp
 COMPILE_PREREQS := $(COMMON_BUILD_PREREQS) build-dcptun-containerexe
+endif
 
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
 release: BUILD_ARGS := $(BUILD_ARGS) -buildmode=pie -ldflags "-bindnow -s -w $(version_values)"
@@ -334,21 +330,6 @@ build-ci: generate-ci release ## Runs codegen, including license/notice files, t
 build-dcp: $(DCP_BINARY) ## Builds DCP CLI binary
 $(DCP_BINARY): $(GO_SOURCES) go.mod | ${OUTPUT_BIN}
 	$(GO_BIN) build -o $(DCP_BINARY) $(BUILD_ARGS) ./cmd/dcp
-
-.PHONY: build-dcpctrl
-build-dcpctrl: $(DCPCTRL_BINARY) ## Builds DCP standard controller host (dcpctrl)
-$(DCPCTRL_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	$(GO_BIN) build -o $(DCPCTRL_BINARY) $(BUILD_ARGS) ./cmd/dcpctrl
-
-.PHONY: build-dcpproc
-build-dcpproc: $(DCPPROC_BINARY) ## Builds DCP process monitor (dcpproc)
-$(DCPPROC_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	$(GO_BIN) build -o $(DCPPROC_BINARY) $(BUILD_ARGS) ./cmd/dcpproc
-
-.PHONY: build-dcptun
-build-dcptun: $(DCPTUN_SERVER_BINARY) ## Builds DCP reverse network tunnel binary for the current target OS
-$(DCPTUN_SERVER_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
-	$(GO_BIN) build -o $(DCPTUN_SERVER_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 
 .PHONY: build-dcptun-containerexe
 build-dcptun-containerexe: $(DCPTUN_CLIENT_BINARY) ## Builds DCP reverse network tunnel client binary for Linux (to be used in containers)
@@ -375,18 +356,12 @@ endif
 
 .PHONY: install
 install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) $(BIN_DIR) ## Installs all binaries to their destinations
-	$(install) $(DCPPROC_BINARY) $(BIN_DIR)
-	$(install) $(DCPCTRL_BINARY) $(EXTENSIONS_DIR)
 	$(install) $(DCP_BINARY) $(DCP_DIR)
-	$(install) $(DCPTUN_SERVER_BINARY) $(BIN_DIR)
 	$(install) $(DCPTUN_CLIENT_BINARY) $(BIN_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
-	$(rm_f) $(BIN_DIR)/dcpproc$(bin_exe_suffix)
-	$(rm_f) $(EXTENSIONS_DIR)/dcpctrl$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
-	$(rm_f) $(BIN_DIR)/dcptun$(bin_exe_suffix)
 	$(rm_f) $(BIN_DIR)/dcptun_c
 
 ifneq ($(detected_OS),windows)
@@ -398,9 +373,9 @@ endif
 ##@ Test targets
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcpproc build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
 endif
 
 .PHONY: test-prereqs
@@ -491,7 +466,7 @@ $(PARROT_TOOL): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 
 # Builds parrot tool binary suitable for use inside containers
 .PHONY: parrot-tool-containerexe
-parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY) 
+parrot-tool-containerexe: $(PARROT_TOOL_CONTAINER_BINARY)
 $(PARROT_TOOL_CONTAINER_BINARY): $(wildcard ./test/parrot/*.go) | $(TOOL_BIN)
 ifeq ($(detected_OS),windows)
 	$$env:GOOS = "linux"; $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot

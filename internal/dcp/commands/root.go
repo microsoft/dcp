@@ -13,6 +13,9 @@ import (
 	ctrlruntime "sigs.k8s.io/controller-runtime"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
+	dcpctrl_cmds "github.com/microsoft/dcp/internal/dcpctrl/commands"
+	dcpproc_cmds "github.com/microsoft/dcp/internal/dcpproc/commands"
+	dcptun_cmds "github.com/microsoft/dcp/internal/dcptun/commands"
 	"github.com/microsoft/dcp/pkg/logger"
 )
 
@@ -59,6 +62,31 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	} else {
 		rootCmd.AddCommand(cmd)
 	}
+
+	// Add dcpctrl sub-commands
+	rootCmd.AddCommand(dcpctrl_cmds.NewRunControllersCommand(log.Logger))
+
+	// Add dcpproc sub-commands
+	if cmd, err = dcpproc_cmds.NewProcessCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'monitor-process' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	if cmd, err = dcpproc_cmds.NewContainerCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'monitor-container' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	if cmd, err = dcpproc_cmds.NewStopProcessTreeCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up 'stop-process-tree' command: %w", err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
+	// Add dcptun sub-commands
+	rootCmd.AddCommand(dcptun_cmds.NewRunServerCommand(log.Logger))
 
 	ctrlruntime.SetLogger(log.Logger.V(1))
 	klog.SetLogger(log.Logger.V(1))
