@@ -1242,6 +1242,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		strconv.Itoa(int(pd.ClientProxyDataPort)),
 	}, r.createProxySecurityArgs(pd, log)...)
 
+	// We assume os.Args[0] will be valid here because it is in all the scenarios we currently support.
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Stdout = stdoutFile
 	cmd.Stderr = stderrFile

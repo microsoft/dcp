@@ -56,15 +56,23 @@ func GetExtensionsDirs() ([]string, error) {
 
 func GetDcpBinDir() (string, error) {
 	if binPath, found := os.LookupEnv(DcpBinPathEnv); found {
-		return binPath, nil
+		return filepath.Abs(filepath.Clean(binPath))
 	}
 
-	extensionsDir, err := probeForExtensionsDir()
-	if err != nil {
-		return "", fmt.Errorf("DCP binary directory location could not be determined: %w", err)
+	exePath, err := osutil.ThisExecutablePath()
+	if err == nil {
+		exeDir := filepath.Dir(exePath)
+		exeDir = filepath.Clean(exeDir)
+
+		return exeDir, nil
 	}
 
-	return filepath.Join(extensionsDir, DcpBinDir), nil
+	cwd, cwdErr := os.Getwd()
+	if cwdErr == nil {
+		return filepath.Clean(cwd), nil
+	}
+
+	return "", fmt.Errorf("could not determine DCP bin directory: %w", errors.Join(err, cwdErr))
 }
 
 func WithDcpBinDir(cmd *exec.Cmd) {
