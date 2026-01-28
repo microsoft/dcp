@@ -17,12 +17,17 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
-	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/health"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
 )
+
+// AdvancedTestEnvironmentInfo provides information about the test environment created via StartAdvancedTestEnvironment().
+type AdvancedTestEnvironmentInfo struct {
+	ProcessExecutor process.Executor
+	*ctrl_testutil.TestProcessExecutableRunner
+}
 
 // Starts an test environment for advanced tests that use real process executor and true container orchestrator (Docker or Podman).
 // Note that the Executable controller (if included in the mix) only supports process execution (no IDE execution).
@@ -34,7 +39,7 @@ func StartAdvancedTestEnvironment(
 	log logr.Logger,
 ) (
 	*ctrl_testutil.ApiServerInfo,
-	process.Executor,
+	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
 	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerUseTrueContainerOrchestrator, log)
@@ -43,7 +48,7 @@ func StartAdvancedTestEnvironment(
 	}
 
 	pe := process.NewOSExecutor(log)
-	exeRunner := exerunners.NewProcessExecutableRunner(pe)
+	exeRunner := ctrl_testutil.NewTestProcessExecutableRunner(pe)
 
 	managerDone := concurrency.NewAutoResetEvent(true)
 	_ = context.AfterFunc(ctx, func() {
@@ -209,5 +214,9 @@ func StartAdvancedTestEnvironment(
 		managerDone.Set()
 	}()
 
-	return serverInfo, pe, nil
+	teInfo := &AdvancedTestEnvironmentInfo{
+		ProcessExecutor:             pe,
+		TestProcessExecutableRunner: exeRunner,
+	}
+	return serverInfo, teInfo, nil
 }

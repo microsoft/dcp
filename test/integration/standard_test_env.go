@@ -21,9 +21,9 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
-	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/health"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
 )
@@ -31,6 +31,7 @@ import (
 // TestEnvironmentInfo provides information about the test environment created via StartTestEnvironment().
 type TestEnvironmentInfo struct {
 	*internal_testutil.TestProcessExecutor
+	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
 }
@@ -61,7 +62,7 @@ func StartTestEnvironment(
 		RunCommand: dcpproc.SimulateStopProcessTreeCommand,
 	})
 
-	exeRunner := exerunners.NewProcessExecutableRunner(pex)
+	exeRunner := ctrlutil.NewTestProcessExecutableRunner(pex)
 	ir := ctrl_testutil.NewTestIdeRunner(ctx)
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
@@ -243,9 +244,10 @@ func StartTestEnvironment(
 	}()
 
 	teInfo := &TestEnvironmentInfo{
-		TestProcessExecutor:     pex,
-		TestIdeRunner:           ir,
-		TestTunnelControlClient: tcc,
+		TestProcessExecutor:         pex,
+		TestProcessExecutableRunner: exeRunner,
+		TestIdeRunner:               ir,
+		TestTunnelControlClient:     tcc,
 	}
 	return serverInfo, teInfo, nil
 }
