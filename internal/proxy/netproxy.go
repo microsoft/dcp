@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-
 package proxy
 
 import (
@@ -25,6 +24,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/queue"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/syncmap"
@@ -157,7 +157,8 @@ func (p *netProxy) Start() error {
 	}
 
 	lc := net.ListenConfig{}
-	if p.mode == apiv1.TCP {
+	switch p.mode {
+	case apiv1.TCP:
 		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
@@ -169,7 +170,7 @@ func (p *netProxy) Start() error {
 		p.effectivePort = int32(tcpAddr.Port)
 
 		go p.runTCP(tcpListener)
-	} else if p.mode == apiv1.UDP {
+	case apiv1.UDP:
 		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
@@ -237,13 +238,27 @@ func (p *netProxy) stop(listener io.Closer) {
 	_ = p.setState(ProxyStateAny, ProxyStateFinished)
 }
 
+// Buffer incoming data from the parked connection while we wait for an endpoint to be configured.
+// This allows us to process EOF/FIN while a connection is parked to avoid accumulating partially closed sockets.
+type parkedConnectionPump struct {
+	net.Conn
+	reader io.Reader
+}
+
+func (c *parkedConnectionPump) Read(b []byte) (int, error) {
+	return c.reader.Read(b)
+}
+
 func (p *netProxy) runTCP(tcpListener net.Listener) {
 	var parkedConnections []net.Conn
+	parkedConnectionMutex := &sync.Mutex{}
 
 	defer func() {
+		parkedConnectionMutex.Lock()
 		for _, conn := range parkedConnections {
 			_ = conn.Close()
 		}
+		parkedConnectionMutex.Unlock()
 	}()
 	defer p.configurationApplied.SetAndFreeze() // Make sure that Configure() calls return after the proxy has stopped
 	defer p.stop(tcpListener)
@@ -289,10 +304,12 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 			p.log.V(1).Info("Endpoint configuration changed; new configuration will be applied to future connections...", "Config", newConfig.String())
 
 			if len(newConfig.Endpoints) > 0 {
+				parkedConnectionMutex.Lock()
 				for _, conn := range parkedConnections {
 					go p.handleTCPConnection(configVal, conn)
 				}
 				parkedConnections = nil
+				parkedConnectionMutex.Unlock()
 			}
 
 		case incoming := <-connectionChannel.Out:
@@ -306,7 +323,37 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 				go p.handleTCPConnection(configVal, incoming)
 			} else {
 				p.log.V(1).Info("No endpoints configured, parking connection...")
-				parkedConnections = append(parkedConnections, incoming)
+
+				parkedReader, parkedWriter := usvc_io.NewBufferedPipe()
+				wrapped := &parkedConnectionPump{Conn: incoming, reader: parkedReader}
+
+				go func() {
+					_, copyErr := io.Copy(parkedWriter, incoming)
+
+					parkedConnectionMutex.Lock()
+					defer parkedConnectionMutex.Unlock()
+
+					// Close the incoming connection when done and remove it from the parked connections list if still present
+					_ = incoming.Close()
+					for index, conn := range parkedConnections {
+						if conn == wrapped {
+							parkedConnections = append(parkedConnections[:index], parkedConnections[index+1:]...)
+							break
+						}
+					}
+
+					if bufferedWriter, ok := parkedWriter.(*usvc_io.BufferedPipeWriter); ok {
+						if closeErr := bufferedWriter.CloseWithError(copyErr); closeErr != nil {
+							p.log.V(1).Info("Error closing parked connection buffer", "Error", closeErr)
+						}
+					} else {
+						if closeErr := parkedWriter.Close(); closeErr != nil {
+							p.log.V(1).Info("Error closing parked connection buffer", "Error", closeErr)
+						}
+					}
+				}()
+
+				parkedConnections = append(parkedConnections, wrapped)
 			}
 		}
 	}
