@@ -1328,63 +1328,98 @@ func TestExecutableDeletionWhileStarting(t *testing.T) {
 }
 
 func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	type testcase struct {
+		description              string
+		asynchronousStartupDelay time.Duration
+	}
 
-	exe := apiv1.Executable{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-executable-templated-env-vars-injected",
-			Namespace: metav1.NamespaceNone,
+	testcases := []testcase{
+		{
+			description:              "synchronous startup",
+			asynchronousStartupDelay: 0,
 		},
-		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: "/path/to/test-executable-templated-env-vars-injected",
-			Env: []apiv1.EnvVar{
-				{
-					Name:  "EXE_NAME",
-					Value: `{{- .Name -}}`,
-				},
-				{
-					Name:  "EXE_SPEC_EXECUTABLE_PATH",
-					Value: `{{- .Spec.ExecutablePath -}}`,
-				},
-			},
+		{
+			description:              "asynchronous startup",
+			asynchronousStartupDelay: 2 * time.Second,
 		},
 	}
 
-	t.Logf("Creating Executable '%s' that has injected env vars...", exe.ObjectMeta.Name)
-	err := client.Create(ctx, &exe)
-	require.NoError(t, err, "Could not create an Executable")
+	t.Parallel()
 
-	t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
-	pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
-	require.NoError(t, err, "Process could not be started")
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
 
-	t.Logf("Ensure the Executable process got templated env vars injected...")
-	pe, found := testProcessExecutor.FindByPid(pid)
-	require.True(t, found, "Could not find the process with PID %d", pid)
+			exeName := fmt.Sprintf("test-executable-templated-env-vars-injected-%s", strings.ReplaceAll(tc.description, " ", "-"))
+			exe := apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      exeName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "/path/to/" + exeName,
+					Env: []apiv1.EnvVar{
+						{
+							Name:  "EXE_NAME",
+							Value: `{{- .Name -}}`,
+						},
+						{
+							Name:  "EXE_SPEC_EXECUTABLE_PATH",
+							Value: `{{- .Spec.ExecutablePath -}}`,
+						},
+					},
+				},
+			}
 
-	// Validate the templated env vars
-	// Validate EXE_NAME
-	matches := testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`EXE_NAME=(.+)`))
-	require.Len(t, matches, 1, "EXE_NAME was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+			if tc.asynchronousStartupDelay > 0 {
+				testProcessExecutableRunner.InstallAutoExecution(internal_testutil.AutoExecution{
+					Condition: internal_testutil.ProcessSearchCriteria{
+						Command: []string{exe.Spec.ExecutablePath},
+					},
+					AsynchronousStartupDelay: tc.asynchronousStartupDelay,
+				})
+				defer testProcessExecutableRunner.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
+					Command: []string{exe.Spec.ExecutablePath},
+				})
+			}
 
-	// Validate EXE_SPEC_EXECUTABLE_PATH
-	matches = testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`EXE_SPEC_EXECUTABLE_PATH=(.+)`))
-	require.Len(t, matches, 1, "EXE_SPEC_EXECUTABLE_PATH was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+			t.Logf("Creating Executable '%s' that has injected env vars...", exe.ObjectMeta.Name)
+			err := client.Create(ctx, &exe)
+			require.NoError(t, err, "Could not create an Executable")
 
-	t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected templated env vars...")
-	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		return len(currentExe.Status.EffectiveEnv) > 0, nil
-	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
-		return fmt.Sprintf("%s=%s", v.Name, v.Value)
-	})
-	expectedEnvVar := fmt.Sprintf("EXE_NAME=%s", updatedExe.Name)
-	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected EXE_NAME. The effective environment is %v", effectiveEnv)
+			t.Logf("Ensure Executable '%s' is running...", exe.ObjectMeta.Name)
+			pid, err := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+			require.NoError(t, err, "Process could not be started")
 
-	expectedEnvVar2 := fmt.Sprintf("EXE_SPEC_EXECUTABLE_PATH=%s", updatedExe.Spec.ExecutablePath)
-	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar2), "The Executable effective environment does not contain expected EXE_SPEC_EXECUTABLE_PATH. The effective environment is %v", effectiveEnv)
+			t.Logf("Ensure the Executable process got templated env vars injected...")
+			pe, found := testProcessExecutor.FindByPid(pid)
+			require.True(t, found, "Could not find the process with PID %d", pid)
+
+			// Validate the templated env vars
+			// Validate EXE_NAME
+			matches := testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`EXE_NAME=(.+)`))
+			require.Len(t, matches, 1, "EXE_NAME was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+
+			// Validate EXE_SPEC_EXECUTABLE_PATH
+			matches = testutil.FindAllMatching(pe.Cmd.Env, regexp.MustCompile(`EXE_SPEC_EXECUTABLE_PATH=(.+)`))
+			require.Len(t, matches, 1, "EXE_SPEC_EXECUTABLE_PATH was not injected into the Executable process environment variables. The process environment variables are: %v", pe.Cmd.Env)
+
+			t.Logf("Ensure the Executable.Status.EffectiveEnv contains the injected templated env vars...")
+			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+				return len(currentExe.Status.EffectiveEnv) > 0, nil
+			})
+			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+				return fmt.Sprintf("%s=%s", v.Name, v.Value)
+			})
+			expectedEnvVar := fmt.Sprintf("EXE_NAME=%s", updatedExe.Name)
+			require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable effective environment does not contain expected EXE_NAME. The effective environment is %v", effectiveEnv)
+
+			expectedEnvVar2 := fmt.Sprintf("EXE_SPEC_EXECUTABLE_PATH=%s", updatedExe.Spec.ExecutablePath)
+			require.True(t, slices.Contains(effectiveEnv, expectedEnvVar2), "The Executable effective environment does not contain expected EXE_SPEC_EXECUTABLE_PATH. The effective environment is %v", effectiveEnv)
+		})
+	}
 }
 
 // Verify that Services, clients and servers can use "all-interface" addresses in their configurations.
