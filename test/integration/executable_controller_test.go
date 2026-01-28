@@ -803,7 +803,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 				return fmt.Sprintf("%s=%s", v.Name, v.Value)
 			})
 			expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
-			require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected port information. The effective environemtn is %v", exe.ObjectMeta.Name, effectiveEnv)
+			require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
 
 			t.Logf("Ensure service exposed by Executable '%s' gets to Ready state...", exe.ObjectMeta.Name)
 			waitServiceReady(t, ctx, svc.NamespacedName())
