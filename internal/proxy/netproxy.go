@@ -327,6 +327,10 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 				parkedReader, parkedWriter := usvc_io.NewBufferedPipe()
 				wrapped := &parkedConnectionPump{Conn: incoming, reader: parkedReader}
 
+				parkedConnectionMutex.Lock()
+				parkedConnections = append(parkedConnections, wrapped)
+				parkedConnectionMutex.Unlock()
+
 				go func() {
 					_, copyErr := io.Copy(parkedWriter, incoming)
 
@@ -342,18 +346,11 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 						}
 					}
 
-					if bufferedWriter, ok := parkedWriter.(*usvc_io.BufferedPipeWriter); ok {
-						if closeErr := bufferedWriter.CloseWithError(copyErr); closeErr != nil {
-							p.log.V(1).Info("Error closing parked connection buffer", "Error", closeErr)
-						}
-					} else {
-						if closeErr := parkedWriter.Close(); closeErr != nil {
-							p.log.V(1).Info("Error closing parked connection buffer", "Error", closeErr)
-						}
+					bufferedWriter := parkedWriter.(*usvc_io.BufferedPipeWriter)
+					if closeErr := bufferedWriter.CloseWithError(copyErr); closeErr != nil {
+						p.log.V(1).Info("Error closing parked connection buffer", "Error", closeErr)
 					}
 				}()
-
-				parkedConnections = append(parkedConnections, wrapped)
 			}
 		}
 	}
