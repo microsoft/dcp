@@ -42,11 +42,12 @@ import (
 )
 
 var (
-	testProcessExecutor   *internal_testutil.TestProcessExecutor
-	ideRunner             *ctrl_testutil.TestIdeRunner
-	client                ctrl_client.Client
-	restClient            *clientgorest.RESTClient
-	containerOrchestrator *ctrl_testutil.TestContainerOrchestrator
+	testProcessExecutor         *internal_testutil.TestProcessExecutor
+	testProcessExecutableRunner *ctrl_testutil.TestProcessExecutableRunner
+	ideRunner                   *ctrl_testutil.TestIdeRunner
+	client                      ctrl_client.Client
+	restClient                  *clientgorest.RESTClient
+	containerOrchestrator       *ctrl_testutil.TestContainerOrchestrator
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
@@ -68,6 +69,7 @@ func TestMain(m *testing.M) {
 	restClient = serverInfo.RestClient
 	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
+	testProcessExecutableRunner = teInfo.TestProcessExecutableRunner
 	ideRunner = teInfo.TestIdeRunner
 
 	var code int = 0

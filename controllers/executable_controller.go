@@ -344,7 +344,7 @@ func ensureExecutableFinalState(
 }
 
 // Performs an attempt to start an Executable run.
-// Main runner is tried first (Spec.ExecutionType), and if that fails and fallback runners are allowed (Spec.FalbackExecutionTypes),
+// Main runner is tried first (Spec.ExecutionType), and if that fails and fallback runners are allowed (Spec.FallbackExecutionTypes),
 // they are in the order specified, one at a time.
 // This function is called from the reconciliation loop.
 func (r *ExecutableReconciler) startExecutable(
@@ -374,18 +374,20 @@ func (r *ExecutableReconciler) startExecutable(
 		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}
 
+	environmentChanged := noChange
 	if ri.startupStage == StartupStageCertificateDataReady {
-		oc := r.computeExecutableEnvironment(ctx, exe, log, ri)
-		if oc != noChange {
+		var computed bool
+		computed, environmentChanged = r.computeExecutableEnvironment(ctx, exe, log, ri)
+		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
-			return oc
+			return environmentChanged
 		}
 	}
 
 	if ri.startupStage >= StartupStageDefaultRunner && len(ri.startResults) == 0 { // Should never happen
 		log.Error(errors.New("inconsistent Executable startup state"), "No startup results found despite startup stage indicating that a startup attempt was made")
 		r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
-		return statusChanged
+		return statusChanged | environmentChanged
 	}
 
 	var startResult *ExecutableStartResult = nil
@@ -396,7 +398,7 @@ func (r *ExecutableReconciler) startExecutable(
 	if ri.startupStage >= StartupStageDefaultRunner && startResult != nil && startResult.ExeState == apiv1.ExecutableStateStarting {
 		// Run attempt in progress, just make sure the Executable status is up to date.
 		// When the attempt finishes, OnStartupCompleted() will schedule another reconciliation.
-		return ri.ApplyTo(exe, log)
+		return ri.ApplyTo(exe, log) | environmentChanged
 	}
 
 	// Helper function to update Executable status when the start attempt was successful.
@@ -419,7 +421,7 @@ func (r *ExecutableReconciler) startExecutable(
 	// So first we need to check the result of the previous startup attempt (if any).
 	if startResult.IsSuccessfullyCompleted() {
 		handleSuccessfulStart(startResult)
-		return statusChanged
+		return statusChanged | environmentChanged
 	} else if startResult != nil {
 		runErr := startResult.StartupError
 		if runErr != nil {
@@ -443,7 +445,7 @@ func (r *ExecutableReconciler) startExecutable(
 			}
 			exe.Status.FinishTimestamp = exe.Status.StartupTimestamp
 			r.runs.DeleteByNamespacedName(exe.NamespacedName())
-			return statusChanged
+			return statusChanged | environmentChanged
 		}
 
 		ri.startupStage++
@@ -475,11 +477,11 @@ func (r *ExecutableReconciler) startExecutable(
 
 		if startResult.IsSuccessfullyCompleted() {
 			handleSuccessfulStart(startResult)
-			return statusChanged
+			return statusChanged | environmentChanged
 		}
 
 		// Asynchronous start in progress, wait for OnStartupCompleted() to be called
-		return additionalReconciliationNeeded
+		return additionalReconciliationNeeded | environmentChanged
 	}
 }
 
@@ -985,11 +987,10 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 }
 
 // Computes effective environment and invocation arguments for the Executable.
-// Returned objectChange indicates whether the method was successful or not.
-// noChange means environment was computed successfully and we can proceed with startup.
-// Any other value means there was an error and the caller should return allow another reconciliation loop iteration.
+// Returned value indicates whether the method was successful or not, together with objectChange that indicates
+// whether the Executable status was changed and whether another reconciliation iteration is needed.
 // This method is called from the reconciliation loop.
-func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) objectChange {
+func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) (bool, objectChange) {
 	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
 	reservedServicePorts := make(map[types.NamespacedName]int32)
 
@@ -1005,16 +1006,16 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 			log.Info("Executable is being deleted while waiting to compute effective environment, aborting startup",
 				"Cause", err.Error())
 			markExecutableFailed()
-			return statusChanged
+			return false, statusChanged
 		} else {
 			log.Info("Could not compute effective environment for the Executable, retrying startup...",
 				"Cause", err.Error())
-			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
+			return false, r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
 		}
 	} else if err != nil {
 		log.Error(err, "Could not compute effective environment for the Executable")
 		markExecutableFailed()
-		return statusChanged
+		return false, statusChanged
 	}
 
 	err = r.computeEffectiveInvocationArgs(ctx, exe, reservedServicePorts, log)
@@ -1023,16 +1024,16 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 			log.Info("Executable is being deleted while waiting to compute effective invocation arguments, aborting startup",
 				"Cause", err.Error())
 			markExecutableFailed()
-			return statusChanged
+			return false, statusChanged
 		} else {
 			log.Info("Could not compute effective invocation arguments for the Executable, retrying startup...",
 				"Cause", err.Error())
-			return r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
+			return false, r.setExecutableState(exe, apiv1.ExecutableStateStarting) | additionalReconciliationNeeded
 		}
 	} else if err != nil {
 		log.Error(err, "Could not compute effective invocation arguments for the Executable")
 		markExecutableFailed()
-		return statusChanged
+		return false, statusChanged
 	}
 
 	if len(reservedServicePorts) > 0 {
@@ -1044,7 +1045,7 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 	ri.ReservedPorts = reservedServicePorts
 	ri.startupStage = StartupStageDataInitialized
 	r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
-	return noChange
+	return true, statusChanged // Status.EffectiveEnv and Status.EffectiveArgs were changed
 }
 
 func (r *ExecutableReconciler) prepareCertificateFiles(
