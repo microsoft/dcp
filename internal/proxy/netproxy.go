@@ -256,6 +256,22 @@ func (c *parkedConnection) Read(b []byte) (int, error) {
 	return c.reader.Read(b)
 }
 
+func (c *parkedConnection) Close() error {
+	closeErr := c.Conn.Close()
+
+	readerCloser, ok := c.reader.(io.Closer)
+	if !ok {
+		return closeErr
+	}
+
+	closeErr = errors.Join(closeErr, readerCloser.Close())
+	if closeErr != nil {
+		return closeErr
+	}
+
+	return nil
+}
+
 func (p *netProxy) runTCP(tcpListener net.Listener) {
 	var parkedConnections []net.Conn
 	parkedConnectionMutex := &sync.Mutex{}
