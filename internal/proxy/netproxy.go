@@ -265,11 +265,8 @@ func (c *parkedConnection) Close() error {
 	}
 
 	closeErr = errors.Join(closeErr, readerCloser.Close())
-	if closeErr != nil {
-		return closeErr
-	}
 
-	return nil
+	return closeErr
 }
 
 func (p *netProxy) runTCP(tcpListener net.Listener) {
@@ -356,7 +353,7 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 					oldest := parkedConnections[0]
 					parkedConnections = parkedConnections[1:]
 					p.log.V(1).Info("Max parked connections reached, closing oldest connection")
-					_ = oldest.Close()
+					go func() { _ = oldest.Close() }() // Close in goroutine to avoid blocking
 				}
 				parkedConnections = append(parkedConnections, wrapped)
 				parkedConnectionMutex.Unlock()
