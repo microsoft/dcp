@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-
 package proxy
 
 import (
@@ -251,6 +250,210 @@ func TestUDPTwoEndpoints(t *testing.T) {
 	require.NoError(t, clientConn1.Close())
 	require.NoError(t, clientConn2.Close())
 	require.NoError(t, serverConn.Close())
+}
+
+func TestTCPParkedConnectionMaxBufferSize(t *testing.T) {
+	t.Parallel()
+
+	// Set up a proxy with no endpoints configured
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
+
+	// Configure the proxy with no endpoints to force connection parking
+	emptyConfig := ProxyConfig{
+		Endpoints: []Endpoint{},
+	}
+	err := proxy.Configure(emptyConfig)
+	require.NoError(t, err)
+
+	// Connect a client to the proxy
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
+	require.NoError(t, err)
+	require.NotNil(t, clientConn)
+	defer clientConn.Close()
+
+	// The buffer max size is 1MB (1024 * 1024 bytes)
+	const maxBufferSize = 1024 * 1024
+	const chunkSize = 64 * 1024 // 64KB chunks
+	chunk := make([]byte, chunkSize)
+
+	var totalWritten atomic.Int64
+	writeCompleted := make(chan struct{}, 1)
+
+	// Write in a goroutine since it should block when buffer is full
+	go func() {
+		// Try to write 4MB which is well beyond the 1MB limit
+		for i := 0; i < 64; i++ {
+			n, writeErr := clientConn.Write(chunk)
+			if writeErr != nil {
+				break
+			}
+			totalWritten.Add(int64(n))
+		}
+		close(writeCompleted)
+	}()
+
+	// Wait for writes to fill the buffer and block
+	select {
+	case <-writeCompleted:
+		// If write completed, it means the connection was closed or errored
+		// This shouldn't happen since we're just buffering with no endpoints
+		t.Fatalf("Write unexpectedly completed with %d bytes written", totalWritten.Load())
+	case <-time.After(2 * time.Second):
+		// Write blocked as expected when buffer is full
+		written := totalWritten.Load()
+		t.Logf("Blocked after writing %d bytes (max buffer: %d)", written, maxBufferSize)
+
+		// The total buffered should be roughly maxBufferSize + socket buffers
+		// Socket buffers can add 256KB-512KB on each side, so we allow for up to 2MB total
+		// The key assertion is that it's bounded and didn't grow to 4MB (our attempted write)
+		require.Greater(t, written, int64(maxBufferSize/2),
+			"Should have written a substantial amount before blocking")
+		require.Less(t, written, int64(4*1024*1024),
+			"Should have blocked before writing all 4MB, proving the buffer limit works")
+	}
+}
+
+func TestTCPParkedConnectionFlushesDataOnEndpointConfigure(t *testing.T) {
+	t.Parallel()
+
+	// Set up a proxy with no endpoints configured
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
+
+	// Configure the proxy with no endpoints to force connection parking
+	emptyConfig := ProxyConfig{
+		Endpoints: []Endpoint{},
+	}
+	err := proxy.Configure(emptyConfig)
+	require.NoError(t, err)
+
+	// Connect a client to the proxy and send data while no endpoints are configured
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
+	require.NoError(t, err)
+	require.NotNil(t, clientConn)
+	defer clientConn.Close()
+
+	// Generate test data to send
+	const dataSize = 128 * 1024 // 128KB of data
+	testData := []byte(testutil.GetRandLetters(t, dataSize))
+
+	// Write data while no endpoints are configured (data will be parked)
+	bytesWritten, writeErr := clientConn.Write(testData)
+	require.NoError(t, writeErr)
+	require.Equal(t, dataSize, bytesWritten)
+
+	// Give the proxy time to receive and buffer the data
+	time.Sleep(100 * time.Millisecond)
+
+	// Now set up a server to receive the data
+	serverListener, port := setupTcpServer(t, autoAllocatePort)
+	defer serverListener.Close()
+
+	// Configure the proxy with the new endpoint
+	config := ProxyConfig{
+		Endpoints: []Endpoint{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
+		},
+	}
+	configErr := proxy.Configure(config)
+	require.NoError(t, configErr)
+
+	// Accept the connection from the proxy
+	serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
+	serverConn, acceptErr := serverListener.Accept()
+	require.NoError(t, acceptErr)
+	require.NotNil(t, serverConn)
+	defer serverConn.Close()
+
+	// Read all the data that was buffered
+	receivedData := make([]byte, dataSize)
+	totalRead := 0
+	serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for totalRead < dataSize {
+		n, readErr := serverConn.Read(receivedData[totalRead:])
+		if readErr != nil {
+			t.Fatalf("Error reading from server connection after %d bytes: %v", totalRead, readErr)
+		}
+		totalRead += n
+	}
+
+	// Verify all data was received correctly
+	require.Equal(t, dataSize, totalRead, "Should have received all the data that was sent")
+	require.Equal(t, testData, receivedData, "Received data should match sent data")
+}
+
+func TestTCPParkedConnectionClosedBeforeEndpointConfigured(t *testing.T) {
+	t.Parallel()
+
+	// Set up a proxy with no endpoints configured
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+	proxy, logSink := setupTcpProxy(t, ctx)
+	defer logSink.AssertNotCalled(t, "Error")
+
+	// Configure the proxy with no endpoints to force connection parking
+	emptyConfig := ProxyConfig{
+		Endpoints: []Endpoint{},
+	}
+	err := proxy.Configure(emptyConfig)
+	require.NoError(t, err)
+
+	// Connect a client to the proxy and send some data
+	clientConn, err := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
+	require.NoError(t, err)
+	require.NotNil(t, clientConn)
+
+	// Send some data while no endpoints are configured
+	testData := []byte("data that should not be received")
+	bytesWritten, writeErr := clientConn.Write(testData)
+	require.NoError(t, writeErr)
+	require.Equal(t, len(testData), bytesWritten)
+
+	// Give the proxy time to receive and buffer the data
+	time.Sleep(500 * time.Millisecond)
+
+	// Close the client connection before configuring an endpoint
+	require.NoError(t, clientConn.Close())
+
+	// Give the proxy time to detect the closed connection and clean up
+	time.Sleep(500 * time.Millisecond)
+
+	// Now set up a server
+	serverListener, port := setupTcpServer(t, autoAllocatePort)
+	defer serverListener.Close()
+
+	// Configure the proxy with the new endpoint
+	config := ProxyConfig{
+		Endpoints: []Endpoint{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
+		},
+	}
+	configErr := proxy.Configure(config)
+	require.NoError(t, configErr)
+
+	// Try to accept a connection - there should be none since the client closed before endpoint was configured
+	serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(500 * time.Millisecond))
+	serverConn, acceptErr := serverListener.Accept()
+
+	// We expect either no connection (timeout) or a connection that immediately closes with no data
+	if acceptErr != nil {
+		// Timeout is expected - no connection should be forwarded
+		require.True(t, errors.Is(acceptErr, os.ErrDeadlineExceeded),
+			"Expected timeout error, got: %v", acceptErr)
+	} else {
+		// If we got a connection, it should have no data and close immediately
+		defer serverConn.Close()
+		serverConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buffer := make([]byte, 1024)
+		n, readErr := serverConn.Read(buffer)
+		require.Equal(t, 0, n, "Should not have received any data from a closed parked connection")
+		require.Error(t, readErr, "Should get an error reading from a closed connection")
+	}
 }
 
 func TestRandomEndpointSelection(t *testing.T) {

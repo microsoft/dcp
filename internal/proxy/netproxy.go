@@ -240,12 +240,12 @@ func (p *netProxy) stop(listener io.Closer) {
 
 // Buffer incoming data from the parked connection while we wait for an endpoint to be configured.
 // This allows us to process EOF/FIN while a connection is parked to avoid accumulating partially closed sockets.
-type parkedConnectionPump struct {
+type parkedConnection struct {
 	net.Conn
 	reader io.Reader
 }
 
-func (c *parkedConnectionPump) Read(b []byte) (int, error) {
+func (c *parkedConnection) Read(b []byte) (int, error) {
 	return c.reader.Read(b)
 }
 
@@ -324,8 +324,8 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 			} else {
 				p.log.V(1).Info("No endpoints configured, parking connection...")
 
-				parkedReader, parkedWriter := usvc_io.NewBufferedPipe()
-				wrapped := &parkedConnectionPump{Conn: incoming, reader: parkedReader}
+				parkedReader, parkedWriter := usvc_io.NewBufferedPipeWithMaxSize(1024 * 1024) // 1MB max buffer size
+				wrapped := &parkedConnection{Conn: incoming, reader: parkedReader}
 
 				parkedConnectionMutex.Lock()
 				parkedConnections = append(parkedConnections, wrapped)
@@ -335,16 +335,16 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 					_, copyErr := io.Copy(parkedWriter, incoming)
 
 					parkedConnectionMutex.Lock()
-					defer parkedConnectionMutex.Unlock()
-
-					// Close the incoming connection when done and remove it from the parked connections list if still present
-					_ = incoming.Close()
 					for index, conn := range parkedConnections {
 						if conn == wrapped {
 							parkedConnections = append(parkedConnections[:index], parkedConnections[index+1:]...)
 							break
 						}
 					}
+					parkedConnectionMutex.Unlock()
+
+					// Close the incoming connection when done and remove it from the parked connections list if still present
+					_ = incoming.Close()
 
 					bufferedWriter := parkedWriter.(*usvc_io.BufferedPipeWriter)
 					if closeErr := bufferedWriter.CloseWithError(copyErr); closeErr != nil {
