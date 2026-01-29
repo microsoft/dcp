@@ -249,7 +249,7 @@ func (p *netProxy) stop(listener io.Closer) {
 // This allows us to process EOF/FIN while a connection is parked to avoid accumulating partially closed sockets.
 type parkedConnection struct {
 	net.Conn
-	reader io.Reader
+	reader io.ReadCloser
 }
 
 func (c *parkedConnection) Read(b []byte) (int, error) {
@@ -259,12 +259,7 @@ func (c *parkedConnection) Read(b []byte) (int, error) {
 func (c *parkedConnection) Close() error {
 	closeErr := c.Conn.Close()
 
-	readerCloser, ok := c.reader.(io.Closer)
-	if !ok {
-		return closeErr
-	}
-
-	closeErr = errors.Join(closeErr, readerCloser.Close())
+	closeErr = errors.Join(closeErr, c.reader.Close())
 
 	return closeErr
 }
