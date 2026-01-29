@@ -67,6 +67,9 @@ func (bpr *BufferedPipeReader) CloseWithError(err error) error {
 	if bpr.rerr == nil {
 		bpr.rerr = err
 	}
+
+	// Need to wake up writers, if any, so they can see the reader is closed
+	bpr.cond.Broadcast()
 	return nil
 }
 
