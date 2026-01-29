@@ -456,6 +456,101 @@ func TestTCPParkedConnectionClosedBeforeEndpointConfigured(t *testing.T) {
 	}
 }
 
+func TestTCPParkedConnectionMaxCountLimit(t *testing.T) {
+	t.Parallel()
+
+	// Set up a proxy with no endpoints configured
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	defer cancelFunc()
+	// Use logr.Discard() instead of mock logger since this test causes expected TCP errors
+	// when connections are closed due to the limit
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+	require.NotNil(t, proxy)
+	err := proxy.Start()
+	require.NoError(t, err)
+
+	// Configure the proxy with no endpoints to force connection parking
+	emptyConfig := ProxyConfig{
+		Endpoints: []Endpoint{},
+	}
+	err = proxy.Configure(emptyConfig)
+	require.NoError(t, err)
+
+	// Create more connections than the max allowed (MaxParkedConnections = 20)
+	const numConnections = 25
+	connections := make([]net.Conn, numConnections)
+
+	for i := 0; i < numConnections; i++ {
+		conn, dialErr := net.Dial("tcp", networking.AddressAndPort(proxy.EffectiveAddress(), proxy.EffectivePort()))
+		require.NoError(t, dialErr)
+		require.NotNil(t, conn)
+		connections[i] = conn
+
+		// Write a unique identifier for each connection
+		msg := fmt.Sprintf("connection-%02d", i)
+		_, writeErr := conn.Write([]byte(msg))
+		require.NoError(t, writeErr)
+
+		// Small delay to ensure connections are processed in order
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Give the proxy time to process all connections
+	time.Sleep(500 * time.Millisecond)
+
+	// The first 5 connections (0-4) should have been closed due to the limit
+	// Try to write to them - should fail
+	for i := 0; i < numConnections-MaxParkedConnections; i++ {
+		// Set a short deadline and try to write
+		connections[i].SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+		_, writeErr := connections[i].Write([]byte("test"))
+		// The connection should be closed or have an error
+		// On some systems, the first write after close may succeed due to buffering,
+		// so we do a read which should definitely fail on a closed connection
+		connections[i].SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		buf := make([]byte, 1)
+		_, readErr := connections[i].Read(buf)
+		// Either write or read should fail on a closed connection
+		connectionClosed := writeErr != nil || readErr != nil
+		require.True(t, connectionClosed,
+			"Connection %d should have been closed due to max parked connections limit", i)
+	}
+
+	// The remaining connections (5-24) should still be valid
+	// Configure an endpoint and verify they can send data
+	serverListener, port := setupTcpServer(t, autoAllocatePort)
+	defer serverListener.Close()
+
+	config := ProxyConfig{
+		Endpoints: []Endpoint{
+			{Address: networking.IPv4LocalhostDefaultAddress, Port: int32(port)},
+		},
+	}
+	configErr := proxy.Configure(config)
+	require.NoError(t, configErr)
+
+	// Count how many connections are accepted by the server
+	acceptedCount := 0
+	serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	for {
+		serverConn, acceptErr := serverListener.Accept()
+		if acceptErr != nil {
+			break
+		}
+		acceptedCount++
+		serverConn.Close()
+	}
+
+	// Should have accepted exactly MaxParkedConnections (20) connections
+	require.Equal(t, MaxParkedConnections, acceptedCount,
+		"Should have exactly %d parked connections after limit enforcement", MaxParkedConnections)
+
+	// Clean up remaining client connections
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
+}
+
 func TestRandomEndpointSelection(t *testing.T) {
 	t.Parallel()
 
@@ -480,9 +575,10 @@ func TestRandomEndpointSelection(t *testing.T) {
 		endpoint, err := chooseEndpoint(config)
 		require.NoError(t, err)
 		require.NotNil(t, endpoint)
-		if endpoint.Address == "127.0.0.1" {
+		switch endpoint.Address {
+		case "127.0.0.1":
 			haveSeenZeroOne = true
-		} else if endpoint.Address == "127.0.0.2" {
+		case "127.0.0.2":
 			haveSeenZeroTwo = true
 		}
 	}

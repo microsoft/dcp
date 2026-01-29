@@ -57,6 +57,13 @@ const (
 
 	// The time after which a UDP stream will be shut down if it has not been used.
 	UdpStreamInactivityTimeout = 2 * time.Minute
+
+	// The maximum number of parked TCP connections allowed.
+	// If exceeded, the oldest parked connection will be closed.
+	MaxParkedConnections = 20
+
+	// The maximum buffer size for a parked connection (1 MB).
+	ParkedConnectionMaxBufferSize = 1024 * 1024
 )
 
 // A "UDP stream" binds the client with the Endpoint that is serving it.
@@ -324,10 +331,17 @@ func (p *netProxy) runTCP(tcpListener net.Listener) {
 			} else {
 				p.log.V(1).Info("No endpoints configured, parking connection...")
 
-				parkedReader, parkedWriter := usvc_io.NewBufferedPipeWithMaxSize(1024 * 1024) // 1MB max buffer size
+				parkedReader, parkedWriter := usvc_io.NewBufferedPipeWithMaxSize(ParkedConnectionMaxBufferSize)
 				wrapped := &parkedConnection{Conn: incoming, reader: parkedReader}
 
 				parkedConnectionMutex.Lock()
+				// If we're at the limit, close the oldest parked connection
+				if len(parkedConnections) >= MaxParkedConnections {
+					oldest := parkedConnections[0]
+					parkedConnections = parkedConnections[1:]
+					p.log.V(1).Info("Max parked connections reached, closing oldest connection")
+					_ = oldest.Close()
+				}
 				parkedConnections = append(parkedConnections, wrapped)
 				parkedConnectionMutex.Unlock()
 
