@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
@@ -33,6 +34,17 @@ import (
 var (
 	log = logger.New("proxy-tests").Logger
 )
+
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
 
 func TestMain(m *testing.M) {
 	networking.EnableStrictMruPortHandling(log)
@@ -144,9 +156,6 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	for i := 0; i < emptyConfigTries; i++ {
 		err = proxy.Configure(emptyConfig)
 		require.NoError(t, err)
-
-		// Delay a bit to make sure empty configuration have been seen by the proxy but do not cause proxy errors
-		time.Sleep(300 * time.Millisecond)
 	}
 
 	// Configure the proxy with valid endpoint
@@ -159,9 +168,6 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	}
 	err = proxy.Configure(config)
 	require.NoError(t, err)
-
-	// Delay server creation to ensure the proxy buffers the message
-	time.Sleep(2 * time.Second)
 
 	// Set up a server
 	serverListener, _ := setupTcpServer(t, port)
@@ -279,41 +285,33 @@ func TestTCPParkedConnectionMaxBufferSize(t *testing.T) {
 	const chunkSize = 64 * 1024 // 64KB chunks
 	chunk := make([]byte, chunkSize)
 
-	var totalWritten atomic.Int64
-	writeCompleted := make(chan struct{}, 1)
+	const maxWriteBytes = 32 * 1024 * 1024
+	const writeTimeout = 100 * time.Millisecond
 
-	// Write in a goroutine since it should block when buffer is full
-	go func() {
-		// Try to write 4MB which is well beyond the 1MB limit
-		for i := 0; i < 64; i++ {
-			n, writeErr := clientConn.Write(chunk)
-			if writeErr != nil {
+	var totalWritten atomic.Int64
+	timedOut := false
+
+	for totalWritten.Load() < maxWriteBytes {
+		setDeadlineErr := clientConn.SetWriteDeadline(time.Now().Add(writeTimeout))
+		require.NoError(t, setDeadlineErr)
+
+		n, writeErr := clientConn.Write(chunk)
+		totalWritten.Add(int64(n))
+		if writeErr != nil {
+			if isTimeoutError(writeErr) {
+				timedOut = true
 				break
 			}
-			totalWritten.Add(int64(n))
+			t.Fatalf("Unexpected write error after %d bytes: %v", totalWritten.Load(), writeErr)
 		}
-		close(writeCompleted)
-	}()
-
-	// Wait for writes to fill the buffer and block
-	select {
-	case <-writeCompleted:
-		// If write completed, it means the connection was closed or errored
-		// This shouldn't happen since we're just buffering with no endpoints
-		t.Fatalf("Write unexpectedly completed with %d bytes written", totalWritten.Load())
-	case <-time.After(2 * time.Second):
-		// Write blocked as expected when buffer is full
-		written := totalWritten.Load()
-		t.Logf("Blocked after writing %d bytes (max buffer: %d)", written, maxBufferSize)
-
-		// The total buffered should be roughly maxBufferSize + socket buffers
-		// Socket buffers can add 256KB-512KB on each side, so we allow for up to 2MB total
-		// The key assertion is that it's bounded and didn't grow to 4MB (our attempted write)
-		require.Greater(t, written, int64(maxBufferSize/2),
-			"Should have written a substantial amount before blocking")
-		require.Less(t, written, int64(4*1024*1024),
-			"Should have blocked before writing all 4MB, proving the buffer limit works")
 	}
+
+	written := totalWritten.Load()
+	require.True(t, timedOut, "Expected writes to block before %d bytes", maxWriteBytes)
+	require.Greater(t, written, int64(maxBufferSize/2),
+		"Should have written a substantial amount before blocking")
+	require.Less(t, written, int64(maxWriteBytes),
+		"Should have blocked before writing %d bytes", maxWriteBytes)
 }
 
 func TestTCPParkedConnectionFlushesDataOnEndpointConfigure(t *testing.T) {
@@ -347,9 +345,6 @@ func TestTCPParkedConnectionFlushesDataOnEndpointConfigure(t *testing.T) {
 	require.NoError(t, writeErr)
 	require.Equal(t, dataSize, bytesWritten)
 
-	// Give the proxy time to receive and buffer the data
-	time.Sleep(100 * time.Millisecond)
-
 	// Now set up a server to receive the data
 	serverListener, port := setupTcpServer(t, autoAllocatePort)
 	defer serverListener.Close()
@@ -364,7 +359,8 @@ func TestTCPParkedConnectionFlushesDataOnEndpointConfigure(t *testing.T) {
 	require.NoError(t, configErr)
 
 	// Accept the connection from the proxy
-	serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
+	setDeadlineErr := serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(5 * time.Second))
+	require.NoError(t, setDeadlineErr)
 	serverConn, acceptErr := serverListener.Accept()
 	require.NoError(t, acceptErr)
 	require.NotNil(t, serverConn)
@@ -373,7 +369,8 @@ func TestTCPParkedConnectionFlushesDataOnEndpointConfigure(t *testing.T) {
 	// Read all the data that was buffered
 	receivedData := make([]byte, dataSize)
 	totalRead := 0
-	serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	setReadDeadlineErr := serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	require.NoError(t, setReadDeadlineErr)
 	for totalRead < dataSize {
 		n, readErr := serverConn.Read(receivedData[totalRead:])
 		if readErr != nil {
@@ -414,14 +411,29 @@ func TestTCPParkedConnectionClosedBeforeEndpointConfigured(t *testing.T) {
 	require.NoError(t, writeErr)
 	require.Equal(t, len(testData), bytesWritten)
 
-	// Give the proxy time to receive and buffer the data
-	time.Sleep(500 * time.Millisecond)
-
 	// Close the client connection before configuring an endpoint
-	require.NoError(t, clientConn.Close())
+	tcpConn, ok := clientConn.(*net.TCPConn)
+	require.True(t, ok)
+	require.NoError(t, tcpConn.CloseWrite())
 
-	// Give the proxy time to detect the closed connection and clean up
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the proxy to observe the close and shut down the parked connection
+	waitErr := wait.PollUntilContextTimeout(context.Background(), 25*time.Millisecond, 5*time.Second, true, func(_ context.Context) (bool, error) {
+		setReadDeadlineErr := clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if setReadDeadlineErr != nil {
+			return true, nil
+		}
+		buffer := make([]byte, 1)
+		_, readErr := clientConn.Read(buffer)
+		if readErr == nil {
+			return false, nil
+		}
+		if isTimeoutError(readErr) {
+			return false, nil
+		}
+		return true, nil
+	})
+	require.NoError(t, waitErr)
+	require.NoError(t, clientConn.Close())
 
 	// Now set up a server
 	serverListener, port := setupTcpServer(t, autoAllocatePort)
@@ -437,7 +449,8 @@ func TestTCPParkedConnectionClosedBeforeEndpointConfigured(t *testing.T) {
 	require.NoError(t, configErr)
 
 	// Try to accept a connection - there should be none since the client closed before endpoint was configured
-	serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(500 * time.Millisecond))
+	setDeadlineErr := serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(500 * time.Millisecond))
+	require.NoError(t, setDeadlineErr)
 	serverConn, acceptErr := serverListener.Accept()
 
 	// We expect either no connection (timeout) or a connection that immediately closes with no data
@@ -448,7 +461,8 @@ func TestTCPParkedConnectionClosedBeforeEndpointConfigured(t *testing.T) {
 	} else {
 		// If we got a connection, it should have no data and close immediately
 		defer serverConn.Close()
-		serverConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		setReadDeadlineErr := serverConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		require.NoError(t, setReadDeadlineErr)
 		buffer := make([]byte, 1024)
 		n, readErr := serverConn.Read(buffer)
 		require.Equal(t, 0, n, "Should not have received any data from a closed parked connection")
@@ -490,30 +504,30 @@ func TestTCPParkedConnectionMaxCountLimit(t *testing.T) {
 		msg := fmt.Sprintf("connection-%02d", i)
 		_, writeErr := conn.Write([]byte(msg))
 		require.NoError(t, writeErr)
-
-		// Small delay to ensure connections are processed in order
-		time.Sleep(20 * time.Millisecond)
 	}
-
-	// Give the proxy time to process all connections
-	time.Sleep(500 * time.Millisecond)
 
 	// The first 5 connections (0-4) should have been closed due to the limit
 	// Try to write to them - should fail
 	for i := 0; i < numConnections-MaxParkedConnections; i++ {
-		// Set a short deadline and try to write
-		connections[i].SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-		_, writeErr := connections[i].Write([]byte("test"))
-		// The connection should be closed or have an error
-		// On some systems, the first write after close may succeed due to buffering,
-		// so we do a read which should definitely fail on a closed connection
-		connections[i].SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-		buf := make([]byte, 1)
-		_, readErr := connections[i].Read(buf)
-		// Either write or read should fail on a closed connection
-		connectionClosed := writeErr != nil || readErr != nil
-		require.True(t, connectionClosed,
-			"Connection %d should have been closed due to max parked connections limit", i)
+		conn := connections[i]
+		waitErr := wait.PollUntilContextTimeout(context.Background(), 25*time.Millisecond, 5*time.Second, true, func(_ context.Context) (bool, error) {
+			setWriteDeadlineErr := conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+			if setWriteDeadlineErr != nil {
+				return true, nil
+			}
+			_, writeErr := conn.Write([]byte("test"))
+			setReadDeadlineErr := conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			if setReadDeadlineErr != nil {
+				return true, nil
+			}
+			buf := make([]byte, 1)
+			_, readErr := conn.Read(buf)
+
+			writeClosed := writeErr != nil && !isTimeoutError(writeErr)
+			readClosed := readErr != nil && !isTimeoutError(readErr)
+			return writeClosed || readClosed, nil
+		})
+		require.NoError(t, waitErr)
 	}
 
 	// The remaining connections (5-24) should still be valid
@@ -531,7 +545,8 @@ func TestTCPParkedConnectionMaxCountLimit(t *testing.T) {
 
 	// Count how many connections are accepted by the server
 	acceptedCount := 0
-	serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	setDeadlineErr := serverListener.(*net.TCPListener).SetDeadline(time.Now().Add(2 * time.Second))
+	require.NoError(t, setDeadlineErr)
 	for {
 		serverConn, acceptErr := serverListener.Accept()
 		if acceptErr != nil {

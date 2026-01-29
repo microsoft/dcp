@@ -44,7 +44,7 @@ func TestMultipleRwOps(t *testing.T) {
 }
 
 func TestBufferedPipeMaxSize(t *testing.T) {
-	const maxSize = 1024 // 1KB max buffer
+	const maxSize uint = 1024 // 1KB max buffer
 	reader, writer := usvc_io.NewBufferedPipeWithMaxSize(maxSize)
 
 	var totalWritten atomic.Int64
@@ -100,16 +100,16 @@ func TestBufferedPipeMaxSize(t *testing.T) {
 }
 
 func TestBufferedPipeMaxSizeWriterBlocksUntilRead(t *testing.T) {
-	const maxSize = 512
+	const maxSize uint = 512
 	reader, writer := usvc_io.NewBufferedPipeWithMaxSize(maxSize)
 	defer reader.Close()
 	defer writer.Close()
 
 	// Fill the buffer completely
-	data := make([]byte, maxSize)
+	data := make([]byte, int(maxSize))
 	n, writeErr := writer.Write(data)
 	require.NoError(t, writeErr)
-	require.Equal(t, maxSize, n)
+	require.Equal(t, int(maxSize), n)
 
 	// Try to write more - should block
 	writeBlocked := make(chan struct{})

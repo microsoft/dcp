@@ -15,7 +15,7 @@ type bufferedPipe struct {
 	lock    *sync.Mutex
 	cond    *sync.Cond
 	data    *bytes.Buffer
-	maxSize int // 0 means unlimited
+	maxSize uint // 0 means unlimited
 	rerr    error
 	werr    error
 }
@@ -103,12 +103,13 @@ func (bpw *BufferedPipeWriter) Write(p []byte) (int, error) {
 			return totalWritten, io.ErrClosedPipe
 		}
 
-		available := bpw.maxSize - bpw.data.Len()
-		if available <= 0 {
+		bufferLen := bpw.data.Len()
+		if uint(bufferLen) >= bpw.maxSize {
 			// Buffer is full, wait for reader to consume data
 			bpw.cond.Wait()
 			continue
 		}
+		available := int(bpw.maxSize - uint(bufferLen))
 
 		// Write as much as we can fit
 		toWrite := p
@@ -165,7 +166,7 @@ func NewBufferedPipe() (io.ReadCloser, io.WriteCloser) {
 // If maxSize is 0, the buffer can grow without limit (same as NewBufferedPipe).
 // If maxSize is > 0, writers will block when the buffer reaches the maximum size,
 // waiting for readers to consume data before more can be written.
-func NewBufferedPipeWithMaxSize(maxSize int) (io.ReadCloser, io.WriteCloser) {
+func NewBufferedPipeWithMaxSize(maxSize uint) (io.ReadCloser, io.WriteCloser) {
 	p := bufferedPipe{
 		data:    new(bytes.Buffer),
 		lock:    new(sync.Mutex),
