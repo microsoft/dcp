@@ -1111,10 +1111,10 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	dcppaths.EnableTestPathProbing()
 
-	serverInfo, pe, startupErr := StartAdvancedTestEnvironment(ctx, AllControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironment(ctx, AllControllers, t.Name(), t.TempDir(), log)
 	require.NoError(t, startupErr, "Failed to start the API server")
 	t.Logf("API server started with PID %d", serverInfo.ApiServerPID)
-	defer pe.Dispose()
+	defer teInfo.ProcessExecutor.Dispose()
 	defer shutdownAdvancedTestEnvironment(t, ctx, cancel, serverInfo)
 
 	serverSvc := &apiv1.Service{
