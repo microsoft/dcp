@@ -28,7 +28,7 @@ const (
 
 func main() {
 	logName := "dcp"
-	if len(os.Args) > 1 {
+	if len(os.Args) > 1 && osutil.HasOnlyValidFilenameChars(os.Args[1]) {
 		// Use the command name as part of the log file name, instead of just "dcp", which is the same for all invocations.
 		logName = os.Args[1]
 	}
