@@ -27,9 +27,15 @@ const (
 )
 
 func main() {
-	log := logger.New("dcp").
+	logName := "dcp"
+	if len(os.Args) > 1 {
+		// Use the command name as part of the log file name, instead of just "dcp", which is the same for all invocations.
+		logName = os.Args[1]
+	}
+	log := logger.New(logName).
 		WithFilterSink(logger.MacOsProcErrorLogFilter, 1).
 		WithName("dcp")
+
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log.Logger)
 		if panicErr != nil {
