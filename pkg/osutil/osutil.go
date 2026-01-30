@@ -18,11 +18,19 @@ import (
 
 const (
 	MaxCopyFileSize = 50 * 1024 * 1024 // 50MB
+
+	forbiddenFilenameCharRegex           = `<>:"/\\|?*\x00-\x1F`              // not any of < > : " / \ | ? * or control characters (ASCII < 32)
+	forbiddenInclTrailingSpaceOrDotRegex = forbiddenFilenameCharRegex + `\s.` // also not ending with space or dot
 )
 
 var (
 	lf   = []byte("\n")
 	crlf = []byte("\r\n")
+
+	// Regular expression for validating a string contains only valid filename characters
+	validFilenameCharsRegex = regexp.MustCompile(fmt.Sprintf(
+		`^[^%s]*[^%s]$`, forbiddenFilenameCharRegex, forbiddenInclTrailingSpaceOrDotRegex,
+	))
 )
 
 func LF() []byte {
@@ -123,4 +131,17 @@ func isRoot(path string) bool {
 		return matched
 	}
 	return false
+}
+
+// IsSimpleValidFilename checks whether name is a simple, OS-agnostic
+// valid filename according to the following rules:
+// - must not be empty
+// - must not contain control characters (ASCII < 32)
+// - must not contain any of: < > : " / \\ | ? *
+// - must not end with a space or a dot
+// This is a deliberately simple check.
+// It does NOT guarantee the filename is accepted by the OS or filesystem.
+// Should NOT be used for security-sensitive validation.
+func HasOnlyValidFilenameChars(name string) bool {
+	return validFilenameCharsRegex.MatchString(name)
 }
