@@ -12,11 +12,12 @@ import (
 )
 
 type bufferedPipe struct {
-	lock *sync.Mutex
-	cond *sync.Cond
-	data *bytes.Buffer
-	rerr error
-	werr error
+	lock    *sync.Mutex
+	cond    *sync.Cond
+	data    *bytes.Buffer
+	maxSize uint // 0 means unlimited
+	rerr    error
+	werr    error
 }
 
 type BufferedPipeReader struct {
@@ -38,7 +39,10 @@ func (bpr *BufferedPipeReader) Read(p []byte) (int, error) {
 		}
 
 		if bpr.data.Len() > 0 {
-			return bpr.data.Read(p)
+			n, readErr := bpr.data.Read(p)
+			// Signal writers that buffer space may be available
+			bpr.cond.Broadcast()
+			return n, readErr
 		}
 
 		// No data, need to wait for it
@@ -63,6 +67,9 @@ func (bpr *BufferedPipeReader) CloseWithError(err error) error {
 	if bpr.rerr == nil {
 		bpr.rerr = err
 	}
+
+	// Need to wake up writers, if any, so they can see the reader is closed
+	bpr.cond.Broadcast()
 	return nil
 }
 
@@ -78,9 +85,49 @@ func (bpw *BufferedPipeWriter) Write(p []byte) (int, error) {
 		return 0, bpw.werr
 	}
 
-	n, err := bpw.data.Write(p)
-	bpw.cond.Signal()
-	return n, err
+	// If no max size is set, write all data at once
+	if bpw.maxSize == 0 {
+		n, writeErr := bpw.data.Write(p)
+		bpw.cond.Signal()
+		return n, writeErr
+	}
+
+	// With max size set, we may need to write in chunks as buffer space becomes available
+	totalWritten := 0
+	for len(p) > 0 {
+		if bpw.werr != nil {
+			return totalWritten, bpw.werr
+		}
+
+		if bpw.rerr != nil {
+			return totalWritten, io.ErrClosedPipe
+		}
+
+		bufferLen := bpw.data.Len()
+		if uint(bufferLen) >= bpw.maxSize {
+			// Buffer is full, wait for reader to consume data
+			bpw.cond.Wait()
+			continue
+		}
+		available := int(bpw.maxSize - uint(bufferLen))
+
+		// Write as much as we can fit
+		toWrite := p
+		if len(toWrite) > available {
+			toWrite = p[:available]
+		}
+
+		n, writeErr := bpw.data.Write(toWrite)
+		totalWritten += n
+		p = p[n:]
+		bpw.cond.Signal()
+
+		if writeErr != nil {
+			return totalWritten, writeErr
+		}
+	}
+
+	return totalWritten, nil
 }
 
 // Closes the writer half of the pipe, subsequent writers will receive io.ErrClosedPipe.
@@ -112,9 +159,18 @@ func (bpw *BufferedPipeWriter) CloseWithError(err error) error {
 // so writers are never blocked. It is also goroutine-safe.
 // Inspiration/reference: https://github.com/golang/go/issues/28790, https://github.com/golang/go/issues/34502, https://github.com/acomagu/bufpipe
 func NewBufferedPipe() (io.ReadCloser, io.WriteCloser) {
+	return NewBufferedPipeWithMaxSize(0)
+}
+
+// NewBufferedPipeWithMaxSize is like NewBufferedPipe, but with an optional maximum buffer size.
+// If maxSize is 0, the buffer can grow without limit (same as NewBufferedPipe).
+// If maxSize is > 0, writers will block when the buffer reaches the maximum size,
+// waiting for readers to consume data before more can be written.
+func NewBufferedPipeWithMaxSize(maxSize uint) (io.ReadCloser, io.WriteCloser) {
 	p := bufferedPipe{
-		data: new(bytes.Buffer),
-		lock: new(sync.Mutex),
+		data:    new(bytes.Buffer),
+		lock:    new(sync.Mutex),
+		maxSize: maxSize,
 	}
 	p.cond = sync.NewCond(p.lock)
 
