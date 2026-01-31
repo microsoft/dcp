@@ -16,15 +16,39 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/go-dap"
 	"github.com/google/uuid"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
+// SessionDriverConfig holds the configuration for creating a SessionDriver.
+type SessionDriverConfig struct {
+	// UpstreamTransport is the connection to the IDE/client.
+	UpstreamTransport Transport
+
+	// ControlClient is the gRPC client for communicating with the control server.
+	ControlClient *ControlClient
+
+	// Executor is the process executor for managing debug adapter processes.
+	// If nil, a new executor will be created.
+	Executor process.Executor
+
+	// Logger for session driver operations.
+	Logger logr.Logger
+
+	// ProxyConfig is optional configuration for the proxy.
+	ProxyConfig ProxyConfig
+}
+
 // SessionDriver orchestrates the interaction between a DAP proxy and a gRPC control client.
-// It manages the lifecycle of both components and provides the message callbacks that
-// connect the proxy to the gRPC channel.
+// It manages the lifecycle of the debug adapter process, the proxy, and the gRPC connection.
 type SessionDriver struct {
-	proxy  *Proxy
-	client *ControlClient
-	log    logr.Logger
+	upstreamTransport Transport
+	client            *ControlClient
+	executor          process.Executor
+	proxyConfig       ProxyConfig
+	log               logr.Logger
+
+	// proxy is created during Run
+	proxy *Proxy
 
 	// currentStatus tracks the inferred debug session status
 	statusMu      sync.Mutex
@@ -32,25 +56,33 @@ type SessionDriver struct {
 }
 
 // NewSessionDriver creates a new session driver.
-func NewSessionDriver(proxy *Proxy, client *ControlClient, log logr.Logger) *SessionDriver {
+func NewSessionDriver(config SessionDriverConfig) *SessionDriver {
+	log := config.Logger
 	if log.GetSink() == nil {
 		log = logr.Discard()
 	}
 
+	executor := config.Executor
+	if executor == nil {
+		executor = process.NewOSExecutor(log)
+	}
+
 	return &SessionDriver{
-		proxy:         proxy,
-		client:        client,
-		log:           log,
-		currentStatus: DebugSessionStatusConnecting,
+		upstreamTransport: config.UpstreamTransport,
+		client:            config.ControlClient,
+		executor:          executor,
+		proxyConfig:       config.ProxyConfig,
+		log:               log,
+		currentStatus:     DebugSessionStatusConnecting,
 	}
 }
 
 // Run starts the session driver and blocks until the session ends.
-// It establishes the gRPC connection, starts the proxy with callbacks, and handles
-// message routing between the proxy and gRPC channel.
+// It establishes the gRPC connection, launches the debug adapter, creates the proxy,
+// and handles message routing between components.
 //
 // The context controls the lifetime of the session. Cancelling the context will
-// terminate both the proxy and gRPC connection.
+// terminate the debug adapter process, proxy, and gRPC connection.
 //
 // Returns an aggregated error if any component fails. Context errors are filtered
 // if they are redundant (i.e., caused by intentional shutdown).
@@ -61,9 +93,33 @@ func (d *SessionDriver) Run(ctx context.Context) error {
 		return connectErr
 	}
 
+	// Get adapter config from the server (received during handshake)
+	adapterConfig := d.client.GetAdapterConfig()
+	if adapterConfig == nil {
+		d.client.Close()
+		return fmt.Errorf("no adapter config received from server")
+	}
+
+	// Launch the debug adapter
+	d.log.Info("Launching debug adapter", "args", adapterConfig.Args)
+	adapter, launchErr := LaunchDebugAdapter(ctx, d.executor, adapterConfig, d.log)
+	if launchErr != nil {
+		d.client.Close()
+		return fmt.Errorf("failed to launch debug adapter: %w", launchErr)
+	}
+
 	// Create proxy context that we can cancel independently
 	proxyCtx, proxyCancel := context.WithCancel(ctx)
 	defer proxyCancel()
+
+	// Create proxy config with logger if not already set
+	proxyConfig := d.proxyConfig
+	if proxyConfig.Logger.GetSink() == nil {
+		proxyConfig.Logger = d.log
+	}
+
+	// Create the proxy connecting upstream (IDE) to downstream (debug adapter)
+	d.proxy = NewProxy(d.upstreamTransport, adapter.Transport, proxyConfig)
 
 	// Build callbacks
 	upstreamCallback := d.buildUpstreamCallback()
@@ -87,19 +143,33 @@ func (d *SessionDriver) Run(ctx context.Context) error {
 		d.log.Info("Session driver context cancelled")
 	case <-d.client.Terminated():
 		d.log.Info("gRPC connection terminated", "reason", d.client.TerminateReason())
+	case <-adapter.Done():
+		d.log.Info("Debug adapter process exited")
 	}
 
-	// Shutdown sequence: proxy first, then client
+	// Shutdown sequence: proxy first, then adapter transport, then client
 	proxyCancel()
 	proxyWg.Wait()
+
+	// Close the adapter transport (this will also help clean up the process)
+	adapter.Transport.Close()
+
+	// Wait for adapter process to fully exit
+	adapterErr := adapter.Wait()
 
 	clientErr := d.client.Close()
 
 	// Filter and aggregate errors
 	proxyErr = filterContextError(proxyErr, ctx, d.log)
+	adapterErr = filterContextError(adapterErr, ctx, d.log)
 	clientErr = filterContextError(clientErr, ctx, d.log)
 
-	return errors.Join(proxyErr, clientErr)
+	return errors.Join(proxyErr, adapterErr, clientErr)
+}
+
+// Proxy returns the proxy instance. Only valid after Run has started.
+func (d *SessionDriver) Proxy() *Proxy {
+	return d.proxy
 }
 
 // buildUpstreamCallback creates the callback for messages from the IDE.
@@ -124,6 +194,8 @@ func (d *SessionDriver) buildDownstreamCallback(ctx context.Context) MessageCall
 		case *dap.InitializeResponse:
 			d.updateStatus(DebugSessionStatusInitializing)
 			d.sendEventToServer(msg)
+			// Extract and send capabilities to the server
+			d.sendCapabilitiesToServer(m)
 			return ForwardUnchanged()
 
 		case *dap.ConfigurationDoneResponse:
@@ -158,6 +230,22 @@ func (d *SessionDriver) buildDownstreamCallback(ctx context.Context) MessageCall
 		default:
 			return ForwardUnchanged()
 		}
+	}
+}
+
+// sendCapabilitiesToServer extracts capabilities from InitializeResponse and sends to the gRPC server.
+func (d *SessionDriver) sendCapabilitiesToServer(resp *dap.InitializeResponse) {
+	// Serialize just the body (capabilities) to JSON
+	capabilitiesJSON, jsonErr := json.Marshal(resp.Body)
+	if jsonErr != nil {
+		d.log.Error(jsonErr, "Failed to serialize capabilities")
+		return
+	}
+
+	d.log.V(1).Info("Sending capabilities to server", "size", len(capabilitiesJSON))
+
+	if sendErr := d.client.SendCapabilities(capabilitiesJSON); sendErr != nil {
+		d.log.Error(sendErr, "Failed to send capabilities to server")
 	}
 }
 

@@ -83,6 +83,9 @@ type ControlClient struct {
 	conn   *grpc.ClientConn
 	stream grpc.BidiStreamingClient[proto.SessionMessage, proto.SessionMessage]
 
+	// adapterConfig holds the debug adapter configuration received during handshake.
+	adapterConfig *DebugAdapterConfig
+
 	// Channels for incoming messages
 	virtualRequests chan VirtualRequest
 	terminatedChan  chan struct{}
@@ -204,6 +207,14 @@ func (c *ControlClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("%w: %s", ErrSessionRejected, handshakeResp.GetError())
 	}
 
+	// Extract adapter config from handshake response
+	c.adapterConfig = FromProtoAdapterConfig(handshakeResp.GetAdapterConfig())
+	if c.adapterConfig != nil {
+		c.log.Info("Received adapter config",
+			"args", c.adapterConfig.Args,
+			"mode", c.adapterConfig.Mode.String())
+	}
+
 	c.log.Info("Connected to control server", "resource", c.config.ResourceKey.String())
 
 	// Start receive loop
@@ -291,6 +302,12 @@ func (c *ControlClient) handleServerMessage(msg *proto.SessionMessage) {
 	}
 }
 
+// GetAdapterConfig returns the debug adapter configuration received during handshake.
+// Returns nil if no adapter config was provided.
+func (c *ControlClient) GetAdapterConfig() *DebugAdapterConfig {
+	return c.adapterConfig
+}
+
 // VirtualRequests returns a channel that receives virtual DAP requests from the server.
 func (c *ControlClient) VirtualRequests() <-chan VirtualRequest {
 	return c.virtualRequests
@@ -342,6 +359,20 @@ func (c *ControlClient) SendStatusUpdate(status DebugSessionStatus, errorMsg str
 			StatusUpdate: &proto.StatusUpdate{
 				Status: FromDebugSessionStatus(status),
 				Error:  ptrString(errorMsg),
+			},
+		},
+	})
+}
+
+// SendCapabilities sends the debug adapter capabilities to the server.
+func (c *ControlClient) SendCapabilities(capabilitiesJSON []byte) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+
+	return c.stream.Send(&proto.SessionMessage{
+		Message: &proto.SessionMessage_CapabilitiesUpdate{
+			CapabilitiesUpdate: &proto.CapabilitiesUpdate{
+				CapabilitiesJson: capabilitiesJSON,
 			},
 		},
 	})

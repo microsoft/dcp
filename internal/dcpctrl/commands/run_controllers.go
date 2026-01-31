@@ -22,6 +22,7 @@ import (
 	cmds "github.com/microsoft/dcp/internal/commands"
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/containers/runtimes"
+	"github.com/microsoft/dcp/internal/dap"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/exerunners"
@@ -149,6 +150,9 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		harvester := controllers.NewResourceHarvester()
 		go harvester.Harvest(ctrlCtx, containerOrchestrator, log.WithName("ResourceCleanup"))
 
+		// Create the debug session map for DAP proxy session management
+		debugSessions := dap.NewSessionMap()
+
 		const defaultControllerName = ""
 
 		serviceCtrl := controllers.NewServiceReconciler(
@@ -177,6 +181,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
 			hpSet,
+			debugSessions,
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up Executable controller")

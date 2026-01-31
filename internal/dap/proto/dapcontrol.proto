@@ -60,6 +60,9 @@ message SessionMessage {
 
     // HandshakeResponse is sent by the server to acknowledge the handshake.
     HandshakeResponse handshake_response = 9;
+
+    // CapabilitiesUpdate is sent by the client to report debug adapter capabilities.
+    CapabilitiesUpdate capabilities_update = 10;
   }
 }
 
@@ -69,9 +72,53 @@ message Handshake {
 }
 
 // HandshakeResponse acknowledges a successful handshake or reports an error.
+// On success, includes the debug adapter configuration for launching the adapter.
 message HandshakeResponse {
   bool success = 1;
   string error = 2;
+  // Debug adapter launch configuration (only set on success).
+  DebugAdapterConfig adapter_config = 3;
+}
+
+// DebugAdapterMode specifies how the debug adapter communicates.
+enum DebugAdapterMode {
+  // Unspecified mode defaults to STDIO.
+  DEBUG_ADAPTER_MODE_UNSPECIFIED = 0;
+
+  // STDIO mode: adapter uses stdin/stdout for DAP communication.
+  DEBUG_ADAPTER_MODE_STDIO = 1;
+
+  // TCP_CALLBACK mode: we start a listener, adapter connects to us.
+  // Use --client-addr or similar to pass our address to the adapter.
+  DEBUG_ADAPTER_MODE_TCP_CALLBACK = 2;
+
+  // TCP_CONNECT mode: we specify a port, adapter listens, we connect.
+  // Use {{port}} placeholder in args which is replaced with allocated port.
+  DEBUG_ADAPTER_MODE_TCP_CONNECT = 3;
+}
+
+// EnvVar represents an environment variable with name and value.
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+// DebugAdapterConfig contains the configuration for launching a debug adapter.
+message DebugAdapterConfig {
+  // Command line arguments to launch the debug adapter.
+  // The first element is the executable, remaining elements are arguments.
+  // May contain "{{port}}" placeholder for TCP modes.
+  repeated string args = 1;
+
+  // Communication mode for the debug adapter.
+  DebugAdapterMode mode = 2;
+
+  // Environment variables to set for the debug adapter process.
+  repeated EnvVar env = 3;
+
+  // Connection timeout in seconds for TCP modes.
+  // Default is 10 seconds if not specified.
+  int32 connection_timeout_seconds = 4;
 }
 
 // VirtualRequest contains a DAP request to be sent to the debug adapter.
@@ -146,6 +193,12 @@ message StatusUpdate {
 
   // Optional error message when status is ERROR.
   string error = 2;
+}
+
+// CapabilitiesUpdate reports debug adapter capabilities from the InitializeResponse.
+message CapabilitiesUpdate {
+  // JSON-encoded capabilities object from the debug adapter's InitializeResponse.
+  bytes capabilities_json = 1;
 }
 
 // Terminate signals that the debug session should end.

@@ -198,6 +198,17 @@ func getDebuggeeBinary(t *testing.T) string {
 	}
 }
 
+// getDelveAdapterConfig returns the debug adapter configuration for launching
+// Delve in DAP mode (for use with SessionDriver).
+// Note: Delve DAP mode requires a TCP listener; it does not support pure stdio mode.
+// We use TCP Connect mode with {{port}} substitution since Delve starts its own TCP listener.
+func getDelveAdapterConfig() *DebugAdapterConfig {
+	return &DebugAdapterConfig{
+		Mode: DebugAdapterModeTCPConnect,
+		Args: []string{"go", "tool", "dlv", "dap", "-l", "127.0.0.1:{{port}}"},
+	}
+}
+
 // TestProxy_E2E_DelveDebugSession tests a complete debug session through the proxy.
 func TestProxy_E2E_DelveDebugSession(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 60*time.Second)
@@ -382,13 +393,6 @@ func TestGRPC_E2E_ControlServerWithDelve(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 60*time.Second)
 	defer cancel()
 
-	// Start Delve
-	delve, startErr := startDelve(ctx, t)
-	if startErr != nil {
-		t.Fatalf("Failed to start Delve: %v", startErr)
-	}
-	defer delve.cleanup()
-
 	// === Setup gRPC Control Server ===
 	grpcListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
 	if listenErr != nil {
@@ -446,7 +450,7 @@ func TestGRPC_E2E_ControlServerWithDelve(t *testing.T) {
 	})
 	require.NoError(t, waitErr, "gRPC server should be ready")
 
-	// === Setup Proxy with Session Driver ===
+	// === Setup Session Driver ===
 	resourceKey := commonapi.NamespacedNameWithKind{
 		NamespacedName: types.NamespacedName{
 			Namespace: "test-namespace",
@@ -459,20 +463,18 @@ func TestGRPC_E2E_ControlServerWithDelve(t *testing.T) {
 		},
 	}
 
-	// Create a TCP listener for the proxy's upstream (client-facing) side
+	// Pre-register the session with the adapter config (simulating what the controller would do)
+	adapterConfig := getDelveAdapterConfig()
+	preRegErr := server.Sessions().PreRegisterSession(resourceKey, adapterConfig)
+	require.NoError(t, preRegErr, "Pre-registration should succeed")
+
+	// Create a TCP listener for the upstream (client-facing) side
 	upstreamListener, upListenErr := net.Listen("tcp", "127.0.0.1:0")
 	if upListenErr != nil {
 		t.Fatalf("Failed to create upstream listener: %v", upListenErr)
 	}
 	defer upstreamListener.Close()
-	t.Logf("Proxy upstream listening at: %s", upstreamListener.Addr().String())
-
-	// Connect to Delve (proxy downstream)
-	downstreamConn, dialErr := net.Dial("tcp", delve.addr)
-	if dialErr != nil {
-		t.Fatalf("Failed to connect to Delve: %v", dialErr)
-	}
-	downstreamTransport := NewTCPTransport(downstreamConn)
+	t.Logf("Upstream listening at: %s", upstreamListener.Addr().String())
 
 	// Accept client connection in background
 	var upstreamConn net.Conn
@@ -484,10 +486,10 @@ func TestGRPC_E2E_ControlServerWithDelve(t *testing.T) {
 		upstreamConn, acceptErr = upstreamListener.Accept()
 	}()
 
-	// Connect test client to proxy
+	// Connect test client
 	clientConn, clientDialErr := net.Dial("tcp", upstreamListener.Addr().String())
 	if clientDialErr != nil {
-		t.Fatalf("Failed to connect client to proxy: %v", clientDialErr)
+		t.Fatalf("Failed to connect client: %v", clientDialErr)
 	}
 	clientTransport := NewTCPTransport(clientConn)
 
@@ -498,24 +500,20 @@ func TestGRPC_E2E_ControlServerWithDelve(t *testing.T) {
 	}
 	upstreamTransport := NewTCPTransport(upstreamConn)
 
-	// Create proxy
-	proxyLog := testutil.NewLogForTesting("dap-proxy")
-	proxy := NewProxy(upstreamTransport, downstreamTransport, ProxyConfig{
-		Logger: proxyLog,
-	})
-
 	// Create control client
-	clientLog := testutil.NewLogForTesting("grpc-client")
 	controlClient := NewControlClient(ControlClientConfig{
 		Endpoint:    grpcListener.Addr().String(),
 		BearerToken: "test-token",
 		ResourceKey: resourceKey,
-		Logger:      clientLog,
+		Logger:      testutil.NewLogForTesting("grpc-client"),
 	})
 
-	// Create session driver
-	driverLog := testutil.NewLogForTesting("session-driver")
-	driver := NewSessionDriver(proxy, controlClient, driverLog)
+	// Create session driver - it will launch Delve and create the proxy internally
+	driver := NewSessionDriver(SessionDriverConfig{
+		UpstreamTransport: upstreamTransport,
+		ControlClient:     controlClient,
+		Logger:            testutil.NewLogForTesting("session-driver"),
+	})
 
 	// Start session driver
 	var driverWg sync.WaitGroup
@@ -725,13 +723,6 @@ func TestGRPC_E2E_VirtualRequestTimeout(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
 
-	// Start Delve
-	delve, startErr := startDelve(ctx, t)
-	if startErr != nil {
-		t.Fatalf("Failed to start Delve: %v", startErr)
-	}
-	defer delve.cleanup()
-
 	// Setup gRPC server
 	grpcListener, _ := net.Listen("tcp", "127.0.0.1:0")
 	testLog := testutil.NewLogForTesting("grpc-server")
@@ -763,7 +754,7 @@ func TestGRPC_E2E_VirtualRequestTimeout(t *testing.T) {
 	})
 	require.NoError(t, waitErr, "gRPC server should be ready")
 
-	// Setup proxy with session driver
+	// Setup session driver
 	resourceKey := commonapi.NamespacedNameWithKind{
 		NamespacedName: types.NamespacedName{
 			Namespace: "test-ns",
@@ -776,15 +767,14 @@ func TestGRPC_E2E_VirtualRequestTimeout(t *testing.T) {
 		},
 	}
 
-	// Connect proxy to Delve
+	// Pre-register the session with the adapter config
+	adapterConfig := getDelveAdapterConfig()
+	preRegErr := server.Sessions().PreRegisterSession(resourceKey, adapterConfig)
+	require.NoError(t, preRegErr, "Pre-registration should succeed")
+
+	// Setup upstream connection
 	upstreamListener, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer upstreamListener.Close()
-
-	downstreamConn, dialErr := net.Dial("tcp", delve.addr)
-	if dialErr != nil {
-		t.Fatalf("Failed to connect to Delve: %v", dialErr)
-	}
-	downstreamTransport := NewTCPTransport(downstreamConn)
 
 	var upstreamConn net.Conn
 	var acceptWg sync.WaitGroup
@@ -802,10 +792,6 @@ func TestGRPC_E2E_VirtualRequestTimeout(t *testing.T) {
 	acceptWg.Wait()
 	upstreamTransport := NewTCPTransport(upstreamConn)
 
-	proxy := NewProxy(upstreamTransport, downstreamTransport, ProxyConfig{
-		Logger: testutil.NewLogForTesting("proxy"),
-	})
-
 	controlClient := NewControlClient(ControlClientConfig{
 		Endpoint:    grpcListener.Addr().String(),
 		BearerToken: "test-token",
@@ -813,7 +799,11 @@ func TestGRPC_E2E_VirtualRequestTimeout(t *testing.T) {
 		Logger:      testutil.NewLogForTesting("client"),
 	})
 
-	driver := NewSessionDriver(proxy, controlClient, testutil.NewLogForTesting("driver"))
+	driver := NewSessionDriver(SessionDriverConfig{
+		UpstreamTransport: upstreamTransport,
+		ControlClient:     controlClient,
+		Logger:            testutil.NewLogForTesting("driver"),
+	})
 
 	var driverWg sync.WaitGroup
 	driverWg.Add(1)
@@ -872,13 +862,6 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 60*time.Second)
 	defer cancel()
 
-	// Start Delve
-	delve, startErr := startDelve(ctx, t)
-	if startErr != nil {
-		t.Fatalf("Failed to start Delve: %v", startErr)
-	}
-	defer delve.cleanup()
-
 	// Setup gRPC server
 	grpcListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
 	if listenErr != nil {
@@ -927,18 +910,17 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 		},
 	}
 
-	// Setup proxy infrastructure
+	// Pre-register the session with the adapter config
+	adapterConfig := getDelveAdapterConfig()
+	preRegErr := server.Sessions().PreRegisterSession(resourceKey, adapterConfig)
+	require.NoError(t, preRegErr, "Pre-registration should succeed")
+
+	// Setup upstream connection
 	upstreamListener, upListenErr := net.Listen("tcp", "127.0.0.1:0")
 	if upListenErr != nil {
 		t.Fatalf("Failed to create upstream listener: %v", upListenErr)
 	}
 	defer upstreamListener.Close()
-
-	downstreamConn, dialErr := net.Dial("tcp", delve.addr)
-	if dialErr != nil {
-		t.Fatalf("Failed to connect to Delve: %v", dialErr)
-	}
-	downstreamTransport := NewTCPTransport(downstreamConn)
 
 	var upstreamConn net.Conn
 	var acceptWg sync.WaitGroup
@@ -959,10 +941,6 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 	acceptWg.Wait()
 	upstreamTransport := NewTCPTransport(upstreamConn)
 
-	proxy := NewProxy(upstreamTransport, downstreamTransport, ProxyConfig{
-		Logger: testutil.NewLogForTesting("proxy"),
-	})
-
 	controlClient := NewControlClient(ControlClientConfig{
 		Endpoint:    grpcListener.Addr().String(),
 		BearerToken: "test-token",
@@ -970,7 +948,11 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 		Logger:      testutil.NewLogForTesting("client"),
 	})
 
-	driver := NewSessionDriver(proxy, controlClient, testutil.NewLogForTesting("driver"))
+	driver := NewSessionDriver(SessionDriverConfig{
+		UpstreamTransport: upstreamTransport,
+		ControlClient:     controlClient,
+		Logger:            testutil.NewLogForTesting("driver"),
+	})
 
 	var driverWg sync.WaitGroup
 	driverWg.Add(1)
@@ -1126,13 +1108,6 @@ func TestGRPC_E2E_VirtualSetBreakpoints(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 60*time.Second)
 	defer cancel()
 
-	// Start Delve
-	delve, startErr := startDelve(ctx, t)
-	if startErr != nil {
-		t.Fatalf("Failed to start Delve: %v", startErr)
-	}
-	defer delve.cleanup()
-
 	// Setup gRPC server
 	grpcListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
 	if listenErr != nil {
@@ -1181,18 +1156,17 @@ func TestGRPC_E2E_VirtualSetBreakpoints(t *testing.T) {
 		},
 	}
 
-	// Setup proxy infrastructure
+	// Pre-register the session with the adapter config
+	adapterConfig := getDelveAdapterConfig()
+	preRegErr := server.Sessions().PreRegisterSession(resourceKey, adapterConfig)
+	require.NoError(t, preRegErr, "Pre-registration should succeed")
+
+	// Setup upstream connection
 	upstreamListener, upListenErr := net.Listen("tcp", "127.0.0.1:0")
 	if upListenErr != nil {
 		t.Fatalf("Failed to create upstream listener: %v", upListenErr)
 	}
 	defer upstreamListener.Close()
-
-	downstreamConn, dialErr := net.Dial("tcp", delve.addr)
-	if dialErr != nil {
-		t.Fatalf("Failed to connect to Delve: %v", dialErr)
-	}
-	downstreamTransport := NewTCPTransport(downstreamConn)
 
 	var upstreamConn net.Conn
 	var acceptWg sync.WaitGroup
@@ -1213,10 +1187,6 @@ func TestGRPC_E2E_VirtualSetBreakpoints(t *testing.T) {
 	acceptWg.Wait()
 	upstreamTransport := NewTCPTransport(upstreamConn)
 
-	proxy := NewProxy(upstreamTransport, downstreamTransport, ProxyConfig{
-		Logger: testutil.NewLogForTesting("proxy"),
-	})
-
 	controlClient := NewControlClient(ControlClientConfig{
 		Endpoint:    grpcListener.Addr().String(),
 		BearerToken: "test-token",
@@ -1224,7 +1194,11 @@ func TestGRPC_E2E_VirtualSetBreakpoints(t *testing.T) {
 		Logger:      testutil.NewLogForTesting("client"),
 	})
 
-	driver := NewSessionDriver(proxy, controlClient, testutil.NewLogForTesting("driver"))
+	driver := NewSessionDriver(SessionDriverConfig{
+		UpstreamTransport: upstreamTransport,
+		ControlClient:     controlClient,
+		Logger:            testutil.NewLogForTesting("driver"),
+	})
 
 	var driverWg sync.WaitGroup
 	driverWg.Add(1)
@@ -1425,13 +1399,6 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
 
-	// Start Delve
-	delve, startErr := startDelve(ctx, t)
-	if startErr != nil {
-		t.Fatalf("Failed to start Delve: %v", startErr)
-	}
-	defer delve.cleanup()
-
 	// Setup gRPC server
 	grpcListener, _ := net.Listen("tcp", "127.0.0.1:0")
 	testLog := testutil.NewLogForTesting("grpc-server")
@@ -1476,12 +1443,14 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 		},
 	}
 
+	// Pre-register the session with the adapter config
+	adapterConfig := getDelveAdapterConfig()
+	preRegErr := server.Sessions().PreRegisterSession(resourceKey, adapterConfig)
+	require.NoError(t, preRegErr, "Pre-registration should succeed")
+
 	// === First Session - should succeed ===
 	upstreamListener1, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer upstreamListener1.Close()
-
-	downstreamConn1, _ := net.Dial("tcp", delve.addr)
-	downstreamTransport1 := NewTCPTransport(downstreamConn1)
 
 	var upstreamConn1 net.Conn
 	var acceptWg1 sync.WaitGroup
@@ -1499,10 +1468,6 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 	acceptWg1.Wait()
 	upstreamTransport1 := NewTCPTransport(upstreamConn1)
 
-	proxy1 := NewProxy(upstreamTransport1, downstreamTransport1, ProxyConfig{
-		Logger: testutil.NewLogForTesting("proxy1"),
-	})
-
 	controlClient1 := NewControlClient(ControlClientConfig{
 		Endpoint:    grpcListener.Addr().String(),
 		BearerToken: "test-token",
@@ -1510,7 +1475,11 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 		Logger:      testutil.NewLogForTesting("client1"),
 	})
 
-	driver1 := NewSessionDriver(proxy1, controlClient1, testutil.NewLogForTesting("driver1"))
+	driver1 := NewSessionDriver(SessionDriverConfig{
+		UpstreamTransport: upstreamTransport1,
+		ControlClient:     controlClient1,
+		Logger:            testutil.NewLogForTesting("driver1"),
+	})
 
 	var driver1Wg sync.WaitGroup
 	driver1Wg.Add(1)
@@ -1519,14 +1488,18 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 		_ = driver1.Run(ctx)
 	}()
 
-	// Wait for first session to be registered
+	// Wait for first session to be connected (claimed by driver1)
 	var sessionState *DebugSessionState
 	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		sessionState = server.GetSessionStatus(resourceKey)
-		return sessionState != nil, nil
+		if sessionState == nil {
+			return false, nil
+		}
+		// Wait until the session is actually connected (claimed), not just pre-registered
+		return server.Sessions().IsSessionConnected(resourceKey), nil
 	})
-	require.NoError(t, waitErr, "First session should be registered")
-	t.Logf("First session registered with status: %s", sessionState.Status.String())
+	require.NoError(t, waitErr, "First session should be connected")
+	t.Logf("First session connected with status: %s", sessionState.Status.String())
 
 	// === Second Session - should be rejected ===
 	t.Log("Attempting second session with same resource key...")
@@ -1546,6 +1519,7 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 
 	assert.True(t,
 		strings.Contains(connectErr.Error(), "AlreadyExists") ||
+			strings.Contains(connectErr.Error(), "already connected") ||
 			strings.Contains(connectErr.Error(), "session already exists"),
 		"Error should indicate duplicate session")
 
@@ -1554,4 +1528,140 @@ func TestGRPC_E2E_SessionRejectionOnDuplicate(t *testing.T) {
 	driver1Wg.Wait()
 
 	t.Log("Duplicate session rejection test completed!")
+}
+
+// TestGRPC_E2E_SessionDriverContextCancellation tests that the session driver
+// returns no error when the context is cancelled (graceful shutdown).
+func TestGRPC_E2E_SessionDriverContextCancellation(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	// Setup gRPC server
+	grpcListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("Failed to create gRPC listener: %v", listenErr)
+	}
+
+	testLog := testutil.NewLogForTesting("grpc-server")
+	server := NewControlServer(ControlServerConfig{
+		Listener:    grpcListener,
+		BearerToken: "test-token",
+		Logger:      testLog,
+	})
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		_ = server.Start(ctx)
+	}()
+	defer func() {
+		server.Stop()
+		serverWg.Wait()
+	}()
+
+	// Wait for gRPC server to be ready
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		conn, dialErr := net.DialTimeout("tcp", grpcListener.Addr().String(), 50*time.Millisecond)
+		if dialErr != nil {
+			return false, nil
+		}
+		conn.Close()
+		return true, nil
+	})
+	require.NoError(t, waitErr, "gRPC server should be ready")
+
+	// Setup resource key
+	resourceKey := commonapi.NamespacedNameWithKind{
+		NamespacedName: types.NamespacedName{
+			Namespace: "test-ns",
+			Name:      "context-cancel-test",
+		},
+		Kind: schema.GroupVersionKind{
+			Group:   "dcp.io",
+			Version: "v1",
+			Kind:    "Executable",
+		},
+	}
+
+	// Pre-register the session with the adapter config
+	adapterConfig := getDelveAdapterConfig()
+	preRegErr := server.Sessions().PreRegisterSession(resourceKey, adapterConfig)
+	require.NoError(t, preRegErr, "Pre-registration should succeed")
+
+	// Setup upstream connection
+	upstreamListener, upListenErr := net.Listen("tcp", "127.0.0.1:0")
+	if upListenErr != nil {
+		t.Fatalf("Failed to create upstream listener: %v", upListenErr)
+	}
+	defer upstreamListener.Close()
+
+	var upstreamConn net.Conn
+	var acceptWg sync.WaitGroup
+	acceptWg.Add(1)
+	go func() {
+		defer acceptWg.Done()
+		upstreamConn, _ = upstreamListener.Accept()
+	}()
+
+	clientConn, clientDialErr := net.Dial("tcp", upstreamListener.Addr().String())
+	if clientDialErr != nil {
+		t.Fatalf("Failed to connect client: %v", clientDialErr)
+	}
+	clientTransport := NewTCPTransport(clientConn)
+	testClient := NewTestClient(clientTransport)
+	defer testClient.Close()
+
+	acceptWg.Wait()
+	upstreamTransport := NewTCPTransport(upstreamConn)
+
+	controlClient := NewControlClient(ControlClientConfig{
+		Endpoint:    grpcListener.Addr().String(),
+		BearerToken: "test-token",
+		ResourceKey: resourceKey,
+		Logger:      testutil.NewLogForTesting("client"),
+	})
+
+	driver := NewSessionDriver(SessionDriverConfig{
+		UpstreamTransport: upstreamTransport,
+		ControlClient:     controlClient,
+		Logger:            testutil.NewLogForTesting("driver"),
+	})
+
+	// Create a separate cancellable context for the driver
+	driverCtx, driverCancel := context.WithCancel(ctx)
+
+	var driverErr error
+	var driverWg sync.WaitGroup
+	driverWg.Add(1)
+	go func() {
+		defer driverWg.Done()
+		driverErr = driver.Run(driverCtx)
+	}()
+
+	// Wait for session to be connected
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		return server.Sessions().IsSessionConnected(resourceKey), nil
+	})
+	require.NoError(t, waitErr, "Session should be connected")
+	t.Log("Session connected")
+
+	// Initialize the debug session to ensure everything is working
+	t.Log("Initializing debug session...")
+	_, initErr := testClient.Initialize(ctx)
+	require.NoError(t, initErr, "Initialize should succeed")
+	t.Log("Initialize successful")
+
+	// Now cancel the driver context to trigger graceful shutdown
+	t.Log("Cancelling driver context...")
+	driverCancel()
+
+	// Wait for driver to complete
+	driverWg.Wait()
+
+	// Verify no error is returned on context cancellation
+	require.NoError(t, driverErr, "Session driver should return no error on context cancellation")
+	t.Log("Driver returned no error on context cancellation")
+
+	t.Log("Context cancellation test completed successfully!")
 }

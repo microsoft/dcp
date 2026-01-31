@@ -17,12 +17,6 @@ import (
 // The function is called after a successful response is received for a virtual request.
 type syntheticEventGenerator func(request dap.Message, response dap.Message, cache *breakpointCache) []dap.Message
 
-// breakpointKey uniquely identifies a source breakpoint by file path and line number.
-type breakpointKey struct {
-	path string
-	line int
-}
-
 // breakpointInfo stores information about a breakpoint for delta computation.
 type breakpointInfo struct {
 	id       int
@@ -55,20 +49,6 @@ func newBreakpointCache() *breakpointCache {
 		functionBreakpoints:  make(map[string]breakpointInfo),
 		exceptionBreakpoints: make(map[string]breakpointInfo),
 	}
-}
-
-// getSourceBreakpoints returns a copy of the breakpoints for a given source path.
-func (c *breakpointCache) getSourceBreakpoints(path string) map[int]breakpointInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	result := make(map[int]breakpointInfo)
-	if bps, ok := c.sourceBreakpoints[path]; ok {
-		for k, v := range bps {
-			result[k] = v
-		}
-	}
-	return result
 }
 
 // updateSourceBreakpoints updates the cache with new breakpoints for a source.
@@ -121,18 +101,6 @@ func (c *breakpointCache) updateSourceBreakpoints(path string, newBreakpoints []
 	c.sourceBreakpoints[path] = newState
 
 	return newBps, removedBps, changedBps
-}
-
-// getFunctionBreakpoints returns a copy of all function breakpoints.
-func (c *breakpointCache) getFunctionBreakpoints() map[string]breakpointInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	result := make(map[string]breakpointInfo)
-	for k, v := range c.functionBreakpoints {
-		result[k] = v
-	}
-	return result
 }
 
 // updateFunctionBreakpoints updates the cache with new function breakpoints.

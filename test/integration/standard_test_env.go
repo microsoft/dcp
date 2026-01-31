@@ -107,6 +107,7 @@ func StartTestEnvironment(
 				apiv1.ExecutionTypeIDE:     ir,
 			},
 			hpSet,
+			nil, // debugSessions
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)

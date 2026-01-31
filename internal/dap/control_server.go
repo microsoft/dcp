@@ -8,6 +8,7 @@ package dap
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,12 +55,19 @@ type ControlServerConfig struct {
 	// Logger is the logger for the server.
 	Logger logr.Logger
 
+	// SessionMap is the shared session map for pre-registration.
+	// If nil, a new SessionMap is created (for backward compatibility in tests).
+	SessionMap *SessionMap
+
 	// RunInTerminalHandler is called when a proxy sends a RunInTerminal request.
 	// The handler should execute the command and return the result.
 	RunInTerminalHandler func(ctx context.Context, key commonapi.NamespacedNameWithKind, req *proto.RunInTerminalRequest) *proto.RunInTerminalResponse
 
 	// EventHandler is called when a proxy sends a DAP event.
 	EventHandler func(key commonapi.NamespacedNameWithKind, payload []byte)
+
+	// CapabilitiesHandler is called when a proxy sends debug adapter capabilities.
+	CapabilitiesHandler func(key commonapi.NamespacedNameWithKind, capabilitiesJSON []byte)
 }
 
 // ControlServer is a gRPC server that manages DAP proxy sessions.
@@ -96,9 +104,15 @@ func NewControlServer(config ControlServerConfig) *ControlServer {
 		log = logr.Discard()
 	}
 
+	sessions := config.SessionMap
+	if sessions == nil {
+		// Create a new SessionMap for backward compatibility (tests)
+		sessions = NewSessionMap()
+	}
+
 	return &ControlServer{
 		config:          config,
-		sessions:        NewSessionMap(),
+		sessions:        sessions,
 		log:             log,
 		streams:         make(map[string]*sessionStream),
 		pendingRequests: make(map[string]chan *proto.VirtualResponse),
@@ -200,39 +214,74 @@ func (s *ControlServer) DebugSession(stream grpc.BidiStreamingServer[proto.Sessi
 	// Create session context
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 
-	// Register session
-	registerErr := s.sessions.RegisterSession(resourceKey, sessionCancel)
-	if registerErr != nil {
-		sessionCancel()
-		if errors.Is(registerErr, ErrSessionRejected) {
-			s.log.Info("Session rejected: duplicate session", "resource", resourceKey.String())
-			// Send rejection response
-			sendErr := stream.Send(&proto.SessionMessage{
-				Message: &proto.SessionMessage_HandshakeResponse{
-					HandshakeResponse: &proto.HandshakeResponse{
-						Success: ptrBool(false),
-						Error:   ptrString("session already exists for this resource"),
-					},
-				},
-			})
-			if sendErr != nil {
-				s.log.Error(sendErr, "Failed to send handshake rejection")
+	// Try to claim the session; if not registered, try parking
+	var adapterConfig *DebugAdapterConfig
+	claimErr := s.sessions.ClaimSession(resourceKey, sessionCancel)
+	if claimErr != nil {
+		if errors.Is(claimErr, ErrSessionNotPreRegistered) {
+			// Check if session was rejected
+			if reason, rejected := s.sessions.IsSessionRejected(resourceKey); rejected {
+				sessionCancel()
+				s.log.Info("Session rejected", "resource", resourceKey.String(), "reason", reason)
+				sendRejectResponse(stream, reason, s.log)
+				return status.Error(codes.FailedPrecondition, reason)
 			}
-			return status.Error(codes.AlreadyExists, "session already exists for this resource")
+
+			// Park the connection and wait for registration
+			s.log.Info("Session not registered, parking connection", "resource", resourceKey.String())
+			var parkErr error
+			adapterConfig, parkErr = s.sessions.ParkConnection(ctx, resourceKey, DefaultParkingTimeout)
+			if parkErr != nil {
+				sessionCancel()
+				s.log.Info("Session parking failed", "resource", resourceKey.String(), "error", parkErr)
+				sendRejectResponse(stream, parkErr.Error(), s.log)
+				return status.Error(codes.NotFound, parkErr.Error())
+			}
+
+			// Now try to claim the session again
+			claimErr = s.sessions.ClaimSession(resourceKey, sessionCancel)
 		}
-		return fmt.Errorf("failed to register session: %w", registerErr)
+
+		if claimErr != nil {
+			sessionCancel()
+			var errorMsg string
+			var grpcCode codes.Code
+
+			if errors.Is(claimErr, ErrSessionNotPreRegistered) {
+				s.log.Info("Session rejected: not pre-registered", "resource", resourceKey.String())
+				errorMsg = "session not pre-registered for this resource"
+				grpcCode = codes.NotFound
+			} else if errors.Is(claimErr, ErrSessionAlreadyClaimed) {
+				s.log.Info("Session rejected: already claimed", "resource", resourceKey.String())
+				errorMsg = "session already connected for this resource"
+				grpcCode = codes.AlreadyExists
+			} else {
+				errorMsg = "failed to claim session"
+				grpcCode = codes.Internal
+			}
+
+			sendRejectResponse(stream, errorMsg, s.log)
+			return status.Error(grpcCode, errorMsg)
+		}
 	}
 
 	defer func() {
-		s.sessions.DeregisterSession(resourceKey)
+		s.sessions.ReleaseSession(resourceKey)
 		sessionCancel()
 	}()
 
-	// Send handshake response
+	// Get adapter config for this session (if not already from parking)
+	if adapterConfig == nil {
+		adapterConfig = s.sessions.GetAdapterConfig(resourceKey)
+	}
+	protoAdapterConfig := toProtoAdapterConfig(adapterConfig)
+
+	// Send handshake response with adapter config
 	sendErr := stream.Send(&proto.SessionMessage{
 		Message: &proto.SessionMessage_HandshakeResponse{
 			HandshakeResponse: &proto.HandshakeResponse{
-				Success: ptrBool(true),
+				Success:       ptrBool(true),
+				AdapterConfig: protoAdapterConfig,
 			},
 		},
 	})
@@ -309,6 +358,9 @@ func (s *ControlServer) handleSessionMessage(
 		s.sessions.UpdateSessionStatus(key, status, m.StatusUpdate.GetError())
 		s.log.V(1).Info("Session status updated", "resource", key.String(), "status", status.String())
 
+	case *proto.SessionMessage_CapabilitiesUpdate:
+		s.handleCapabilitiesUpdate(key, m.CapabilitiesUpdate)
+
 	default:
 		s.log.Info("Unexpected message type from proxy", "type", fmt.Sprintf("%T", msg.Message))
 	}
@@ -375,6 +427,32 @@ func (s *ControlServer) handleRunInTerminalRequest(
 	})
 	if sendErr != nil {
 		s.log.Error(sendErr, "Failed to send RunInTerminal response", "resource", key.String())
+	}
+}
+
+// handleCapabilitiesUpdate processes a capabilities update from a proxy.
+func (s *ControlServer) handleCapabilitiesUpdate(
+	key commonapi.NamespacedNameWithKind,
+	update *proto.CapabilitiesUpdate,
+) {
+	s.log.V(1).Info("Received capabilities update",
+		"resource", key.String(),
+		"size", len(update.GetCapabilitiesJson()))
+
+	// Parse and store capabilities in session map
+	capabilitiesJSON := update.GetCapabilitiesJson()
+	if len(capabilitiesJSON) > 0 {
+		var capabilities map[string]interface{}
+		if err := json.Unmarshal(capabilitiesJSON, &capabilities); err == nil {
+			s.sessions.SetCapabilities(key, capabilities)
+		} else {
+			s.log.Error(err, "Failed to parse capabilities JSON", "resource", key.String())
+		}
+	}
+
+	// Call handler if configured
+	if s.config.CapabilitiesHandler != nil {
+		s.config.CapabilitiesHandler(key, capabilitiesJSON)
 	}
 }
 
@@ -492,4 +570,19 @@ func (s *ControlServer) GetSessionStatus(key commonapi.NamespacedNameWithKind) *
 // SessionEvents returns a channel that receives session lifecycle events.
 func (s *ControlServer) SessionEvents() <-chan SessionEvent {
 	return s.sessions.SessionEvents()
+}
+
+// sendRejectResponse sends a handshake rejection response on the stream.
+func sendRejectResponse(stream grpc.BidiStreamingServer[proto.SessionMessage, proto.SessionMessage], errorMsg string, log logr.Logger) {
+	sendErr := stream.Send(&proto.SessionMessage{
+		Message: &proto.SessionMessage_HandshakeResponse{
+			HandshakeResponse: &proto.HandshakeResponse{
+				Success: ptrBool(false),
+				Error:   ptrString(errorMsg),
+			},
+		},
+	})
+	if sendErr != nil {
+		log.Error(sendErr, "Failed to send handshake rejection")
+	}
 }

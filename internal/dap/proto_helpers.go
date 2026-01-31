@@ -6,6 +6,8 @@
 package dap
 
 import (
+	"time"
+
 	"github.com/microsoft/dcp/internal/dap/proto"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -105,4 +107,99 @@ func FromDebugSessionStatus(status DebugSessionStatus) *proto.DebugSessionStatus
 		ps = proto.DebugSessionStatus_DEBUG_SESSION_STATUS_UNSPECIFIED
 	}
 	return &ps
+}
+
+// toProtoAdapterConfig converts a DebugAdapterConfig to a proto.DebugAdapterConfig.
+func toProtoAdapterConfig(config *DebugAdapterConfig) *proto.DebugAdapterConfig {
+	if config == nil {
+		return nil
+	}
+
+	protoConfig := &proto.DebugAdapterConfig{
+		Args: config.Args,
+		Mode: toProtoAdapterMode(config.Mode),
+	}
+
+	// Convert environment variables
+	if len(config.Env) > 0 {
+		protoConfig.Env = make([]*proto.EnvVar, len(config.Env))
+		for i, ev := range config.Env {
+			protoConfig.Env[i] = &proto.EnvVar{
+				Name:  ptrString(ev.Name),
+				Value: ptrString(ev.Value),
+			}
+		}
+	}
+
+	// Convert connection timeout
+	if config.ConnectionTimeout > 0 {
+		protoConfig.ConnectionTimeoutSeconds = ptrInt32(int32(config.ConnectionTimeout.Seconds()))
+	}
+
+	return protoConfig
+}
+
+// toProtoAdapterMode converts a DebugAdapterMode to a proto.DebugAdapterMode pointer.
+func toProtoAdapterMode(mode DebugAdapterMode) *proto.DebugAdapterMode {
+	var pm proto.DebugAdapterMode
+	switch mode {
+	case DebugAdapterModeStdio:
+		pm = proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_STDIO
+	case DebugAdapterModeTCPCallback:
+		pm = proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_TCP_CALLBACK
+	case DebugAdapterModeTCPConnect:
+		pm = proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_TCP_CONNECT
+	default:
+		pm = proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_UNSPECIFIED
+	}
+	return &pm
+}
+
+// FromProtoAdapterConfig converts a proto.DebugAdapterConfig to a DebugAdapterConfig.
+func FromProtoAdapterConfig(config *proto.DebugAdapterConfig) *DebugAdapterConfig {
+	if config == nil {
+		return nil
+	}
+
+	result := &DebugAdapterConfig{
+		Args: config.GetArgs(),
+		Mode: fromProtoAdapterMode(config.GetMode()),
+	}
+
+	// Convert environment variables
+	if len(config.GetEnv()) > 0 {
+		result.Env = make([]EnvVar, len(config.GetEnv()))
+		for i, ev := range config.GetEnv() {
+			result.Env[i] = EnvVar{
+				Name:  ev.GetName(),
+				Value: ev.GetValue(),
+			}
+		}
+	}
+
+	// Convert connection timeout
+	if config.GetConnectionTimeoutSeconds() > 0 {
+		result.ConnectionTimeout = time.Duration(config.GetConnectionTimeoutSeconds()) * time.Second
+	}
+
+	return result
+}
+
+// fromProtoAdapterMode converts a proto.DebugAdapterMode to a DebugAdapterMode.
+func fromProtoAdapterMode(mode proto.DebugAdapterMode) DebugAdapterMode {
+	switch mode {
+	case proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_STDIO:
+		return DebugAdapterModeStdio
+	case proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_TCP_CALLBACK:
+		return DebugAdapterModeTCPCallback
+	case proto.DebugAdapterMode_DEBUG_ADAPTER_MODE_TCP_CONNECT:
+		return DebugAdapterModeTCPConnect
+	default:
+		return DebugAdapterModeStdio
+	}
+}
+
+// ptrInt32 returns a pointer to the given int32.
+func ptrInt32(i int32) *int32 {
+	return &i
 }

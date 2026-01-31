@@ -8,6 +8,8 @@ package dap
 import (
 	"context"
 	"errors"
+	"os/exec"
+	"strings"
 
 	"github.com/go-logr/logr"
 )
@@ -57,6 +59,8 @@ func IsProxyError(err error) bool {
 // filterContextError filters out redundant context errors during shutdown.
 // If the error is a context.Canceled or context.DeadlineExceeded and the
 // context is already done, the error is logged at debug level and nil is returned.
+// Additionally, if the error is from a process killed due to context cancellation
+// (e.g., "signal: killed"), it is also filtered out.
 // Otherwise, the original error is returned unchanged.
 //
 // This is useful when aggregating errors during shutdown to avoid including
@@ -66,10 +70,19 @@ func filterContextError(err error, ctx context.Context, log logr.Logger) error {
 		return nil
 	}
 
-	// Check if this is a context error and the context is done
+	// Check if the context is done
 	if ctx.Err() != nil {
+		// Filter standard context errors
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			log.V(1).Info("Filtering redundant context error", "error", err)
+			return nil
+		}
+
+		// Filter exec.ExitError with "signal: killed" since this is expected when
+		// a process is killed due to context cancellation
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && strings.Contains(exitErr.Error(), "signal: killed") {
+			log.V(1).Info("Filtering process killed error on context cancellation", "error", err)
 			return nil
 		}
 	}
