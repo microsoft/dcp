@@ -101,6 +101,20 @@ type Proxy struct {
 
 	// mu protects started flag
 	mu sync.Mutex
+
+	// === Virtual request event handling ===
+
+	// virtualRequestMu protects virtual request state
+	virtualRequestMu sync.Mutex
+
+	// virtualRequestActive is true while a state-changing virtual request is in progress
+	virtualRequestActive bool
+
+	// bufferedEvents holds events received while a virtual request is active
+	bufferedEvents []dap.Message
+
+	// breakpointCache tracks breakpoint state for delta computation
+	breakpointCache *breakpointCache
 }
 
 // NewProxy creates a new DAP proxy with the given transports and configuration.
@@ -136,6 +150,7 @@ func NewProxy(upstream, downstream Transport, config ProxyConfig) *Proxy {
 		deduplicator:    newEventDeduplicator(dedupWindow),
 		requestTimeout:  config.RequestTimeout,
 		log:             log,
+		breakpointCache: newBreakpointCache(),
 	}
 }
 
@@ -486,6 +501,16 @@ func (p *Proxy) handleAdapterResponseMessage(fullMsg dap.Message, resp *dap.Resp
 // handleAdapterEventMessage processes an event from the debug adapter.
 // The fullMsg is the complete typed message, and event is the embedded Event.
 func (p *Proxy) handleAdapterEventMessage(fullMsg dap.Message, event *dap.Event) {
+	// Check if we should buffer this event due to an active virtual request
+	p.virtualRequestMu.Lock()
+	if p.virtualRequestActive {
+		p.log.V(1).Info("Buffering event during virtual request", "event", event.Event)
+		p.bufferedEvents = append(p.bufferedEvents, fullMsg)
+		p.virtualRequestMu.Unlock()
+		return
+	}
+	p.virtualRequestMu.Unlock()
+
 	// Check for deduplication
 	if p.deduplicator.ShouldSuppress(fullMsg) {
 		p.log.V(1).Info("Suppressing duplicate event", "event", event.Event)
@@ -553,6 +578,10 @@ func (p *Proxy) downstreamWriter() error {
 
 // SendRequest sends a virtual request to the debug adapter and waits for the response.
 // This method blocks until a response is received or the context is cancelled.
+// For state-changing commands, this method will:
+// 1. Block downstream events during the request
+// 2. Generate synthetic events on successful response
+// 3. Flush any buffered events after synthetic events
 func (p *Proxy) SendRequest(ctx context.Context, request dap.Message) (dap.Message, error) {
 	p.mu.Lock()
 	if !p.started {
@@ -580,6 +609,17 @@ func (p *Proxy) SendRequest(ctx context.Context, request dap.Message) (dap.Messa
 		return nil, fmt.Errorf("expected request message, got %T", request)
 	}
 
+	// Check if this is a state-changing command
+	isStateChanging := isStateChangingCommand(req.Command)
+
+	// If state-changing, activate event blocking
+	if isStateChanging {
+		p.virtualRequestMu.Lock()
+		p.virtualRequestActive = true
+		p.bufferedEvents = nil // Clear any stale buffered events
+		p.virtualRequestMu.Unlock()
+	}
+
 	virtualSeq := p.adapterSeq.Next()
 	originalSeq := req.Seq
 	req.Seq = virtualSeq
@@ -594,16 +634,23 @@ func (p *Proxy) SendRequest(ctx context.Context, request dap.Message) (dap.Messa
 
 	p.log.V(1).Info("Sending virtual request",
 		"command", req.Command,
-		"virtualSeq", virtualSeq)
+		"virtualSeq", virtualSeq,
+		"stateChanging", isStateChanging)
 
 	// Send to adapter
 	select {
 	case p.downstreamQueue <- request:
 	case <-ctx.Done():
-		// Clean up pending request
+		// Clean up pending request and release event blocking
 		p.pendingRequests.Get(virtualSeq)
+		if isStateChanging {
+			p.releaseEventBlocking()
+		}
 		return nil, ctx.Err()
 	case <-p.ctx.Done():
+		if isStateChanging {
+			p.releaseEventBlocking()
+		}
 		return nil, ErrProxyClosed
 	}
 
@@ -616,22 +663,40 @@ func (p *Proxy) SendRequest(ctx context.Context, request dap.Message) (dap.Messa
 	}
 
 	// Wait for response
+	var response dap.Message
+	var responseErr error
+
 	select {
-	case response, ok := <-responseChan:
+	case resp, ok := <-responseChan:
 		if !ok {
-			return nil, ErrProxyClosed
+			responseErr = ErrProxyClosed
+		} else {
+			response = resp
 		}
-		return response, nil
 	case <-waitCtx.Done():
 		// Clean up pending request if still there
 		p.pendingRequests.Get(virtualSeq)
 		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
-			return nil, ErrRequestTimeout
+			responseErr = ErrRequestTimeout
+		} else {
+			responseErr = waitCtx.Err()
 		}
-		return nil, waitCtx.Err()
 	case <-p.ctx.Done():
-		return nil, ErrProxyClosed
+		responseErr = ErrProxyClosed
 	}
+
+	// Handle state-changing command completion
+	if isStateChanging {
+		if responseErr != nil {
+			// On error, just release blocking and flush buffered events
+			p.releaseEventBlocking()
+		} else {
+			// On success, generate synthetic events and then flush buffered
+			p.handleVirtualRequestCompletion(request, response)
+		}
+	}
+
+	return response, responseErr
 }
 
 // SendRequestAsync sends a virtual request to the debug adapter asynchronously.
@@ -739,4 +804,63 @@ func (p *Proxy) Stop() {
 		p.cancel()
 	}
 	p.mu.Unlock()
+}
+
+// releaseEventBlocking releases the virtual request event blocking and flushes buffered events.
+func (p *Proxy) releaseEventBlocking() {
+	p.virtualRequestMu.Lock()
+	buffered := p.bufferedEvents
+	p.bufferedEvents = nil
+	p.virtualRequestActive = false
+	p.virtualRequestMu.Unlock()
+
+	// Flush buffered events to IDE
+	for _, event := range buffered {
+		// Check for deduplication before forwarding
+		if eventMsg, ok := event.(dap.EventMessage); ok {
+			if p.deduplicator.ShouldSuppress(event) {
+				p.log.V(1).Info("Suppressing buffered duplicate event", "event", eventMsg.GetEvent().Event)
+				continue
+			}
+		}
+		p.forwardToIDE(event)
+	}
+}
+
+// handleVirtualRequestCompletion handles the completion of a state-changing virtual request.
+// It generates synthetic events and then flushes buffered events.
+func (p *Proxy) handleVirtualRequestCompletion(request dap.Message, response dap.Message) {
+	// Generate synthetic events
+	syntheticEvents := getSyntheticEvents(request, response, p.breakpointCache)
+
+	// Log synthetic events being generated
+	for _, event := range syntheticEvents {
+		p.log.V(1).Info("Generating synthetic event", "type", debugEventType(event))
+	}
+
+	// Get buffered events and release blocking
+	p.virtualRequestMu.Lock()
+	buffered := p.bufferedEvents
+	p.bufferedEvents = nil
+	p.virtualRequestActive = false
+	p.virtualRequestMu.Unlock()
+
+	// Send synthetic events first
+	for _, event := range syntheticEvents {
+		// Record for deduplication so matching adapter events will be suppressed
+		p.deduplicator.RecordVirtualEvent(event)
+		p.forwardToIDE(event)
+	}
+
+	// Then flush buffered events
+	for _, event := range buffered {
+		// Check for deduplication before forwarding
+		if eventMsg, ok := event.(dap.EventMessage); ok {
+			if p.deduplicator.ShouldSuppress(event) {
+				p.log.V(1).Info("Suppressing buffered duplicate event", "event", eventMsg.GetEvent().Event)
+				continue
+			}
+		}
+		p.forwardToIDE(event)
+	}
 }

@@ -1050,8 +1050,8 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 		continueResp.Response.Success, continueResp.Body.AllThreadsContinued)
 
 	// === Collect and validate event ordering ===
-	// After a Continue, DAP specifies: ContinuedEvent (optional) then StoppedEvent
-	// We collect all events until we receive the stopped event and verify the order
+	// After a virtual Continue request, the proxy should generate a synthetic ContinuedEvent
+	// followed by the StoppedEvent from hitting the next breakpoint
 	t.Log("Collecting events until stopped...")
 	events, collectErr := testClient.CollectEventsUntil("stopped", 10*time.Second)
 	require.NoError(t, collectErr, "Should receive stopped event")
@@ -1074,15 +1074,13 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 		}
 	}
 
-	// Validate: if a continued event was received, it must come before stopped
-	if continuedEventIndex >= 0 {
-		t.Logf("Continued event at index %d, Stopped event at index %d", continuedEventIndex, stoppedEventIndex)
-		assert.Less(t, continuedEventIndex, stoppedEventIndex,
-			"Continued event should arrive before Stopped event")
-		t.Log("✓ Event ordering verified: continued before stopped")
-	} else {
-		t.Log("Note: No continued event received (Delve may not send it in all cases)")
-	}
+	// The proxy should generate a synthetic ContinuedEvent for virtual Continue requests
+	require.GreaterOrEqual(t, continuedEventIndex, 0,
+		"Proxy should generate synthetic ContinuedEvent for virtual Continue request")
+	t.Logf("Continued event at index %d, Stopped event at index %d", continuedEventIndex, stoppedEventIndex)
+	assert.Less(t, continuedEventIndex, stoppedEventIndex,
+		"Continued event should arrive before Stopped event")
+	t.Log("✓ Event ordering verified: continued before stopped")
 
 	// Extract the stopped event for further use
 	stoppedEvent2, ok := events[len(events)-1].(*dap.StoppedEvent)
@@ -1120,6 +1118,306 @@ func TestGRPC_E2E_VirtualContinueRequest(t *testing.T) {
 	driverWg.Wait()
 
 	t.Log("Virtual Continue request test completed successfully!")
+}
+
+// TestGRPC_E2E_VirtualSetBreakpoints tests that virtual setBreakpoints requests
+// generate synthetic BreakpointEvents for added, removed, and changed breakpoints.
+func TestGRPC_E2E_VirtualSetBreakpoints(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 60*time.Second)
+	defer cancel()
+
+	// Start Delve
+	delve, startErr := startDelve(ctx, t)
+	if startErr != nil {
+		t.Fatalf("Failed to start Delve: %v", startErr)
+	}
+	defer delve.cleanup()
+
+	// Setup gRPC server
+	grpcListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("Failed to create gRPC listener: %v", listenErr)
+	}
+
+	testLog := testutil.NewLogForTesting("grpc-server")
+	server := NewControlServer(ControlServerConfig{
+		Listener:    grpcListener,
+		BearerToken: "test-token",
+		Logger:      testLog,
+	})
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		_ = server.Start(ctx)
+	}()
+	defer func() {
+		server.Stop()
+		serverWg.Wait()
+	}()
+
+	// Wait for gRPC server to be ready
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		conn, dialErr := net.DialTimeout("tcp", grpcListener.Addr().String(), 50*time.Millisecond)
+		if dialErr != nil {
+			return false, nil
+		}
+		conn.Close()
+		return true, nil
+	})
+	require.NoError(t, waitErr, "gRPC server should be ready")
+
+	// Setup resource key
+	resourceKey := commonapi.NamespacedNameWithKind{
+		NamespacedName: types.NamespacedName{
+			Namespace: "test-ns",
+			Name:      "virtual-breakpoints-test",
+		},
+		Kind: schema.GroupVersionKind{
+			Group:   "dcp.io",
+			Version: "v1",
+			Kind:    "Executable",
+		},
+	}
+
+	// Setup proxy infrastructure
+	upstreamListener, upListenErr := net.Listen("tcp", "127.0.0.1:0")
+	if upListenErr != nil {
+		t.Fatalf("Failed to create upstream listener: %v", upListenErr)
+	}
+	defer upstreamListener.Close()
+
+	downstreamConn, dialErr := net.Dial("tcp", delve.addr)
+	if dialErr != nil {
+		t.Fatalf("Failed to connect to Delve: %v", dialErr)
+	}
+	downstreamTransport := NewTCPTransport(downstreamConn)
+
+	var upstreamConn net.Conn
+	var acceptWg sync.WaitGroup
+	acceptWg.Add(1)
+	go func() {
+		defer acceptWg.Done()
+		upstreamConn, _ = upstreamListener.Accept()
+	}()
+
+	clientConn, clientDialErr := net.Dial("tcp", upstreamListener.Addr().String())
+	if clientDialErr != nil {
+		t.Fatalf("Failed to connect client: %v", clientDialErr)
+	}
+	clientTransport := NewTCPTransport(clientConn)
+	testClient := NewTestClient(clientTransport)
+	defer testClient.Close()
+
+	acceptWg.Wait()
+	upstreamTransport := NewTCPTransport(upstreamConn)
+
+	proxy := NewProxy(upstreamTransport, downstreamTransport, ProxyConfig{
+		Logger: testutil.NewLogForTesting("proxy"),
+	})
+
+	controlClient := NewControlClient(ControlClientConfig{
+		Endpoint:    grpcListener.Addr().String(),
+		BearerToken: "test-token",
+		ResourceKey: resourceKey,
+		Logger:      testutil.NewLogForTesting("client"),
+	})
+
+	driver := NewSessionDriver(proxy, controlClient, testutil.NewLogForTesting("driver"))
+
+	var driverWg sync.WaitGroup
+	driverWg.Add(1)
+	go func() {
+		defer driverWg.Done()
+		_ = driver.Run(ctx)
+	}()
+
+	// Wait for session to be registered
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		return server.GetSessionStatus(resourceKey) != nil, nil
+	})
+	require.NoError(t, waitErr, "Session should be registered")
+
+	// Get debuggee paths
+	debuggeeDir := getDebuggeeDir(t)
+	debuggeeBinary := getDebuggeeBinary(t)
+	debuggeeSource := filepath.Join(debuggeeDir, "debuggee.go")
+
+	// === Initialize debug session ===
+	t.Log("Initializing debug session...")
+	_, initErr := testClient.Initialize(ctx)
+	require.NoError(t, initErr, "Initialize should succeed")
+
+	_, _ = testClient.WaitForEvent("initialized", 2*time.Second)
+
+	// Launch
+	t.Log("Launching debuggee...")
+	launchErr := testClient.Launch(ctx, debuggeeBinary, false)
+	require.NoError(t, launchErr, "Launch should succeed")
+
+	// Configuration done (no breakpoints yet)
+	t.Log("Sending configurationDone...")
+	configErr := testClient.ConfigurationDone(ctx)
+	require.NoError(t, configErr, "ConfigurationDone should succeed")
+
+	// === Test 1: Add breakpoints via virtual request ===
+	t.Log("Test 1: Adding breakpoints via virtual request...")
+	setBpReq := &dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Type: "request",
+			},
+			Command: "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{
+				Path: debuggeeSource,
+			},
+			Breakpoints: []dap.SourceBreakpoint{
+				{Line: 18},
+				{Line: 26},
+			},
+		},
+	}
+	setBpPayload, _ := json.Marshal(setBpReq)
+
+	setBpRespPayload, virtualErr := server.SendVirtualRequest(ctx, resourceKey, setBpPayload, 5*time.Second)
+	require.NoError(t, virtualErr, "Virtual setBreakpoints should succeed")
+
+	var setBpResp dap.SetBreakpointsResponse
+	parseErr := json.Unmarshal(setBpRespPayload, &setBpResp)
+	require.NoError(t, parseErr, "Should parse setBreakpoints response")
+	assert.True(t, setBpResp.Response.Success, "SetBreakpoints should succeed")
+	require.Len(t, setBpResp.Body.Breakpoints, 2, "Should have 2 breakpoints")
+	t.Logf("Added breakpoints: line %d (id=%d), line %d (id=%d)",
+		setBpResp.Body.Breakpoints[0].Line, setBpResp.Body.Breakpoints[0].Id,
+		setBpResp.Body.Breakpoints[1].Line, setBpResp.Body.Breakpoints[1].Id)
+
+	// Collect any breakpoint events that were generated
+	// The proxy should have generated "new" events for both breakpoints
+	var bpEvents []*dap.BreakpointEvent
+	for {
+		event, eventErr := testClient.WaitForEvent("breakpoint", 500*time.Millisecond)
+		if eventErr != nil {
+			break // No more events
+		}
+		if bpEvent, ok := event.(*dap.BreakpointEvent); ok {
+			bpEvents = append(bpEvents, bpEvent)
+			t.Logf("Received BreakpointEvent: reason=%s, id=%d, line=%d",
+				bpEvent.Body.Reason, bpEvent.Body.Breakpoint.Id, bpEvent.Body.Breakpoint.Line)
+		}
+	}
+
+	// Verify we got "new" events for the added breakpoints
+	require.Len(t, bpEvents, 2, "Should receive 2 breakpoint events for added breakpoints")
+	for _, evt := range bpEvents {
+		assert.Equal(t, "new", evt.Body.Reason, "Event reason should be 'new' for added breakpoints")
+	}
+
+	// === Test 2: Remove a breakpoint via virtual request ===
+	t.Log("Test 2: Removing a breakpoint via virtual request...")
+	removeBpReq := &dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Type: "request",
+			},
+			Command: "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{
+				Path: debuggeeSource,
+			},
+			Breakpoints: []dap.SourceBreakpoint{
+				{Line: 18}, // Keep only line 18, remove line 26
+			},
+		},
+	}
+	removeBpPayload, _ := json.Marshal(removeBpReq)
+
+	removeBpRespPayload, removeErr := server.SendVirtualRequest(ctx, resourceKey, removeBpPayload, 5*time.Second)
+	require.NoError(t, removeErr, "Virtual setBreakpoints (remove) should succeed")
+
+	var removeBpResp dap.SetBreakpointsResponse
+	parseRemoveErr := json.Unmarshal(removeBpRespPayload, &removeBpResp)
+	require.NoError(t, parseRemoveErr, "Should parse setBreakpoints response")
+	require.Len(t, removeBpResp.Body.Breakpoints, 1, "Should have 1 breakpoint")
+	t.Logf("Remaining breakpoint: line %d", removeBpResp.Body.Breakpoints[0].Line)
+
+	// Collect breakpoint events - should get a "removed" event
+	bpEvents = nil
+	for {
+		event, eventErr := testClient.WaitForEvent("breakpoint", 500*time.Millisecond)
+		if eventErr != nil {
+			break
+		}
+		if bpEvent, ok := event.(*dap.BreakpointEvent); ok {
+			bpEvents = append(bpEvents, bpEvent)
+			t.Logf("Received BreakpointEvent: reason=%s, id=%d, line=%d",
+				bpEvent.Body.Reason, bpEvent.Body.Breakpoint.Id, bpEvent.Body.Breakpoint.Line)
+		}
+	}
+
+	// Verify we got a "removed" event
+	require.Len(t, bpEvents, 1, "Should receive 1 breakpoint event for removed breakpoint")
+	assert.Equal(t, "removed", bpEvents[0].Body.Reason, "Event reason should be 'removed'")
+	assert.Equal(t, 26, bpEvents[0].Body.Breakpoint.Line, "Removed breakpoint should be on line 26")
+
+	// === Test 3: Clear all breakpoints via virtual request ===
+	t.Log("Test 3: Clearing all breakpoints via virtual request...")
+	clearBpReq := &dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Type: "request",
+			},
+			Command: "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source: dap.Source{
+				Path: debuggeeSource,
+			},
+			Breakpoints: []dap.SourceBreakpoint{}, // Empty list
+		},
+	}
+	clearBpPayload, _ := json.Marshal(clearBpReq)
+
+	clearBpRespPayload, clearErr := server.SendVirtualRequest(ctx, resourceKey, clearBpPayload, 5*time.Second)
+	require.NoError(t, clearErr, "Virtual setBreakpoints (clear) should succeed")
+
+	var clearBpResp dap.SetBreakpointsResponse
+	parseClearErr := json.Unmarshal(clearBpRespPayload, &clearBpResp)
+	require.NoError(t, parseClearErr, "Should parse setBreakpoints response")
+	assert.Empty(t, clearBpResp.Body.Breakpoints, "Should have no breakpoints")
+
+	// Collect breakpoint events - should get a "removed" event for line 18
+	bpEvents = nil
+	for {
+		event, eventErr := testClient.WaitForEvent("breakpoint", 500*time.Millisecond)
+		if eventErr != nil {
+			break
+		}
+		if bpEvent, ok := event.(*dap.BreakpointEvent); ok {
+			bpEvents = append(bpEvents, bpEvent)
+			t.Logf("Received BreakpointEvent: reason=%s, id=%d, line=%d",
+				bpEvent.Body.Reason, bpEvent.Body.Breakpoint.Id, bpEvent.Body.Breakpoint.Line)
+		}
+	}
+
+	require.Len(t, bpEvents, 1, "Should receive 1 breakpoint event for removed breakpoint")
+	assert.Equal(t, "removed", bpEvents[0].Body.Reason, "Event reason should be 'removed'")
+	assert.Equal(t, 18, bpEvents[0].Body.Breakpoint.Line, "Removed breakpoint should be on line 18")
+
+	// Cleanup - disconnect
+	t.Log("Disconnecting...")
+	disconnCtx, disconnCancel := context.WithTimeout(ctx, 2*time.Second)
+	_ = testClient.Disconnect(disconnCtx, true) // terminateDebuggee=true to end the session
+	disconnCancel()
+
+	// Cleanup
+	cancel()
+	driverWg.Wait()
+
+	t.Log("Virtual setBreakpoints test completed successfully!")
 }
 
 // TestGRPC_E2E_SessionRejectionOnDuplicate tests that duplicate sessions are rejected.
