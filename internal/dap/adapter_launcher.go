@@ -210,7 +210,7 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 		"args", config.Args[1:],
 		"pid", pid)
 
-	adapter.Transport = NewStdioTransport(stdout, stdin)
+	adapter.Transport = NewStdioTransportWithContext(ctx, stdout, stdin)
 	adapter.pid = pid
 	adapter.startTime = startTime
 
@@ -324,7 +324,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 		return nil, ctx.Err()
 	}
 
-	adapter.Transport = NewTCPTransport(conn)
+	adapter.Transport = NewTCPTransportWithContext(ctx, conn)
 	return adapter, nil
 }
 
@@ -429,7 +429,7 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 
 	log.Info("Connected to debug adapter", "address", addr)
 
-	adapter.Transport = NewTCPTransport(conn)
+	adapter.Transport = NewTCPTransportWithContext(ctx, conn)
 	return adapter, nil
 }
 

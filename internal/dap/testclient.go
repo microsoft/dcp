@@ -409,6 +409,9 @@ func (c *TestClient) CollectEventsUntil(targetEventType string, timeout time.Dur
 // Close closes the client and its transport.
 func (c *TestClient) Close() error {
 	c.cancel()
+	// Close the transport first to unblock any pending reads
+	closeErr := c.transport.Close()
+	// Then wait for goroutines to finish
 	c.wg.Wait()
-	return c.transport.Close()
+	return closeErr
 }

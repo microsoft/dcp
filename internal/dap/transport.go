@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/google/go-dap"
+	dcpio "github.com/microsoft/dcp/pkg/io"
 )
 
 // Transport provides an abstraction for DAP message I/O over different connection types.
@@ -40,6 +41,7 @@ type tcpTransport struct {
 	conn   net.Conn
 	reader *bufio.Reader
 	writer *bufio.Writer
+	ctx    context.Context
 
 	// writeMu protects concurrent writes to the connection
 	writeMu sync.Mutex
@@ -50,15 +52,31 @@ type tcpTransport struct {
 }
 
 // NewTCPTransport creates a new Transport backed by a TCP connection.
+// This constructor creates a transport without context cancellation support.
+// Use NewTCPTransportWithContext for context-aware transports.
 func NewTCPTransport(conn net.Conn) Transport {
+	return NewTCPTransportWithContext(context.Background(), conn)
+}
+
+// NewTCPTransportWithContext creates a new Transport backed by a TCP connection
+// that respects context cancellation. When the context is cancelled, any blocked
+// reads will be unblocked by closing the connection.
+func NewTCPTransportWithContext(ctx context.Context, conn net.Conn) Transport {
+	// Use ContextReader with leverageReadCloser=true so the connection is closed
+	// when the context is cancelled, unblocking any pending reads.
+	contextReader := dcpio.NewContextReader(ctx, conn, true)
+
 	return &tcpTransport{
 		conn:   conn,
-		reader: bufio.NewReader(conn),
+		reader: bufio.NewReader(contextReader),
 		writer: bufio.NewWriter(conn),
+		ctx:    ctx,
 	}
 }
 
 // DialTCP establishes a TCP connection to the specified address and returns a Transport.
+// The returned transport respects context cancellation - when the context is cancelled,
+// any blocked reads will be unblocked.
 func DialTCP(ctx context.Context, address string) (Transport, error) {
 	var d net.Dialer
 	conn, dialErr := d.DialContext(ctx, "tcp", address)
@@ -66,7 +84,7 @@ func DialTCP(ctx context.Context, address string) (Transport, error) {
 		return nil, fmt.Errorf("failed to dial TCP %s: %w", address, dialErr)
 	}
 
-	return NewTCPTransport(conn), nil
+	return NewTCPTransportWithContext(ctx, conn), nil
 }
 
 func (t *tcpTransport) ReadMessage() (dap.Message, error) {
@@ -127,6 +145,7 @@ type stdioTransport struct {
 	writer *bufio.Writer
 	stdin  io.ReadCloser
 	stdout io.WriteCloser
+	ctx    context.Context
 
 	// writeMu protects concurrent writes
 	writeMu sync.Mutex
@@ -138,12 +157,26 @@ type stdioTransport struct {
 
 // NewStdioTransport creates a new Transport backed by stdin and stdout streams.
 // The caller is responsible for ensuring that stdin supports reading and stdout supports writing.
+// This constructor creates a transport without context cancellation support.
+// Use NewStdioTransportWithContext for context-aware transports.
 func NewStdioTransport(stdin io.ReadCloser, stdout io.WriteCloser) Transport {
+	return NewStdioTransportWithContext(context.Background(), stdin, stdout)
+}
+
+// NewStdioTransportWithContext creates a new Transport backed by stdin and stdout streams
+// that respects context cancellation. When the context is cancelled, any blocked
+// reads will be unblocked by closing the stdin stream.
+func NewStdioTransportWithContext(ctx context.Context, stdin io.ReadCloser, stdout io.WriteCloser) Transport {
+	// Use ContextReader with leverageReadCloser=true so stdin is closed
+	// when the context is cancelled, unblocking any pending reads.
+	contextReader := dcpio.NewContextReader(ctx, stdin, true)
+
 	return &stdioTransport{
-		reader: bufio.NewReader(stdin),
+		reader: bufio.NewReader(contextReader),
 		writer: bufio.NewWriter(stdout),
 		stdin:  stdin,
 		stdout: stdout,
+		ctx:    ctx,
 	}
 }
 
