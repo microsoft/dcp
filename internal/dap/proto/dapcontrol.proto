@@ -1,0 +1,164 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See LICENSE in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+edition = "2023";
+
+package dapcontrol;
+
+option go_package = "github.com/microsoft/dcp/internal/dap/proto";
+
+// ResourceIdentifier uniquely identifies a DCP resource.
+// Maps to commonapi.NamespacedNameWithKind in Go.
+message ResourceIdentifier {
+  string namespace = 1;
+  string name = 2;
+  string group = 3;
+  string version = 4;
+  string kind = 5;
+}
+
+// DebugSessionStatus represents the current state of a debug session.
+enum DebugSessionStatus {
+  DEBUG_SESSION_STATUS_UNSPECIFIED = 0;
+  DEBUG_SESSION_STATUS_CONNECTING = 1;
+  DEBUG_SESSION_STATUS_INITIALIZING = 2;
+  DEBUG_SESSION_STATUS_ATTACHED = 3;
+  DEBUG_SESSION_STATUS_STOPPED = 4;
+  DEBUG_SESSION_STATUS_TERMINATED = 5;
+  DEBUG_SESSION_STATUS_ERROR = 6;
+}
+
+// SessionMessage is the bidirectional message type for the DebugSession stream.
+message SessionMessage {
+  oneof message {
+    // Handshake is sent by the client to identify the resource being debugged.
+    Handshake handshake = 1;
+
+    // VirtualRequest is sent by the server to inject a DAP request.
+    VirtualRequest virtual_request = 2;
+
+    // VirtualResponse is sent by the client in response to a VirtualRequest.
+    VirtualResponse virtual_response = 3;
+
+    // Event is sent by the client to forward DAP events to the server.
+    Event event = 4;
+
+    // RunInTerminalRequest is sent by the client when the debug adapter
+    // requests to run a command in a terminal.
+    RunInTerminalRequest run_in_terminal_request = 5;
+
+    // RunInTerminalResponse is sent by the server in response to RunInTerminalRequest.
+    RunInTerminalResponse run_in_terminal_response = 6;
+
+    // StatusUpdate is sent by the client to report debug session status changes.
+    StatusUpdate status_update = 7;
+
+    // Terminate is sent by the server to signal that the session should end.
+    Terminate terminate = 8;
+
+    // HandshakeResponse is sent by the server to acknowledge the handshake.
+    HandshakeResponse handshake_response = 9;
+  }
+}
+
+// Handshake identifies the resource being debugged.
+message Handshake {
+  ResourceIdentifier resource = 1;
+}
+
+// HandshakeResponse acknowledges a successful handshake or reports an error.
+message HandshakeResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// VirtualRequest contains a DAP request to be sent to the debug adapter.
+message VirtualRequest {
+  // Unique identifier for correlating request/response pairs.
+  string request_id = 1;
+
+  // JSON-encoded DAP request message.
+  bytes payload = 2;
+
+  // Timeout in milliseconds for the request. Zero means no timeout.
+  int64 timeout_ms = 3;
+}
+
+// VirtualResponse contains the response to a VirtualRequest.
+message VirtualResponse {
+  // The request_id from the corresponding VirtualRequest.
+  string request_id = 1;
+
+  // JSON-encoded DAP response message. Empty if error is set.
+  bytes payload = 2;
+
+  // Error message if the request failed. Empty on success.
+  string error = 3;
+}
+
+// Event contains a DAP event being forwarded to the server.
+message Event {
+  // JSON-encoded DAP event message.
+  bytes payload = 1;
+}
+
+// RunInTerminalRequest is sent when the debug adapter requests terminal execution.
+message RunInTerminalRequest {
+  // Unique identifier for correlating request/response pairs.
+  string request_id = 1;
+
+  // The kind of terminal to use: "integrated" or "external".
+  string kind = 2;
+
+  // Optional title for the terminal.
+  string title = 3;
+
+  // Working directory for the command.
+  string cwd = 4;
+
+  // Command arguments to execute.
+  repeated string args = 5;
+
+  // Environment variables to set.
+  map<string, string> env = 6;
+}
+
+// RunInTerminalResponse is the response to a RunInTerminalRequest.
+message RunInTerminalResponse {
+  // The request_id from the corresponding RunInTerminalRequest.
+  string request_id = 1;
+
+  // Process ID of the launched process, or 0 if not available.
+  int64 process_id = 2;
+
+  // Shell process ID if applicable, or 0 if not available.
+  int64 shell_process_id = 3;
+
+  // Error message if the request failed. Empty on success.
+  string error = 4;
+}
+
+// StatusUpdate reports a change in debug session status.
+message StatusUpdate {
+  DebugSessionStatus status = 1;
+
+  // Optional error message when status is ERROR.
+  string error = 2;
+}
+
+// Terminate signals that the debug session should end.
+message Terminate {
+  // Optional reason for termination.
+  string reason = 1;
+}
+
+// DapControl is the gRPC service for DAP proxy control.
+service DapControl {
+  // DebugSession establishes a bidirectional stream for controlling a debug session.
+  // The client sends a Handshake message first to identify the resource.
+  // The server may send VirtualRequests and RunInTerminalResponses.
+  // The client sends VirtualResponses, Events, RunInTerminalRequests, and StatusUpdates.
+  rpc DebugSession(stream SessionMessage) returns (stream SessionMessage);
+}

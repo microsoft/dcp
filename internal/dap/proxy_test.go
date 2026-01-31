@@ -190,13 +190,22 @@ func TestProxy_ForwardEvent(t *testing.T) {
 	wg.Wait()
 }
 
-func TestProxy_InitializeRequestSetsSupportsRunInTerminal(t *testing.T) {
+func TestProxy_InitializeRequestModifiedByCallback(t *testing.T) {
 	t.Parallel()
 
 	upstream := newMockTransport()
 	downstream := newMockTransport()
 
 	proxy := NewProxy(upstream, downstream, ProxyConfig{})
+
+	// Callback that modifies InitializeRequest to set SupportsRunInTerminalRequest
+	upstreamCallback := func(msg dap.Message) CallbackResult {
+		if req, ok := msg.(*dap.InitializeRequest); ok {
+			req.Arguments.SupportsRunInTerminalRequest = true
+			return ForwardModified(req)
+		}
+		return ForwardUnchanged()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -205,7 +214,7 @@ func TestProxy_InitializeRequestSetsSupportsRunInTerminal(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = proxy.Start(ctx)
+		_ = proxy.StartWithCallbacks(ctx, upstreamCallback, nil)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -229,38 +238,50 @@ func TestProxy_InitializeRequestSetsSupportsRunInTerminal(t *testing.T) {
 	initReq, ok := adapterMsg.(*dap.InitializeRequest)
 	require.True(t, ok)
 	assert.True(t, initReq.Arguments.SupportsRunInTerminalRequest,
-		"supportsRunInTerminalRequest should be forced to true")
+		"supportsRunInTerminalRequest should be forced to true by callback")
 
 	cancel()
 	wg.Wait()
 }
 
-func TestProxy_InterceptRunInTerminal(t *testing.T) {
+func TestProxy_InterceptRunInTerminalWithCallback(t *testing.T) {
 	t.Parallel()
 
 	upstream := newMockTransport()
 	downstream := newMockTransport()
 
+	proxy := NewProxy(upstream, downstream, ProxyConfig{})
+
 	terminalCalled := false
 	var terminalArgs dap.RunInTerminalRequestArguments
 
-	proxy := NewProxy(upstream, downstream, ProxyConfig{
-		TerminalHandler: func(req *dap.RunInTerminalRequest) *dap.RunInTerminalResponse {
+	// Create a downstream callback that intercepts RunInTerminal requests
+	downstreamCallback := func(msg dap.Message) CallbackResult {
+		if req, ok := msg.(*dap.RunInTerminalRequest); ok {
 			terminalCalled = true
 			terminalArgs = req.Arguments
-			return &dap.RunInTerminalResponse{
-				Response: dap.Response{
-					ProtocolMessage: dap.ProtocolMessage{Type: "response"},
-					Command:         "runInTerminal",
-					RequestSeq:      req.Seq,
-					Success:         true,
-				},
-				Body: dap.RunInTerminalResponseBody{
-					ProcessId: 12345,
-				},
-			}
-		},
-	})
+
+			// Create async response channel
+			asyncResp := make(chan AsyncResponse, 1)
+			go func() {
+				asyncResp <- AsyncResponse{
+					Response: &dap.RunInTerminalResponse{
+						Response: dap.Response{
+							ProtocolMessage: dap.ProtocolMessage{Type: "response"},
+							Command:         "runInTerminal",
+							RequestSeq:      req.Seq,
+							Success:         true,
+						},
+						Body: dap.RunInTerminalResponseBody{
+							ProcessId: 12345,
+						},
+					},
+				}
+			}()
+			return SuppressWithAsyncResponse(asyncResp)
+		}
+		return ForwardUnchanged()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -269,7 +290,7 @@ func TestProxy_InterceptRunInTerminal(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = proxy.Start(ctx)
+		_ = proxy.StartWithCallbacks(ctx, nil, downstreamCallback)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -454,26 +475,26 @@ func TestProxy_EventDeduplication(t *testing.T) {
 	wg.Wait()
 }
 
-func TestProxy_MessageHandler(t *testing.T) {
+func TestProxy_MessageCallback(t *testing.T) {
 	t.Parallel()
 
 	upstream := newMockTransport()
 	downstream := newMockTransport()
 
-	handlerCalledChan := make(chan struct{}, 1)
-	proxy := NewProxy(upstream, downstream, ProxyConfig{
-		Handler: func(msg dap.Message, direction Direction) (dap.Message, bool) {
-			if _, ok := msg.(*dap.ContinueRequest); ok && direction == Upstream {
-				select {
-				case handlerCalledChan <- struct{}{}:
-				default:
-				}
-				// Suppress the message
-				return nil, false
+	proxy := NewProxy(upstream, downstream, ProxyConfig{})
+
+	callbackCalledChan := make(chan struct{}, 1)
+	upstreamCallback := func(msg dap.Message) CallbackResult {
+		if _, ok := msg.(*dap.ContinueRequest); ok {
+			select {
+			case callbackCalledChan <- struct{}{}:
+			default:
 			}
-			return msg, true
-		},
-	})
+			// Suppress the message
+			return Suppress()
+		}
+		return ForwardUnchanged()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -482,7 +503,7 @@ func TestProxy_MessageHandler(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = proxy.Start(ctx)
+		_ = proxy.StartWithCallbacks(ctx, upstreamCallback, nil)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -495,12 +516,12 @@ func TestProxy_MessageHandler(t *testing.T) {
 		},
 	})
 
-	// Wait for handler to be called
+	// Wait for callback to be called
 	select {
-	case <-handlerCalledChan:
-		// Handler was called
+	case <-callbackCalledChan:
+		// Callback was called
 	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for handler to be called")
+		t.Fatal("timeout waiting for callback to be called")
 	}
 
 	// Message should not reach adapter

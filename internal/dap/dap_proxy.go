@@ -6,9 +6,9 @@
 // Package dap provides a Debug Adapter Protocol (DAP) proxy implementation.
 // The proxy sits between an IDE client and a debug adapter server, forwarding
 // messages bidirectionally while providing capabilities for:
-//   - Message interception and modification
+//   - Message interception and modification via callbacks
 //   - Virtual request injection (proxy-generated requests to the adapter)
-//   - RunInTerminal request handling
+//   - Asynchronous response handling for reverse requests
 //   - Event deduplication for virtual request side effects
 package dap
 
@@ -23,25 +23,8 @@ import (
 	"github.com/google/go-dap"
 )
 
-var (
-	// ErrProxyClosed is returned when attempting to use a closed proxy.
-	ErrProxyClosed = errors.New("proxy is closed")
-
-	// ErrRequestTimeout is returned when a virtual request times out waiting for a response.
-	ErrRequestTimeout = errors.New("request timeout")
-)
-
 // ProxyConfig contains configuration options for the DAP proxy.
 type ProxyConfig struct {
-	// Handler is an optional message handler for intercepting and modifying messages.
-	// If nil, messages are forwarded unchanged (except for initialize requests which
-	// always have supportsRunInTerminalRequest set to true).
-	Handler MessageHandler
-
-	// TerminalHandler handles runInTerminal requests from the debug adapter.
-	// If nil, a default stub handler is used that returns success with zero process IDs.
-	TerminalHandler TerminalHandler
-
 	// DeduplicationWindow is the time window for event deduplication.
 	// Events from the adapter matching recently emitted virtual events are suppressed.
 	// If zero, DefaultDeduplicationWindow is used.
@@ -86,11 +69,11 @@ type Proxy struct {
 	// ideSeq generates sequence numbers for messages sent to the IDE
 	ideSeq *sequenceCounter
 
-	// handler is the message handler for modification/interception
-	handler MessageHandler
+	// upstreamCallback is called for messages from the IDE
+	upstreamCallback MessageCallback
 
-	// terminalHandler handles runInTerminal requests
-	terminalHandler TerminalHandler
+	// downstreamCallback is called for messages from the debug adapter
+	downstreamCallback MessageCallback
 
 	// deduplicator suppresses duplicate events from virtual requests
 	deduplicator *eventDeduplicator
@@ -137,19 +120,10 @@ func NewProxy(upstream, downstream Transport, config ProxyConfig) *Proxy {
 		dedupWindow = DefaultDeduplicationWindow
 	}
 
-	handler := config.Handler
-	terminalHandler := config.TerminalHandler
-	if terminalHandler == nil {
-		terminalHandler = defaultTerminalHandler()
-	}
-
 	log := config.Logger
 	if log.GetSink() == nil {
 		log = logr.Discard()
 	}
-
-	// Compose the user handler with our required initialize request handler
-	composedHandler := ComposeHandlers(initializeRequestHandler(), handler)
 
 	return &Proxy{
 		upstream:        upstream,
@@ -159,8 +133,6 @@ func NewProxy(upstream, downstream Transport, config ProxyConfig) *Proxy {
 		pendingRequests: newPendingRequestMap(),
 		adapterSeq:      newSequenceCounter(),
 		ideSeq:          newSequenceCounter(),
-		handler:         composedHandler,
-		terminalHandler: terminalHandler,
 		deduplicator:    newEventDeduplicator(dedupWindow),
 		requestTimeout:  config.RequestTimeout,
 		log:             log,
@@ -169,9 +141,21 @@ func NewProxy(upstream, downstream Transport, config ProxyConfig) *Proxy {
 
 // Start begins the proxy message pumps and blocks until the proxy terminates.
 // Returns an error if the proxy encounters a fatal error, or nil on clean shutdown.
+// This is equivalent to calling StartWithCallbacks with nil callbacks.
 func (p *Proxy) Start(ctx context.Context) error {
+	return p.StartWithCallbacks(ctx, nil, nil)
+}
+
+// StartWithCallbacks begins the proxy message pumps with optional callbacks and blocks
+// until the proxy terminates. Callbacks can inspect, modify, or suppress messages.
+// If upstreamCallback is nil, upstream messages are forwarded unchanged.
+// If downstreamCallback is nil, downstream messages are forwarded unchanged.
+// Returns an error if the proxy encounters a fatal error, or nil on clean shutdown.
+func (p *Proxy) StartWithCallbacks(ctx context.Context, upstreamCallback, downstreamCallback MessageCallback) error {
 	var startErr error
 	p.startOnce.Do(func() {
+		p.upstreamCallback = upstreamCallback
+		p.downstreamCallback = downstreamCallback
 		startErr = p.startInternal(ctx)
 	})
 	return startErr
@@ -237,12 +221,15 @@ func (p *Proxy) startInternal(ctx context.Context) error {
 	// Trigger shutdown
 	p.cancel()
 
-	// Close transports to unblock readers
+	// Close transports to unblock readers, aggregating any close errors
+	var closeErrors []error
 	if closeErr := p.upstream.Close(); closeErr != nil {
 		p.log.Error(closeErr, "Error closing upstream transport")
+		closeErrors = append(closeErrors, fmt.Errorf("closing upstream: %w", closeErr))
 	}
 	if closeErr := p.downstream.Close(); closeErr != nil {
 		p.log.Error(closeErr, "Error closing downstream transport")
+		closeErrors = append(closeErrors, fmt.Errorf("closing downstream: %w", closeErr))
 	}
 
 	// Close queues to unblock writers
@@ -254,6 +241,11 @@ func (p *Proxy) startInternal(ctx context.Context) error {
 
 	// Wait for all goroutines to finish
 	p.wg.Wait()
+
+	// Aggregate all errors
+	if len(closeErrors) > 0 {
+		result = errors.Join(result, errors.Join(closeErrors...))
+	}
 
 	return result
 }
@@ -278,14 +270,30 @@ func (p *Proxy) upstreamReader() error {
 
 		p.log.V(1).Info("Received message from IDE", "type", fmt.Sprintf("%T", msg))
 
-		// Apply handler for potential modification/interception
-		modified, forward := p.handler(msg, Upstream)
-		if !forward {
-			p.log.V(1).Info("Message suppressed by handler")
-			continue
-		}
-		if modified != nil {
-			msg = modified
+		// Apply callback for potential modification/interception
+		if p.upstreamCallback != nil {
+			result := p.upstreamCallback(msg)
+
+			// Check for fatal callback error
+			if result.Err != nil {
+				return fmt.Errorf("upstream callback error: %w", result.Err)
+			}
+
+			// Check if message should be suppressed
+			if !result.Forward {
+				p.log.V(1).Info("Message suppressed by callback")
+
+				// Handle async response if provided
+				if result.ResponseChan != nil {
+					p.handleAsyncResponse(result.ResponseChan, p.downstreamQueue)
+				}
+				continue
+			}
+
+			// Use modified message if provided
+			if result.Modified != nil {
+				msg = result.Modified
+			}
 		}
 
 		// Process based on message type
@@ -296,6 +304,63 @@ func (p *Proxy) upstreamReader() error {
 			// Forward other message types (shouldn't happen from IDE)
 			p.log.Info("Unexpected message type from IDE", "type", fmt.Sprintf("%T", msg))
 		}
+	}
+}
+
+// handleAsyncResponse spawns a goroutine to wait for an async response and send it to the target queue.
+func (p *Proxy) handleAsyncResponse(responseChan <-chan AsyncResponse, targetQueue chan<- dap.Message) {
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		select {
+		case asyncResp, ok := <-responseChan:
+			if !ok {
+				p.log.V(1).Info("Async response channel closed without response")
+				return
+			}
+			if asyncResp.Err != nil {
+				p.log.Error(asyncResp.Err, "Async response error")
+				return
+			}
+			if asyncResp.Response != nil {
+				// Assign sequence number based on target
+				p.assignSequenceNumber(asyncResp.Response, targetQueue)
+
+				select {
+				case targetQueue <- asyncResp.Response:
+				case <-p.ctx.Done():
+				}
+			}
+		case <-p.ctx.Done():
+			p.log.V(1).Info("Context cancelled while waiting for async response")
+		}
+	}()
+}
+
+// assignSequenceNumber assigns the appropriate sequence number to a message based on the target queue.
+func (p *Proxy) assignSequenceNumber(msg dap.Message, targetQueue chan<- dap.Message) {
+	// Determine which sequence counter to use based on the target
+	var seq int
+	if targetQueue == p.downstreamQueue {
+		seq = p.adapterSeq.Next()
+	} else {
+		seq = p.ideSeq.Next()
+	}
+
+	// Set sequence number based on message type
+	switch m := msg.(type) {
+	case *dap.Response:
+		m.Seq = seq
+	case dap.ResponseMessage:
+		m.GetResponse().Seq = seq
+	case *dap.Event:
+		m.Seq = seq
+	case dap.EventMessage:
+		m.GetEvent().Seq = seq
+	case *dap.Request:
+		m.Seq = seq
+	case dap.RequestMessage:
+		m.GetRequest().Seq = seq
 	}
 }
 
@@ -348,14 +413,30 @@ func (p *Proxy) downstreamReader() error {
 
 		p.log.V(1).Info("Received message from adapter", "type", fmt.Sprintf("%T", msg))
 
-		// Apply handler for potential modification/interception
-		modified, forward := p.handler(msg, Downstream)
-		if !forward {
-			p.log.V(1).Info("Message suppressed by handler")
-			continue
-		}
-		if modified != nil {
-			msg = modified
+		// Apply callback for potential modification/interception
+		if p.downstreamCallback != nil {
+			result := p.downstreamCallback(msg)
+
+			// Check for fatal callback error
+			if result.Err != nil {
+				return fmt.Errorf("downstream callback error: %w", result.Err)
+			}
+
+			// Check if message should be suppressed
+			if !result.Forward {
+				p.log.V(1).Info("Message suppressed by callback")
+
+				// Handle async response if provided (response goes back to adapter)
+				if result.ResponseChan != nil {
+					p.handleAsyncResponse(result.ResponseChan, p.downstreamQueue)
+				}
+				continue
+			}
+
+			// Use modified message if provided
+			if result.Modified != nil {
+				msg = result.Modified
+			}
 		}
 
 		// Process based on message type
@@ -364,10 +445,9 @@ func (p *Proxy) downstreamReader() error {
 			p.handleAdapterResponseMessage(msg, m.GetResponse())
 		case dap.EventMessage:
 			p.handleAdapterEventMessage(msg, m.GetEvent())
-		case *dap.RunInTerminalRequest:
-			p.handleRunInTerminalRequest(m)
 		case dap.RequestMessage:
-			// Other reverse requests - forward to IDE
+			// Reverse requests (like runInTerminal) - forward to IDE
+			// The callback can intercept these if special handling is needed
 			p.forwardToIDE(msg)
 		default:
 			p.log.Info("Unexpected message type from adapter", "type", fmt.Sprintf("%T", msg))
@@ -413,27 +493,6 @@ func (p *Proxy) handleAdapterEventMessage(fullMsg dap.Message, event *dap.Event)
 	}
 
 	p.forwardToIDE(fullMsg)
-}
-
-// handleRunInTerminalRequest handles a runInTerminal reverse request from the adapter.
-func (p *Proxy) handleRunInTerminalRequest(req *dap.RunInTerminalRequest) {
-	p.log.Info("Intercepting runInTerminal request",
-		"kind", req.Arguments.Kind,
-		"title", req.Arguments.Title,
-		"cwd", req.Arguments.Cwd)
-
-	// Invoke the terminal handler
-	response := p.terminalHandler(req)
-
-	// Set the response sequence number
-	response.Seq = p.adapterSeq.Next()
-	response.RequestSeq = req.Seq
-
-	// Send response back to adapter
-	select {
-	case p.downstreamQueue <- response:
-	case <-p.ctx.Done():
-	}
 }
 
 // forwardToIDE sends a message to the IDE.
@@ -566,7 +625,7 @@ func (p *Proxy) SendRequest(ctx context.Context, request dap.Message) (dap.Messa
 	case <-waitCtx.Done():
 		// Clean up pending request if still there
 		p.pendingRequests.Get(virtualSeq)
-		if waitCtx.Err() == context.DeadlineExceeded {
+		if errors.Is(waitCtx.Err(), context.DeadlineExceeded) {
 			return nil, ErrRequestTimeout
 		}
 		return nil, waitCtx.Err()
