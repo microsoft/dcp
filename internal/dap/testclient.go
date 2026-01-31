@@ -380,6 +380,32 @@ func (c *TestClient) WaitForTerminatedEvent(timeout time.Duration) error {
 	return waitErr
 }
 
+// CollectEventsUntil collects all events until a specific event type is received.
+// Returns the collected events in order, with the target event last.
+// This is useful for verifying event ordering.
+func (c *TestClient) CollectEventsUntil(targetEventType string, timeout time.Duration) ([]dap.Message, error) {
+	deadline := time.After(timeout)
+	var events []dap.Message
+
+	for {
+		select {
+		case msg := <-c.eventChan:
+			events = append(events, msg)
+			if event, ok := msg.(dap.EventMessage); ok {
+				if event.GetEvent().Event == targetEventType {
+					return events, nil
+				}
+			}
+
+		case <-deadline:
+			return events, fmt.Errorf("timeout waiting for event %q (collected %d events)", targetEventType, len(events))
+
+		case <-c.ctx.Done():
+			return events, c.ctx.Err()
+		}
+	}
+}
+
 // Close closes the client and its transport.
 func (c *TestClient) Close() error {
 	c.cancel()
