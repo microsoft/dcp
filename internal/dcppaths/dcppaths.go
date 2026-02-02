@@ -137,9 +137,9 @@ func probeForDcpDir() (string, error) {
 	}
 
 	// Fallback: return the default DCP extensions directory inside the user's homeDir directory.
-	homeDir, homeDiErr := os.UserHomeDir()
-	if homeDiErr != nil {
-		return "", fmt.Errorf("could not determine the path to DCP extensions directory: the program location is not within the standard DCP directory structure, and we could not determine the path to the user's home directory: %w", errors.Join(err, homeDiErr))
+	homeDir, homeDirErr := os.UserHomeDir()
+	if homeDirErr != nil {
+		return "", fmt.Errorf("could not determine the path to DCP extensions directory: the program location is not within the standard DCP directory structure, and we could not determine the path to the user's home directory: %w", errors.Join(err, homeDirErr))
 	}
 
 	dcpDir := filepath.Join(homeDir, DcpUserDir)

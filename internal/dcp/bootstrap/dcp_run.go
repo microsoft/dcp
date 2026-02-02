@@ -95,9 +95,9 @@ func DcpRun(
 	hostedServices := []hosting.Service{}
 	if !serverOnly {
 		// Always run the built-in controllers
-		controllerService, controllerServceErr := newRunControllersService(cwd, invocationFlags, log)
-		if controllerServceErr != nil {
-			return fmt.Errorf("could not start built-in controllers: %w", controllerServceErr)
+		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, log)
+		if controllerServiceErr != nil {
+			return fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
 		}
 		hostedServices = append(hostedServices, controllerService)
 
