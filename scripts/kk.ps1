@@ -14,7 +14,7 @@ function dcpdKubectl() {
 
         $dcpCommandLine = $dcpProcess | Select-Object -ExpandProperty CommandLine | ForEach-Object { $_.Split() }
     } else {
-        $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcp" })
+        $dcpProcesses = @(Get-Process | Where-Object { $_.Name -ceq "dcp" -and $_.CommandLine -match "start-apiserver" })
         if ($dcpProcesses.Count -eq 0) {
             throw "No DCP processes found"
         } elseif ($dcpProcesses.Count -gt 1) {
