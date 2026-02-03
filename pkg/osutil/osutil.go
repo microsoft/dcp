@@ -133,7 +133,7 @@ func isRoot(path string) bool {
 	return false
 }
 
-// IsSimpleValidFilename checks whether name is a simple, OS-agnostic
+// HasOnlyValidFilenameChars checks whether name is a simple, OS-agnostic
 // valid filename according to the following rules:
 // - must not be empty
 // - must not contain control characters (ASCII < 32)

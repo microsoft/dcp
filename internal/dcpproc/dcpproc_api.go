@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -104,7 +105,12 @@ func StopProcessTree(
 		cmdArgs = append(cmdArgs, "--process-start-time", rootProcessStartTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 
-	stopProcessTreeCmd := exec.Command(os.Args[0], cmdArgs...)
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	if dcpPathErr != nil {
+		log.Error(dcpPathErr, "DCP executable path could not be determined")
+		return dcpPathErr
+	}
+	stopProcessTreeCmd := exec.Command(dcpPath, cmdArgs...)
 	stopProcessTreeCmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(stopProcessTreeCmd) // Ensure the session ID is passed to the monitor command
 
@@ -138,7 +144,11 @@ func getMonitorCmdArgs() []string {
 }
 
 func startDcpProc(pe process.Executor, cmdArgs []string) error {
-	dcpProcCmd := exec.Command(os.Args[0], cmdArgs...)
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	if dcpPathErr != nil {
+		return fmt.Errorf("DCP executable path could not be determined: %w", dcpPathErr)
+	}
+	dcpProcCmd := exec.Command(dcpPath, cmdArgs...)
 	dcpProcCmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(dcpProcCmd) // Ensure the session ID is passed to the monitor command
 	_, _, monitorErr := pe.StartAndForget(dcpProcCmd, process.CreationFlagsNone)
