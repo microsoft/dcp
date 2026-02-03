@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -30,7 +31,7 @@ const (
 var (
 	enableTestPathProbing atomic.Bool
 	dcpExeName            string
-	probedDcpDir          atomic.Value
+	probeForDcpDirOnce    func() (string, error)
 )
 
 func GetExtensionsDirs() ([]string, error) {
@@ -48,7 +49,7 @@ func GetExtensionsDirs() ([]string, error) {
 		return extensionPaths, nil
 	}
 
-	dcpDir, err := probeForDcpDir()
+	dcpDir, err := probeForDcpDirOnce()
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +62,7 @@ func GetDcpBinDir() (string, error) {
 		return filepath.Abs(filepath.Clean(binPath))
 	}
 
-	dcpDir, err := probeForDcpDir()
+	dcpDir, err := probeForDcpDirOnce()
 	if err != nil {
 		return "", fmt.Errorf("DCP binary directory location could not be determined: %w", err)
 	}
@@ -79,7 +80,7 @@ func WithDcpBinDir(cmd *exec.Cmd) {
 }
 
 func GetDcpExePath() (string, error) {
-	dcpDir, err := probeForDcpDir()
+	dcpDir, err := probeForDcpDirOnce()
 	if err != nil {
 		return "", fmt.Errorf("DCP root directory location could not be determined: %w", err)
 	}
@@ -95,11 +96,6 @@ func probeForDcpDir() (string, error) {
 	// - The extension directory (subfolder of the root directory), or
 	// - The bin directory (subfolder of the extensions directory).
 
-	probedDcpDirVal := probedDcpDir.Load()
-	if probedDcpDirVal != nil && probedDcpDirVal.(string) != "" {
-		return probedDcpDirVal.(string), nil
-	}
-
 	exePath, err := osutil.ThisExecutablePath()
 	if err == nil {
 		exeDir, exeName := filepath.Split(exePath)
@@ -108,20 +104,17 @@ func probeForDcpDir() (string, error) {
 		switch {
 		case exeName == dcpExeName:
 			// exeDir is the root DCP directory.
-			probedDcpDir.Store(exeDir)
 			return exeDir, nil
 
 		case strings.HasSuffix(exeDir, DcpExtensionsDir):
 			// exeDir is the extensions directory, we need to go one level up.
 			dcpDir := filepath.Dir(exeDir)
-			probedDcpDir.Store(dcpDir)
 			return dcpDir, nil
 
 		case strings.HasSuffix(exeDir, filepath.Join(DcpExtensionsDir, DcpBinDir)):
 			// exeDir is the bin directory.
 			extensionsDir := filepath.Dir(exeDir)
 			dcpDir := filepath.Dir(extensionsDir)
-			probedDcpDir.Store(dcpDir)
 			return dcpDir, nil
 		}
 	}
@@ -131,7 +124,6 @@ func probeForDcpDir() (string, error) {
 		rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, tail...)
 		if rootFindErr == nil {
 			dcpDir := filepath.Join(rootFolder, DcpBinDir)
-			probedDcpDir.Store(dcpDir)
 			return dcpDir, nil
 		}
 	}
@@ -143,7 +135,6 @@ func probeForDcpDir() (string, error) {
 	}
 
 	dcpDir := filepath.Join(homeDir, DcpUserDir)
-	probedDcpDir.Store(dcpDir)
 	return dcpDir, nil
 }
 
@@ -184,4 +175,5 @@ func init() {
 	if osutil.IsWindows() {
 		dcpExeName += ".exe"
 	}
+	probeForDcpDirOnce = sync.OnceValues(probeForDcpDir)
 }
