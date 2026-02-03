@@ -18,6 +18,7 @@ import (
 
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/appmgmt"
+	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/hosting"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
@@ -93,8 +94,11 @@ func DcpRun(
 
 	hostedServices := []hosting.Service{}
 	if !serverOnly {
-		// Always run the built-in controller
-		controllerService := newRunControllersService(cwd, invocationFlags, log)
+		// Always run the built-in controllers
+		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, log)
+		if controllerServiceErr != nil {
+			return fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
+		}
 		hostedServices = append(hostedServices, controllerService)
 
 		// Also run any extension controllers
@@ -213,7 +217,7 @@ func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (not
 	return ns, nil
 }
 
-func newRunControllersService(appRootDir string, invocationFlags []string, log logr.Logger) *hosting.CommandService {
+func newRunControllersService(appRootDir string, invocationFlags []string, log logr.Logger) (*hosting.CommandService, error) {
 	monitorPid := os.Getpid()
 
 	allArgs := []string{"run-controllers"}
@@ -229,8 +233,12 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 		allArgs = append(allArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 
-	// We assume os.Args[0] will be valid here because it is in all the scenarios we currently support.
-	cmd := exec.Command(os.Args[0], allArgs...)
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	if dcpPathErr != nil {
+		log.Error(dcpPathErr, "Could not determine DCP executable path for running built-in controllers")
+		return nil, dcpPathErr
+	}
+	cmd := exec.Command(dcpPath, allArgs...)
 	cmd.Env = os.Environ()    // Use DCP CLI environment
 	logger.WithSessionId(cmd) // Ensure the session ID is passed to the command
 	cmd.Dir = appRootDir
@@ -244,5 +252,5 @@ func newRunControllersService(appRootDir string, invocationFlags []string, log l
 	process.ForkFromParent(cmd)
 
 	hostingOpts := hosting.CommandServiceRunOptionShowStderr | hosting.CommandServiceRunOptionDontTerminate
-	return hosting.NewCommandService("DCP controller host", cmd, process.NewOSExecutor(log), hostingOpts, log)
+	return hosting.NewCommandService("DCP controller host", cmd, process.NewOSExecutor(log), hostingOpts, log), nil
 }
