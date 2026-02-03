@@ -21,7 +21,7 @@ if [[ ($# -gt 1) && ($1 = '--dcp-pid') ]]; then
     dcp_pid=$1
     shift
 else
-    dcp_pid=$(pgrep -x dcp)
+    dcp_pid=$(pgrep -f 'dcp start-apiserver')
     if [[ $? -ne 0 ]]; then
         echo "DCP processes could not be found (pgrep failed). Please specify the PID of the DCP process you want to interact with."
         exit 2
