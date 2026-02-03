@@ -780,11 +780,14 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 	err := serverInfo.Client.Create(ctx, &network)
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
 
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr, "Could not get DCP executable path")
+
 	t.Log("Installing server proxy auto execution with startup error...")
 	serverStartAttempted := &atomic.Bool{}
 	teInfo.TestProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{os.Args[0], "tunnel-server"},
+			Command: []string{dcpPath, "tunnel-server"},
 		},
 		StartupError: func(_ *internal_testutil.ProcessExecution) error {
 			serverStartAttempted.Store(true)
@@ -1301,9 +1304,12 @@ func simulateServerProxy(
 	serverControlPort int32,
 	tpe *internal_testutil.TestProcessExecutor,
 ) {
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr, "Could not get DCP executable path")
+
 	tpe.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{os.Args[0], "tunnel-server"},
+			Command: []string{dcpPath, "tunnel-server"},
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			tc := dcptun.TunnelProxyConfig{
