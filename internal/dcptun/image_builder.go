@@ -424,7 +424,7 @@ func dcptunClientBinaryPath() (string, error) {
 	}
 
 	// Fallback: probe for dcptun_c from the current directory (used primarily for testing)
-	rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, ClientBinaryName)
+	rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, dcppaths.BuildOutputDir, ClientBinaryName)
 	if rootFindErr != nil {
 		return "", fmt.Errorf("dcptun client binary not found next to the running binary and could not be located via filesystem probing: %w", rootFindErr)
 	}
