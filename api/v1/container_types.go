@@ -1172,6 +1172,11 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 	// Validate PEM certificates configuration
 	errorList = append(errorList, c.Spec.PemCertificates.Validate(field.NewPath("spec", "pemCertificates"))...)
 
+	// Validate that annotations don't exceed the Kubernetes size limit.
+	// This provides a clearer error message than the generic Kubernetes API server error,
+	// especially when long arguments or environment variables are stored in annotations.
+	errorList = append(errorList, ValidateAnnotationsSize(c.Annotations, field.NewPath("metadata", "annotations"))...)
+
 	return errorList
 }
 
