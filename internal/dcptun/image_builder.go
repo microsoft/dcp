@@ -429,7 +429,7 @@ func dcptunClientBinaryPath() (string, error) {
 		return "", fmt.Errorf("dcptun client binary not found next to the running binary and could not be located via filesystem probing: %w", rootFindErr)
 	}
 
-	binaryPath = filepath.Join(rootFolder, ClientBinaryName)
+	binaryPath = filepath.Join(rootFolder, dcppaths.BuildOutputDir, ClientBinaryName)
 	fi, statErr = os.Stat(binaryPath)
 
 	if statErr != nil {
