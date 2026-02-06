@@ -99,8 +99,6 @@ endif
 # Locations and names for binaries built from this repository
 OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
-EXTENSIONS_DIR ?= $(home_dir)/.dcp/ext
-BIN_DIR ?= $(home_dir)/.dcp/ext/bin
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 
@@ -355,14 +353,14 @@ else
 endif
 
 .PHONY: install
-install: compile | $(DCP_DIR) $(EXTENSIONS_DIR) $(BIN_DIR) ## Installs all binaries to their destinations
+install: compile | $(DCP_DIR) ## Installs all binaries to their destinations
 	$(install) $(DCP_BINARY) $(DCP_DIR)
-	$(install) $(DCPTUN_CLIENT_BINARY) $(BIN_DIR)
+	$(install) $(DCPTUN_CLIENT_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
-	$(rm_f) $(BIN_DIR)/dcptun_c
+	$(rm_f) $(DCP_DIR)/dcptun_c
 
 ifneq ($(detected_OS),windows)
 .PHONY: link-dcp
@@ -411,12 +409,6 @@ ${OUTPUT_BIN}/ext/bin/: | ${OUTPUT_BIN}
 
 $(TOOL_BIN):
 	$(mkdir) $(TOOL_BIN)
-
-$(EXTENSIONS_DIR):
-	$(mkdir) $(EXTENSIONS_DIR)
-
-$(BIN_DIR):
-	$(mkdir) $(BIN_DIR)
 
 $(DCP_DIR):
 	$(mkdir) $(DCP_DIR)

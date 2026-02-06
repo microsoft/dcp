@@ -10,7 +10,6 @@ import (
 	"fmt"
 	iofs "io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,10 +21,9 @@ import (
 const (
 	DcpUserDir           = ".dcp"
 	DcpExtensionsDir     = "ext"
-	DcpBinDir            = "bin"
 	DcpWorkDir           = "dcp-work"
 	DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
-	DcpBinPathEnv        = "DCP_BIN_PATH"
+	BuildOutputDir       = "bin"
 )
 
 var (
@@ -57,26 +55,8 @@ func GetExtensionsDirs() ([]string, error) {
 	return []string{filepath.Join(dcpDir, DcpExtensionsDir)}, nil
 }
 
-func GetDcpBinDir() (string, error) {
-	if binPath, found := os.LookupEnv(DcpBinPathEnv); found {
-		return filepath.Abs(filepath.Clean(binPath))
-	}
-
-	dcpDir, err := probeForDcpDirOnce()
-	if err != nil {
-		return "", fmt.Errorf("DCP binary directory location could not be determined: %w", err)
-	}
-
-	return filepath.Join(dcpDir, DcpExtensionsDir, DcpBinDir), nil
-}
-
-func WithDcpBinDir(cmd *exec.Cmd) {
-	binDir, err := GetDcpBinDir()
-	if err != nil {
-		return
-	}
-
-	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", DcpBinPathEnv, binDir))
+func GetDcpDir() (string, error) {
+	return probeForDcpDirOnce()
 }
 
 func GetDcpExePath() (string, error) {
@@ -110,20 +90,14 @@ func probeForDcpDir() (string, error) {
 			// exeDir is the extensions directory, we need to go one level up.
 			dcpDir := filepath.Dir(exeDir)
 			return dcpDir, nil
-
-		case strings.HasSuffix(exeDir, filepath.Join(DcpExtensionsDir, DcpBinDir)):
-			// exeDir is the bin directory.
-			extensionsDir := filepath.Dir(exeDir)
-			dcpDir := filepath.Dir(extensionsDir)
-			return dcpDir, nil
 		}
 	}
 
 	if enableTestPathProbing.Load() {
-		tail := []string{DcpBinDir, dcpExeName}
+		tail := []string{BuildOutputDir, dcpExeName}
 		rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, tail...)
 		if rootFindErr == nil {
-			dcpDir := filepath.Join(rootFolder, DcpBinDir)
+			dcpDir := filepath.Join(rootFolder, BuildOutputDir)
 			return dcpDir, nil
 		}
 	}
