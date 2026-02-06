@@ -412,7 +412,7 @@ func computeFileHash(filePath string) (string, error) {
 func dcptunClientBinaryPath() (string, error) {
 	dcpDir, dcpDirErr := dcppaths.GetDcpDir()
 	if dcpDirErr != nil {
-		return "", fmt.Errorf("failed to get DCP bin directory: %w", dcpDirErr)
+		return "", fmt.Errorf("failed to get DCP directory: %w", dcpDirErr)
 	}
 
 	binaryPath := filepath.Join(dcpDir, ClientBinaryName)
