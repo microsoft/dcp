@@ -531,7 +531,7 @@ func getDcpProcExecutablePath() (string, error) {
 		return dcpPath, nil
 	}
 
-	tail := []string{dcppaths.DcpBinDir, dcpExeName}
+	tail := []string{dcppaths.BuildOutputDir, dcpExeName}
 	rootFolder, err := osutil.FindRootFor(osutil.FileTarget, tail...)
 	if err != nil {
 		return "", err
