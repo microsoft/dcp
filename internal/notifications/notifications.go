@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -20,11 +19,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications/proto"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/grpcutil"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
 )
 
@@ -129,38 +127,14 @@ func asNotification(nd *proto.NotificationData) (Notification, error) {
 	}
 }
 
-// A helper function that ensures the notification socket can be created
+// PrepareNotificationSocketPath ensures the notification socket can be created
 // in a folder that is writable only by the current user, and that the path
 // is reasonably unique to the calling process.
-// If the `rootDir` is empty, it will use the user's cache directory.
+// If the rootDir is empty, it will use the user's cache directory.
 func PrepareNotificationSocketPath(rootDir string, socketNamePrefix string) (string, error) {
-	if rootDir == "" {
-		cacheDir, cacheDirErr := os.UserCacheDir()
-		if cacheDirErr != nil {
-			return "", fmt.Errorf("failed to get user cache directory when creating a notification socket: %w", cacheDirErr)
-		} else {
-			rootDir = cacheDir
-		}
-	}
-
-	socketDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
-	if err := os.MkdirAll(socketDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
-		return "", fmt.Errorf("failed to create directory for notification socket: %w", err)
-	}
-
-	// On Windows the user cache directory always exists and is always private to the user,
-	// but on Unix-like systems, we need to ensure the directory is private.
-	if !osutil.IsWindows() {
-		info, infoErr := os.Stat(socketDir)
-		if infoErr != nil {
-			return "", fmt.Errorf("failed to check permissions on the notification socket directory: %w", infoErr)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("notification socket path %s is not a directory", socketDir)
-		}
-		if info.Mode().Perm() != osutil.PermissionOnlyOwnerReadWriteTraverse {
-			return "", fmt.Errorf("notification socket directory %s is not private to the user", socketDir)
-		}
+	socketDir, dirErr := networking.PrepareSecureSocketDir(rootDir)
+	if dirErr != nil {
+		return "", fmt.Errorf("failed to prepare notification socket directory: %w", dirErr)
 	}
 
 	suffix, suffixErr := randdata.MakeRandomString(8)
@@ -218,18 +192,22 @@ type UnixSocketNotificationSource interface {
 	SocketPath() string
 }
 
-func NewNotificationSource(lifetimeCtx context.Context, socketPath string, log logr.Logger) (UnixSocketNotificationSource, error) {
-	listener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
-	if listenErr != nil {
-		return nil, fmt.Errorf("could not create notification socket at %s: %w", socketPath, listenErr)
+// NewNotificationSource creates a notification source that listens on the given socket path.
+// The socketDir and socketNamePrefix are used to create a secure Unix domain socket via
+// the shared networking library. If socketDir is empty, os.UserCacheDir() is used.
+// The actual socket path (including a random suffix) can be retrieved via SocketPath().
+func NewNotificationSource(lifetimeCtx context.Context, socketDir string, socketNamePrefix string, log logr.Logger) (UnixSocketNotificationSource, error) {
+	socketListener, listenerErr := networking.NewSecureSocketListener(socketDir, socketNamePrefix)
+	if listenerErr != nil {
+		return nil, fmt.Errorf("could not create notification socket: %w", listenerErr)
 	}
 
 	ns := &unixSocketNotificationSource{
 		lifetimeCtx:     lifetimeCtx,
 		log:             log,
-		socketPath:      socketPath,
+		socketPath:      socketListener.SocketPath(),
 		lock:            &sync.Mutex{},
-		listener:        listener,
+		listener:        socketListener,
 		subscriptions:   make(map[uint32]*concurrency.UnboundedChan[Notification]),
 		dispose:         concurrency.NewOneTimeJob[struct{}](),
 		clientConnected: concurrency.NewSemaphore(),
@@ -241,7 +219,7 @@ func NewNotificationSource(lifetimeCtx context.Context, socketPath string, log l
 	proto.RegisterNotificationsServer(notifyServer, ns)
 
 	go func() {
-		serverErr := notifyServer.Serve(ns.listener)
+		serverErr := notifyServer.Serve(socketListener)
 		if serverErr != nil && !errors.Is(serverErr, net.ErrClosed) {
 			ns.log.Error(serverErr, "Notification server encountered an error")
 		}

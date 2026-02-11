@@ -32,12 +32,11 @@ func TestNotificationSendReceive(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultNotificationsTestTimeout)
 	defer cancel()
 
-	socketPath, socketPathErr := PrepareNotificationSocketPath(testutil.TestTempDir(), "test-notification-socket-")
-	require.NoError(t, socketPathErr)
-	nsi, nsErr := NewNotificationSource(ctx, socketPath, sourceLog)
+	nsi, nsErr := NewNotificationSource(ctx, testutil.TestTempDir(), "test-notification-socket-", sourceLog)
 	require.NoError(t, nsErr)
 	require.NotNil(t, nsi)
 	usns := nsi.(*unixSocketNotificationSource)
+	socketPath := nsi.SocketPath()
 
 	const numNotifications = 10
 	notes := make(chan Notification, numNotifications)
@@ -85,12 +84,11 @@ func TestNotificationMultipleReceivers(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultNotificationsTestTimeout)
 	defer cancel()
 
-	socketPath, socketPathErr := PrepareNotificationSocketPath(testutil.TestTempDir(), "test-notification-socket-")
-	require.NoError(t, socketPathErr)
-	ns, err := NewNotificationSource(ctx, socketPath, testLog)
-	require.NoError(t, err)
+	ns, nsCreateErr := NewNotificationSource(ctx, testutil.TestTempDir(), "test-notification-socket-", testLog)
+	require.NoError(t, nsCreateErr)
 	require.NotNil(t, ns)
 	usns := ns.(*unixSocketNotificationSource)
+	socketPath := ns.SocketPath()
 
 	// Start with two receivers
 	r1Ctx, r1CtxCancel := context.WithCancel(ctx)

@@ -8,8 +8,11 @@ package dap
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +21,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// uniqueSocketPath generates a unique, short socket path for testing.
+// macOS has a ~104 character limit for Unix socket paths, so we use
+// the system temp directory with a short filename.
+func uniqueSocketPath(t *testing.T, suffix string) string {
+	t.Helper()
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("dap-%s-%d.sock", suffix, time.Now().UnixNano()))
+	t.Cleanup(func() { os.Remove(socketPath) })
+	return socketPath
+}
 
 func TestTCPTransport(t *testing.T) {
 	t.Parallel()
@@ -48,8 +61,8 @@ func TestTCPTransport(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	clientTransport := NewTCPTransport(clientConn)
-	serverTransport := NewTCPTransport(serverConn)
+	clientTransport := NewTCPTransportWithContext(context.Background(), clientConn)
+	serverTransport := NewTCPTransportWithContext(context.Background(), serverConn)
 
 	t.Run("write and read message", func(t *testing.T) {
 		// Client sends to server
@@ -79,47 +92,9 @@ func TestTCPTransport(t *testing.T) {
 		writeErr := clientTransport.WriteMessage(&dap.InitializeRequest{})
 		assert.Error(t, writeErr)
 
-		// Double close should be safe
-		closeErr = clientTransport.Close()
-		assert.NoError(t, closeErr)
+		// Double close should not panic
+		_ = clientTransport.Close()
 	})
-}
-
-func TestDialTCP(t *testing.T) {
-	t.Parallel()
-
-	// Create a listener
-	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, listenErr)
-	defer listener.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Accept in background
-	go func() {
-		conn, _ := listener.Accept()
-		if conn != nil {
-			conn.Close()
-		}
-	}()
-
-	transport, dialErr := DialTCP(ctx, listener.Addr().String())
-	require.NoError(t, dialErr)
-	require.NotNil(t, transport)
-
-	closeErr := transport.Close()
-	assert.NoError(t, closeErr)
-}
-
-func TestDialTCP_InvalidAddress(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	_, dialErr := DialTCP(ctx, "127.0.0.1:0")
-	assert.Error(t, dialErr)
 }
 
 // mockReadWriteCloser implements io.ReadWriteCloser for testing
@@ -172,8 +147,8 @@ func TestStdioTransport(t *testing.T) {
 		serverRead, clientWrite := io.Pipe()
 		clientRead, serverWrite := io.Pipe()
 
-		clientTransport := NewStdioTransport(clientRead, clientWrite)
-		serverTransport := NewStdioTransport(serverRead, serverWrite)
+		clientTransport := NewStdioTransportWithContext(context.Background(), clientRead, clientWrite)
+		serverTransport := NewStdioTransportWithContext(context.Background(), serverRead, serverWrite)
 
 		defer clientTransport.Close()
 		defer serverTransport.Close()
@@ -212,7 +187,7 @@ func TestStdioTransport(t *testing.T) {
 		stdin := newMockReadWriteCloser()
 		stdout := newMockReadWriteCloser()
 
-		transport := NewStdioTransport(stdin, stdout)
+		transport := NewStdioTransportWithContext(context.Background(), stdin, stdout)
 
 		closeErr := transport.Close()
 		assert.NoError(t, closeErr)
@@ -224,4 +199,124 @@ func TestStdioTransport(t *testing.T) {
 		closeErr = transport.Close()
 		assert.NoError(t, closeErr)
 	})
+}
+
+func TestUnixTransport(t *testing.T) {
+	t.Parallel()
+
+	// Create a temporary socket file with a short path (macOS has ~104 char limit for Unix socket paths)
+	socketPath := uniqueSocketPath(t, "ut")
+
+	// Create a listener
+	listener, listenErr := net.Listen("unix", socketPath)
+	require.NoError(t, listenErr)
+	defer listener.Close()
+
+	// Accept connection in goroutine
+	var serverConn net.Conn
+	var acceptErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serverConn, acceptErr = listener.Accept()
+	}()
+
+	// Connect client
+	clientConn, dialErr := net.Dial("unix", socketPath)
+	require.NoError(t, dialErr)
+
+	wg.Wait()
+	require.NoError(t, acceptErr)
+	require.NotNil(t, serverConn)
+
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	clientTransport := NewUnixTransportWithContext(context.Background(), clientConn)
+	serverTransport := NewUnixTransportWithContext(context.Background(), serverConn)
+
+	t.Run("write and read message", func(t *testing.T) {
+		// Client sends to server
+		request := &dap.InitializeRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+				Command:         "initialize",
+			},
+		}
+
+		writeErr := clientTransport.WriteMessage(request)
+		require.NoError(t, writeErr)
+
+		received, readErr := serverTransport.ReadMessage()
+		require.NoError(t, readErr)
+
+		initReq, ok := received.(*dap.InitializeRequest)
+		require.True(t, ok)
+		assert.Equal(t, 1, initReq.Seq)
+		assert.Equal(t, "initialize", initReq.Command)
+	})
+
+	t.Run("close prevents further operations", func(t *testing.T) {
+		closeErr := clientTransport.Close()
+		assert.NoError(t, closeErr)
+
+		writeErr := clientTransport.WriteMessage(&dap.InitializeRequest{})
+		assert.Error(t, writeErr)
+
+		// Double close should not panic
+		_ = clientTransport.Close()
+	})
+}
+
+func TestUnixTransportWithContext(t *testing.T) {
+	t.Parallel()
+
+	socketPath := uniqueSocketPath(t, "ctx")
+
+	// Create listener
+	listener, listenErr := net.Listen("unix", socketPath)
+	require.NoError(t, listenErr)
+	defer listener.Close()
+
+	// Accept connection in goroutine
+	var serverConn net.Conn
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serverConn, _ = listener.Accept()
+	}()
+
+	// Connect with context
+	ctx, cancel := context.WithCancel(context.Background())
+	clientConn, dialErr := net.Dial("unix", socketPath)
+	require.NoError(t, dialErr)
+
+	wg.Wait()
+	require.NotNil(t, serverConn)
+	defer serverConn.Close()
+
+	// Create transport with cancellable context
+	clientTransport := NewUnixTransportWithContext(ctx, clientConn)
+
+	// Start a blocking read
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		_, _ = clientTransport.ReadMessage()
+	}()
+
+	// Give the read goroutine time to block
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel context should unblock the read
+	cancel()
+
+	select {
+	case <-readDone:
+		// Success - read was unblocked
+	case <-time.After(2 * time.Second):
+		t.Fatal("read was not unblocked after context cancellation")
+	}
 }

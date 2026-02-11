@@ -27,7 +27,6 @@ import (
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/internal/dap"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/networking"
@@ -82,9 +81,6 @@ type ExecutableReconciler struct {
 
 	// A WorkQueue for operations related to stopping Executables (which might take a while).
 	stopQueue *resiliency.WorkQueue
-
-	// Debug session map for managing pre-registered debug sessions.
-	debugSessions *dap.SessionMap
 }
 
 var (
@@ -106,7 +102,6 @@ func NewExecutableReconciler(
 	log logr.Logger,
 	executableRunners map[apiv1.ExecutionType]ExecutableRunner,
 	healthProbeSet *health.HealthProbeSet,
-	debugSessions *dap.SessionMap,
 ) *ExecutableReconciler {
 	base := NewReconcilerBase[apiv1.Executable](client, noCacheClient, log, lifetimeCtx)
 
@@ -117,7 +112,6 @@ func NewExecutableReconciler(
 		hpSet:             healthProbeSet,
 		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
 		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelExecutableStops),
-		debugSessions:     debugSessions,
 	}
 
 	go r.handleHealthProbeResults()
@@ -296,9 +290,6 @@ func ensureExecutableRunningState(
 	change |= runInfo.ApplyTo(exe, log)
 	r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 
-	// Pre-register debug session if debug adapter is configured
-	r.manageDebugSession(exe, log)
-
 	return change
 }
 
@@ -350,23 +341,6 @@ func ensureExecutableFinalState(
 
 	change |= runInfo.ApplyTo(exe, log) // Ensure the status matches the current state.
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
-
-	// Reject debug session with reason based on final state
-	var rejectReason string
-	switch desiredState {
-	case apiv1.ExecutableStateFailedToStart:
-		rejectReason = "executable failed to start"
-	case apiv1.ExecutableStateFinished:
-		rejectReason = "executable finished"
-	case apiv1.ExecutableStateTerminated:
-		rejectReason = "executable terminated"
-	default:
-		rejectReason = fmt.Sprintf("executable entered terminal state: %s", desiredState)
-	}
-	r.rejectDebugSession(exe, rejectReason, log)
-
-	// Cleanup debug session when executable reaches final state
-	r.cleanupDebugSession(exe, log)
 
 	return change
 }
@@ -750,7 +724,6 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
 	r.deleteOutputFiles(exe, log)
 	r.deleteCertificateFiles(exe, log)
-	r.cleanupDebugSession(exe, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
 }
 
@@ -1271,103 +1244,6 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 	)
 	exe.Status.HealthStatus = newHealthStatus
 	return statusChanged
-}
-
-// manageDebugSession manages the debug session pre-registration for an executable.
-// It should be called when the executable transitions to Running state.
-func (r *ExecutableReconciler) manageDebugSession(exe *apiv1.Executable, log logr.Logger) {
-	if r.debugSessions == nil {
-		return
-	}
-
-	// Check if debug adapter launch is configured
-	if len(exe.Spec.DebugAdapterLaunch) == 0 {
-		return
-	}
-
-	resourceKey := commonapi.NamespacedNameWithKind{
-		NamespacedName: types.NamespacedName{
-			Namespace: exe.Namespace,
-			Name:      exe.Name,
-		},
-		Kind: executableKind,
-	}
-
-	// Build the adapter config with mode and environment
-	config := &dap.DebugAdapterConfig{
-		Args: exe.Spec.DebugAdapterLaunch,
-		Mode: dap.ParseDebugAdapterMode(exe.Spec.DebugAdapterMode),
-	}
-
-	// Include the executable's effective environment for the adapter
-	if len(exe.Status.EffectiveEnv) > 0 {
-		config.Env = make([]dap.EnvVar, len(exe.Status.EffectiveEnv))
-		for i, ev := range exe.Status.EffectiveEnv {
-			config.Env[i] = dap.EnvVar{
-				Name:  ev.Name,
-				Value: ev.Value,
-			}
-		}
-	}
-
-	preRegisterErr := r.debugSessions.PreRegisterSession(resourceKey, config)
-	if preRegisterErr != nil {
-		// Session may already be registered (from a previous reconciliation)
-		log.V(1).Info("Debug session pre-registration skipped (may already exist)",
-			"error", preRegisterErr.Error())
-	} else {
-		log.Info("Pre-registered debug session",
-			"debugAdapter", exe.Spec.DebugAdapterLaunch[0],
-			"mode", config.Mode.String())
-	}
-}
-
-// cleanupDebugSession removes the debug session for an executable.
-// It should be called when the executable is being deleted or reaches a terminal state.
-func (r *ExecutableReconciler) cleanupDebugSession(exe *apiv1.Executable, log logr.Logger) {
-	if r.debugSessions == nil {
-		return
-	}
-
-	// Only cleanup if debug adapter was configured
-	if len(exe.Spec.DebugAdapterLaunch) == 0 {
-		return
-	}
-
-	resourceKey := commonapi.NamespacedNameWithKind{
-		NamespacedName: types.NamespacedName{
-			Namespace: exe.Namespace,
-			Name:      exe.Name,
-		},
-		Kind: executableKind,
-	}
-
-	r.debugSessions.DeregisterSession(resourceKey)
-	log.V(1).Info("Deregistered debug session")
-}
-
-// rejectDebugSession rejects any parked connections waiting for this executable's debug session.
-// It should be called when the executable fails to start or terminates unexpectedly.
-func (r *ExecutableReconciler) rejectDebugSession(exe *apiv1.Executable, reason string, log logr.Logger) {
-	if r.debugSessions == nil {
-		return
-	}
-
-	// Only reject if debug adapter was configured
-	if len(exe.Spec.DebugAdapterLaunch) == 0 {
-		return
-	}
-
-	resourceKey := commonapi.NamespacedNameWithKind{
-		NamespacedName: types.NamespacedName{
-			Namespace: exe.Namespace,
-			Name:      exe.Name,
-		},
-		Kind: executableKind,
-	}
-
-	r.debugSessions.RejectSession(resourceKey, reason)
-	log.V(1).Info("Rejected debug session", "reason", reason)
 }
 
 var _ RunChangeHandler = (*ExecutableReconciler)(nil)

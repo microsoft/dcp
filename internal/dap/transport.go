@@ -36,159 +36,55 @@ type Transport interface {
 	Close() error
 }
 
-// tcpTransport implements Transport over a TCP connection.
-type tcpTransport struct {
-	conn   net.Conn
+// connTransport implements Transport over any connection that provides
+// an io.Reader for incoming data and an io.Writer for outgoing data.
+// It is used for TCP, Unix domain socket, and stdio-based transports.
+type connTransport struct {
 	reader *bufio.Reader
 	writer *bufio.Writer
-	ctx    context.Context
+	closer io.Closer
 
-	// writeMu protects concurrent writes to the connection
+	// writeMu serializes message writes. Each DAP message is sent as a
+	// content-length header followed by the message body in separate writes,
+	// then flushed. The mutex ensures this multi-write sequence is atomic
+	// so concurrent WriteMessage calls cannot interleave their bytes.
 	writeMu sync.Mutex
-
-	// closed indicates whether the transport has been closed
-	closed bool
-	mu     sync.Mutex
-}
-
-// NewTCPTransport creates a new Transport backed by a TCP connection.
-// This constructor creates a transport without context cancellation support.
-// Use NewTCPTransportWithContext for context-aware transports.
-func NewTCPTransport(conn net.Conn) Transport {
-	return NewTCPTransportWithContext(context.Background(), conn)
 }
 
 // NewTCPTransportWithContext creates a new Transport backed by a TCP connection
 // that respects context cancellation. When the context is cancelled, any blocked
 // reads will be unblocked by closing the connection.
 func NewTCPTransportWithContext(ctx context.Context, conn net.Conn) Transport {
-	// Use ContextReader with leverageReadCloser=true so the connection is closed
-	// when the context is cancelled, unblocking any pending reads.
-	contextReader := dcpio.NewContextReader(ctx, conn, true)
-
-	return &tcpTransport{
-		conn:   conn,
-		reader: bufio.NewReader(contextReader),
-		writer: bufio.NewWriter(conn),
-		ctx:    ctx,
-	}
-}
-
-// DialTCP establishes a TCP connection to the specified address and returns a Transport.
-// The returned transport respects context cancellation - when the context is cancelled,
-// any blocked reads will be unblocked.
-func DialTCP(ctx context.Context, address string) (Transport, error) {
-	var d net.Dialer
-	conn, dialErr := d.DialContext(ctx, "tcp", address)
-	if dialErr != nil {
-		return nil, fmt.Errorf("failed to dial TCP %s: %w", address, dialErr)
-	}
-
-	return NewTCPTransportWithContext(ctx, conn), nil
-}
-
-func (t *tcpTransport) ReadMessage() (dap.Message, error) {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return nil, fmt.Errorf("transport is closed")
-	}
-	t.mu.Unlock()
-
-	msg, readErr := dap.ReadProtocolMessage(t.reader)
-	if readErr != nil {
-		return nil, fmt.Errorf("failed to read DAP message: %w", readErr)
-	}
-
-	return msg, nil
-}
-
-func (t *tcpTransport) WriteMessage(msg dap.Message) error {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return fmt.Errorf("transport is closed")
-	}
-	t.mu.Unlock()
-
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
-
-	writeErr := dap.WriteProtocolMessage(t.writer, msg)
-	if writeErr != nil {
-		return fmt.Errorf("failed to write DAP message: %w", writeErr)
-	}
-
-	flushErr := t.writer.Flush()
-	if flushErr != nil {
-		return fmt.Errorf("failed to flush DAP message: %w", flushErr)
-	}
-
-	return nil
-}
-
-func (t *tcpTransport) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.closed {
-		return nil
-	}
-
-	t.closed = true
-	return t.conn.Close()
-}
-
-// stdioTransport implements Transport over stdin/stdout streams.
-type stdioTransport struct {
-	reader *bufio.Reader
-	writer *bufio.Writer
-	stdin  io.ReadCloser
-	stdout io.WriteCloser
-	ctx    context.Context
-
-	// writeMu protects concurrent writes
-	writeMu sync.Mutex
-
-	// closed indicates whether the transport has been closed
-	closed bool
-	mu     sync.Mutex
-}
-
-// NewStdioTransport creates a new Transport backed by stdin and stdout streams.
-// The caller is responsible for ensuring that stdin supports reading and stdout supports writing.
-// This constructor creates a transport without context cancellation support.
-// Use NewStdioTransportWithContext for context-aware transports.
-func NewStdioTransport(stdin io.ReadCloser, stdout io.WriteCloser) Transport {
-	return NewStdioTransportWithContext(context.Background(), stdin, stdout)
+	return newConnTransport(ctx, conn, conn, conn)
 }
 
 // NewStdioTransportWithContext creates a new Transport backed by stdin and stdout streams
 // that respects context cancellation. When the context is cancelled, any blocked
 // reads will be unblocked by closing the stdin stream.
 func NewStdioTransportWithContext(ctx context.Context, stdin io.ReadCloser, stdout io.WriteCloser) Transport {
-	// Use ContextReader with leverageReadCloser=true so stdin is closed
-	// when the context is cancelled, unblocking any pending reads.
-	contextReader := dcpio.NewContextReader(ctx, stdin, true)
+	return newConnTransport(ctx, stdin, stdout, multiCloser{stdin, stdout})
+}
 
-	return &stdioTransport{
+// NewUnixTransportWithContext creates a new Transport backed by a Unix domain socket connection
+// that respects context cancellation. When the context is cancelled, any blocked
+// reads will be unblocked by closing the connection.
+func NewUnixTransportWithContext(ctx context.Context, conn net.Conn) Transport {
+	return newConnTransport(ctx, conn, conn, conn)
+}
+
+// newConnTransport creates a connTransport from separate read, write, and close resources.
+// A ContextReader wraps the reader so that context cancellation unblocks pending reads.
+func newConnTransport(ctx context.Context, r io.Reader, w io.Writer, closer io.Closer) Transport {
+	contextReader := dcpio.NewContextReader(ctx, r, true)
+	return &connTransport{
 		reader: bufio.NewReader(contextReader),
-		writer: bufio.NewWriter(stdout),
-		stdin:  stdin,
-		stdout: stdout,
-		ctx:    ctx,
+		writer: bufio.NewWriter(w),
+		closer: closer,
 	}
 }
 
-func (t *stdioTransport) ReadMessage() (dap.Message, error) {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return nil, fmt.Errorf("transport is closed")
-	}
-	t.mu.Unlock()
-
-	msg, readErr := dap.ReadProtocolMessage(t.reader)
+func (t *connTransport) ReadMessage() (dap.Message, error) {
+	msg, readErr := ReadMessageWithFallback(t.reader)
 	if readErr != nil {
 		return nil, fmt.Errorf("failed to read DAP message: %w", readErr)
 	}
@@ -196,18 +92,11 @@ func (t *stdioTransport) ReadMessage() (dap.Message, error) {
 	return msg, nil
 }
 
-func (t *stdioTransport) WriteMessage(msg dap.Message) error {
-	t.mu.Lock()
-	if t.closed {
-		t.mu.Unlock()
-		return fmt.Errorf("transport is closed")
-	}
-	t.mu.Unlock()
-
+func (t *connTransport) WriteMessage(msg dap.Message) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
 
-	writeErr := dap.WriteProtocolMessage(t.writer, msg)
+	writeErr := WriteMessageWithFallback(t.writer, msg)
 	if writeErr != nil {
 		return fmt.Errorf("failed to write DAP message: %w", writeErr)
 	}
@@ -220,27 +109,19 @@ func (t *stdioTransport) WriteMessage(msg dap.Message) error {
 	return nil
 }
 
-func (t *stdioTransport) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+func (t *connTransport) Close() error {
+	return t.closer.Close()
+}
 
-	if t.closed {
-		return nil
+// multiCloser closes multiple io.Closers, returning the first error.
+type multiCloser []io.Closer
+
+func (mc multiCloser) Close() error {
+	var firstErr error
+	for _, c := range mc {
+		if closeErr := c.Close(); closeErr != nil && firstErr == nil {
+			firstErr = closeErr
+		}
 	}
-
-	t.closed = true
-
-	var errs []error
-	if closeErr := t.stdin.Close(); closeErr != nil {
-		errs = append(errs, fmt.Errorf("failed to close stdin: %w", closeErr))
-	}
-	if closeErr := t.stdout.Close(); closeErr != nil {
-		errs = append(errs, fmt.Errorf("failed to close stdout: %w", closeErr))
-	}
-
-	if len(errs) > 0 {
-		return errs[0] // Return first error; could enhance to return all
-	}
-
-	return nil
+	return firstErr
 }

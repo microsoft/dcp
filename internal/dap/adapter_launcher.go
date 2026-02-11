@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -38,14 +37,8 @@ type LaunchedAdapter struct {
 	// Transport provides DAP message I/O with the debug adapter.
 	Transport Transport
 
-	// pid is the process ID of the debug adapter.
-	pid process.Pid_t
-
-	// startTime is the process start time (used for process identity).
-	startTime time.Time
-
-	// executor is the process executor used for lifecycle management.
-	executor process.Executor
+	// handle identifies the debug adapter process.
+	handle process.ProcessHandle
 
 	// listener is the TCP listener for callback mode (nil for other modes).
 	listener net.Listener
@@ -63,25 +56,9 @@ type LaunchedAdapter struct {
 	mu sync.Mutex
 }
 
-// Wait blocks until the debug adapter process exits.
-// Returns the exit error if the process exited with an error.
-func (la *LaunchedAdapter) Wait() error {
-	<-la.done
-	la.mu.Lock()
-	defer la.mu.Unlock()
-	return la.exitErr
-}
-
-// ExitCode returns the process exit code. Only valid after Wait() returns.
-func (la *LaunchedAdapter) ExitCode() int32 {
-	la.mu.Lock()
-	defer la.mu.Unlock()
-	return la.exitCode
-}
-
 // Pid returns the process ID of the debug adapter.
 func (la *LaunchedAdapter) Pid() process.Pid_t {
-	return la.pid
+	return la.handle.Pid
 }
 
 // Done returns a channel that is closed when the debug adapter process exits.
@@ -107,15 +84,6 @@ func (la *LaunchedAdapter) Close() error {
 	return errors.Join(errs...)
 }
 
-// Stop explicitly stops the debug adapter process.
-// This is typically not needed as the process is stopped automatically when the context is cancelled.
-func (la *LaunchedAdapter) Stop() error {
-	if la.executor != nil && la.pid != process.UnknownPID {
-		return la.executor.StopProcess(la.pid, la.startTime)
-	}
-	return nil
-}
-
 // LaunchDebugAdapter launches a debug adapter process using the provided configuration.
 // The process lifetime is tied to the provided context - when the context is cancelled,
 // the process will be killed by the executor.
@@ -132,7 +100,7 @@ func LaunchDebugAdapter(ctx context.Context, executor process.Executor, config *
 		return nil, ErrInvalidAdapterConfig
 	}
 
-	switch config.Mode {
+	switch config.EffectiveMode() {
 	case DebugAdapterModeStdio:
 		return launchStdioAdapter(ctx, executor, config, log)
 	case DebugAdapterModeTCPCallback:
@@ -168,7 +136,6 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 	}
 
 	adapter := &LaunchedAdapter{
-		executor: executor,
 		done:     make(chan struct{}),
 		exitCode: process.UnknownExitCode,
 	}
@@ -192,7 +159,7 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 		}
 	})
 
-	pid, startTime, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		stdin.Close()
 		stdout.Close()
@@ -208,11 +175,10 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 	log.Info("Launched debug adapter process (stdio mode)",
 		"command", config.Args[0],
 		"args", config.Args[1:],
-		"pid", pid)
+		"pid", handle.Pid)
 
 	adapter.Transport = NewStdioTransportWithContext(ctx, stdout, stdin)
-	adapter.pid = pid
-	adapter.startTime = startTime
+	adapter.handle = handle
 
 	return adapter, nil
 }
@@ -243,7 +209,6 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 	}
 
 	adapter := &LaunchedAdapter{
-		executor: executor,
 		listener: listener,
 		done:     make(chan struct{}),
 		exitCode: process.UnknownExitCode,
@@ -268,7 +233,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 		}
 	})
 
-	pid, startTime, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		listener.Close()
 		stderr.Close()
@@ -283,17 +248,13 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 	log.Info("Launched debug adapter process (tcp-callback mode)",
 		"command", args[0],
 		"args", args[1:],
-		"pid", pid,
+		"pid", handle.Pid,
 		"listenAddress", listenerAddr)
 
-	adapter.pid = pid
-	adapter.startTime = startTime
+	adapter.handle = handle
 
 	// Wait for adapter to connect
-	timeout := config.ConnectionTimeout
-	if timeout <= 0 {
-		timeout = DefaultAdapterConnectionTimeout
-	}
+	timeout := config.GetConnectionTimeout()
 
 	connCh := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
@@ -311,11 +272,11 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 	case conn = <-connCh:
 		log.Info("Debug adapter connected", "remoteAddr", conn.RemoteAddr().String())
 	case acceptErr := <-errCh:
-		_ = executor.StopProcess(pid, startTime)
+		_ = executor.StopProcess(adapter.handle)
 		listener.Close()
 		return nil, fmt.Errorf("failed to accept adapter connection: %w", acceptErr)
 	case <-time.After(timeout):
-		_ = executor.StopProcess(pid, startTime)
+		_ = executor.StopProcess(adapter.handle)
 		listener.Close()
 		return nil, ErrAdapterConnectionTimeout
 	case <-ctx.Done():
@@ -349,7 +310,6 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 	}
 
 	adapter := &LaunchedAdapter{
-		executor: executor,
 		done:     make(chan struct{}),
 		exitCode: process.UnknownExitCode,
 	}
@@ -373,7 +333,7 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 		}
 	})
 
-	pid, startTime, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		stderr.Close()
 		return nil, fmt.Errorf("failed to start debug adapter: %w", startErr)
@@ -387,17 +347,13 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 	log.Info("Launched debug adapter process (tcp-connect mode)",
 		"command", args[0],
 		"args", args[1:],
-		"pid", pid,
+		"pid", handle.Pid,
 		"port", port)
 
-	adapter.pid = pid
-	adapter.startTime = startTime
+	adapter.handle = handle
 
 	// Connect to the adapter with retry
-	timeout := config.ConnectionTimeout
-	if timeout <= 0 {
-		timeout = DefaultAdapterConnectionTimeout
-	}
+	timeout := config.GetConnectionTimeout()
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	var conn net.Conn
@@ -423,7 +379,7 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 	}
 
 	if connectErr != nil {
-		_ = executor.StopProcess(pid, startTime)
+		_ = executor.StopProcess(adapter.handle)
 		return nil, fmt.Errorf("%w: failed to connect to adapter at %s: %v", ErrAdapterConnectionTimeout, addr, connectErr)
 	}
 
@@ -443,11 +399,10 @@ func substitutePort(args []string, port string) []string {
 }
 
 // buildEnv builds the environment for the adapter process.
+// Only the environment variables from the config are used; the current process
+// environment is intentionally NOT inherited.
 func buildEnv(config *DebugAdapterConfig) []string {
-	env := os.Environ()
-	// Clear GOFLAGS to avoid issues when launching Go tools (like dlv)
-	env = append(env, "GOFLAGS=")
-	// Add user-specified environment variables
+	env := make([]string, 0, len(config.Env))
 	for _, e := range config.Env {
 		env = append(env, e.Name+"="+e.Value)
 	}

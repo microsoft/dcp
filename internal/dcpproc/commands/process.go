@@ -65,14 +65,14 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, resourceId)
 		}
 
-		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, log)
+		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), process.NewProcessHandle(monitorPid, monitorProcessStartTime), monitorInterval, log)
 		defer monitorCtxCancel()
 		if monitorCtxErr != nil {
 			if errors.Is(monitorCtxErr, os.ErrProcessDone) {
 				// If the monitor process is already terminated, stop the service immediately
 				log.Info("Monitored process already exited, shutting down child process...")
 				executor := process.NewOSExecutor(log)
-				stopErr := executor.StopProcess(childPid, childProcessStartTime)
+				stopErr := executor.StopProcess(process.NewProcessHandle(childPid, childProcessStartTime))
 				if stopErr != nil {
 					log.Error(stopErr, "Failed to stop child process")
 					return stopErr
@@ -85,7 +85,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			}
 		}
 
-		childProcessCtx, childProcessCtxCancel, childMonitorErr := cmds.MonitorPid(cmd.Context(), childPid, childProcessStartTime, monitorInterval, log)
+		childProcessCtx, childProcessCtxCancel, childMonitorErr := cmds.MonitorPid(cmd.Context(), process.NewProcessHandle(childPid, childProcessStartTime), monitorInterval, log)
 		defer childProcessCtxCancel()
 		if childMonitorErr != nil {
 			// Log as Info--we might leak the child process if regular cleanup fails, but this should be rare.
@@ -105,7 +105,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			if childProcessCtx.Err() == nil {
 				log.Info("Monitored process exited, shutting down child process")
 				executor := process.NewOSExecutor(log)
-				stopErr := executor.StopProcess(childPid, childProcessStartTime)
+				stopErr := executor.StopProcess(process.NewProcessHandle(childPid, childProcessStartTime))
 				if stopErr != nil {
 					log.Error(stopErr, "Failed to stop child service process")
 					return stopErr

@@ -261,24 +261,6 @@ type ExecutableSpec struct {
 	// PEM formatted certificates to be written for the Executable
 	// +optional
 	PemCertificates *ExecutablePemCertificates `json:"pemCertificates,omitempty"`
-
-	// Debug adapter launch command for debugging this Executable.
-	// The first element is the executable path, subsequent elements are arguments.
-	// When set, enables debug session support via the DAP proxy.
-	// Arguments may contain the placeholder "{{port}}" which will be replaced with
-	// an allocated port number when using TCP modes.
-	// +listType=atomic
-	// +optional
-	DebugAdapterLaunch []string `json:"debugAdapterLaunch,omitempty"`
-
-	// Debug adapter communication mode. Specifies how the DAP proxy communicates
-	// with the debug adapter process.
-	// Valid values are:
-	// - "" or "stdio": adapter uses stdin/stdout for DAP messages (default)
-	// - "tcp-callback": we start a listener, adapter connects to us (pass address via --client-addr or similar)
-	// - "tcp-connect": we specify a port, adapter listens, we connect to it
-	// +optional
-	DebugAdapterMode string `json:"debugAdapterMode,omitempty"`
 }
 
 func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
@@ -332,14 +314,6 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
-	if !stdslices.Equal(es.DebugAdapterLaunch, other.DebugAdapterLaunch) {
-		return false
-	}
-
-	if es.DebugAdapterMode != other.DebugAdapterMode {
-		return false
-	}
-
 	return true
 }
 
@@ -380,12 +354,6 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	}
 
 	errorList = append(errorList, es.PemCertificates.Validate(specPath.Child("pemCertificates"))...)
-
-	// Validate DebugAdapterMode if set
-	validModes := []string{"", "stdio", "tcp-callback", "tcp-connect"}
-	if !slices.Contains(validModes, es.DebugAdapterMode) {
-		errorList = append(errorList, field.Invalid(specPath.Child("debugAdapterMode"), es.DebugAdapterMode, "Debug adapter mode must be one of: '', 'stdio', 'tcp-callback', or 'tcp-connect'."))
-	}
 
 	return errorList
 }

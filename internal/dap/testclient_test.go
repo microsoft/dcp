@@ -10,24 +10,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-dap"
+	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 // TestClient is a DAP client for testing purposes.
 // It provides helper methods for common DAP operations.
 type TestClient struct {
 	transport Transport
-	seq       int
-	seqMu     sync.Mutex
+	seq       atomic.Int64
 
 	// eventChan receives events from the server
 	eventChan chan dap.Message
 
 	// responseChans tracks pending requests waiting for responses
-	responseChans map[int]chan dap.Message
-	responseMu    sync.Mutex
+	responseChans syncmap.Map[int, chan dap.Message]
 
 	// ctx controls the client lifecycle
 	ctx    context.Context
@@ -41,12 +41,10 @@ type TestClient struct {
 func NewTestClient(transport Transport) *TestClient {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &TestClient{
-		transport:     transport,
-		seq:           0,
-		eventChan:     make(chan dap.Message, 100),
-		responseChans: make(map[int]chan dap.Message),
-		ctx:           ctx,
-		cancel:        cancel,
+		transport: transport,
+		eventChan: make(chan dap.Message, 100),
+		ctx:       ctx,
+		cancel:    cancel,
 	}
 
 	c.wg.Add(1)
@@ -79,12 +77,9 @@ func (c *TestClient) readLoop() {
 		switch m := msg.(type) {
 		case dap.ResponseMessage:
 			resp := m.GetResponse()
-			c.responseMu.Lock()
-			if ch, ok := c.responseChans[resp.RequestSeq]; ok {
+			if ch, ok := c.responseChans.LoadAndDelete(resp.RequestSeq); ok {
 				ch <- msg
-				delete(c.responseChans, resp.RequestSeq)
 			}
-			c.responseMu.Unlock()
 
 		case dap.EventMessage:
 			select {
@@ -103,10 +98,7 @@ func (c *TestClient) readLoop() {
 
 // nextSeq returns the next sequence number.
 func (c *TestClient) nextSeq() int {
-	c.seqMu.Lock()
-	defer c.seqMu.Unlock()
-	c.seq++
-	return c.seq
+	return int(c.seq.Add(1))
 }
 
 // sendRequest sends a request and waits for the response.
@@ -117,15 +109,11 @@ func (c *TestClient) sendRequest(ctx context.Context, req dap.RequestMessage) (d
 
 	// Create response channel
 	respChan := make(chan dap.Message, 1)
-	c.responseMu.Lock()
-	c.responseChans[seq] = respChan
-	c.responseMu.Unlock()
+	c.responseChans.Store(seq, respChan)
 
 	// Send request
 	if writeErr := c.transport.WriteMessage(req); writeErr != nil {
-		c.responseMu.Lock()
-		delete(c.responseChans, seq)
-		c.responseMu.Unlock()
+		c.responseChans.Delete(seq)
 		return nil, fmt.Errorf("failed to send request: %w", writeErr)
 	}
 
@@ -134,9 +122,7 @@ func (c *TestClient) sendRequest(ctx context.Context, req dap.RequestMessage) (d
 	case resp := <-respChan:
 		return resp, nil
 	case <-ctx.Done():
-		c.responseMu.Lock()
-		delete(c.responseChans, seq)
-		c.responseMu.Unlock()
+		c.responseChans.Delete(seq)
 		return nil, ctx.Err()
 	}
 }

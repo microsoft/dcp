@@ -6,186 +6,434 @@
 package dap
 
 import (
+	"bufio"
+	"bytes"
 	"testing"
-	"time"
 
 	"github.com/google/go-dap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSequenceCounter(t *testing.T) {
+func TestReadMessageWithFallback(t *testing.T) {
 	t.Parallel()
 
-	counter := newSequenceCounter()
+	t.Run("known request is decoded normally", func(t *testing.T) {
+		t.Parallel()
 
-	assert.Equal(t, 0, counter.Current(), "initial value should be 0")
-
-	assert.Equal(t, 1, counter.Next(), "first Next() should return 1")
-	assert.Equal(t, 1, counter.Current(), "Current() should return 1 after first Next()")
-
-	assert.Equal(t, 2, counter.Next(), "second Next() should return 2")
-	assert.Equal(t, 3, counter.Next(), "third Next() should return 3")
-	assert.Equal(t, 3, counter.Current(), "Current() should return 3")
-}
-
-func TestPendingRequestMap(t *testing.T) {
-	t.Parallel()
-
-	m := newPendingRequestMap()
-
-	assert.Equal(t, 0, m.Len(), "initial map should be empty")
-
-	// Add requests
-	req1 := &pendingRequest{
-		originalSeq: 1,
-		virtual:     false,
-		request:     &dap.ContinueRequest{},
-	}
-	req2 := &pendingRequest{
-		originalSeq:  0,
-		virtual:      true,
-		responseChan: make(chan dap.Message, 1),
-		request:      &dap.ThreadsRequest{},
-	}
-
-	m.Add(10, req1)
-	m.Add(11, req2)
-
-	assert.Equal(t, 2, m.Len(), "map should have 2 entries")
-
-	// Get request
-	got := m.Get(10)
-	require.NotNil(t, got, "should get request for seq 10")
-	assert.Equal(t, req1, got)
-	assert.Equal(t, 1, m.Len(), "map should have 1 entry after Get")
-
-	// Get same request again should return nil
-	got = m.Get(10)
-	assert.Nil(t, got, "second Get for same seq should return nil")
-
-	// Get unknown request
-	got = m.Get(999)
-	assert.Nil(t, got, "Get for unknown seq should return nil")
-
-	// Get remaining request
-	got = m.Get(11)
-	require.NotNil(t, got, "should get request for seq 11")
-	assert.Equal(t, req2, got)
-	assert.Equal(t, 0, m.Len(), "map should be empty")
-}
-
-func TestPendingRequestMap_DrainWithError(t *testing.T) {
-	t.Parallel()
-
-	m := newPendingRequestMap()
-
-	// Add virtual request with response channel
-	responseChan := make(chan dap.Message, 1)
-	m.Add(10, &pendingRequest{
-		virtual:      true,
-		responseChan: responseChan,
-	})
-
-	// Add non-virtual request
-	m.Add(11, &pendingRequest{
-		virtual: false,
-	})
-
-	assert.Equal(t, 2, m.Len())
-
-	// Drain
-	m.DrainWithError()
-
-	assert.Equal(t, 0, m.Len(), "map should be empty after drain")
-
-	// Response channel should be closed
-	select {
-	case _, ok := <-responseChan:
-		assert.False(t, ok, "response channel should be closed")
-	default:
-		t.Fatal("response channel should be closed and readable")
-	}
-}
-
-func TestDirection_String(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "upstream", Upstream.String())
-	assert.Equal(t, "downstream", Downstream.String())
-	assert.Equal(t, "unknown", Direction(99).String())
-}
-
-func TestEventDeduplicator(t *testing.T) {
-	t.Parallel()
-
-	t.Run("suppresses duplicate event within window", func(t *testing.T) {
-		d := newEventDeduplicator(100 * time.Millisecond)
-
-		event := &dap.ContinuedEvent{
-			Event: dap.Event{
-				ProtocolMessage: dap.ProtocolMessage{Type: "event"},
-				Event:           "continued",
-			},
-			Body: dap.ContinuedEventBody{
-				ThreadId: 1,
+		// Create a valid DAP message using WriteProtocolMessage
+		buf := new(bytes.Buffer)
+		initReq := &dap.InitializeRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+				Command:         "initialize",
 			},
 		}
+		err := dap.WriteProtocolMessage(buf, initReq)
+		require.NoError(t, err)
 
-		// Record virtual event
-		d.RecordVirtualEvent(event)
+		reader := bufio.NewReader(buf)
+		msg, readErr := ReadMessageWithFallback(reader)
+		require.NoError(t, readErr)
 
-		// Same event should be suppressed
-		assert.True(t, d.ShouldSuppress(event))
-
-		// Second suppression should not suppress (entry was removed)
-		assert.False(t, d.ShouldSuppress(event))
+		decoded, ok := msg.(*dap.InitializeRequest)
+		require.True(t, ok, "expected *dap.InitializeRequest, got %T", msg)
+		assert.Equal(t, 1, decoded.Seq)
+		assert.Equal(t, "initialize", decoded.Command)
 	})
 
-	t.Run("does not suppress after window expires", func(t *testing.T) {
-		now := time.Now()
-		d := newEventDeduplicator(100 * time.Millisecond)
-		d.timeSource = func() time.Time { return now }
+	t.Run("unknown request returns RawMessage", func(t *testing.T) {
+		t.Parallel()
 
-		event := &dap.ContinuedEvent{
-			Body: dap.ContinuedEventBody{ThreadId: 1},
-		}
+		// Create a DAP message with unknown command
+		customJSON := `{"seq":2,"type":"request","command":"handshake","arguments":{"value":"test-value"}}`
+		content := "Content-Length: " + itoa(len(customJSON)) + "\r\n\r\n" + customJSON
 
-		d.RecordVirtualEvent(event)
+		reader := bufio.NewReader(bytes.NewBufferString(content))
+		msg, readErr := ReadMessageWithFallback(reader)
+		require.NoError(t, readErr)
 
-		// Advance time past window
-		d.timeSource = func() time.Time { return now.Add(150 * time.Millisecond) }
-
-		assert.False(t, d.ShouldSuppress(event))
+		raw, ok := msg.(*RawMessage)
+		require.True(t, ok, "expected *RawMessage, got %T", msg)
+		assert.Equal(t, 2, raw.GetSeq())
+		assert.Contains(t, string(raw.Data), `"command":"handshake"`)
 	})
 
-	t.Run("does not suppress different events", func(t *testing.T) {
-		d := newEventDeduplicator(100 * time.Millisecond)
+	t.Run("unknown event returns RawMessage", func(t *testing.T) {
+		t.Parallel()
 
-		event1 := &dap.ContinuedEvent{
-			Body: dap.ContinuedEventBody{ThreadId: 1},
-		}
-		event2 := &dap.ContinuedEvent{
-			Body: dap.ContinuedEventBody{ThreadId: 2},
-		}
+		customJSON := `{"seq":5,"type":"event","event":"customEvent","body":{"data":123}}`
+		content := "Content-Length: " + itoa(len(customJSON)) + "\r\n\r\n" + customJSON
 
-		d.RecordVirtualEvent(event1)
+		reader := bufio.NewReader(bytes.NewBufferString(content))
+		msg, readErr := ReadMessageWithFallback(reader)
+		require.NoError(t, readErr)
 
-		// Different thread ID should not be suppressed
-		assert.False(t, d.ShouldSuppress(event2))
+		raw, ok := msg.(*RawMessage)
+		require.True(t, ok, "expected *RawMessage, got %T", msg)
+		assert.Equal(t, 5, raw.GetSeq())
+		assert.Contains(t, string(raw.Data), `"event":"customEvent"`)
 	})
 
-	t.Run("does not suppress output events", func(t *testing.T) {
-		d := newEventDeduplicator(100 * time.Millisecond)
+	t.Run("malformed JSON returns error", func(t *testing.T) {
+		t.Parallel()
 
-		event := &dap.OutputEvent{
-			Body: dap.OutputEventBody{
-				Output:   "test output",
-				Category: "console",
+		badJSON := `{"seq":1,"type":`
+		content := "Content-Length: " + itoa(len(badJSON)) + "\r\n\r\n" + badJSON
+
+		reader := bufio.NewReader(bytes.NewBufferString(content))
+		_, readErr := ReadMessageWithFallback(reader)
+		require.Error(t, readErr)
+	})
+}
+
+func TestWriteMessageWithFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("known message uses standard encoding", func(t *testing.T) {
+		t.Parallel()
+
+		buf := new(bytes.Buffer)
+		initReq := &dap.InitializeRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+				Command:         "initialize",
 			},
 		}
+		err := WriteMessageWithFallback(buf, initReq)
+		require.NoError(t, err)
 
-		d.RecordVirtualEvent(event)
-		assert.False(t, d.ShouldSuppress(event), "output events should not be deduplicated")
+		// Read it back
+		reader := bufio.NewReader(buf)
+		msg, readErr := dap.ReadProtocolMessage(reader)
+		require.NoError(t, readErr)
+
+		decoded, ok := msg.(*dap.InitializeRequest)
+		require.True(t, ok)
+		assert.Equal(t, 1, decoded.Seq)
+	})
+
+	t.Run("RawMessage writes raw bytes", func(t *testing.T) {
+		t.Parallel()
+
+		customJSON := `{"seq":2,"type":"request","command":"handshake","arguments":{"value":"test-value"}}`
+		raw := &RawMessage{Data: []byte(customJSON)}
+
+		buf := new(bytes.Buffer)
+		err := WriteMessageWithFallback(buf, raw)
+		require.NoError(t, err)
+
+		// Expect Content-Length header followed by the raw JSON
+		result := buf.String()
+		assert.Contains(t, result, "Content-Length:")
+		assert.Contains(t, result, customJSON)
+	})
+
+	t.Run("RawMessage roundtrip preserves data", func(t *testing.T) {
+		t.Parallel()
+
+		originalJSON := `{"seq":3,"type":"request","command":"vsdbgHandshake","arguments":{"protocolVersion":1}}`
+		raw := &RawMessage{Data: []byte(originalJSON)}
+
+		buf := new(bytes.Buffer)
+		err := WriteMessageWithFallback(buf, raw)
+		require.NoError(t, err)
+
+		// Read it back using ReadMessageWithFallback
+		reader := bufio.NewReader(buf)
+		msg, readErr := ReadMessageWithFallback(reader)
+		require.NoError(t, readErr)
+
+		readRaw, ok := msg.(*RawMessage)
+		require.True(t, ok, "expected *RawMessage, got %T", msg)
+		assert.Equal(t, originalJSON, string(readRaw.Data))
+	})
+}
+
+// itoa is a simple helper to convert int to string without importing strconv
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+func TestMessageEnvelope_TypedRequest(t *testing.T) {
+	t.Parallel()
+
+	msg := &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+			Command:         "initialize",
+		},
+	}
+
+	env := NewMessageEnvelope(msg)
+	assert.Equal(t, 1, env.Seq)
+	assert.Equal(t, "request", env.Type)
+	assert.Equal(t, "initialize", env.Command)
+	assert.False(t, env.IsResponse())
+
+	// Modify seq
+	env.Seq = 100
+	finalized, finalizeErr := env.Finalize()
+	require.NoError(t, finalizeErr)
+	assert.Equal(t, 100, finalized.GetSeq())
+	assert.Equal(t, msg, finalized) // same pointer
+}
+
+func TestMessageEnvelope_TypedResponse(t *testing.T) {
+	t.Parallel()
+
+	msg := &dap.InitializeResponse{
+		Response: dap.Response{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "response"},
+			Command:         "initialize",
+			RequestSeq:      1,
+			Success:         true,
+		},
+	}
+
+	env := NewMessageEnvelope(msg)
+	assert.Equal(t, 2, env.Seq)
+	assert.Equal(t, "response", env.Type)
+	assert.Equal(t, 1, env.RequestSeq)
+	assert.True(t, env.IsResponse())
+	require.NotNil(t, env.Success)
+	assert.True(t, *env.Success)
+
+	// Modify both seq and request_seq
+	env.Seq = 200
+	env.RequestSeq = 50
+	finalized, finalizeErr := env.Finalize()
+	require.NoError(t, finalizeErr)
+	assert.Equal(t, 200, finalized.GetSeq())
+	resp := finalized.(*dap.InitializeResponse)
+	assert.Equal(t, 50, resp.Response.RequestSeq)
+}
+
+func TestMessageEnvelope_TypedEvent(t *testing.T) {
+	t.Parallel()
+
+	msg := &dap.OutputEvent{
+		Event: dap.Event{
+			ProtocolMessage: dap.ProtocolMessage{Seq: 3, Type: "event"},
+			Event:           "output",
+		},
+	}
+
+	env := NewMessageEnvelope(msg)
+	assert.Equal(t, 3, env.Seq)
+	assert.Equal(t, "event", env.Type)
+	assert.Equal(t, "output", env.Event)
+	assert.False(t, env.IsResponse())
+
+	// Modify seq
+	env.Seq = 300
+	finalized, finalizeErr := env.Finalize()
+	require.NoError(t, finalizeErr)
+	assert.Equal(t, 300, finalized.GetSeq())
+}
+
+func TestMessageEnvelope_RawRequest(t *testing.T) {
+	t.Parallel()
+
+	raw := &RawMessage{Data: []byte(`{"seq":5,"type":"request","command":"handshake","arguments":{"v":1}}`)}
+	env := NewMessageEnvelope(raw)
+
+	assert.Equal(t, 5, env.Seq)
+	assert.Equal(t, "request", env.Type)
+	assert.Equal(t, "handshake", env.Command)
+	assert.False(t, env.IsResponse())
+
+	// Modify seq
+	env.Seq = 500
+	finalized, finalizeErr := env.Finalize()
+	require.NoError(t, finalizeErr)
+
+	// Finalize returns the same RawMessage with patched JSON
+	patchedRaw, ok := finalized.(*RawMessage)
+	require.True(t, ok)
+	assert.Equal(t, 500, patchedRaw.GetSeq())
+	assert.Contains(t, string(patchedRaw.Data), `"command":"handshake"`)
+	assert.Contains(t, string(patchedRaw.Data), `"arguments"`)
+}
+
+func TestMessageEnvelope_RawResponse(t *testing.T) {
+	t.Parallel()
+
+	raw := &RawMessage{Data: []byte(`{"seq":6,"type":"response","command":"handshake","request_seq":5,"success":true,"body":{"v":1}}`)}
+	env := NewMessageEnvelope(raw)
+
+	assert.Equal(t, 6, env.Seq)
+	assert.Equal(t, "response", env.Type)
+	assert.Equal(t, 5, env.RequestSeq)
+	assert.True(t, env.IsResponse())
+	require.NotNil(t, env.Success)
+	assert.True(t, *env.Success)
+
+	// Modify both seq and request_seq — should produce a single patch pass
+	env.Seq = 100
+	env.RequestSeq = 42
+	finalized, finalizeErr := env.Finalize()
+	require.NoError(t, finalizeErr)
+
+	patchedRaw, ok := finalized.(*RawMessage)
+	require.True(t, ok)
+	assert.Equal(t, 100, patchedRaw.GetSeq())
+	h := patchedRaw.parseHeader()
+	assert.Equal(t, 42, h.RequestSeq)
+	assert.Equal(t, "handshake", h.Command)
+	assert.Contains(t, string(patchedRaw.Data), `"body"`)
+}
+
+func TestMessageEnvelope_NoChanges(t *testing.T) {
+	t.Parallel()
+
+	originalJSON := `{"seq":3,"type":"event","event":"custom","body":{"data":123}}`
+	raw := &RawMessage{Data: []byte(originalJSON)}
+	env := NewMessageEnvelope(raw)
+
+	// Don't modify anything
+	finalized, finalizeErr := env.Finalize()
+	require.NoError(t, finalizeErr)
+
+	patchedRaw, ok := finalized.(*RawMessage)
+	require.True(t, ok)
+	// Data should be untouched since nothing changed
+	assert.Equal(t, originalJSON, string(patchedRaw.Data))
+}
+
+func TestMessageEnvelope_Describe(t *testing.T) {
+	t.Parallel()
+
+	t.Run("typed request", func(t *testing.T) {
+		t.Parallel()
+		msg := &dap.InitializeRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: 1, Type: "request"},
+				Command:         "initialize",
+			},
+		}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "request 'initialize' (seq=1)", env.Describe())
+	})
+
+	t.Run("typed response success", func(t *testing.T) {
+		t.Parallel()
+		msg := &dap.InitializeResponse{
+			Response: dap.Response{
+				ProtocolMessage: dap.ProtocolMessage{Seq: 2, Type: "response"},
+				Command:         "initialize",
+				RequestSeq:      1,
+				Success:         true,
+			},
+		}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "response 'initialize' (seq=2, request_seq=1, success=true)", env.Describe())
+	})
+
+	t.Run("raw request", func(t *testing.T) {
+		t.Parallel()
+		msg := &RawMessage{Data: []byte(`{"seq":5,"type":"request","command":"vsdbgHandshake"}`)}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "raw request 'vsdbgHandshake' (seq=5)", env.Describe())
+	})
+
+	t.Run("raw response success", func(t *testing.T) {
+		t.Parallel()
+		msg := &RawMessage{Data: []byte(`{"seq":6,"type":"response","command":"vsdbgHandshake","request_seq":5,"success":true}`)}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "raw response 'vsdbgHandshake' (seq=6, request_seq=5, success=true)", env.Describe())
+	})
+
+	t.Run("raw response failure", func(t *testing.T) {
+		t.Parallel()
+		msg := &RawMessage{Data: []byte(`{"seq":7,"type":"response","command":"vsdbgHandshake","request_seq":5,"success":false,"message":"denied"}`)}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "raw response 'vsdbgHandshake' (seq=7, request_seq=5, success=false, message=\"denied\")", env.Describe())
+	})
+
+	t.Run("raw event", func(t *testing.T) {
+		t.Parallel()
+		msg := &RawMessage{Data: []byte(`{"seq":8,"type":"event","event":"customNotify"}`)}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "raw event 'customNotify' (seq=8)", env.Describe())
+	})
+
+	t.Run("raw unknown type", func(t *testing.T) {
+		t.Parallel()
+		msg := &RawMessage{Data: []byte(`{"seq":9,"type":"weird"}`)}
+		env := NewMessageEnvelope(msg)
+		assert.Equal(t, "raw weird (seq=9)", env.Describe())
+	})
+
+	t.Run("describe reflects modified seq", func(t *testing.T) {
+		t.Parallel()
+		msg := &RawMessage{Data: []byte(`{"seq":5,"type":"request","command":"handshake"}`)}
+		env := NewMessageEnvelope(msg)
+		env.Seq = 99
+		assert.Equal(t, "raw request 'handshake' (seq=99)", env.Describe())
+	})
+}
+
+func TestPatchJSONFields(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single field", func(t *testing.T) {
+		t.Parallel()
+		raw := &RawMessage{Data: []byte(`{"seq":1,"type":"request","command":"test"}`)}
+		require.NoError(t, raw.patchJSONFields(map[string]int{"seq": 42}))
+		assert.Equal(t, 42, raw.GetSeq())
+		assert.Contains(t, string(raw.Data), `"command":"test"`)
+	})
+
+	t.Run("multiple fields", func(t *testing.T) {
+		t.Parallel()
+		raw := &RawMessage{Data: []byte(`{"seq":1,"type":"response","command":"test","request_seq":5,"success":true}`)}
+		require.NoError(t, raw.patchJSONFields(map[string]int{"seq": 100, "request_seq": 42}))
+		h := raw.parseHeader()
+		assert.Equal(t, 100, h.Seq)
+		assert.Equal(t, 42, h.RequestSeq)
+		assert.Equal(t, "test", h.Command)
+		require.NotNil(t, h.Success)
+		assert.True(t, *h.Success)
+	})
+
+	t.Run("empty fields is no-op", func(t *testing.T) {
+		t.Parallel()
+		original := `{"seq":1,"type":"request"}`
+		raw := &RawMessage{Data: []byte(original)}
+		require.NoError(t, raw.patchJSONFields(map[string]int{}))
+		assert.Equal(t, original, string(raw.Data))
+	})
+
+	t.Run("preserves body", func(t *testing.T) {
+		t.Parallel()
+		raw := &RawMessage{Data: []byte(`{"seq":1,"type":"response","command":"test","request_seq":3,"success":true,"body":{"value":"test"}}`)}
+		require.NoError(t, raw.patchJSONFields(map[string]int{"seq": 42}))
+		assert.Contains(t, string(raw.Data), `"body"`)
+		assert.Contains(t, string(raw.Data), `"value":"test"`)
+	})
+
+	t.Run("invalidates header cache", func(t *testing.T) {
+		t.Parallel()
+		raw := &RawMessage{Data: []byte(`{"seq":1,"type":"request","command":"test"}`)}
+		// Populate cache
+		h1 := raw.parseHeader()
+		assert.Equal(t, 1, h1.Seq)
+		assert.NotNil(t, raw.header)
+		// Patch
+		require.NoError(t, raw.patchJSONFields(map[string]int{"seq": 99}))
+		// Cache should be invalidated
+		assert.Nil(t, raw.header)
+		// Re-parse should reflect new value
+		h2 := raw.parseHeader()
+		assert.Equal(t, 99, h2.Seq)
 	})
 }

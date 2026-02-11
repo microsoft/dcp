@@ -659,7 +659,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Podman command '%s'", "ExecContainer"))
@@ -1084,13 +1084,13 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
 		pco.log.Error(err, "Could not execute 'podman events' command; container events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
+	dcpproc.RunProcessWatcher(pco.executor, handle, pco.log)
 
 	startWaitForProcessExit()
 
@@ -1102,7 +1102,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		pco.log.V(1).Info("Stopping 'podman events' command", "PID", pid)
+		pco.log.V(1).Info("Stopping 'podman events' command", "PID", handle.Pid)
 	}
 }
 
@@ -1144,13 +1144,13 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
 		pco.log.Error(err, "Could not execute 'podman events' command; network events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
+	dcpproc.RunProcessWatcher(pco.executor, handle, pco.log)
 
 	startWaitForProcessExit()
 
@@ -1162,7 +1162,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		pco.log.V(1).Info("Stopping 'podman events' command", "PID", pid)
+		pco.log.V(1).Info("Stopping 'podman events' command", "PID", handle.Pid)
 	}
 }
 
@@ -1197,14 +1197,14 @@ func (pco *PodmanCliOrchestrator) streamPodmanCommand(
 	}
 
 	pco.log.V(1).Info("Running podman command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start podman command '%s'", commandName))
 	}
 
 	if opts&streamCommandOptionUseWatcher != 0 {
-		dcpproc.RunProcessWatcher(pco.executor, pid, startTime, pco.log)
+		dcpproc.RunProcessWatcher(pco.executor, handle, pco.log)
 	}
 
 	startWaitForProcessExit()

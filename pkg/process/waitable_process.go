@@ -27,8 +27,8 @@ type WaitableProcess struct {
 	waitLock         sync.Mutex
 }
 
-func FindWaitableProcess(pid Pid_t, processStartTime time.Time) (*WaitableProcess, error) {
-	foundProcess, err := FindProcess(pid, processStartTime)
+func FindWaitableProcess(handle ProcessHandle) (*WaitableProcess, error) {
+	foundProcess, err := FindProcess(handle)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +36,7 @@ func FindWaitableProcess(pid Pid_t, processStartTime time.Time) (*WaitableProces
 	dcpProcess := &WaitableProcess{
 		WaitPollInterval: defaultWaitPollInterval,
 		process:          foundProcess,
-		processStartTime: processStartTime,
+		processStartTime: handle.IdentityTime,
 		err:              nil,
 		waitLock:         sync.Mutex{},
 	}
@@ -70,7 +70,7 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 					case <-timer.C:
 						pid := Uint32_ToPidT(uint32(p.process.Pid))
 
-						_, pollErr := FindProcess(pid, p.processStartTime)
+						_, pollErr := FindProcess(ProcessHandle{Pid: pid, IdentityTime: p.processStartTime})
 						// We couldn't find the PID, so the process has exited
 						if pollErr != nil {
 							p.err = nil

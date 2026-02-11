@@ -277,19 +277,19 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 	return removeErr
 }
 
-func (rh *resourceHarvester) isRunningDCPProcess(pid process.Pid_t, startTime time.Time) bool {
-	if running, exists := rh.processes[pid]; exists {
+func (rh *resourceHarvester) isRunningDCPProcess(handle process.ProcessHandle) bool {
+	if running, exists := rh.processes[handle.Pid]; exists {
 		return running
 	}
 
 	// If the process is not in the cache, we need to check if it is running.
-	_, findErr := process.FindProcess(pid, startTime)
+	_, findErr := process.FindProcess(handle)
 	if findErr != nil {
 		return false // Process not found, so it's not running.
 	}
 
 	// We found the process, so cache it as running.
-	rh.processes[pid] = true
+	rh.processes[handle.Pid] = true
 	return true
 }
 
@@ -299,7 +299,7 @@ func (rh *resourceHarvester) creatorStillRunning(labels map[string]string) bool 
 	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
 	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
 
-	return rh.isRunningDCPProcess(creatorPID, creatorStartTime)
+	return rh.isRunningDCPProcess(process.NewProcessHandle(creatorPID, creatorStartTime))
 }
 
 // Checks for the presence of the creator process ID and start time labels.

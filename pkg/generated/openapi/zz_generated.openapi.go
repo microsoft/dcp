@@ -2900,33 +2900,6 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutablePemCertificates"),
 						},
 					},
-					"debugAdapterLaunch": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Debug adapter launch command for debugging this Executable. The first element is the executable path, subsequent elements are arguments. When set, enables debug session support via the DAP proxy. Arguments may contain the placeholder \"{{port}}\" which will be replaced with an allocated port number when using TCP modes.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
-						},
-					},
-					"debugAdapterMode": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Debug adapter communication mode. Specifies how the DAP proxy communicates with the debug adapter process. Valid values are: - \"\" or \"stdio\": adapter uses stdin/stdout for DAP messages (default) - \"tcp-callback\": we start a listener, adapter connects to us (pass address via --client-addr or similar) - \"tcp-connect\": we specify a port, adapter listens, we connect to it",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 				},
 				Required: []string{"executablePath"},
 			},
