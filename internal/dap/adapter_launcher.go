@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 
 	"github.com/go-logr/logr"
@@ -31,6 +34,13 @@ var ErrInvalidAdapterConfig = errors.New("invalid debug adapter configuration: A
 
 // ErrAdapterConnectionTimeout is returned when the adapter fails to connect within the timeout.
 var ErrAdapterConnectionTimeout = errors.New("debug adapter connection timeout")
+
+// Environment variables starting with these prefixes will not be inherited from the
+// ambient (DCP process) environment when launching debug adapters.
+var suppressVarPrefixes = []string{
+	"DEBUG_SESSION",
+	"DCP_",
+}
 
 // LaunchedAdapter represents a running debug adapter process with its transport.
 type LaunchedAdapter struct {
@@ -115,7 +125,7 @@ func LaunchDebugAdapter(ctx context.Context, executor process.Executor, config *
 // launchStdioAdapter launches an adapter in stdio mode.
 func launchStdioAdapter(ctx context.Context, executor process.Executor, config *DebugAdapterConfig, log logr.Logger) (*LaunchedAdapter, error) {
 	cmd := exec.Command(config.Args[0], config.Args[1:]...)
-	cmd.Env = buildEnv(config)
+	cmd.Env = buildFilteredEnv(config)
 
 	stdin, stdinErr := cmd.StdinPipe()
 	if stdinErr != nil {
@@ -200,7 +210,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 	args := substitutePort(config.Args, portStr)
 
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = buildEnv(config)
+	cmd.Env = buildFilteredEnv(config)
 
 	stderr, stderrErr := cmd.StderrPipe()
 	if stderrErr != nil {
@@ -302,7 +312,7 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 	args := substitutePort(config.Args, portStr)
 
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = buildEnv(config)
+	cmd.Env = buildFilteredEnv(config)
 
 	stderr, stderrErr := cmd.StderrPipe()
 	if stderrErr != nil {
@@ -398,15 +408,34 @@ func substitutePort(args []string, port string) []string {
 	return result
 }
 
-// buildEnv builds the environment for the adapter process.
-// Only the environment variables from the config are used; the current process
-// environment is intentionally NOT inherited.
-func buildEnv(config *DebugAdapterConfig) []string {
-	env := make([]string, 0, len(config.Env))
-	for _, e := range config.Env {
-		env = append(env, e.Name+"="+e.Value)
+// buildFilteredEnv builds the environment for the adapter process by inheriting
+// the ambient (current process) environment, removing variables with suppressed
+// prefixes (DCP_ and DEBUG_SESSION), and then applying the config-specified
+// environment variables on top.
+func buildFilteredEnv(config *DebugAdapterConfig) []string {
+	var envMap maps.StringKeyMap[string]
+	if osutil.IsWindows() {
+		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseInsensitive)
+	} else {
+		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
 	}
-	return env
+
+	envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
+		parts := strings.SplitN(envStr, "=", 2)
+		return parts[0], parts[1]
+	}))
+
+	for _, prefix := range suppressVarPrefixes {
+		envMap.DeletePrefix(prefix)
+	}
+
+	for _, e := range config.Env {
+		envMap.Override(e.Name, e.Value)
+	}
+
+	return maps.MapToSlice[string](envMap.Data(), func(key string, value string) string {
+		return key + "=" + value
+	})
 }
 
 // logStderr reads and logs stderr from the adapter.
