@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -699,7 +700,11 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 	if toolDirErr != nil {
 		t.Skip("debuggee binary not found (run 'make test-prereqs' first):", toolDirErr)
 	}
-	debuggeeBinary := filepath.Join(toolDir, "debuggee")
+	debuggeeName := "debuggee"
+	if runtime.GOOS == "windows" {
+		debuggeeName += ".exe"
+	}
+	debuggeeBinary := filepath.Join(toolDir, debuggeeName)
 
 	// Resolve the source file path for setting breakpoints.
 	debuggeeSource := resolveDebuggeeSourcePath(t)
