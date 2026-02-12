@@ -410,7 +410,7 @@ func substitutePort(args []string, port string) []string {
 
 // buildFilteredEnv builds the environment for the adapter process by inheriting
 // the ambient (current process) environment, removing variables with suppressed
-// prefixes (DCP_ and DEBUG_SESSION), and then applying the config-specified
+// prefixes (DCP_ and DEBUG_SESSION_), and then applying the config-specified
 // environment variables on top.
 func buildFilteredEnv(config *DebugAdapterConfig) []string {
 	var envMap maps.StringKeyMap[string]
