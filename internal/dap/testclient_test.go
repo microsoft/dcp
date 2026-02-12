@@ -102,6 +102,20 @@ func (c *TestClient) nextSeq() int {
 	return int(c.seq.Add(1))
 }
 
+// responseError extracts a detailed error message from a DAP response.
+// If the response is an ErrorResponse, it extracts the message and body error details.
+// Otherwise, it returns a generic "unexpected response type" error.
+func responseError(resp dap.Message, expectedType string) error {
+	if errResp, ok := resp.(*dap.ErrorResponse); ok {
+		if errResp.Body.Error != nil {
+			return fmt.Errorf("%s failed: %s (error %d: %s)",
+				expectedType, errResp.Message, errResp.Body.Error.Id, errResp.Body.Error.Format)
+		}
+		return fmt.Errorf("%s failed: %s", expectedType, errResp.Message)
+	}
+	return fmt.Errorf("unexpected response type for %s: %T", expectedType, resp)
+}
+
 // sendRequest sends a request and waits for the response.
 func (c *TestClient) sendRequest(ctx context.Context, req dap.RequestMessage) (dap.Message, error) {
 	request := req.GetRequest()
@@ -154,7 +168,7 @@ func (c *TestClient) Initialize(ctx context.Context) (*dap.InitializeResponse, e
 
 	initResp, ok := resp.(*dap.InitializeResponse)
 	if !ok {
-		return nil, fmt.Errorf("unexpected response type: %T", resp)
+		return nil, responseError(resp, "initialize")
 	}
 
 	if !initResp.Success {
@@ -191,7 +205,7 @@ func (c *TestClient) Launch(ctx context.Context, program string, stopOnEntry boo
 
 	launchResp, ok := resp.(*dap.LaunchResponse)
 	if !ok {
-		return fmt.Errorf("unexpected response type: %T", resp)
+		return responseError(resp, "launch")
 	}
 
 	if !launchResp.Success {
@@ -228,7 +242,7 @@ func (c *TestClient) SetBreakpoints(ctx context.Context, file string, lines []in
 
 	bpResp, ok := resp.(*dap.SetBreakpointsResponse)
 	if !ok {
-		return nil, fmt.Errorf("unexpected response type: %T", resp)
+		return nil, responseError(resp, "setBreakpoints")
 	}
 
 	if !bpResp.Success {
@@ -254,7 +268,7 @@ func (c *TestClient) ConfigurationDone(ctx context.Context) error {
 
 	configResp, ok := resp.(*dap.ConfigurationDoneResponse)
 	if !ok {
-		return fmt.Errorf("unexpected response type: %T", resp)
+		return responseError(resp, "configurationDone")
 	}
 
 	if !configResp.Success {
@@ -283,7 +297,7 @@ func (c *TestClient) Continue(ctx context.Context, threadID int) error {
 
 	contResp, ok := resp.(*dap.ContinueResponse)
 	if !ok {
-		return fmt.Errorf("unexpected response type: %T", resp)
+		return responseError(resp, "continue")
 	}
 
 	if !contResp.Success {
@@ -312,7 +326,7 @@ func (c *TestClient) Disconnect(ctx context.Context, terminateDebuggee bool) err
 
 	disconnResp, ok := resp.(*dap.DisconnectResponse)
 	if !ok {
-		return fmt.Errorf("unexpected response type: %T", resp)
+		return responseError(resp, "disconnect")
 	}
 
 	if !disconnResp.Success {
