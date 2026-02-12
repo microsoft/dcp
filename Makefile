@@ -374,9 +374,9 @@ endif
 ##@ Test targets
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool cache-delve
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool cache-delve
 endif
 
 .PHONY: test-prereqs
@@ -484,6 +484,11 @@ endif
 debuggee-tool: $(DEBUGGEE_TOOL)
 $(DEBUGGEE_TOOL): $(wildcard ./test/debuggee/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -gcflags="all=-N -l" -o $(DEBUGGEE_TOOL) github.com/microsoft/dcp/test/debuggee
+
+# cache-delve ensures the Delve debugger is downloaded for DAP tests
+.PHONY: cache-delve
+cache-delve:
+	@$(CLEAR_GOARGS) $(GOTOOL_BIN) github.com/go-delve/delve/cmd/dlv version
 
 .PHONY: httpcontent-stream-repro
 httpcontent-stream-repro:

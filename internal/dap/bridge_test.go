@@ -14,6 +14,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // shortTempDir creates a short temporary directory for socket tests.
@@ -56,7 +59,7 @@ func TestDapBridge_RunWithConnection(t *testing.T) {
 
 	bridge := NewDapBridge(config)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := testutil.GetTestContext(t, 500*time.Millisecond)
 	defer cancel()
 
 	// Run bridge with pre-connected connection
@@ -116,18 +119,24 @@ func TestDapBridge_Done(t *testing.T) {
 		// Expected
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
 
 	// Start bridge
+	errCh := make(chan error, 1)
 	go func() {
-		_ = bridge.RunWithConnection(ctx, serverConn)
+		errCh <- bridge.RunWithConnection(ctx, serverConn)
 	}()
-
-	// Give it time to start
-	time.Sleep(50 * time.Millisecond)
 
 	// Cancel to cause termination
 	cancel()
+
+	// Wait for RunWithConnection to return
+	select {
+	case <-errCh:
+		// Expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunWithConnection did not return after cancel")
+	}
 
 	// Done channel should be closed after termination
 	select {
@@ -165,7 +174,7 @@ func TestBridgeManager_StartAndReady(t *testing.T) {
 		SocketDir: socketDir,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, 2*time.Second)
 	defer cancel()
 
 	// Start in background
@@ -198,7 +207,7 @@ func TestBridgeManager_DuplicateSession(t *testing.T) {
 	})
 	_, _ = manager.RegisterSession("dup-session", "token")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
 	go func() {
@@ -209,22 +218,24 @@ func TestBridgeManager_DuplicateSession(t *testing.T) {
 
 	socketPath := manager.SocketPath()
 
-	// First connection - will fail because no debug adapter config in handshake,
-	// but it should mark the session as connected first
+	// First connection with a valid adapter config so the handshake completes
+	// and markSessionConnected is called. The adapter will fail to launch but
+	// the session will remain marked as connected.
 	conn1, err1 := net.Dial("unix", socketPath)
 	require.NoError(t, err1)
 	defer conn1.Close()
 
-	// Send a handshake without debug adapter config - it will fail but mark connected
-	writer := NewHandshakeWriter(conn1)
-	_ = writer.WriteRequest(&HandshakeRequest{
-		Token:     "token",
-		SessionID: "dup-session",
-		// No DebugAdapterConfig - this will cause failure but connected flag is set first
+	handshakeErr1 := performHandshakeWithAdapterConfig(conn1, "token", "dup-session", "", &DebugAdapterConfig{
+		Args: []string{"echo", "dummy"},
+		Mode: DebugAdapterModeStdio,
 	})
+	require.NoError(t, handshakeErr1, "first handshake should succeed")
 
-	// Give time for first connection to be processed
-	time.Sleep(200 * time.Millisecond)
+	// Wait until the first connection is processed and the session is marked connected
+	pollErr := wait.PollUntilContextCancel(ctx, 50*time.Millisecond, true, func(_ context.Context) (bool, error) {
+		return manager.IsSessionConnected("dup-session"), nil
+	})
+	require.NoError(t, pollErr, "first connection should mark the session as connected")
 
 	// Second connection for the same session
 	conn2, err2 := net.Dial("unix", socketPath)

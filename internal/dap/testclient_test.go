@@ -38,8 +38,9 @@ type TestClient struct {
 }
 
 // NewTestClient creates a new DAP test client with the given transport.
-func NewTestClient(transport Transport) *TestClient {
-	ctx, cancel := context.WithCancel(context.Background())
+// The client's lifecycle is bound to the provided context.
+func NewTestClient(ctx context.Context, transport Transport) *TestClient {
+	ctx, cancel := context.WithCancel(ctx)
 	c := &TestClient{
 		transport: transport,
 		eventChan: make(chan dap.Message, 100),

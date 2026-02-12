@@ -20,11 +20,13 @@ import (
 	"github.com/google/go-dap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	pkgtestutil "github.com/microsoft/dcp/pkg/testutil"
 )
 
 // ===== Integration Tests =====
@@ -53,8 +55,14 @@ func TestBridge_RunWithConnection(t *testing.T) {
 
 	bridge := NewDapBridge(config)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
+
+	// Drain clientConn so the bridge can write error messages to the IDE transport
+	// without blocking on the pipe.
+	go func() {
+		_, _ = io.Copy(io.Discard, clientConn)
+	}()
 
 	// Run the bridge in a goroutine - it will fail to launch the adapter since we're using a fake command
 	// but this tests the basic flow
@@ -62,9 +70,14 @@ func TestBridge_RunWithConnection(t *testing.T) {
 		_ = bridge.RunWithConnection(ctx, serverConn)
 	}()
 
-	// Give bridge a moment to start, then cancel
-	time.Sleep(100 * time.Millisecond)
-	cancel()
+	// Wait for the bridge to terminate (it will fail to launch the fake adapter and exit)
+	select {
+	case <-bridge.terminateCh:
+		// Expected - bridge terminated after failing to launch adapter
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("bridge did not terminate in time")
+	}
 }
 
 func TestBridgeManager_HandshakeValidation(t *testing.T) {
@@ -84,7 +97,7 @@ func TestBridgeManager_HandshakeValidation(t *testing.T) {
 	require.NoError(t, regErr)
 	require.NotNil(t, session)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
 	// Start bridge manager in background
@@ -126,7 +139,7 @@ func TestBridgeManager_SessionNotFound(t *testing.T) {
 		HandshakeTimeout: 2 * time.Second,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
 	// Start bridge manager in background
@@ -167,7 +180,7 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 	})
 	_, _ = manager.RegisterSession("timeout-session", "test-token")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
 	// Start bridge manager in background
@@ -190,13 +203,21 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 	require.NoError(t, dialErr)
 	defer ideConn.Close()
 
-	// Wait for timeout - the server should close our connection
-	time.Sleep(500 * time.Millisecond)
-
-	// Try to read - should get EOF or error since server closed
-	buf := make([]byte, 1)
-	_, readErr := ideConn.Read(buf)
-	assert.Error(t, readErr, "connection should be closed by server after timeout")
+	// Poll until the server closes our connection due to handshake timeout
+	pollErr := wait.PollUntilContextCancel(ctx, 100*time.Millisecond, true, func(_ context.Context) (bool, error) {
+		_ = ideConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		buf := make([]byte, 1)
+		_, readErr := ideConn.Read(buf)
+		// Connection closed when read returns a non-timeout error (EOF, closed, etc.)
+		if readErr != nil {
+			if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+				return false, nil // Still open, keep polling
+			}
+			return true, nil // Non-timeout error means connection was closed
+		}
+		return false, nil
+	})
+	require.NoError(t, pollErr, "connection should be closed by server after handshake timeout")
 
 	cancel()
 }
@@ -324,7 +345,8 @@ func TestBridge_RunInTerminalInterception(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
 
 	// Apply downstream interception
 	_, forward, asyncResponse := bridge.interceptDownstreamMessage(ctx, ritReq)
@@ -383,7 +405,9 @@ func TestBridge_MessageForwarding(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
 	modifiedDown, forwardDown, asyncResp := bridge.interceptDownstreamMessage(ctx, stoppedEvent)
 	assert.True(t, forwardDown, "stopped event should be forwarded")
 	assert.Equal(t, stoppedEvent, modifiedDown, "message should not be modified")
@@ -420,7 +444,9 @@ func TestBridge_OutputEventForwarding(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
 	modified, forward, asyncResp := bridge.interceptDownstreamMessage(ctx, outputEvent)
 
 	// Output event should still be forwarded to IDE
@@ -465,7 +491,9 @@ func TestBridge_OutputEventNotCapturedWhenRunInTerminalUsed(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
 	_, forward, _ := bridge.interceptDownstreamMessage(ctx, outputEvent)
 
 	// Output event should still be forwarded
@@ -499,7 +527,9 @@ func TestBridge_TerminatedEventTracking(t *testing.T) {
 		},
 	}
 
-	ctx := context.Background()
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
 	modified, forward, asyncResp := bridge.interceptDownstreamMessage(ctx, terminatedEvent)
 
 	assert.True(t, forward, "terminated event should be forwarded to IDE")
@@ -527,7 +557,7 @@ func TestBridge_SendErrorToIDE(t *testing.T) {
 
 	bridge := NewDapBridge(config)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
 	bridge.ideTransport = NewUnixTransportWithContext(ctx, serverConn)
@@ -576,7 +606,7 @@ func TestBridge_SendTerminatedToIDE(t *testing.T) {
 
 	bridge := NewDapBridge(config)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
 	bridge.ideTransport = NewUnixTransportWithContext(ctx, serverConn)
@@ -675,7 +705,7 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 	debuggeeSource := resolveDebuggeeSourcePath(t)
 	breakpointLine := 18 // result := compute(10)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := pkgtestutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
 
 	log := logr.Discard()
@@ -731,7 +761,7 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 
 	// Create the DAP test client over the connected Unix socket.
 	ideTransport := NewUnixTransportWithContext(ctx, ideConn)
-	client := NewTestClient(ideTransport)
+	client := NewTestClient(ctx, ideTransport)
 	defer client.Close()
 
 	// === DAP Protocol Sequence ===

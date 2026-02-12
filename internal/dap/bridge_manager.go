@@ -319,6 +319,19 @@ func (m *BridgeManager) markSessionDisconnected(sessionID string) {
 	}
 }
 
+// IsSessionConnected returns whether the given session has an active connection.
+// Returns false if the session does not exist.
+func (m *BridgeManager) IsSessionConnected(sessionID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, exists := m.sessions[sessionID]
+	if !exists {
+		return false
+	}
+	return session.Connected
+}
+
 // updateSessionState updates the state of a session.
 func (m *BridgeManager) updateSessionState(sessionID string, state BridgeSessionState, errorMsg string) error {
 	m.mu.Lock()

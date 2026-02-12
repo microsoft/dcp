@@ -7,7 +7,6 @@ package dap
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +19,8 @@ import (
 	"github.com/google/go-dap"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // uniqueSocketPath generates a unique, short socket path for testing.
@@ -61,8 +62,11 @@ func TestTCPTransport(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	clientTransport := NewTCPTransportWithContext(context.Background(), clientConn)
-	serverTransport := NewTCPTransportWithContext(context.Background(), serverConn)
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
+	clientTransport := NewTCPTransportWithContext(ctx, clientConn)
+	serverTransport := NewTCPTransportWithContext(ctx, serverConn)
 
 	t.Run("write and read message", func(t *testing.T) {
 		// Client sends to server
@@ -147,8 +151,11 @@ func TestStdioTransport(t *testing.T) {
 		serverRead, clientWrite := io.Pipe()
 		clientRead, serverWrite := io.Pipe()
 
-		clientTransport := NewStdioTransportWithContext(context.Background(), clientRead, clientWrite)
-		serverTransport := NewStdioTransportWithContext(context.Background(), serverRead, serverWrite)
+		ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+		defer cancel()
+
+		clientTransport := NewStdioTransportWithContext(ctx, clientRead, clientWrite)
+		serverTransport := NewStdioTransportWithContext(ctx, serverRead, serverWrite)
 
 		defer clientTransport.Close()
 		defer serverTransport.Close()
@@ -187,7 +194,10 @@ func TestStdioTransport(t *testing.T) {
 		stdin := newMockReadWriteCloser()
 		stdout := newMockReadWriteCloser()
 
-		transport := NewStdioTransportWithContext(context.Background(), stdin, stdout)
+		ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+		defer cancel()
+
+		transport := NewStdioTransportWithContext(ctx, stdin, stdout)
 
 		closeErr := transport.Close()
 		assert.NoError(t, closeErr)
@@ -233,8 +243,11 @@ func TestUnixTransport(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
-	clientTransport := NewUnixTransportWithContext(context.Background(), clientConn)
-	serverTransport := NewUnixTransportWithContext(context.Background(), serverConn)
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
+	clientTransport := NewUnixTransportWithContext(ctx, clientConn)
+	serverTransport := NewUnixTransportWithContext(ctx, serverConn)
 
 	t.Run("write and read message", func(t *testing.T) {
 		// Client sends to server
@@ -288,8 +301,7 @@ func TestUnixTransportWithContext(t *testing.T) {
 		serverConn, _ = listener.Accept()
 	}()
 
-	// Connect with context
-	ctx, cancel := context.WithCancel(context.Background())
+	// Connect
 	clientConn, dialErr := net.Dial("unix", socketPath)
 	require.NoError(t, dialErr)
 
@@ -298,17 +310,20 @@ func TestUnixTransportWithContext(t *testing.T) {
 	defer serverConn.Close()
 
 	// Create transport with cancellable context
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
 	clientTransport := NewUnixTransportWithContext(ctx, clientConn)
 
-	// Start a blocking read
+	// Start a blocking read, signalling when the goroutine is about to block
+	readStarted := make(chan struct{})
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
+		close(readStarted)
 		_, _ = clientTransport.ReadMessage()
 	}()
 
-	// Give the read goroutine time to block
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the read goroutine to be running before cancelling
+	<-readStarted
 
 	// Cancel context should unblock the read
 	cancel()
