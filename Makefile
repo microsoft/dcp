@@ -479,11 +479,12 @@ else
 	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 endif
 
-# debuggee tool is used for DAP proxy integration testing
+# debuggee tool is used for DAP proxy integration testing.
+# CLEAR_GOARGS ensures it is built for the native architecture (required for Delve debugging).
 .PHONY: debuggee-tool
 debuggee-tool: $(DEBUGGEE_TOOL)
 $(DEBUGGEE_TOOL): $(wildcard ./test/debuggee/*.go) | $(TOOL_BIN)
-	$(GO_BIN) build -gcflags="all=-N -l" -o $(DEBUGGEE_TOOL) github.com/microsoft/dcp/test/debuggee
+	$(CLEAR_GOARGS) $(GO_BIN) build -gcflags="all=-N -l" -o $(DEBUGGEE_TOOL) github.com/microsoft/dcp/test/debuggee
 
 # cache-delve ensures the Delve debugger is downloaded for DAP tests
 .PHONY: cache-delve
