@@ -106,6 +106,8 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			log.Error(err, "Failed to capture startup profile")
 		}
 
+		defer usvc_io.CleanupSessionFolderIfNeeded()
+
 		if rootDir == "" {
 			rootDir, err = os.Getwd()
 			if err != nil {
