@@ -14,7 +14,6 @@ import (
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcp/commands"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -44,7 +43,6 @@ func main() {
 			os.Exit(errPanic)
 		}
 	}()
-	defer usvc_io.CleanupSessionFolderIfNeeded()
 
 	ctx := kubeapiserver.SetupSignalContext()
 
