@@ -753,9 +753,7 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 	// Perform handshake with dlv dap adapter config (tcp-callback: bridge listens, dlv connects).
 	// The adapter process does not inherit the current process environment, so we must
 	// explicitly pass environment variables needed by the Go toolchain.
-	// Clear GOOS/GOARCH to ensure dlv runs on native architecture (CI may set these for cross-compilation).
 	adapterEnv := envVarsFromOS("PATH", "HOME", "GOPATH", "GOROOT", "GOMODCACHE")
-	adapterEnv = append(adapterEnv, apiv1.EnvVar{Name: "GOOS", Value: ""}, apiv1.EnvVar{Name: "GOARCH", Value: ""})
 	handshakeErr := performHandshakeWithAdapterConfig(ideConn, token, sessionID, "delve-run-id", &DebugAdapterConfig{
 		Args: []string{
 			"go", "tool", "github.com/go-delve/delve/cmd/dlv",
