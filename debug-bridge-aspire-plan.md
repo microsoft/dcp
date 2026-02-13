@@ -17,18 +17,20 @@ Currently, `protocols_supported` tops out at `"2025-10-01"`. No `2026-02-01` or 
 │      └─ Connects to Unix socket provided by DCP in run session response  │
 └──────────────────────────────────┬───────────────────────────────────────┘
                                    │ DAP messages (Unix socket)
-                                   │ + Initial handshake (token + session ID + adapter config)
+                                   │ + Initial handshake (token + session ID + run ID + adapter config)
                                    ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ DCP DAP Bridge                                                           │
-│  ├─ Shared Unix socket listener for IDE connections                      │
-│  ├─ Handshake validation (token + session ID)                            │
-│  ├─ Message forwarding (IDE ↔ Debug Adapter)                             │
+│ DCP DAP Bridge (BridgeManager + DapBridge)                               │
+│  ├─ SecureSocketListener for IDE connections                             │
+│  ├─ Handshake validation (session ID + token)                            │
+│  ├─ Sequence number remapping (IDE ↔ Adapter seq isolation)              │
+│  ├─ RawMessage forwarding (transparent proxy for unknown DAP messages)   │
 │  ├─ Interception layer:                                                  │
 │  │    ├─ initialize: ensure supportsRunInTerminalRequest = true          │
 │  │    ├─ runInTerminal: handle locally, launch process, capture stdio    │
 │  │    └─ output events: capture for logging (unless runInTerminal used)  │
-│  └─ Process runner for runInTerminal commands                            │
+│  ├─ Inline runInTerminal handling (exec.Command via process.Executor)    │
+│  └─ Output routing (BridgeConnectionHandler → OutputHandler + writers)   │
 └──────────────────────────────────┬───────────────────────────────────────┘
                                    │ DAP messages (stdio/TCP)
                                    ▼
@@ -112,6 +114,7 @@ export interface DebugAdapterConfig {
 export interface DebugBridgeHandshakeRequest {
     token: string;
     session_id: string;
+    run_id?: string;
     debug_adapter_config: DebugAdapterConfig;
 }
 
@@ -134,6 +137,7 @@ export async function connectToDebugBridge(
     socketPath: string,
     token: string,
     sessionId: string,
+    runId: string,
     adapterConfig: DebugAdapterConfig
 ): Promise<net.Socket>
 ```
@@ -143,7 +147,7 @@ This function should:
 1. Connect to the Unix domain socket at `socketPath` using `net.connect({ path: socketPath })`
 2. Send the handshake request as **length-prefixed JSON**:
    - Write a 4-byte big-endian `uint32` containing the JSON payload length
-   - Write the UTF-8 encoded JSON bytes of `DebugBridgeHandshakeRequest`
+   - Write the UTF-8 encoded JSON bytes of `DebugBridgeHandshakeRequest` (including `run_id` for output routing)
 3. Read the handshake response:
    - Read 4 bytes → big-endian `uint32` length
    - Read that many bytes → parse as `DebugBridgeHandshakeResponse`
@@ -282,84 +286,85 @@ This may not be strictly necessary if the C# side doesn't interact with these fi
 
 ## Error Reporting
 
-### Problem
+### Current State (Implemented in DCP)
 
-Currently, after a successful handshake, the DCP bridge operates as a pure transparent proxy — if anything goes wrong (adapter fails to launch, adapter crashes, transport errors), the IDE just sees a **silent connection drop** with no explanation. There are no synthesized DAP error events or responses sent to the IDE.
+The DCP bridge now sends meaningful DAP error information to the IDE when errors occur after the handshake. The implementation uses `OutputEvent` (category: `"stderr"`) followed by `TerminatedEvent` to communicate errors through the standard DAP protocol.
 
-### Error Scenarios and Current Behavior
+### Error Scenarios and Behavior
 
-| Scenario | What IDE Currently Sees |
-|----------|------------------------|
-| Handshake failure (bad token, invalid session, missing config) | Handshake error JSON response — **this is fine** |
-| Handshake read failure (malformed data, timeout) | Raw connection drop — **no explanation** |
-| Debug adapter fails to launch (bad command, missing binary) | Connection drop — **no DAP-level error** |
-| Adapter connection timeout (TCP modes) | Connection drop — **no DAP-level error** |
-| Adapter crashes before sending `TerminatedEvent` | Connection drop — **no DAP-level error** |
-| Transport read/write failure mid-session | Connection drop — **no DAP-level error** |
+| Scenario | What IDE Sees |
+|----------|---------------|
+| Handshake failure (bad token, invalid session, missing config) | Handshake error JSON response — handled cleanly |
+| Handshake read failure (malformed data, timeout) | Raw connection drop — no DAP-level error possible (pre-handshake) |
+| Debug adapter fails to launch (bad command, missing binary) | `OutputEvent` (stderr) with error text + `TerminatedEvent` |
+| Adapter connection timeout (TCP modes) | `OutputEvent` (stderr) with error text + `TerminatedEvent` |
+| Adapter crashes before sending `TerminatedEvent` | Synthesized `TerminatedEvent` (with optional `OutputEvent` if transport error) |
+| Transport read/write failure mid-session | `OutputEvent` (stderr) + synthesized `TerminatedEvent` |
 
-### Required Changes — DCP Side (microsoft/dcp)
+### DCP Implementation Details
 
-These changes will be made in the DCP repo to ensure the IDE receives meaningful DAP error information:
+#### 1. DAP message helpers in `internal/dap/message.go`
 
-#### 1. Add DAP error message helpers in `internal/dap/message.go`
-
-Create helper functions to synthesize DAP messages:
+Unexported helper functions synthesize DAP messages for error reporting:
 
 ```go
-// NewOutputEvent creates an OutputEvent for sending error/info text to the IDE.
-func NewOutputEvent(seq int, category, output string) *dap.OutputEvent
+// newOutputEvent creates an OutputEvent for sending error/info text to the IDE.
+func newOutputEvent(seq int, category, output string) *dap.OutputEvent
 
-// NewTerminatedEvent creates a TerminatedEvent to signal session end.
-func NewTerminatedEvent(seq int) *dap.TerminatedEvent
-
-// NewErrorResponse creates an ErrorResponse for a request that cannot be fulfilled.
-func NewErrorResponse(requestSeq int, command string, message string) *dap.ErrorResponse
+// newTerminatedEvent creates a TerminatedEvent to signal session end.
+func newTerminatedEvent(seq int) *dap.TerminatedEvent
 ```
 
-#### 2. Send DAP error events on adapter launch failure in `bridge.go`
+Note: `NewErrorResponse` was considered but not implemented — `OutputEvent` + `TerminatedEvent` is sufficient for all error scenarios.
 
-When `launchAdapterWithConfig` fails, before returning the error (and closing the connection), send an `OutputEvent` with `category: "stderr"` describing the failure, followed by a `TerminatedEvent`:
+#### 2. Error delivery via `sendErrorToIDE()` in `bridge.go`
+
+When errors occur after the IDE transport is established, `sendErrorToIDE()` sends an `OutputEvent` with `category: "stderr"` followed by a `TerminatedEvent`. Sequence numbers for bridge-originated messages use `b.ideSeqCounter` (an atomic counter separate from the IDE's own sequence numbers):
 
 ```go
-func (b *DapBridge) runWithConnectionAndConfig(ctx context.Context, ideConn net.Conn, adapterConfig *DebugAdapterConfig) error {
-    defer b.terminate()
-    b.ideTransport = NewUnixTransportWithContext(ctx, ideConn)
-
-    b.setState(BridgeStateLaunchingAdapter)
-    launchErr := b.launchAdapterWithConfig(ctx, adapterConfig)
-    if launchErr != nil {
-        // Send error to IDE via DAP OutputEvent before closing connection
-        b.sendErrorToIDE(fmt.Sprintf("Failed to launch debug adapter: %v", launchErr))
-        return fmt.Errorf("failed to launch debug adapter: %w", launchErr)
-    }
-    // ...
+func (b *DapBridge) sendErrorToIDE(message string) {
+    outputEvent := newOutputEvent(int(b.ideSeqCounter.Add(1)), "stderr", message+"\n")
+    b.ideTransport.WriteMessage(outputEvent)
+    b.sendTerminatedToIDE()
 }
 ```
 
-#### 3. Send DAP error events on unexpected adapter exit
+#### 3. Adapter launch failure
 
-When `<-b.adapter.Done()` fires in the message loop, and the adapter did NOT send a `TerminatedEvent`, synthesize one for the IDE.
+When `launchAdapterWithConfig` fails, `sendErrorToIDE()` is called before returning the error:
 
-#### 4. Send DAP error events on transport failures
+```go
+launchErr := b.launchAdapterWithConfig(ctx, adapterConfig)
+if launchErr != nil {
+    b.sendErrorToIDE(fmt.Sprintf("Failed to launch debug adapter: %v", launchErr))
+    return fmt.Errorf("failed to launch debug adapter: %w", launchErr)
+}
+```
 
-When a read/write error occurs in the message loop, attempt to send an `OutputEvent` describing the transport failure to the IDE before closing.
+#### 4. Unexpected adapter exit
+
+When `<-b.adapter.Done()` fires and the adapter did NOT send a `TerminatedEvent` (tracked via `terminatedEventSeen` flag), the bridge synthesizes one. If the exit was due to a transport error (as opposed to clean EOF/cancellation), an `OutputEvent` with the error text is sent first.
+
+#### 5. Transport failures
+
+When read/write errors occur in the message loop, the bridge attempts to send an `OutputEvent` describing the failure before closing the connection.
 
 ### Required Changes — IDE/Aspire Side
 
-#### 5. Handle handshake failures in `debugBridgeClient.ts`
+#### 1. Handle handshake failures in `debugBridgeClient.ts`
 
 When `connectToDebugBridge()` receives `{"success": false, "error": "..."}`, throw an error that includes the error message. The VS Code extension should surface this to the user via:
 - A `vscode.window.showErrorMessage()` call with the error text
 - A `sessionMessage` notification (level: `error`) sent to DCP via the WebSocket notification stream
 - Clean termination of the debug session
 
-#### 6. Handle DAP error events in `DebugBridgeAdapter`
+#### 2. Handle DAP error events in `DebugBridgeAdapter`
 
 The `DebugBridgeAdapter` (Step 7 in the main plan) should watch for `OutputEvent` messages with `category: "stderr"` that arrive before the first `InitializeResponse`. These indicate adapter launch errors from DCP. The adapter should:
 - Forward them to VS Code (which will display them in the Debug Console)
 - If followed by a `TerminatedEvent`, terminate the session cleanly
 
-#### 7. Handle unexpected connection drops
+#### 3. Handle unexpected connection drops
 
 If the Unix socket closes unexpectedly (without a `TerminatedEvent` or `DisconnectResponse`), the `DebugBridgeAdapter` should:
 - Fire a `TerminatedEvent` to VS Code so the debug session ends cleanly
@@ -376,6 +381,11 @@ If the Unix socket closes unexpectedly (without a `TerminatedEvent` or `Disconne
 | **IDE decides adapter** | DCP does NOT tell the IDE which adapter to use; the IDE determines this from the launch configuration type and sends the adapter binary path + args back in the handshake's `debug_adapter_config` |
 | **Backward compatible** | When `debug_bridge_socket_path` is absent from the run session request, the existing non-bridge flow is used unchanged |
 | **DAP-level error reporting** | DCP sends `OutputEvent` (category: stderr) + `TerminatedEvent` to the IDE when errors occur after handshake, so the IDE can display meaningful errors instead of a silent connection drop |
+| **Single `BridgeManager`** | Session management, socket listening, and bridge lifecycle are combined into one `BridgeManager` type rather than separate `BridgeSessionManager` and `BridgeSocketManager` — simpler lifecycle management with a single mutex |
+| **Sequence number remapping** | Bridge-assigned seq numbers prevent collisions between IDE-originated and bridge-originated (e.g., `runInTerminal` response) messages; a `seqMap` restores original seq values on responses |
+| **`RawMessage` fallback** | Unknown/proprietary DAP messages that the `go-dap` library can't decode are wrapped in `RawMessage` and forwarded transparently, enabling support for custom debug adapter extensions |
+| **`SecureSocketListener`** | Uses the project's `networking.SecureSocketListener` instead of a plain Unix domain socket for enhanced security |
+| **Environment filtering on adapter launch** | Adapter processes inherit the DCP environment but with `DEBUG_SESSION*` and `DCP_*` variables removed, preventing credential leakage to debug adapters |
 
 ---
 
@@ -393,6 +403,85 @@ If the Unix socket closes unexpectedly (without a `TerminatedEvent` or `Disconne
    - Unexpected connection drop → extension fires synthetic `TerminatedEvent` to VS Code, session ends without hang
 4. **Regression**: Ensure the existing (non-bridge) flow still works when DCP negotiates an older API version
 5. **Manual test**: Debug a .NET Aspire app with the updated extension and verify breakpoints, stepping, variable inspection all work through the bridge
+
+---
+
+## DCP Implementation Details
+
+These sections document key aspects of the DCP-side implementation that the IDE extension should be aware of.
+
+### Sequence Number Remapping
+
+The bridge remaps DAP sequence numbers to prevent collisions between IDE-originated messages and bridge-originated messages (such as `RunInTerminalResponse` or synthesized error events). This is implemented in `bridge.go` with three components:
+
+- **`adapterSeqCounter`** (atomic `int64`): Generates monotonically increasing `seq` numbers for all messages sent to the adapter. When forwarding an IDE message, the bridge replaces `seq` with a bridge-assigned value and records the mapping.
+- **`ideSeqCounter`** (atomic `int64`): Generates `seq` numbers for bridge-originated messages sent to the IDE (synthesized `OutputEvent`, `TerminatedEvent`, `RunInTerminalResponse`).
+- **`seqMap`** (`syncmap.Map[int, int]`): Maps bridge-assigned seq numbers → original IDE seq numbers. When a response comes back from the adapter, the bridge looks up the `request_seq` in this map and restores the original IDE seq value before forwarding.
+
+This is transparent to the IDE — the IDE sees its own seq numbers on all responses.
+
+### RawMessage and MessageEnvelope
+
+`message.go` contains two key types that enable transparent proxying of all DAP messages, including those unknown to the `go-dap` library:
+
+**`RawMessage`**: Wraps the raw JSON bytes of a DAP message that couldn't be decoded by `go-dap`. This enables the bridge to transparently forward proprietary/custom DAP messages (e.g., custom commands from language-specific debug adapters) without needing to understand their schema.
+
+**`MessageEnvelope`**: A wrapper that provides uniform access to DAP header fields (`seq`, `type`, `request_seq`, `command`, `event`) across both typed `go-dap` messages and `RawMessage` instances. It supports:
+- Lazy extraction of header fields at creation time
+- Free modification of `Seq`, `RequestSeq`, etc.
+- `Finalize()` to apply changes back — zero-cost for typed messages, single JSON field patch for raw messages
+
+The bridge uses `ReadMessageWithFallback` / `WriteMessageWithFallback` instead of the standard `go-dap` reader/writer. These functions attempt standard decoding first, falling back to `RawMessage` for unrecognized message types.
+
+### Output Routing
+
+When a bridge connection is established, `BridgeManager` invokes a `BridgeConnectionHandler` callback to resolve output routing:
+
+```go
+type BridgeConnectionHandler func(sessionID string, runID string) (OutputHandler, io.Writer, io.Writer)
+```
+
+This returns:
+- An `OutputHandler` interface (`HandleOutput(category, output string)`) for routing DAP `OutputEvent` messages
+- `io.Writer` instances for stdout and stderr (used as sinks for `runInTerminal` process pipes)
+
+The `run_id` field in the handshake request is what connects the bridge session to the correct executable's output files. In `internal/exerunners/`, the `bridgeOutputHandler` implementation routes:
+- `"stdout"` and `"console"` category events → stdout writer
+- `"stderr"` category events → stderr writer
+- Other categories → silently discarded
+
+Output routing only captures via `OutputHandler` when `runInTerminal` was NOT used (tracked by `runInTerminalUsed` flag). When `runInTerminal` launches a process, DCP captures stdout/stderr directly from the process pipes, avoiding double-capture.
+
+### BridgeManager Lifecycle
+
+`BridgeManager` is the single orchestrator for all bridge sessions. It combines session registration, socket management, and bridge lifecycle:
+
+1. **Creation**: `NewBridgeManager(BridgeManagerConfig{Logger, ConnectionHandler})` — requires a `BridgeConnectionHandler` callback
+2. **Start**: `Start(ctx)` creates a `SecureSocketListener`, signals readiness via `Ready()` channel, then enters an accept loop
+3. **Session registration**: `RegisterSession(sessionID, token)` creates a `BridgeSession` in `BridgeSessionStateCreated` state. Session ID is typically `string(exe.UID)`.
+4. **Connection handling**: Each accepted connection goes through handshake, validation, `markSessionConnected()`, then `runBridge()`. If anything fails between marking connected and running, `markSessionDisconnected()` rolls back to allow retry.
+5. **Bridge construction**: Creates a `DapBridge` via `NewDapBridge(BridgeConfig{...})` where `BridgeConfig` includes `SessionID`, `AdapterConfig`, `Executor`, `Logger`, `OutputHandler`, `StdoutWriter`, `StderrWriter`
+6. **Termination**: Session moves to `BridgeSessionStateTerminated` (success) or `BridgeSessionStateError` (failure) when the bridge's `RunWithConnection` returns
+
+### DapBridge Lifecycle
+
+The `DapBridge` handles a single debug session's message forwarding:
+
+1. `RunWithConnection(ctx, ideConn)` creates an IDE transport and calls `launchAdapterWithConfig`
+2. On adapter launch failure: `sendErrorToIDE()` → return error
+3. On success: enters `runMessageLoop(ctx)`
+4. Message loop starts two goroutines (`forwardIDEToAdapter`, `forwardAdapterToIDE`) and watches for adapter process exit via `<-b.adapter.Done()`
+5. On adapter exit without `TerminatedEvent`: synthesizes one (optionally preceded by an error `OutputEvent`)
+6. Cleanup: closes both transports, waits for goroutines, collects errors
+
+### Adapter Launch Environment Filtering
+
+When launching a debug adapter process, `buildFilteredEnv()` in `adapter_launcher.go`:
+1. Inherits the DCP process's full environment
+2. Removes variables with `DEBUG_SESSION` or `DCP_` prefixes (case-insensitive on Windows)
+3. Applies any environment variables specified in the `DebugAdapterConfig.Env` array on top
+
+Additionally, all adapter modes capture the adapter's stderr via a pipe and log it for diagnostic purposes.
 
 ---
 
@@ -427,6 +516,7 @@ Maximum message size: **65536 bytes** (64 KB).
 {
     "token": "<same bearer token used for HTTP auth (DEBUG_SESSION_TOKEN)>",
     "session_id": "<debug_session_id from the run session request>",
+    "run_id": "<optional: correlates with executable's output writers for log routing>",
     "debug_adapter_config": {
         "args": ["/path/to/debug-adapter", "--arg1", "value1"],
         "mode": "stdio",
@@ -442,10 +532,11 @@ Maximum message size: **65536 bytes** (64 KB).
 |-------|------|----------|-------------|
 | `token` | `string` | Yes | The same bearer token used for HTTP authentication |
 | `session_id` | `string` | Yes | The `debug_session_id` from the run session request |
+| `run_id` | `string` | No | Correlates the bridge session with the executable's output writers for log routing |
 | `debug_adapter_config` | `object` | Yes | Configuration for launching the debug adapter |
 | `debug_adapter_config.args` | `string[]` | Yes | Command + arguments to launch the adapter. First element is the executable path. |
 | `debug_adapter_config.mode` | `string` | No | `"stdio"` (default), `"tcp-callback"`, or `"tcp-connect"` |
-| `debug_adapter_config.env` | `array` | No | Environment variables as `[{"name":"N","value":"V"}]` |
+| `debug_adapter_config.env` | `array` | No | Environment variables as `[{"name":"N","value":"V"}]` (uses `apiv1.EnvVar` type on DCP side) |
 | `debug_adapter_config.connectionTimeoutSeconds` | `number` | No | Timeout for TCP connections (default: 10 seconds) |
 
 ### Debug Adapter Modes
@@ -453,7 +544,7 @@ Maximum message size: **65536 bytes** (64 KB).
 | Mode | Description |
 |------|-------------|
 | `stdio` (default) | DCP launches the adapter and communicates via stdin/stdout |
-| `tcp-callback` | DCP starts a TCP listener, then launches the adapter. The adapter connects back to DCP. |
+| `tcp-callback` | DCP starts a TCP listener, substitutes `{{port}}` in `args` with the listener port, then launches the adapter. The adapter connects back to DCP on that port. |
 | `tcp-connect` | DCP allocates a port, replaces `{{port}}` placeholder in `args`, launches the adapter (which listens on that port), then DCP connects to it. |
 
 ### Handshake Response (DCP → IDE)
@@ -476,10 +567,12 @@ Failure:
 ### Handshake Validation
 
 DCP validates the handshake in this order:
-1. Token matches the registered session token → otherwise `"invalid session token"`
-2. Session ID exists → otherwise `"bridge session not found"`
+1. Session ID exists → otherwise `"bridge session not found"` (`ErrBridgeSessionNotFound`)
+2. Token matches the registered session token → otherwise `"invalid session token"` (`ErrBridgeSessionInvalidToken`)
 3. `debug_adapter_config` is present → otherwise `"debug adapter configuration is required"`
-4. Session not already connected → otherwise `"session already connected"` (only one IDE connection per session allowed)
+4. Session not already connected → otherwise `"session already connected"` (`ErrBridgeSessionAlreadyConnected`) (only one IDE connection per session allowed)
+
+If connection fails after marking the session as connected (between step 4 and running the bridge), the connected state is rolled back via `markSessionDisconnected()` so the session can be retried.
 
 ### Timeouts
 
@@ -512,16 +605,24 @@ All other DAP messages are forwarded transparently in both directions.
 
 These files in the `microsoft/dcp` repo implement the DCP side of the bridge protocol, for reference:
 
+### `internal/dap/` — Core Bridge Package
+
 | File | Purpose |
 |------|---------|
-| `internal/dap/bridge.go` | Core `DapBridge` — bidirectional message forwarding with interception |
-| `internal/dap/bridge_handshake.go` | Length-prefixed JSON handshake protocol implementation |
-| `internal/dap/bridge_session.go` | `BridgeSessionManager` — session registry, state tracking |
-| `internal/dap/bridge_socket_manager.go` | `BridgeSocketManager` — shared Unix socket listener, dispatches connections |
-| `internal/dap/adapter_types.go` | `DebugAdapterConfig`, `HandshakeDebugAdapterConfig`, adapter modes |
-| `internal/dap/adapter_launcher.go` | `LaunchDebugAdapter()` — starts adapter processes in all 3 modes |
-| `internal/dap/transport.go` | `Transport` interface with TCP, stdio, and Unix socket implementations |
-| `internal/dap/process_runner.go` | `ProcessRunner` — launches processes for `runInTerminal` requests |
-| `internal/exerunners/ide_executable_runner.go` | Integration point — registers bridge sessions, includes socket path in run requests |
-| `internal/exerunners/ide_requests_responses.go` | Protocol types, API version definitions, `ideRunSessionRequestV1` with bridge fields |
-| `internal/exerunners/ide_connection_info.go` | Version negotiation, `SupportsDebugBridge()` helper |
+| `internal/dap/doc.go` | Package-level documentation |
+| `internal/dap/bridge.go` | Core `DapBridge` — bidirectional message forwarding with interception, sequence number remapping, inline `runInTerminal` handling (`handleRunInTerminalRequest`), and error reporting via `sendErrorToIDE()` |
+| `internal/dap/bridge_handshake.go` | Length-prefixed JSON handshake protocol: `HandshakeRequest`/`HandshakeResponse` types, `HandshakeReader`/`HandshakeWriter`, `performClientHandshake()` convenience function, `maxHandshakeMessageSize` (64 KB) constant |
+| `internal/dap/bridge_manager.go` | `BridgeManager` — combined session management, `SecureSocketListener` socket lifecycle, handshake processing, and bridge lifecycle. Contains `BridgeSession` with states (`Created`, `Connected`, `Terminated`, `Error`), session registration/rollback, and `BridgeConnectionHandler` callback type |
+| `internal/dap/adapter_types.go` | `DebugAdapterConfig` struct (args, mode, env as `[]apiv1.EnvVar`, connectionTimeoutSeconds) and `DebugAdapterMode` constants (`stdio`, `tcp-callback`, `tcp-connect`) |
+| `internal/dap/adapter_launcher.go` | `LaunchDebugAdapter()` — starts adapter processes in all 3 modes, environment filtering (`buildFilteredEnv()` removes `DEBUG_SESSION*`/`DCP_*` variables), adapter stderr capture via pipe, `LaunchedAdapter` struct with transport + process handle + done channel |
+| `internal/dap/transport.go` | `Transport` interface with a single `connTransport` backing implementation shared by three factory functions: `NewTCPTransportWithContext`, `NewStdioTransportWithContext`, `NewUnixTransportWithContext`. Uses `dcpio.NewContextReader` for cancellation-aware reads |
+| `internal/dap/message.go` | `RawMessage` (transparent forwarding of unknown/proprietary DAP messages), `MessageEnvelope` (uniform header access with lazy seq patching), `ReadMessageWithFallback`/`WriteMessageWithFallback`, unexported helpers `newOutputEvent`/`newTerminatedEvent` |
+
+### `internal/exerunners/` — Integration Points
+
+| File | Purpose |
+|------|---------|
+| `internal/exerunners/ide_executable_runner.go` | Integration point — creates `BridgeManager` when `SupportsDebugBridge()`, registers bridge sessions using `exe.UID` as session ID, includes `debug_bridge_socket_path` and `debug_session_id` in run session requests |
+| `internal/exerunners/ide_requests_responses.go` | Protocol types, API version definitions (`version20260201 = "2026-02-01"`), `ideRunSessionRequestV1` with bridge fields (`DebugBridgeSocketPath`, `DebugSessionID`) |
+| `internal/exerunners/ide_connection_info.go` | Version negotiation, `SupportsDebugBridge()` helper (checks `>= version20260201`) |
+| `internal/exerunners/bridge_output_handler.go` | `bridgeOutputHandler` implementing `dap.OutputHandler` — routes DAP output events by category (`"stdout"`/`"console"` → stdout writer, `"stderr"` → stderr writer) |
