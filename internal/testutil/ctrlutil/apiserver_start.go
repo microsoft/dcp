@@ -238,14 +238,14 @@ func StartApiServer(
 		info.ApiServerExited.SetAndFreeze()
 	})
 
-	apiServerPID, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone)
+	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone)
 	if dcpStartErr != nil {
 		info.ApiServerExited.SetAndFreeze()
 		cleanup()
 		return nil, fmt.Errorf("failed to start the API server process: %w", dcpStartErr)
 	}
 	startWaitForProcessExit()
-	info.ApiServerPID = apiServerPID
+	info.ApiServerPID = apiServerHandle.Pid
 
 	// Using generous timeout because AzDO pipeline machines can be very slow at times.
 	const configCreationTimeout = 70 * time.Second

@@ -289,6 +289,7 @@ func ensureExecutableRunningState(
 	// Ensure the status matches the current state.
 	change |= runInfo.ApplyTo(exe, log)
 	r.enableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+
 	return change
 }
 
@@ -340,6 +341,7 @@ func ensureExecutableFinalState(
 
 	change |= runInfo.ApplyTo(exe, log) // Ensure the status matches the current state.
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+
 	return change
 }
 

@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/microsoft/dcp/pkg/process"
@@ -58,16 +57,16 @@ func GetProcessExecutor(ctx context.Context) process.Executor {
 
 type dummyProcessExecutor struct{}
 
-func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, func(), error) {
-	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
+func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag) (process.ProcessHandle, func(), error) {
+	return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
 }
 
-func (*dummyProcessExecutor) StopProcess(_ process.Pid_t, _ time.Time) error {
+func (*dummyProcessExecutor) StopProcess(_ process.ProcessHandle) error {
 	return fmt.Errorf("there is no process executor configured, no processes can be stopped")
 }
 
-func (*dummyProcessExecutor) StartAndForget(_ *exec.Cmd, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {
-	return process.UnknownPID, time.Time{}, fmt.Errorf("there is no process executor configured, no processes can be started")
+func (*dummyProcessExecutor) StartAndForget(_ *exec.Cmd, _ process.ProcessCreationFlag) (process.ProcessHandle, error) {
+	return process.ProcessHandle{Pid: process.UnknownPID}, fmt.Errorf("there is no process executor configured, no processes can be started")
 }
 
 func (*dummyProcessExecutor) Dispose() {

@@ -114,6 +114,7 @@ DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
+DEBUGGEE_TOOL ?= $(TOOL_BIN)/debuggee$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
@@ -371,9 +372,9 @@ endif
 ##@ Test targets
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool cache-delve
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool cache-delve
 endif
 
 .PHONY: test-prereqs
@@ -394,9 +395,13 @@ endif
 test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS) -parallel 32
 
+.PHONY: test-integration
+test-integration: test-prereqs ## Run all tests including integration tests
+	$(GO_BIN) test -tags integration ./... $(TEST_OPTS) -parallel 32
+
 .PHONY: test-ci
 test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
-	$(GO_BIN) test ./... $(TEST_OPTS)
+	$(GO_BIN) test -tags integration ./... $(TEST_OPTS)
 
 ## Development and test support targets
 
@@ -465,6 +470,18 @@ ifeq ($(detected_OS),windows)
 else
 	GOOS=linux $(GO_BIN) build -o $(PARROT_TOOL_CONTAINER_BINARY) github.com/microsoft/dcp/test/parrot
 endif
+
+# debuggee tool is used for DAP proxy integration testing.
+# CLEAR_GOARGS ensures it is built for the native architecture (required for Delve debugging).
+.PHONY: debuggee-tool
+debuggee-tool: $(DEBUGGEE_TOOL)
+$(DEBUGGEE_TOOL): $(wildcard ./test/debuggee/*.go) | $(TOOL_BIN)
+	$(CLEAR_GOARGS) $(GO_BIN) build -gcflags="all=-N -l" -o $(DEBUGGEE_TOOL) github.com/microsoft/dcp/test/debuggee
+
+# cache-delve ensures the Delve debugger is downloaded for DAP tests
+.PHONY: cache-delve
+cache-delve:
+	@$(CLEAR_GOARGS) $(GOTOOL_BIN) github.com/go-delve/delve/cmd/dlv version
 
 .PHONY: httpcontent-stream-repro
 httpcontent-stream-repro:

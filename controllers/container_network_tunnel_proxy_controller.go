@@ -1259,7 +1259,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		r.onServerProcessExit(tunnelProxy.NamespacedName(), pid, exitCode, err, stdoutFile, stderrFile)
 	})
 
-	pid, startTime, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone)
+	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone)
 	if startErr != nil {
 		log.Error(startErr, "Failed to start server proxy process")
 		startFailed = true
@@ -1273,7 +1273,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	tc, tcErr := readServerProxyConfig(ctx, stdoutFile.Name())
 	if tcErr != nil {
 		log.Error(tcErr, "Failed to read connection information from the server proxy")
-		stopProcessErr := r.config.ProcessExecutor.StopProcess(pid, startTime)
+		stopProcessErr := r.config.ProcessExecutor.StopProcess(handle)
 		if stopProcessErr != nil {
 			log.Error(stopProcessErr, "Failed to stop server proxy process after being unable to read its configuration")
 		}
@@ -1281,11 +1281,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		return false
 	}
 
-	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, pid, startTime, log)
+	dcpproc.RunProcessWatcher(r.config.ProcessExecutor, handle, log)
 
-	pointers.SetValue(&pd.ServerProxyProcessID, int64(pid))
+	pointers.SetValue(&pd.ServerProxyProcessID, int64(handle.Pid))
 	pd.ServerProxyControlPort = tc.ServerControlPort
-	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(startTime)
+	pd.ServerProxyStartupTimestamp = metav1.NewMicroTime(handle.IdentityTime)
 	pd.ServerProxyStdOutFile = stdoutFile.Name()
 	pd.ServerProxyStdErrFile = stderrFile.Name()
 
@@ -1377,7 +1377,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 
 		// The process may have already exited because the client container has been stopped.
 
-		stopErr := r.config.ProcessExecutor.StopProcess(pid, startTime)
+		stopErr := r.config.ProcessExecutor.StopProcess(process.NewProcessHandle(pid, startTime))
 		if stopErr != nil && !errors.Is(stopErr, process.ErrorProcessNotFound) {
 			log.Error(stopErr, "Failed to stop server proxy process")
 		} else {

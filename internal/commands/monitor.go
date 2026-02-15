@@ -29,22 +29,21 @@ func AddMonitorFlags(cmd *cobra.Command) {
 	cmd.Flags().Uint8VarP(&monitorInterval, "monitor-interval", "i", 0, "If present, specifies the time in seconds between checks for the monitor PID.")
 }
 
-// Starts monitoring a process with a given PID and (optional) start time.
+// Starts monitoring a process identified by the given handle.
 // Returns a context that will be cancelled when the monitored process exits, or if the returned cancellation function is called.
 // The returned context (and the cancellation function) is valid even if an error occurs (e.g. the process cannot be found),
 // but it will be already cancelled in that case.
 func MonitorPid(
 	ctx context.Context,
-	pid process.Pid_t,
-	expectedProcessStartTime time.Time,
+	handle process.ProcessHandle,
 	pollInterval uint8,
 	logger logr.Logger,
 ) (context.Context, context.CancelFunc, error) {
 	monitorCtx, monitorCtxCancel := context.WithCancel(ctx)
 
-	monitorProc, monitorProcErr := process.FindWaitableProcess(pid, expectedProcessStartTime)
+	monitorProc, monitorProcErr := process.FindWaitableProcess(handle)
 	if monitorProcErr != nil {
-		logger.Info("Error finding process", "PID", pid)
+		logger.Info("Error finding process", "PID", handle.Pid)
 		monitorCtxCancel()
 		return monitorCtx, monitorCtxCancel, monitorProcErr
 	}
@@ -57,12 +56,12 @@ func MonitorPid(
 		defer monitorCtxCancel()
 		if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {
 			if errors.Is(waitErr, context.Canceled) {
-				logger.V(1).Info("Monitoring cancelled by context", "PID", pid)
+				logger.V(1).Info("Monitoring cancelled by context", "PID", handle.Pid)
 			} else {
-				logger.Error(waitErr, "Error waiting for process", "PID", pid)
+				logger.Error(waitErr, "Error waiting for process", "PID", handle.Pid)
 			}
 		} else {
-			logger.Info("Monitor process exited, shutting down", "PID", pid)
+			logger.Info("Monitor process exited, shutting down", "PID", handle.Pid)
 		}
 	}()
 
@@ -83,6 +82,6 @@ func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (contex
 	}
 
 	// Ignore errors as they're logged by MonitorPid and we always return a valid context
-	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, monitorPid, monitorProcessStartTime, monitorInterval, logger)
+	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, process.NewProcessHandle(monitorPid, monitorProcessStartTime), monitorInterval, logger)
 	return monitorCtx, monitorCtxCancel
 }

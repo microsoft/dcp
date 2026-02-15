@@ -200,14 +200,7 @@ func DcpRun(
 func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (notifications.UnixSocketNotificationSource, error) {
 	const noNotifications = "Notifications will not be sent to controller process"
 
-	socketPath, socketPathErr := notifications.PrepareNotificationSocketPath("", "dcp-notify-sock-")
-	if socketPathErr != nil {
-		retErr := fmt.Errorf("failed to prepare notification socket path: %w", socketPathErr)
-		log.Error(socketPathErr, noNotifications)
-		return nil, retErr
-	}
-
-	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, socketPath, log)
+	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, "", "dcp-notify-sock-", log)
 	if nsErr != nil {
 		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)
 		log.Error(nsErr, noNotifications)

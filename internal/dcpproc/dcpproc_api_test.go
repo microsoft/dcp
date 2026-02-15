@@ -35,7 +35,7 @@ func TestRunProcessWatcher(t *testing.T) {
 	testPid := process.Pid_t(28869)
 	testStartTime := time.Now()
 
-	RunProcessWatcher(pe, testPid, testStartTime, log)
+	RunProcessWatcher(pe, process.NewProcessHandle(testPid, testStartTime), log)
 
 	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
@@ -103,9 +103,9 @@ func TestStopProcessTree(t *testing.T) {
 		},
 	})
 
-	pid, startTime, startErr := pex.StartAndForget(testCmd, process.CreationFlagsNone)
+	handle, startErr := pex.StartAndForget(testCmd, process.CreationFlagsNone)
 	require.NoError(t, startErr, "Could not simulate starting test process")
-	testProc, found := pex.FindByPid(pid)
+	testProc, found := pex.FindByPid(handle.Pid)
 	require.True(t, found, "Could not find the started process")
 
 	var dcpProc *internal_testutil.ProcessExecution
@@ -119,7 +119,7 @@ func TestStopProcessTree(t *testing.T) {
 		},
 	})
 
-	stopProcessTreeErr := StopProcessTree(ctx, pex, pid, startTime, log)
+	stopProcessTreeErr := StopProcessTree(ctx, pex, handle, log)
 	require.NoError(t, stopProcessTreeErr, "Could not stop the process tree")
 	require.True(t, testProc.Finished(), "The test processed should have been stopped")
 
@@ -129,9 +129,9 @@ func TestStopProcessTree(t *testing.T) {
 	require.Equal(t, "stop-process-tree", dcpProc.Cmd.Args[1], "Should use 'stop-process-tree' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--pid", "Should include --pid flag")
-	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(pid), 10), "Should include test process ID")
+	require.Equal(t, dcpProc.Cmd.Args[3], strconv.FormatInt(int64(handle.Pid), 10), "Should include test process ID")
 	require.Equal(t, dcpProc.Cmd.Args[4], "--process-start-time", "Should include --process-start-time flag")
-	require.Equal(t, dcpProc.Cmd.Args[5], startTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
+	require.Equal(t, dcpProc.Cmd.Args[5], handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), "Should include formatted process start time")
 }
 
 func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
