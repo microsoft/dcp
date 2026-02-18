@@ -32,10 +32,6 @@ const LogSubresourceName = "log"
 // See: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/#syntax-and-character-set
 const MaxAnnotationsTotalSize = 256 * 1024 // 256 KB = 262144 bytes
 
-// AnnotationSizeWarningThreshold is the threshold at which we warn about annotation size.
-// We use 90% of the max size to give users early warning before hitting the hard limit.
-const AnnotationSizeWarningThreshold = MaxAnnotationsTotalSize * 90 / 100 // ~230 KB
-
 // ValidateAnnotationsSize checks if the total size of annotations exceeds the Kubernetes limit.
 // It returns an error if the annotations exceed MaxAnnotationsTotalSize (256 KB).
 func ValidateAnnotationsSize(annotations map[string]string, fieldPath *field.Path) field.ErrorList {
@@ -63,9 +59,9 @@ func calculateAnnotationsSize(annotations map[string]string) int {
 	return totalSize
 }
 
-// GetAnnotationsSizeInfo returns a human-readable description of the annotation size.
+// getAnnotationsSizeInfo returns a human-readable description of the annotation size.
 // This can be used to provide helpful context in error messages.
-func GetAnnotationsSizeInfo(annotations map[string]string) string {
+func getAnnotationsSizeInfo(annotations map[string]string) string {
 	totalSize := calculateAnnotationsSize(annotations)
 	return fmt.Sprintf("%d bytes (limit: %d bytes / 256 KB)", totalSize, MaxAnnotationsTotalSize)
 }

@@ -17,10 +17,10 @@ func TestValidateAnnotationsSize(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name           string
-		annotations    map[string]string
-		expectError    bool
-		errorContains  string
+		name          string
+		annotations   map[string]string
+		expectError   bool
+		errorContains string
 	}{
 		{
 			name:        "nil annotations should pass",
@@ -43,7 +43,7 @@ func TestValidateAnnotationsSize(t *testing.T) {
 		{
 			name: "annotations at 90% of limit should pass",
 			annotations: map[string]string{
-				"large-value": strings.Repeat("a", AnnotationSizeWarningThreshold-11), // 11 = len("large-value")
+				"large-value": strings.Repeat("a", (MaxAnnotationsTotalSize*90/100)-11), // 11 = len("large-value")
 			},
 			expectError: false,
 		},
@@ -154,7 +154,7 @@ func TestGetAnnotationsSizeInfo(t *testing.T) {
 		"key": "value",
 	}
 
-	info := GetAnnotationsSizeInfo(annotations)
+	info := getAnnotationsSizeInfo(annotations)
 
 	require.Contains(t, info, "8 bytes", "should contain the calculated size")
 	require.Contains(t, info, "262144 bytes", "should contain the limit")
@@ -167,13 +167,4 @@ func TestMaxAnnotationsTotalSizeConstant(t *testing.T) {
 	// Verify the constant matches the Kubernetes limit
 	require.Equal(t, 262144, MaxAnnotationsTotalSize,
 		"MaxAnnotationsTotalSize should be 256 KB (262144 bytes)")
-}
-
-func TestAnnotationSizeWarningThresholdConstant(t *testing.T) {
-	t.Parallel()
-
-	// Verify the warning threshold is 90% of the max
-	expectedThreshold := MaxAnnotationsTotalSize * 90 / 100
-	require.Equal(t, expectedThreshold, AnnotationSizeWarningThreshold,
-		"AnnotationSizeWarningThreshold should be 90%% of MaxAnnotationsTotalSize")
 }

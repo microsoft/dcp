@@ -93,6 +93,8 @@ func (cn *ContainerNetworkConnection) Validate(ctx context.Context) field.ErrorL
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
+	errorList = append(errorList, ValidateAnnotationsSize(cn.Annotations, field.NewPath("metadata", "annotations"))...)
+
 	return errorList
 }
 
