@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 )
 
@@ -68,6 +69,65 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 			Aliases:    []string{"cf5947988412"},
 		},
 	}, ct.Networks)
+}
+
+func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		mount    apiv1.VolumeMount
+		wantArgs []string
+	}{
+		{
+			name: "named volume includes src",
+			mount: apiv1.VolumeMount{
+				Type:   apiv1.NamedVolumeMount,
+				Source: "myvolume",
+				Target: "/data",
+			},
+			wantArgs: []string{"--mount", "type=volume,src=myvolume,target=/data"},
+		},
+		{
+			name: "anonymous volume omits src",
+			mount: apiv1.VolumeMount{
+				Type:   apiv1.NamedVolumeMount,
+				Source: "",
+				Target: "/data",
+			},
+			wantArgs: []string{"--mount", "type=volume,target=/data"},
+		},
+		{
+			name: "named volume readonly",
+			mount: apiv1.VolumeMount{
+				Type:     apiv1.NamedVolumeMount,
+				Source:   "myvolume",
+				Target:   "/data",
+				ReadOnly: true,
+			},
+			wantArgs: []string{"--mount", "type=volume,src=myvolume,target=/data,readonly"},
+		},
+		{
+			name: "anonymous volume readonly",
+			mount: apiv1.VolumeMount{
+				Type:     apiv1.NamedVolumeMount,
+				Source:   "",
+				Target:   "/data",
+				ReadOnly: true,
+			},
+			wantArgs: []string{"--mount", "type=volume,target=/data,readonly"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			options := containers.CreateContainerOptions{}
+			options.VolumeMounts = []apiv1.VolumeMount{tc.mount}
+			args := applyCreateContainerOptions([]string{}, options)
+			require.Equal(t, tc.wantArgs, args)
+		})
+	}
 }
 
 const inspectedConsulJune2024 = `
