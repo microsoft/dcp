@@ -208,7 +208,9 @@ func (c *containerLogStreamer) StreamLogs(
 
 	// We always want to use a FollowWriter, even if not in "follow" mode,
 	// to account for the fact that ContainerLogSource.CaptureContainerLogs() is an asynchronous operation.
-	followWriter := usvc_io.NewFollowWriter(ctx, src, dest)
+	// A few no-data stop retries will allow us to get log lines from a container that we just started capturing logs for, regardless of follow/non-follow mode.
+	const noDataStopRetries = 3
+	followWriter := usvc_io.NewFollowWriter(ctx, src, dest, usvc_io.WithNoDataStopRetries(noDataStopRetries))
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -256,7 +258,10 @@ func (c *containerLogStreamer) StreamLogs(
 		}
 	}()
 
-	if !follow || ctr.Done() {
+	if !follow {
+		// FollowWriter will keep pushing data until EOF (it will not stop immediately when we call StopFollow()).
+		followWriter.StopFollow()
+	} else if ctr.Done() {
 		logs.DelayCancelFollowStreams([]*usvc_io.FollowWriter{followWriter}, (*usvc_io.FollowWriter).StopFollow)
 	}
 
