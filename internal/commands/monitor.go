@@ -82,6 +82,6 @@ func GetMonitorContextFromFlags(ctx context.Context, logger logr.Logger) (contex
 	}
 
 	// Ignore errors as they're logged by MonitorPid and we always return a valid context
-	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, process.NewProcessHandle(monitorPid, monitorProcessStartTime), monitorInterval, logger)
+	monitorCtx, monitorCtxCancel, _ := MonitorPid(ctx, process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, logger)
 	return monitorCtx, monitorCtxCancel
 }

@@ -287,7 +287,7 @@ func TestChildrenTerminated(t *testing.T) {
 			processTree, err := process.GetProcessTree(rootP)
 			require.NoError(t, err)
 
-			err = executor.StopProcess(process.NewProcessHandle(rootP.Pid, rootP.IdentityTime))
+			err = executor.StopProcess(process.NewHandle(rootP.Pid, rootP.IdentityTime))
 			require.NoError(t, err)
 
 			// Wait up to 10 seconds for all processes to exit. This guarantees that the test will only pass if StopProcess()
@@ -351,7 +351,7 @@ func TestWatchCatchesProcessExit(t *testing.T) {
 	require.NoError(t, err)
 
 	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	delayProc, err := process.FindWaitableProcess(process.NewProcessHandle(pid, time.Time{}))
+	delayProc, err := process.FindWaitableProcess(process.NewHandle(pid, time.Time{}))
 	require.NoError(t, err)
 
 	err = delayProc.Wait(ctx)
@@ -378,7 +378,7 @@ func TestContextCancelsWatch(t *testing.T) {
 	require.NoError(t, err, "command should start without error")
 
 	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	delayProc, err := process.FindWaitableProcess(process.NewProcessHandle(pid, time.Time{}))
+	delayProc, err := process.FindWaitableProcess(process.NewHandle(pid, time.Time{}))
 	require.NoError(t, err, "find process should succeed without error")
 
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second*5)

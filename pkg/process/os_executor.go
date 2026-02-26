@@ -184,7 +184,7 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pro
 		"CreationFlags", flags,
 	)
 
-	handle := NewProcessHandle(pid, ProcessIdentityTime(pid))
+	handle := NewHandle(pid, ProcessIdentityTime(pid))
 
 	startCompletionErr := e.completeProcessStart(cmd, handle, flags)
 	if startCompletionErr != nil {

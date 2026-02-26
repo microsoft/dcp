@@ -21,7 +21,7 @@ Currently, `protocols_supported` tops out at `"2025-10-01"`. No `2026-02-01` or 
                                    ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
 │ DCP DAP Bridge (BridgeManager + DapBridge)                               │
-│  ├─ SecureSocketListener for IDE connections                             │
+│  ├─ PrivateUnixSocketListener for IDE connections                        │
 │  ├─ Handshake validation (session ID + token)                            │
 │  ├─ Sequence number remapping (IDE ↔ Adapter seq isolation)              │
 │  ├─ RawMessage forwarding (transparent proxy for unknown DAP messages)   │
@@ -108,7 +108,7 @@ export interface DebugAdapterConfig {
     args: string[];
     mode?: "stdio" | "tcp-callback" | "tcp-connect";
     env?: Array<{ name: string; value: string }>;
-    connectionTimeoutSeconds?: number;
+    connectionTimeout?: string; // Go duration format, e.g. "10s"
 }
 
 export interface DebugBridgeHandshakeRequest {
@@ -384,7 +384,7 @@ If the Unix socket closes unexpectedly (without a `TerminatedEvent` or `Disconne
 | **Single `BridgeManager`** | Session management, socket listening, and bridge lifecycle are combined into one `BridgeManager` type rather than separate `BridgeSessionManager` and `BridgeSocketManager` — simpler lifecycle management with a single mutex |
 | **Sequence number remapping** | Bridge-assigned seq numbers prevent collisions between IDE-originated and bridge-originated (e.g., `runInTerminal` response) messages; a `seqMap` restores original seq values on responses |
 | **`RawMessage` fallback** | Unknown/proprietary DAP messages that the `go-dap` library can't decode are wrapped in `RawMessage` and forwarded transparently, enabling support for custom debug adapter extensions |
-| **`SecureSocketListener`** | Uses the project's `networking.SecureSocketListener` instead of a plain Unix domain socket for enhanced security |
+| **`PrivateUnixSocketListener`** | Uses the project's `networking.PrivateUnixSocketListener` instead of a plain Unix domain socket for enhanced security |
 | **Environment filtering on adapter launch** | Adapter processes inherit the DCP environment but with `DEBUG_SESSION*` and `DCP_*` variables removed, preventing credential leakage to debug adapters |
 
 ---
@@ -457,7 +457,7 @@ Output routing only captures via `OutputHandler` when `runInTerminal` was NOT us
 `BridgeManager` is the single orchestrator for all bridge sessions. It combines session registration, socket management, and bridge lifecycle:
 
 1. **Creation**: `NewBridgeManager(BridgeManagerConfig{Logger, ConnectionHandler})` — requires a `BridgeConnectionHandler` callback
-2. **Start**: `Start(ctx)` creates a `SecureSocketListener`, signals readiness via `Ready()` channel, then enters an accept loop
+2. **Start**: `Start(ctx)` creates a `PrivateUnixSocketListener`, signals readiness via `Ready()` channel, then enters an accept loop
 3. **Session registration**: `RegisterSession(sessionID, token)` creates a `BridgeSession` in `BridgeSessionStateCreated` state. Session ID is typically `string(exe.UID)`.
 4. **Connection handling**: Each accepted connection goes through handshake, validation, `markSessionConnected()`, then `runBridge()`. If anything fails between marking connected and running, `markSessionDisconnected()` rolls back to allow retry.
 5. **Bridge construction**: Creates a `DapBridge` via `NewDapBridge(BridgeConfig{...})` where `BridgeConfig` includes `SessionID`, `AdapterConfig`, `Executor`, `Logger`, `OutputHandler`, `StdoutWriter`, `StderrWriter`
@@ -523,7 +523,7 @@ Maximum message size: **65536 bytes** (64 KB).
         "env": [
             { "name": "VAR_NAME", "value": "var_value" }
         ],
-        "connectionTimeoutSeconds": 10
+        "connectionTimeout": "10s"
     }
 }
 ```
@@ -537,7 +537,7 @@ Maximum message size: **65536 bytes** (64 KB).
 | `debug_adapter_config.args` | `string[]` | Yes | Command + arguments to launch the adapter. First element is the executable path. |
 | `debug_adapter_config.mode` | `string` | No | `"stdio"` (default), `"tcp-callback"`, or `"tcp-connect"` |
 | `debug_adapter_config.env` | `array` | No | Environment variables as `[{"name":"N","value":"V"}]` (uses `apiv1.EnvVar` type on DCP side) |
-| `debug_adapter_config.connectionTimeoutSeconds` | `number` | No | Timeout for TCP connections (default: 10 seconds) |
+| `debug_adapter_config.connectionTimeout` | `string` | No | Timeout for TCP connections as a Go duration string, e.g. `"10s"` (default: 10 seconds) |
 
 ### Debug Adapter Modes
 
@@ -612,8 +612,8 @@ These files in the `microsoft/dcp` repo implement the DCP side of the bridge pro
 | `internal/dap/doc.go` | Package-level documentation |
 | `internal/dap/bridge.go` | Core `DapBridge` — bidirectional message forwarding with interception, sequence number remapping, inline `runInTerminal` handling (`handleRunInTerminalRequest`), and error reporting via `sendErrorToIDE()` |
 | `internal/dap/bridge_handshake.go` | Length-prefixed JSON handshake protocol: `HandshakeRequest`/`HandshakeResponse` types, `HandshakeReader`/`HandshakeWriter`, `performClientHandshake()` convenience function, `maxHandshakeMessageSize` (64 KB) constant |
-| `internal/dap/bridge_manager.go` | `BridgeManager` — combined session management, `SecureSocketListener` socket lifecycle, handshake processing, and bridge lifecycle. Contains `BridgeSession` with states (`Created`, `Connected`, `Terminated`, `Error`), session registration/rollback, and `BridgeConnectionHandler` callback type |
-| `internal/dap/adapter_types.go` | `DebugAdapterConfig` struct (args, mode, env as `[]apiv1.EnvVar`, connectionTimeoutSeconds) and `DebugAdapterMode` constants (`stdio`, `tcp-callback`, `tcp-connect`) |
+| `internal/dap/bridge_manager.go` | `BridgeManager` — combined session management, `PrivateUnixSocketListener` socket lifecycle, handshake processing, and bridge lifecycle. Contains `BridgeSession` with states (`Created`, `Connected`, `Terminated`, `Error`), session registration/rollback, and `BridgeConnectionHandler` callback type |
+| `internal/dap/adapter_types.go` | `DebugAdapterConfig` struct (args, mode, env as `[]apiv1.EnvVar`, connectionTimeout as `*metav1.Duration`) and `DebugAdapterMode` constants (`stdio`, `tcp-callback`, `tcp-connect`) |
 | `internal/dap/adapter_launcher.go` | `LaunchDebugAdapter()` — starts adapter processes in all 3 modes, environment filtering (`buildFilteredEnv()` removes `DEBUG_SESSION*`/`DCP_*` variables), adapter stderr capture via pipe, `LaunchedAdapter` struct with transport + process handle + done channel |
 | `internal/dap/transport.go` | `Transport` interface with a single `connTransport` backing implementation shared by three factory functions: `NewTCPTransportWithContext`, `NewStdioTransportWithContext`, `NewUnixTransportWithContext`. Uses `dcpio.NewContextReader` for cancellation-aware reads |
 | `internal/dap/message.go` | `RawMessage` (transparent forwarding of unknown/proprietary DAP messages), `MessageEnvelope` (uniform header access with lazy seq patching), `ReadMessageWithFallback`/`WriteMessageWithFallback`, unexported helpers `newOutputEvent`/`newTerminatedEvent` |

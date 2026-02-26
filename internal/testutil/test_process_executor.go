@@ -133,7 +133,7 @@ func (e *TestProcessExecutor) StartProcess(
 		return process.ProcessHandle{Pid: process.UnknownPID}, nil, autoExecutionErr
 	}
 
-	handle := process.NewProcessHandle(pid, startTimestamp)
+	handle := process.NewHandle(pid, startTimestamp)
 	return handle, startWaitingForExit, nil
 }
 
@@ -170,7 +170,7 @@ func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCre
 		return process.ProcessHandle{Pid: process.UnknownPID}, autoExecutionErr
 	}
 
-	handle := process.NewProcessHandle(pid, startTimestamp)
+	handle := process.NewHandle(pid, startTimestamp)
 	return handle, nil
 }
 
@@ -194,7 +194,7 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 						if !stopInitiated {
 							// RunCommand() "ended on its own" (as opposed to being triggered by StopProcess() or SimulateProcessExit()),
 							// so we need to do the resource cleanup.
-							stopProcessErr := e.stopProcessImpl(process.NewProcessHandle(pe.PID, pe.StartedAt), exitCode)
+							stopProcessErr := e.stopProcessImpl(process.NewHandle(pe.PID, pe.StartedAt), exitCode)
 							if stopProcessErr != nil && ae.StopError == nil {
 								panic(fmt.Errorf("we should have an execution with PID=%d: %w", pe.PID, stopProcessErr))
 							}

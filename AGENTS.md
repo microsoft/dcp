@@ -38,6 +38,9 @@ This codebase implements several custom Kubernetes types and controllers. Implem
 ### Avoid variable reuse (especially for errors)
 - If a function invokes multiple error-returning functions, use a different variable name for each error to avoid confusion.
 
+### Use sync.Mutex as pointers
+- In this codebase, `sync.Mutex` instances are used as pointers (`*sync.Mutex`). Create them with `&sync.Mutex{}` and pass them around as pointer values.
+
 ## Adhere to Code Placement Rules
 Place new code in the correct location according to the project's structure:
 - **API Definitions:** Go in `api/v1/`.

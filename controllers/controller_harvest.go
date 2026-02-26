@@ -299,7 +299,7 @@ func (rh *resourceHarvester) creatorStillRunning(labels map[string]string) bool 
 	creatorPID, _ := process.StringToPidT(labels[CreatorProcessIdLabel])
 	creatorStartTime, _ := time.Parse(osutil.RFC3339MiliTimestampFormat, labels[CreatorProcessStartTimeLabel])
 
-	return rh.isRunningDCPProcess(process.NewProcessHandle(creatorPID, creatorStartTime))
+	return rh.isRunningDCPProcess(process.NewHandle(creatorPID, creatorStartTime))
 }
 
 // Checks for the presence of the creator process ID and start time labels.

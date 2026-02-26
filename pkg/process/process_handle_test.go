@@ -16,9 +16,9 @@ func TestProcessHandle_Comparable(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	h1 := NewProcessHandle(Uint32_ToPidT(100), now)
-	h2 := NewProcessHandle(Uint32_ToPidT(100), now)
-	h3 := NewProcessHandle(Uint32_ToPidT(200), now)
+	h1 := NewHandle(Uint32_ToPidT(100), now)
+	h2 := NewHandle(Uint32_ToPidT(100), now)
+	h3 := NewHandle(Uint32_ToPidT(200), now)
 
 	assert.Equal(t, h1, h2)
 	assert.NotEqual(t, h1, h3)

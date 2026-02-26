@@ -24,8 +24,8 @@ type ProcessHandle struct {
 	IdentityTime time.Time
 }
 
-// NewProcessHandle creates a ProcessHandle from a PID and an identity time.
-func NewProcessHandle(pid Pid_t, identityTime time.Time) ProcessHandle {
+// NewHandle creates a ProcessHandle from a PID and an identity time.
+func NewHandle(pid Pid_t, identityTime time.Time) ProcessHandle {
 	return ProcessHandle{
 		Pid:          pid,
 		IdentityTime: identityTime,

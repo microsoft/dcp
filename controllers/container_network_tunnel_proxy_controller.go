@@ -1377,7 +1377,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) cleanupProxyPair(
 
 		// The process may have already exited because the client container has been stopped.
 
-		stopErr := r.config.ProcessExecutor.StopProcess(process.NewProcessHandle(pid, startTime))
+		stopErr := r.config.ProcessExecutor.StopProcess(process.NewHandle(pid, startTime))
 		if stopErr != nil && !errors.Is(stopErr, process.ErrorProcessNotFound) {
 			log.Error(stopErr, "Failed to stop server proxy process")
 		} else {

@@ -35,7 +35,7 @@ func TestRunProcessWatcher(t *testing.T) {
 	testPid := process.Pid_t(28869)
 	testStartTime := time.Now()
 
-	RunProcessWatcher(pe, process.NewProcessHandle(testPid, testStartTime), log)
+	RunProcessWatcher(pe, process.NewHandle(testPid, testStartTime), log)
 
 	dcpProc, dcpProcErr := findRunningDcp(pe)
 	require.NoError(t, dcpProcErr)
