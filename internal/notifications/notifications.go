@@ -132,7 +132,7 @@ func asNotification(nd *proto.NotificationData) (Notification, error) {
 // is reasonably unique to the calling process.
 // If the rootDir is empty, it will use the user's cache directory.
 func PrepareNotificationSocketPath(rootDir string, socketNamePrefix string) (string, error) {
-	socketDir, dirErr := networking.PrepareSecureSocketDir(rootDir)
+	socketDir, dirErr := networking.PreparePrivateUnixSocketDir(rootDir)
 	if dirErr != nil {
 		return "", fmt.Errorf("failed to prepare notification socket directory: %w", dirErr)
 	}

@@ -23,6 +23,10 @@ func TestProcessHandle_Comparable(t *testing.T) {
 	assert.Equal(t, h1, h2)
 	assert.NotEqual(t, h1, h3)
 
+	// Verify zero-value handle doesn't equal a handle with actual values
+	zeroHandle := ProcessHandle{Pid: UnknownPID}
+	assert.NotEqual(t, zeroHandle, h1)
+
 	// Verify usable as map key (replaces WaitKey)
 	m := map[ProcessHandle]string{
 		h1: "first",

@@ -36,7 +36,7 @@ func TestPrepareSecureSocketDirCreatesDirectoryWithCorrectPermissions(t *testing
 	t.Parallel()
 	rootDir := shortTempDir(t)
 
-	socketDir, prepareErr := PrepareSecureSocketDir(rootDir)
+	socketDir, prepareErr := PreparePrivateUnixSocketDir(rootDir)
 	require.NoError(t, prepareErr)
 
 	expectedDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
@@ -54,10 +54,10 @@ func TestPrepareSecureSocketDirIdempotentOnRepeatedCalls(t *testing.T) {
 	t.Parallel()
 	rootDir := shortTempDir(t)
 
-	dir1, err1 := PrepareSecureSocketDir(rootDir)
+	dir1, err1 := PreparePrivateUnixSocketDir(rootDir)
 	require.NoError(t, err1)
 
-	dir2, err2 := PrepareSecureSocketDir(rootDir)
+	dir2, err2 := PreparePrivateUnixSocketDir(rootDir)
 	require.NoError(t, err2)
 
 	assert.Equal(t, dir1, dir2)
@@ -66,7 +66,7 @@ func TestPrepareSecureSocketDirIdempotentOnRepeatedCalls(t *testing.T) {
 func TestPrepareSecureSocketDirFallsBackToUserCacheDir(t *testing.T) {
 	t.Parallel()
 
-	socketDir, prepareErr := PrepareSecureSocketDir("")
+	socketDir, prepareErr := PreparePrivateUnixSocketDir("")
 	require.NoError(t, prepareErr)
 
 	cacheDir, cacheDirErr := os.UserCacheDir()
@@ -89,7 +89,7 @@ func TestPrepareSecureSocketDirRejectsWrongPermissions(t *testing.T) {
 	mkdirErr := os.MkdirAll(socketDir, 0755)
 	require.NoError(t, mkdirErr)
 
-	_, prepareErr := PrepareSecureSocketDir(rootDir)
+	_, prepareErr := PreparePrivateUnixSocketDir(rootDir)
 	require.Error(t, prepareErr)
 	assert.Contains(t, prepareErr.Error(), "not private to the user")
 }
