@@ -160,6 +160,40 @@ func TestFollowWriterNoFollowWholeFile(t *testing.T) {
 	require.Equal(t, content, received, "follow writer did not emit expected content, buffer content is: %s", received)
 }
 
+// Verifies that when WithNoDataStopRetries is used, the FollowWriter retries reading
+// after StopFollow() is called, giving time for data written just before StopFollow() to be picked up.
+func TestFollowWriterNoDataStopRetriesDeliversData(t *testing.T) {
+	t.Parallel()
+
+	const content = "important data\n"
+	tmpReader := testutil.NewThreadSafeBuffer()
+	tmpWriter := tmpReader
+
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+	buf := testutil.NewBufferWriter()
+
+	const stopRetries = 20 // Use a large number of retries to make the test more robust on slow machines.
+	writer := usvc_io.NewFollowWriter(ctx, tmpReader, buf, usvc_io.WithNoDataStopRetries(stopRetries))
+
+	// Write data and immediately stop following.
+	n, writeErr := tmpWriter.Write([]byte(content))
+	require.NoError(t, writeErr)
+	require.Equal(t, len(content), n)
+	writer.StopFollow()
+
+	// Wait for the FollowWriter to finish and verify the data was delivered.
+	select {
+	case <-writer.Done():
+		// expected
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not finish within the test timeout")
+	}
+
+	require.Equal(t, content, string(buf.Bytes()))
+	require.NoError(t, writer.Err())
+}
+
 // Verifies that assumptions we make about the atomic.Value type are correct.
 func TestFollowWriterAtomicValueOkForErrors(t *testing.T) {
 	t.Parallel()
