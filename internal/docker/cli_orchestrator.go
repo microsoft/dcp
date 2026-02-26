@@ -485,7 +485,11 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 	}
 
 	for _, mount := range options.VolumeMounts {
-		mountVal := fmt.Sprintf("type=%s,src=%s,target=%s", mount.Type, mount.Source, mount.Target)
+		mountVal := fmt.Sprintf("type=%s", mount.Type)
+		if mount.Source != "" {
+			mountVal += fmt.Sprintf(",src=%s", mount.Source)
+		}
+		mountVal += fmt.Sprintf(",target=%s", mount.Target)
 		if mount.ReadOnly {
 			mountVal += ",readonly"
 		}

@@ -10,9 +10,11 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 
 ### Starting a new major or minor release
 
+* Note: pushing a new release branch requires JIT elevated permissions.
+
 1. Ensure you have the latest branch history by running `git fetch`
 1. Create a new release branch from `origin/main` named `release/<major>.<minor>` where `<major>.<minor>` is the intended version of the release (`git checkout -b release/<major>.<minor> origin/main`).
-1. Push the new release branch (and tag if applicable) to GitHub by running `git push origin`
+1. Push the new release branch to GitHub by running `git push origin`
 
 *Note: A given release branch will be used for all releases, including servicing releases in the given major.minor version. So `release/0.2` will serve as the release branch for any `0.2.x` releases, `release/0.3` would be for `0.3.x`, etc. Tags will be used to indicate the specific commits within a release branch that are final release builds. (See [Creating a final release build](#starting-a-final-release-build) for more details on tagging and building the final release build).*
 
@@ -23,6 +25,8 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 1. If for some reason creating the new branch fails, you'll have to resort to manually cherry-picking the PR changes into a new branch (created from the release branch) and handling any merge conflicts yourself, before creating the new PR manually.
 
 ### Starting a final release build
+
+* Note: creating a new tagged GitHub release requires JIT elevated permissions.
 
 1. Once you have a release candidate build that you're ready to release as a final build, [start a new GitHub release](https://github.com/microsoft/dcp/releases/new).
 1. Set the release tag to the appropriate `v<major>.<minor>.<patch>` (eg. `v0.2.3`) and the target branch to either the release branch you're releasing from (eg. `release/0.2`) if the latest commit in the branch is the new release build or to the specific commit from the release branch.
@@ -38,7 +42,9 @@ The project uses [GitVersion](https://gitversion.net/) to generate predictable v
 
 Once the production branch is updated and tagged, an official build needs to be started for that tagged version:
 
-1.  Ensure that official build for the updated `release` branch tag has completed.
+1. Tags aren't currently automatically picked up by the signing pipeline, so you'll need to ensure the new release tag is synced to the signing pipeline.
+1.  Once the new tag has been synced, an official build should start automatically but you can trigger one manually for the tag if necessary.
+1. Keep an eye on the official build pipeline in case there are any issues. It should kick off an automatic PR in Aspire to pull in the new bits.
 1.  Watch for a PR titled "Update dependencies microsoft/dcp", which updates
 [eng/Versions.props](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) and [eng/Version.Details.xml](https://github.com/dotnet/aspire/blob/main/eng/Versions.props) files.
     * When the PR shows up, review and approve. Once the automatic checks pass, the PR should auto-merge.

@@ -410,12 +410,12 @@ func computeFileHash(filePath string) (string, error) {
 
 // Returns the path to the dcptun_c binary
 func dcptunClientBinaryPath() (string, error) {
-	dcpBinDir, dcpBinDirErr := dcppaths.GetDcpBinDir()
-	if dcpBinDirErr != nil {
-		return "", fmt.Errorf("failed to get DCP bin directory: %w", dcpBinDirErr)
+	dcpDir, dcpDirErr := dcppaths.GetDcpDir()
+	if dcpDirErr != nil {
+		return "", fmt.Errorf("failed to get DCP directory: %w", dcpDirErr)
 	}
 
-	binaryPath := filepath.Join(dcpBinDir, ClientBinaryName)
+	binaryPath := filepath.Join(dcpDir, ClientBinaryName)
 	fi, statErr := os.Stat(binaryPath)
 
 	// Verify the binary exists
@@ -423,13 +423,13 @@ func dcptunClientBinaryPath() (string, error) {
 		return binaryPath, nil
 	}
 
-	// Fallback: probe for bin/dcptun_c from the current directory (used primarily for testing)
-	rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, dcppaths.DcpBinDir, ClientBinaryName)
+	// Fallback: probe for dcptun_c from the current directory (used primarily for testing)
+	rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, dcppaths.BuildOutputDir, ClientBinaryName)
 	if rootFindErr != nil {
 		return "", fmt.Errorf("dcptun client binary not found next to the running binary and could not be located via filesystem probing: %w", rootFindErr)
 	}
 
-	binaryPath = filepath.Join(rootFolder, dcppaths.DcpBinDir, ClientBinaryName)
+	binaryPath = filepath.Join(rootFolder, dcppaths.BuildOutputDir, ClientBinaryName)
 	fi, statErr = os.Stat(binaryPath)
 
 	if statErr != nil {

@@ -1,6 +1,6 @@
 module github.com/microsoft/dcp
 
-go 1.24.12
+go 1.24.13
 
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0

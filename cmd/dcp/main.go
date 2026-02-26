@@ -14,7 +14,6 @@ import (
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcp/commands"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -27,9 +26,15 @@ const (
 )
 
 func main() {
-	log := logger.New("dcp").
+	logName := "dcp"
+	if len(os.Args) > 1 && osutil.HasOnlyValidFilenameChars(os.Args[1]) && os.Args[1][0] != '-' {
+		// Use the command name as part of the log file name, instead of just "dcp", which is the same for all invocations.
+		logName = os.Args[1]
+	}
+	log := logger.New(logName).
 		WithFilterSink(logger.MacOsProcErrorLogFilter, 1).
 		WithName("dcp")
+
 	defer func() {
 		panicErr := resiliency.MakePanicError(recover(), log.Logger)
 		if panicErr != nil {
@@ -38,7 +43,6 @@ func main() {
 			os.Exit(errPanic)
 		}
 	}()
-	defer usvc_io.CleanupSessionFolderIfNeeded()
 
 	ctx := kubeapiserver.SetupSignalContext()
 

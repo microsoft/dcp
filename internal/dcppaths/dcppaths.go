@@ -10,9 +10,9 @@ import (
 	"fmt"
 	iofs "io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -21,14 +21,15 @@ import (
 const (
 	DcpUserDir           = ".dcp"
 	DcpExtensionsDir     = "ext"
-	DcpBinDir            = "bin"
 	DcpWorkDir           = "dcp-work"
 	DcpExtensionsPathEnv = "DCP_EXTENSIONS_PATH"
-	DcpBinPathEnv        = "DCP_BIN_PATH"
+	BuildOutputDir       = "bin"
 )
 
 var (
 	enableTestPathProbing atomic.Bool
+	dcpExeName            string
+	probeForDcpDirOnce    func() (string, error)
 )
 
 func GetExtensionsDirs() ([]string, error) {
@@ -46,55 +47,34 @@ func GetExtensionsDirs() ([]string, error) {
 		return extensionPaths, nil
 	}
 
-	extensionsDir, err := probeForExtensionsDir()
+	dcpDir, err := probeForDcpDirOnce()
 	if err != nil {
 		return nil, err
 	}
 
-	return []string{extensionsDir}, nil
+	return []string{filepath.Join(dcpDir, DcpExtensionsDir)}, nil
 }
 
-func GetDcpBinDir() (string, error) {
-	if binPath, found := os.LookupEnv(DcpBinPathEnv); found {
-		return filepath.Abs(filepath.Clean(binPath))
-	}
-
-	exePath, err := osutil.ThisExecutablePath()
-	if err == nil {
-		exeDir := filepath.Dir(exePath)
-		exeDir = filepath.Clean(exeDir)
-
-		return exeDir, nil
-	}
-
-	cwd, cwdErr := os.Getwd()
-	if cwdErr == nil {
-		return filepath.Clean(cwd), nil
-	}
-
-	return "", fmt.Errorf("could not determine DCP bin directory: %w", errors.Join(err, cwdErr))
+func GetDcpDir() (string, error) {
+	return probeForDcpDirOnce()
 }
 
-func WithDcpBinDir(cmd *exec.Cmd) {
-	binDir, err := GetDcpBinDir()
+func GetDcpExePath() (string, error) {
+	dcpDir, err := probeForDcpDirOnce()
 	if err != nil {
-		return
+		return "", fmt.Errorf("DCP root directory location could not be determined: %w", err)
 	}
 
-	cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", DcpBinPathEnv, binDir))
+	return filepath.Join(dcpDir, dcpExeName), nil
 }
 
-// Figure out the extensions directory based on current executable path, filesystem probing, and well-known environment variables.
-func probeForExtensionsDir() (string, error) {
+// Figure out the directory where DCP binary is based on current executable path,
+// filesystem probing, and well-known environment variables.
+func probeForDcpDir() (string, error) {
 	// We assume the binaries can be found in 3 locations:
 	// - The root directory (DCP API server ONLY),
 	// - The extension directory (subfolder of the root directory), or
 	// - The bin directory (subfolder of the extensions directory).
-
-	dcpExeName := "dcp"
-	if osutil.IsWindows() {
-		dcpExeName += ".exe"
-	}
 
 	exePath, err := osutil.ThisExecutablePath()
 	if err == nil {
@@ -104,35 +84,32 @@ func probeForExtensionsDir() (string, error) {
 		switch {
 		case exeName == dcpExeName:
 			// exeDir is the root DCP directory.
-			return filepath.Join(exeDir, DcpExtensionsDir), nil
-
-		case strings.HasSuffix(exeDir, DcpExtensionsDir):
-			// exeDir is the extensions directory.
 			return exeDir, nil
 
-		case strings.HasSuffix(exeDir, filepath.Join(DcpExtensionsDir, DcpBinDir)):
-			// exeDir is the bin directory.
-			extensionsDir := filepath.Dir(exeDir)
-			return extensionsDir, nil
+		case strings.HasSuffix(exeDir, DcpExtensionsDir):
+			// exeDir is the extensions directory, we need to go one level up.
+			dcpDir := filepath.Dir(exeDir)
+			return dcpDir, nil
 		}
 	}
 
 	if enableTestPathProbing.Load() {
-		tail := []string{DcpBinDir, dcpExeName}
+		tail := []string{BuildOutputDir, dcpExeName}
 		rootFolder, rootFindErr := osutil.FindRootFor(osutil.FileTarget, tail...)
 		if rootFindErr == nil {
-			return filepath.Join(rootFolder, DcpBinDir, DcpExtensionsDir), nil
+			dcpDir := filepath.Join(rootFolder, BuildOutputDir)
+			return dcpDir, nil
 		}
 	}
 
-	// Fallback: return the default DCP extensions directory inside the user's home directory.
-	home, homeDirGetErr := os.UserHomeDir()
-	if homeDirGetErr != nil {
-		return "", fmt.Errorf("could not determine the path to DCP extensions directory: the program location is not within the standard DCP directory structure, and we could not determine the path to the user's home directory: %w", errors.Join(err, homeDirGetErr))
+	// Fallback: return the default DCP extensions directory inside the user's homeDir directory.
+	homeDir, homeDirErr := os.UserHomeDir()
+	if homeDirErr != nil {
+		return "", fmt.Errorf("could not determine the path to DCP extensions directory: the program location is not within the standard DCP directory structure, and we could not determine the path to the user's home directory: %w", errors.Join(err, homeDirErr))
 	}
 
-	extensionsDir := filepath.Join(home, DcpUserDir, DcpExtensionsDir)
-	return extensionsDir, nil
+	dcpDir := filepath.Join(homeDir, DcpUserDir)
+	return dcpDir, nil
 }
 
 // Returns the full path to user DCP data directory, attempting to create it as necessary.
@@ -165,4 +142,12 @@ func EnsureUserDcpDir() (string, error) {
 // Used by tests only, enables probing for additional DCP paths during test runs.
 func EnableTestPathProbing() {
 	enableTestPathProbing.Store(true)
+}
+
+func init() {
+	dcpExeName = "dcp"
+	if osutil.IsWindows() {
+		dcpExeName += ".exe"
+	}
+	probeForDcpDirOnce = sync.OnceValues(probeForDcpDir)
 }

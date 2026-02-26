@@ -16,6 +16,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -27,6 +28,9 @@ func TestRunProcessWatcher(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr, "Could not determine DCP executable path")
 
 	testPid := process.Pid_t(28869)
 	testStartTime := time.Now()
@@ -37,7 +41,7 @@ func TestRunProcessWatcher(t *testing.T) {
 	require.NoError(t, dcpProcErr)
 
 	require.True(t, len(dcpProc.Cmd.Args) >= 8, "Command should have at least 8 arguments")
-	require.Equal(t, dcpProc.Cmd.Args[0], os.Args[0], "Should execute dcp")
+	require.Equal(t, dcpProc.Cmd.Args[0], dcpPath, "Should execute dcp")
 	require.Equal(t, "monitor-process", dcpProc.Cmd.Args[1], "Should use 'monitor-process' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--child", "Should include --child flag")
@@ -53,6 +57,9 @@ func TestRunContainerWatcher(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr, "Could not determine DCP executable path")
 
 	testContainerID := "test-container-123"
 
@@ -62,7 +69,7 @@ func TestRunContainerWatcher(t *testing.T) {
 	require.NoError(t, dcpProcErr)
 
 	require.True(t, len(dcpProc.Cmd.Args) >= 5, "Command should have at least 5 arguments")
-	require.Equal(t, dcpProc.Cmd.Args[0], os.Args[0], "Should execute dcp")
+	require.Equal(t, dcpProc.Cmd.Args[0], dcpPath, "Should execute dcp")
 	require.Equal(t, "monitor-container", dcpProc.Cmd.Args[1], "Should use 'monitor-container' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--containerID", "Should include --containerID flag")
@@ -76,6 +83,9 @@ func TestStopProcessTree(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	require.NoError(t, dcpPathErr, "Could not determine DCP executable path")
 
 	testCmdPath := fmt.Sprintf("/usr/bin/%s", t.Name())
 	testCmd := exec.Command(testCmdPath, "arg1", "arg2")
@@ -101,7 +111,7 @@ func TestStopProcessTree(t *testing.T) {
 	var dcpProc *internal_testutil.ProcessExecution
 	pex.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{os.Args[0]},
+			Command: []string{dcpPath},
 		},
 		RunCommand: func(pe *internal_testutil.ProcessExecution) int32 {
 			dcpProc = pe
@@ -115,7 +125,7 @@ func TestStopProcessTree(t *testing.T) {
 
 	require.NotNil(t, dcpProc, "dcp stop-process-tree should have been invoked")
 	require.True(t, len(dcpProc.Cmd.Args) >= 5, "Command should have at least 5 arguments")
-	require.Equal(t, dcpProc.Cmd.Args[0], os.Args[0], "Should execute dcp")
+	require.Equal(t, dcpProc.Cmd.Args[0], dcpPath, "Should execute dcp")
 	require.Equal(t, "stop-process-tree", dcpProc.Cmd.Args[1], "Should use 'stop-process-tree' subcommand")
 
 	require.Equal(t, dcpProc.Cmd.Args[2], "--pid", "Should include --pid flag")
@@ -125,7 +135,12 @@ func TestStopProcessTree(t *testing.T) {
 }
 
 func findRunningDcp(pe *internal_testutil.TestProcessExecutor) (*internal_testutil.ProcessExecution, error) {
-	candidates := pe.FindAll([]string{os.Args[0]}, "", func(pe *internal_testutil.ProcessExecution) bool {
+	dcpPath, dcpPathErr := dcppaths.GetDcpExePath()
+	if dcpPathErr != nil {
+		return nil, fmt.Errorf("could not determine DCP executable path: %w", dcpPathErr)
+	}
+
+	candidates := pe.FindAll([]string{dcpPath}, "", func(pe *internal_testutil.ProcessExecution) bool {
 		return pe.Running()
 	})
 	if len(candidates) == 0 {

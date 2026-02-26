@@ -81,7 +81,6 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 
 			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
-			// We assume os.Args[0] will be valid here because it is in all the scenarios we currently support.
 			forked := exec.Command(os.Args[0], args...)
 			forked.Env = os.Environ()    // Inherit the environment from the parent process
 			logger.WithSessionId(forked) // Ensure the session ID is passed to the forked process
@@ -106,6 +105,8 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			log.Error(err, "Failed to capture startup profile")
 		}
+
+		defer usvc_io.CleanupSessionFolderIfNeeded()
 
 		if rootDir == "" {
 			rootDir, err = os.Getwd()

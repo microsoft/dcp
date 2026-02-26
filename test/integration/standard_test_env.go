@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -57,7 +56,7 @@ func StartTestEnvironment(
 	// On Windows the process Executable runner uses the dcp stop-process-tree subcommand, so we need to simulate that.
 	pex.InstallAutoExecution(internal_testutil.AutoExecution{
 		Condition: internal_testutil.ProcessSearchCriteria{
-			Command: []string{os.Args[0], "stop-process-tree"},
+			Command: []string{"dcp", "stop-process-tree"},
 		},
 		RunCommand: dcpproc.SimulateStopProcessTreeCommand,
 	})
