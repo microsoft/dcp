@@ -715,6 +715,7 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 
 	log := logr.Discard()
 	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
 
 	// Set up bridge manager and register a session.
 	socketDir := shortTempDir(t)

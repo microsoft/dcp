@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // DefaultAdapterConnectionTimeout is the default timeout for connecting to the debug adapter.
@@ -47,16 +48,16 @@ type DebugAdapterConfig struct {
 	// Env contains environment variables to set for the adapter process.
 	Env []apiv1.EnvVar `json:"env,omitempty"`
 
-	// ConnectionTimeoutSeconds is the timeout (in seconds) for connecting to the adapter in TCP modes.
-	// If zero, DefaultAdapterConnectionTimeout is used.
-	ConnectionTimeoutSeconds int `json:"connectionTimeoutSeconds,omitempty"`
+	// ConnectionTimeout is the timeout for connecting to the adapter in TCP modes.
+	// If nil or zero, DefaultAdapterConnectionTimeout is used.
+	ConnectionTimeout *metav1.Duration `json:"connectionTimeout,omitempty"`
 }
 
 // GetConnectionTimeout returns the connection timeout as a time.Duration.
-// If ConnectionTimeoutSeconds is zero or negative, DefaultAdapterConnectionTimeout is returned.
+// If ConnectionTimeout is nil or non-positive, DefaultAdapterConnectionTimeout is returned.
 func (c *DebugAdapterConfig) GetConnectionTimeout() time.Duration {
-	if c.ConnectionTimeoutSeconds > 0 {
-		return time.Duration(c.ConnectionTimeoutSeconds) * time.Second
+	if c.ConnectionTimeout != nil && c.ConnectionTimeout.Duration > 0 {
+		return c.ConnectionTimeout.Duration
 	}
 	return DefaultAdapterConnectionTimeout
 }

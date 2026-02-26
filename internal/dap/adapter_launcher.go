@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -34,13 +34,6 @@ var ErrInvalidAdapterConfig = errors.New("invalid debug adapter configuration: A
 
 // ErrAdapterConnectionTimeout is returned when the adapter fails to connect within the timeout.
 var ErrAdapterConnectionTimeout = errors.New("debug adapter connection timeout")
-
-// Environment variables starting with these prefixes will not be inherited from the
-// ambient (DCP process) environment when launching debug adapters.
-var suppressVarPrefixes = []string{
-	"DEBUG_SESSION",
-	"DCP_",
-}
 
 // LaunchedAdapter represents a running debug adapter process with its transport.
 type LaunchedAdapter struct {
@@ -63,7 +56,7 @@ type LaunchedAdapter struct {
 	exitErr error
 
 	// mu protects exitCode and exitErr.
-	mu sync.Mutex
+	mu *sync.Mutex
 }
 
 // Pid returns the process ID of the debug adapter.
@@ -146,6 +139,7 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 	}
 
 	adapter := &LaunchedAdapter{
+		mu:       &sync.Mutex{},
 		done:     make(chan struct{}),
 		exitCode: process.UnknownExitCode,
 	}
@@ -177,6 +171,9 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 		return nil, fmt.Errorf("failed to start debug adapter: %w", startErr)
 	}
 
+	// Start process monitor to ensure cleanup if DCP crashes
+	dcpproc.RunProcessWatcher(executor, handle, log)
+
 	// Start waiting for process exit
 	startWaitForExit()
 
@@ -197,7 +194,7 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 // We start a listener and the adapter connects to us.
 func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, config *DebugAdapterConfig, log logr.Logger) (*LaunchedAdapter, error) {
 	// Start a listener on a free port
-	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	listener, listenErr := net.Listen("tcp", networking.AddressAndPort(networking.IPv4LocalhostDefaultAddress, 0))
 	if listenErr != nil {
 		return nil, fmt.Errorf("failed to create listener: %w", listenErr)
 	}
@@ -219,6 +216,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 	}
 
 	adapter := &LaunchedAdapter{
+		mu:       &sync.Mutex{},
 		listener: listener,
 		done:     make(chan struct{}),
 		exitCode: process.UnknownExitCode,
@@ -249,6 +247,9 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 		stderr.Close()
 		return nil, fmt.Errorf("failed to start debug adapter: %w", startErr)
 	}
+
+	// Start process monitor to ensure cleanup if DCP crashes
+	dcpproc.RunProcessWatcher(executor, handle, log)
 
 	// Start waiting for process exit
 	startWaitForExit()
@@ -303,7 +304,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 // The adapter listens on a port and we connect to it.
 func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, config *DebugAdapterConfig, log logr.Logger) (*LaunchedAdapter, error) {
 	// Allocate a free port for the adapter
-	port, portErr := networking.GetFreePort(apiv1.TCP, "127.0.0.1", log)
+	port, portErr := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	if portErr != nil {
 		return nil, fmt.Errorf("failed to allocate port: %w", portErr)
 	}
@@ -320,6 +321,7 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 	}
 
 	adapter := &LaunchedAdapter{
+		mu:       &sync.Mutex{},
 		done:     make(chan struct{}),
 		exitCode: process.UnknownExitCode,
 	}
@@ -348,6 +350,9 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 		stderr.Close()
 		return nil, fmt.Errorf("failed to start debug adapter: %w", startErr)
 	}
+
+	// Start process monitor to ensure cleanup if DCP crashes
+	dcpproc.RunProcessWatcher(executor, handle, log)
 
 	// Start waiting for process exit
 	startWaitForExit()
@@ -410,24 +415,10 @@ func substitutePort(args []string, port string) []string {
 
 // buildFilteredEnv builds the environment for the adapter process by inheriting
 // the ambient (current process) environment, removing variables with suppressed
-// prefixes (DCP_ and DEBUG_SESSION_), and then applying the config-specified
+// prefixes (DCP_ and DEBUG_SESSION), and then applying the config-specified
 // environment variables on top.
 func buildFilteredEnv(config *DebugAdapterConfig) []string {
-	var envMap maps.StringKeyMap[string]
-	if osutil.IsWindows() {
-		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseInsensitive)
-	} else {
-		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
-	}
-
-	envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
-		parts := strings.SplitN(envStr, "=", 2)
-		return parts[0], parts[1]
-	}))
-
-	for _, prefix := range suppressVarPrefixes {
-		envMap.DeletePrefix(prefix)
-	}
+	envMap := osutil.NewFilteredAmbientEnv()
 
 	for _, e := range config.Env {
 		envMap.Override(e.Name, e.Value)

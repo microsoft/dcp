@@ -14,12 +14,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHandshakeRequestResponse(t *testing.T) {
-	t.Parallel()
+// setupHandshakeConn creates a Unix socket pair for handshake testing.
+func setupHandshakeConn(t *testing.T, suffix string) (net.Conn, net.Conn) {
+	t.Helper()
 
-	socketPath := uniqueSocketPath(t, "hs-rr")
+	socketPath := uniqueSocketPath(t, suffix)
 
-	// Create server listener
 	listener, listenErr := net.Listen("unix", socketPath)
 	require.NoError(t, listenErr)
 	defer listener.Close()
@@ -34,113 +34,107 @@ func TestHandshakeRequestResponse(t *testing.T) {
 		serverConn, acceptErr = listener.Accept()
 	}()
 
-	// Connect client
 	clientConn, dialErr := net.Dial("unix", socketPath)
 	require.NoError(t, dialErr)
-	defer clientConn.Close()
 
 	wg.Wait()
 	require.NoError(t, acceptErr)
-	defer serverConn.Close()
 
-	t.Run("write and read request", func(t *testing.T) {
-		clientWriter := NewHandshakeWriter(clientConn)
-		serverReader := NewHandshakeReader(serverConn)
-
-		req := &HandshakeRequest{
-			Token:     "test-token-123",
-			SessionID: "session-456",
-		}
-
-		writeErr := clientWriter.WriteRequest(req)
-		require.NoError(t, writeErr)
-
-		receivedReq, readErr := serverReader.ReadRequest()
-		require.NoError(t, readErr)
-
-		assert.Equal(t, req.Token, receivedReq.Token)
-		assert.Equal(t, req.SessionID, receivedReq.SessionID)
+	t.Cleanup(func() {
+		clientConn.Close()
+		serverConn.Close()
 	})
 
-	t.Run("write and read response", func(t *testing.T) {
-		serverWriter := NewHandshakeWriter(serverConn)
-		clientReader := NewHandshakeReader(clientConn)
-
-		resp := &HandshakeResponse{
-			Success: true,
-		}
-
-		writeErr := serverWriter.WriteResponse(resp)
-		require.NoError(t, writeErr)
-
-		receivedResp, readErr := clientReader.ReadResponse()
-		require.NoError(t, readErr)
-
-		assert.True(t, receivedResp.Success)
-		assert.Empty(t, receivedResp.Error)
-	})
-
-	t.Run("write and read error response", func(t *testing.T) {
-		serverWriter := NewHandshakeWriter(serverConn)
-		clientReader := NewHandshakeReader(clientConn)
-
-		resp := &HandshakeResponse{
-			Success: false,
-			Error:   "authentication failed",
-		}
-
-		writeErr := serverWriter.WriteResponse(resp)
-		require.NoError(t, writeErr)
-
-		receivedResp, readErr := clientReader.ReadResponse()
-		require.NoError(t, readErr)
-
-		assert.False(t, receivedResp.Success)
-		assert.Equal(t, "authentication failed", receivedResp.Error)
-	})
+	return clientConn, serverConn
 }
 
-func TestHandshakeMessageSizeLimit(t *testing.T) {
+func TestHandshakeWriteAndReadRequest(t *testing.T) {
 	t.Parallel()
 
-	socketPath := uniqueSocketPath(t, "hs-sz")
+	clientConn, serverConn := setupHandshakeConn(t, "hs-rq")
 
-	listener, listenErr := net.Listen("unix", socketPath)
-	require.NoError(t, listenErr)
-	defer listener.Close()
+	clientWriter := NewHandshakeWriter(clientConn)
+	serverReader := NewHandshakeReader(serverConn)
 
-	var wg sync.WaitGroup
-	var serverConn net.Conn
+	req := &HandshakeRequest{
+		Token:     "test-token-123",
+		SessionID: "session-456",
+	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		serverConn, _ = listener.Accept()
-	}()
+	writeErr := clientWriter.WriteRequest(req)
+	require.NoError(t, writeErr)
 
-	clientConn, dialErr := net.Dial("unix", socketPath)
-	require.NoError(t, dialErr)
-	defer clientConn.Close()
+	receivedReq, readErr := serverReader.ReadRequest()
+	require.NoError(t, readErr)
 
-	wg.Wait()
-	defer serverConn.Close()
+	assert.Equal(t, req.Token, receivedReq.Token)
+	assert.Equal(t, req.SessionID, receivedReq.SessionID)
+}
 
-	t.Run("rejects oversized message", func(t *testing.T) {
-		writer := NewHandshakeWriter(clientConn)
+func TestHandshakeWriteAndReadResponse(t *testing.T) {
+	t.Parallel()
 
-		// Create a request with a very long token
-		largeToken := make([]byte, maxHandshakeMessageSize+1)
-		for i := range largeToken {
-			largeToken[i] = 'a'
-		}
+	clientConn, serverConn := setupHandshakeConn(t, "hs-rs")
 
-		req := &HandshakeRequest{
-			Token:     string(largeToken),
-			SessionID: "session",
-		}
+	serverWriter := NewHandshakeWriter(serverConn)
+	clientReader := NewHandshakeReader(clientConn)
 
-		// Writing should fail due to size limit
-		err := writer.WriteRequest(req)
-		assert.Error(t, err)
-	})
+	resp := &HandshakeResponse{
+		Success: true,
+	}
+
+	writeErr := serverWriter.WriteResponse(resp)
+	require.NoError(t, writeErr)
+
+	receivedResp, readErr := clientReader.ReadResponse()
+	require.NoError(t, readErr)
+
+	assert.True(t, receivedResp.Success)
+	assert.Empty(t, receivedResp.Error)
+}
+
+func TestHandshakeWriteAndReadErrorResponse(t *testing.T) {
+	t.Parallel()
+
+	clientConn, serverConn := setupHandshakeConn(t, "hs-er")
+
+	serverWriter := NewHandshakeWriter(serverConn)
+	clientReader := NewHandshakeReader(clientConn)
+
+	resp := &HandshakeResponse{
+		Success: false,
+		Error:   "authentication failed",
+	}
+
+	writeErr := serverWriter.WriteResponse(resp)
+	require.NoError(t, writeErr)
+
+	receivedResp, readErr := clientReader.ReadResponse()
+	require.NoError(t, readErr)
+
+	assert.False(t, receivedResp.Success)
+	assert.Equal(t, "authentication failed", receivedResp.Error)
+}
+
+func TestHandshakeRejectsOversizedMessage(t *testing.T) {
+	t.Parallel()
+
+	clientConn, _ := setupHandshakeConn(t, "hs-sz")
+
+	writer := NewHandshakeWriter(clientConn)
+
+	// Create a request with a very long token
+	largeToken := make([]byte, maxHandshakeMessageSize+1)
+	for i := range largeToken {
+		largeToken[i] = 'a'
+	}
+
+	req := &HandshakeRequest{
+		Token:     string(largeToken),
+		SessionID: "session",
+	}
+
+	// Writing should fail due to size limit
+	writeErr := writer.WriteRequest(req)
+	assert.Error(t, writeErr)
 }

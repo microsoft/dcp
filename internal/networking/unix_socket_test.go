@@ -32,247 +32,240 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
-func TestPrepareSecureSocketDir(t *testing.T) {
+func TestPrepareSecureSocketDirCreatesDirectoryWithCorrectPermissions(t *testing.T) {
 	t.Parallel()
+	rootDir := shortTempDir(t)
 
-	t.Run("creates directory with correct permissions", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+	socketDir, prepareErr := PrepareSecureSocketDir(rootDir)
+	require.NoError(t, prepareErr)
 
-		socketDir, prepareErr := PrepareSecureSocketDir(rootDir)
-		require.NoError(t, prepareErr)
+	expectedDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
+	assert.Equal(t, expectedDir, socketDir)
 
-		expectedDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
-		assert.Equal(t, expectedDir, socketDir)
-
-		info, statErr := os.Stat(socketDir)
-		require.NoError(t, statErr)
-		assert.True(t, info.IsDir())
-		if runtime.GOOS != "windows" {
-			assert.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
-		}
-	})
-
-	t.Run("idempotent on repeated calls", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
-
-		dir1, err1 := PrepareSecureSocketDir(rootDir)
-		require.NoError(t, err1)
-
-		dir2, err2 := PrepareSecureSocketDir(rootDir)
-		require.NoError(t, err2)
-
-		assert.Equal(t, dir1, dir2)
-	})
-
-	t.Run("falls back to user cache dir when rootDir is empty", func(t *testing.T) {
-		t.Parallel()
-
-		socketDir, prepareErr := PrepareSecureSocketDir("")
-		require.NoError(t, prepareErr)
-
-		cacheDir, cacheDirErr := os.UserCacheDir()
-		require.NoError(t, cacheDirErr)
-
-		expectedDir := filepath.Join(cacheDir, dcppaths.DcpWorkDir)
-		assert.Equal(t, expectedDir, socketDir)
-	})
-
-	t.Run("rejects directory with wrong permissions on unix", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("permission validation is skipped on Windows")
-		}
-
-		t.Parallel()
-		rootDir := shortTempDir(t)
-
-		// Pre-create the dcp-work directory with overly-permissive permissions
-		socketDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
-		mkdirErr := os.MkdirAll(socketDir, 0755)
-		require.NoError(t, mkdirErr)
-
-		_, prepareErr := PrepareSecureSocketDir(rootDir)
-		require.Error(t, prepareErr)
-		assert.Contains(t, prepareErr.Error(), "not private to the user")
-	})
+	info, statErr := os.Stat(socketDir)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
+	}
 }
 
-func TestNewSecureSocketListener(t *testing.T) {
+func TestPrepareSecureSocketDirIdempotentOnRepeatedCalls(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
+
+	dir1, err1 := PrepareSecureSocketDir(rootDir)
+	require.NoError(t, err1)
+
+	dir2, err2 := PrepareSecureSocketDir(rootDir)
+	require.NoError(t, err2)
+
+	assert.Equal(t, dir1, dir2)
+}
+
+func TestPrepareSecureSocketDirFallsBackToUserCacheDir(t *testing.T) {
 	t.Parallel()
 
-	t.Run("creates listener with random name", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+	socketDir, prepareErr := PrepareSecureSocketDir("")
+	require.NoError(t, prepareErr)
 
-		listener, createErr := NewSecureSocketListener(rootDir, "test-")
-		require.NoError(t, createErr)
-		require.NotNil(t, listener)
-		defer listener.Close()
+	cacheDir, cacheDirErr := os.UserCacheDir()
+	require.NoError(t, cacheDirErr)
 
-		socketPath := listener.SocketPath()
-		socketName := filepath.Base(socketPath)
+	expectedDir := filepath.Join(cacheDir, dcppaths.DcpWorkDir)
+	assert.Equal(t, expectedDir, socketDir)
+}
 
-		// Verify the socket name starts with the prefix and has the random suffix
-		assert.True(t, len(socketName) > len("test-"), "socket name should include random suffix")
-		assert.Equal(t, "test-", socketName[:len("test-")])
+func TestPrepareSecureSocketDirRejectsWrongPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission validation is skipped on Windows")
+	}
 
-		// Verify socket file was created
-		_, statErr := os.Stat(socketPath)
-		require.NoError(t, statErr)
-	})
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-	t.Run("two listeners get different paths", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+	// Pre-create the dcp-work directory with overly-permissive permissions
+	socketDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
+	mkdirErr := os.MkdirAll(socketDir, 0755)
+	require.NoError(t, mkdirErr)
 
-		l1, err1 := NewSecureSocketListener(rootDir, "dup-")
-		require.NoError(t, err1)
-		defer l1.Close()
+	_, prepareErr := PrepareSecureSocketDir(rootDir)
+	require.Error(t, prepareErr)
+	assert.Contains(t, prepareErr.Error(), "not private to the user")
+}
 
-		l2, err2 := NewSecureSocketListener(rootDir, "dup-")
-		require.NoError(t, err2)
-		defer l2.Close()
+func TestPrivateUnixSocketListenerCreatesListenerWithRandomName(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		assert.NotEqual(t, l1.SocketPath(), l2.SocketPath(), "two listeners with the same prefix should have different socket paths")
-	})
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "test-")
+	require.NoError(t, createErr)
+	require.NotNil(t, listener)
+	defer listener.Close()
 
-	t.Run("accepts connections", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+	socketPath := listener.SocketPath()
+	socketName := filepath.Base(socketPath)
 
-		listener, createErr := NewSecureSocketListener(rootDir, "acc-")
-		require.NoError(t, createErr)
-		defer listener.Close()
+	// Verify the socket name starts with the prefix and has the random suffix
+	assert.True(t, len(socketName) > len("test-"), "socket name should include random suffix")
+	assert.Equal(t, "test-", socketName[:len("test-")])
 
-		// Accept in background
-		var serverConn net.Conn
-		var acceptErr error
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			serverConn, acceptErr = listener.Accept()
-		}()
+	// Verify socket file was created
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr)
+}
 
-		// Connect client
-		clientConn, dialErr := net.Dial("unix", listener.SocketPath())
-		require.NoError(t, dialErr)
-		defer clientConn.Close()
+func TestPrivateUnixSocketListenerTwoListenersGetDifferentPaths(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		wg.Wait()
-		require.NoError(t, acceptErr)
-		require.NotNil(t, serverConn)
-		defer serverConn.Close()
+	l1, err1 := NewPrivateUnixSocketListener(rootDir, "dup-")
+	require.NoError(t, err1)
+	defer l1.Close()
 
-		// Verify we can exchange data
-		_, writeErr := clientConn.Write([]byte("hello"))
-		require.NoError(t, writeErr)
+	l2, err2 := NewPrivateUnixSocketListener(rootDir, "dup-")
+	require.NoError(t, err2)
+	defer l2.Close()
 
-		buf := make([]byte, 5)
-		n, readErr := serverConn.Read(buf)
-		require.NoError(t, readErr)
-		assert.Equal(t, "hello", string(buf[:n]))
-	})
+	assert.NotEqual(t, l1.SocketPath(), l2.SocketPath(), "two listeners with the same prefix should have different socket paths")
+}
 
-	t.Run("close removes socket file", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+func TestPrivateUnixSocketListenerAcceptsConnections(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		listener, createErr := NewSecureSocketListener(rootDir, "cls-")
-		require.NoError(t, createErr)
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "acc-")
+	require.NoError(t, createErr)
+	defer listener.Close()
 
-		socketPath := listener.SocketPath()
+	// Accept in background
+	var serverConn net.Conn
+	var acceptErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serverConn, acceptErr = listener.Accept()
+	}()
 
-		// Verify socket exists
-		_, statErr := os.Stat(socketPath)
-		require.NoError(t, statErr)
+	// Connect client
+	clientConn, dialErr := net.Dial("unix", listener.SocketPath())
+	require.NoError(t, dialErr)
+	defer clientConn.Close()
 
-		closeErr := listener.Close()
-		assert.NoError(t, closeErr)
+	wg.Wait()
+	require.NoError(t, acceptErr)
+	require.NotNil(t, serverConn)
+	defer serverConn.Close()
 
-		// Verify socket was removed
-		_, statErr = os.Stat(socketPath)
-		assert.True(t, os.IsNotExist(statErr))
+	// Verify we can exchange data
+	_, writeErr := clientConn.Write([]byte("hello"))
+	require.NoError(t, writeErr)
 
-		// Double close should be safe
-		closeErr = listener.Close()
-		assert.NoError(t, closeErr)
-	})
+	buf := make([]byte, 5)
+	n, readErr := serverConn.Read(buf)
+	require.NoError(t, readErr)
+	assert.Equal(t, "hello", string(buf[:n]))
+}
 
-	t.Run("removes stale socket file on create", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+func TestPrivateUnixSocketListenerCloseRemovesSocketFile(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		// Create first listener to get a socket path
-		l1, err1 := NewSecureSocketListener(rootDir, "stale-")
-		require.NoError(t, err1)
-		socketPath := l1.SocketPath()
-		l1.Close()
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "cls-")
+	require.NoError(t, createErr)
 
-		// Manually create a stale file at the same path
-		staleFile, createFileErr := os.Create(socketPath)
-		require.NoError(t, createFileErr)
-		staleFile.Close()
+	socketPath := listener.SocketPath()
 
-		// Create new listener with the exact same path — this exercises the stale removal
-		// Since we can't predict the random suffix, we test via PrepareSecureSocketDir + manual path
-		// Instead, verify that a new listener in the same dir works fine
-		l2, err2 := NewSecureSocketListener(rootDir, "stale-")
-		require.NoError(t, err2)
-		defer l2.Close()
+	// Verify socket exists
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr)
 
-		// Verify we can connect
-		conn, dialErr := net.Dial("unix", l2.SocketPath())
+	closeErr := listener.Close()
+	assert.NoError(t, closeErr)
+
+	// Verify socket was removed
+	_, statErr = os.Stat(socketPath)
+	assert.True(t, os.IsNotExist(statErr))
+
+	// Double close should be safe
+	closeErr = listener.Close()
+	assert.NoError(t, closeErr)
+}
+
+func TestPrivateUnixSocketListenerDoesNotRemoveExistingSocketOnCollision(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
+
+	// Create listeners that will occupy socket paths in the directory.
+	// A new listener should get a different path without removing these.
+	l1, err1 := NewPrivateUnixSocketListener(rootDir, "col-")
+	require.NoError(t, err1)
+	defer l1.Close()
+
+	l2, err2 := NewPrivateUnixSocketListener(rootDir, "col-")
+	require.NoError(t, err2)
+	defer l2.Close()
+
+	// The first listener's socket must still exist (not removed by the second).
+	_, statErr := os.Stat(l1.SocketPath())
+	assert.NoError(t, statErr, "existing socket file should not be removed on collision")
+
+	// Both listeners should have distinct paths.
+	assert.NotEqual(t, l1.SocketPath(), l2.SocketPath())
+
+	// Both should accept connections.
+	for _, listener := range []*PrivateUnixSocketListener{l1, l2} {
+		conn, dialErr := net.Dial("unix", listener.SocketPath())
 		require.NoError(t, dialErr)
 		conn.Close()
-	})
+	}
+}
 
-	t.Run("accept returns error after close", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+func TestPrivateUnixSocketListenerAcceptReturnsErrorAfterClose(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		listener, createErr := NewSecureSocketListener(rootDir, "afc-")
-		require.NoError(t, createErr)
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "afc-")
+	require.NoError(t, createErr)
 
-		closeErr := listener.Close()
-		require.NoError(t, closeErr)
+	closeErr := listener.Close()
+	require.NoError(t, closeErr)
 
-		_, acceptErr := listener.Accept()
-		assert.Error(t, acceptErr)
-	})
+	_, acceptErr := listener.Accept()
+	assert.Error(t, acceptErr)
+}
 
-	t.Run("Addr returns valid address", func(t *testing.T) {
-		t.Parallel()
-		rootDir := shortTempDir(t)
+func TestPrivateUnixSocketListenerAddrReturnsValidAddress(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		listener, createErr := NewSecureSocketListener(rootDir, "addr-")
-		require.NoError(t, createErr)
-		defer listener.Close()
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "addr-")
+	require.NoError(t, createErr)
+	defer listener.Close()
 
-		addr := listener.Addr()
-		require.NotNil(t, addr)
-		assert.Equal(t, "unix", addr.Network())
-	})
+	addr := listener.Addr()
+	require.NotNil(t, addr)
+	assert.Equal(t, "unix", addr.Network())
+}
 
-	t.Run("socket file permissions on unix", func(t *testing.T) {
-		if runtime.GOOS == "windows" {
-			t.Skip("socket file permission check not applicable on Windows")
-		}
+func TestPrivateUnixSocketListenerSocketFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("socket file permission check not applicable on Windows")
+	}
 
-		t.Parallel()
-		rootDir := shortTempDir(t)
+	t.Parallel()
+	rootDir := shortTempDir(t)
 
-		listener, createErr := NewSecureSocketListener(rootDir, "perm-")
-		require.NoError(t, createErr)
-		defer listener.Close()
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "perm-")
+	require.NoError(t, createErr)
+	defer listener.Close()
 
-		info, statErr := os.Stat(listener.SocketPath())
-		require.NoError(t, statErr)
-		// The socket file should have 0600 permissions (best-effort).
-		// On some systems the kernel may adjust socket permissions, so
-		// we check that at minimum the group/other write bits are not set.
-		perm := info.Mode().Perm()
-		assert.Zero(t, perm&0077, fmt.Sprintf("socket should not be accessible by group/others, got %o", perm))
-	})
+	info, statErr := os.Stat(listener.SocketPath())
+	require.NoError(t, statErr)
+	// The socket file should have 0600 permissions (best-effort).
+	// On some systems the kernel may adjust socket permissions, so
+	// we check that at minimum the group/other write bits are not set.
+	perm := info.Mode().Perm()
+	assert.Zero(t, perm&0077, fmt.Sprintf("socket should not be accessible by group/others, got %o", perm))
 }

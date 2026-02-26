@@ -28,25 +28,25 @@ type BridgeConfig struct {
 	SessionID string
 
 	// AdapterConfig contains the configuration for launching the debug adapter.
-	// When using RunWithConnection, this can be nil and passed directly to RunWithConnection.
 	AdapterConfig *DebugAdapterConfig
 
 	// Executor is the process executor for managing debug adapter processes.
-	// If nil, a new executor will be created.
+	// If nil, a new OS executor will be created for this purpose.
 	Executor process.Executor
 
 	// Logger for bridge operations.
 	Logger logr.Logger
 
-	// OutputHandler is called when output events are received from the debug adapter.
-	// If nil, output events are only forwarded without additional processing.
+	// OutputHandler is called when output events are received from the debug adapter,
+	// unless runInTerminal was used (in which case output is captured directly from the debugee
+	// process). If nil, output events are only forwarded without additional processing.
 	OutputHandler OutputHandler
 
-	// StdoutWriter is where process stdout (from runInTerminal) will be written.
+	// StdoutWriter is where debugee process stdout (from runInTerminal) will be written.
 	// If nil, stdout is discarded.
 	StdoutWriter io.Writer
 
-	// StderrWriter is where process stderr (from runInTerminal) will be written.
+	// StderrWriter is where debugee process stderr (from runInTerminal) will be written.
 	// If nil, stderr is discarded.
 	StderrWriter io.Writer
 }
@@ -121,15 +121,13 @@ func NewDapBridge(config BridgeConfig) *DapBridge {
 }
 
 // RunWithConnection runs the bridge with an already-connected IDE connection.
-// This is the main entry point when using BridgeSocketManager.
+// This is the main entry point when using BridgeManager.
 // The handshake must have already been performed by the caller.
 //
 // The bridge will:
 // 1. Launch the debug adapter using the provided config
 // 2. Forward DAP messages bidirectionally
 // 3. Terminate when the context is cancelled or errors occur
-//
-// If adapterConfig is nil, it uses the config's AdapterConfig.
 func (b *DapBridge) RunWithConnection(ctx context.Context, ideConn net.Conn) error {
 	return b.runWithConnectionAndConfig(ctx, ideConn, b.config.AdapterConfig)
 }
@@ -172,23 +170,16 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	errCh := make(chan error, 2)
 
 	// IDE → Adapter
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		errCh <- b.forwardIDEToAdapter(ctx)
 	}()
 
 	// Adapter → IDE
-	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		errCh <- b.forwardAdapterToIDE(ctx)
-	}()
-
-	// Wait for adapter process to exit
-	go func() {
-		<-b.adapter.Done()
-		b.log.V(1).Info("Debug adapter process exited")
 	}()
 
 	// Wait for first error or context cancellation
@@ -197,7 +188,7 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	case <-ctx.Done():
 		b.log.V(1).Info("Context cancelled, shutting down")
 	case loopErr = <-errCh:
-		if loopErr != nil && !errors.Is(loopErr, io.EOF) && !errors.Is(loopErr, context.Canceled) {
+		if loopErr != nil && !isExpectedShutdownErr(loopErr) {
 			b.log.Error(loopErr, "Message forwarding error")
 		}
 	case <-b.adapter.Done():
@@ -209,7 +200,7 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	terminated := b.terminatedEventSeen.Load()
 
 	if !terminated {
-		if loopErr != nil && !errors.Is(loopErr, io.EOF) && !errors.Is(loopErr, context.Canceled) {
+		if loopErr != nil && !isExpectedShutdownErr(loopErr) {
 			b.sendErrorToIDE(fmt.Sprintf("Debug session ended unexpectedly: %v", loopErr))
 		} else {
 			b.sendTerminatedToIDE()
@@ -227,7 +218,7 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	close(errCh)
 	var errs []error
 	for err := range errCh {
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		if err != nil && !isExpectedShutdownErr(err) {
 			errs = append(errs, err)
 		}
 	}

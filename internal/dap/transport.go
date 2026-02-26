@@ -8,14 +8,21 @@ package dap
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/go-dap"
 	dcpio "github.com/microsoft/dcp/pkg/io"
 )
+
+// ErrTransportClosed is returned when a read or write is attempted on a transport
+// that has been intentionally closed via Close(). This distinguishes expected
+// shutdown errors from unexpected connection failures.
+var ErrTransportClosed = errors.New("transport closed")
 
 // Transport provides an abstraction for DAP message I/O over different connection types.
 // Implementations must be safe for concurrent use by multiple goroutines for reading
@@ -43,6 +50,11 @@ type connTransport struct {
 	reader *bufio.Reader
 	writer *bufio.Writer
 	closer io.Closer
+
+	// closed tracks whether Close() has been called. This is used to wrap
+	// subsequent read/write errors with ErrTransportClosed so callers can
+	// distinguish intentional shutdown from unexpected failures.
+	closed atomic.Bool
 
 	// writeMu serializes message writes. Each DAP message is sent as a
 	// content-length header followed by the message body in separate writes,
@@ -86,6 +98,9 @@ func newConnTransport(ctx context.Context, r io.Reader, w io.Writer, closer io.C
 func (t *connTransport) ReadMessage() (dap.Message, error) {
 	msg, readErr := ReadMessageWithFallback(t.reader)
 	if readErr != nil {
+		if t.closed.Load() {
+			return nil, fmt.Errorf("%w: %w", ErrTransportClosed, readErr)
+		}
 		return nil, fmt.Errorf("failed to read DAP message: %w", readErr)
 	}
 
@@ -98,11 +113,17 @@ func (t *connTransport) WriteMessage(msg dap.Message) error {
 
 	writeErr := WriteMessageWithFallback(t.writer, msg)
 	if writeErr != nil {
+		if t.closed.Load() {
+			return fmt.Errorf("%w: %w", ErrTransportClosed, writeErr)
+		}
 		return fmt.Errorf("failed to write DAP message: %w", writeErr)
 	}
 
 	flushErr := t.writer.Flush()
 	if flushErr != nil {
+		if t.closed.Load() {
+			return fmt.Errorf("%w: %w", ErrTransportClosed, flushErr)
+		}
 		return fmt.Errorf("failed to flush DAP message: %w", flushErr)
 	}
 
@@ -110,7 +131,17 @@ func (t *connTransport) WriteMessage(msg dap.Message) error {
 }
 
 func (t *connTransport) Close() error {
+	t.closed.Store(true)
 	return t.closer.Close()
+}
+
+// isExpectedShutdownErr returns true if the error is expected during normal
+// bridge shutdown — for example, when transports are intentionally closed,
+// the context is cancelled, or the remote end disconnects cleanly.
+func isExpectedShutdownErr(err error) bool {
+	return errors.Is(err, ErrTransportClosed) ||
+		errors.Is(err, context.Canceled) ||
+		isExpectedCloseErr(err)
 }
 
 // multiCloser closes multiple io.Closers, returning the first error.

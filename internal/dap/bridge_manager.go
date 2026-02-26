@@ -138,7 +138,7 @@ type BridgeManagerConfig struct {
 // connections to the appropriate bridge sessions.
 type BridgeManager struct {
 	config   BridgeManagerConfig
-	listener *networking.SecureSocketListener
+	listener *networking.PrivateUnixSocketListener
 	log      logr.Logger
 	executor process.Executor
 
@@ -228,13 +228,21 @@ func (m *BridgeManager) Ready() <-chan struct{} {
 func (m *BridgeManager) Start(ctx context.Context) error {
 	// Create the Unix socket listener
 	var listenerErr error
-	m.listener, listenerErr = networking.NewSecureSocketListener(m.socketDir, m.socketPrefix)
+	m.listener, listenerErr = networking.NewPrivateUnixSocketListener(m.socketDir, m.socketPrefix)
 	if listenerErr != nil {
 		return fmt.Errorf("failed to create socket listener: %w", listenerErr)
 	}
 	defer m.listener.Close()
 
 	m.log.Info("Bridge manager listening", "socketPath", m.listener.SocketPath())
+
+	// Close the listener when the context is cancelled so that Accept() unblocks.
+	// PrivateUnixSocketListener.Close() is idempotent, so the deferred Close above
+	// is still safe.
+	go func() {
+		<-ctx.Done()
+		m.listener.Close()
+	}()
 
 	// Signal that we're ready to accept connections
 	m.readyOnce.Do(func() {
@@ -243,19 +251,13 @@ func (m *BridgeManager) Start(ctx context.Context) error {
 
 	// Accept connections in a loop
 	for {
-		select {
-		case <-ctx.Done():
-			m.log.V(1).Info("Bridge manager shutting down")
-			return ctx.Err()
-		default:
-		}
-
 		// Accept the next connection
 		conn, acceptErr := m.listener.Accept()
 		if acceptErr != nil {
-			// Check if context was cancelled
+			// Check if context was cancelled (listener was closed by the goroutine above)
 			select {
 			case <-ctx.Done():
+				m.log.V(1).Info("Bridge manager shutting down")
 				return ctx.Err()
 			default:
 			}
@@ -506,7 +508,7 @@ func (m *BridgeManager) runBridge(
 
 	// Run the bridge with the already-connected IDE connection
 	bridgeErr := bridge.RunWithConnection(ctx, conn)
-	if bridgeErr != nil && !errors.Is(bridgeErr, context.Canceled) {
+	if bridgeErr != nil && !isExpectedShutdownErr(bridgeErr) {
 		log.Error(bridgeErr, "Bridge terminated with error")
 		_ = m.updateSessionState(session.ID, BridgeSessionStateError, bridgeErr.Error())
 	} else {

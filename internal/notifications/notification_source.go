@@ -40,7 +40,7 @@ type unixSocketNotificationSource struct {
 	lock        *sync.Mutex
 
 	// The Unix domain socket listener for incoming connections.
-	listener *networking.SecureSocketListener
+	listener *networking.PrivateUnixSocketListener
 
 	// Subscriptions are just long-lived gRPC calls returning a stream of notifications.
 	// Each channel gets an unbounded channel for sending notifications to the client/subscriber.

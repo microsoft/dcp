@@ -887,12 +887,6 @@ func (r *ExecutableReconciler) validateExistingEndpoints(
 	return existing, nil, nil
 }
 
-// Environment variables starting with these prefixes will never be applied to Executables.
-var suppressVarPrefixes = []string{
-	"DEBUG_SESSION",
-	"DCP_",
-}
-
 // Computes the effective set of environment variables for the Executable run and stores it in Status.EffectiveEnv.
 func (r *ExecutableReconciler) computeEffectiveEnvironment(
 	ctx context.Context,
@@ -902,20 +896,12 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 ) error {
 	// Start with ambient environment.
 	var envMap maps.StringKeyMap[string]
-	if osutil.IsWindows() {
-		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseInsensitive)
-	} else {
-		envMap = maps.NewStringKeyMap[string](maps.StringMapModeCaseSensitive)
-	}
 
 	switch exe.Spec.AmbientEnvironment.Behavior {
 	case "", apiv1.EnvironmentBehaviorInherit:
-		envMap.Apply(maps.SliceToMap(os.Environ(), func(envStr string) (string, string) {
-			parts := strings.SplitN(envStr, "=", 2)
-			return parts[0], parts[1]
-		}))
+		envMap = osutil.NewFilteredAmbientEnv()
 	case apiv1.EnvironmentBehaviorDoNotInherit:
-		// Noop
+		envMap = osutil.NewPlatformStringMap[string]()
 	default:
 		return fmt.Errorf("unknown environment behavior: %s", exe.Spec.AmbientEnvironment.Behavior)
 	}
@@ -951,9 +937,7 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		envMap.Set(key, effectiveValue)
 	}
 
-	for _, prefix := range suppressVarPrefixes {
-		envMap.DeletePrefix(prefix)
-	}
+	osutil.SuppressEnvVarPrefixes(envMap)
 
 	exe.Status.EffectiveEnv = maps.MapToSlice[apiv1.EnvVar](envMap.Data(), func(key string, value string) apiv1.EnvVar {
 		return apiv1.EnvVar{Name: key, Value: value}

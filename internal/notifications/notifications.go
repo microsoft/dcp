@@ -197,7 +197,7 @@ type UnixSocketNotificationSource interface {
 // the shared networking library. If socketDir is empty, os.UserCacheDir() is used.
 // The actual socket path (including a random suffix) can be retrieved via SocketPath().
 func NewNotificationSource(lifetimeCtx context.Context, socketDir string, socketNamePrefix string, log logr.Logger) (UnixSocketNotificationSource, error) {
-	socketListener, listenerErr := networking.NewSecureSocketListener(socketDir, socketNamePrefix)
+	socketListener, listenerErr := networking.NewPrivateUnixSocketListener(socketDir, socketNamePrefix)
 	if listenerErr != nil {
 		return nil, fmt.Errorf("could not create notification socket: %w", listenerErr)
 	}
