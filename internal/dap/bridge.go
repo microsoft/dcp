@@ -164,10 +164,12 @@ func (b *DapBridge) launchAdapterWithConfig(ctx context.Context, config *DebugAd
 
 // runMessageLoop runs the bidirectional message forwarding loop.
 func (b *DapBridge) runMessageLoop(ctx context.Context) error {
-	// Create a cancellable context for the pipes. This is only used as a
-	// fallback to ensure cleanup; the normal shutdown path uses CloseInput
-	// on each pipe for a graceful drain.
-	pipeCtx, pipeCancel := context.WithCancel(ctx)
+	// Create an independent context for the pipes. This must NOT be derived
+	// from ctx because the ordered shutdown sequence needs the pipes to
+	// remain alive after ctx is cancelled so that queued messages (including
+	// shutdown events) can drain. The normal shutdown path uses CloseInput
+	// on each pipe for a graceful drain; pipeCancel is a fallback safety net.
+	pipeCtx, pipeCancel := context.WithCancel(context.Background())
 	defer pipeCancel()
 
 	// Create message pipes for both directions.
@@ -233,13 +235,13 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	// === Ordered graceful shutdown ===
 	//
 	// The goal is to let the IDE-bound pipe (idePipe) drain any queued
-	// messages (e.g., a disconnect response) before tearing down the
-	// IDE transport. The shutdown proceeds in dependency order:
+	// messages (e.g., a disconnect response, terminated event) before
+	// tearing down the IDE transport. The shutdown proceeds in dependency order:
 	//
 	// 1. adapter transport closed → adapter reader unblocked
-	// 2. adapter reader done → no more idePipe.Send()
-	// 3. idePipe input closed → graceful drain → remaining messages written
-	// 4. post-shutdown messages sent to IDE (terminated events)
+	// 2. adapter reader done → no more external idePipe.Send() calls
+	// 3. shutdown messages enqueued into idePipe (via Send)
+	// 4. idePipe input closed → graceful drain → all messages written
 	// 5. IDE transport closed → IDE reader unblocked
 	// 6. IDE reader done → no more adapterPipe.Send()
 	// 7. adapterPipe input closed → drain → done
@@ -251,13 +253,8 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	// will call idePipe.Send().
 	<-adapterReaderDone
 
-	// Step 3: Close idePipe input. The UnboundedChan drains buffered messages
-	// to its output channel, and Run() writes them to the IDE transport.
-	b.idePipe.CloseInput()
-	<-idePipeDone
-
-	// Step 4: Send post-shutdown messages directly to the IDE transport
-	// (still open). The seq counter continues from where idePipe left off.
+	// Step 3: Enqueue any final shutdown messages (e.g., TerminatedEvent)
+	// into idePipe so they are written in-order by the pipe's writer goroutine.
 	terminated := b.terminatedEventSeen.Load()
 	if !terminated {
 		if loopErr != nil && !isExpectedShutdownErr(loopErr) {
@@ -266,6 +263,12 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 			b.sendTerminatedToIDE()
 		}
 	}
+
+	// Step 4: Close idePipe input. The UnboundedChan drains all buffered
+	// messages (including shutdown messages just enqueued) to its output
+	// channel, and Run() writes them to the IDE transport.
+	b.idePipe.CloseInput()
+	<-idePipeDone
 
 	// Step 5: Close IDE transport to unblock the IDE→adapter reader.
 	b.ideTransport.Close()
@@ -496,19 +499,25 @@ func (b *DapBridge) handleRunInTerminalRequest(ctx context.Context, req *dap.Run
 	return response
 }
 
-// sendErrorToIDE sends an OutputEvent with category "stderr" followed by a TerminatedEvent to the IDE.
-// This is used to report errors to the IDE (e.g., adapter launch failure) before closing the connection.
-// This method writes directly to the IDE transport, bypassing the idePipe. It must only be called
-// after the idePipe writer goroutine has stopped. The sequence counter is shared with the pipe
-// so seq values continue monotonically.
-// Errors writing to the IDE transport are logged but not returned, since the bridge is shutting down anyway.
+// sendErrorToIDE sends an OutputEvent with category "stderr" followed by a TerminatedEvent
+// to the IDE. When the idePipe is available, messages are enqueued through it so that
+// sequence numbering and write serialization are handled by the pipe's writer goroutine.
+// When the idePipe is not yet created (e.g., adapter launch failure before the message loop),
+// messages are written directly to the IDE transport with a fallback sequence counter.
 func (b *DapBridge) sendErrorToIDE(message string) {
+	outputEvent := newOutputEvent(0, "stderr", message+"\n")
+
+	if b.idePipe != nil {
+		b.idePipe.Send(NewMessageEnvelope(outputEvent))
+		b.sendTerminatedToIDE()
+		return
+	}
+
 	if b.ideTransport == nil {
 		return
 	}
 
-	seq := b.nextIDESeq()
-	outputEvent := newOutputEvent(seq, "stderr", message+"\n")
+	outputEvent.Seq = int(b.fallbackIDESeqCounter.Add(1))
 	if writeErr := b.ideTransport.WriteMessage(outputEvent); writeErr != nil {
 		b.log.V(1).Info("Failed to send error OutputEvent to IDE", "error", writeErr)
 		return
@@ -518,31 +527,24 @@ func (b *DapBridge) sendErrorToIDE(message string) {
 }
 
 // sendTerminatedToIDE sends a TerminatedEvent to the IDE so it knows the debug session has ended.
-// This is used when the bridge terminates due to an error and the adapter has not already sent
-// a TerminatedEvent. This method writes directly to the IDE transport, bypassing the idePipe.
-// It must only be called after the idePipe writer goroutine has stopped.
-// Errors writing to the IDE transport are logged but not returned.
+// When the idePipe is available, the event is enqueued through it; otherwise it is written
+// directly to the IDE transport.
 func (b *DapBridge) sendTerminatedToIDE() {
+	terminatedEvent := newTerminatedEvent(0)
+
+	if b.idePipe != nil {
+		b.idePipe.Send(NewMessageEnvelope(terminatedEvent))
+		return
+	}
+
 	if b.ideTransport == nil {
 		return
 	}
 
-	seq := b.nextIDESeq()
-	terminatedEvent := newTerminatedEvent(seq)
+	terminatedEvent.Seq = int(b.fallbackIDESeqCounter.Add(1))
 	if writeErr := b.ideTransport.WriteMessage(terminatedEvent); writeErr != nil {
 		b.log.V(1).Info("Failed to send TerminatedEvent to IDE", "error", writeErr)
 	}
-}
-
-// nextIDESeq returns the next sequence number for IDE-bound messages.
-// During normal operation this counter is incremented by the idePipe writer;
-// during shutdown it is incremented directly by sendErrorToIDE/sendTerminatedToIDE.
-func (b *DapBridge) nextIDESeq() int {
-	if b.idePipe != nil {
-		return int(b.idePipe.SeqCounter.Add(1))
-	}
-	// Fallback: idePipe not yet created (e.g., adapter launch failure before message loop).
-	return int(b.fallbackIDESeqCounter.Add(1))
 }
 
 // terminate marks the bridge as terminated.
