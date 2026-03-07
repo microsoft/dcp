@@ -38,7 +38,7 @@ The bridge intercepts:
 For debug session implementations, use DapBridge:
 
 	// Create and start the bridge manager
-	manager := dap.NewBridgeManager(log, dap.BridgeManagerConfig{})
+	manager := dap.NewBridgeManager(dap.BridgeManagerConfig{}, log)
 
 	// Register a session and start the manager
 	session, _ := manager.RegisterSession(sessionID, token)

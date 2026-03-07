@@ -395,10 +395,6 @@ endif
 test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS) -parallel 32
 
-.PHONY: test-integration
-test-integration: test-prereqs ## Run all tests including integration tests
-	$(GO_BIN) test -tags integration ./... $(TEST_OPTS) -parallel 32
-
 .PHONY: test-ci
 test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test -tags integration ./... $(TEST_OPTS)

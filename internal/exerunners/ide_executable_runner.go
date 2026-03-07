@@ -79,9 +79,9 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 
 	// Create and start the bridge manager if the IDE supports debug bridge
 	if connInfo.SupportsDebugBridge() {
-		r.bridgeManager = dap.NewBridgeManager(log.WithName("BridgeManager"), dap.BridgeManagerConfig{
+		r.bridgeManager = dap.NewBridgeManager(dap.BridgeManagerConfig{
 			ConnectionHandler: r.handleBridgeConnection,
-		})
+		}, log.WithName("BridgeManager"))
 
 		// Start the bridge manager in a background goroutine
 		go func() {
@@ -410,7 +410,11 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 				}
 			}
 
-			isr.DebugBridgeSocketPath = r.bridgeManager.SocketPath()
+			var socketErr error
+			isr.DebugBridgeSocketPath, socketErr = r.bridgeManager.SocketPath(r.lifetimeCtx)
+			if socketErr != nil {
+				return nil, fmt.Errorf("failed to get debug bridge socket path: %w", socketErr)
+			}
 			isr.DebugSessionID = sessionID
 
 			r.log.Info("Debug bridge session registered",

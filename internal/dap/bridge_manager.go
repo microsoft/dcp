@@ -90,6 +90,7 @@ var (
 	ErrBridgeSessionAlreadyExists    = errors.New("bridge session already exists")
 	ErrBridgeSessionInvalidToken     = errors.New("invalid session token")
 	ErrBridgeSessionAlreadyConnected = errors.New("session already connected")
+	ErrBridgeSocketNotReady          = errors.New("bridge socket is not ready")
 )
 
 // BridgeConnectionHandler is called when a new bridge connection is established,
@@ -145,6 +146,12 @@ type BridgeManager struct {
 	readyCh      chan struct{}
 	readyOnce    *sync.Once
 
+	// listenerCh is closed by Start() after the listener field has been set
+	// (whether successfully or not). SocketPath() blocks on this channel so
+	// that it never observes the listener before Start() has initialised it.
+	listenerCh   chan struct{}
+	listenerOnce *sync.Once
+
 	// mu protects sessions and activeBridges.
 	mu            *sync.Mutex
 	sessions      map[string]*BridgeSession
@@ -152,11 +159,7 @@ type BridgeManager struct {
 }
 
 // NewBridgeManager creates a new BridgeManager with the given configuration.
-func NewBridgeManager(log logr.Logger, config BridgeManagerConfig) *BridgeManager {
-	if log.GetSink() == nil {
-		log = logr.Discard()
-	}
-
+func NewBridgeManager(config BridgeManagerConfig, log logr.Logger) *BridgeManager {
 	executor := config.Executor
 	if executor == nil {
 		executor = process.NewOSExecutor(log)
@@ -176,6 +179,8 @@ func NewBridgeManager(log logr.Logger, config BridgeManagerConfig) *BridgeManage
 		socketPrefix:  socketPrefix,
 		readyCh:       make(chan struct{}),
 		readyOnce:     &sync.Once{},
+		listenerCh:    make(chan struct{}),
+		listenerOnce:  &sync.Once{},
 		mu:            &sync.Mutex{},
 		sessions:      make(map[string]*BridgeSession),
 		activeBridges: make(map[string]*DapBridge),
@@ -206,13 +211,19 @@ func (m *BridgeManager) RegisterSession(sessionID string, token string) (*Bridge
 }
 
 // SocketPath returns the path to the Unix socket.
-// This is only available after Start() has been called, as the socket path
-// includes a random suffix generated during listener creation.
-func (m *BridgeManager) SocketPath() string {
-	if m.listener == nil {
-		return ""
+// It blocks until Start() has finished initialising the listener or ctx is cancelled.
+func (m *BridgeManager) SocketPath(ctx context.Context) (string, error) {
+	select {
+	case <-m.listenerCh:
+		// Start() has set the listener field.
+	case <-ctx.Done():
+		return "", fmt.Errorf("waiting for bridge socket: %w", ctx.Err())
 	}
-	return m.listener.SocketPath()
+
+	if m.listener == nil {
+		return "", ErrBridgeSocketNotReady
+	}
+	return m.listener.SocketPath(), nil
 }
 
 // Ready returns a channel that is closed when the socket is ready to accept connections.
@@ -227,6 +238,10 @@ func (m *BridgeManager) Start(ctx context.Context) error {
 	// Create the Unix socket listener
 	var listenerErr error
 	m.listener, listenerErr = networking.NewPrivateUnixSocketListener(m.socketDir, m.socketPrefix)
+
+	// Signal that the listener field has been set so that SocketPath() can proceed.
+	m.listenerOnce.Do(func() { close(m.listenerCh) })
+
 	if listenerErr != nil {
 		return fmt.Errorf("failed to create socket listener: %w", listenerErr)
 	}

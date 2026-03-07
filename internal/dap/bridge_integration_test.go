@@ -87,10 +87,10 @@ func TestBridgeManager_HandshakeValidation(t *testing.T) {
 	// Test that BridgeManager correctly validates handshakes
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
+	manager := NewBridgeManager(BridgeManagerConfig{
 		SocketDir:        socketDir,
 		HandshakeTimeout: 2 * time.Second,
-	})
+	}, logr.Discard())
 
 	// Register a session with a token
 	session, regErr := manager.RegisterSession("valid-session", "test-token")
@@ -113,7 +113,8 @@ func TestBridgeManager_HandshakeValidation(t *testing.T) {
 		t.Fatal("bridge manager failed to become ready")
 	}
 
-	socketPath := manager.SocketPath()
+	socketPath, socketPathErr := manager.SocketPath(ctx)
+	require.NoError(t, socketPathErr)
 
 	// Connect with wrong token - should fail
 	ideConn, dialErr := net.Dial("unix", socketPath)
@@ -133,10 +134,10 @@ func TestBridgeManager_SessionNotFound(t *testing.T) {
 	// Test handshake failure when session doesn't exist
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
+	manager := NewBridgeManager(BridgeManagerConfig{
 		SocketDir:        socketDir,
 		HandshakeTimeout: 2 * time.Second,
-	})
+	}, logr.Discard())
 
 	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
@@ -154,7 +155,8 @@ func TestBridgeManager_SessionNotFound(t *testing.T) {
 		t.Fatal("bridge manager failed to become ready")
 	}
 
-	socketPath := manager.SocketPath()
+	socketPath, socketPathErr := manager.SocketPath(ctx)
+	require.NoError(t, socketPathErr)
 
 	// Connect with non-existent session - should fail
 	ideConn, dialErr := net.Dial("unix", socketPath)
@@ -172,10 +174,10 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 	t.Parallel()
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
+	manager := NewBridgeManager(BridgeManagerConfig{
 		SocketDir:        socketDir,
 		HandshakeTimeout: 200 * time.Millisecond, // Short timeout
-	})
+	}, logr.Discard())
 	_, _ = manager.RegisterSession("timeout-session", "test-token")
 
 	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
@@ -194,7 +196,8 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 		t.Fatal("bridge manager failed to become ready")
 	}
 
-	socketPath := manager.SocketPath()
+	socketPath, socketPathErr := manager.SocketPath(ctx)
+	require.NoError(t, socketPathErr)
 
 	// Connect but don't send handshake - should timeout and close connection
 	ideConn, dialErr := net.Dial("unix", socketPath)
@@ -716,11 +719,11 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 
 	// Set up bridge manager and register a session.
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(log, BridgeManagerConfig{
+	manager := NewBridgeManager(BridgeManagerConfig{
 		SocketDir:        socketDir,
 		Executor:         executor,
 		HandshakeTimeout: 5 * time.Second,
-	})
+	}, log)
 
 	token := "test-delve-token"
 	sessionID := "delve-e2e-session"
@@ -739,7 +742,8 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 		t.Fatal("bridge manager failed to become ready")
 	}
 
-	socketPath := manager.SocketPath()
+	socketPath, socketPathErr := manager.SocketPath(ctx)
+	require.NoError(t, socketPathErr)
 	require.NotEmpty(t, socketPath)
 
 	// Connect to the Unix socket as the IDE.

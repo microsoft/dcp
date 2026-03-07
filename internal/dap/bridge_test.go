@@ -151,16 +151,22 @@ func TestDapBridge_Done(t *testing.T) {
 func TestBridgeManager_SocketPath(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	// Use a cancelled context so SocketPath() returns immediately
+	// rather than blocking waiting for Start().
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
-	// Before Start(), SocketPath() returns empty string since no listener exists yet
-	assert.Empty(t, manager.SocketPath())
+	// Before Start(), SocketPath() returns an error since no listener exists yet
+	socketPath, socketErr := manager.SocketPath(cancelledCtx)
+	assert.Empty(t, socketPath)
+	assert.Error(t, socketErr)
 }
 
 func TestBridgeManager_DefaultSocketNamePrefix(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	// Should use default prefix
 	assert.Equal(t, DefaultSocketNamePrefix, manager.socketPrefix)
@@ -171,12 +177,12 @@ func TestBridgeManager_StartAndReady(t *testing.T) {
 
 	socketDir := shortTempDir(t)
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
-		SocketDir: socketDir,
-	})
-
 	ctx, cancel := testutil.GetTestContext(t, 2*time.Second)
 	defer cancel()
+
+	manager := NewBridgeManager(BridgeManagerConfig{
+		SocketDir: socketDir,
+	}, logr.Discard())
 
 	// Start in background
 	go func() {
@@ -187,8 +193,10 @@ func TestBridgeManager_StartAndReady(t *testing.T) {
 	select {
 	case <-manager.Ready():
 		// Expected — SocketPath should now be set
-		assert.NotEmpty(t, manager.SocketPath())
-		assert.Contains(t, manager.SocketPath(), DefaultSocketNamePrefix)
+		socketPath, socketErr := manager.SocketPath(ctx)
+		require.NoError(t, socketErr)
+		assert.NotEmpty(t, socketPath)
+		assert.Contains(t, socketPath, DefaultSocketNamePrefix)
 	case <-time.After(1 * time.Second):
 		t.Fatal("manager did not become ready in time")
 	}
@@ -202,14 +210,14 @@ func TestBridgeManager_DuplicateSession(t *testing.T) {
 	// Test that a second connection for the same session is rejected
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
-		SocketDir:        socketDir,
-		HandshakeTimeout: 2 * time.Second,
-	})
-	_, _ = manager.RegisterSession("dup-session", "token")
-
 	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
+
+	manager := NewBridgeManager(BridgeManagerConfig{
+		SocketDir:        socketDir,
+		HandshakeTimeout: 2 * time.Second,
+	}, logr.Discard())
+	_, _ = manager.RegisterSession("dup-session", "token")
 
 	go func() {
 		_ = manager.Start(ctx)
@@ -217,7 +225,8 @@ func TestBridgeManager_DuplicateSession(t *testing.T) {
 
 	<-manager.Ready()
 
-	socketPath := manager.SocketPath()
+	socketPath, socketErr := manager.SocketPath(ctx)
+	require.NoError(t, socketErr)
 
 	// First connection with a valid adapter config so the handshake completes
 	// and markSessionConnected is called. The adapter will fail to launch but

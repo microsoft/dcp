@@ -16,7 +16,7 @@ import (
 func TestBridgeManager_RegisterSession(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	session, err := manager.RegisterSession("test-session-1", "test-token-123")
 	require.NoError(t, err)
@@ -31,7 +31,7 @@ func TestBridgeManager_RegisterSession(t *testing.T) {
 func TestBridgeManager_RegisterSession_DuplicateID(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	_, sessionErr := manager.RegisterSession("dup-session", "token1")
 	require.NoError(t, sessionErr)
@@ -43,7 +43,7 @@ func TestBridgeManager_RegisterSession_DuplicateID(t *testing.T) {
 func TestBridgeManager_ValidateHandshake_InvalidToken(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	_, regErr := manager.RegisterSession("token-session", "correct-token")
 	require.NoError(t, regErr)
@@ -55,7 +55,7 @@ func TestBridgeManager_ValidateHandshake_InvalidToken(t *testing.T) {
 func TestBridgeManager_ValidateHandshake_SessionNotFound(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	_, validateErr := manager.validateHandshake("nonexistent", "any-token")
 	assert.ErrorIs(t, validateErr, ErrBridgeSessionNotFound)
@@ -64,7 +64,7 @@ func TestBridgeManager_ValidateHandshake_SessionNotFound(t *testing.T) {
 func TestBridgeManager_MarkSessionConnected(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	session, regErr := manager.RegisterSession("connect-session", "test-token")
 	require.NoError(t, regErr)
@@ -83,7 +83,7 @@ func TestBridgeManager_MarkSessionConnected(t *testing.T) {
 func TestBridgeManager_MarkSessionConnected_NotFound(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	connectErr := manager.markSessionConnected("nonexistent")
 	assert.ErrorIs(t, connectErr, ErrBridgeSessionNotFound)
@@ -92,7 +92,7 @@ func TestBridgeManager_MarkSessionConnected_NotFound(t *testing.T) {
 func TestBridgeManager_MarkSessionDisconnected(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 
 	_, regErr := manager.RegisterSession("disconnect-session", "test-token")
 	require.NoError(t, regErr)
@@ -112,6 +112,6 @@ func TestBridgeManager_MarkSessionDisconnected_NotFound(t *testing.T) {
 	t.Parallel()
 
 	// Should be a no-op, not panic
-	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
+	manager := NewBridgeManager(BridgeManagerConfig{}, logr.Discard())
 	manager.markSessionDisconnected("nonexistent")
 }
