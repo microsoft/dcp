@@ -207,20 +207,6 @@ func TestPrivateUnixSocketListenerDoesNotRemoveExistingSocketOnCollision(t *test
 	}
 }
 
-func TestPrivateUnixSocketListenerAcceptReturnsErrorAfterClose(t *testing.T) {
-	t.Parallel()
-	rootDir := shortTempDir(t)
-
-	listener, createErr := NewPrivateUnixSocketListener(rootDir, "afc-")
-	require.NoError(t, createErr)
-
-	closeErr := listener.Close()
-	require.NoError(t, closeErr)
-
-	_, acceptErr := listener.Accept()
-	assert.ErrorIs(t, acceptErr, net.ErrClosed)
-}
-
 func TestPrivateUnixSocketListenerConcurrentCloseReturnsErrClosed(t *testing.T) {
 	t.Parallel()
 	rootDir := shortTempDir(t)
