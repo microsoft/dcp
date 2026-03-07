@@ -65,6 +65,14 @@ func (p *MessagePipe) Send(env *MessageEnvelope) {
 	p.ch.In <- env
 }
 
+// CloseInput closes the pipe's input channel, signaling that no more messages
+// will be sent. The pipe's Run goroutine will finish writing any buffered
+// messages and then exit. The caller must ensure no goroutine calls Send after
+// CloseInput returns.
+func (p *MessagePipe) CloseInput() {
+	close(p.ch.In)
+}
+
 // Run runs the writer loop, reading messages from the FIFO queue, assigning
 // sequence numbers, and writing them to the transport. It returns when the
 // context is cancelled (which closes the UnboundedChan's Out channel) or

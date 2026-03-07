@@ -164,8 +164,9 @@ func (b *DapBridge) launchAdapterWithConfig(ctx context.Context, config *DebugAd
 
 // runMessageLoop runs the bidirectional message forwarding loop.
 func (b *DapBridge) runMessageLoop(ctx context.Context) error {
-	// Create a cancellable context for the pipes so we can stop the writer
-	// goroutines immediately during shutdown (break-glass).
+	// Create a cancellable context for the pipes. This is only used as a
+	// fallback to ensure cleanup; the normal shutdown path uses CloseInput
+	// on each pipe for a graceful drain.
 	pipeCtx, pipeCancel := context.WithCancel(ctx)
 	defer pipeCancel()
 
@@ -173,33 +174,50 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	b.adapterPipe = NewMessagePipe(pipeCtx, b.adapter.Transport, "adapterPipe", b.log)
 	b.idePipe = NewMessagePipe(pipeCtx, b.ideTransport, "idePipe", b.log)
 
-	var wg sync.WaitGroup
+	// Track each goroutine independently so the shutdown sequence can
+	// wait for specific goroutines in the correct order.
+	var (
+		adapterPipeResult   error
+		idePipeResult       error
+		adapterReaderResult error
+		ideReaderResult     error
+	)
+
+	adapterPipeDone := make(chan struct{})
+	idePipeDone := make(chan struct{})
+	adapterReaderDone := make(chan struct{})
+	ideReaderDone := make(chan struct{})
+
+	// errCh collects the first error for the initial select trigger.
 	errCh := make(chan error, 4)
 
 	// Pipe writers
-	wg.Add(4)
 	go func() {
-		defer wg.Done()
-		errCh <- b.adapterPipe.Run(pipeCtx)
+		adapterPipeResult = b.adapterPipe.Run(pipeCtx)
+		close(adapterPipeDone)
+		errCh <- adapterPipeResult
 	}()
 	go func() {
-		defer wg.Done()
-		errCh <- b.idePipe.Run(pipeCtx)
+		idePipeResult = b.idePipe.Run(pipeCtx)
+		close(idePipeDone)
+		errCh <- idePipeResult
 	}()
 
 	// IDE → Adapter reader
 	go func() {
-		defer wg.Done()
-		errCh <- b.forwardIDEToAdapter(ctx)
+		ideReaderResult = b.forwardIDEToAdapter(ctx)
+		close(ideReaderDone)
+		errCh <- ideReaderResult
 	}()
 
 	// Adapter → IDE reader
 	go func() {
-		defer wg.Done()
-		errCh <- b.forwardAdapterToIDE(ctx)
+		adapterReaderResult = b.forwardAdapterToIDE(ctx)
+		close(adapterReaderDone)
+		errCh <- adapterReaderResult
 	}()
 
-	// Wait for first error or context cancellation
+	// Wait for first error, context cancellation, or adapter exit
 	var loopErr error
 	select {
 	case <-ctx.Done():
@@ -212,18 +230,34 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 		b.log.V(1).Info("Debug adapter exited")
 	}
 
-	// Stop the pipe writer goroutines immediately (break-glass: don't drain).
-	pipeCancel()
+	// === Ordered graceful shutdown ===
+	//
+	// The goal is to let the IDE-bound pipe (idePipe) drain any queued
+	// messages (e.g., a disconnect response) before tearing down the
+	// IDE transport. The shutdown proceeds in dependency order:
+	//
+	// 1. adapter transport closed → adapter reader unblocked
+	// 2. adapter reader done → no more idePipe.Send()
+	// 3. idePipe input closed → graceful drain → remaining messages written
+	// 4. post-shutdown messages sent to IDE (terminated events)
+	// 5. IDE transport closed → IDE reader unblocked
+	// 6. IDE reader done → no more adapterPipe.Send()
+	// 7. adapterPipe input closed → drain → done
 
-	// Close transports to unblock any pending reads
-	b.ideTransport.Close()
+	// Step 1: Close adapter transport to unblock the adapter→IDE reader.
 	b.adapter.Transport.Close()
 
-	// Wait for all goroutines to finish
-	wg.Wait()
+	// Step 2: Wait for adapter reader to finish. After this, no goroutine
+	// will call idePipe.Send().
+	<-adapterReaderDone
 
-	// After pipes are stopped, send shutdown messages directly to the IDE
-	// transport. The seq counter continues from where the pipe left off.
+	// Step 3: Close idePipe input. The UnboundedChan drains buffered messages
+	// to its output channel, and Run() writes them to the IDE transport.
+	b.idePipe.CloseInput()
+	<-idePipeDone
+
+	// Step 4: Send post-shutdown messages directly to the IDE transport
+	// (still open). The seq counter continues from where idePipe left off.
 	terminated := b.terminatedEventSeen.Load()
 	if !terminated {
 		if loopErr != nil && !isExpectedShutdownErr(loopErr) {
@@ -233,12 +267,21 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 		}
 	}
 
-	// Collect any remaining errors (non-blocking)
-	close(errCh)
+	// Step 5: Close IDE transport to unblock the IDE→adapter reader.
+	b.ideTransport.Close()
+
+	// Step 6: Wait for IDE reader to finish.
+	<-ideReaderDone
+
+	// Step 7: Close adapterPipe input and wait for drain.
+	b.adapterPipe.CloseInput()
+	<-adapterPipeDone
+
+	// Collect errors from all goroutines.
 	var errs []error
-	for err := range errCh {
-		if err != nil && !isExpectedShutdownErr(err) {
-			errs = append(errs, err)
+	for _, goroutineErr := range []error{adapterReaderResult, ideReaderResult, adapterPipeResult, idePipeResult} {
+		if goroutineErr != nil && !isExpectedShutdownErr(goroutineErr) {
+			errs = append(errs, goroutineErr)
 		}
 	}
 

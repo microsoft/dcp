@@ -54,7 +54,7 @@ type connTransport struct {
 	// closed tracks whether Close() has been called. This is used to wrap
 	// subsequent read/write errors with ErrTransportClosed so callers can
 	// distinguish intentional shutdown from unexpected failures.
-	closed atomic.Bool
+	closed *atomic.Bool
 
 	// writeMu serializes message writes. Each DAP message is sent as a
 	// content-length header followed by the message body in separate writes,
@@ -92,6 +92,7 @@ func newConnTransport(ctx context.Context, r io.Reader, w io.Writer, closer io.C
 		reader: bufio.NewReader(contextReader),
 		writer: bufio.NewWriter(w),
 		closer: closer,
+		closed: &atomic.Bool{},
 	}
 }
 
@@ -144,15 +145,15 @@ func isExpectedShutdownErr(err error) bool {
 		isExpectedCloseErr(err)
 }
 
-// multiCloser closes multiple io.Closers, returning the first error.
+// multiCloser closes multiple io.Closers, joining all errors.
 type multiCloser []io.Closer
 
 func (mc multiCloser) Close() error {
-	var firstErr error
+	var errs []error
 	for _, c := range mc {
-		if closeErr := c.Close(); closeErr != nil && firstErr == nil {
-			firstErr = closeErr
+		if closeErr := c.Close(); closeErr != nil {
+			errs = append(errs, closeErr)
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
