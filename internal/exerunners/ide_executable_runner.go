@@ -79,8 +79,7 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 
 	// Create and start the bridge manager if the IDE supports debug bridge
 	if connInfo.SupportsDebugBridge() {
-		r.bridgeManager = dap.NewBridgeManager(dap.BridgeManagerConfig{
-			Logger:            log.WithName("BridgeManager"),
+		r.bridgeManager = dap.NewBridgeManager(log.WithName("BridgeManager"), dap.BridgeManagerConfig{
 			ConnectionHandler: r.handleBridgeConnection,
 		})
 

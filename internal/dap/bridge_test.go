@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -150,7 +151,7 @@ func TestDapBridge_Done(t *testing.T) {
 func TestBridgeManager_SocketPath(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(BridgeManagerConfig{})
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
 
 	// Before Start(), SocketPath() returns empty string since no listener exists yet
 	assert.Empty(t, manager.SocketPath())
@@ -159,7 +160,7 @@ func TestBridgeManager_SocketPath(t *testing.T) {
 func TestBridgeManager_DefaultSocketNamePrefix(t *testing.T) {
 	t.Parallel()
 
-	manager := NewBridgeManager(BridgeManagerConfig{})
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{})
 
 	// Should use default prefix
 	assert.Equal(t, DefaultSocketNamePrefix, manager.socketPrefix)
@@ -170,7 +171,7 @@ func TestBridgeManager_StartAndReady(t *testing.T) {
 
 	socketDir := shortTempDir(t)
 
-	manager := NewBridgeManager(BridgeManagerConfig{
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
 		SocketDir: socketDir,
 	})
 
@@ -201,7 +202,7 @@ func TestBridgeManager_DuplicateSession(t *testing.T) {
 	// Test that a second connection for the same session is rejected
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(BridgeManagerConfig{
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
 		SocketDir:        socketDir,
 		HandshakeTimeout: 2 * time.Second,
 	})

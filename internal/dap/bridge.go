@@ -19,7 +19,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/google/go-dap"
 	"github.com/microsoft/dcp/pkg/process"
-	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 // BridgeConfig contains configuration for creating a DapBridge.
@@ -85,19 +84,18 @@ type DapBridge struct {
 	// terminateOnce ensures terminateCh is closed only once
 	terminateOnce sync.Once
 
-	// adapterSeqCounter generates sequence numbers for messages sent to the adapter.
-	// This includes forwarded IDE messages (with remapped seq) and bridge-originated
-	// messages (e.g., RunInTerminalResponse).
-	adapterSeqCounter atomic.Int64
+	// adapterPipe is the FIFO message pipe for messages sent to the debug adapter.
+	// It assigns monotonically increasing sequence numbers at write time and
+	// maintains a seqMap of virtualSeq→originalIDESeq for response correlation.
+	adapterPipe *MessagePipe
 
-	// ideSeqCounter generates sequence numbers for bridge-originated messages sent
-	// to the IDE (e.g., synthesized OutputEvent, TerminatedEvent during shutdown).
-	ideSeqCounter atomic.Int64
+	// idePipe is the FIFO message pipe for messages sent to the IDE.
+	// It assigns monotonically increasing sequence numbers at write time.
+	idePipe *MessagePipe
 
-	// seqMap maps virtual (bridge-assigned) sequence numbers to original IDE sequence
-	// numbers. This is used to restore request_seq on responses flowing from the
-	// adapter back to the IDE.
-	seqMap syncmap.Map[int, int]
+	// fallbackIDESeqCounter is used for IDE-bound seq assignment when idePipe
+	// has not yet been created (e.g., adapter launch failure before message loop).
+	fallbackIDESeqCounter atomic.Int64
 }
 
 // NewDapBridge creates a new DAP bridge with the given configuration.
@@ -166,17 +164,36 @@ func (b *DapBridge) launchAdapterWithConfig(ctx context.Context, config *DebugAd
 
 // runMessageLoop runs the bidirectional message forwarding loop.
 func (b *DapBridge) runMessageLoop(ctx context.Context) error {
-	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
+	// Create a cancellable context for the pipes so we can stop the writer
+	// goroutines immediately during shutdown (break-glass).
+	pipeCtx, pipeCancel := context.WithCancel(ctx)
+	defer pipeCancel()
 
-	// IDE → Adapter
-	wg.Add(2)
+	// Create message pipes for both directions.
+	b.adapterPipe = NewMessagePipe(pipeCtx, b.adapter.Transport, "adapterPipe", b.log)
+	b.idePipe = NewMessagePipe(pipeCtx, b.ideTransport, "idePipe", b.log)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 4)
+
+	// Pipe writers
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		errCh <- b.adapterPipe.Run(pipeCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		errCh <- b.idePipe.Run(pipeCtx)
+	}()
+
+	// IDE → Adapter reader
 	go func() {
 		defer wg.Done()
 		errCh <- b.forwardIDEToAdapter(ctx)
 	}()
 
-	// Adapter → IDE
+	// Adapter → IDE reader
 	go func() {
 		defer wg.Done()
 		errCh <- b.forwardAdapterToIDE(ctx)
@@ -195,10 +212,19 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 		b.log.V(1).Info("Debug adapter exited")
 	}
 
-	// If the adapter did not send a TerminatedEvent, synthesize one for the IDE.
-	// Also send an error OutputEvent if we exited due to a transport error.
-	terminated := b.terminatedEventSeen.Load()
+	// Stop the pipe writer goroutines immediately (break-glass: don't drain).
+	pipeCancel()
 
+	// Close transports to unblock any pending reads
+	b.ideTransport.Close()
+	b.adapter.Transport.Close()
+
+	// Wait for all goroutines to finish
+	wg.Wait()
+
+	// After pipes are stopped, send shutdown messages directly to the IDE
+	// transport. The seq counter continues from where the pipe left off.
+	terminated := b.terminatedEventSeen.Load()
 	if !terminated {
 		if loopErr != nil && !isExpectedShutdownErr(loopErr) {
 			b.sendErrorToIDE(fmt.Sprintf("Debug session ended unexpectedly: %v", loopErr))
@@ -206,13 +232,6 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 			b.sendTerminatedToIDE()
 		}
 	}
-
-	// Close transports to unblock any pending reads
-	b.ideTransport.Close()
-	b.adapter.Transport.Close()
-
-	// Wait for goroutines to finish
-	wg.Wait()
 
 	// Collect any remaining errors (non-blocking)
 	close(errCh)
@@ -229,7 +248,8 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	return nil
 }
 
-// forwardIDEToAdapter forwards messages from the IDE to the debug adapter.
+// forwardIDEToAdapter reads messages from the IDE, intercepts as needed,
+// and enqueues them to the adapterPipe for ordered writing.
 func (b *DapBridge) forwardIDEToAdapter(ctx context.Context) error {
 	for {
 		select {
@@ -258,35 +278,13 @@ func (b *DapBridge) forwardIDEToAdapter(ctx context.Context) error {
 			env = NewMessageEnvelope(modifiedMsg)
 		}
 
-		// Remap the message's seq to the bridge's sequence counter so that all
-		// messages sent to the adapter have unique, monotonically increasing
-		// sequence numbers (no collisions with bridge-originated messages like
-		// the RunInTerminalResponse).
-		originalSeq := env.Seq
-		virtualSeq := int(b.adapterSeqCounter.Add(1))
-		env.Seq = virtualSeq
-
-		// Store the mapping for non-response messages so we can restore
-		// request_seq on the adapter's responses back to the IDE.
-		if !env.IsResponse() {
-			b.seqMap.Store(virtualSeq, originalSeq)
-		}
-
-		b.logEnvelopeMessage("IDE -> Adapter: forwarding message to adapter", env,
-			"originalSeq", originalSeq,
-			"virtualSeq", virtualSeq)
-		finalizedMsg, finalizeErr := env.Finalize()
-		if finalizeErr != nil {
-			return fmt.Errorf("failed to finalize message for adapter: %w", finalizeErr)
-		}
-		writeErr := b.adapter.Transport.WriteMessage(finalizedMsg)
-		if writeErr != nil {
-			return fmt.Errorf("failed to write to adapter: %w", writeErr)
-		}
+		b.logEnvelopeMessage("IDE -> Adapter: enqueueing message for adapter", env)
+		b.adapterPipe.Send(env)
 	}
 }
 
-// forwardAdapterToIDE forwards messages from the debug adapter to the IDE.
+// forwardAdapterToIDE reads messages from the debug adapter, intercepts as needed,
+// remaps response seq values, and enqueues them to the idePipe for ordered writing.
 func (b *DapBridge) forwardAdapterToIDE(ctx context.Context) error {
 	for {
 		select {
@@ -306,13 +304,12 @@ func (b *DapBridge) forwardAdapterToIDE(ctx context.Context) error {
 		// Intercept and potentially handle the message
 		modifiedMsg, forward, asyncResponse := b.interceptDownstreamMessage(ctx, msg)
 
-		// If there's an async response (e.g., RunInTerminalResponse), send it back to the adapter
+		// If there's an async response (e.g., RunInTerminalResponse), enqueue it
+		// to the adapter pipe so it gets a proper sequence number.
 		if asyncResponse != nil {
-			b.logEnvelopeMessage("Adapter -> IDE: sending async response to adapter", NewMessageEnvelope(asyncResponse))
-			writeErr := b.adapter.Transport.WriteMessage(asyncResponse)
-			if writeErr != nil {
-				b.log.Error(writeErr, "Failed to write async response to adapter")
-			}
+			asyncEnv := NewMessageEnvelope(asyncResponse)
+			b.logEnvelopeMessage("Adapter -> IDE: enqueueing async response for adapter", asyncEnv)
+			b.adapterPipe.Send(asyncEnv)
 		}
 
 		if !forward {
@@ -327,25 +324,10 @@ func (b *DapBridge) forwardAdapterToIDE(ctx context.Context) error {
 
 		// For response messages, restore the original IDE sequence number in
 		// request_seq so the IDE can correlate the response with its request.
-		if env.IsResponse() {
-			if origSeq, found := b.seqMap.LoadAndDelete(env.RequestSeq); found {
-				b.log.V(1).Info("Adapter -> IDE: remapping response request_seq",
-					"command", env.Command,
-					"virtualRequestSeq", env.RequestSeq,
-					"originalRequestSeq", origSeq)
-				env.RequestSeq = origSeq
-			}
-		}
+		b.adapterPipe.RemapResponseSeq(env)
 
-		b.logEnvelopeMessage("Adapter -> IDE: forwarding message to IDE", env)
-		finalizedMsg, finalizeErr := env.Finalize()
-		if finalizeErr != nil {
-			return fmt.Errorf("failed to finalize message for IDE: %w", finalizeErr)
-		}
-		writeErr := b.ideTransport.WriteMessage(finalizedMsg)
-		if writeErr != nil {
-			return fmt.Errorf("failed to write to IDE: %w", writeErr)
-		}
+		b.logEnvelopeMessage("Adapter -> IDE: enqueueing message for IDE", env)
+		b.idePipe.Send(env)
 	}
 }
 
@@ -398,6 +380,8 @@ func (b *DapBridge) handleOutputEvent(event *dap.OutputEvent) {
 
 // handleRunInTerminalRequest handles the runInTerminal reverse request.
 // Returns the response to send back to the debug adapter.
+// The response's Seq field is set to 0 because the adapterPipe will assign
+// the actual sequence number when the message is dequeued for writing.
 func (b *DapBridge) handleRunInTerminalRequest(ctx context.Context, req *dap.RunInTerminalRequest) *dap.RunInTerminalResponse {
 	b.log.Info("Handling RunInTerminal request",
 		"seq", req.Seq,
@@ -417,7 +401,6 @@ func (b *DapBridge) handleRunInTerminalRequest(ctx context.Context, req *dap.Run
 		return &dap.RunInTerminalResponse{
 			Response: dap.Response{
 				ProtocolMessage: dap.ProtocolMessage{
-					Seq:  int(b.adapterSeqCounter.Add(1)),
 					Type: "response",
 				},
 				RequestSeq: req.Seq,
@@ -448,7 +431,6 @@ func (b *DapBridge) handleRunInTerminalRequest(ctx context.Context, req *dap.Run
 	response := &dap.RunInTerminalResponse{
 		Response: dap.Response{
 			ProtocolMessage: dap.ProtocolMessage{
-				Seq:  int(b.adapterSeqCounter.Add(1)),
 				Type: "response",
 			},
 			RequestSeq: req.Seq,
@@ -473,13 +455,17 @@ func (b *DapBridge) handleRunInTerminalRequest(ctx context.Context, req *dap.Run
 
 // sendErrorToIDE sends an OutputEvent with category "stderr" followed by a TerminatedEvent to the IDE.
 // This is used to report errors to the IDE (e.g., adapter launch failure) before closing the connection.
+// This method writes directly to the IDE transport, bypassing the idePipe. It must only be called
+// after the idePipe writer goroutine has stopped. The sequence counter is shared with the pipe
+// so seq values continue monotonically.
 // Errors writing to the IDE transport are logged but not returned, since the bridge is shutting down anyway.
 func (b *DapBridge) sendErrorToIDE(message string) {
 	if b.ideTransport == nil {
 		return
 	}
 
-	outputEvent := newOutputEvent(int(b.ideSeqCounter.Add(1)), "stderr", message+"\n")
+	seq := b.nextIDESeq()
+	outputEvent := newOutputEvent(seq, "stderr", message+"\n")
 	if writeErr := b.ideTransport.WriteMessage(outputEvent); writeErr != nil {
 		b.log.V(1).Info("Failed to send error OutputEvent to IDE", "error", writeErr)
 		return
@@ -490,16 +476,30 @@ func (b *DapBridge) sendErrorToIDE(message string) {
 
 // sendTerminatedToIDE sends a TerminatedEvent to the IDE so it knows the debug session has ended.
 // This is used when the bridge terminates due to an error and the adapter has not already sent
-// a TerminatedEvent. Errors writing to the IDE transport are logged but not returned.
+// a TerminatedEvent. This method writes directly to the IDE transport, bypassing the idePipe.
+// It must only be called after the idePipe writer goroutine has stopped.
+// Errors writing to the IDE transport are logged but not returned.
 func (b *DapBridge) sendTerminatedToIDE() {
 	if b.ideTransport == nil {
 		return
 	}
 
-	terminatedEvent := newTerminatedEvent(int(b.ideSeqCounter.Add(1)))
+	seq := b.nextIDESeq()
+	terminatedEvent := newTerminatedEvent(seq)
 	if writeErr := b.ideTransport.WriteMessage(terminatedEvent); writeErr != nil {
 		b.log.V(1).Info("Failed to send TerminatedEvent to IDE", "error", writeErr)
 	}
+}
+
+// nextIDESeq returns the next sequence number for IDE-bound messages.
+// During normal operation this counter is incremented by the idePipe writer;
+// during shutdown it is incremented directly by sendErrorToIDE/sendTerminatedToIDE.
+func (b *DapBridge) nextIDESeq() int {
+	if b.idePipe != nil {
+		return int(b.idePipe.SeqCounter.Add(1))
+	}
+	// Fallback: idePipe not yet created (e.g., adapter launch failure before message loop).
+	return int(b.fallbackIDESeqCounter.Add(1))
 }
 
 // terminate marks the bridge as terminated.

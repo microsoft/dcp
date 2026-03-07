@@ -120,9 +120,6 @@ type BridgeManagerConfig struct {
 	// If nil, a new executor will be created.
 	Executor process.Executor
 
-	// Logger for bridge manager operations.
-	Logger logr.Logger
-
 	// HandshakeTimeout is the timeout for reading the handshake from a connection.
 	// If zero, defaults to DefaultHandshakeTimeout.
 	HandshakeTimeout time.Duration
@@ -146,17 +143,16 @@ type BridgeManager struct {
 	socketDir    string
 	socketPrefix string
 	readyCh      chan struct{}
-	readyOnce    sync.Once
+	readyOnce    *sync.Once
 
 	// mu protects sessions and activeBridges.
-	mu            sync.Mutex
+	mu            *sync.Mutex
 	sessions      map[string]*BridgeSession
 	activeBridges map[string]*DapBridge
 }
 
 // NewBridgeManager creates a new BridgeManager with the given configuration.
-func NewBridgeManager(config BridgeManagerConfig) *BridgeManager {
-	log := config.Logger
+func NewBridgeManager(log logr.Logger, config BridgeManagerConfig) *BridgeManager {
 	if log.GetSink() == nil {
 		log = logr.Discard()
 	}
@@ -179,6 +175,8 @@ func NewBridgeManager(config BridgeManagerConfig) *BridgeManager {
 		socketDir:     socketDir,
 		socketPrefix:  socketPrefix,
 		readyCh:       make(chan struct{}),
+		readyOnce:     &sync.Once{},
+		mu:            &sync.Mutex{},
 		sessions:      make(map[string]*BridgeSession),
 		activeBridges: make(map[string]*DapBridge),
 	}

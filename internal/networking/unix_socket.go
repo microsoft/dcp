@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -30,7 +31,7 @@ type PrivateUnixSocketListener struct {
 	listener   net.Listener
 	socketPath string
 
-	closed   bool
+	closed   atomic.Bool
 	closeErr error
 	mu       *sync.Mutex
 }
@@ -102,15 +103,18 @@ func NewPrivateUnixSocketListener(socketDir string, socketNamePrefix string) (*P
 // Accept waits for and returns the next connection to the listener.
 // Returns net.ErrClosed if the listener has been closed.
 func (l *PrivateUnixSocketListener) Accept() (net.Conn, error) {
-	l.mu.Lock()
-	if l.closed {
-		l.mu.Unlock()
+	if l.closed.Load() {
 		return nil, net.ErrClosed
 	}
-	l.mu.Unlock()
 
 	conn, acceptErr := l.listener.Accept()
 	if acceptErr != nil {
+		// If the listener was closed while we were blocking on Accept(),
+		// return net.ErrClosed so the caller can distinguish a graceful
+		// shutdown from an unexpected error.
+		if l.closed.Load() {
+			return nil, net.ErrClosed
+		}
 		return nil, acceptErr
 	}
 
@@ -123,11 +127,11 @@ func (l *PrivateUnixSocketListener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.closed {
+	if l.closed.Load() {
 		return l.closeErr
 	}
 
-	l.closed = true
+	l.closed.Store(true)
 
 	l.closeErr = l.listener.Close()
 

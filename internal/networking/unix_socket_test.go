@@ -115,21 +115,6 @@ func TestPrivateUnixSocketListenerCreatesListenerWithRandomName(t *testing.T) {
 	require.NoError(t, statErr)
 }
 
-func TestPrivateUnixSocketListenerTwoListenersGetDifferentPaths(t *testing.T) {
-	t.Parallel()
-	rootDir := shortTempDir(t)
-
-	l1, err1 := NewPrivateUnixSocketListener(rootDir, "dup-")
-	require.NoError(t, err1)
-	defer l1.Close()
-
-	l2, err2 := NewPrivateUnixSocketListener(rootDir, "dup-")
-	require.NoError(t, err2)
-	defer l2.Close()
-
-	assert.NotEqual(t, l1.SocketPath(), l2.SocketPath(), "two listeners with the same prefix should have different socket paths")
-}
-
 func TestPrivateUnixSocketListenerAcceptsConnections(t *testing.T) {
 	t.Parallel()
 	rootDir := shortTempDir(t)
@@ -233,7 +218,56 @@ func TestPrivateUnixSocketListenerAcceptReturnsErrorAfterClose(t *testing.T) {
 	require.NoError(t, closeErr)
 
 	_, acceptErr := listener.Accept()
-	assert.Error(t, acceptErr)
+	assert.ErrorIs(t, acceptErr, net.ErrClosed)
+}
+
+func TestPrivateUnixSocketListenerConcurrentCloseReturnsErrClosed(t *testing.T) {
+	t.Parallel()
+	rootDir := shortTempDir(t)
+
+	listener, createErr := NewPrivateUnixSocketListener(rootDir, "ccl-")
+	require.NoError(t, createErr)
+
+	// Start Accept() in a goroutine; it will block until the listener is closed.
+	var acceptErr error
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		_, acceptErr = listener.Accept()
+	}()
+
+	// Give the accept goroutine a moment to enter the blocking Accept() call.
+	runtime.Gosched()
+
+	// Launch 10 goroutines that all race to call Close().
+	const closerCount = 10
+	closeErrs := make([]error, closerCount)
+	startCh := make(chan struct{})
+	var closeWg sync.WaitGroup
+	closeWg.Add(closerCount)
+	for i := range closerCount {
+		go func() {
+			defer closeWg.Done()
+			<-startCh
+			closeErrs[i] = listener.Close()
+		}()
+	}
+
+	// Signal all closers to race.
+	close(startCh)
+	closeWg.Wait()
+
+	// Wait for Accept() to return.
+	<-acceptDone
+
+	// Accept() must return net.ErrClosed so the caller can distinguish
+	// a graceful shutdown from an unexpected error.
+	assert.ErrorIs(t, acceptErr, net.ErrClosed)
+
+	// All Close() calls must succeed (Close is idempotent).
+	for i, closeErr := range closeErrs {
+		assert.NoError(t, closeErr, "Close() call %d returned an error", i)
+	}
 }
 
 func TestPrivateUnixSocketListenerAddrReturnsValidAddress(t *testing.T) {

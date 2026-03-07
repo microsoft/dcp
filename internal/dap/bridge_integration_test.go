@@ -87,9 +87,8 @@ func TestBridgeManager_HandshakeValidation(t *testing.T) {
 	// Test that BridgeManager correctly validates handshakes
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(BridgeManagerConfig{
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
 		SocketDir:        socketDir,
-		Logger:           logr.Discard(),
 		HandshakeTimeout: 2 * time.Second,
 	})
 
@@ -134,9 +133,8 @@ func TestBridgeManager_SessionNotFound(t *testing.T) {
 	// Test handshake failure when session doesn't exist
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(BridgeManagerConfig{
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
 		SocketDir:        socketDir,
-		Logger:           logr.Discard(),
 		HandshakeTimeout: 2 * time.Second,
 	})
 
@@ -174,9 +172,8 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 	t.Parallel()
 
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(BridgeManagerConfig{
+	manager := NewBridgeManager(logr.Discard(), BridgeManagerConfig{
 		SocketDir:        socketDir,
-		Logger:           logr.Discard(),
 		HandshakeTimeout: 200 * time.Millisecond, // Short timeout
 	})
 	_, _ = manager.RegisterSession("timeout-session", "test-token")
@@ -719,10 +716,9 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 
 	// Set up bridge manager and register a session.
 	socketDir := shortTempDir(t)
-	manager := NewBridgeManager(BridgeManagerConfig{
+	manager := NewBridgeManager(log, BridgeManagerConfig{
 		SocketDir:        socketDir,
 		Executor:         executor,
-		Logger:           log,
 		HandshakeTimeout: 5 * time.Second,
 	})
 
