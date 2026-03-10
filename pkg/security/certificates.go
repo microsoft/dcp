@@ -53,15 +53,18 @@ func (scd ServerCertificateData) CA() ([]byte, error) {
 func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), serialNumberBits)
 
+	// Serial numbers must be positive (RFC 5280 §4.1.2.2), so generate in [0, limit) and add 1.
 	caSerialNumber, caSerialNumberErr := cryptorand.Int(cryptorand.Reader, serialNumberLimit)
 	if caSerialNumberErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to generate CA serial number: %w", caSerialNumberErr)
 	}
+	caSerialNumber.Add(caSerialNumber, big.NewInt(1))
 
 	serverSerialNumber, serverSerialNumberErr := cryptorand.Int(cryptorand.Reader, serialNumberLimit)
 	if serverSerialNumberErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to generate server serial number: %w", serverSerialNumberErr)
 	}
+	serverSerialNumber.Add(serverSerialNumber, big.NewInt(1))
 
 	// Generate keys for the CA certificate
 	caKey, caKeyErr := rsa.GenerateKey(cryptorand.Reader, caKeyLength)
