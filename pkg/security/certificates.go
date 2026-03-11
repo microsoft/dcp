@@ -16,7 +16,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	mathrand "math/rand"
 	"net"
 	"time"
 )
@@ -25,6 +24,7 @@ const (
 	caKeyLength           = 4096
 	keyLength             = 2048
 	defaultExpirationDays = 7
+	serialNumberBits      = 128
 )
 
 type ServerCertificateData struct {
@@ -51,6 +51,21 @@ func (scd ServerCertificateData) CA() ([]byte, error) {
 // Generates a self-signed certificate authority, server certificate, and a server private key
 // for securing network connections. Returned certificates are raw (not PEM-encoded).
 func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
+	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), serialNumberBits)
+
+	// Serial numbers must be positive (RFC 5280 §4.1.2.2), so generate in [0, limit) and add 1.
+	caSerialNumber, caSerialNumberErr := cryptorand.Int(cryptorand.Reader, serialNumberLimit)
+	if caSerialNumberErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to generate CA serial number: %w", caSerialNumberErr)
+	}
+	caSerialNumber.Add(caSerialNumber, big.NewInt(1))
+
+	serverSerialNumber, serverSerialNumberErr := cryptorand.Int(cryptorand.Reader, serialNumberLimit)
+	if serverSerialNumberErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to generate server serial number: %w", serverSerialNumberErr)
+	}
+	serverSerialNumber.Add(serverSerialNumber, big.NewInt(1))
+
 	// Generate keys for the CA certificate
 	caKey, caKeyErr := rsa.GenerateKey(cryptorand.Reader, caKeyLength)
 	if caKeyErr != nil {
@@ -63,14 +78,24 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		return ServerCertificateData{}, fmt.Errorf("failed to generate server key: %w", serverKeyErr)
 	}
 
+	// Generate the subject key ID for the CA certificate as a SHA-256 hash of the CA public key
+	caPublicKeyBytes, caPublicKeyBytesErr := asn1.Marshal(*caKey.Public().(*rsa.PublicKey))
+	if caPublicKeyBytesErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to marshal CA public key: %w", caPublicKeyBytesErr)
+	}
+	caSubjectKeyId := sha256.Sum256(caPublicKeyBytes)
+
+	now := time.Now()
+
 	// Template for the CA certificate
 	ca := &x509.Certificate{
-		SerialNumber: big.NewInt(mathrand.Int63()),
+		SerialNumber: caSerialNumber,
 		Subject: pkix.Name{
 			CommonName: ip.String(),
 		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().AddDate(0, 0, defaultExpirationDays),
+		NotBefore:             now,
+		NotAfter:              now.AddDate(0, 0, defaultExpirationDays),
+		SubjectKeyId:          caSubjectKeyId[:],
 		IsCA:                  true,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
@@ -82,23 +107,24 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		return ServerCertificateData{}, fmt.Errorf("failed to create CA certificate: %w", caErr)
 	}
 
-	// Generate the subject ID for the server certificate as a SHA256 hash of the server public key
+	// Generate the subject key ID for the server certificate as a SHA-256 hash of the server public key
 	serverPublicKeyBytes, serverPublicKeyBytesErr := asn1.Marshal(*serverKey.Public().(*rsa.PublicKey))
 	if serverPublicKeyBytesErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to marshal server public key: %w", serverPublicKeyBytesErr)
 	}
-	serverPublicKeySubjectId := sha256.Sum256(serverPublicKeyBytes)
+	serverSubjectKeyId := sha256.Sum256(serverPublicKeyBytes)
 
 	// Template for the server certificate
 	server := &x509.Certificate{
-		SerialNumber: big.NewInt(mathrand.Int63()),
-		Subject:      pkix.Name{},
-		IPAddresses:  []net.IP{ip},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().AddDate(0, 0, defaultExpirationDays),
-		SubjectKeyId: serverPublicKeySubjectId[:],
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		SerialNumber:   serverSerialNumber,
+		Subject:        pkix.Name{},
+		IPAddresses:    []net.IP{ip},
+		NotBefore:      now,
+		NotAfter:       now.AddDate(0, 0, defaultExpirationDays),
+		SubjectKeyId:   serverSubjectKeyId[:],
+		AuthorityKeyId: caSubjectKeyId[:],
+		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		KeyUsage:       x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 	}
 
 	serverBytes, serverErr := x509.CreateCertificate(cryptorand.Reader, server, ca, &serverKey.PublicKey, caKey)
