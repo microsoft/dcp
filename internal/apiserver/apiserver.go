@@ -154,6 +154,8 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 		return nil, err
 	}
 
+	log.V(1).Info("kubeconfig saved successfully")
+
 	completedConfig := config.Complete()
 	stoppedCh, err := runServerFromCompletedConfig(completedConfig, runCtx, runConfig, log)
 	if err != nil {

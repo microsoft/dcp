@@ -20,6 +20,8 @@ import (
 	"net"
 	"os"
 	"time"
+
+	"github.com/microsoft/dcp/internal/networking"
 )
 
 const (
@@ -182,33 +184,78 @@ func PEMEncodePrivateKey(key *rsa.PrivateKey) ([]byte, error) {
 }
 
 // ValidateCertificateFiles validates that the given certificate and key files are readable,
-// contain valid PEM data, and that the certificate and key form a valid pair.
-func ValidateCertificateFiles(certFile, keyFile string) error {
+// contain valid PEM data, that the certificate and key form a valid pair, and that the server
+// certificate is valid for localhost.
+// Returns the server address to use based on what the certificate covers and the system's
+// IP version preference. IP addresses are preferred over DNS names. If the preferred IP
+// version is covered, that address is used. Otherwise, it falls back to whichever localhost
+// address the cert is valid for.
+func ValidateCertificateFiles(certFile, keyFile string) (string, error) {
 	certPEM, certReadErr := os.ReadFile(certFile)
 	if certReadErr != nil {
-		return fmt.Errorf("unable to read certificate file '%s': %w", certFile, certReadErr)
+		return "", fmt.Errorf("unable to read certificate file '%s': %w", certFile, certReadErr)
 	}
 
 	keyPEM, keyReadErr := os.ReadFile(keyFile)
 	if keyReadErr != nil {
-		return fmt.Errorf("unable to read private key file '%s': %w", keyFile, keyReadErr)
+		return "", fmt.Errorf("unable to read private key file '%s': %w", keyFile, keyReadErr)
 	}
 
 	_, tlsErr := tls.X509KeyPair(certPEM, keyPEM)
 	if tlsErr != nil {
-		return fmt.Errorf("certificate and private key are not a valid pair: %w", tlsErr)
+		return "", fmt.Errorf("certificate and private key are not a valid pair: %w", tlsErr)
 	}
 
-	return nil
+	// Parse the server certificate (first in the chain) and determine which localhost address it covers.
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("no certificate found in PEM data")
+	}
+
+	cert, parseErr := x509.ParseCertificate(block.Bytes)
+	if parseErr != nil {
+		return "", fmt.Errorf("failed to parse certificate: %w", parseErr)
+	}
+
+	// Check each localhost address using the standard library's VerifyHostname,
+	// which checks both SANs and the Subject CN per RFC 6125.
+	hasIPv4 := cert.VerifyHostname(networking.IPv4LocalhostDefaultAddress) == nil
+	hasIPv6 := cert.VerifyHostname(networking.IPv6LocalhostDefaultAddress) == nil
+	hasLocalhost := cert.VerifyHostname(networking.Localhost) == nil
+
+	if !hasIPv4 && !hasIPv6 && !hasLocalhost {
+		return "", fmt.Errorf("certificate is not valid for localhost; '%s', %s, or %s must be a valid certificate subject",
+			networking.Localhost, networking.IPv4LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress)
+	}
+
+	// Prefer IP addresses, respecting the system's IP version preference.
+	preference := networking.GetIpVersionPreference()
+
+	if preference == networking.IpVersionPreference4 && hasIPv4 {
+		return networking.IPv4LocalhostDefaultAddress, nil
+	}
+	if preference == networking.IpVersionPreference6 && hasIPv6 {
+		return networking.IPv6LocalhostDefaultAddress, nil
+	}
+
+	// No preference or preferred version not covered; prefer any IP over "localhost".
+	if hasIPv4 {
+		return networking.IPv4LocalhostDefaultAddress, nil
+	}
+	if hasIPv6 {
+		return networking.IPv6LocalhostDefaultAddress, nil
+	}
+	return networking.Localhost, nil
 }
 
-// ExtractRootCertificate extracts the root certificate from a PEM-encoded certificate chain file.
-// If the file contains multiple certificates (a chain), it returns the last one (the root).
-// Intermediates are not needed because the server provides the full chain during TLS handshake.
-// If the file contains a single certificate (e.g. a self-signed cert), it returns that certificate
-// since it is the trust anchor.
+// ExtractRootCertificate extracts the trust anchor from PEM-encoded certificate data.
+// It identifies the self-signed certificate (where Issuer equals Subject) regardless of
+// PEM ordering. For a single self-signed cert it returns that cert. For a chain it returns
+// the root CA after verifying that the leaf cert chains to it through any intermediates present.
+// Returns an error if no self-signed certificate is found or if the chain is invalid.
 func ExtractRootCertificate(certPEM []byte) ([]byte, error) {
-	var lastBlock *pem.Block
+	var certs []*x509.Certificate
+	var certBlocks []*pem.Block
 	rest := certPEM
 
 	for {
@@ -217,23 +264,94 @@ func ExtractRootCertificate(certPEM []byte) ([]byte, error) {
 		if block == nil {
 			break
 		}
-		if block.Type == "CERTIFICATE" {
-			lastBlock = block
+		if block.Type != "CERTIFICATE" {
+			continue
 		}
+		cert, parseErr := x509.ParseCertificate(block.Bytes)
+		if parseErr != nil {
+			continue
+		}
+		certs = append(certs, cert)
+		certBlocks = append(certBlocks, block)
 	}
 
-	if lastBlock == nil {
+	if len(certs) == 0 {
 		return nil, fmt.Errorf("no certificates found in PEM data")
+	}
+
+	// Find the self-signed certificate (trust anchor).
+	rootIdx := -1
+	for i, cert := range certs {
+		if bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+			rootIdx = i
+			break
+		}
+	}
+	if rootIdx < 0 {
+		return nil, fmt.Errorf("no self-signed root certificate found in PEM data")
+	}
+
+	// For chains with multiple certs, verify the leaf actually chains to the root.
+	if len(certs) > 1 {
+		leafIdx := findLeafCert(certs, rootIdx)
+		if leafIdx < 0 {
+			return nil, fmt.Errorf("unable to identify leaf certificate in chain")
+		}
+
+		rootPool := x509.NewCertPool()
+		rootPool.AddCert(certs[rootIdx])
+
+		intermediatePool := x509.NewCertPool()
+		for i, cert := range certs {
+			if i == leafIdx || i == rootIdx {
+				continue
+			}
+			intermediatePool.AddCert(cert)
+		}
+
+		verifyOpts := x509.VerifyOptions{
+			Roots:         rootPool,
+			Intermediates: intermediatePool,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		}
+		if _, verifyErr := certs[leafIdx].Verify(verifyOpts); verifyErr != nil {
+			return nil, fmt.Errorf("certificate chain verification failed: %w", verifyErr)
+		}
 	}
 
 	var buffer bytes.Buffer
 	rootPemBlock := &pem.Block{
 		Type:  "CERTIFICATE",
-		Bytes: lastBlock.Bytes,
+		Bytes: certBlocks[rootIdx].Bytes,
 	}
 	if encodeErr := pem.Encode(&buffer, rootPemBlock); encodeErr != nil {
 		return nil, fmt.Errorf("failed to PEM encode root certificate: %w", encodeErr)
 	}
 
 	return buffer.Bytes(), nil
+}
+
+// findLeafCert returns the index of the leaf certificate in the slice. The leaf is
+// the certificate whose Subject does not appear as the Issuer of any other certificate
+// in the bundle (i.e. it does not sign any other cert).
+func findLeafCert(certs []*x509.Certificate, rootIdx int) int {
+	for i, cert := range certs {
+		if i == rootIdx {
+			continue
+		}
+		isIssuer := false
+		for j, other := range certs {
+			if j == i {
+				continue
+			}
+			if bytes.Equal(other.RawIssuer, cert.RawSubject) {
+				isIssuer = true
+				break
+			}
+		}
+		if !isIssuer {
+			return i
+		}
+	}
+	return -1
 }

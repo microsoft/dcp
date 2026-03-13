@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/pflag"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/security"
 )
 
@@ -138,10 +139,20 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		return nil, fmt.Errorf("both --%s and --%s must be specified together", TLSCertFileFlagName, TLSKeyFileFlagName)
 	}
 
+	// Determine the server address to use.
+	var serverAddress string
 	if tlsCertFile != "" {
-		if validateErr := security.ValidateCertificateFiles(tlsCertFile, tlsKeyFile); validateErr != nil {
+		var validateErr error
+		serverAddress, validateErr = security.ValidateCertificateFiles(tlsCertFile, tlsKeyFile)
+		if validateErr != nil {
 			return nil, fmt.Errorf("TLS certificate validation failed: %w", validateErr)
 		}
+	} else {
+		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
+		if preferredErr != nil {
+			return nil, fmt.Errorf("could not determine server address: %w", preferredErr)
+		}
+		serverAddress = networking.IpToString(preferredIps[0])
 	}
 
 	kubeconfigPath, pathErr := getKubeConfigPath(flags)
@@ -160,7 +171,7 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 
 	useCertificate := tlsCertFile == "" // Only generate ephemeral certs if user didn't provide their own
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, useCertificate, generateToken, tlsCertFile, tlsKeyFile, log)
+	k, kErr := getKubeconfig(kubeconfigPath, port, useCertificate, generateToken, tlsCertFile, tlsKeyFile, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}
