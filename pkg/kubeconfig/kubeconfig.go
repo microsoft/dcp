@@ -203,7 +203,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 	}, nil
 }
 
-func createKubeconfig(port int32, useCertifiate bool, generateToken bool, tlsCertFile string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
+func createKubeconfig(port int32, useCertificate bool, generateToken bool, tlsCertFile string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	ips, err := networking.GetPreferredHostIps(networking.Localhost)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
@@ -224,8 +224,7 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, tlsCer
 		Server: "https://" + networking.AddressAndPort(address, port),
 	}
 
-	var certificateData security.ServerCertificateData
-	var certificateErr error
+	var certificateData *security.ServerCertificateData
 
 	if tlsCertFile != "" {
 		// User provided their own certificate; extract the root CA for client trust.
@@ -240,19 +239,20 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, tlsCer
 		}
 
 		cluster.CertificateAuthorityData = rootCA
-	} else if useCertifiate {
+	} else if useCertificate {
 		// Generate certificates to secure the connection
-		certificateData, certificateErr = security.GenerateServerCertificate(ip)
+		generatedCert, certificateErr := security.GenerateServerCertificate(ip)
 		if certificateErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not generate certificates: %w", certificateErr)
 		}
 
-		caPEM, caErr := certificateData.CA()
+		caPEM, caErr := generatedCert.CA()
 		if caErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not encode CA certificate: %w", caErr)
 		}
 		// We're generating a certificate, so we need to tell the client how to verify it
 		cluster.CertificateAuthorityData = caPEM
+		certificateData = &generatedCert
 	} else {
 		// If we aren't generating certificates, we need to skip TLS verification
 		cluster.InsecureSkipTLSVerify = true
@@ -287,5 +287,5 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, tlsCer
 			"apiserver": &context,
 		},
 		CurrentContext: "apiserver",
-	}, &certificateData, nil
+	}, certificateData, nil
 }
