@@ -10,6 +10,7 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"time"
 )
 
@@ -174,6 +176,63 @@ func PEMEncodePrivateKey(key *rsa.PrivateKey) ([]byte, error) {
 	}
 	if err := pem.Encode(&buffer, pemBlock); err != nil {
 		return nil, fmt.Errorf("failed to PEM encode private key: %w", err)
+	}
+
+	return buffer.Bytes(), nil
+}
+
+// ValidateCertificateFiles validates that the given certificate and key files are readable,
+// contain valid PEM data, and that the certificate and key form a valid pair.
+func ValidateCertificateFiles(certFile, keyFile string) error {
+	certPEM, certReadErr := os.ReadFile(certFile)
+	if certReadErr != nil {
+		return fmt.Errorf("unable to read certificate file '%s': %w", certFile, certReadErr)
+	}
+
+	keyPEM, keyReadErr := os.ReadFile(keyFile)
+	if keyReadErr != nil {
+		return fmt.Errorf("unable to read private key file '%s': %w", keyFile, keyReadErr)
+	}
+
+	_, tlsErr := tls.X509KeyPair(certPEM, keyPEM)
+	if tlsErr != nil {
+		return fmt.Errorf("certificate and private key are not a valid pair: %w", tlsErr)
+	}
+
+	return nil
+}
+
+// ExtractRootCACertificate extracts the root CA certificate from a PEM-encoded certificate chain file.
+// If the file contains multiple certificates (a chain), it returns the last one (the root CA).
+// Intermediates are not needed because the server provides the full chain during TLS handshake.
+// If the file contains a single certificate (e.g. a self-signed cert), it returns that certificate
+// since it is the trust anchor.
+func ExtractRootCACertificate(certPEM []byte) ([]byte, error) {
+	var lastBlock *pem.Block
+	rest := certPEM
+
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type == "CERTIFICATE" {
+			lastBlock = block
+		}
+	}
+
+	if lastBlock == nil {
+		return nil, fmt.Errorf("no certificates found in PEM data")
+	}
+
+	var buffer bytes.Buffer
+	rootPemBlock := &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: lastBlock.Bytes,
+	}
+	if encodeErr := pem.Encode(&buffer, rootPemBlock); encodeErr != nil {
+		return nil, fmt.Errorf("failed to PEM encode root CA certificate: %w", encodeErr)
 	}
 
 	return buffer.Bytes(), nil

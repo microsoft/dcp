@@ -230,7 +230,12 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServer
 		}
 	}
 
-	if certificateData != nil {
+	if s.config.HasUserProvidedCert() {
+		// Use the user-provided certificate files directly.
+		// Tilt's ApplyTo() will load them via dynamiccertificates.NewDynamicServingContentFromFiles().
+		options.ServingOptions.ServerCert.CertKey.CertFile = s.config.TLSCertFile()
+		options.ServingOptions.ServerCert.CertKey.KeyFile = s.config.TLSKeyFile()
+	} else if certificateData != nil {
 		cert, certErr := certificateData.Certificate()
 		if certErr != nil {
 			return nil, fmt.Errorf("unable to obtain certificate data: %w", certErr)

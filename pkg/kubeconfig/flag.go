@@ -15,15 +15,21 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	"github.com/microsoft/dcp/pkg/security"
 )
 
 const (
-	PortFlagName     = "port"
-	DCP_SECURE_TOKEN = "DCP_SECURE_TOKEN"
+	PortFlagName          = "port"
+	TLSCertFileFlagName   = "tls-cert-file"
+	TLSKeyFileFlagName    = "tls-private-key-file"
+	DCP_SECURE_TOKEN      = "DCP_SECURE_TOKEN"
 )
 
 var (
-	port int32
+	port        int32
+	tlsCertFile string
+	tlsKeyFile  string
 )
 
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
@@ -56,6 +62,26 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 		fs.Int32Var(&port, PortFlagName, 0, "Use a specific port when scaffolding the Kubeconfig file. If not specified, a random port will be used.")
 		return fs.Lookup(PortFlagName)
 	}
+}
+
+// EnsureTLSCertFileFlag registers the --tls-cert-file flag if not already registered.
+func EnsureTLSCertFileFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCertFileFlagName); f != nil {
+		return f
+	}
+	fs.StringVar(&tlsCertFile, TLSCertFileFlagName, "", "File containing the x509 certificate for HTTPS, "+
+		"optionally followed by the full certificate chain. When provided, --tls-private-key-file must also be specified. "+
+		"If not provided, an ephemeral self-signed certificate is generated.")
+	return fs.Lookup(TLSCertFileFlagName)
+}
+
+// EnsureTLSKeyFileFlag registers the --tls-private-key-file flag if not already registered.
+func EnsureTLSKeyFileFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSKeyFileFlagName); f != nil {
+		return f
+	}
+	fs.StringVar(&tlsKeyFile, TLSKeyFileFlagName, "", "File containing the x509 private key matching --tls-cert-file.")
+	return fs.Lookup(TLSKeyFileFlagName)
 }
 
 // Ensures that the kubeconfig flag exist and points to a non-empty file.
@@ -107,6 +133,17 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
+	// Validate TLS certificate flags: both must be specified, or neither.
+	if (tlsCertFile != "") != (tlsKeyFile != "") {
+		return nil, fmt.Errorf("both --%s and --%s must be specified together", TLSCertFileFlagName, TLSKeyFileFlagName)
+	}
+
+	if tlsCertFile != "" {
+		if validateErr := security.ValidateCertificateFiles(tlsCertFile, tlsKeyFile); validateErr != nil {
+			return nil, fmt.Errorf("TLS certificate validation failed: %w", validateErr)
+		}
+	}
+
 	kubeconfigPath, pathErr := getKubeConfigPath(flags)
 	if pathErr != nil {
 		return nil, pathErr
@@ -121,7 +158,9 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
 	generateToken := !tokenFound || token == ""
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, true /* use certificate */, generateToken, log)
+	useCertificate := tlsCertFile == "" // Only generate ephemeral certs if user didn't provide their own
+
+	k, kErr := getKubeconfig(kubeconfigPath, port, useCertificate, generateToken, tlsCertFile, tlsKeyFile, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}
