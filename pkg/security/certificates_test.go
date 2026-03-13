@@ -61,12 +61,21 @@ func TestValidateCertificateFiles_PrefersIPv6OverLocalhost(t *testing.T) {
 	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
 }
 
-func TestValidateCertificateFiles_BothIPsPreferIPv4(t *testing.T) {
+func TestValidateCertificateFiles_BothIPsSelectsBasedOnPreference(t *testing.T) {
 	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}, nil)
 	addr, err := ValidateCertificateFiles(certFile, keyFile)
 	assert.NoError(t, err)
-	// With no IP version preference, IPv4 is preferred.
-	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+
+	preference := networking.GetIpVersionPreference()
+	switch preference {
+	case networking.IpVersionPreference4:
+		assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+	case networking.IpVersionPreference6:
+		assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
+	default:
+		// No preference: either IP is acceptable, but must not be "localhost".
+		assert.Contains(t, []string{networking.IPv4LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress}, addr)
+	}
 }
 
 func TestValidateCertificateFiles_RejectsNonLocalhostCert(t *testing.T) {

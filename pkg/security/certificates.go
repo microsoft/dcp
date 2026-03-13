@@ -219,8 +219,9 @@ func ValidateCertificateFiles(certFile, keyFile string) (string, error) {
 
 	// Check each localhost address using the standard library's VerifyHostname,
 	// which checks both SANs and the Subject CN per RFC 6125.
+	// VerifyHostname expects raw host/IP strings, so strip brackets from IPv6 addresses.
 	hasIPv4 := cert.VerifyHostname(networking.IPv4LocalhostDefaultAddress) == nil
-	hasIPv6 := cert.VerifyHostname(networking.IPv6LocalhostDefaultAddress) == nil
+	hasIPv6 := cert.VerifyHostname(networking.ToStandaloneAddress(networking.IPv6LocalhostDefaultAddress)) == nil
 	hasLocalhost := cert.VerifyHostname(networking.Localhost) == nil
 
 	if !hasIPv4 && !hasIPv6 && !hasLocalhost {
@@ -279,10 +280,16 @@ func ExtractRootCertificate(certPEM []byte) ([]byte, error) {
 		return nil, fmt.Errorf("no certificates found in PEM data")
 	}
 
-	// Find the self-signed certificate (trust anchor).
+	// Find the self-signed certificate (trust anchor). A true self-signed cert has
+	// matching Issuer/Subject AND has signed itself. The RawIssuer/RawSubject check
+	// alone only identifies "self-issued" certs, which can include intermediates.
+	// We use CheckSignature (not CheckSignatureFrom) to verify the cryptographic
+	// signature without CA constraint checks, since self-signed non-CA certs
+	// (e.g. ASP.NET dev certs) are valid trust anchors.
 	rootIdx := -1
 	for i, cert := range certs {
-		if bytes.Equal(cert.RawIssuer, cert.RawSubject) {
+		if bytes.Equal(cert.RawIssuer, cert.RawSubject) &&
+			cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature) == nil {
 			rootIdx = i
 			break
 		}
