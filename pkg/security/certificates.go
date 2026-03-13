@@ -202,12 +202,12 @@ func ValidateCertificateFiles(certFile, keyFile string) error {
 	return nil
 }
 
-// ExtractRootCACertificate extracts the root CA certificate from a PEM-encoded certificate chain file.
-// If the file contains multiple certificates (a chain), it returns the last one (the root CA).
+// ExtractRootCertificate extracts the root certificate from a PEM-encoded certificate chain file.
+// If the file contains multiple certificates (a chain), it returns the last one (the root).
 // Intermediates are not needed because the server provides the full chain during TLS handshake.
 // If the file contains a single certificate (e.g. a self-signed cert), it returns that certificate
 // since it is the trust anchor.
-func ExtractRootCACertificate(certPEM []byte) ([]byte, error) {
+func ExtractRootCertificate(certPEM []byte) ([]byte, error) {
 	var lastBlock *pem.Block
 	rest := certPEM
 
@@ -232,7 +232,7 @@ func ExtractRootCACertificate(certPEM []byte) ([]byte, error) {
 		Bytes: lastBlock.Bytes,
 	}
 	if encodeErr := pem.Encode(&buffer, rootPemBlock); encodeErr != nil {
-		return nil, fmt.Errorf("failed to PEM encode root CA certificate: %w", encodeErr)
+		return nil, fmt.Errorf("failed to PEM encode root certificate: %w", encodeErr)
 	}
 
 	return buffer.Bytes(), nil

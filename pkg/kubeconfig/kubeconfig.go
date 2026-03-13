@@ -234,7 +234,7 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, tlsCer
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not read certificate file: %w", certReadErr)
 		}
 
-		rootCA, rootCAErr := security.ExtractRootCACertificate(certPEM)
+		rootCA, rootCAErr := security.ExtractRootCertificate(certPEM)
 		if rootCAErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not extract root CA from certificate file: %w", rootCAErr)
 		}

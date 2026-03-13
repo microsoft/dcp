@@ -66,10 +66,10 @@ func TestValidateCertificateFiles_InvalidPEM(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a valid pair")
 }
 
-func TestExtractRootCACertificate_SingleSelfSignedCert(t *testing.T) {
+func TestExtractRootCertificate_SingleSelfSignedCert(t *testing.T) {
 	certPEM := generateSelfSignedCertPEM(t)
 
-	rootCA, err := ExtractRootCACertificate(certPEM)
+	rootCA, err := ExtractRootCertificate(certPEM)
 	require.NoError(t, err)
 
 	// For a single self-signed cert, the root CA should be the cert itself.
@@ -81,13 +81,13 @@ func TestExtractRootCACertificate_SingleSelfSignedCert(t *testing.T) {
 	assert.Equal(t, origBlock.Bytes, block.Bytes)
 }
 
-func TestExtractRootCACertificate_CertChain(t *testing.T) {
+func TestExtractRootCertificate_CertChain(t *testing.T) {
 	serverPEM, _, rootPEM := generateCertChainPEM(t)
 
 	// Build a chain file: server + root
 	chainPEM := append(serverPEM, rootPEM...)
 
-	rootCA, err := ExtractRootCACertificate(chainPEM)
+	rootCA, err := ExtractRootCertificate(chainPEM)
 	require.NoError(t, err)
 
 	// Should return the last cert (root CA), not the server cert.
@@ -98,14 +98,14 @@ func TestExtractRootCACertificate_CertChain(t *testing.T) {
 	assert.Equal(t, rootBlock.Bytes, block.Bytes)
 }
 
-func TestExtractRootCACertificate_ThreeCertChain(t *testing.T) {
+func TestExtractRootCertificate_ThreeCertChain(t *testing.T) {
 	serverPEM, intermediatePEM, rootPEM := generateCertChainPEM(t)
 
 	// Build a chain file: server + intermediate + root
 	chainPEM := append(serverPEM, intermediatePEM...)
 	chainPEM = append(chainPEM, rootPEM...)
 
-	rootCA, err := ExtractRootCACertificate(chainPEM)
+	rootCA, err := ExtractRootCertificate(chainPEM)
 	require.NoError(t, err)
 
 	// Should return the last cert (root CA).
@@ -116,19 +116,19 @@ func TestExtractRootCACertificate_ThreeCertChain(t *testing.T) {
 	assert.Equal(t, rootBlock.Bytes, block.Bytes)
 }
 
-func TestExtractRootCACertificate_NoCertificates(t *testing.T) {
-	_, err := ExtractRootCACertificate([]byte("no certs here"))
+func TestExtractRootCertificate_NoCertificates(t *testing.T) {
+	_, err := ExtractRootCertificate([]byte("no certs here"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no certificates found")
 }
 
-func TestExtractRootCACertificate_EmptyInput(t *testing.T) {
-	_, err := ExtractRootCACertificate([]byte{})
+func TestExtractRootCertificate_EmptyInput(t *testing.T) {
+	_, err := ExtractRootCertificate([]byte{})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no certificates found")
 }
 
-func TestExtractRootCACertificate_SkipsNonCertBlocks(t *testing.T) {
+func TestExtractRootCertificate_SkipsNonCertBlocks(t *testing.T) {
 	certPEM := generateSelfSignedCertPEM(t)
 
 	// Prepend a non-certificate PEM block
@@ -139,7 +139,7 @@ func TestExtractRootCACertificate_SkipsNonCertBlocks(t *testing.T) {
 	mixed := pem.EncodeToMemory(keyBlock)
 	mixed = append(mixed, certPEM...)
 
-	rootCA, err := ExtractRootCACertificate(mixed)
+	rootCA, err := ExtractRootCertificate(mixed)
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(rootCA)
