@@ -169,7 +169,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 
 // For an existing kubeconfig file, read the data and return it. If no kubeconfig file exists, generate the
 // data and return that (to be persisted after API server starts).
-func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, generateToken bool, tlsCertFile string, tlsKeyFile string, log logr.Logger) (*Kubeconfig, error) {
+func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, generateToken bool, tlsCertFile string, tlsKeyFile string, serverAddress string, log logr.Logger) (*Kubeconfig, error) {
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
@@ -180,7 +180,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 		}
 
 		// Create a new config
-		config, certificateData, err = createKubeconfig(port, useCertificate, generateToken, tlsCertFile, log)
+		config, certificateData, err = createKubeconfig(port, useCertificate, generateToken, tlsCertFile, serverAddress, log)
 		if err != nil {
 			return nil, err
 		}
@@ -203,17 +203,9 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 	}, nil
 }
 
-func createKubeconfig(port int32, useCertificate bool, generateToken bool, tlsCertFile string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
-	ips, err := networking.GetPreferredHostIps(networking.Localhost)
-	if err != nil {
-		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
-	}
-
-	ip := ips[0]
-	address := networking.IpToString(ip)
-
+func createKubeconfig(port int32, useCertificate bool, generateToken bool, tlsCertFile string, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
-		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, address, log); newPortErr != nil {
+		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, serverAddress, log); newPortErr != nil {
 			return nil, nil, newPortErr
 		} else {
 			port = newPort
@@ -221,7 +213,7 @@ func createKubeconfig(port int32, useCertificate bool, generateToken bool, tlsCe
 	}
 
 	cluster := clientcmd_api.Cluster{
-		Server: "https://" + networking.AddressAndPort(address, port),
+		Server: "https://" + networking.AddressAndPort(serverAddress, port),
 	}
 
 	var certificateData *security.ServerCertificateData
@@ -241,6 +233,7 @@ func createKubeconfig(port int32, useCertificate bool, generateToken bool, tlsCe
 		cluster.CertificateAuthorityData = rootCA
 	} else if useCertificate {
 		// Generate certificates to secure the connection
+		ip := net.ParseIP(networking.ToStandaloneAddress(serverAddress))
 		generatedCert, certificateErr := security.GenerateServerCertificate(ip)
 		if certificateErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not generate certificates: %w", certificateErr)

@@ -22,33 +22,79 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/dcp/internal/networking"
 )
 
-func TestValidateCertificateFiles_ValidPair(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKey(t)
-	err := ValidateCertificateFiles(certFile, keyFile)
+func TestValidateCertificateFiles_ValidPairIPv4(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
+	addr, err := ValidateCertificateFiles(certFile, keyFile)
 	assert.NoError(t, err)
+	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+}
+
+func TestValidateCertificateFiles_ValidPairIPv6(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv6loopback}, nil)
+	addr, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
+}
+
+func TestValidateCertificateFiles_ValidPairLocalhostDNS(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, nil, []string{"localhost"})
+	addr, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.Localhost, addr)
+}
+
+func TestValidateCertificateFiles_PrefersIPv4OverLocalhost(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, []string{"localhost"})
+	addr, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+}
+
+func TestValidateCertificateFiles_PrefersIPv6OverLocalhost(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv6loopback}, []string{"localhost"})
+	addr, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
+}
+
+func TestValidateCertificateFiles_BothIPsPreferIPv4(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}, nil)
+	addr, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.NoError(t, err)
+	// With no IP version preference, IPv4 is preferred.
+	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+}
+
+func TestValidateCertificateFiles_RejectsNonLocalhostCert(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(10, 0, 0, 1)}, nil)
+	_, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid for localhost")
 }
 
 func TestValidateCertificateFiles_CertFileNotFound(t *testing.T) {
-	_, keyFile := generateTestCertAndKey(t)
-	err := ValidateCertificateFiles("/nonexistent/cert.pem", keyFile)
+	_, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
+	_, err := ValidateCertificateFiles("/nonexistent/cert.pem", keyFile)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unable to read certificate file")
 }
 
 func TestValidateCertificateFiles_KeyFileNotFound(t *testing.T) {
-	certFile, _ := generateTestCertAndKey(t)
-	err := ValidateCertificateFiles(certFile, "/nonexistent/key.pem")
+	certFile, _ := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
+	_, err := ValidateCertificateFiles(certFile, "/nonexistent/key.pem")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unable to read private key file")
 }
 
 func TestValidateCertificateFiles_MismatchedPair(t *testing.T) {
-	certFile, _ := generateTestCertAndKey(t)
-	_, keyFile2 := generateTestCertAndKey(t)
+	certFile, _ := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
+	_, keyFile2 := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
 
-	err := ValidateCertificateFiles(certFile, keyFile2)
+	_, err := ValidateCertificateFiles(certFile, keyFile2)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid pair")
 }
@@ -61,7 +107,7 @@ func TestValidateCertificateFiles_InvalidPEM(t *testing.T) {
 	require.NoError(t, os.WriteFile(certFile, []byte("not a cert"), 0600))
 	require.NoError(t, os.WriteFile(keyFile, []byte("not a key"), 0600))
 
-	err := ValidateCertificateFiles(certFile, keyFile)
+	_, err := ValidateCertificateFiles(certFile, keyFile)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid pair")
 }
@@ -81,16 +127,16 @@ func TestExtractRootCertificate_SingleSelfSignedCert(t *testing.T) {
 	assert.Equal(t, origBlock.Bytes, block.Bytes)
 }
 
-func TestExtractRootCertificate_CertChain(t *testing.T) {
-	serverPEM, _, rootPEM := generateCertChainPEM(t)
+func TestExtractRootCertificate_TwoLevelChain(t *testing.T) {
+	leafPEM, rootPEM := generateTwoLevelChainPEM(t)
 
-	// Build a chain file: server + root
-	chainPEM := append(serverPEM, rootPEM...)
+	// Build a chain file: leaf + root
+	chainPEM := append(leafPEM, rootPEM...)
 
-	rootCA, err := ExtractRootCertificate(chainPEM)
-	require.NoError(t, err)
+	rootCA, rootCaErr := ExtractRootCertificate(chainPEM)
+	require.NoError(t, rootCaErr)
 
-	// Should return the last cert (root CA), not the server cert.
+	// Should return the root CA, not the leaf cert.
 	block, _ := pem.Decode(rootCA)
 	require.NotNil(t, block)
 
@@ -105,15 +151,46 @@ func TestExtractRootCertificate_ThreeCertChain(t *testing.T) {
 	chainPEM := append(serverPEM, intermediatePEM...)
 	chainPEM = append(chainPEM, rootPEM...)
 
-	rootCA, err := ExtractRootCertificate(chainPEM)
-	require.NoError(t, err)
+	rootCA, rootCaErr := ExtractRootCertificate(chainPEM)
+	require.NoError(t, rootCaErr)
 
-	// Should return the last cert (root CA).
+	// Should return the root CA.
 	block, _ := pem.Decode(rootCA)
 	require.NotNil(t, block)
 
 	rootBlock, _ := pem.Decode(rootPEM)
 	assert.Equal(t, rootBlock.Bytes, block.Bytes)
+}
+
+func TestExtractRootCertificate_RootFirstOrder(t *testing.T) {
+	serverPEM, intermediatePEM, rootPEM := generateCertChainPEM(t)
+
+	// Reversed order: root + intermediate + server
+	chainPEM := append(rootPEM, intermediatePEM...)
+	chainPEM = append(chainPEM, serverPEM...)
+
+	rootCA, rootCaErr := ExtractRootCertificate(chainPEM)
+	require.NoError(t, rootCaErr)
+
+	// Should still return the root CA regardless of ordering.
+	block, _ := pem.Decode(rootCA)
+	require.NotNil(t, block)
+
+	rootBlock, _ := pem.Decode(rootPEM)
+	assert.Equal(t, rootBlock.Bytes, block.Bytes)
+}
+
+func TestExtractRootCertificate_UnrelatedCerts(t *testing.T) {
+	// Create a self-signed cert and a chain where the leaf is signed by a different root.
+	selfSignedPEM := generateSelfSignedCertPEM(t)
+	serverPEM, _, _ := generateCertChainPEM(t)
+
+	// Bundle the unrelated chain leaf with the self-signed cert.
+	chainPEM := append(serverPEM, selfSignedPEM...)
+
+	_, extractErr := ExtractRootCertificate(chainPEM)
+	assert.Error(t, extractErr)
+	assert.Contains(t, extractErr.Error(), "certificate chain verification failed")
 }
 
 func TestExtractRootCertificate_NoCertificates(t *testing.T) {
@@ -149,7 +226,12 @@ func TestExtractRootCertificate_SkipsNonCertBlocks(t *testing.T) {
 
 // --- Test helpers ---
 
-func generateTestCertAndKey(t *testing.T) (certFile, keyFile string) {
+func generateTestCertAndKeyWithSANs(t *testing.T, ips []net.IP, dnsNames []string) (certFile, keyFile string) {
+	t.Helper()
+	return generateTestCertAndKeyWithSubject(t, "test", ips, dnsNames)
+}
+
+func generateTestCertAndKeyWithSubject(t *testing.T, cn string, ips []net.IP, dnsNames []string) (certFile, keyFile string) {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -158,10 +240,11 @@ func generateTestCertAndKey(t *testing.T) (certFile, keyFile string) {
 
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
+		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(time.Hour),
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		IPAddresses:  ips,
+		DNSNames:     dnsNames,
 	}
 
 	certBytes, certErr := x509.CreateCertificate(cryptorand.Reader, template, template, &key.PublicKey, key)
@@ -177,6 +260,49 @@ func generateTestCertAndKey(t *testing.T) (certFile, keyFile string) {
 	require.NoError(t, os.WriteFile(kf, keyPEM, 0600))
 
 	return cf, kf
+}
+
+func generateTwoLevelChainPEM(t *testing.T) (leafPEM, rootPEM []byte) {
+	t.Helper()
+
+	// Generate root CA
+	rootKey, rootKeyErr := rsa.GenerateKey(cryptorand.Reader, 2048)
+	require.NoError(t, rootKeyErr)
+
+	rootTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Root CA"},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+	}
+
+	rootCertBytes, rootCertErr := x509.CreateCertificate(cryptorand.Reader, rootTemplate, rootTemplate, &rootKey.PublicKey, rootKey)
+	require.NoError(t, rootCertErr)
+
+	rootCert, rootParseErr := x509.ParseCertificate(rootCertBytes)
+	require.NoError(t, rootParseErr)
+
+	// Generate leaf cert signed directly by root
+	leafKey, leafKeyErr := rsa.GenerateKey(cryptorand.Reader, 2048)
+	require.NoError(t, leafKeyErr)
+
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "leaf"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	leafCertBytes, leafCertErr := x509.CreateCertificate(cryptorand.Reader, leafTemplate, rootCert, &leafKey.PublicKey, rootKey)
+	require.NoError(t, leafCertErr)
+
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafCertBytes}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCertBytes})
 }
 
 func generateSelfSignedCertPEM(t *testing.T) []byte {
