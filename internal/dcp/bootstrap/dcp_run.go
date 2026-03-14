@@ -134,6 +134,8 @@ func DcpRun(
 		return apiServerErr
 	}
 
+	log.V(1).Info("About to launch host services")
+
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
 	shutdownHost := func() error {
 		cancelHostCtx()
