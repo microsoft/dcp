@@ -121,6 +121,60 @@ func TestValidateCertificateFiles_InvalidPEM(t *testing.T) {
 	assert.Contains(t, err.Error(), "not a valid pair")
 }
 
+func TestValidateCertificateFiles_ExpiredCertificate(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-1 * time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+	})
+	_, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "certificate has expired")
+}
+
+func TestValidateCertificateFiles_NotYetValidCertificate(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(1 * time.Hour),
+		NotAfter:     time.Now().Add(2 * time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+	})
+	_, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not yet valid")
+}
+
+func TestValidateCertificateFiles_WrongExtKeyUsage(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	_, err := ValidateCertificateFiles(certFile, keyFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid for server authentication")
+}
+
+func TestValidateCertificateFiles_ServerAuthExtKeyUsage(t *testing.T) {
+	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	addr, addrErr := ValidateCertificateFiles(certFile, keyFile)
+	assert.NoError(t, addrErr)
+	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+}
+
 func TestExtractRootCertificate_SingleSelfSignedCert(t *testing.T) {
 	certPEM := generateSelfSignedCertPEM(t)
 
@@ -242,19 +296,22 @@ func generateTestCertAndKeyWithSANs(t *testing.T, ips []net.IP, dnsNames []strin
 
 func generateTestCertAndKeyWithSubject(t *testing.T, cn string, ips []net.IP, dnsNames []string) (certFile, keyFile string) {
 	t.Helper()
-	dir := t.TempDir()
-
-	key, keyErr := rsa.GenerateKey(cryptorand.Reader, 2048)
-	require.NoError(t, keyErr)
-
-	template := &x509.Certificate{
+	return generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(time.Hour),
 		IPAddresses:  ips,
 		DNSNames:     dnsNames,
-	}
+	})
+}
+
+func generateTestCertAndKeyWithTemplate(t *testing.T, template *x509.Certificate) (certFile, keyFile string) {
+	t.Helper()
+	dir := t.TempDir()
+
+	key, keyErr := rsa.GenerateKey(cryptorand.Reader, 2048)
+	require.NoError(t, keyErr)
 
 	certBytes, certErr := x509.CreateCertificate(cryptorand.Reader, template, template, &key.PublicKey, key)
 	require.NoError(t, certErr)

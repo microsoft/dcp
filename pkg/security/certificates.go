@@ -217,6 +217,29 @@ func ValidateCertificateFiles(certFile, keyFile string) (string, error) {
 		return "", fmt.Errorf("failed to parse certificate: %w", parseErr)
 	}
 
+	// Validate the certificate is currently within its validity period.
+	now := time.Now()
+	if now.Before(cert.NotBefore) {
+		return "", fmt.Errorf("certificate is not yet valid (valid from %s)", cert.NotBefore.Format(time.RFC3339))
+	}
+	if now.After(cert.NotAfter) {
+		return "", fmt.Errorf("certificate has expired (expired on %s)", cert.NotAfter.Format(time.RFC3339))
+	}
+
+	// Validate the certificate is authorized for server authentication.
+	if len(cert.ExtKeyUsage) > 0 {
+		hasServerAuth := false
+		for _, usage := range cert.ExtKeyUsage {
+			if usage == x509.ExtKeyUsageServerAuth || usage == x509.ExtKeyUsageAny {
+				hasServerAuth = true
+				break
+			}
+		}
+		if !hasServerAuth {
+			return "", fmt.Errorf("certificate is not valid for server authentication (missing ServerAuth extended key usage)")
+		}
+	}
+
 	// Check each localhost address using the standard library's VerifyHostname,
 	// which checks both SANs and the Subject CN per RFC 6125.
 	// VerifyHostname expects raw host/IP strings, so strip brackets from IPv6 addresses.
