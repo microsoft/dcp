@@ -15,8 +15,6 @@ import (
 	"encoding/pem"
 	"math/big"
 	"net"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,155 +23,6 @@ import (
 
 	"github.com/microsoft/dcp/internal/networking"
 )
-
-func TestValidateCertificateFiles_ValidPairIPv4(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
-	addr, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, err)
-	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
-}
-
-func TestValidateCertificateFiles_ValidPairIPv6(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv6loopback}, nil)
-	addr, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, err)
-	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
-}
-
-func TestValidateCertificateFiles_ValidPairLocalhostDNS(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, nil, []string{"localhost"})
-	addr, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, err)
-	assert.Equal(t, networking.Localhost, addr)
-}
-
-func TestValidateCertificateFiles_PrefersIPv4OverLocalhost(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, []string{"localhost"})
-	addr, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, err)
-	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
-}
-
-func TestValidateCertificateFiles_PrefersIPv6OverLocalhost(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv6loopback}, []string{"localhost"})
-	addr, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, err)
-	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
-}
-
-func TestValidateCertificateFiles_BothIPsSelectsBasedOnPreference(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}, nil)
-	addr, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, err)
-
-	preference := networking.GetIpVersionPreference()
-	switch preference {
-	case networking.IpVersionPreference4:
-		assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
-	case networking.IpVersionPreference6:
-		assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
-	default:
-		// No preference: either IP is acceptable, but must not be "localhost".
-		assert.Contains(t, []string{networking.IPv4LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress}, addr)
-	}
-}
-
-func TestValidateCertificateFiles_RejectsNonLocalhostCert(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(10, 0, 0, 1)}, nil)
-	_, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not valid for localhost")
-}
-
-func TestValidateCertificateFiles_CertFileNotFound(t *testing.T) {
-	_, keyFile := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
-	_, err := ValidateCertificateFiles("/nonexistent/cert.pem", keyFile)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unable to read certificate file")
-}
-
-func TestValidateCertificateFiles_KeyFileNotFound(t *testing.T) {
-	certFile, _ := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
-	_, err := ValidateCertificateFiles(certFile, "/nonexistent/key.pem")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unable to read private key file")
-}
-
-func TestValidateCertificateFiles_MismatchedPair(t *testing.T) {
-	certFile, _ := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
-	_, keyFile2 := generateTestCertAndKeyWithSANs(t, []net.IP{net.IPv4(127, 0, 0, 1)}, nil)
-
-	_, err := ValidateCertificateFiles(certFile, keyFile2)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not a valid pair")
-}
-
-func TestValidateCertificateFiles_InvalidPEM(t *testing.T) {
-	dir := t.TempDir()
-	certFile := filepath.Join(dir, "bad-cert.pem")
-	keyFile := filepath.Join(dir, "bad-key.pem")
-
-	require.NoError(t, os.WriteFile(certFile, []byte("not a cert"), 0600))
-	require.NoError(t, os.WriteFile(keyFile, []byte("not a key"), 0600))
-
-	_, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not a valid pair")
-}
-
-func TestValidateCertificateFiles_ExpiredCertificate(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now().Add(-2 * time.Hour),
-		NotAfter:     time.Now().Add(-1 * time.Hour),
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
-	})
-	_, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "certificate has expired")
-}
-
-func TestValidateCertificateFiles_NotYetValidCertificate(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now().Add(1 * time.Hour),
-		NotAfter:     time.Now().Add(2 * time.Hour),
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
-	})
-	_, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not yet valid")
-}
-
-func TestValidateCertificateFiles_WrongExtKeyUsage(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(time.Hour),
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	})
-	_, err := ValidateCertificateFiles(certFile, keyFile)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not valid for server authentication")
-}
-
-func TestValidateCertificateFiles_ServerAuthExtKeyUsage(t *testing.T) {
-	certFile, keyFile := generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "test"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(time.Hour),
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	})
-	addr, addrErr := ValidateCertificateFiles(certFile, keyFile)
-	assert.NoError(t, addrErr)
-	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
-}
 
 func TestExtractRootCertificate_SingleSelfSignedCert(t *testing.T) {
 	certPEM := generateSelfSignedCertPEM(t)
@@ -287,46 +136,102 @@ func TestExtractRootCertificate_SkipsNonCertBlocks(t *testing.T) {
 	assert.Equal(t, "CERTIFICATE", block.Type)
 }
 
-// --- Test helpers ---
+// --- ValidateCertificate tests ---
 
-func generateTestCertAndKeyWithSANs(t *testing.T, ips []net.IP, dnsNames []string) (certFile, keyFile string) {
-	t.Helper()
-	return generateTestCertAndKeyWithSubject(t, "test", ips, dnsNames)
-}
-
-func generateTestCertAndKeyWithSubject(t *testing.T, cn string, ips []net.IP, dnsNames []string) (certFile, keyFile string) {
-	t.Helper()
-	return generateTestCertAndKeyWithTemplate(t, &x509.Certificate{
+func TestValidateCertificate_ValidIPv4(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: cn},
+		Subject:      pkix.Name{CommonName: "test"},
 		NotBefore:    time.Now(),
 		NotAfter:     time.Now().Add(time.Hour),
-		IPAddresses:  ips,
-		DNSNames:     dnsNames,
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
 	})
+	addr, err := ValidateCertificate(cert)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
 }
 
-func generateTestCertAndKeyWithTemplate(t *testing.T, template *x509.Certificate) (certFile, keyFile string) {
-	t.Helper()
-	dir := t.TempDir()
-
-	key, keyErr := rsa.GenerateKey(cryptorand.Reader, 2048)
-	require.NoError(t, keyErr)
-
-	certBytes, certErr := x509.CreateCertificate(cryptorand.Reader, template, template, &key.PublicKey, key)
-	require.NoError(t, certErr)
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certBytes})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-
-	cf := filepath.Join(dir, "cert.pem")
-	kf := filepath.Join(dir, "key.pem")
-
-	require.NoError(t, os.WriteFile(cf, certPEM, 0600))
-	require.NoError(t, os.WriteFile(kf, keyPEM, 0600))
-
-	return cf, kf
+func TestValidateCertificate_ValidIPv6(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv6loopback},
+	})
+	addr, err := ValidateCertificate(cert)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
 }
+
+func TestValidateCertificate_ValidLocalhostDNS(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		DNSNames:     []string{"localhost"},
+	})
+	addr, err := ValidateCertificate(cert)
+	assert.NoError(t, err)
+	assert.Equal(t, networking.Localhost, addr)
+}
+
+func TestValidateCertificate_ExpiredCertificate(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-1 * time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+	})
+	_, err := ValidateCertificate(cert)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "certificate has expired")
+}
+
+func TestValidateCertificate_NotYetValid(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(1 * time.Hour),
+		NotAfter:     time.Now().Add(2 * time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+	})
+	_, err := ValidateCertificate(cert)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not yet valid")
+}
+
+func TestValidateCertificate_WrongExtKeyUsage(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	_, err := ValidateCertificate(cert)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid for server authentication")
+}
+
+func TestValidateCertificate_RejectsNonLocalhostCert(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("192.168.1.1")},
+	})
+	_, err := ValidateCertificate(cert)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid for localhost")
+}
+
+// --- Test helpers ---
+
 
 func generateTwoLevelChainPEM(t *testing.T) (leafPEM, rootPEM []byte) {
 	t.Helper()
@@ -452,4 +357,19 @@ func generateCertChainPEM(t *testing.T) (serverPEM, intermediatePEM, rootPEM []b
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverCertBytes}),
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: intermediateCertBytes}),
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCertBytes})
+}
+
+func generateTestX509Cert(t *testing.T, template *x509.Certificate) *x509.Certificate {
+	t.Helper()
+
+	key, keyErr := rsa.GenerateKey(cryptorand.Reader, 2048)
+	require.NoError(t, keyErr)
+
+	certBytes, certErr := x509.CreateCertificate(cryptorand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, certErr)
+
+	cert, parseErr := x509.ParseCertificate(certBytes)
+	require.NoError(t, parseErr)
+
+	return cert
 }

@@ -6,6 +6,7 @@
 package kubeconfig
 
 import (
+	"crypto/x509"
 	"errors"
 	goflag "flag"
 	"fmt"
@@ -21,16 +22,14 @@ import (
 )
 
 const (
-	PortFlagName          = "port"
-	TLSCertFileFlagName   = "tls-cert-file"
-	TLSKeyFileFlagName    = "tls-private-key-file"
-	DCP_SECURE_TOKEN      = "DCP_SECURE_TOKEN"
+	PortFlagName               = "port"
+	TLSCertThumbprintFlagName  = "tls-cert-thumbprint"
+	DCP_SECURE_TOKEN           = "DCP_SECURE_TOKEN"
 )
 
 var (
-	port        int32
-	tlsCertFile string
-	tlsKeyFile  string
+	port              int32
+	tlsCertThumbprint string
 )
 
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
@@ -65,24 +64,15 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 	}
 }
 
-// EnsureTLSCertFileFlag registers the --tls-cert-file flag if not already registered.
-func EnsureTLSCertFileFlag(fs *pflag.FlagSet) *pflag.Flag {
-	if f := fs.Lookup(TLSCertFileFlagName); f != nil {
+// EnsureTLSCertThumbprintFlag registers the --tls-cert-thumbprint flag if not already registered.
+func EnsureTLSCertThumbprintFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCertThumbprintFlagName); f != nil {
 		return f
 	}
-	fs.StringVar(&tlsCertFile, TLSCertFileFlagName, "", "File containing the x509 certificate for HTTPS, "+
-		"optionally followed by the full certificate chain. When provided, --tls-private-key-file must also be specified. "+
-		"If not provided, an ephemeral self-signed certificate is generated.")
-	return fs.Lookup(TLSCertFileFlagName)
-}
-
-// EnsureTLSKeyFileFlag registers the --tls-private-key-file flag if not already registered.
-func EnsureTLSKeyFileFlag(fs *pflag.FlagSet) *pflag.Flag {
-	if f := fs.Lookup(TLSKeyFileFlagName); f != nil {
-		return f
-	}
-	fs.StringVar(&tlsKeyFile, TLSKeyFileFlagName, "", "File containing the x509 private key matching --tls-cert-file.")
-	return fs.Lookup(TLSKeyFileFlagName)
+	fs.StringVar(&tlsCertThumbprint, TLSCertThumbprintFlagName, "",
+		"SHA-1 thumbprint of a certificate in the Windows CurrentUser\\My certificate store to use for HTTPS. "+
+			"If not provided, an ephemeral self-signed certificate is generated.")
+	return fs.Lookup(TLSCertThumbprintFlagName)
 }
 
 // Ensures that the kubeconfig flag exist and points to a non-empty file.
@@ -134,19 +124,27 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
-	// Validate TLS certificate flags: both must be specified, or neither.
-	if (tlsCertFile != "") != (tlsKeyFile != "") {
-		return nil, fmt.Errorf("both --%s and --%s must be specified together", TLSCertFileFlagName, TLSKeyFileFlagName)
-	}
-
-	// Determine the server address to use.
+	// Determine the server address and optional store certificate data.
 	var serverAddress string
-	if tlsCertFile != "" {
+	var storeCertData *security.ServerCertificateData
+	if tlsCertThumbprint != "" {
+		certData, lookupErr := security.LookupCertificate(tlsCertThumbprint)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("TLS certificate store lookup failed: %w", lookupErr)
+		}
+
+		leafCert, parseErr := x509.ParseCertificate(certData.ServerCert)
+		if parseErr != nil {
+			return nil, fmt.Errorf("TLS certificate validation failed: could not parse certificate: %w", parseErr)
+		}
+
 		var validateErr error
-		serverAddress, validateErr = security.ValidateCertificateFiles(tlsCertFile, tlsKeyFile)
+		serverAddress, validateErr = security.ValidateCertificate(leafCert)
 		if validateErr != nil {
 			return nil, fmt.Errorf("TLS certificate validation failed: %w", validateErr)
 		}
+
+		storeCertData = certData
 	} else {
 		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
 		if preferredErr != nil {
@@ -169,9 +167,9 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
 	generateToken := !tokenFound || token == ""
 
-	useCertificate := tlsCertFile == "" // Only generate ephemeral certs if user didn't provide their own
+	generateEphemeral := storeCertData == nil
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, useCertificate, generateToken, tlsCertFile, tlsKeyFile, serverAddress, log)
+	k, kErr := getKubeconfig(kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}

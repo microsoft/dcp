@@ -10,7 +10,6 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -18,7 +17,6 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"os"
 	"time"
 
 	"github.com/microsoft/dcp/internal/networking"
@@ -183,40 +181,11 @@ func PEMEncodePrivateKey(key *rsa.PrivateKey) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
-// ValidateCertificateFiles validates that the given certificate and key files are readable,
-// contain valid PEM data, that the certificate and key form a valid pair, and that the server
-// certificate is valid for localhost.
+// ValidateCertificate validates that the given certificate is currently valid,
+// authorized for server authentication, and covers a localhost address.
 // Returns the server address to use based on what the certificate covers and the system's
-// IP version preference. IP addresses are preferred over DNS names. If the preferred IP
-// version is covered, that address is used. Otherwise, it falls back to whichever localhost
-// address the cert is valid for.
-func ValidateCertificateFiles(certFile, keyFile string) (string, error) {
-	certPEM, certReadErr := os.ReadFile(certFile)
-	if certReadErr != nil {
-		return "", fmt.Errorf("unable to read certificate file '%s': %w", certFile, certReadErr)
-	}
-
-	keyPEM, keyReadErr := os.ReadFile(keyFile)
-	if keyReadErr != nil {
-		return "", fmt.Errorf("unable to read private key file '%s': %w", keyFile, keyReadErr)
-	}
-
-	_, tlsErr := tls.X509KeyPair(certPEM, keyPEM)
-	if tlsErr != nil {
-		return "", fmt.Errorf("certificate and private key are not a valid pair: %w", tlsErr)
-	}
-
-	// Parse the server certificate (first in the chain) and determine which localhost address it covers.
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("no certificate found in PEM data")
-	}
-
-	cert, parseErr := x509.ParseCertificate(block.Bytes)
-	if parseErr != nil {
-		return "", fmt.Errorf("failed to parse certificate: %w", parseErr)
-	}
-
+// IP version preference.
+func ValidateCertificate(cert *x509.Certificate) (string, error) {
 	// Validate the certificate is currently within its validity period.
 	now := time.Now()
 	if now.Before(cert.NotBefore) {
