@@ -1,9 +1,9 @@
+//go:build !windows
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-
-//go:build !windows
 
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
@@ -27,7 +27,7 @@ const (
 )
 
 type OSExecutor struct {
-	procsWaiting map[WaitKey]*waitState
+	procsWaiting map[ProcessHandle]*waitState
 	disposed     bool
 	lock         sync.Locker
 	log          logr.Logger
@@ -35,33 +35,33 @@ type OSExecutor struct {
 
 func NewOSExecutor(log logr.Logger) Executor {
 	return &OSExecutor{
-		procsWaiting: make(map[WaitKey]*waitState),
+		procsWaiting: make(map[ProcessHandle]*waitState),
 		disposed:     false,
 		lock:         &sync.Mutex{},
 		log:          log.WithName("os-executor"),
 	}
 }
 
-func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
-	proc, err := FindProcess(pid, processStartTime)
+func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+	proc, err := FindProcess(handle)
 	if err != nil {
 		e.acquireLock()
 		alreadyEnded := false
-		ws, found := e.procsWaiting[WaitKey{pid, processStartTime}]
+		ws, found := e.procsWaiting[handle]
 		if found {
 			alreadyEnded = !ws.waitEnded.IsZero()
 		}
 		e.releaseLock()
 
 		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
-			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
+			return nil, ErrProcessNotFound{Pid: handle.Pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
 	}
 
-	waitable := makeWaitable(pid, proc)
-	ws, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitable, waitReasonStopping)
+	waitable := makeWaitable(handle.Pid, proc)
+	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
@@ -79,22 +79,22 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		err = e.signalAndWaitForExit(proc, syscall.SIGTERM, ws)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("Process stopped by SIGTERM", "PID", pid)
+			e.log.V(1).Info("Process stopped by SIGTERM", "PID", handle.Pid)
 			return waitEndedCh, nil
 		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
 		default:
-			e.log.V(1).Info("Process did not stop upon SIGTERM", "PID", pid)
+			e.log.V(1).Info("Process did not stop upon SIGTERM", "PID", handle.Pid)
 		}
 	}
 
-	e.log.V(1).Info("Sending SIGKILL to process...", "PID", pid)
+	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
 	err = e.signalAndWaitForExit(proc, syscall.SIGKILL, ws)
 	if err != nil {
 		return nil, err
 	}
 
-	e.log.V(1).Info("Process stopped by SIGKILL", "PID", pid)
+	e.log.V(1).Info("Process stopped by SIGKILL", "PID", handle.Pid)
 	return waitEndedCh, nil
 }
 
@@ -132,7 +132,7 @@ func (e *OSExecutor) prepareProcessStart(_ *exec.Cmd, _ ProcessCreationFlag) {
 	// No additional preparation needed for Unix-like systems.
 }
 
-func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, _ Pid_t, _ time.Time, _ ProcessCreationFlag) error {
+func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, _ ProcessHandle, _ ProcessCreationFlag) error {
 	// No additional actions needed on process start for Unix-like systems.
 	return nil
 }

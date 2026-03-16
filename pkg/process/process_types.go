@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"time"
 )
 
 const (
@@ -43,23 +42,23 @@ type Pid_t int64
 type Executor interface {
 	// Starts the process described by given command instance.
 	// When the passed context is cancelled, the process is automatically terminated.
-	// Returns the process PID, process start time, and a function that enables process exit notifications
+	// Returns a ProcessHandle identifying the started process and a function that enables process exit notifications
 	// delivered to the exit handler.
 	StartProcess(
 		ctx context.Context,
 		cmd *exec.Cmd,
 		exitHandler ProcessExitHandler,
 		creationFlags ProcessCreationFlag,
-	) (pid Pid_t, startTime time.Time, startWaitForProcessExit func(), err error)
+	) (handle ProcessHandle, startWaitForProcessExit func(), err error)
 
-	// Stops the process with a given PID.
-	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped.
+	// Stops the process identified by the given ProcessHandle.
+	// The handle's IdentityTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped
 	// (to protect against stopping a wrong process, if the PID was reused).
-	StopProcess(pid Pid_t, processStartTime time.Time) error
+	StopProcess(handle ProcessHandle) error
 
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.
-	StartAndForget(cmd *exec.Cmd, creationFlags ProcessCreationFlag) (pid Pid_t, startTime time.Time, err error)
+	StartAndForget(cmd *exec.Cmd, creationFlags ProcessCreationFlag) (handle ProcessHandle, err error)
 
 	// Disposes the executor. Processes started with CreationFlagEnsureKillOnDispose will be terminated.
 	// Other processes will be waited on (so that they do not become zombies), but not terminated.

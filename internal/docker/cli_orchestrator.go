@@ -677,7 +677,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	_, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "ExecContainer"))
@@ -1097,13 +1097,13 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
 		dco.log.Error(err, "Could not execute 'docker events' command; container events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
+	dcpproc.RunProcessWatcher(dco.executor, handle, dco.log)
 
 	startWaitForProcessExit()
 
@@ -1115,7 +1115,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		dco.log.V(1).Info("Stopping 'docker events' command", "pid", pid)
+		dco.log.V(1).Info("Stopping 'docker events' command", "pid", handle.Pid)
 	}
 }
 
@@ -1156,13 +1156,13 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
 	if err != nil {
 		dco.log.Error(err, "Could not execute 'docker events' command; network events unavailable")
 		return
 	}
 
-	dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
+	dcpproc.RunProcessWatcher(dco.executor, handle, dco.log)
 
 	startWaitForProcessExit()
 
@@ -1174,7 +1174,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 		}
 	case <-watcherCtx.Done():
 		// We are asked to shut down
-		dco.log.V(1).Info("Stopping 'docker events' command", "PID", pid)
+		dco.log.V(1).Info("Stopping 'docker events' command", "PID", handle.Pid)
 	}
 }
 
@@ -1209,14 +1209,14 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", commandName))
 	}
 
 	if opts&streamCommandOptionUseWatcher != 0 {
-		dcpproc.RunProcessWatcher(dco.executor, pid, startTime, dco.log)
+		dcpproc.RunProcessWatcher(dco.executor, handle, dco.log)
 	}
 
 	startWaitForProcessExit()

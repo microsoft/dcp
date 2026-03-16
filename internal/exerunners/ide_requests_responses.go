@@ -84,6 +84,14 @@ type ideRunSessionRequestV1 struct {
 
 	Env  []apiv1.EnvVar `json:"env,omitempty"`
 	Args []string       `json:"args,omitempty"`
+
+	// Debug bridge fields (added in version 2026-02-01)
+	// When present, the IDE should connect to the Unix socket at DebugBridgeSocketPath
+	// and send a handshake message with the IDE session token and DebugSessionID.
+	// The IDE session token (used for this request's authentication) is reused for
+	// bridge handshake authentication.
+	DebugBridgeSocketPath string `json:"debug_bridge_socket_path,omitempty"`
+	DebugSessionID        string `json:"debug_session_id,omitempty"`
 }
 
 type launchConfigurationBase struct {
@@ -148,6 +156,7 @@ const (
 	version20240303      apiVersion = "2024-03-03"
 	version20240423      apiVersion = "2024-04-23"
 	version20251001      apiVersion = "2025-10-01"
+	version20260201      apiVersion = "2026-02-01" // Added debug bridge support
 	queryParamApiVersion            = "api-version"
 	instanceIdHeader                = "Microsoft-Developer-DCP-Instance-ID"
 

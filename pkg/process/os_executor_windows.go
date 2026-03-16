@@ -1,9 +1,9 @@
+//go:build windows
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-
-//go:build windows
 
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
@@ -36,7 +36,7 @@ var (
 )
 
 type OSExecutor struct {
-	procsWaiting      map[WaitKey]*waitState
+	procsWaiting      map[ProcessHandle]*waitState
 	lock              sync.Locker
 	disposed          bool
 	log               logr.Logger
@@ -45,7 +45,7 @@ type OSExecutor struct {
 
 func NewOSExecutor(log logr.Logger) Executor {
 	e := &OSExecutor{
-		procsWaiting: make(map[WaitKey]*waitState),
+		procsWaiting: make(map[ProcessHandle]*waitState),
 		lock:         &sync.Mutex{},
 		disposed:     false,
 		log:          log.WithName("os-executor"),
@@ -54,26 +54,26 @@ func NewOSExecutor(log logr.Logger) Executor {
 	return e
 }
 
-func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) (<-chan struct{}, error) {
-	proc, err := FindProcess(pid, processStartTime)
+func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+	proc, err := FindProcess(handle)
 	if err != nil {
 		e.acquireLock()
 		alreadyEnded := false
-		ws, found := e.procsWaiting[WaitKey{pid, processStartTime}]
+		ws, found := e.procsWaiting[handle]
 		if found {
 			alreadyEnded = !ws.waitEnded.IsZero()
 		}
 		e.releaseLock()
 
 		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
-			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
+			return nil, ErrProcessNotFound{Pid: handle.Pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
 	}
 
-	waitable := makeWaitable(pid, proc)
-	ws, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitable, waitReasonStopping)
+	waitable := makeWaitable(handle.Pid, proc)
+	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
 	if opts&optWaitForStdio == 0 {
@@ -90,22 +90,22 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		err = e.signalAndWaitForExit(proc, windows.CTRL_BREAK_EVENT, ws)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("Process stopped by CTRL_BREAK_EVENT", "PID", pid)
+			e.log.V(1).Info("Process stopped by CTRL_BREAK_EVENT", "PID", handle.Pid)
 			return waitEndedCh, nil
 		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
 		default:
-			e.log.V(1).Info("Process did not stop upon CTRL_BREAK_EVENT", "PID", pid)
+			e.log.V(1).Info("Process did not stop upon CTRL_BREAK_EVENT", "PID", handle.Pid)
 		}
 	}
 
-	e.log.V(1).Info("Sending SIGKILL to process...", "PID", pid)
+	e.log.V(1).Info("Sending SIGKILL to process...", "PID", handle.Pid)
 	err = proc.Kill()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return nil, err
 	}
 
-	e.log.V(1).Info("Process stopped by SIGKILL", "PID", pid)
+	e.log.V(1).Info("Process stopped by SIGKILL", "PID", handle.Pid)
 	return waitEndedCh, nil
 }
 
@@ -162,7 +162,7 @@ func (e *OSExecutor) prepareProcessStart(cmd *exec.Cmd, flags ProcessCreationFla
 	}
 }
 
-func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, pid Pid_t, _ time.Time, flags ProcessCreationFlag) error {
+func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, handle ProcessHandle, flags ProcessCreationFlag) error {
 	if cleanupJobDisabled() || (flags&CreationFlagEnsureKillOnDispose) == 0 {
 		return nil
 	}
@@ -180,9 +180,9 @@ func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, pid Pid_t, _ time.Time, f
 		// The AssignProcessToJobObject docs say PROCESS_TERMINATE and PROCESS_SET_QUOTA are sufficient to assign a process to a job object,
 		// but in practice we need PROCESS_ALL_ACCESS to make it work.
 		const access = windows.PROCESS_ALL_ACCESS
-		processHandle, processHandleErr := windows.OpenProcess(access, false, uint32(pid))
+		processHandle, processHandleErr := windows.OpenProcess(access, false, uint32(handle.Pid))
 		if processHandleErr != nil {
-			e.log.V(1).Info("Could not open new process handle", "PID", pid, "Error", processHandleErr)
+			e.log.V(1).Info("Could not open new process handle", "PID", handle.Pid, "Error", processHandleErr)
 		} else {
 			defer tryCloseHandle(processHandle)
 
@@ -192,15 +192,15 @@ func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, pid Pid_t, _ time.Time, f
 
 			jobAssignmentErr := windows.AssignProcessToJobObject(pcj, processHandle)
 			if jobAssignmentErr != nil {
-				e.log.V(1).Info("Could not assign process to job object", "PID", pid, "Error", jobAssignmentErr)
+				e.log.V(1).Info("Could not assign process to job object", "PID", handle.Pid, "Error", jobAssignmentErr)
 			}
 		}
 	}
 
-	resumptionErr := resumeNewSuspendedProcess(uint32(pid))
+	resumptionErr := resumeNewSuspendedProcess(uint32(handle.Pid))
 	if resumptionErr != nil {
-		e.log.Error(resumptionErr, "Could not resume new suspended process", "PID", pid)
-		return fmt.Errorf("could not resume new suspended process with pid %d: %w", pid, resumptionErr)
+		e.log.Error(resumptionErr, "Could not resume new suspended process", "PID", handle.Pid)
+		return fmt.Errorf("could not resume new suspended process with pid %d: %w", handle.Pid, resumptionErr)
 	}
 
 	return nil

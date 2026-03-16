@@ -31,10 +31,10 @@ import (
 )
 
 type processRunState struct {
-	identityTime time.Time
-	stdOutFile   *os.File
-	stdErrFile   *os.File
-	cmdInfo      string // Command line used to start the process, for logging purposes
+	handle     process.ProcessHandle
+	stdOutFile *os.File
+	stdErrFile *os.File
+	cmdInfo    string // Command line used to start the process, for logging purposes
 }
 
 type ProcessExecutableRunner struct {
@@ -106,7 +106,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	})
 
 	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
-	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -127,19 +127,19 @@ func (r *ProcessExecutableRunner) StartRun(
 		return result
 	} else {
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
+		dcpproc.RunProcessWatcher(r.pe, handle, log)
 
-		r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-			identityTime: processIdentityTime,
-			stdOutFile:   stdOutFile,
-			stdErrFile:   stdErrFile,
-			cmdInfo:      cmd.String(),
+		r.runningProcesses.Store(pidToRunID(handle.Pid), &processRunState{
+			handle:     handle,
+			stdOutFile: stdOutFile,
+			stdErrFile: stdErrFile,
+			cmdInfo:    cmd.String(),
 		})
 
-		result.RunID = pidToRunID(pid)
-		pointers.SetValue(&result.Pid, int64(pid))
+		result.RunID = pidToRunID(handle.Pid)
+		pointers.SetValue(&result.Pid, int64(handle.Pid))
 		result.ExeState = apiv1.ExecutableStateRunning
-		result.CompletionTimestamp = metav1.NewMicroTime(process.StartTimeForProcess(pid))
+		result.CompletionTimestamp = metav1.NewMicroTime(process.StartTimeForProcess(handle.Pid))
 		result.StartWaitForRunCompletion = startWaitForProcessExit
 
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
@@ -171,9 +171,9 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
 			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
 			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runIdToPID(runID), runState.identityTime, stopLog)
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
 		} else {
-			errCh <- r.pe.StopProcess(runIdToPID(runID), runState.identityTime)
+			errCh <- r.pe.StopProcess(runState.handle)
 		}
 	}()
 
@@ -214,18 +214,6 @@ func makeCommand(exe *apiv1.Executable) *exec.Cmd {
 
 func pidToRunID(pid process.Pid_t) controllers.RunID {
 	return controllers.RunID(strconv.FormatInt(int64(pid), 10))
-}
-
-func runIdToPID(runID controllers.RunID) process.Pid_t {
-	pid64, err := strconv.ParseInt(string(runID), 10, 64)
-	if err != nil {
-		return process.UnknownPID
-	}
-	pid, err := process.Int64_ToPidT(pid64)
-	if err != nil {
-		return process.UnknownPID
-	}
-	return pid
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)
