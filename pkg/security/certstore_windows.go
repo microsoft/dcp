@@ -109,8 +109,11 @@ func normalizeThumbprint(thumbprint string) string {
 }
 
 // contextToX509 converts a Windows CertContext to a Go x509.Certificate.
+// The certificate bytes are copied so the result remains valid after the
+// CertContext is freed.
 func contextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
-	certBytes := unsafe.Slice(ctx.EncodedCert, ctx.Length)
+	certBytes := make([]byte, ctx.Length)
+	copy(certBytes, unsafe.Slice(ctx.EncodedCert, ctx.Length))
 	return x509.ParseCertificate(certBytes)
 }
 
