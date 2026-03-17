@@ -23,12 +23,14 @@ import (
 const (
 	PortFlagName               = "port"
 	TLSCertThumbprintFlagName  = "tls-cert-thumbprint"
+	TLSCAFileFlagName          = "tls-ca-file"
 	DCP_SECURE_TOKEN           = "DCP_SECURE_TOKEN"
 )
 
 var (
 	port              int32
 	tlsCertThumbprint string
+	tlsCAFile         string
 )
 
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
@@ -72,6 +74,17 @@ func EnsureTLSCertThumbprintFlag(fs *pflag.FlagSet) *pflag.Flag {
 		"SHA-1 thumbprint of a certificate in the Windows CurrentUser\\My certificate store to use for HTTPS. "+
 			"If not provided, an ephemeral self-signed certificate is generated.")
 	return fs.Lookup(TLSCertThumbprintFlagName)
+}
+
+// EnsureTLSCAFileFlag registers the --tls-ca-file flag if not already registered.
+func EnsureTLSCAFileFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCAFileFlagName); f != nil {
+		return f
+	}
+	fs.StringVar(&tlsCAFile, TLSCAFileFlagName, "",
+		"File containing the PEM-encoded CA certificate to use as the trust anchor. "+
+			"Only used with --tls-cert-thumbprint when the certificate is not self-signed.")
+	return fs.Lookup(TLSCAFileFlagName)
 }
 
 // Ensures that the kubeconfig flag exist and points to a non-empty file.
@@ -132,7 +145,19 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		if lookupErr != nil {
 			return nil, fmt.Errorf("TLS certificate store lookup failed: %w", lookupErr)
 		}
+
+		// If a CA file is provided, use it as the trust anchor instead of the cert itself.
+		if tlsCAFile != "" {
+			caPEM, caReadErr := os.ReadFile(tlsCAFile)
+			if caReadErr != nil {
+				return nil, fmt.Errorf("unable to read CA certificate file '%s': %w", tlsCAFile, caReadErr)
+			}
+			storeCertData.CACertPEM = caPEM
+		}
 	} else {
+		if tlsCAFile != "" {
+			return nil, fmt.Errorf("--%s requires --%s to also be specified", TLSCAFileFlagName, TLSCertThumbprintFlagName)
+		}
 		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
 		if preferredErr != nil {
 			return nil, fmt.Errorf("could not determine server address: %w", preferredErr)

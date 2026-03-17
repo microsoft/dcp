@@ -10,11 +10,9 @@
 package security
 
 import (
-	"bytes"
-	"crypto/sha1"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"fmt"
 	"strings"
 	"unsafe"
@@ -37,10 +35,6 @@ var (
 	procPFXExportCertStoreEx = modCrypt32.NewProc("PFXExportCertStoreEx")
 )
 
-type certWithPEM struct {
-	cert *x509.Certificate
-	pem  []byte
-}
 
 func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error) {
 	thumbprint = normalizeThumbprint(thumbprint)
@@ -95,10 +89,11 @@ func normalizeThumbprint(thumbprint string) string {
 	return strings.ToLower(thumbprint)
 }
 
-// exportViaPFX exports the certificate, its chain, and its private key by
-// performing a PFX (PKCS#12) export of a temporary in-memory store, then
-// parsing the PFX to extract all components. This approach works with both
-// CNG and legacy CSP key storage providers.
+// exportViaPFX exports the certificate and its private key by performing a
+// PFX (PKCS#12) export of a temporary in-memory store, then parsing the PFX.
+// This approach works with both CNG and legacy CSP key storage providers.
+// The in-memory store contains a single certificate, so the PFX will contain
+// exactly one certificate and one private key.
 func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCertificateData, string, error) {
 	// Create a temporary in-memory certificate store.
 	memStore, openErr := windows.CertOpenStore(
@@ -161,82 +156,28 @@ func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCerti
 		return nil, "", fmt.Errorf("PFXExportCertStoreEx failed: %w (the key may be marked as non-exportable)", err)
 	}
 
-	// Parse the PFX into PEM blocks and extract the leaf cert, root CA, and key.
-	pemBlocks, pfxErr := pkcs12.ToPEM(pfxData[:pfxBlob.Size], "")
+	// Parse the PFX to extract the certificate and private key.
+	privateKey, cert, pfxErr := pkcs12.Decode(pfxData[:pfxBlob.Size], "")
 	if pfxErr != nil {
 		return nil, "", fmt.Errorf("could not decode PFX data: %w", pfxErr)
 	}
 
-	var certs []certWithPEM
-	var keyPEM []byte
-
-	for _, block := range pemBlocks {
-		switch block.Type {
-		case "CERTIFICATE":
-			cert, certErr := x509.ParseCertificate(block.Bytes)
-			if certErr != nil {
-				return nil, "", fmt.Errorf("could not parse certificate from PFX: %w", certErr)
-			}
-			certs = append(certs, certWithPEM{cert: cert, pem: pem.EncodeToMemory(block)})
-		case "PRIVATE KEY":
-			if keyPEM == nil {
-				keyPEM = pem.EncodeToMemory(block)
-			}
-		}
+	rsaKey, ok := privateKey.(*rsa.PrivateKey)
+	if !ok {
+		return nil, "", fmt.Errorf("private key for certificate %q is not RSA (got %T); only RSA keys are currently supported", thumbprint, privateKey)
 	}
 
-	if len(certs) == 0 {
-		return nil, "", fmt.Errorf("PFX for certificate %q did not contain a certificate", thumbprint)
-	}
-	if keyPEM == nil {
-		return nil, "", fmt.Errorf("PFX for certificate %q did not contain a private key", thumbprint)
-	}
-
-	// Find the leaf certificate by matching the requested thumbprint.
-	leafIdx := -1
-	for i, c := range certs {
-		hash := sha1.Sum(c.cert.Raw)
-		if hex.EncodeToString(hash[:]) == thumbprint {
-			leafIdx = i
-			break
-		}
-	}
-	if leafIdx < 0 {
-		return nil, "", fmt.Errorf("PFX export for %q did not contain the expected leaf certificate", thumbprint)
-	}
-
-	// Validate the leaf certificate.
-	serverAddress, validateErr := ValidateCertificate(certs[leafIdx].cert)
+	serverAddress, validateErr := ValidateCertificate(cert)
 	if validateErr != nil {
 		return nil, "", fmt.Errorf("certificate with thumbprint %q is not valid: %w", thumbprint, validateErr)
 	}
 
-	// The chain includes all certificates; the root CA is the trust anchor for the kubeconfig.
-	rootIdx, rootFound := findRootCertIndex(certs)
-	if !rootFound {
-		return nil, "", fmt.Errorf("certificate chain for %q does not contain a self-signed root CA", thumbprint)
-	}
-
-	var chainPEM []byte
-	for _, c := range certs {
-		chainPEM = append(chainPEM, c.pem...)
-	}
+	// For a single certificate, it serves as both the chain and the CA trust anchor.
+	certPEM := PEMEncodeCertificates(cert.Raw)
 
 	return &ServerCertificateData{
-		CACertPEM:    certs[rootIdx].pem,
-		CertChainPEM: chainPEM,
-		ServerKeyPEM: keyPEM,
+		CACertPEM:    certPEM,
+		CertChainPEM: certPEM,
+		ServerKeyPEM: PEMEncodePrivateKey(x509.MarshalPKCS1PrivateKey(rsaKey)),
 	}, serverAddress, nil
-}
-
-// findRootCertIndex returns the index of the self-signed root certificate.
-// If none is found, returns -1 and false.
-func findRootCertIndex(certs []certWithPEM) (int, bool) {
-	for i, c := range certs {
-		if bytes.Equal(c.cert.RawIssuer, c.cert.RawSubject) &&
-			c.cert.CheckSignature(c.cert.SignatureAlgorithm, c.cert.RawTBSCertificate, c.cert.Signature) == nil {
-			return i, true
-		}
-	}
-	return -1, false
 }

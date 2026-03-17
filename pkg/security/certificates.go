@@ -119,66 +119,30 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		return ServerCertificateData{}, fmt.Errorf("failed to create server certificate: %w", serverErr)
 	}
 
-	serverKeyPEM, keyEncodeErr := PEMEncodePrivateKey(serverKey)
-	if keyEncodeErr != nil {
-		return ServerCertificateData{}, fmt.Errorf("failed to PEM encode server key: %w", keyEncodeErr)
-	}
-
-	caCertPEM, caEncodeErr := PEMEncodeCertificates(caBytes)
-	if caEncodeErr != nil {
-		return ServerCertificateData{}, fmt.Errorf("failed to PEM encode CA certificate: %w", caEncodeErr)
-	}
-
-	serverCertPEM, serverEncodeErr := PEMEncodeCertificates(serverBytes)
-	if serverEncodeErr != nil {
-		return ServerCertificateData{}, fmt.Errorf("failed to PEM encode server certificate: %w", serverEncodeErr)
-	}
-
 	return ServerCertificateData{
-		CACertPEM:    caCertPEM,
-		CertChainPEM: serverCertPEM,
-		ServerKeyPEM: serverKeyPEM,
+		CACertPEM:    PEMEncodeCertificates(caBytes),
+		CertChainPEM: PEMEncodeCertificates(serverBytes),
+		ServerKeyPEM: PEMEncodePrivateKey(x509.MarshalPKCS1PrivateKey(serverKey)),
 	}, nil
 }
 
-// PEM-encodes a set of certificates into a common buffer
-func PEMEncodeCertificates(certs ...[]byte) ([]byte, error) {
-	if len(certs) == 0 {
-		return nil, fmt.Errorf("no certificates provided for PEM encoding")
-	}
-
-	var buffer bytes.Buffer
-
-	for _, cert := range certs {
-		pemBlock := &pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: cert,
-		}
-		if err := pem.Encode(&buffer, pemBlock); err != nil {
-			return nil, fmt.Errorf("failed to PEM encode certificate: %w", err)
-		}
-	}
-
-	return buffer.Bytes(), nil
+// PEMEncodeBlock PEM-encodes a single block with the given type and DER bytes.
+func PEMEncodeBlock(blockType string, derBytes []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: derBytes})
 }
 
-// PEM-encodes a private key
-func PEMEncodePrivateKey(key *rsa.PrivateKey) ([]byte, error) {
-	if key == nil {
-		return nil, fmt.Errorf("private key is nil")
+// PEMEncodeCertificates PEM-encodes a set of raw DER certificates into a common buffer.
+func PEMEncodeCertificates(certs ...[]byte) []byte {
+	var buf []byte
+	for _, cert := range certs {
+		buf = append(buf, PEMEncodeBlock("CERTIFICATE", cert)...)
 	}
+	return buf
+}
 
-	var buffer bytes.Buffer
-
-	pemBlock := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}
-	if err := pem.Encode(&buffer, pemBlock); err != nil {
-		return nil, fmt.Errorf("failed to PEM encode private key: %w", err)
-	}
-
-	return buffer.Bytes(), nil
+// PEMEncodePrivateKey PEM-encodes PKCS#1 RSA private key bytes.
+func PEMEncodePrivateKey(pkcs1Bytes []byte) []byte {
+	return PEMEncodeBlock("RSA PRIVATE KEY", pkcs1Bytes)
 }
 
 // ValidateCertificate validates that the given certificate is currently valid,
