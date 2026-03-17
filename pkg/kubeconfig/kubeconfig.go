@@ -201,11 +201,7 @@ func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, st
 
 	if storeCertData != nil {
 		// Certificate was loaded from the system certificate store.
-		caPEM, caErr := storeCertData.CA()
-		if caErr != nil {
-			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not encode root CA from certificate store: %w", caErr)
-		}
-		cluster.CertificateAuthorityData = caPEM
+		cluster.CertificateAuthorityData = storeCertData.CACertPEM
 		certificateData = storeCertData
 	} else if generateEphemeral {
 		// Generate certificates to secure the connection
@@ -215,12 +211,8 @@ func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, st
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not generate certificates: %w", certificateErr)
 		}
 
-		caPEM, caErr := generatedCert.CA()
-		if caErr != nil {
-			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not encode CA certificate: %w", caErr)
-		}
 		// We're generating a certificate, so we need to tell the client how to verify it
-		cluster.CertificateAuthorityData = caPEM
+		cluster.CertificateAuthorityData = generatedCert.CACertPEM
 		certificateData = &generatedCert
 	} else {
 		// If we aren't generating certificates, we need to skip TLS verification

@@ -6,7 +6,6 @@
 package kubeconfig
 
 import (
-	"crypto/x509"
 	"errors"
 	goflag "flag"
 	"fmt"
@@ -128,23 +127,11 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	var serverAddress string
 	var storeCertData *security.ServerCertificateData
 	if tlsCertThumbprint != "" {
-		certData, lookupErr := security.LookupCertificate(tlsCertThumbprint)
+		var lookupErr error
+		storeCertData, serverAddress, lookupErr = security.LookupCertificate(tlsCertThumbprint)
 		if lookupErr != nil {
 			return nil, fmt.Errorf("TLS certificate store lookup failed: %w", lookupErr)
 		}
-
-		leafCert, parseErr := x509.ParseCertificate(certData.ServerCert)
-		if parseErr != nil {
-			return nil, fmt.Errorf("TLS certificate validation failed: could not parse certificate: %w", parseErr)
-		}
-
-		var validateErr error
-		serverAddress, validateErr = security.ValidateCertificate(leafCert)
-		if validateErr != nil {
-			return nil, fmt.Errorf("TLS certificate validation failed: %w", validateErr)
-		}
-
-		storeCertData = certData
 	} else {
 		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
 		if preferredErr != nil {

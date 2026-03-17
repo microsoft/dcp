@@ -30,24 +30,9 @@ const (
 )
 
 type ServerCertificateData struct {
-	CACertificate []byte          // Self-signed CA certificate, not encoded
-	ServerCert    []byte          // Server certificate, not encoded
-	ServerKey     *rsa.PrivateKey // Server private key
-}
-
-// Returns PEM-encoded server and certificate authority certificates.
-func (scd ServerCertificateData) Certificate() ([]byte, error) {
-	return PEMEncodeCertificates(scd.ServerCert, scd.CACertificate)
-}
-
-// Returns PEM-encoded server private key.
-func (scd ServerCertificateData) ServerPrivateKey() ([]byte, error) {
-	return PEMEncodePrivateKey(scd.ServerKey)
-}
-
-// Returns PEM-encoded CA certificate.
-func (scd ServerCertificateData) CA() ([]byte, error) {
-	return PEMEncodeCertificates(scd.CACertificate)
+	CACertPEM      []byte // Root CA certificate, PEM-encoded (for client trust / kubeconfig)
+	CertChainPEM   []byte // Server certificate chain (leaf + intermediates), PEM-encoded
+	ServerKeyPEM   []byte // Server private key, PEM-encoded
 }
 
 // Generates a self-signed certificate authority, server certificate, and a server private key
@@ -134,10 +119,25 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		return ServerCertificateData{}, fmt.Errorf("failed to create server certificate: %w", serverErr)
 	}
 
+	serverKeyPEM, keyEncodeErr := PEMEncodePrivateKey(serverKey)
+	if keyEncodeErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to PEM encode server key: %w", keyEncodeErr)
+	}
+
+	caCertPEM, caEncodeErr := PEMEncodeCertificates(caBytes)
+	if caEncodeErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to PEM encode CA certificate: %w", caEncodeErr)
+	}
+
+	serverCertPEM, serverEncodeErr := PEMEncodeCertificates(serverBytes)
+	if serverEncodeErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to PEM encode server certificate: %w", serverEncodeErr)
+	}
+
 	return ServerCertificateData{
-		CACertificate: caBytes,
-		ServerCert:    serverBytes,
-		ServerKey:     serverKey,
+		CACertPEM:    caCertPEM,
+		CertChainPEM: serverCertPEM,
+		ServerKeyPEM: serverKeyPEM,
 	}, nil
 }
 

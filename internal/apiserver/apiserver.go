@@ -233,14 +233,8 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServer
 	}
 
 	if certificateData != nil {
-		cert, certErr := certificateData.Certificate()
-		if certErr != nil {
-			return nil, fmt.Errorf("unable to obtain certificate data: %w", certErr)
-		}
-		key, keyErr := certificateData.ServerPrivateKey()
-		if keyErr != nil {
-			return nil, fmt.Errorf("unable to obtain key data: %w", keyErr)
-		}
+		cert := certificateData.CertChainPEM
+		key := certificateData.ServerKeyPEM
 		options.ServingOptions.ServerCert.GeneratedCert, err = dynamiccertificates.NewStaticCertKeyContent("DCP server certificate", cert, key)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create static certificate: %w", err)

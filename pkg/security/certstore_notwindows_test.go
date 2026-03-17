@@ -16,7 +16,7 @@ import (
 )
 
 func TestLookupCertificate_NotSupportedOnNonWindows(t *testing.T) {
-	_, err := LookupCertificate("aabbccdd")
+	_, _, err := LookupCertificate("aabbccdd")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "only supported on Windows")
 }

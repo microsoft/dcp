@@ -11,6 +11,6 @@ package security
 
 import "fmt"
 
-func lookupCertificate(_ string) (*ServerCertificateData, error) {
-	return nil, fmt.Errorf("certificate store lookup is only supported on Windows")
+func lookupCertificate(_ string) (*ServerCertificateData, string, error) {
+	return nil, "", fmt.Errorf("certificate store lookup is only supported on Windows")
 }
