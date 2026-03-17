@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"unsafe"
 
@@ -79,8 +80,12 @@ func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error
 	return exportViaPFX(certCtx, thumbprint)
 }
 
-// normalizeThumbprint strips common formatting from certificate thumbprints:
-// spaces, colons, and the leading "0x" prefix.
+// normalizeThumbprint strips common formatting from certificate thumbprints
+// and returns a lowercase hex string. Handles formats from various sources:
+//   - Windows certmgr/PowerShell Get-ChildItem Cert:\: "AA BB CC DD ..." (space-separated uppercase hex)
+//   - OpenSSL x509 -fingerprint: "AA:BB:CC:DD:..." (colon-separated uppercase hex)
+//   - .NET X509Certificate2.Thumbprint: "AABBCCDD..." (contiguous uppercase hex)
+//   - Programmatic hex with prefix: "0xaabbccdd..." or "0XAABBCCDD..."
 func normalizeThumbprint(thumbprint string) string {
 	thumbprint = strings.ReplaceAll(thumbprint, " ", "")
 	thumbprint = strings.ReplaceAll(thumbprint, ":", "")
@@ -141,9 +146,14 @@ func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCerti
 	if pfxBlob.Size == 0 {
 		return nil, "", fmt.Errorf("PFXExportCertStoreEx returned zero size")
 	}
+	if pfxBlob.Size > math.MaxInt32 {
+		return nil, "", fmt.Errorf("PFXExportCertStoreEx returned unexpectedly large size: %d", pfxBlob.Size)
+	}
+
+	pfxSize := int(pfxBlob.Size)
 
 	// Second call: export the PFX into the buffer.
-	pfxData := make([]byte, pfxBlob.Size)
+	pfxData := make([]byte, pfxSize)
 	pfxBlob.Data = &pfxData[0]
 	r, _, err = procPFXExportCertStoreEx.Call(
 		uintptr(memStore),
@@ -157,7 +167,7 @@ func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCerti
 	}
 
 	// Parse the PFX to extract the certificate and private key.
-	privateKey, cert, pfxErr := pkcs12.Decode(pfxData[:pfxBlob.Size], "")
+	privateKey, cert, pfxErr := pkcs12.Decode(pfxData[:pfxSize], "")
 	if pfxErr != nil {
 		return nil, "", fmt.Errorf("could not decode PFX data: %w", pfxErr)
 	}

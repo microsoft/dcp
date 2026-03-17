@@ -72,6 +72,8 @@ func EnsureTLSCertThumbprintFlag(fs *pflag.FlagSet) *pflag.Flag {
 	}
 	fs.StringVar(&tlsCertThumbprint, TLSCertThumbprintFlagName, "",
 		"SHA-1 thumbprint of a certificate in the Windows CurrentUser\\My certificate store to use for HTTPS. "+
+			"The certificate must have an exportable RSA private key. "+
+			"Only supported on Windows. "+
 			"If not provided, an ephemeral self-signed certificate is generated.")
 	return fs.Lookup(TLSCertThumbprintFlagName)
 }
