@@ -13,8 +13,10 @@ import (
 	"bytes"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"strings"
 	"unsafe"
 
@@ -22,8 +24,14 @@ import (
 )
 
 const (
-	// NCrypt blob type for PKCS8 private key export.
-	ncryptPKCS8PrivateKeyBlob = "PKCS8_PRIVATEKEY"
+	// NCrypt blob type for full RSA private key export.
+	ncryptRSAFullPrivateBlob = "RSAFULLPRIVATEBLOB"
+
+	// BCRYPT_RSAFULLPRIVATE_MAGIC identifies an RSA full private key blob.
+	bcryptRSAFullPrivateMagic = 0x33415352 // "RSA3" in little-endian
+
+	// Size of the BCRYPT_RSAKEY_BLOB header (6 x uint32).
+	bcryptRSAKeyBlobHeaderSize = 6 * 4
 )
 
 var (
@@ -131,27 +139,22 @@ func acquirePrivateKey(ctx *windows.CertContext, thumbprint string) (*rsa.Privat
 		defer ncryptFreeObject(keyHandle)
 	}
 
-	pkcs8Bytes, exportErr := ncryptExportKey(keyHandle)
+	blobBytes, exportErr := ncryptExportKey(keyHandle)
 	if exportErr != nil {
 		return nil, fmt.Errorf("could not export private key for certificate %q: %w (the key may be marked as non-exportable)", thumbprint, exportErr)
 	}
 
-	parsedKey, parseErr := x509.ParsePKCS8PrivateKey(pkcs8Bytes)
+	rsaKey, parseErr := parseRSAFullPrivateBlob(blobBytes)
 	if parseErr != nil {
 		return nil, fmt.Errorf("could not parse exported private key for certificate %q: %w", thumbprint, parseErr)
-	}
-
-	rsaKey, ok := parsedKey.(*rsa.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("private key for certificate %q is not RSA (got %T); only RSA keys are currently supported", thumbprint, parsedKey)
 	}
 
 	return rsaKey, nil
 }
 
-// ncryptExportKey exports a CNG key handle as PKCS8 DER bytes.
+// ncryptExportKey exports a CNG key handle as an RSA full private key blob.
 func ncryptExportKey(keyHandle windows.Handle) ([]byte, error) {
-	blobType, blobTypeErr := windows.UTF16PtrFromString(ncryptPKCS8PrivateKeyBlob)
+	blobType, blobTypeErr := windows.UTF16PtrFromString(ncryptRSAFullPrivateBlob)
 	if blobTypeErr != nil {
 		return nil, fmt.Errorf("could not encode blob type: %w", blobTypeErr)
 	}
@@ -192,6 +195,78 @@ func ncryptExportKey(keyHandle windows.Handle) ([]byte, error) {
 	}
 
 	return buf[:size], nil
+}
+
+// parseRSAFullPrivateBlob parses a BCRYPT_RSAFULLPRIVATE_BLOB into an rsa.PrivateKey.
+//
+// Blob layout (all integers are unsigned, little-endian):
+//
+//	BCRYPT_RSAKEY_BLOB header (6 x uint32):
+//	  Magic, BitLength, cbPublicExp, cbModulus, cbPrime1, cbPrime2
+//	Followed by contiguous byte fields:
+//	  PublicExponent  [cbPublicExp]
+//	  Modulus         [cbModulus]
+//	  Prime1          [cbPrime1]
+//	  Prime2          [cbPrime2]
+//	  Exponent1       [cbPrime1]   (d mod (p-1))
+//	  Exponent2       [cbPrime2]   (d mod (q-1))
+//	  Coefficient     [cbPrime1]   (q^-1 mod p)
+//	  PrivateExponent [cbModulus]
+//
+// See https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/ns-bcrypt-bcrypt_rsakey_blob
+func parseRSAFullPrivateBlob(blob []byte) (*rsa.PrivateKey, error) {
+	if len(blob) < bcryptRSAKeyBlobHeaderSize {
+		return nil, fmt.Errorf("RSA key blob too short: %d bytes", len(blob))
+	}
+
+	magic := binary.LittleEndian.Uint32(blob[0:4])
+	if magic != bcryptRSAFullPrivateMagic {
+		return nil, fmt.Errorf("unexpected RSA key blob magic: 0x%08X (expected 0x%08X)", magic, bcryptRSAFullPrivateMagic)
+	}
+
+	cbPublicExp := int(binary.LittleEndian.Uint32(blob[8:12]))
+	cbModulus := int(binary.LittleEndian.Uint32(blob[12:16]))
+	cbPrime1 := int(binary.LittleEndian.Uint32(blob[16:20]))
+	cbPrime2 := int(binary.LittleEndian.Uint32(blob[20:24]))
+
+	// Total expected size: header + PublicExp + Modulus + P + Q + dP + dQ + qInv + D
+	expectedSize := bcryptRSAKeyBlobHeaderSize + cbPublicExp + cbModulus +
+		cbPrime1 + cbPrime2 + // P, Q
+		cbPrime1 + cbPrime2 + cbPrime1 + // dP, dQ, qInv
+		cbModulus // D
+	if len(blob) < expectedSize {
+		return nil, fmt.Errorf("RSA key blob too short: %d bytes (expected at least %d)", len(blob), expectedSize)
+	}
+
+	offset := bcryptRSAKeyBlobHeaderSize
+	readField := func(size int) *big.Int {
+		field := new(big.Int).SetBytes(blob[offset : offset+size])
+		offset += size
+		return field
+	}
+
+	publicExp := readField(cbPublicExp)
+	modulus := readField(cbModulus)
+	prime1 := readField(cbPrime1)
+	prime2 := readField(cbPrime2)
+	offset += cbPrime1 + cbPrime2 + cbPrime1 // skip dP, dQ, qInv — Go recomputes them
+	privateExp := readField(cbModulus)
+
+	key := &rsa.PrivateKey{
+		PublicKey: rsa.PublicKey{
+			N: modulus,
+			E: int(publicExp.Int64()),
+		},
+		D:      privateExp,
+		Primes: []*big.Int{prime1, prime2},
+	}
+	key.Precompute()
+
+	if validateErr := key.Validate(); validateErr != nil {
+		return nil, fmt.Errorf("exported RSA key failed validation: %w", validateErr)
+	}
+
+	return key, nil
 }
 
 // ncryptFreeObject releases an NCrypt handle.
