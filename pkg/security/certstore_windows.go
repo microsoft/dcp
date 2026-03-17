@@ -32,12 +32,26 @@ const (
 
 	// Size of the BCRYPT_RSAKEY_BLOB header (6 x uint32).
 	bcryptRSAKeyBlobHeaderSize = 6 * 4
+
+	// Legacy CSP export blob type.
+	privatekeyBlob = 0x7 // PRIVATEKEYBLOB
+
+	// PRIVATEKEYBLOB header: BLOBHEADER (8 bytes) + RSAPUBKEY (12 bytes) = 20 bytes.
+	privatekeyBlobHeaderSize = 20
+
+	// RSA2 magic in RSAPUBKEY identifies a private key blob.
+	rsaPrivateKeyMagic = 0x32415352 // "RSA2" in little-endian
 )
 
 var (
 	modNCrypt            = windows.NewLazyDLL("ncrypt.dll")
 	procNCryptExportKey  = modNCrypt.NewProc("NCryptExportKey")
 	procNCryptFreeObject = modNCrypt.NewProc("NCryptFreeObject")
+
+	modAdvapi32         = windows.NewLazyDLL("advapi32.dll")
+	procCryptExportKey  = modAdvapi32.NewProc("CryptExportKey")
+	procCryptGetUserKey = modAdvapi32.NewProc("CryptGetUserKey")
+	procCryptDestroyKey = modAdvapi32.NewProc("CryptDestroyKey")
 )
 
 func lookupCertificate(thumbprint string) (*ServerCertificateData, error) {
@@ -119,6 +133,7 @@ func contextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
 }
 
 // acquirePrivateKey gets the RSA private key associated with a certificate context.
+// Supports both CNG and legacy CSP key storage providers.
 func acquirePrivateKey(ctx *windows.CertContext, thumbprint string) (*rsa.PrivateKey, error) {
 	var keyHandle windows.Handle
 	var keySpec uint32
@@ -126,7 +141,7 @@ func acquirePrivateKey(ctx *windows.CertContext, thumbprint string) (*rsa.Privat
 
 	acquireErr := windows.CryptAcquireCertificatePrivateKey(
 		ctx,
-		windows.CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG|windows.CRYPT_ACQUIRE_SILENT_FLAG,
+		windows.CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG|windows.CRYPT_ACQUIRE_SILENT_FLAG,
 		nil,
 		&keyHandle,
 		&keySpec,
@@ -135,16 +150,31 @@ func acquirePrivateKey(ctx *windows.CertContext, thumbprint string) (*rsa.Privat
 	if acquireErr != nil {
 		return nil, fmt.Errorf("could not acquire private key for certificate %q: %w (the key may require user interaction or may not be accessible)", thumbprint, acquireErr)
 	}
-	if callerFree {
-		defer ncryptFreeObject(keyHandle)
+
+	var blobBytes []byte
+	var exportErr error
+
+	if keySpec == windows.CERT_NCRYPT_KEY_SPEC {
+		// CNG key: export via NCrypt.
+		if callerFree {
+			defer ncryptFreeObject(keyHandle)
+		}
+		blobBytes, exportErr = ncryptExportKey(keyHandle)
+		if exportErr != nil {
+			return nil, fmt.Errorf("could not export CNG private key for certificate %q: %w (the key may be marked as non-exportable)", thumbprint, exportErr)
+		}
+	} else {
+		// Legacy CSP key: export via CryptoAPI.
+		if callerFree {
+			defer windows.CryptReleaseContext(keyHandle, 0)
+		}
+		blobBytes, exportErr = cspExportKey(keyHandle, keySpec)
+		if exportErr != nil {
+			return nil, fmt.Errorf("could not export CSP private key for certificate %q: %w (the key may be marked as non-exportable)", thumbprint, exportErr)
+		}
 	}
 
-	blobBytes, exportErr := ncryptExportKey(keyHandle)
-	if exportErr != nil {
-		return nil, fmt.Errorf("could not export private key for certificate %q: %w (the key may be marked as non-exportable)", thumbprint, exportErr)
-	}
-
-	rsaKey, parseErr := parseRSAFullPrivateBlob(blobBytes)
+	rsaKey, parseErr := parseRSAPrivateKeyBlob(blobBytes)
 	if parseErr != nil {
 		return nil, fmt.Errorf("could not parse exported private key for certificate %q: %w", thumbprint, parseErr)
 	}
@@ -197,7 +227,144 @@ func ncryptExportKey(keyHandle windows.Handle) ([]byte, error) {
 	return buf[:size], nil
 }
 
-// parseRSAFullPrivateBlob parses a BCRYPT_RSAFULLPRIVATE_BLOB into an rsa.PrivateKey.
+// cspExportKey exports a legacy CSP key handle as a PRIVATEKEYBLOB.
+func cspExportKey(provHandle windows.Handle, keySpec uint32) ([]byte, error) {
+	// Get a handle to the key within the CSP.
+	var hKey uintptr
+	r, _, err := procCryptGetUserKey.Call(
+		uintptr(provHandle),
+		uintptr(keySpec),
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if r == 0 {
+		return nil, fmt.Errorf("CryptGetUserKey failed: %w", err)
+	}
+	defer procCryptDestroyKey.Call(hKey) //nolint:errcheck
+
+	// First call: determine the required buffer size.
+	var size uint32
+	r, _, err = procCryptExportKey.Call(
+		hKey,
+		0, // hExpKey (not used for plaintext export)
+		uintptr(privatekeyBlob),
+		0, // dwFlags
+		0, // pbData (nil to get size)
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if r == 0 {
+		return nil, fmt.Errorf("CryptExportKey size query failed: %w", err)
+	}
+	if size == 0 {
+		return nil, fmt.Errorf("CryptExportKey returned zero size for key")
+	}
+
+	// Second call: export the key into the buffer.
+	buf := make([]byte, size)
+	r, _, err = procCryptExportKey.Call(
+		hKey,
+		0,
+		uintptr(privatekeyBlob),
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if r == 0 {
+		return nil, fmt.Errorf("CryptExportKey failed: %w", err)
+	}
+
+	return buf[:size], nil
+}
+
+// parseRSAPrivateKeyBlob parses either a CNG BCRYPT_RSAFULLPRIVATE_BLOB or a
+// legacy CSP PRIVATEKEYBLOB into an rsa.PrivateKey. The format is detected
+// by examining the magic value in the blob header.
+func parseRSAPrivateKeyBlob(blob []byte) (*rsa.PrivateKey, error) {
+	if len(blob) < 4 {
+		return nil, fmt.Errorf("RSA key blob too short: %d bytes", len(blob))
+	}
+
+	// The first byte distinguishes the two formats:
+	// - CSP PRIVATEKEYBLOB starts with BLOBHEADER.bType = 0x07 (PRIVATEKEYBLOB)
+	// - CNG BCRYPT_RSAKEY_BLOB starts with Magic (little-endian uint32)
+	if blob[0] == privatekeyBlob {
+		return parseCSPPrivateKeyBlob(blob)
+	}
+	return parseCNGFullPrivateBlob(blob)
+}
+
+// parseCSPPrivateKeyBlob parses a legacy CSP PRIVATEKEYBLOB.
+//
+// Layout:
+//
+//	BLOBHEADER (8 bytes): bType(1) bVersion(1) reserved(2) aiKeyAlg(4)
+//	RSAPUBKEY  (12 bytes): magic(4) bitlen(4) pubexp(4)
+//	Followed by little-endian byte fields:
+//	  modulus     [bitlen/8]
+//	  prime1      [bitlen/16]
+//	  prime2      [bitlen/16]
+//	  exponent1   [bitlen/16]  (d mod (p-1))
+//	  exponent2   [bitlen/16]  (d mod (q-1))
+//	  coefficient [bitlen/16]  (q^-1 mod p)
+//	  privateExponent [bitlen/8]
+//
+// All multi-byte integers are in little-endian byte order.
+// See https://learn.microsoft.com/en-us/windows/win32/seccrypto/base-provider-key-blobs
+func parseCSPPrivateKeyBlob(blob []byte) (*rsa.PrivateKey, error) {
+	if len(blob) < privatekeyBlobHeaderSize {
+		return nil, fmt.Errorf("CSP private key blob too short: %d bytes", len(blob))
+	}
+
+	magic := binary.LittleEndian.Uint32(blob[8:12])
+	if magic != rsaPrivateKeyMagic {
+		return nil, fmt.Errorf("unexpected CSP key blob magic: 0x%08X (expected 0x%08X)", magic, rsaPrivateKeyMagic)
+	}
+
+	bitLen := int(binary.LittleEndian.Uint32(blob[12:16]))
+	pubExp := int(binary.LittleEndian.Uint32(blob[16:20]))
+
+	byteLen := bitLen / 8
+	halfLen := bitLen / 16
+
+	// Total expected size: header + modulus + p + q + dp + dq + qInv + d
+	expectedSize := privatekeyBlobHeaderSize + byteLen + halfLen*5 + byteLen
+	if len(blob) < expectedSize {
+		return nil, fmt.Errorf("CSP private key blob too short: %d bytes (expected at least %d)", len(blob), expectedSize)
+	}
+
+	offset := privatekeyBlobHeaderSize
+	readFieldLE := func(size int) *big.Int {
+		// CSP blobs store integers in little-endian; reverse for big.Int.
+		field := make([]byte, size)
+		copy(field, blob[offset:offset+size])
+		reverseBytes(field)
+		offset += size
+		return new(big.Int).SetBytes(field)
+	}
+
+	modulus := readFieldLE(byteLen)
+	prime1 := readFieldLE(halfLen)
+	prime2 := readFieldLE(halfLen)
+	offset += halfLen * 3 // skip dP, dQ, qInv — Go recomputes them
+	privateExp := readFieldLE(byteLen)
+
+	key := &rsa.PrivateKey{
+		PublicKey: rsa.PublicKey{
+			N: modulus,
+			E: pubExp,
+		},
+		D:      privateExp,
+		Primes: []*big.Int{prime1, prime2},
+	}
+	key.Precompute()
+
+	if validateErr := key.Validate(); validateErr != nil {
+		return nil, fmt.Errorf("exported RSA key failed validation: %w", validateErr)
+	}
+
+	return key, nil
+}
+
+// parseCNGFullPrivateBlob parses a BCRYPT_RSAFULLPRIVATE_BLOB into an rsa.PrivateKey.
 //
 // Blob layout (all integers are unsigned, little-endian):
 //
@@ -214,7 +381,7 @@ func ncryptExportKey(keyHandle windows.Handle) ([]byte, error) {
 //	  PrivateExponent [cbModulus]
 //
 // See https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/ns-bcrypt-bcrypt_rsakey_blob
-func parseRSAFullPrivateBlob(blob []byte) (*rsa.PrivateKey, error) {
+func parseCNGFullPrivateBlob(blob []byte) (*rsa.PrivateKey, error) {
 	if len(blob) < bcryptRSAKeyBlobHeaderSize {
 		return nil, fmt.Errorf("RSA key blob too short: %d bytes", len(blob))
 	}
@@ -267,6 +434,13 @@ func parseRSAFullPrivateBlob(blob []byte) (*rsa.PrivateKey, error) {
 	}
 
 	return key, nil
+}
+
+// reverseBytes reverses a byte slice in place.
+func reverseBytes(b []byte) {
+	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
+		b[i], b[j] = b[j], b[i]
+	}
 }
 
 // ncryptFreeObject releases an NCrypt handle.
