@@ -80,13 +80,19 @@ func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error
 	return exportViaPFX(certCtx, thumbprint)
 }
 
-// normalizeThumbprint strips common formatting from certificate thumbprints
-// and returns a lowercase hex string. Handles formats from various sources:
+// normalizeThumbprint strips common formatting and copy/paste artifacts from
+// certificate thumbprints and returns a lowercase hex string. Handles formats
+// from various sources:
 //   - Windows certmgr/PowerShell Get-ChildItem Cert:\: "AA BB CC DD ..." (space-separated uppercase hex)
 //   - OpenSSL x509 -fingerprint: "AA:BB:CC:DD:..." (colon-separated uppercase hex)
 //   - .NET X509Certificate2.Thumbprint: "AABBCCDD..." (contiguous uppercase hex)
 //   - Programmatic hex with prefix: "0xaabbccdd..." or "0XAABBCCDD..."
+//
+// Also strips leading/trailing whitespace (\t, \r, \n) and the invisible
+// left-to-right mark (U+200E) that Windows certificate UI sometimes embeds.
 func normalizeThumbprint(thumbprint string) string {
+	thumbprint = strings.TrimSpace(thumbprint)
+	thumbprint = strings.ReplaceAll(thumbprint, "\u200e", "") // left-to-right mark
 	thumbprint = strings.ReplaceAll(thumbprint, " ", "")
 	thumbprint = strings.ReplaceAll(thumbprint, ":", "")
 	thumbprint = strings.TrimPrefix(thumbprint, "0x")

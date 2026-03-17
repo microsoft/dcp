@@ -230,6 +230,57 @@ func TestValidateCertificate_RejectsNonLocalhostCert(t *testing.T) {
 	assert.Contains(t, err.Error(), "not valid for localhost")
 }
 
+func TestValidateCertificate_BothIPsSelectsBasedOnPreference(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+	})
+	addr, addrErr := ValidateCertificate(cert)
+	assert.NoError(t, addrErr)
+
+	preference := networking.GetIpVersionPreference()
+	switch preference {
+	case networking.IpVersionPreference4:
+		assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+	case networking.IpVersionPreference6:
+		assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
+	default:
+		// No preference: either IP is acceptable.
+		assert.Contains(t, []string{networking.IPv4LocalhostDefaultAddress, networking.IPv6LocalhostDefaultAddress}, addr)
+	}
+}
+
+func TestValidateCertificate_PrefersIPv4OverLocalhost(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1)},
+		DNSNames:     []string{"localhost"},
+	})
+	addr, addrErr := ValidateCertificate(cert)
+	assert.NoError(t, addrErr)
+	assert.Equal(t, networking.IPv4LocalhostDefaultAddress, addr)
+}
+
+func TestValidateCertificate_PrefersIPv6OverLocalhost(t *testing.T) {
+	cert := generateTestX509Cert(t, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.IPv6loopback},
+		DNSNames:     []string{"localhost"},
+	})
+	addr, addrErr := ValidateCertificate(cert)
+	assert.NoError(t, addrErr)
+	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
+}
+
 // --- Test helpers ---
 
 

@@ -56,3 +56,15 @@ func TestNormalizeThumbprint_MixedFormatting(t *testing.T) {
 	result := normalizeThumbprint("A1:b2 C3:d4 E5:f6 A1:b2 C3:d4 E5:f6 A1:b2 C3:d4 E5:f6 A1:b2")
 	assert.Equal(t, "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result)
 }
+
+func TestNormalizeThumbprint_LeadingTrailingWhitespace(t *testing.T) {
+	// Copy/paste from shell output with trailing newline and tabs
+	result := normalizeThumbprint("\t A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2 \r\n")
+	assert.Equal(t, "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result)
+}
+
+func TestNormalizeThumbprint_WindowsLeftToRightMark(t *testing.T) {
+	// Windows certificate UI sometimes embeds invisible U+200E (LRM) characters
+	result := normalizeThumbprint("\u200eA1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2\u200e")
+	assert.Equal(t, "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", result)
+}
