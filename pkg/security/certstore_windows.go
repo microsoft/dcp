@@ -11,6 +11,7 @@ package security
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
@@ -191,9 +192,21 @@ func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCerti
 		return nil, "", fmt.Errorf("PFX for certificate %q did not contain a private key", thumbprint)
 	}
 
-	// Validate the leaf certificate (first in the list).
-	leafCert := certs[0].cert
-	serverAddress, validateErr := ValidateCertificate(leafCert)
+	// Find the leaf certificate by matching the requested thumbprint.
+	leafIdx := -1
+	for i, c := range certs {
+		hash := sha1.Sum(c.cert.Raw)
+		if hex.EncodeToString(hash[:]) == thumbprint {
+			leafIdx = i
+			break
+		}
+	}
+	if leafIdx < 0 {
+		return nil, "", fmt.Errorf("PFX export for %q did not contain the expected leaf certificate", thumbprint)
+	}
+
+	// Validate the leaf certificate.
+	serverAddress, validateErr := ValidateCertificate(certs[leafIdx].cert)
 	if validateErr != nil {
 		return nil, "", fmt.Errorf("certificate with thumbprint %q is not valid: %w", thumbprint, validateErr)
 	}
@@ -217,7 +230,7 @@ func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCerti
 }
 
 // findRootCertIndex returns the index of the self-signed root certificate.
-// If none is found, returns the index of the last certificate.
+// If none is found, returns -1 and false.
 func findRootCertIndex(certs []certWithPEM) (int, bool) {
 	for i, c := range certs {
 		if bytes.Equal(c.cert.RawIssuer, c.cert.RawSubject) &&
