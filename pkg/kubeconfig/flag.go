@@ -15,15 +15,22 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/security"
 )
 
 const (
-	PortFlagName     = "port"
-	DCP_SECURE_TOKEN = "DCP_SECURE_TOKEN"
+	PortFlagName               = "port"
+	TLSCertThumbprintFlagName  = "tls-cert-thumbprint"
+	TLSCAFileFlagName          = "tls-ca-file"
+	DCP_SECURE_TOKEN           = "DCP_SECURE_TOKEN"
 )
 
 var (
-	port int32
+	port              int32
+	tlsCertThumbprint string
+	tlsCAFile         string
 )
 
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
@@ -56,6 +63,30 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 		fs.Int32Var(&port, PortFlagName, 0, "Use a specific port when scaffolding the Kubeconfig file. If not specified, a random port will be used.")
 		return fs.Lookup(PortFlagName)
 	}
+}
+
+// EnsureTLSCertThumbprintFlag registers the --tls-cert-thumbprint flag if not already registered.
+func EnsureTLSCertThumbprintFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCertThumbprintFlagName); f != nil {
+		return f
+	}
+	fs.StringVar(&tlsCertThumbprint, TLSCertThumbprintFlagName, "",
+		"SHA-1 thumbprint of a certificate in the Windows CurrentUser\\My certificate store to use for HTTPS. "+
+			"The certificate must have an exportable RSA private key. "+
+			"Only supported on Windows. "+
+			"If not provided, an ephemeral self-signed certificate is generated.")
+	return fs.Lookup(TLSCertThumbprintFlagName)
+}
+
+// EnsureTLSCAFileFlag registers the --tls-ca-file flag if not already registered.
+func EnsureTLSCAFileFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCAFileFlagName); f != nil {
+		return f
+	}
+	fs.StringVar(&tlsCAFile, TLSCAFileFlagName, "",
+		"File containing the PEM-encoded CA certificate to use as the trust anchor. "+
+			"Only used with --tls-cert-thumbprint when the certificate is not self-signed.")
+	return fs.Lookup(TLSCAFileFlagName)
 }
 
 // Ensures that the kubeconfig flag exist and points to a non-empty file.
@@ -107,6 +138,35 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
+	// Determine the server address and optional store certificate data.
+	var serverAddress string
+	var storeCertData *security.ServerCertificateData
+	if tlsCertThumbprint != "" {
+		var lookupErr error
+		storeCertData, serverAddress, lookupErr = security.LookupCertificate(tlsCertThumbprint)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("TLS certificate store lookup failed: %w", lookupErr)
+		}
+
+		// If a CA file is provided, use it as the trust anchor instead of the cert itself.
+		if tlsCAFile != "" {
+			caPEM, caReadErr := os.ReadFile(tlsCAFile)
+			if caReadErr != nil {
+				return nil, fmt.Errorf("unable to read CA certificate file '%s': %w", tlsCAFile, caReadErr)
+			}
+			storeCertData.CACertPEM = caPEM
+		}
+	} else {
+		if tlsCAFile != "" {
+			return nil, fmt.Errorf("--%s requires --%s to also be specified", TLSCAFileFlagName, TLSCertThumbprintFlagName)
+		}
+		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
+		if preferredErr != nil {
+			return nil, fmt.Errorf("could not determine server address: %w", preferredErr)
+		}
+		serverAddress = networking.IpToString(preferredIps[0])
+	}
+
 	kubeconfigPath, pathErr := getKubeConfigPath(flags)
 	if pathErr != nil {
 		return nil, pathErr
@@ -121,7 +181,9 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
 	generateToken := !tokenFound || token == ""
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, true /* use certificate */, generateToken, log)
+	generateEphemeral := storeCertData == nil
+
+	k, kErr := getKubeconfig(kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}
