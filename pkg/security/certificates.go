@@ -10,7 +10,6 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -18,7 +17,6 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"os"
 	"time"
 
 	"github.com/microsoft/dcp/internal/networking"
@@ -32,24 +30,9 @@ const (
 )
 
 type ServerCertificateData struct {
-	CACertificate []byte          // Self-signed CA certificate, not encoded
-	ServerCert    []byte          // Server certificate, not encoded
-	ServerKey     *rsa.PrivateKey // Server private key
-}
-
-// Returns PEM-encoded server and certificate authority certificates.
-func (scd ServerCertificateData) Certificate() ([]byte, error) {
-	return PEMEncodeCertificates(scd.ServerCert, scd.CACertificate)
-}
-
-// Returns PEM-encoded server private key.
-func (scd ServerCertificateData) ServerPrivateKey() ([]byte, error) {
-	return PEMEncodePrivateKey(scd.ServerKey)
-}
-
-// Returns PEM-encoded CA certificate.
-func (scd ServerCertificateData) CA() ([]byte, error) {
-	return PEMEncodeCertificates(scd.CACertificate)
+	CACertPEM      []byte // Root CA certificate, PEM-encoded (for client trust / kubeconfig)
+	CertChainPEM   []byte // Server certificate chain (leaf + intermediates), PEM-encoded
+	ServerKeyPEM   []byte // Server private key, PEM-encoded
 }
 
 // Generates a self-signed certificate authority, server certificate, and a server private key
@@ -137,86 +120,36 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 	}
 
 	return ServerCertificateData{
-		CACertificate: caBytes,
-		ServerCert:    serverBytes,
-		ServerKey:     serverKey,
+		CACertPEM:    PEMEncodeCertificates(caBytes),
+		CertChainPEM: PEMEncodeCertificates(serverBytes),
+		ServerKeyPEM: PEMEncodePrivateKey(x509.MarshalPKCS1PrivateKey(serverKey)),
 	}, nil
 }
 
-// PEM-encodes a set of certificates into a common buffer
-func PEMEncodeCertificates(certs ...[]byte) ([]byte, error) {
-	if len(certs) == 0 {
-		return nil, fmt.Errorf("no certificates provided for PEM encoding")
-	}
+// PEMEncodeBlock PEM-encodes a single block with the given type and DER bytes.
+func PEMEncodeBlock(blockType string, derBytes []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: derBytes})
+}
 
-	var buffer bytes.Buffer
-
+// PEMEncodeCertificates PEM-encodes a set of raw DER certificates into a common buffer.
+func PEMEncodeCertificates(certs ...[]byte) []byte {
+	var buf []byte
 	for _, cert := range certs {
-		pemBlock := &pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: cert,
-		}
-		if err := pem.Encode(&buffer, pemBlock); err != nil {
-			return nil, fmt.Errorf("failed to PEM encode certificate: %w", err)
-		}
+		buf = append(buf, PEMEncodeBlock("CERTIFICATE", cert)...)
 	}
-
-	return buffer.Bytes(), nil
+	return buf
 }
 
-// PEM-encodes a private key
-func PEMEncodePrivateKey(key *rsa.PrivateKey) ([]byte, error) {
-	if key == nil {
-		return nil, fmt.Errorf("private key is nil")
-	}
-
-	var buffer bytes.Buffer
-
-	pemBlock := &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(key),
-	}
-	if err := pem.Encode(&buffer, pemBlock); err != nil {
-		return nil, fmt.Errorf("failed to PEM encode private key: %w", err)
-	}
-
-	return buffer.Bytes(), nil
+// PEMEncodePrivateKey PEM-encodes PKCS#1 RSA private key bytes.
+func PEMEncodePrivateKey(pkcs1Bytes []byte) []byte {
+	return PEMEncodeBlock("RSA PRIVATE KEY", pkcs1Bytes)
 }
 
-// ValidateCertificateFiles validates that the given certificate and key files are readable,
-// contain valid PEM data, that the certificate and key form a valid pair, and that the server
-// certificate is valid for localhost.
+// ValidateCertificate validates that the given certificate is currently valid,
+// authorized for server authentication, and covers a localhost address.
 // Returns the server address to use based on what the certificate covers and the system's
-// IP version preference. IP addresses are preferred over DNS names. If the preferred IP
-// version is covered, that address is used. Otherwise, it falls back to whichever localhost
-// address the cert is valid for.
-func ValidateCertificateFiles(certFile, keyFile string) (string, error) {
-	certPEM, certReadErr := os.ReadFile(certFile)
-	if certReadErr != nil {
-		return "", fmt.Errorf("unable to read certificate file '%s': %w", certFile, certReadErr)
-	}
-
-	keyPEM, keyReadErr := os.ReadFile(keyFile)
-	if keyReadErr != nil {
-		return "", fmt.Errorf("unable to read private key file '%s': %w", keyFile, keyReadErr)
-	}
-
-	_, tlsErr := tls.X509KeyPair(certPEM, keyPEM)
-	if tlsErr != nil {
-		return "", fmt.Errorf("certificate and private key are not a valid pair: %w", tlsErr)
-	}
-
-	// Parse the server certificate (first in the chain) and determine which localhost address it covers.
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", fmt.Errorf("no certificate found in PEM data")
-	}
-
-	cert, parseErr := x509.ParseCertificate(block.Bytes)
-	if parseErr != nil {
-		return "", fmt.Errorf("failed to parse certificate: %w", parseErr)
-	}
-
+// IP version preference.
+func ValidateCertificate(cert *x509.Certificate) (string, error) {
 	// Validate the certificate is currently within its validity period.
 	now := time.Now()
 	if now.Before(cert.NotBefore) {

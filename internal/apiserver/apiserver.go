@@ -232,21 +232,10 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServer
 		}
 	}
 
-	if s.config.HasUserProvidedCert() {
-		// Use the user-provided certificate files directly.
-		// Tilt's ApplyTo() will load them via dynamiccertificates.NewDynamicServingContentFromFiles().
-		options.ServingOptions.ServerCert.CertKey.CertFile = s.config.TLSCertFile()
-		options.ServingOptions.ServerCert.CertKey.KeyFile = s.config.TLSKeyFile()
-	} else if certificateData != nil {
-		cert, certErr := certificateData.Certificate()
-		if certErr != nil {
-			return nil, fmt.Errorf("unable to obtain certificate data: %w", certErr)
-		}
-		key, keyErr := certificateData.ServerPrivateKey()
-		if keyErr != nil {
-			return nil, fmt.Errorf("unable to obtain key data: %w", keyErr)
-		}
-		options.ServingOptions.ServerCert.GeneratedCert, err = dynamiccertificates.NewStaticCertKeyContent("DCP self signed certificate", cert, key)
+	if certificateData != nil {
+		cert := certificateData.CertChainPEM
+		key := certificateData.ServerKeyPEM
+		options.ServingOptions.ServerCert.GeneratedCert, err = dynamiccertificates.NewStaticCertKeyContent("DCP server certificate", cert, key)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create static certificate: %w", err)
 		}

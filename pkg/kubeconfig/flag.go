@@ -21,16 +21,16 @@ import (
 )
 
 const (
-	PortFlagName          = "port"
-	TLSCertFileFlagName   = "tls-cert-file"
-	TLSKeyFileFlagName    = "tls-private-key-file"
-	DCP_SECURE_TOKEN      = "DCP_SECURE_TOKEN"
+	PortFlagName               = "port"
+	TLSCertThumbprintFlagName  = "tls-cert-thumbprint"
+	TLSCAFileFlagName          = "tls-ca-file"
+	DCP_SECURE_TOKEN           = "DCP_SECURE_TOKEN"
 )
 
 var (
-	port        int32
-	tlsCertFile string
-	tlsKeyFile  string
+	port              int32
+	tlsCertThumbprint string
+	tlsCAFile         string
 )
 
 // controller-runtime expects --kubeconfig flag to be registered with the default flag.CommandLine flag set,
@@ -65,24 +65,28 @@ func EnsureKubeconfigPortFlag(fs *pflag.FlagSet) *pflag.Flag {
 	}
 }
 
-// EnsureTLSCertFileFlag registers the --tls-cert-file flag if not already registered.
-func EnsureTLSCertFileFlag(fs *pflag.FlagSet) *pflag.Flag {
-	if f := fs.Lookup(TLSCertFileFlagName); f != nil {
+// EnsureTLSCertThumbprintFlag registers the --tls-cert-thumbprint flag if not already registered.
+func EnsureTLSCertThumbprintFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCertThumbprintFlagName); f != nil {
 		return f
 	}
-	fs.StringVar(&tlsCertFile, TLSCertFileFlagName, "", "File containing the x509 certificate for HTTPS, "+
-		"optionally followed by the full certificate chain. When provided, --tls-private-key-file must also be specified. "+
-		"If not provided, an ephemeral self-signed certificate is generated.")
-	return fs.Lookup(TLSCertFileFlagName)
+	fs.StringVar(&tlsCertThumbprint, TLSCertThumbprintFlagName, "",
+		"SHA-1 thumbprint of a certificate in the Windows CurrentUser\\My certificate store to use for HTTPS. "+
+			"The certificate must have an exportable RSA private key. "+
+			"Only supported on Windows. "+
+			"If not provided, an ephemeral self-signed certificate is generated.")
+	return fs.Lookup(TLSCertThumbprintFlagName)
 }
 
-// EnsureTLSKeyFileFlag registers the --tls-private-key-file flag if not already registered.
-func EnsureTLSKeyFileFlag(fs *pflag.FlagSet) *pflag.Flag {
-	if f := fs.Lookup(TLSKeyFileFlagName); f != nil {
+// EnsureTLSCAFileFlag registers the --tls-ca-file flag if not already registered.
+func EnsureTLSCAFileFlag(fs *pflag.FlagSet) *pflag.Flag {
+	if f := fs.Lookup(TLSCAFileFlagName); f != nil {
 		return f
 	}
-	fs.StringVar(&tlsKeyFile, TLSKeyFileFlagName, "", "File containing the x509 private key matching --tls-cert-file.")
-	return fs.Lookup(TLSKeyFileFlagName)
+	fs.StringVar(&tlsCAFile, TLSCAFileFlagName, "",
+		"File containing the PEM-encoded CA certificate to use as the trust anchor. "+
+			"Only used with --tls-cert-thumbprint when the certificate is not self-signed.")
+	return fs.Lookup(TLSCAFileFlagName)
 }
 
 // Ensures that the kubeconfig flag exist and points to a non-empty file.
@@ -134,20 +138,28 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		return nil, fmt.Errorf("invalid port number: %d", port)
 	}
 
-	// Validate TLS certificate flags: both must be specified, or neither.
-	if (tlsCertFile != "") != (tlsKeyFile != "") {
-		return nil, fmt.Errorf("both --%s and --%s must be specified together", TLSCertFileFlagName, TLSKeyFileFlagName)
-	}
-
-	// Determine the server address to use.
+	// Determine the server address and optional store certificate data.
 	var serverAddress string
-	if tlsCertFile != "" {
-		var validateErr error
-		serverAddress, validateErr = security.ValidateCertificateFiles(tlsCertFile, tlsKeyFile)
-		if validateErr != nil {
-			return nil, fmt.Errorf("TLS certificate validation failed: %w", validateErr)
+	var storeCertData *security.ServerCertificateData
+	if tlsCertThumbprint != "" {
+		var lookupErr error
+		storeCertData, serverAddress, lookupErr = security.LookupCertificate(tlsCertThumbprint)
+		if lookupErr != nil {
+			return nil, fmt.Errorf("TLS certificate store lookup failed: %w", lookupErr)
+		}
+
+		// If a CA file is provided, use it as the trust anchor instead of the cert itself.
+		if tlsCAFile != "" {
+			caPEM, caReadErr := os.ReadFile(tlsCAFile)
+			if caReadErr != nil {
+				return nil, fmt.Errorf("unable to read CA certificate file '%s': %w", tlsCAFile, caReadErr)
+			}
+			storeCertData.CACertPEM = caPEM
 		}
 	} else {
+		if tlsCAFile != "" {
+			return nil, fmt.Errorf("--%s requires --%s to also be specified", TLSCAFileFlagName, TLSCertThumbprintFlagName)
+		}
 		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
 		if preferredErr != nil {
 			return nil, fmt.Errorf("could not determine server address: %w", preferredErr)
@@ -169,9 +181,9 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	token, tokenFound := os.LookupEnv(DCP_SECURE_TOKEN)
 	generateToken := !tokenFound || token == ""
 
-	useCertificate := tlsCertFile == "" // Only generate ephemeral certs if user didn't provide their own
+	generateEphemeral := storeCertData == nil
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, useCertificate, generateToken, tlsCertFile, tlsKeyFile, serverAddress, log)
+	k, kErr := getKubeconfig(kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}
