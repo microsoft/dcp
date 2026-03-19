@@ -44,7 +44,7 @@ type ReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStruct
 	reconciliationSeqNo uint32
 
 	// Debouncer used to schedule reconciliations.
-	debouncer *reconcilerDebouncer[struct{}]
+	debouncer *reconcilerDebouncer
 
 	// Channel used to trigger programmatic reconciliations
 	notifyRunChanged *concurrency.UnboundedChan[ctrl_event.GenericEvent]
@@ -70,7 +70,7 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 		Client:           client,
 		NoCacheClient:    noCacheClient,
 		Log:              log,
-		debouncer:        newReconcilerDebouncer[struct{}](),
+		debouncer:        newReconcilerDebouncer(),
 		notifyRunChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		LifetimeCtx:      lifetimeCtx,
 		conflictBackoff:  &syncmap.Map[types.NamespacedName, *backoff.ExponentialBackOff]{},
@@ -100,11 +100,11 @@ func (rb *ReconcilerBase[T, PT]) StartReconciliation(req ctrl.Request) (ctrl_cli
 
 // Schedules reconciliation for specific object identified by namespaced name.
 func (rb *ReconcilerBase[T, PT]) ScheduleReconciliation(nn types.NamespacedName) {
-	rb.debouncer.ReconciliationNeeded(rb.LifetimeCtx, nn, struct{}{}, func(rti reconcileTriggerInput[struct{}]) {
+	rb.debouncer.ReconciliationNeeded(rb.LifetimeCtx, nn, func(target types.NamespacedName) {
 		var obj PT = new(T)
 		om := obj.GetObjectMeta()
-		om.Name = rti.target.Name
-		om.Namespace = rti.target.Namespace
+		om.Name = target.Name
+		om.Namespace = target.Namespace
 		event := ctrl_event.GenericEvent{
 			Object: obj,
 		}
