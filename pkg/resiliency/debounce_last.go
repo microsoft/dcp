@@ -16,18 +16,22 @@ type ResultWithError[R any] struct {
 	Err error
 }
 
+type runState[R any] struct {
+	timer     *time.Timer
+	threshold time.Time
+	doneC     chan struct{}
+	res       ResultWithError[R]
+}
+
 // DebounceLast calls the runner function after the specified delay, but only if no new calls have arrived in the meantime.
 // If new calls arrive, the runner will be delayed further, but no more than maxDelay.
 // After the runner function completes, the callers of Run() will all receive the same result (and error, if any).
 type DebounceLast[R any] struct {
-	delay     time.Duration
-	maxDelay  time.Duration
-	threshold time.Time
-	timer     *time.Timer
-	runC      chan struct{}
-	m         *sync.Mutex
-	runner    func() (R, error)
-	res       *ResultWithError[R]
+	delay    time.Duration
+	maxDelay time.Duration
+	run      *runState[R]
+	m        *sync.Mutex
+	runner   func() (R, error)
 }
 
 func NewDebounceLast[R any](runner func() (R, error), delay, maxDelay time.Duration) *DebounceLast[R] {
@@ -42,59 +46,56 @@ func NewDebounceLast[R any](runner func() (R, error), delay, maxDelay time.Durat
 func (dl *DebounceLast[R]) Run(ctx context.Context) (R, error) {
 	dl.m.Lock()
 
-	var runC chan struct{}
-	var res *ResultWithError[R]
+	var run *runState[R]
 
-	if dl.runC == nil {
+	if dl.run == nil {
 		// New run
-		dl.timer = time.NewTimer(dl.delay)
-		dl.runC = make(chan struct{}, 1)
-		dl.threshold = time.Now().Add(dl.maxDelay)
-		dl.res = &ResultWithError[R]{}
-		runC = dl.runC
-		res = dl.res
+		run = &runState[R]{
+			timer:     time.NewTimer(dl.delay),
+			threshold: time.Now().Add(dl.maxDelay),
+			doneC:     make(chan struct{}),
+		}
+		dl.run = run
 
-		go dl.execRunnerIfThresholdExceeded(ctx)
+		go dl.execRunnerIfThresholdExceeded(ctx, run)
 	} else {
 		// Run in progress
-		runC = dl.runC
-		res = dl.res
-		if time.Now().Add(dl.delay).Before(dl.threshold) {
-			dl.timer.Reset(dl.delay)
+		run = dl.run
+		if time.Now().Add(dl.delay).Before(run.threshold) {
+			run.timer.Reset(dl.delay)
 		}
 	}
 	dl.m.Unlock()
 
-	<-runC
-	return res.V, res.Err
+	<-run.doneC
+	return run.res.V, run.res.Err
 }
 
-// The helper goroutine that will be woken up periodically and run the runner if the threshold is exceeded.
-func (dl *DebounceLast[R]) execRunnerIfThresholdExceeded(ctx context.Context) {
-	defer func() {
-		dl.timer.Stop()
-		close(dl.runC)
-		dl.runC = nil
-		dl.threshold = time.Time{}
-		dl.m.Unlock()
-	}()
+func (dl *DebounceLast[R]) execRunnerIfThresholdExceeded(ctx context.Context, run *runState[R]) {
+	var val R
+	var err error
 
 	select {
-
-	case <-dl.timer.C:
-		func() {
-			var val R
-			var err error
-			func() {
-				defer dl.m.Lock()
-				val, err = dl.runner()
-			}()
-			dl.res.V = val
-			dl.res.Err = err
-		}()
+	case <-run.timer.C:
+		dl.stopCurrentRun(run)
+		val, err = dl.runner()
 
 	case <-ctx.Done():
-		dl.m.Lock()
-		dl.res.V, dl.res.Err = *new(R), ctx.Err()
+		dl.stopCurrentRun(run)
+		val, err = *new(R), ctx.Err()
+	}
+
+	run.timer.Stop()
+	run.res.V = val
+	run.res.Err = err
+	close(run.doneC)
+}
+
+func (dl *DebounceLast[R]) stopCurrentRun(run *runState[R]) {
+	dl.m.Lock()
+	defer dl.m.Unlock()
+
+	if dl.run == run {
+		dl.run = nil
 	}
 }
