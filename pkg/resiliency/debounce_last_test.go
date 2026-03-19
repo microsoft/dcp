@@ -19,8 +19,8 @@ import (
 func TestExecutesRunnerAfterDelay(t *testing.T) {
 	t.Parallel()
 
-	runner := func(i int) (int, error) {
-		return i, nil
+	runner := func() (int, error) {
+		return 7, nil
 	}
 
 	const debounceDelay = time.Millisecond * 100
@@ -31,7 +31,7 @@ func TestExecutesRunnerAfterDelay(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	res, err := deb.Run(ctx, 7)
+	res, err := deb.Run(ctx)
 	finish := time.Now()
 
 	require.NoError(t, err)
@@ -44,7 +44,7 @@ func TestExecutesRunnerAfterDelay(t *testing.T) {
 func TestReturnsErrorFromRunner(t *testing.T) {
 	t.Parallel()
 
-	runner := func(i int) (int, error) {
+	runner := func() (int, error) {
 		return 0, fmt.Errorf("sorry")
 	}
 
@@ -56,7 +56,7 @@ func TestReturnsErrorFromRunner(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := deb.Run(ctx, 7)
+	_, err := deb.Run(ctx)
 	finish := time.Now()
 
 	require.Error(t, err)
@@ -67,8 +67,9 @@ func TestReturnsErrorFromRunner(t *testing.T) {
 func TestDebouncesRapidInvocations(t *testing.T) {
 	t.Parallel()
 
-	runner := func(i int) (int, error) {
-		return i, nil
+	runnerCalls := atomic.Int32{}
+	runner := func() (int, error) {
+		return int(runnerCalls.Add(1)), nil
 	}
 
 	const debounceDelay = time.Millisecond * 200
@@ -78,7 +79,6 @@ func TestDebouncesRapidInvocations(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
-	const resultShift = 10
 	const numCalls = 5
 
 	results := make([]int, numCalls)
@@ -86,14 +86,14 @@ func TestDebouncesRapidInvocations(t *testing.T) {
 	wg.Add(numCalls)
 
 	start := time.Now()
-	// Make numCalls calls to runner, in order, as fast as possible
+	// Make numCalls calls to runner as fast as possible.
 	for i := 0; i < numCalls; i++ {
-		go func(j int) {
-			res, err := deb.Run(ctx, j)
+		go func(index int) {
+			res, err := deb.Run(ctx)
 			require.NoError(t, err)
-			results[j-resultShift] = res
+			results[index] = res
 			wg.Done()
-		}(i + resultShift)
+		}(i)
 	}
 
 	wg.Wait()
@@ -103,10 +103,8 @@ func TestDebouncesRapidInvocations(t *testing.T) {
 	require.IsNonIncreasing(t, results)
 	require.IsNonDecreasing(t, results)
 
-	// It is not predictable what the result will be, because the order of goroutines executing the call
-	// is random, but they should be within [resultShift, resultShift + numCalls).
-	require.GreaterOrEqual(t, results[0], resultShift)
-	require.Less(t, results[0], resultShift+numCalls)
+	require.Equal(t, 1, results[0])
+	require.Equal(t, int32(1), runnerCalls.Load())
 
 	require.WithinRange(t, finish, start.Add(debounceDelay), time.Now().Add(testTimeoutDelay))
 }
@@ -114,8 +112,10 @@ func TestDebouncesRapidInvocations(t *testing.T) {
 func TestDebounceIsReusable(t *testing.T) {
 	t.Parallel()
 
-	runner := func(i int32) (int32, error) {
-		return i, nil
+	runnerCalls := atomic.Int32{}
+	runner := func() (int32, error) {
+		runnerCalls.Add(1)
+		return 1, nil
 	}
 
 	const debounceDelay = time.Millisecond * 150
@@ -134,7 +134,7 @@ func TestDebounceIsReusable(t *testing.T) {
 
 		for i := 0; i < numCalls; i++ {
 			go func() {
-				res, err := deb.Run(ctx, 1)
+				res, err := deb.Run(ctx)
 				require.NoError(t, err)
 				atomic.AddInt32(&sum, res)
 				wg.Done()
@@ -152,24 +152,25 @@ func TestDebounceIsReusable(t *testing.T) {
 	// Verify all calls were made and the results add up to expected value
 	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
 	require.Equal(t, int32(numCalls), sum)
+	require.Equal(t, int32(1), runnerCalls.Load())
 
 	// Now the same debounce should be ready for another round of calls
-	const secondRunResultShift = 10
-	sum = secondRunResultShift
+	sum = 0
 
 	start = time.Now()
 	makeCalls()
 	finish = time.Now()
 
 	require.WithinRange(t, finish, start.Add(debounceDelay), testTimeout)
-	require.Equal(t, int32(numCalls+secondRunResultShift), sum)
+	require.Equal(t, int32(numCalls), sum)
+	require.Equal(t, int32(2), runnerCalls.Load())
 }
 
 func TestReturnsErrorIfContextCancelled(t *testing.T) {
 	t.Parallel()
 
-	runner := func(i int) (int, error) {
-		return i, nil
+	runner := func() (int, error) {
+		return 7, nil
 	}
 
 	const debounceDelay = time.Millisecond * 500
@@ -180,7 +181,7 @@ func TestReturnsErrorIfContextCancelled(t *testing.T) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
 	defer cancel()
-	_, err := deb.Run(ctx, 7)
+	_, err := deb.Run(ctx)
 	finish := time.Now()
 
 	require.ErrorIs(t, err, context.DeadlineExceeded)

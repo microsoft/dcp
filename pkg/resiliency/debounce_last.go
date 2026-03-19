@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-type Runner[T any, R any] interface {
-	~func(T) (R, error)
-}
-
 type ResultWithError[R any] struct {
 	V   R
 	Err error
@@ -23,19 +19,19 @@ type ResultWithError[R any] struct {
 // DebounceLast calls the runner function after the specified delay, but only if no new calls have arrived in the meantime.
 // If new calls arrive, the runner will be delayed further, but no more than maxDelay.
 // After the runner function completes, the callers of Run() will all receive the same result (and error, if any).
-type DebounceLast[T any, R any, RF Runner[T, R]] struct {
+type DebounceLast[R any] struct {
 	delay     time.Duration
 	maxDelay  time.Duration
 	threshold time.Time
 	timer     *time.Timer
 	runC      chan struct{}
 	m         *sync.Mutex
-	runner    RF
+	runner    func() (R, error)
 	res       *ResultWithError[R]
 }
 
-func NewDebounceLast[T any, R any, RF Runner[T, R]](runner RF, delay, maxDelay time.Duration) *DebounceLast[T, R, RF] {
-	return &DebounceLast[T, R, RF]{
+func NewDebounceLast[R any](runner func() (R, error), delay, maxDelay time.Duration) *DebounceLast[R] {
+	return &DebounceLast[R]{
 		delay:    delay,
 		maxDelay: maxDelay,
 		runner:   runner,
@@ -43,7 +39,7 @@ func NewDebounceLast[T any, R any, RF Runner[T, R]](runner RF, delay, maxDelay t
 	}
 }
 
-func (dl *DebounceLast[T, R, RF]) Run(ctx context.Context, arg T) (R, error) {
+func (dl *DebounceLast[R]) Run(ctx context.Context) (R, error) {
 	dl.m.Lock()
 
 	var runC chan struct{}
@@ -58,7 +54,7 @@ func (dl *DebounceLast[T, R, RF]) Run(ctx context.Context, arg T) (R, error) {
 		runC = dl.runC
 		res = dl.res
 
-		go dl.execRunnerIfThresholdExceeded(ctx, arg)
+		go dl.execRunnerIfThresholdExceeded(ctx)
 	} else {
 		// Run in progress
 		runC = dl.runC
@@ -74,7 +70,7 @@ func (dl *DebounceLast[T, R, RF]) Run(ctx context.Context, arg T) (R, error) {
 }
 
 // The helper goroutine that will be woken up periodically and run the runner if the threshold is exceeded.
-func (dl *DebounceLast[T, R, RF]) execRunnerIfThresholdExceeded(ctx context.Context, arg T) {
+func (dl *DebounceLast[R]) execRunnerIfThresholdExceeded(ctx context.Context) {
 	defer func() {
 		dl.timer.Stop()
 		close(dl.runC)
@@ -91,7 +87,7 @@ func (dl *DebounceLast[T, R, RF]) execRunnerIfThresholdExceeded(ctx context.Cont
 			var err error
 			func() {
 				defer dl.m.Lock()
-				val, err = dl.runner(arg)
+				val, err = dl.runner()
 			}()
 			dl.res.V = val
 			dl.res.Err = err
