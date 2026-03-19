@@ -1,6 +1,6 @@
 ---
 name: update-dependencies
-description: 'Update packages that DCP execuatables depend on. This skill is used infrequently, usually just once at the start of a new development cycle. Should only be used when requested explicitly, never as part of a regular change or PR.'
+description: 'Update packages that DCP executables depend on. This skill is used infrequently, usually just once at the start of a new development cycle. Should only be used when requested explicitly, never as part of a regular change or PR.'
 ---
 
 # Update Dependencies
