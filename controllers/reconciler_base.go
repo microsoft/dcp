@@ -66,16 +66,19 @@ func NewReconcilerBase[T commonapi.ObjectStruct, PT commonapi.PCopyableObjectStr
 	log logr.Logger,
 	lifetimeCtx context.Context,
 ) *ReconcilerBase[T, PT] {
-	return &ReconcilerBase[T, PT]{
+	rb := &ReconcilerBase[T, PT]{
 		Client:           client,
 		NoCacheClient:    noCacheClient,
 		Log:              log,
-		debouncer:        newReconcilerDebouncer(),
 		notifyRunChanged: concurrency.NewUnboundedChan[ctrl_event.GenericEvent](lifetimeCtx),
 		LifetimeCtx:      lifetimeCtx,
 		conflictBackoff:  &syncmap.Map[types.NamespacedName, *backoff.ExponentialBackOff]{},
 		kind:             reflect.TypeFor[T]().Name(),
 	}
+	rb.debouncer = newReconcilerDebouncer(func(name types.NamespacedName) {
+		rb.doScheduleReconciliation(name)
+	})
+	return rb
 }
 
 // Marks the startup of another reconciliation.
@@ -100,16 +103,18 @@ func (rb *ReconcilerBase[T, PT]) StartReconciliation(req ctrl.Request) (ctrl_cli
 
 // Schedules reconciliation for specific object identified by namespaced name.
 func (rb *ReconcilerBase[T, PT]) ScheduleReconciliation(nn types.NamespacedName) {
-	rb.debouncer.ReconciliationNeeded(rb.LifetimeCtx, nn, func(target types.NamespacedName) {
-		var obj PT = new(T)
-		om := obj.GetObjectMeta()
-		om.Name = target.Name
-		om.Namespace = target.Namespace
-		event := ctrl_event.GenericEvent{
-			Object: obj,
-		}
-		rb.notifyRunChanged.In <- event
-	})
+	rb.debouncer.ReconciliationNeeded(rb.LifetimeCtx, nn)
+}
+
+func (rb *ReconcilerBase[T, PT]) doScheduleReconciliation(target types.NamespacedName) {
+	var obj PT = new(T)
+	om := obj.GetObjectMeta()
+	om.Name = target.Name
+	om.Namespace = target.Namespace
+	event := ctrl_event.GenericEvent{
+		Object: obj,
+	}
+	rb.notifyRunChanged.In <- event
 }
 
 // Schedules reconciliation for specific object identified by namespaced name, delaying it by specified duration.

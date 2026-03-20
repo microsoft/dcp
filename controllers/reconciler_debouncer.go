@@ -32,13 +32,15 @@ type reconcilerDebouncer struct {
 	debounceMap   *syncmap.Map[types.NamespacedName, *objectDebounce]
 	debounceDelay time.Duration
 	maxDelay      time.Duration
+	trigger       reconcileTrigger
 }
 
-func newReconcilerDebouncer() *reconcilerDebouncer {
+func newReconcilerDebouncer(trigger reconcileTrigger) *reconcilerDebouncer {
 	return &reconcilerDebouncer{
 		debounceMap:   &syncmap.Map[types.NamespacedName, *objectDebounce]{},
 		debounceDelay: reconciliationDebounceDelay,
 		maxDelay:      reconciliationMaxDelay,
+		trigger:       trigger,
 	}
 }
 
@@ -57,9 +59,9 @@ func (rd *reconcilerDebouncer) OnReconcile(name types.NamespacedName) {
 }
 
 // Tries to trigger reconciliation for an object identified by name, after appropriate debouncing.
-func (rd *reconcilerDebouncer) ReconciliationNeeded(ctx context.Context, name types.NamespacedName, trigger reconcileTrigger) {
+func (rd *reconcilerDebouncer) ReconciliationNeeded(ctx context.Context, name types.NamespacedName) {
 	debounce, _ := rd.debounceMap.LoadOrStoreNew(name, func() *objectDebounce {
-		return objectDebounceFactory(trigger, name, rd.debounceDelay, rd.maxDelay)
+		return objectDebounceFactory(rd.trigger, name, rd.debounceDelay, rd.maxDelay)
 	})
 
 	debounce.run(ctx)
