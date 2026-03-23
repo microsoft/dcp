@@ -154,6 +154,8 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 		return nil, err
 	}
 
+	log.V(1).Info("kubeconfig saved successfully")
+
 	completedConfig := config.Complete()
 	stoppedCh, err := runServerFromCompletedConfig(completedConfig, runCtx, runConfig, log)
 	if err != nil {
@@ -231,15 +233,9 @@ func (s *ApiServer) computeServerOptions(log logr.Logger) (*tiltstart.TiltServer
 	}
 
 	if certificateData != nil {
-		cert, certErr := certificateData.Certificate()
-		if certErr != nil {
-			return nil, fmt.Errorf("unable to obtain certificate data: %w", certErr)
-		}
-		key, keyErr := certificateData.ServerPrivateKey()
-		if keyErr != nil {
-			return nil, fmt.Errorf("unable to obtain key data: %w", keyErr)
-		}
-		options.ServingOptions.ServerCert.GeneratedCert, err = dynamiccertificates.NewStaticCertKeyContent("DCP self signed certificate", cert, key)
+		cert := certificateData.CertChainPEM
+		key := certificateData.ServerKeyPEM
+		options.ServingOptions.ServerCert.GeneratedCert, err = dynamiccertificates.NewStaticCertKeyContent("DCP server certificate", cert, key)
 		if err != nil {
 			return nil, fmt.Errorf("unable to create static certificate: %w", err)
 		}
