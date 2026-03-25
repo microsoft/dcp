@@ -15,8 +15,9 @@ import (
 )
 
 type TarWriter struct {
-	writer *tar.Writer
-	buffer *bytes.Buffer
+	writer   *tar.Writer
+	buffer   *bytes.Buffer
+	hasItems bool
 }
 
 func NewTarWriter() *TarWriter {
@@ -25,6 +26,11 @@ func NewTarWriter() *TarWriter {
 		writer: tar.NewWriter(buffer),
 		buffer: buffer,
 	}
+}
+
+// Empty returns true if no items have been written to the tar archive.
+func (tw *TarWriter) Empty() bool {
+	return !tw.hasItems
 }
 
 func (tw *TarWriter) Buffer() (*bytes.Buffer, error) {
@@ -53,6 +59,7 @@ func (tw *TarWriter) WriteDir(name string, uid int32, gid int32, mode os.FileMod
 		return err
 	}
 
+	tw.hasItems = true
 	return nil
 }
 
@@ -73,6 +80,7 @@ func (tw *TarWriter) WriteSymlink(name string, linkTarget string, uid int32, gid
 		return err
 	}
 
+	tw.hasItems = true
 	return nil
 }
 
@@ -103,6 +111,7 @@ func (tw *TarWriter) WriteFile(contents []byte, name string, uid int32, gid int3
 		return io.ErrShortWrite
 	}
 
+	tw.hasItems = true
 	return nil
 }
 
@@ -133,5 +142,6 @@ func (tw *TarWriter) CopyFile(src io.Reader, size int64, name string, uid int32,
 		return io.ErrShortWrite
 	}
 
+	tw.hasItems = true
 	return nil
 }
