@@ -78,17 +78,18 @@ func ApplyImageLayersImpl(
 	pr, pw := io.Pipe()
 	now := time.Now()
 
-	// Write the tar in a goroutine while docker reads from the pipe
+	// Write the tar in a goroutine while docker reads from the pipe.
+	// If tar generation fails, CloseWithError unblocks the build command promptly.
 	var tarErr error
 	tarDone := make(chan struct{})
 	go func() {
 		defer close(tarDone)
-		defer pw.Close()
 
 		tw := usvc_io.NewTarWriterTo(pw)
 
 		if writeErr := tw.WriteFile([]byte(dockerfile), "Dockerfile", 0, 0, 0644, now, now, now); writeErr != nil {
 			tarErr = fmt.Errorf("writing Dockerfile to build context tar: %w", writeErr)
+			pw.CloseWithError(tarErr)
 			return
 		}
 
@@ -99,16 +100,19 @@ func ApplyImageLayersImpl(
 			if layer.Source != "" {
 				if streamErr := streamLayerFromSource(tw, layer, layerFileName, now); streamErr != nil {
 					tarErr = fmt.Errorf("streaming image layer %d to build context: %w", i, streamErr)
+					pw.CloseWithError(tarErr)
 					return
 				}
 			} else {
 				decoded, decodeErr := base64.StdEncoding.DecodeString(layer.RawContents)
 				if decodeErr != nil {
 					tarErr = fmt.Errorf("decoding base64 rawContents for layer %d (%q): %w", i, layer.Digest, decodeErr)
+					pw.CloseWithError(tarErr)
 					return
 				}
 				if writeErr := tw.WriteFile(decoded, layerFileName, 0, 0, 0644, now, now, now); writeErr != nil {
 					tarErr = fmt.Errorf("writing layer %d to build context tar: %w", i, writeErr)
+					pw.CloseWithError(tarErr)
 					return
 				}
 			}
@@ -116,7 +120,11 @@ func ApplyImageLayersImpl(
 
 		if closeErr := tw.Close(); closeErr != nil {
 			tarErr = fmt.Errorf("finalizing build context tar: %w", closeErr)
+			pw.CloseWithError(tarErr)
+			return
 		}
+
+		pw.Close()
 	}()
 
 	// Build the derived image, streaming the tar context via stdin.
@@ -136,15 +144,17 @@ func ApplyImageLayersImpl(
 	// Wait for the tar writer goroutine to finish
 	<-tarDone
 
-	if tarErr != nil {
-		return "", tarErr
-	}
+	// Prefer the build error (with actionable stderr) over tar errors, since a build
+	// failure that closes stdin will cause a broken pipe in the tar writer goroutine.
 	if buildErr != nil {
 		errDetail := ""
 		if errBuf != nil {
 			errDetail = errBuf.String()
 		}
 		return "", fmt.Errorf("building derived image with image layers: %w: %s", buildErr, errDetail)
+	}
+	if tarErr != nil {
+		return "", tarErr
 	}
 
 	// Return the tag if provided, otherwise the image ID from build output
@@ -173,7 +183,9 @@ func verifyLayerSourceHash(layer *apiv1.ImageLayer) error {
 	}
 
 	actualHashHex := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(actualHashHex, layer.SHA256) {
+	expectedHash := strings.TrimSpace(layer.SHA256)
+	expectedHash = strings.TrimPrefix(strings.TrimPrefix(expectedHash, "sha256:"), "SHA256:")
+	if !strings.EqualFold(actualHashHex, expectedHash) {
 		return fmt.Errorf("SHA256 mismatch for layer source %q: expected %s, got %s", layer.Source, layer.SHA256, actualHashHex)
 	}
 

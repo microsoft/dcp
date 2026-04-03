@@ -8,6 +8,7 @@ package io
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -39,8 +40,11 @@ func NewTarWriterTo(w io.Writer) *TarWriter {
 }
 
 func (tw *TarWriter) Buffer() (*bytes.Buffer, error) {
-	err := tw.writer.Close()
+	if tw.buffer == nil {
+		return nil, fmt.Errorf("Buffer() is not supported on TarWriters created with NewTarWriterTo; use Close() instead")
+	}
 
+	err := tw.writer.Close()
 	if err != nil {
 		return nil, err
 	}
