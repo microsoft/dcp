@@ -1360,9 +1360,6 @@ func unmarshalImage(data []byte, ic *containers.InspectedImage) error {
 	ic.Labels = dii.Config.Labels
 	ic.Tags = dii.RepoTags
 	ic.Digest = dii.Descriptor.Digest
-	ic.Architecture = dii.Architecture
-	ic.OS = dii.Os
-	ic.RootFSDiffIDs = dii.RootFS.Layers
 
 	return nil
 }
@@ -1536,13 +1533,10 @@ type dockerListedContainer struct {
 // The definition only includes data that we care about.
 // For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
 type dockerInspectedImage struct {
-	Id           string                         `json:"Id"`
-	Config       dockerInspectedImageConfig     `json:"Config,omitempty"`
-	RepoTags     []string                       `json:"RepoTags,omitempty"`
-	Descriptor   dockerInspectedImageDescriptor `json:"Descriptor,omitempty"`
-	Architecture string                         `json:"Architecture,omitempty"`
-	Os           string                         `json:"Os,omitempty"`
-	RootFS       dockerInspectedImageRootFS     `json:"RootFS,omitempty"`
+	Id         string                         `json:"Id"`
+	Config     dockerInspectedImageConfig     `json:"Config,omitempty"`
+	RepoTags   []string                       `json:"RepoTags,omitempty"`
+	Descriptor dockerInspectedImageDescriptor `json:"Descriptor,omitempty"`
 }
 
 type dockerInspectedImageConfig struct {
@@ -1551,11 +1545,6 @@ type dockerInspectedImageConfig struct {
 
 type dockerInspectedImageDescriptor struct {
 	Digest string `json:"digest,omitempty"`
-}
-
-type dockerInspectedImageRootFS struct {
-	Type   string   `json:"Type,omitempty"`
-	Layers []string `json:"Layers,omitempty"`
 }
 
 // dockerInspectedContainerXxx correspond to data returned by "docker container inspect" command.

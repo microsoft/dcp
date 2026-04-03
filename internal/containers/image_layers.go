@@ -6,7 +6,6 @@
 package containers
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -22,6 +21,7 @@ import (
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 const defaultApplyImageLayersTimeout = 10 * time.Minute
@@ -77,21 +77,22 @@ func ApplyImageLayersImpl(
 	}
 
 	// Build a tar archive containing the Dockerfile and all layer tars
-	var contextBuf bytes.Buffer
-	tw := tar.NewWriter(&contextBuf)
+	now := time.Now()
+	tw := usvc_io.NewTarWriter()
 
-	if writeErr := writeTarEntry(tw, "Dockerfile", []byte(dockerfile)); writeErr != nil {
+	if writeErr := tw.WriteFile([]byte(dockerfile), "Dockerfile", 0, 0, 0644, now, now, now); writeErr != nil {
 		return "", fmt.Errorf("writing Dockerfile to build context tar: %w", writeErr)
 	}
 
 	for i, entry := range layerEntries {
-		if writeErr := writeTarEntry(tw, entry.fileName, entry.data); writeErr != nil {
+		if writeErr := tw.WriteFile(entry.data, entry.fileName, 0, 0, 0644, now, now, now); writeErr != nil {
 			return "", fmt.Errorf("writing layer %d to build context tar: %w", i, writeErr)
 		}
 	}
 
-	if closeErr := tw.Close(); closeErr != nil {
-		return "", fmt.Errorf("closing build context tar: %w", closeErr)
+	contextBuf, bufErr := tw.Buffer()
+	if bufErr != nil {
+		return "", fmt.Errorf("finalizing build context tar: %w", bufErr)
 	}
 
 	// Build the derived image, streaming the tar context via stdin.
@@ -106,7 +107,7 @@ func ApplyImageLayersImpl(
 	args = append(args, "-")
 
 	cmd := makeCommand(args...)
-	cmd.Stdin = &contextBuf
+	cmd.Stdin = contextBuf
 
 	_, errBuf, buildErr := runBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
 	if buildErr != nil {
@@ -153,17 +154,4 @@ func readLayerFromRawContents(layer *apiv1.ImageLayer) ([]byte, error) {
 		return nil, fmt.Errorf("decoding base64 rawContents for layer %q: %w", layer.Digest, decodeErr)
 	}
 	return decoded, nil
-}
-
-func writeTarEntry(tw *tar.Writer, name string, data []byte) error {
-	header := &tar.Header{
-		Name: name,
-		Mode: 0644,
-		Size: int64(len(data)),
-	}
-	if headerErr := tw.WriteHeader(header); headerErr != nil {
-		return headerErr
-	}
-	_, writeErr := tw.Write(data)
-	return writeErr
 }
