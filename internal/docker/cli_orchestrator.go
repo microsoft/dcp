@@ -882,6 +882,14 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	return nil
 }
 
+func (dco *DockerCliOrchestrator) ApplyImageLayers(ctx context.Context, options containers.ApplyImageLayersOptions) (string, error) {
+	return containers.ApplyImageLayersImpl(ctx, dco.log, options, func(args ...string) *exec.Cmd {
+		return makeDockerCommand(args...)
+	}, func(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+		return dco.runBufferedDockerCommand(ctx, opName, cmd, stdout, stderr, timeout)
+	})
+}
+
 func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
 	sub := dco.containerEvtWatcher.Subscribe(sink)
 	return sub, nil
@@ -1352,6 +1360,9 @@ func unmarshalImage(data []byte, ic *containers.InspectedImage) error {
 	ic.Labels = dii.Config.Labels
 	ic.Tags = dii.RepoTags
 	ic.Digest = dii.Descriptor.Digest
+	ic.Architecture = dii.Architecture
+	ic.OS = dii.Os
+	ic.RootFSDiffIDs = dii.RootFS.Layers
 
 	return nil
 }
@@ -1525,10 +1536,13 @@ type dockerListedContainer struct {
 // The definition only includes data that we care about.
 // For reference see https://github.com/moby/moby/blob/master/api/swagger.yaml
 type dockerInspectedImage struct {
-	Id         string                         `json:"Id"`
-	Config     dockerInspectedImageConfig     `json:"Config,omitempty"`
-	RepoTags   []string                       `json:"RepoTags,omitempty"`
-	Descriptor dockerInspectedImageDescriptor `json:"Descriptor,omitempty"`
+	Id           string                         `json:"Id"`
+	Config       dockerInspectedImageConfig     `json:"Config,omitempty"`
+	RepoTags     []string                       `json:"RepoTags,omitempty"`
+	Descriptor   dockerInspectedImageDescriptor `json:"Descriptor,omitempty"`
+	Architecture string                         `json:"Architecture,omitempty"`
+	Os           string                         `json:"Os,omitempty"`
+	RootFS       dockerInspectedImageRootFS     `json:"RootFS,omitempty"`
 }
 
 type dockerInspectedImageConfig struct {
@@ -1537,6 +1551,11 @@ type dockerInspectedImageConfig struct {
 
 type dockerInspectedImageDescriptor struct {
 	Digest string `json:"digest,omitempty"`
+}
+
+type dockerInspectedImageRootFS struct {
+	Type   string   `json:"Type,omitempty"`
+	Layers []string `json:"Layers,omitempty"`
 }
 
 // dockerInspectedContainerXxx correspond to data returned by "docker container inspect" command.

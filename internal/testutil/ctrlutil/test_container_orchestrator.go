@@ -2384,5 +2384,25 @@ func (to *TestContainerOrchestrator) SimulateContainerExecCommandLogging(contain
 	return writeErr
 }
 
+func (to *TestContainerOrchestrator) ApplyImageLayers(ctx context.Context, options containers.ApplyImageLayersOptions) (string, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return "", errRuntimeUnhealthy
+	}
+
+	// In test mode, just return the tag without actually building anything
+	if options.Tag != "" {
+		return options.Tag, nil
+	}
+
+	return options.BaseImage.Id, nil
+}
+
 var _ containers.ContainerOrchestrator = (*TestContainerOrchestrator)(nil)
 var _ io.Closer = (*TestContainerOrchestrator)(nil)

@@ -25,6 +25,15 @@ type InspectedImage struct {
 
 	// Digest of the image
 	Digest string `json:"Digest,omitempty"`
+
+	// Architecture of the image (e.g. "amd64")
+	Architecture string `json:"Architecture,omitempty"`
+
+	// OS of the image (e.g. "linux")
+	OS string `json:"Os,omitempty"`
+
+	// RootFS layer diff IDs (uncompressed SHA256 hashes, e.g. "sha256:abc123...")
+	RootFSDiffIDs []string `json:"RootFSDiffIDs,omitempty"`
 }
 
 type InspectImagesOptions struct {

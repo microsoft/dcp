@@ -67,6 +67,7 @@ const (
 	portsLabel           = "com.microsoft.developer.usvc-dev.ports"
 	createFilesLabel     = "com.microsoft.developer.usvc-dev.createFiles"
 	pemCertificatesLabel = "com.microsoft.developer.usvc-dev.pemCertificates"
+	imageLayersLabel     = "com.microsoft.developer.usvc-dev.imageLayers"
 )
 
 var (
@@ -1261,13 +1262,73 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				})
 			}
 
+			if len(rcd.runSpec.ImageLayers) > 0 {
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key:   imageLayersLabel,
+					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.ImageLayers)))),
+				})
+			}
+
+			// If image layers are specified, build a derived image with the layers applied
+			effectiveImage := rcd.runSpec.Image
+			if len(rcd.runSpec.ImageLayers) > 0 {
+				// When applying image layers, we need the base image locally before
+				// constructing the derived image. Normally docker create --pull handles
+				// pulling, but since we intercept before that, we must respect PullPolicy here.
+				baseImageInspected, ensureErr := ensureBaseImageForLayers(
+					startupCtx, r.orchestrator, rcd.runSpec.Image, rcd.runSpec.PullPolicy, log,
+				)
+				if ensureErr != nil {
+					log.Error(ensureErr, "Could not ensure base image is available for image layers")
+					return ensureErr
+				}
+
+				// Derive a tag by replacing the base image's tag/digest with the lifecycle key.
+				// The image ref may be name:tag or name@sha256:digest — we need just the name part.
+				baseRepo := rcd.runSpec.Image
+				if idx := strings.Index(baseRepo, "@"); idx != -1 {
+					baseRepo = baseRepo[:idx]
+				} else if idx := strings.LastIndex(baseRepo, ":"); idx != -1 {
+					// Only strip at colon if it's a tag separator, not part of a port/registry.
+					// A tag separator colon comes after the last slash (or is the only colon).
+					slashIdx := strings.LastIndex(baseRepo, "/")
+					if idx > slashIdx {
+						baseRepo = baseRepo[:idx]
+					}
+				}
+				sanitizedKey := strings.ReplaceAll(lifecycleKey, ":", "-")
+				derivedTag := fmt.Sprintf("%s:dcp-%s", baseRepo, sanitizedKey)
+				applyLayersOptions := containers.ApplyImageLayersOptions{
+					BaseImage: *baseImageInspected,
+					Layers:    rcd.runSpec.ImageLayers,
+					Tag:       derivedTag,
+				}
+				derivedImage, applyErr := r.orchestrator.ApplyImageLayers(startupCtx, applyLayersOptions)
+				if applyErr != nil {
+					log.Error(applyErr, "Could not apply image layers")
+					return applyErr
+				}
+
+				log.V(1).Info("Applied image layers to create derived image", "DerivedImage", derivedImage)
+				effectiveImage = derivedImage
+			}
+
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			streamOptions := containers.StreamCommandOptions{
 				StdOutStream: startupStdoutWriter,
 				StdErrStream: startupStderrWriter,
 			}
+
+			// Use the effective image (original or derived) for container creation
+			runSpecForCreation := *rcd.runSpec
+			runSpecForCreation.Image = effectiveImage
+			if effectiveImage != rcd.runSpec.Image {
+				// The derived image only exists locally; prevent docker create from
+				// attempting to pull it from a registry.
+				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
+			}
 			creationOptions := containers.CreateContainerOptions{
-				ContainerSpec:        *rcd.runSpec,
+				ContainerSpec:        runSpecForCreation,
 				Name:                 containerName,
 				Network:              defaultNetwork,
 				StreamCommandOptions: streamOptions,

@@ -555,3 +555,63 @@ func normalizeHostAddress(hostIP string) string {
 
 	return hostAddress
 }
+
+// ensureBaseImageForLayers ensures the base image is available locally and returns its
+// inspected metadata. It respects the pull policy: "always" pulls first, "never" only
+// inspects, and "missing" (or empty/default) inspects first then pulls if not found.
+func ensureBaseImageForLayers(
+	ctx context.Context,
+	o containers.ContainerOrchestrator,
+	image string,
+	pullPolicy apiv1.PullPolicy,
+	log logr.Logger,
+) (*containers.InspectedImage, error) {
+	if pullPolicy == apiv1.PullPolicyAlways {
+		log.V(1).Info("Pulling base image (pull policy: always)", "Image", image)
+		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
+		if pullErr != nil {
+			return nil, fmt.Errorf("pulling base image %q: %w", image, pullErr)
+		}
+	}
+
+	inspected, inspectErr := o.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{image},
+	})
+	if inspectErr == nil && len(inspected) > 0 {
+		return &inspected[0], nil
+	}
+
+	// Image not found locally
+	if pullPolicy == apiv1.PullPolicyNever {
+		if inspectErr != nil {
+			return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
+		}
+		return nil, fmt.Errorf("base image %q not available locally (pull policy: never)", image)
+	}
+
+	// Default / "missing" behavior: pull and retry inspect
+	if pullPolicy != apiv1.PullPolicyAlways {
+		log.V(1).Info("Base image not found locally, pulling", "Image", image)
+		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
+		if pullErr != nil {
+			return nil, fmt.Errorf("pulling base image %q: %w", image, pullErr)
+		}
+
+		inspected, inspectErr = o.InspectImages(ctx, containers.InspectImagesOptions{
+			Images: []string{image},
+		})
+		if inspectErr != nil {
+			return nil, fmt.Errorf("inspecting base image %q after pull: %w", image, inspectErr)
+		}
+		if len(inspected) == 0 {
+			return nil, fmt.Errorf("base image %q not found after pull", image)
+		}
+		return &inspected[0], nil
+	}
+
+	// PullPolicyAlways already pulled above but inspect still failed
+	if inspectErr != nil {
+		return nil, fmt.Errorf("inspecting base image %q after pull: %w", image, inspectErr)
+	}
+	return nil, fmt.Errorf("base image %q not found after pull", image)
+}

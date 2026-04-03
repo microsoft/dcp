@@ -873,6 +873,14 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	return nil
 }
 
+func (pco *PodmanCliOrchestrator) ApplyImageLayers(ctx context.Context, options containers.ApplyImageLayersOptions) (string, error) {
+	return containers.ApplyImageLayersImpl(ctx, pco.log, options, func(args ...string) *exec.Cmd {
+		return makePodmanCommand(args...)
+	}, func(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+		return pco.runBufferedPodmanCommand(ctx, opName, cmd, stdout, stderr, timeout)
+	})
+}
+
 func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
 	sub := pco.containerEvtWatcher.Subscribe(sink)
 	return sub, nil
@@ -1356,6 +1364,9 @@ func unmarshalImage(pii *podmanInspectedImage, ic *containers.InspectedImage) er
 	ic.Labels = pii.Config.Labels
 	ic.Tags = pii.RepoTags
 	ic.Digest = pii.Digest
+	ic.Architecture = pii.Architecture
+	ic.OS = pii.Os
+	ic.RootFSDiffIDs = pii.RootFS.Layers
 
 	return nil
 }
@@ -1491,15 +1502,23 @@ type podmanInspectedVolume struct {
 // The definition only includes data that we care about.
 // For reference see https://github.com/containers/podman/blob/main/pkg/inspect/inspect.go
 type podmanInspectedImage struct {
-	Id       string                     `json:"Id"`
-	Config   podmanInspectedImageConfig `json:"Config,omitempty"`
-	RepoTags []string                   `json:"RepoTags,omitempty"`
-	Digest   string                     `json:"Digest,omitempty"`
+	Id           string                     `json:"Id"`
+	Config       podmanInspectedImageConfig `json:"Config,omitempty"`
+	RepoTags     []string                   `json:"RepoTags,omitempty"`
+	Digest       string                     `json:"Digest,omitempty"`
+	Architecture string                     `json:"Architecture,omitempty"`
+	Os           string                     `json:"Os,omitempty"`
+	RootFS       podmanInspectedImageRootFS `json:"RootFS,omitempty"`
 }
 
 // For reference see https://github.com/opencontainers/image-spec/blob/main/specs-go/v1/config.go
 type podmanInspectedImageConfig struct {
 	Labels map[string]string `json:"Labels,omitempty"`
+}
+
+type podmanInspectedImageRootFS struct {
+	Type   string   `json:"Type,omitempty"`
+	Layers []string `json:"Layers,omitempty"`
 }
 
 // podmanListedContainerXxx correspond to data returned by "podman container ls" command.
