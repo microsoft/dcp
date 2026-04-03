@@ -42,7 +42,7 @@ func ApplyImageLayersImpl(
 	runBufferedCommand runBufferedCommandFn,
 ) (string, error) {
 	if len(options.Layers) == 0 {
-		return options.Tag, nil
+		return "", fmt.Errorf("at least one image layer must be specified")
 	}
 
 	timeout := options.Timeout

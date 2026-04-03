@@ -574,44 +574,46 @@ func ensureBaseImageForLayers(
 		}
 	}
 
-	inspected, inspectErr := o.InspectImages(ctx, containers.InspectImagesOptions{
-		Images: []string{image},
-	})
-	if inspectErr == nil && len(inspected) > 0 {
-		return &inspected[0], nil
+	inspected, inspectErr := inspectBaseImage(ctx, o, image)
+	if inspectErr == nil {
+		return inspected, nil
 	}
 
-	// Image not found locally
+	// Only attempt to pull if the image was not found; other errors are returned directly
+	if !errors.Is(inspectErr, containers.ErrNotFound) {
+		return nil, fmt.Errorf("inspecting base image %q: %w", image, inspectErr)
+	}
+
 	if pullPolicy == apiv1.PullPolicyNever {
-		if inspectErr != nil {
-			return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
-		}
-		return nil, fmt.Errorf("base image %q not available locally (pull policy: never)", image)
+		return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
 	}
 
-	// Default / "missing" behavior: pull and retry inspect
+	// Default / "missing" behavior: image not found, so pull and retry inspect
 	if pullPolicy != apiv1.PullPolicyAlways {
 		log.V(1).Info("Base image not found locally, pulling", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {
 			return nil, fmt.Errorf("pulling base image %q: %w", image, pullErr)
 		}
-
-		inspected, inspectErr = o.InspectImages(ctx, containers.InspectImagesOptions{
-			Images: []string{image},
-		})
-		if inspectErr != nil {
-			return nil, fmt.Errorf("inspecting base image %q after pull: %w", image, inspectErr)
-		}
-		if len(inspected) == 0 {
-			return nil, fmt.Errorf("base image %q not found after pull", image)
-		}
-		return &inspected[0], nil
 	}
 
-	// PullPolicyAlways already pulled above but inspect still failed
+	inspected, inspectErr = inspectBaseImage(ctx, o, image)
 	if inspectErr != nil {
 		return nil, fmt.Errorf("inspecting base image %q after pull: %w", image, inspectErr)
 	}
-	return nil, fmt.Errorf("base image %q not found after pull", image)
+
+	return inspected, nil
+}
+
+func inspectBaseImage(ctx context.Context, o containers.ContainerOrchestrator, image string) (*containers.InspectedImage, error) {
+	inspected, inspectErr := o.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{image},
+	})
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+	if len(inspected) == 0 {
+		return nil, containers.ErrNotFound
+	}
+	return &inspected[0], nil
 }

@@ -75,6 +75,53 @@ func TestImageLayerValidate(t *testing.T) {
 			expectError: true,
 			errorFields: []string{"sha256"},
 		},
+		{
+			name: "invalid sha256 - too short",
+			layer: ImageLayer{
+				Digest: "abc123",
+				Source: "/path/to/layer.tar",
+				SHA256: "deadbeef",
+			},
+			expectError: true,
+			errorFields: []string{"sha256"},
+		},
+		{
+			name: "invalid sha256 - non-hex characters",
+			layer: ImageLayer{
+				Digest: "abc123",
+				Source: "/path/to/layer.tar",
+				SHA256: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+			},
+			expectError: true,
+			errorFields: []string{"sha256"},
+		},
+		{
+			name: "valid sha256 with sha256: prefix",
+			layer: ImageLayer{
+				Digest: "abc123",
+				Source: "/path/to/layer.tar",
+				SHA256: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid sha256 uppercase",
+			layer: ImageLayer{
+				Digest: "abc123",
+				Source: "/path/to/layer.tar",
+				SHA256: "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid rawContents - not valid base64",
+			layer: ImageLayer{
+				Digest:      "abc123",
+				RawContents: "not-valid-base64!!!",
+			},
+			expectError: true,
+			errorFields: []string{"rawContents"},
+		},
 	}
 
 	for _, tc := range testCases {

@@ -7,6 +7,7 @@ package v1
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ var (
 	// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
 	validContainerName       = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
 	validContainerNameRegexp = regexp.MustCompile(validContainerName)
+	validSHA256HexRegexp     = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
 
 type ContainerRestartPolicy string
@@ -483,6 +485,23 @@ func (il *ImageLayer) Validate(fieldPath *field.Path) field.ErrorList {
 
 	if il.Source != "" && il.SHA256 == "" {
 		errorList = append(errorList, field.Required(fieldPath.Child("sha256"), "sha256 must be set when source is specified"))
+	}
+
+	if il.SHA256 != "" {
+		// Accept with or without "sha256:" prefix; the hex portion must be exactly 64 hex characters
+		hexPart := il.SHA256
+		if strings.HasPrefix(strings.ToLower(hexPart), "sha256:") {
+			hexPart = hexPart[7:]
+		}
+		if !validSHA256HexRegexp.MatchString(hexPart) {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("sha256"), il.SHA256, "sha256 must be a 64-character hex string, optionally prefixed with 'sha256:'"))
+		}
+	}
+
+	if il.RawContents != "" {
+		if _, decodeErr := base64.StdEncoding.DecodeString(il.RawContents); decodeErr != nil {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("rawContents"), "<base64 data>", fmt.Sprintf("rawContents must be valid base64: %s", decodeErr.Error())))
+		}
 	}
 
 	return errorList
