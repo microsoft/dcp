@@ -32,6 +32,8 @@ type runBufferedCommandFn func(ctx context.Context, opName string, cmd *exec.Cmd
 // ApplyImageLayersImpl builds a derived container image by applying additional tar layers
 // on top of a base image. It streams a build context tar (containing a generated Dockerfile
 // and the layer tars) to `docker build` via stdin, avoiding any temporary files on disk.
+// Source-file layers are streamed directly from disk into the tar without buffering
+// their full contents in memory.
 func ApplyImageLayersImpl(
 	ctx context.Context,
 	log logr.Logger,
@@ -54,29 +56,24 @@ func ApplyImageLayersImpl(
 		baseImage = options.BaseImage.Tags[0]
 	}
 
-	// Build the Dockerfile content and collect layer data
+	// First pass: verify source-file layers and build the Dockerfile content.
+	// Source layers are hash-verified here (streaming, no full buffer) so that
+	// the second pass can stream them directly into the tar.
 	dockerfile := fmt.Sprintf("FROM %s\n", baseImage)
-
-	type layerEntry struct {
-		fileName string
-		data     []byte
-	}
-	layerEntries := make([]layerEntry, 0, len(options.Layers))
-
 	for i := range options.Layers {
 		layer := &options.Layers[i]
-		layerFileName := fmt.Sprintf("layer%d.tar", i)
 
-		layerData, readErr := readLayerData(layer, log)
-		if readErr != nil {
-			return "", fmt.Errorf("preparing image layer %d: %w", i, readErr)
+		if layer.Source != "" {
+			if verifyErr := verifyLayerSourceHash(layer); verifyErr != nil {
+				return "", fmt.Errorf("verifying image layer %d: %w", i, verifyErr)
+			}
+			log.V(1).Info("Layer source SHA256 verified", "Source", layer.Source, "Digest", layer.Digest)
 		}
 
-		layerEntries = append(layerEntries, layerEntry{fileName: layerFileName, data: layerData})
-		dockerfile += fmt.Sprintf("ADD %s /\n", layerFileName)
+		dockerfile += fmt.Sprintf("ADD layer%d.tar /\n", i)
 	}
 
-	// Build a tar archive containing the Dockerfile and all layer tars
+	// Second pass: build the tar archive with the Dockerfile and layer data.
 	now := time.Now()
 	tw := usvc_io.NewTarWriter()
 
@@ -84,9 +81,22 @@ func ApplyImageLayersImpl(
 		return "", fmt.Errorf("writing Dockerfile to build context tar: %w", writeErr)
 	}
 
-	for i, entry := range layerEntries {
-		if writeErr := tw.WriteFile(entry.data, entry.fileName, 0, 0, 0644, now, now, now); writeErr != nil {
-			return "", fmt.Errorf("writing layer %d to build context tar: %w", i, writeErr)
+	for i := range options.Layers {
+		layer := &options.Layers[i]
+		layerFileName := fmt.Sprintf("layer%d.tar", i)
+
+		if layer.Source != "" {
+			if streamErr := streamLayerFromSource(tw, layer, layerFileName, now); streamErr != nil {
+				return "", fmt.Errorf("streaming image layer %d to build context: %w", i, streamErr)
+			}
+		} else {
+			decoded, decodeErr := base64.StdEncoding.DecodeString(layer.RawContents)
+			if decodeErr != nil {
+				return "", fmt.Errorf("decoding base64 rawContents for layer %d (%q): %w", i, layer.Digest, decodeErr)
+			}
+			if writeErr := tw.WriteFile(decoded, layerFileName, 0, 0, 0644, now, now, now); writeErr != nil {
+				return "", fmt.Errorf("writing layer %d to build context tar: %w", i, writeErr)
+			}
 		}
 	}
 
@@ -96,11 +106,8 @@ func ApplyImageLayersImpl(
 	}
 
 	// Build the derived image, streaming the tar context via stdin.
-	// --no-cache prevents BuildKit from reusing potentially stale cache entries.
-	// --load ensures the image is exported from the BuildKit cache into the
-	// Docker daemon's image store, preventing manifest/rootfs mismatches.
-	// The trailing "-" tells docker build to read the build context from stdin.
-	args := []string{"build", "--no-cache", "--load"}
+	// The trailing "-" tells docker/podman build to read the build context from stdin.
+	args := []string{"build"}
 	if options.Tag != "" {
 		args = append(args, "-t", options.Tag)
 	}
@@ -123,35 +130,41 @@ func ApplyImageLayersImpl(
 	return options.Tag, nil
 }
 
-// readLayerData reads the raw tar data for a layer, from Source (with SHA256 verification) or RawContents.
-func readLayerData(layer *apiv1.ImageLayer, log logr.Logger) ([]byte, error) {
-	if layer.Source != "" {
-		return readLayerFromSource(layer, log)
+// verifyLayerSourceHash streams the source file through a SHA256 hasher
+// and verifies the hash matches, without buffering the full file in memory.
+func verifyLayerSourceHash(layer *apiv1.ImageLayer) error {
+	f, openErr := os.Open(layer.Source)
+	if openErr != nil {
+		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
+	}
+	defer f.Close()
+
+	hasher := sha256.New()
+	if _, copyErr := io.Copy(hasher, f); copyErr != nil {
+		return fmt.Errorf("hashing layer source file %q: %w", layer.Source, copyErr)
 	}
 
-	return readLayerFromRawContents(layer)
-}
-
-func readLayerFromSource(layer *apiv1.ImageLayer, log logr.Logger) ([]byte, error) {
-	srcData, readErr := os.ReadFile(layer.Source)
-	if readErr != nil {
-		return nil, fmt.Errorf("reading layer source file %q: %w", layer.Source, readErr)
-	}
-
-	actualHash := sha256.Sum256(srcData)
-	actualHashHex := hex.EncodeToString(actualHash[:])
+	actualHashHex := hex.EncodeToString(hasher.Sum(nil))
 	if !strings.EqualFold(actualHashHex, layer.SHA256) {
-		return nil, fmt.Errorf("SHA256 mismatch for layer source %q: expected %s, got %s", layer.Source, layer.SHA256, actualHashHex)
+		return fmt.Errorf("SHA256 mismatch for layer source %q: expected %s, got %s", layer.Source, layer.SHA256, actualHashHex)
 	}
 
-	log.V(1).Info("Layer source SHA256 verified", "Source", layer.Source, "Digest", layer.Digest)
-	return srcData, nil
+	return nil
 }
 
-func readLayerFromRawContents(layer *apiv1.ImageLayer) ([]byte, error) {
-	decoded, decodeErr := base64.StdEncoding.DecodeString(layer.RawContents)
-	if decodeErr != nil {
-		return nil, fmt.Errorf("decoding base64 rawContents for layer %q: %w", layer.Digest, decodeErr)
+// streamLayerFromSource streams a source-file layer directly into the tar writer
+// without buffering the full file contents in memory.
+func streamLayerFromSource(tw *usvc_io.TarWriter, layer *apiv1.ImageLayer, tarName string, modTime time.Time) error {
+	f, openErr := os.Open(layer.Source)
+	if openErr != nil {
+		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
 	}
-	return decoded, nil
+	defer f.Close()
+
+	info, statErr := f.Stat()
+	if statErr != nil {
+		return fmt.Errorf("getting size of layer source file %q: %w", layer.Source, statErr)
+	}
+
+	return tw.CopyFile(f, info.Size(), tarName, 0, 0, 0644, modTime, modTime, modTime)
 }
