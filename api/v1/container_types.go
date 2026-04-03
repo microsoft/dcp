@@ -487,6 +487,10 @@ func (il *ImageLayer) Validate(fieldPath *field.Path) field.ErrorList {
 		errorList = append(errorList, field.Required(fieldPath.Child("sha256"), "sha256 must be set when source is specified"))
 	}
 
+	if il.SHA256 != "" && il.Source == "" {
+		errorList = append(errorList, field.Forbidden(fieldPath.Child("sha256"), "sha256 can only be set when source is specified"))
+	}
+
 	if il.SHA256 != "" {
 		// Accept with or without "sha256:" prefix; the hex portion must be exactly 64 hex characters
 		hexPart := il.SHA256
@@ -991,10 +995,10 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		// Add image layer digests to the hash in order, as layer order is significant
 		// (later layers override files from earlier layers). Only the Digest field is used,
 		// not the raw tar contents, because the Digest represents meaningful data identity
-		// independent of binary differences.
+		// independent of binary differences. Each digest is encoded via gob to ensure
+		// unambiguous separation between entries.
 		for i := range cs.ImageLayers {
-			_, writeErr = fnvHash.Write([]byte(cs.ImageLayers[i].Digest))
-			hashErr = errors.Join(hashErr, writeErr)
+			hashErr = errors.Join(hashErr, encoder.Encode(cs.ImageLayers[i].Digest))
 		}
 	}
 

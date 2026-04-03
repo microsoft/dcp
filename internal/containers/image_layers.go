@@ -184,7 +184,9 @@ func verifyLayerSourceHash(layer *apiv1.ImageLayer) error {
 
 	actualHashHex := hex.EncodeToString(hasher.Sum(nil))
 	expectedHash := strings.TrimSpace(layer.SHA256)
-	expectedHash = strings.TrimPrefix(strings.TrimPrefix(expectedHash, "sha256:"), "SHA256:")
+	if strings.HasPrefix(strings.ToLower(expectedHash), "sha256:") {
+		expectedHash = expectedHash[7:]
+	}
 	if !strings.EqualFold(actualHashHex, expectedHash) {
 		return fmt.Errorf("SHA256 mismatch for layer source %q: expected %s, got %s", layer.Source, layer.SHA256, actualHashHex)
 	}

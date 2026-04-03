@@ -122,6 +122,25 @@ func TestImageLayerValidate(t *testing.T) {
 			expectError: true,
 			errorFields: []string{"rawContents"},
 		},
+		{
+			name: "sha256 with rawContents is forbidden",
+			layer: ImageLayer{
+				Digest:      "abc123",
+				RawContents: "dGVzdA==",
+				SHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			},
+			expectError: true,
+			errorFields: []string{"sha256"},
+		},
+		{
+			name: "sha256 without source is forbidden",
+			layer: ImageLayer{
+				Digest: "abc123",
+				SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			},
+			expectError: true,
+			errorFields: []string{"sha256"},
+		},
 	}
 
 	for _, tc := range testCases {
