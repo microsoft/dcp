@@ -416,7 +416,6 @@ type ApplyImageLayersOptions struct {
 	// Tag to apply to the derived image
 	Tag string
 
-	StreamCommandOptions
 	TimeoutOption
 }
 
