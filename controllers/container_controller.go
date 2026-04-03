@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	std_slices "slices"
 	"strings"
 	"sync"
 	"time"
@@ -1263,9 +1264,14 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 
 			if len(rcd.runSpec.ImageLayers) > 0 {
+				sortedDigests := make([]string, len(rcd.runSpec.ImageLayers))
+				for i, layer := range rcd.runSpec.ImageLayers {
+					sortedDigests[i] = layer.Digest
+				}
+				std_slices.Sort(sortedDigests)
 				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 					Key:   imageLayersLabel,
-					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.ImageLayers)))),
+					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(sortedDigests, "\n")))),
 				})
 			}
 
