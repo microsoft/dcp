@@ -107,7 +107,8 @@ func ApplyImageLayersImpl(
 
 	// Build the derived image, streaming the tar context via stdin.
 	// The trailing "-" tells docker/podman build to read the build context from stdin.
-	args := []string{"build"}
+	// --quiet suppresses build output and prints only the image ID on success.
+	args := []string{"build", "--quiet"}
 	if options.Tag != "" {
 		args = append(args, "-t", options.Tag)
 	}
@@ -116,7 +117,7 @@ func ApplyImageLayersImpl(
 	cmd := makeCommand(args...)
 	cmd.Stdin = contextBuf
 
-	_, errBuf, buildErr := runBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
+	outBuf, errBuf, buildErr := runBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
 	if buildErr != nil {
 		errDetail := ""
 		if errBuf != nil {
@@ -125,9 +126,15 @@ func ApplyImageLayersImpl(
 		return "", fmt.Errorf("building derived image with image layers: %w: %s", buildErr, errDetail)
 	}
 
-	log.V(1).Info("Built derived image with image layers", "Tag", options.Tag, "LayerCount", len(options.Layers))
+	// Return the tag if provided, otherwise the image ID from build output
+	imageRef := options.Tag
+	if imageRef == "" && outBuf != nil {
+		imageRef = strings.TrimSpace(outBuf.String())
+	}
 
-	return options.Tag, nil
+	log.V(1).Info("Built derived image with image layers", "ImageRef", imageRef, "LayerCount", len(options.Layers))
+
+	return imageRef, nil
 }
 
 // verifyLayerSourceHash streams the source file through a SHA256 hasher
