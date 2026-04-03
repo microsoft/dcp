@@ -969,16 +969,12 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 	}
 
 	if len(cs.ImageLayers) > 0 {
-		// Add image layer digests to the hash.
-		// Only the Digest field is used, not the raw tar contents, because the Digest
-		// represents meaningful data identity independent of binary differences.
-		sortedLayers := slices.Clone(cs.ImageLayers)
-		slices.SortFunc(sortedLayers, func(l1, l2 ImageLayer) int {
-			return strings.Compare(l1.Digest, l2.Digest)
-		})
-
-		for i := range sortedLayers {
-			_, writeErr = fnvHash.Write([]byte(sortedLayers[i].Digest))
+		// Add image layer digests to the hash in order, as layer order is significant
+		// (later layers override files from earlier layers). Only the Digest field is used,
+		// not the raw tar contents, because the Digest represents meaningful data identity
+		// independent of binary differences.
+		for i := range cs.ImageLayers {
+			_, writeErr = fnvHash.Write([]byte(cs.ImageLayers[i].Digest))
 			hashErr = errors.Join(hashErr, writeErr)
 		}
 	}

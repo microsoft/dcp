@@ -73,37 +73,51 @@ func ApplyImageLayersImpl(
 		dockerfile += fmt.Sprintf("ADD layer%d.tar /\n", i)
 	}
 
-	// Second pass: build the tar archive with the Dockerfile and layer data.
+	// Second pass: stream the tar archive directly to docker build via io.Pipe.
+	// This avoids buffering the full build context in memory.
+	pr, pw := io.Pipe()
 	now := time.Now()
-	tw := usvc_io.NewTarWriter()
 
-	if writeErr := tw.WriteFile([]byte(dockerfile), "Dockerfile", 0, 0, 0644, now, now, now); writeErr != nil {
-		return "", fmt.Errorf("writing Dockerfile to build context tar: %w", writeErr)
-	}
+	// Write the tar in a goroutine while docker reads from the pipe
+	var tarErr error
+	tarDone := make(chan struct{})
+	go func() {
+		defer close(tarDone)
+		defer pw.Close()
 
-	for i := range options.Layers {
-		layer := &options.Layers[i]
-		layerFileName := fmt.Sprintf("layer%d.tar", i)
+		tw := usvc_io.NewTarWriterTo(pw)
 
-		if layer.Source != "" {
-			if streamErr := streamLayerFromSource(tw, layer, layerFileName, now); streamErr != nil {
-				return "", fmt.Errorf("streaming image layer %d to build context: %w", i, streamErr)
-			}
-		} else {
-			decoded, decodeErr := base64.StdEncoding.DecodeString(layer.RawContents)
-			if decodeErr != nil {
-				return "", fmt.Errorf("decoding base64 rawContents for layer %d (%q): %w", i, layer.Digest, decodeErr)
-			}
-			if writeErr := tw.WriteFile(decoded, layerFileName, 0, 0, 0644, now, now, now); writeErr != nil {
-				return "", fmt.Errorf("writing layer %d to build context tar: %w", i, writeErr)
+		if writeErr := tw.WriteFile([]byte(dockerfile), "Dockerfile", 0, 0, 0644, now, now, now); writeErr != nil {
+			tarErr = fmt.Errorf("writing Dockerfile to build context tar: %w", writeErr)
+			return
+		}
+
+		for i := range options.Layers {
+			layer := &options.Layers[i]
+			layerFileName := fmt.Sprintf("layer%d.tar", i)
+
+			if layer.Source != "" {
+				if streamErr := streamLayerFromSource(tw, layer, layerFileName, now); streamErr != nil {
+					tarErr = fmt.Errorf("streaming image layer %d to build context: %w", i, streamErr)
+					return
+				}
+			} else {
+				decoded, decodeErr := base64.StdEncoding.DecodeString(layer.RawContents)
+				if decodeErr != nil {
+					tarErr = fmt.Errorf("decoding base64 rawContents for layer %d (%q): %w", i, layer.Digest, decodeErr)
+					return
+				}
+				if writeErr := tw.WriteFile(decoded, layerFileName, 0, 0, 0644, now, now, now); writeErr != nil {
+					tarErr = fmt.Errorf("writing layer %d to build context tar: %w", i, writeErr)
+					return
+				}
 			}
 		}
-	}
 
-	contextBuf, bufErr := tw.Buffer()
-	if bufErr != nil {
-		return "", fmt.Errorf("finalizing build context tar: %w", bufErr)
-	}
+		if closeErr := tw.Close(); closeErr != nil {
+			tarErr = fmt.Errorf("finalizing build context tar: %w", closeErr)
+		}
+	}()
 
 	// Build the derived image, streaming the tar context via stdin.
 	// The trailing "-" tells docker/podman build to read the build context from stdin.
@@ -115,9 +129,16 @@ func ApplyImageLayersImpl(
 	args = append(args, "-")
 
 	cmd := makeCommand(args...)
-	cmd.Stdin = contextBuf
+	cmd.Stdin = pr
 
 	outBuf, errBuf, buildErr := runBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
+
+	// Wait for the tar writer goroutine to finish
+	<-tarDone
+
+	if tarErr != nil {
+		return "", tarErr
+	}
 	if buildErr != nil {
 		errDetail := ""
 		if errBuf != nil {
