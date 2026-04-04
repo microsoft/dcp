@@ -3183,6 +3183,57 @@ func TestContainerCreateFilesContinueOnError(t *testing.T) {
 	require.Equal(t, int64(osutil.PermissionOwnerReadWriteOthersRead), items[0].Mode, "copied file item mode does not match expected default value")
 }
 
+// When all CreateFiles entries have ContinueOnError set to true and they all fail,
+// the container should still start successfully.
+func TestContainerCreateFilesAllContinueOnErrorItemsFail(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-create-files-all-continue-on-error-fail"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			CreateFiles: []apiv1.CreateFileSystem{
+				{
+					Destination: "/tmp",
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Name:            "badcert1.pem",
+							Contents:        "this is not a valid certificate",
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							ContinueOnError: true,
+						},
+						{
+							Name:            "badcert2.pem",
+							Contents:        "this is also not a valid certificate",
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							ContinueOnError: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container object")
+
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(inspected.Id)
+	require.NoError(t, getFileErr, "could not get created files")
+
+	// All entries failed with ContinueOnError, so no files should have been created
+	require.Empty(t, files, "expected no created files when all ContinueOnError items fail")
+}
+
 // Even if Docker container stops very quickly, the state of corresponding Container should be "Exited"
 // (and not something else, in particular not "FailedToStart").
 func TestContainerFastExiting(t *testing.T) {

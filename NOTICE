@@ -17,8 +17,8 @@ required to debug changes to any libraries licensed under the GNU Lesser General
 
 ----------------------------------------------------------
 
-cel.dev/expr v0.24.0 - Apache-2.0
-https://github.com/google/cel-spec/blob/v0.24.0/LICENSE
+cel.dev/expr v0.25.1 - Apache-2.0
+https://github.com/google/cel-spec/blob/v0.25.1/LICENSE
 
 
                                  Apache License
@@ -1019,8 +1019,8 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ----------------------------------------------------------
 
-github.com/ebitengine/purego v0.9.0 - Apache-2.0
-https://github.com/ebitengine/purego/blob/v0.9.0/LICENSE
+github.com/ebitengine/purego v0.10.0 - Apache-2.0
+https://github.com/ebitengine/purego/blob/v0.10.0/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -3440,8 +3440,8 @@ https://github.com/google/gnostic-models/blob/v0.7.0/LICENSE
 
 ----------------------------------------------------------
 
-github.com/google/pprof/profile v0.0.0-20241029153458-d1b30febd7db - Apache-2.0
-https://github.com/google/pprof/blob/d1b30febd7db/LICENSE
+github.com/google/pprof/profile v0.0.0-20250403155104-27863c87afa6 - Apache-2.0
+https://github.com/google/pprof/blob/27863c87afa6/LICENSE
 
 
                                  Apache License
@@ -4729,37 +4729,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-github.com/pkg/errors v0.9.1 - BSD-2-Clause
-https://github.com/pkg/errors/blob/v0.9.1/LICENSE
-
-Copyright (c) 2015, Dave Cheney <dave@cheney.net>
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-* Redistributions of source code must retain the above copyright notice, this
-  list of conditions and the following disclaimer.
-
-* Redistributions in binary form must reproduce the above copyright notice,
-  this list of conditions and the following disclaimer in the documentation
-  and/or other materials provided with the distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-----------------------------------------------------------
-
-----------------------------------------------------------
-
 github.com/pmezard/go-difflib/difflib v1.0.1-0.20181226105442-5d4384ee4fb2 - BSD-3-Clause
 https://github.com/pmezard/go-difflib/blob/5d4384ee4fb2/LICENSE
 
@@ -4795,8 +4764,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil v1.22.0 - BSD-3-Clause
-https://github.com/prometheus/client_golang/blob/v1.22.0/internal/github.com/golang/gddo/LICENSE
+github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil v1.23.2 - BSD-3-Clause
+https://github.com/prometheus/client_golang/blob/v1.23.2/internal/github.com/golang/gddo/LICENSE
 
 Copyright (c) 2013 The Go Authors. All rights reserved.
 
@@ -4830,8 +4799,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-github.com/prometheus/client_golang/prometheus v1.22.0 - Apache-2.0
-https://github.com/prometheus/client_golang/blob/v1.22.0/LICENSE
+github.com/prometheus/client_golang/prometheus v1.23.2 - Apache-2.0
+https://github.com/prometheus/client_golang/blob/v1.23.2/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -5248,8 +5217,8 @@ https://github.com/prometheus/client_model/blob/v0.6.2/LICENSE
 
 ----------------------------------------------------------
 
-github.com/prometheus/common v0.63.0 - Apache-2.0
-https://github.com/prometheus/common/blob/v0.63.0/LICENSE
+github.com/prometheus/common v0.66.1 - Apache-2.0
+https://github.com/prometheus/common/blob/v0.66.1/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -5666,8 +5635,8 @@ https://github.com/prometheus/procfs/blob/v0.16.1/LICENSE
 
 ----------------------------------------------------------
 
-github.com/shirou/gopsutil/v4 v4.25.10 - BSD-3-Clause
-https://github.com/shirou/gopsutil/blob/v4.25.10/LICENSE
+github.com/shirou/gopsutil/v4 v4.26.2 - BSD-3-Clause
+https://github.com/shirou/gopsutil/blob/v4.26.2/LICENSE
 
 gopsutil is distributed under BSD license reproduced below.
 
@@ -5735,8 +5704,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-github.com/spf13/cobra v1.10.1 - Apache-2.0
-https://github.com/spf13/cobra/blob/v1.10.1/LICENSE.txt
+github.com/spf13/cobra v1.10.2 - Apache-2.0
+https://github.com/spf13/cobra/blob/v1.10.2/LICENSE.txt
 
                                 Apache License
                            Version 2.0, January 2004
@@ -6011,8 +5980,8 @@ SOFTWARE.
 
 ----------------------------------------------------------
 
-github.com/tilt-dev/tilt-apiserver/pkg v0.16.2 - Apache-2.0
-https://github.com/tilt-dev/tilt-apiserver/blob/v0.16.2/LICENSE
+github.com/tilt-dev/tilt-apiserver/pkg v0.17.2 - Apache-2.0
+https://github.com/tilt-dev/tilt-apiserver/blob/v0.17.2/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -6220,8 +6189,8 @@ https://github.com/tilt-dev/tilt-apiserver/blob/v0.16.2/LICENSE
 
 ----------------------------------------------------------
 
-github.com/tklauser/go-sysconf v0.3.15 - BSD-3-Clause
-https://github.com/tklauser/go-sysconf/blob/v0.3.15/LICENSE
+github.com/tklauser/go-sysconf v0.3.16 - BSD-3-Clause
+https://github.com/tklauser/go-sysconf/blob/v0.3.16/LICENSE
 
 BSD 3-Clause License
 
@@ -6286,8 +6255,8 @@ SOFTWARE.
 
 ----------------------------------------------------------
 
-go.etcd.io/etcd/api/v3 v3.6.4 - Apache-2.0
-https://github.com/etcd-io/etcd/blob/api/v3.6.4/api/LICENSE
+go.etcd.io/etcd/api/v3 v3.6.5 - Apache-2.0
+https://github.com/etcd-io/etcd/blob/api/v3.6.5/api/LICENSE
 
 
                                  Apache License
@@ -6496,8 +6465,8 @@ https://github.com/etcd-io/etcd/blob/api/v3.6.4/api/LICENSE
 
 ----------------------------------------------------------
 
-go.etcd.io/etcd/client/pkg/v3 v3.6.4 - Apache-2.0
-https://github.com/etcd-io/etcd/blob/client/pkg/v3.6.4/client/pkg/LICENSE
+go.etcd.io/etcd/client/pkg/v3 v3.6.5 - Apache-2.0
+https://github.com/etcd-io/etcd/blob/client/pkg/v3.6.5/client/pkg/LICENSE
 
 
                                  Apache License
@@ -6706,8 +6675,8 @@ https://github.com/etcd-io/etcd/blob/client/pkg/v3.6.4/client/pkg/LICENSE
 
 ----------------------------------------------------------
 
-go.etcd.io/etcd/client/v3 v3.6.4 - Apache-2.0
-https://github.com/etcd-io/etcd/blob/client/v3.6.4/client/v3/LICENSE
+go.etcd.io/etcd/client/v3 v3.6.5 - Apache-2.0
+https://github.com/etcd-io/etcd/blob/client/v3.6.5/client/v3/LICENSE
 
 
                                  Apache License
@@ -6916,8 +6885,8 @@ https://github.com/etcd-io/etcd/blob/client/v3.6.4/client/v3/LICENSE
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/auto/sdk v1.1.0 - Apache-2.0
-https://github.com/open-telemetry/opentelemetry-go-instrumentation/blob/sdk/v1.1.0/sdk/LICENSE
+go.opentelemetry.io/auto/sdk v1.2.1 - Apache-2.0
+https://github.com/open-telemetry/opentelemetry-go-instrumentation/blob/sdk/v1.2.1/sdk/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -7334,8 +7303,8 @@ https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.58.0 - Apache-2.0
-https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/net/http/otelhttp/v0.58.0/instrumentation/net/http/otelhttp/LICENSE
+go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 - Apache-2.0
+https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/net/http/otelhttp/v0.61.0/instrumentation/net/http/otelhttp/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -7543,8 +7512,8 @@ https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/v1.38.0/LICENSE
+go.opentelemetry.io/otel v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/v1.42.0/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -8200,8 +8169,8 @@ https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/exporters/stdout/stdoutmetric/v1.38.0/exporters/stdout/stdoutmetric/LICENSE
+go.opentelemetry.io/otel/exporters/stdout/stdoutmetric v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/exporters/stdout/stdoutmetric/v1.42.0/exporters/stdout/stdoutmetric/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -8439,8 +8408,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/exporters/stdout/stdouttrace/v1.38.0/exporters/stdout/stdouttrace/LICENSE
+go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/exporters/stdout/stdouttrace/v1.42.0/exporters/stdout/stdouttrace/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -8678,8 +8647,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel/metric v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/metric/v1.38.0/metric/LICENSE
+go.opentelemetry.io/otel/metric v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/metric/v1.42.0/metric/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -8917,8 +8886,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel/sdk v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/sdk/v1.38.0/sdk/LICENSE
+go.opentelemetry.io/otel/sdk v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/sdk/v1.42.0/sdk/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -9156,8 +9125,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel/sdk/metric v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/sdk/metric/v1.38.0/sdk/metric/LICENSE
+go.opentelemetry.io/otel/sdk/metric v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/sdk/metric/v1.42.0/sdk/metric/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -9395,8 +9364,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-go.opentelemetry.io/otel/trace v1.38.0 - BSD-3-Clause
-https://github.com/open-telemetry/opentelemetry-go/blob/trace/v1.38.0/trace/LICENSE
+go.opentelemetry.io/otel/trace v1.42.0 - BSD-3-Clause
+https://github.com/open-telemetry/opentelemetry-go/blob/trace/v1.42.0/trace/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -9870,10 +9839,10 @@ THE SOFTWARE.
 
 ----------------------------------------------------------
 
-go.uber.org/zap v1.27.0 - MIT
-https://github.com/uber-go/zap/blob/v1.27.0/LICENSE
+go.uber.org/zap v1.27.1 - MIT
+https://github.com/uber-go/zap/blob/v1.27.1/LICENSE
 
-Copyright (c) 2016-2017 Uber Technologies, Inc.
+Copyright (c) 2016-2024 Uber Technologies, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -9897,8 +9866,8 @@ THE SOFTWARE.
 
 ----------------------------------------------------------
 
-go.yaml.in/yaml/v2 v2.4.2 - Apache-2.0
-https://github.com/yaml/go-yaml/blob/v2.4.2/LICENSE
+go.yaml.in/yaml/v2 v2.4.3 - Apache-2.0
+https://github.com/yaml/go-yaml/blob/v2.4.3/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -10164,8 +10133,8 @@ limitations under the License.
 
 ----------------------------------------------------------
 
-golang.org/x/crypto/cryptobyte v0.45.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/crypto/+/v0.45.0:LICENSE
+golang.org/x/crypto/cryptobyte v0.48.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/crypto/+/v0.48.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10234,8 +10203,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/net v0.47.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/net/+/v0.47.0:LICENSE
+golang.org/x/net v0.51.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/net/+/v0.51.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10269,8 +10238,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/oauth2 v0.30.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/oauth2/+/v0.30.0:LICENSE
+golang.org/x/oauth2 v0.34.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/oauth2/+/v0.34.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10304,8 +10273,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/sync v0.18.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sync/+/v0.18.0:LICENSE
+golang.org/x/sync v0.20.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sync/+/v0.20.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10339,8 +10308,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/sys/unix v0.38.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.38.0:LICENSE
+golang.org/x/sys/unix v0.42.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.42.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10374,8 +10343,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/term v0.37.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/term/+/v0.37.0:LICENSE
+golang.org/x/term v0.40.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/term/+/v0.40.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10409,8 +10378,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/text v0.31.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/text/+/v0.31.0:LICENSE
+golang.org/x/text v0.35.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/text/+/v0.35.0:LICENSE
 
 Copyright 2009 The Go Authors.
 
@@ -10688,8 +10657,8 @@ https://github.com/gomodules/jsonpatch/blob/v2.4.0/LICENSE
 
 ----------------------------------------------------------
 
-google.golang.org/genproto/googleapis/api v0.0.0-20250804133106-a7a43d27e69b - Apache-2.0
-https://github.com/googleapis/go-genproto/blob/a7a43d27e69b/googleapis/api/LICENSE
+google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 - Apache-2.0
+https://github.com/googleapis/go-genproto/blob/ff82c1b0f217/googleapis/api/LICENSE
 
 
                                  Apache License
@@ -10898,8 +10867,8 @@ https://github.com/googleapis/go-genproto/blob/a7a43d27e69b/googleapis/api/LICEN
 
 ----------------------------------------------------------
 
-google.golang.org/genproto/googleapis/rpc v0.0.0-20250804133106-a7a43d27e69b - Apache-2.0
-https://github.com/googleapis/go-genproto/blob/a7a43d27e69b/googleapis/rpc/LICENSE
+google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 - Apache-2.0
+https://github.com/googleapis/go-genproto/blob/ff82c1b0f217/googleapis/rpc/LICENSE
 
 
                                  Apache License
@@ -11108,8 +11077,8 @@ https://github.com/googleapis/go-genproto/blob/a7a43d27e69b/googleapis/rpc/LICEN
 
 ----------------------------------------------------------
 
-google.golang.org/grpc v1.76.0 - Apache-2.0
-https://github.com/grpc/grpc-go/blob/v1.76.0/LICENSE
+google.golang.org/grpc v1.79.3 - Apache-2.0
+https://github.com/grpc/grpc-go/blob/v1.79.3/LICENSE
 
 
                                  Apache License
@@ -11318,8 +11287,8 @@ https://github.com/grpc/grpc-go/blob/v1.76.0/LICENSE
 
 ----------------------------------------------------------
 
-google.golang.org/protobuf v1.36.10 - BSD-3-Clause
-https://github.com/protocolbuffers/protobuf-go/blob/v1.36.10/LICENSE
+google.golang.org/protobuf v1.36.11 - BSD-3-Clause
+https://github.com/protocolbuffers/protobuf-go/blob/v1.36.11/LICENSE
 
 Copyright (c) 2018 The Go Authors. All rights reserved.
 
@@ -11353,8 +11322,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-gopkg.in/evanphx/json-patch.v4 v4.12.0 - BSD-3-Clause
-https://github.com/evanphx/json-patch/blob/v4.12.0/LICENSE
+gopkg.in/evanphx/json-patch.v4 v4.13.0 - BSD-3-Clause
+https://github.com/evanphx/json-patch/blob/v4.13.0/LICENSE
 
 Copyright (c) 2014, Evan Phoenix
 All rights reserved.
@@ -11480,8 +11449,8 @@ limitations under the License.
 
 ----------------------------------------------------------
 
-k8s.io/api v0.34.0 - Apache-2.0
-https://github.com/kubernetes/api/blob/v0.34.0/LICENSE
+k8s.io/api v0.35.0 - Apache-2.0
+https://github.com/kubernetes/api/blob/v0.35.0/LICENSE
 
 
                                  Apache License
@@ -11690,8 +11659,8 @@ https://github.com/kubernetes/api/blob/v0.34.0/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/apiextensions-apiserver/pkg/apis/apiextensions v0.34.0 - Apache-2.0
-https://github.com/kubernetes/apiextensions-apiserver/blob/v0.34.0/LICENSE
+k8s.io/apiextensions-apiserver/pkg/apis/apiextensions v0.35.0 - Apache-2.0
+https://github.com/kubernetes/apiextensions-apiserver/blob/v0.35.0/LICENSE
 
 
                                  Apache License
@@ -11900,8 +11869,8 @@ https://github.com/kubernetes/apiextensions-apiserver/blob/v0.34.0/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/apimachinery/pkg v0.34.0 - Apache-2.0
-https://github.com/kubernetes/apimachinery/blob/v0.34.0/LICENSE
+k8s.io/apimachinery/pkg v0.35.0 - Apache-2.0
+https://github.com/kubernetes/apimachinery/blob/v0.35.0/LICENSE
 
 
                                  Apache License
@@ -12110,8 +12079,8 @@ https://github.com/kubernetes/apimachinery/blob/v0.34.0/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/apimachinery/third_party/forked/golang v0.34.0 - BSD-3-Clause
-https://github.com/kubernetes/apimachinery/blob/v0.34.0/third_party/forked/golang/LICENSE
+k8s.io/apimachinery/third_party/forked/golang v0.35.0 - BSD-3-Clause
+https://github.com/kubernetes/apimachinery/blob/v0.35.0/third_party/forked/golang/LICENSE
 
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
@@ -12145,8 +12114,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-k8s.io/apiserver v0.34.0 - Apache-2.0
-https://github.com/kubernetes/apiserver/blob/v0.34.0/LICENSE
+k8s.io/apiserver v0.35.0 - Apache-2.0
+https://github.com/kubernetes/apiserver/blob/v0.35.0/LICENSE
 
 
                                  Apache License
@@ -12355,8 +12324,8 @@ https://github.com/kubernetes/apiserver/blob/v0.34.0/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/client-go v0.34.0 - Apache-2.0
-https://github.com/kubernetes/client-go/blob/v0.34.0/LICENSE
+k8s.io/client-go v0.35.0 - Apache-2.0
+https://github.com/kubernetes/client-go/blob/v0.35.0/LICENSE
 
 
                                  Apache License
@@ -12565,8 +12534,8 @@ https://github.com/kubernetes/client-go/blob/v0.34.0/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/component-base v0.34.0 - Apache-2.0
-https://github.com/kubernetes/component-base/blob/v0.34.0/LICENSE
+k8s.io/component-base v0.35.0 - Apache-2.0
+https://github.com/kubernetes/component-base/blob/v0.35.0/LICENSE
 
 
                                  Apache License
@@ -12974,8 +12943,8 @@ third-party archives.
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg v0.0.0-20250710124328-f3f2b991d03b - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/LICENSE
+k8s.io/kube-openapi/pkg v0.0.0-20250910181357-589584f1c912 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/LICENSE
 
 
                                  Apache License
@@ -13184,8 +13153,8 @@ https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json v0.0.0-20250710124328-f3f2b991d03b - BSD-3-Clause
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/internal/third_party/go-json-experiment/json/LICENSE
+k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json v0.0.0-20250910181357-589584f1c912 - BSD-3-Clause
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/pkg/internal/third_party/go-json-experiment/json/LICENSE
 
 Copyright (c) 2020 The Go Authors. All rights reserved.
 
@@ -13219,8 +13188,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/internal/third_party/govalidator v0.0.0-20250710124328-f3f2b991d03b - MIT
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/internal/third_party/govalidator/LICENSE
+k8s.io/kube-openapi/pkg/internal/third_party/govalidator v0.0.0-20250910181357-589584f1c912 - MIT
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/pkg/internal/third_party/govalidator/LICENSE
 
 The MIT License (MIT)
 
@@ -13248,8 +13217,8 @@ SOFTWARE.
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/errors v0.0.0-20250710124328-f3f2b991d03b - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/errors/LICENSE
+k8s.io/kube-openapi/pkg/validation/errors v0.0.0-20250910181357-589584f1c912 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/pkg/validation/errors/LICENSE
 
 
                                  Apache License
@@ -13458,8 +13427,8 @@ https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/erro
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/spec v0.0.0-20250710124328-f3f2b991d03b - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/spec/LICENSE
+k8s.io/kube-openapi/pkg/validation/spec v0.0.0-20250910181357-589584f1c912 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/pkg/validation/spec/LICENSE
 
 
                                  Apache License
@@ -13668,8 +13637,8 @@ https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/spec
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/strfmt v0.0.0-20250710124328-f3f2b991d03b - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/strfmt/LICENSE
+k8s.io/kube-openapi/pkg/validation/strfmt v0.0.0-20250910181357-589584f1c912 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/pkg/validation/strfmt/LICENSE
 
 
                                  Apache License
@@ -13878,8 +13847,8 @@ https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/strf
 
 ----------------------------------------------------------
 
-k8s.io/kube-openapi/pkg/validation/validate v0.0.0-20250710124328-f3f2b991d03b - Apache-2.0
-https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/validate/LICENSE
+k8s.io/kube-openapi/pkg/validation/validate v0.0.0-20250910181357-589584f1c912 - Apache-2.0
+https://github.com/kubernetes/kube-openapi/blob/589584f1c912/pkg/validation/validate/LICENSE
 
 
                                  Apache License
@@ -14088,8 +14057,8 @@ https://github.com/kubernetes/kube-openapi/blob/f3f2b991d03b/pkg/validation/vali
 
 ----------------------------------------------------------
 
-k8s.io/utils v0.0.0-20250604170112-4c0f3b243397 - Apache-2.0
-https://github.com/kubernetes/utils/blob/4c0f3b243397/LICENSE
+k8s.io/utils v0.0.0-20251002143259-bc988d571ff4 - Apache-2.0
+https://github.com/kubernetes/utils/blob/bc988d571ff4/LICENSE
 
 
                                  Apache License
@@ -14298,8 +14267,8 @@ https://github.com/kubernetes/utils/blob/4c0f3b243397/LICENSE
 
 ----------------------------------------------------------
 
-k8s.io/utils/internal/third_party/forked/golang v0.0.0-20250604170112-4c0f3b243397 - BSD-3-Clause
-https://github.com/kubernetes/utils/blob/4c0f3b243397/internal/third_party/forked/golang/LICENSE
+k8s.io/utils/internal/third_party/forked/golang v0.0.0-20251002143259-bc988d571ff4 - BSD-3-Clause
+https://github.com/kubernetes/utils/blob/bc988d571ff4/internal/third_party/forked/golang/LICENSE
 
 Copyright (c) 2012 The Go Authors. All rights reserved.
 
@@ -14542,8 +14511,8 @@ https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/konnectivity-cli
 
 ----------------------------------------------------------
 
-sigs.k8s.io/controller-runtime v0.22.1 - Apache-2.0
-https://github.com/kubernetes-sigs/controller-runtime/blob/v0.22.1/LICENSE
+sigs.k8s.io/controller-runtime v0.23.0 - Apache-2.0
+https://github.com/kubernetes-sigs/controller-runtime/blob/v0.23.0/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -14751,8 +14720,8 @@ https://github.com/kubernetes-sigs/controller-runtime/blob/v0.22.1/LICENSE
 
 ----------------------------------------------------------
 
-sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 - BSD-3-Clause
-https://github.com/kubernetes-sigs/json/blob/cfa47c3a1cc8/LICENSE
+sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 - BSD-3-Clause
+https://github.com/kubernetes-sigs/json/blob/2d320260d730/LICENSE
 
 Files other than internal/golang/* licensed under:
 
@@ -15730,8 +15699,8 @@ Apache license:
 
 ----------------------------------------------------------
 
-github.com/tklauser/numcpus v0.10.0 - Apache-2.0
-https://github.com/tklauser/numcpus/blob/v0.10.0/LICENSE
+github.com/tklauser/numcpus v0.11.0 - Apache-2.0
+https://github.com/tklauser/numcpus/blob/v0.11.0/LICENSE
 
 
                                  Apache License
@@ -16414,8 +16383,43 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------------------------
 
-golang.org/x/sys/windows v0.38.0 - BSD-3-Clause
-https://cs.opensource.google/go/x/sys/+/v0.38.0:LICENSE
+golang.org/x/crypto v0.48.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/crypto/+/v0.48.0:LICENSE
+
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----------------------------------------------------------
+
+----------------------------------------------------------
+
+golang.org/x/sys/windows v0.42.0 - BSD-3-Clause
+https://cs.opensource.google/go/x/sys/+/v0.42.0:LICENSE
 
 Copyright 2009 The Go Authors.
 

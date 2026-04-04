@@ -850,6 +850,11 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 		}
 	}
 
+	if tarWriter.Empty() {
+		// Can happen if all ContinueOnError items fail
+		return nil
+	}
+
 	buffer, bufferErr := tarWriter.Buffer()
 	if bufferErr != nil {
 		return bufferErr

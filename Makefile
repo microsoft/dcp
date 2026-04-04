@@ -118,8 +118,8 @@ GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v2.6.1
-PROTOC_VERSION ?= 33.0
+GOLANGCI_LINT_VERSION ?= v2.11.2
+PROTOC_VERSION ?= 33.5
 GO_LICENSES_VERSION ?= a8e910054a1e8bc3104cbe074fb7b2251b377a28
 
 # DCP Version information
@@ -212,60 +212,23 @@ endif
 .PHONY: generate-grpc
 generate-grpc: generate-grpc-proto generate-grpc-interfaces ## Generates Go code for communication via gRPC protocol
 
-# Unfortunately "go tool -n <sometool>" (as of Go 1.24.3) does not resolve the path correctly if the tool is not already installed.
-# Instead, upon first invocation, the command returns some random temporary build path
-# that is supposed to be the tool binary, but actually isn't :-(
-# As a temporary workaround, we will invoke the gRPC codegen commands several times, with some dealy.
-# Relevant issue: https://github.com/golang/go/issues/72824
-
-ifeq ($(detected_OS),windows)
-define do-grpc-gen
-	$$attempt = 0; \
-	$(CLEAR_GOARGS) \
-	while ($$attempt -lt 5) { \
-		$$attempt++; \
-		$$grpc_plugin_path = & $(GOTOOL_BIN) -n $(grpc_plugin_url); \
-		& $(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$$grpc_plugin_path" $< ; \
-		if ($$LASTEXITCODE -eq 0) { \
-			exit 0; \
-		} \
-		Start-Sleep -Seconds 5; \
-	}; \
-	Write-Host "Failed to generate Go code for $< after 5 attempts"; \
-	exit 1
-endef
-else
-define do-grpc-gen
-	attempt=0; \
-	while [[ $$attempt -lt 5 ]]; do \
-		attempt=$$((attempt + 1)); \
-		grpc_plugin_path=$$($(CLEAR_GOARGS) $(GOTOOL_BIN) -n $(grpc_plugin_url) ); \
-		$(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$${grpc_plugin_path}" $< ; \
-		if [[ $$? -eq 0 ]]; then \
-			exit 0; \
-		fi; \
-		sleep 5; \
-	done; \
-	echo "Failed to generate Go code for $< after 5 attempts"; \
-	exit 1;
-endef
-endif
-
 .PHONY: generate-grpc-proto
 generate-grpc-proto: $(PROTO_DEFINITIONS)
 generate-grpc-proto: grpc_plugin_url = google.golang.org/protobuf/cmd/protoc-gen-go
 generate-grpc-proto: grpc_plugin_name = protoc-gen-go
 generate-grpc-proto: protoc_args = --go_out=. --go_opt=paths=source_relative
+generate-grpc-proto: grpc_plugin_path = $(shell $(CLEAR_GOARGS) $(GOTOOL_BIN) -n $(grpc_plugin_url))
 $(PROTO_DEFINITIONS): %.pb.go: %.proto | $(PROTOC)
-	@$(do-grpc-gen)
+	$(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$(grpc_plugin_path)" $<
 
 .PHONY: generate-grpc-interfaces
 generate-grpc-interfaces: $(PROTO_INTERFACES)
 generate-grpc-interfaces: grpc_plugin_url = google.golang.org/grpc/cmd/protoc-gen-go-grpc
 generate-grpc-interfaces: grpc_plugin_name = protoc-gen-go-grpc
 generate-grpc-interfaces: protoc_args = --go-grpc_out=. --go-grpc_opt=paths=source_relative
+generate-grpc-interfaces: grpc_plugin_path = $(shell $(CLEAR_GOARGS) $(GOTOOL_BIN) -n $(grpc_plugin_url))
 $(PROTO_INTERFACES): %_grpc.pb.go: %.proto | $(PROTOC)
-	@$(do-grpc-gen)
+	$(PROTOC) $(protoc_args) "--plugin=$(grpc_plugin_name)=$(grpc_plugin_path)" $<
 
 .PHONY: generate-licenses
 generate-licenses: generate-dependency-notices ## Generates license/notice files for all dependencies
