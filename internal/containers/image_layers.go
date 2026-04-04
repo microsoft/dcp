@@ -135,6 +135,10 @@ func ApplyImageLayersImpl(
 
 	outBuf, errBuf, buildErr := runner.RunBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
 
+	// Close the read end of the pipe to unblock the tar writer goroutine if the build
+	// command failed before consuming all input (e.g., binary not found, early exit).
+	pr.Close()
+
 	// Wait for the tar writer goroutine to finish
 	<-tarDone
 

@@ -1288,14 +1288,14 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// Derive a tag by replacing the base image's tag/digest with the lifecycle key.
 				// The image ref may be name:tag or name@sha256:digest — we need just the name part.
 				baseRepo := rcd.runSpec.Image
-				if idx := strings.Index(baseRepo, "@"); idx != -1 {
-					baseRepo = baseRepo[:idx]
-				} else if idx := strings.LastIndex(baseRepo, ":"); idx != -1 {
+				if atidx := strings.Index(baseRepo, "@"); atidx != -1 {
+					baseRepo = baseRepo[:atidx]
+				} else if colonidx := strings.LastIndex(baseRepo, ":"); colonidx != -1 {
 					// Only strip at colon if it's a tag separator, not part of a port/registry.
 					// A tag separator colon comes after the last slash (or is the only colon).
 					slashIdx := strings.LastIndex(baseRepo, "/")
-					if idx > slashIdx {
-						baseRepo = baseRepo[:idx]
+					if colonidx > slashIdx {
+						baseRepo = baseRepo[:colonidx]
 					}
 				}
 				sanitizedKey := strings.ReplaceAll(lifecycleKey, ":", "-")
