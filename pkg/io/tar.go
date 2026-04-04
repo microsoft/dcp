@@ -8,6 +8,7 @@ package io
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -20,11 +21,22 @@ type TarWriter struct {
 	hasItems bool
 }
 
+// NewTarWriter creates a TarWriter that buffers the tar archive in memory.
+// Use Buffer() to retrieve the completed archive.
 func NewTarWriter() *TarWriter {
 	buffer := &bytes.Buffer{}
 	return &TarWriter{
 		writer: tar.NewWriter(buffer),
 		buffer: buffer,
+	}
+}
+
+// NewTarWriterTo creates a TarWriter that writes directly to the provided writer.
+// Use Close() to finalize the tar archive when done writing entries.
+// Buffer() is not supported on writers created with NewTarWriterTo.
+func NewTarWriterTo(w io.Writer) *TarWriter {
+	return &TarWriter{
+		writer: tar.NewWriter(w),
 	}
 }
 
@@ -34,12 +46,21 @@ func (tw *TarWriter) Empty() bool {
 }
 
 func (tw *TarWriter) Buffer() (*bytes.Buffer, error) {
-	err := tw.writer.Close()
+	if tw.buffer == nil {
+		return nil, fmt.Errorf("Buffer() is not supported on TarWriters created with NewTarWriterTo; use Close() instead")
+	}
 
+	err := tw.writer.Close()
 	if err != nil {
 		return nil, err
 	}
 	return tw.buffer, nil
+}
+
+// Close finalizes the tar archive. Use this instead of Buffer() when
+// the TarWriter was created with NewTarWriterTo.
+func (tw *TarWriter) Close() error {
+	return tw.writer.Close()
 }
 
 func (tw *TarWriter) WriteDir(name string, uid int32, gid int32, mode os.FileMode, modTime time.Time, changeTime time.Time, accessTime time.Time) error {

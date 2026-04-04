@@ -6,9 +6,11 @@
 package containers
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"io/fs"
+	"os/exec"
 	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -65,6 +67,18 @@ type StreamCommandOptions struct {
 
 type TimeoutOption struct {
 	Timeout time.Duration
+}
+
+// CLICommandRunner abstracts the ability to create and run container runtime CLI commands.
+// Both Docker and Podman orchestrators implement this interface, allowing shared logic
+// (such as image layer application) to invoke runtime-specific CLI commands.
+type CLICommandRunner interface {
+	// MakeCommand creates an exec.Cmd for the container runtime with the given arguments.
+	MakeCommand(args ...string) *exec.Cmd
+
+	// RunBufferedCommand runs a command, capturing stdout and stderr into buffers.
+	// If the command does not complete within the timeout, it is terminated.
+	RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error)
 }
 
 type ContainerDiagnostics struct {
@@ -404,6 +418,27 @@ type CreateFiles interface {
 	CreateFiles(ctx context.Context, options CreateFilesOptions) error
 }
 
+// ApplyImageLayers command types
+
+type ApplyImageLayersOptions struct {
+	// The inspected base image to apply layers on top of
+	BaseImage InspectedImage
+
+	// The image layers to apply (tar files)
+	Layers []apiv1.ImageLayer
+
+	// Tag to apply to the derived image
+	Tag string
+
+	TimeoutOption
+}
+
+type ApplyImageLayers interface {
+	// Builds a derived image by applying additional tar layers on top of a base image.
+	// Returns the tag/ID of the derived image.
+	ApplyImageLayers(ctx context.Context, options ApplyImageLayersOptions) (string, error)
+}
+
 type StreamContainerLogsOptions struct {
 	// Follow the logs vs. just returning the current logs at the time the command was run
 	Follow bool
@@ -453,6 +488,7 @@ type ContainerOrchestrator interface {
 	RemoveContainers
 	ExecContainers
 	CreateFiles
+	ApplyImageLayers
 
 	// Subscribes to events about container state changes
 	// When the subscription is cancelled, the channel will be closed
