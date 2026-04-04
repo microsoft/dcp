@@ -38,6 +38,7 @@ func NewTarWriterTo(w io.Writer) *TarWriter {
 	return &TarWriter{
 		writer: tar.NewWriter(w),
 	}
+}
 
 // Empty returns true if no items have been written to the tar archive.
 func (tw *TarWriter) Empty() bool {
