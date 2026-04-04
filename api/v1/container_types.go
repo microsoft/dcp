@@ -1209,6 +1209,10 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
 	}
 
+	if c.Spec.Image != "" && strings.ContainsAny(c.Spec.Image, "\r\n\t ") {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "image"), c.Spec.Image, "image must not contain whitespace or control characters"))
+	}
+
 	if c.Spec.Build != nil {
 		if c.Spec.Build.Context == "" {
 			errorList = append(errorList, field.Required(field.NewPath("spec", "build", "context"), "context must be set to a non-empty value when build is specified"))

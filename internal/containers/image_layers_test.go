@@ -108,8 +108,7 @@ func TestApplyImageLayersImpl_DockerfileGeneration(t *testing.T) {
 		context.Background(),
 		logr.Discard(),
 		options,
-		fakeMakeCommand,
-		newFakeRunBufferedCommand(result, "", "", nil),
+		newFakeRunner(result, "", "", nil),
 	)
 
 	require.NoError(t, applyErr)
@@ -146,7 +145,7 @@ func TestApplyImageLayersImpl_UsesImageIdWhenNoTags(t *testing.T) {
 
 	_, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(result, "", "", nil),
+		newFakeRunner(result, "", "", nil),
 	)
 	require.NoError(t, applyErr)
 
@@ -167,7 +166,7 @@ func TestApplyImageLayersImpl_ReturnsImageIdWhenNoTag(t *testing.T) {
 
 	imageRef, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(&fakeBuildResult{}, "sha256:newimage123\n", "", nil),
+		newFakeRunner(&fakeBuildResult{}, "sha256:newimage123\n", "", nil),
 	)
 
 	require.NoError(t, applyErr)
@@ -185,7 +184,7 @@ func TestApplyImageLayersImpl_EmptyLayersReturnsError(t *testing.T) {
 
 	_, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(&fakeBuildResult{}, "", "", nil),
+		newFakeRunner(&fakeBuildResult{}, "", "", nil),
 	)
 
 	require.Error(t, applyErr)
@@ -206,7 +205,7 @@ func TestApplyImageLayersImpl_BuildErrorTakesPrecedenceOverTarError(t *testing.T
 	buildError := fmt.Errorf("docker command 'ApplyImageLayers' returned with non-zero exit code 1")
 	_, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(&fakeBuildResult{}, "", "error: Dockerfile parse error", buildError),
+		newFakeRunner(&fakeBuildResult{}, "", "error: Dockerfile parse error", buildError),
 	)
 
 	require.Error(t, applyErr)
@@ -239,7 +238,7 @@ func TestApplyImageLayersImpl_SourceLayerWithSHA256Prefix(t *testing.T) {
 
 	imageRef, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(result, "", "", nil),
+		newFakeRunner(result, "", "", nil),
 	)
 
 	require.NoError(t, applyErr)
@@ -273,7 +272,7 @@ func TestApplyImageLayersImpl_SourceLayerWithUppercaseSHA256(t *testing.T) {
 
 	_, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(result, "", "", nil),
+		newFakeRunner(result, "", "", nil),
 	)
 
 	require.NoError(t, applyErr)
@@ -300,7 +299,7 @@ func TestApplyImageLayersImpl_SourceLayerHashMismatch(t *testing.T) {
 
 	_, applyErr := ApplyImageLayersImpl(
 		context.Background(), logr.Discard(), options,
-		fakeMakeCommand, newFakeRunBufferedCommand(&fakeBuildResult{}, "", "", nil),
+		newFakeRunner(&fakeBuildResult{}, "", "", nil),
 	)
 
 	require.Error(t, applyErr)
@@ -323,11 +322,11 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 
 		_, applyErr := ApplyImageLayersImpl(
 			context.Background(), logr.Discard(), options,
-			fakeMakeCommand, newFakeRunBufferedCommand(result, "", "", nil),
+			newFakeRunner(result, "", "", nil),
 		)
 		require.NoError(t, applyErr)
 
-		// Args[0] is "echo" from fakeMakeCommand, rest are the build args
+		// Args[0] is "echo" from MakeCommand, rest are the build args
 		assert.Contains(t, result.args, "--quiet")
 		assert.Contains(t, result.args, "-t")
 		assert.Contains(t, result.args, "myimage:dcp-abc")
@@ -345,7 +344,7 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 
 		_, applyErr := ApplyImageLayersImpl(
 			context.Background(), logr.Discard(), options,
-			fakeMakeCommand, newFakeRunBufferedCommand(result, "sha256:built", "", nil),
+			newFakeRunner(result, "sha256:built", "", nil),
 		)
 		require.NoError(t, applyErr)
 
