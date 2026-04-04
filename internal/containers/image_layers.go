@@ -26,9 +26,6 @@ import (
 
 const defaultApplyImageLayersTimeout = 10 * time.Minute
 
-type makeCommandFn func(args ...string) *exec.Cmd
-type runBufferedCommandFn func(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error)
-
 // ApplyImageLayersImpl builds a derived container image by applying additional tar layers
 // on top of a base image. It streams a build context tar (containing a generated Dockerfile
 // and the layer tars) to `docker build` via stdin, avoiding any temporary files on disk.
@@ -38,8 +35,7 @@ func ApplyImageLayersImpl(
 	ctx context.Context,
 	log logr.Logger,
 	options ApplyImageLayersOptions,
-	makeCommand makeCommandFn,
-	runBufferedCommand runBufferedCommandFn,
+	runner CLICommandRunner,
 ) (string, error) {
 	if len(options.Layers) == 0 {
 		return "", fmt.Errorf("at least one image layer must be specified")
@@ -136,10 +132,10 @@ func ApplyImageLayersImpl(
 	}
 	args = append(args, "-")
 
-	cmd := makeCommand(args...)
+	cmd := runner.MakeCommand(args...)
 	cmd.Stdin = pr
 
-	outBuf, errBuf, buildErr := runBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
+	outBuf, errBuf, buildErr := runner.RunBufferedCommand(ctx, "ApplyImageLayers", cmd, nil, nil, timeout)
 
 	// Wait for the tar writer goroutine to finish
 	<-tarDone

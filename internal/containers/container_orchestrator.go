@@ -6,9 +6,11 @@
 package containers
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"io/fs"
+	"os/exec"
 	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -65,6 +67,18 @@ type StreamCommandOptions struct {
 
 type TimeoutOption struct {
 	Timeout time.Duration
+}
+
+// CLICommandRunner abstracts the ability to create and run container runtime CLI commands.
+// Both Docker and Podman orchestrators implement this interface, allowing shared logic
+// (such as image layer application) to invoke runtime-specific CLI commands.
+type CLICommandRunner interface {
+	// MakeCommand creates an exec.Cmd for the container runtime with the given arguments.
+	MakeCommand(args ...string) *exec.Cmd
+
+	// RunBufferedCommand runs a command, capturing stdout and stderr into buffers.
+	// If the command does not complete within the timeout, it is terminated.
+	RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error)
 }
 
 type ContainerDiagnostics struct {

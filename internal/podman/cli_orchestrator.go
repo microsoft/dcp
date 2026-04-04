@@ -874,11 +874,7 @@ func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options conta
 }
 
 func (pco *PodmanCliOrchestrator) ApplyImageLayers(ctx context.Context, options containers.ApplyImageLayersOptions) (string, error) {
-	return containers.ApplyImageLayersImpl(ctx, pco.log, options, func(args ...string) *exec.Cmd {
-		return makePodmanCommand(args...)
-	}, func(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
-		return pco.runBufferedPodmanCommand(ctx, opName, cmd, stdout, stderr, timeout)
-	})
+	return containers.ApplyImageLayersImpl(ctx, pco.log, options, pco)
 }
 
 func (pco *PodmanCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
@@ -1281,6 +1277,14 @@ func (pco *PodmanCliOrchestrator) runBufferedPodmanCommand(
 func makePodmanCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("podman", args...)
 	return cmd
+}
+
+func (pco *PodmanCliOrchestrator) MakeCommand(args ...string) *exec.Cmd {
+	return makePodmanCommand(args...)
+}
+
+func (pco *PodmanCliOrchestrator) RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+	return pco.runBufferedPodmanCommand(ctx, opName, cmd, stdout, stderr, timeout)
 }
 
 func makePodmanMachineCommand(args ...string) *exec.Cmd {

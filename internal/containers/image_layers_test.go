@@ -28,32 +28,42 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 )
 
-// fakeBuildCommand captures the stdin tar and args for inspection by tests.
+// fakeCLICommandRunner implements CLICommandRunner for testing.
+type fakeCLICommandRunner struct {
+	result  *fakeBuildResult
+	outText string
+	errText string
+	retErr  error
+}
+
+// fakeBuildResult captures the stdin tar and args for inspection by tests.
 type fakeBuildResult struct {
 	args     []string
 	stdinTar []byte
 }
 
-func newFakeRunBufferedCommand(result *fakeBuildResult, outText string, errText string, retErr error) runBufferedCommandFn {
-	return func(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
-		result.args = cmd.Args
-
-		if cmd.Stdin != nil {
-			data, readErr := io.ReadAll(cmd.Stdin)
-			if readErr != nil {
-				return nil, nil, readErr
-			}
-			result.stdinTar = data
-		}
-
-		outBuf := bytes.NewBufferString(outText)
-		errBuf := bytes.NewBufferString(errText)
-		return outBuf, errBuf, retErr
-	}
+func (f *fakeCLICommandRunner) MakeCommand(args ...string) *exec.Cmd {
+	return exec.Command("echo", args...)
 }
 
-func fakeMakeCommand(args ...string) *exec.Cmd {
-	return exec.Command("echo", args...)
+func (f *fakeCLICommandRunner) RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+	f.result.args = cmd.Args
+
+	if cmd.Stdin != nil {
+		data, readErr := io.ReadAll(cmd.Stdin)
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		f.result.stdinTar = data
+	}
+
+	outBuf := bytes.NewBufferString(f.outText)
+	errBuf := bytes.NewBufferString(f.errText)
+	return outBuf, errBuf, f.retErr
+}
+
+func newFakeRunner(result *fakeBuildResult, outText string, errText string, retErr error) *fakeCLICommandRunner {
+	return &fakeCLICommandRunner{result: result, outText: outText, errText: errText, retErr: retErr}
 }
 
 // parseTarEntries extracts file names and contents from a tar archive.

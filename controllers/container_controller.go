@@ -1262,6 +1262,8 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				})
 			}
 
+			// If image layers are specified, build a derived image with the layers applied
+			effectiveImage := rcd.runSpec.Image
 			if len(rcd.runSpec.ImageLayers) > 0 {
 				digests := make([]string, len(rcd.runSpec.ImageLayers))
 				for i, layer := range rcd.runSpec.ImageLayers {
@@ -1271,11 +1273,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					Key:   imageLayersLabel,
 					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(digests, "\n")))),
 				})
-			}
 
-			// If image layers are specified, build a derived image with the layers applied
-			effectiveImage := rcd.runSpec.Image
-			if len(rcd.runSpec.ImageLayers) > 0 {
 				// When applying image layers, we need the base image locally before
 				// constructing the derived image. Normally docker create --pull handles
 				// pulling, but since we intercept before that, we must respect PullPolicy here.
