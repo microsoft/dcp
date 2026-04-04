@@ -7,6 +7,7 @@ package v1
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -41,6 +42,7 @@ var (
 	// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
 	validContainerName       = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
 	validContainerNameRegexp = regexp.MustCompile(validContainerName)
+	validSHA256HexRegexp     = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 )
 
 type ContainerRestartPolicy string
@@ -413,6 +415,102 @@ func (cf *CreateFileSystem) Equal(other *CreateFileSystem) bool {
 	return true
 }
 
+// Represents a tar file to be applied as an additional image layer when running the container.
+// The layer can be provided either as a path to a tar file (with a SHA256 hash for verification)
+// or as base64-encoded tar contents.
+// +k8s:openapi-gen=true
+type ImageLayer struct {
+	// An opaque identifier for this layer used in lifecycle key generation.
+	// This allows tracking whether a layer has meaningfully changed independently of
+	// the raw binary content (which may vary due to timestamps or other
+	// materially unimportant differences in the tar file).
+	Digest string `json:"digest"`
+
+	// Path to a tar file on the host filesystem. Mutually exclusive with RawContents.
+	Source string `json:"source,omitempty"`
+
+	// SHA256 hash of the tar file referenced by Source, used for integrity verification. Required when Source is set.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Base64-encoded tar file contents. Mutually exclusive with Source.
+	RawContents string `json:"rawContents,omitempty"`
+}
+
+func (il *ImageLayer) Equal(other *ImageLayer) bool {
+	if il == other {
+		return true
+	}
+
+	if il == nil || other == nil {
+		return false
+	}
+
+	if il.Digest != other.Digest {
+		return false
+	}
+
+	if il.Source != other.Source {
+		return false
+	}
+
+	if il.SHA256 != other.SHA256 {
+		return false
+	}
+
+	if il.RawContents != other.RawContents {
+		return false
+	}
+
+	return true
+}
+
+func (il *ImageLayer) Validate(fieldPath *field.Path) field.ErrorList {
+	if il == nil {
+		return nil
+	}
+
+	var errorList field.ErrorList
+
+	if il.Digest == "" {
+		errorList = append(errorList, field.Required(fieldPath.Child("digest"), "digest must be set to a non-empty value"))
+	}
+
+	if il.Source == "" && il.RawContents == "" {
+		errorList = append(errorList, field.Required(fieldPath, "either source or rawContents must be set"))
+	}
+
+	if il.Source != "" && il.RawContents != "" {
+		errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "source and rawContents cannot be set at the same time"))
+	}
+
+	if il.Source != "" && il.SHA256 == "" {
+		errorList = append(errorList, field.Required(fieldPath.Child("sha256"), "sha256 must be set when source is specified"))
+	}
+
+	if il.SHA256 != "" && il.Source == "" {
+		errorList = append(errorList, field.Forbidden(fieldPath.Child("sha256"), "sha256 can only be set when source is specified"))
+	}
+
+	if il.SHA256 != "" {
+		// Accept with or without "sha256:" prefix; the hex portion must be exactly 64 hex characters
+		hexPart := il.SHA256
+		if strings.HasPrefix(strings.ToLower(hexPart), "sha256:") {
+			hexPart = hexPart[7:]
+		}
+		if !validSHA256HexRegexp.MatchString(hexPart) {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("sha256"), il.SHA256, "sha256 must be a 64-character hex string, optionally prefixed with 'sha256:'"))
+		}
+	}
+
+	if il.RawContents != "" {
+		if _, decodeErr := base64.StdEncoding.DecodeString(il.RawContents); decodeErr != nil {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("rawContents"), "<base64 data>", fmt.Sprintf("rawContents must be valid base64: %s", decodeErr.Error())))
+		}
+	}
+
+	return errorList
+}
+
 // Represents a collection of PEM formatted certificates to be written into the container
 // +k8s:openapi-gen=true
 type ContainerPemCertificates struct {
@@ -575,6 +673,12 @@ type ContainerSpec struct {
 	// +listType=atomic
 	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
 
+	// Tar files to apply as additional image layers when running the container.
+	// Each layer tar will be applied on top of the base image, producing a derived image
+	// that is used to create the container.
+	// +listType=atomic
+	ImageLayers []ImageLayer `json:"imageLayers,omitempty"`
+
 	// PEM formatted public certificates to be created in the container
 	// +optional
 	PemCertificates *ContainerPemCertificates `json:"pemCertificates,omitempty"`
@@ -681,6 +785,12 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
+	if !slices.EqualFunc(cs.ImageLayers, other.ImageLayers, func(l1, l2 ImageLayer) bool {
+		return l1.Equal(&l2)
+	}) {
+		return false
+	}
+
 	return true
 }
 
@@ -698,6 +808,7 @@ func initializeHashEncoder() {
 	_ = initEncoder.Encode(EnvVar{})
 	_ = initEncoder.Encode(CreateFileSystem{})
 	_ = initEncoder.Encode(ContainerPemCertificates{})
+	_ = initEncoder.Encode(ImageLayer{})
 }
 
 func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
@@ -877,6 +988,17 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		slices.Sort(sortedOverwritePaths)
 		for i := range sortedOverwritePaths {
 			hashErr = errors.Join(hashErr, encoder.Encode(sortedOverwritePaths[i]))
+		}
+	}
+
+	if len(cs.ImageLayers) > 0 {
+		// Add image layer digests to the hash in order, as layer order is significant
+		// (later layers override files from earlier layers). Only the Digest field is used,
+		// not the raw tar contents, because the Digest represents meaningful data identity
+		// independent of binary differences. Each digest is encoded via gob to ensure
+		// unambiguous separation between entries.
+		for i := range cs.ImageLayers {
+			hashErr = errors.Join(hashErr, encoder.Encode(cs.ImageLayers[i].Digest))
 		}
 	}
 
@@ -1087,6 +1209,10 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
 	}
 
+	if c.Spec.Image != "" && strings.ContainsAny(c.Spec.Image, "\r\n\t ") {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "image"), c.Spec.Image, "image must not contain whitespace or control characters"))
+	}
+
 	if c.Spec.Build != nil {
 		if c.Spec.Build.Context == "" {
 			errorList = append(errorList, field.Required(field.NewPath("spec", "build", "context"), "context must be set to a non-empty value when build is specified"))
@@ -1167,6 +1293,11 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		if createFile.DefaultGroup < 0 {
 			errorList = append(errorList, field.Invalid(field.NewPath("spec", "createFiles").Index(i).Child("defaultGroup"), createFile.DefaultGroup, "default group must be a non-negative integer"))
 		}
+	}
+
+	imageLayersPath := field.NewPath("spec", "imageLayers")
+	for i, layer := range c.Spec.ImageLayers {
+		errorList = append(errorList, layer.Validate(imageLayersPath.Index(i))...)
 	}
 
 	// Validate PEM certificates configuration
@@ -1253,6 +1384,16 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 
 	if !oldContainer.Spec.PemCertificates.Equal(c.Spec.PemCertificates) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pemCertificates"), "pemCertificates cannot be changed once a Container is created."))
+	}
+
+	if len(oldContainer.Spec.ImageLayers) != len(c.Spec.ImageLayers) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "imageLayers"), "image layers cannot be changed once a Container is created."))
+	} else {
+		for i, layer := range oldContainer.Spec.ImageLayers {
+			if !layer.Equal(&c.Spec.ImageLayers[i]) {
+				errorList = append(errorList, field.Forbidden(field.NewPath("spec", "imageLayers").Index(i), "image layers cannot be changed once a Container is created."))
+			}
+		}
 	}
 
 	return errorList
