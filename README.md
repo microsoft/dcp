@@ -2,17 +2,19 @@
 
 ## Overview
 
-**Developer Control Plane (DCP)** is a developer productivity tool that enables remote execution of code and containers from your local machine or IDE. It provides a Kubernetes-compatible API for managing workloads, making it easy to run, debug, and manage development workflows either locally or in cloud environments.
+**Developer Control Plane (DCP)** is a local application runner for multi-service, polyglot applications. It integrates your code, emulators, and containers to give you a development environment with minimum remote dependencies and maximum ease of use.
 
-DCP is designed to integrate seamlessly with development tools like [Microsoft Aspire](https://learn.microsoft.com/dotnet/aspire/) and VS Code, allowing you to execute code in the cloud while maintaining a local-like development experience.
+DCP exposes a Kubernetes-compatible API (using custom resource definitions) for describing and managing workloads. The Kubernetes API is used for two reasons: first, it provides a language-agnostic way of describing the application, one that is easy to consume from a variety of tools thanks to the popularity of Kubernetes and the wide availability of Kubernetes client libraries. Second, the built-in ability to watch objects in the Kubernetes protocol allows clients to not only tell DCP what the desired state is, but also be notified about changes to the application model as a run progresses. All of this interaction between DCP and its clients happens locally.
+
+DCP integrates with development tools such as [Microsoft Aspire](https://learn.microsoft.com/dotnet/aspire/) and VS Code, enabling IDE-based execution and debugging of application components.
 
 ### Key Features
 
-- **Remote Execution**: Run code and containers on remote machines without changing your workflow
-- **IDE Integration**: Execute code directly from VS Code with full debugging support
-- **Kubernetes API**: Uses standard Kubernetes concepts (CRDs) for workload management
-- **Process & Container Monitoring**: Automatically manages lifecycle of executed processes and containers
-- **Port Management**: Dynamically allocates unique ports across multiple DCP instances
+- **Local Multi-Service Orchestration**: Run multi-service applications composed of processes and containers on your local machine
+- **IDE Integration**: Execute and debug application components directly from VS Code or Visual Studio
+- **Kubernetes-Compatible API**: Describe workloads using a familiar, language-agnostic API built on Kubernetes custom resource definitions
+- **Process & Container Lifecycle Management**: Automatically manage the lifecycle and cleanup of executed processes and containers
+- **Port Management**: Dynamically allocate unique ports across multiple concurrent DCP instances
 
 This repository contains the Developer Control Plane tool (or DCP for short). DCP is implemented as a single binary (`dcp`) that can run in one of several modes depending on how it is invoked. The main modes of operation are:
 - `dcp start-apiserver` - runs the DCP API server that holds the workload model and exposes a Kubernetes-compatible API for managing workloads using the [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver). The API server is Kubernetes-compatible but using custom resource definitions. This is the main entry point for DCP; users or other tools such as Aspire invoke DCP in this mode to launch the API server and controllers.
