@@ -4,7 +4,7 @@
 
 **Developer Control Plane (DCP)** is a local application runner for multi-service, polyglot applications. It integrates your code, emulators, and containers to give you a development environment with minimum remote dependencies and maximum ease of use.
 
-DCP exposes a Kubernetes-compatible API (using custom resource definitions) for describing and managing workloads. The Kubernetes API is used for two reasons: first, it provides a language-agnostic way of describing the application, one that is easy to consume from a variety of tools thanks to the popularity of Kubernetes and the wide availability of Kubernetes client libraries. Second, the built-in ability to watch objects in the Kubernetes protocol allows clients to not only tell DCP what the desired state is, but also be notified about changes to the application model as a run progresses. All of this interaction between DCP and its clients happens locally.
+DCP exposes a Kubernetes-compatible API (using custom resource definitions) for describing and managing workloads. Object status change notifications allow clients to monitor the state of the application as the run progresses. 
 
 DCP integrates with development tools such as [Microsoft Aspire](https://learn.microsoft.com/dotnet/aspire/), Visual Studio, and VS Code, enabling IDE-based execution and debugging of application components.
 
