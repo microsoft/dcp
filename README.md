@@ -12,7 +12,7 @@ DCP integrates with development tools such as [Microsoft Aspire](https://learn.m
 
 - **Local Multi-Service Orchestration**: Run multi-service applications composed of processes and containers on your local machine
 - **IDE Integration**: Execute and debug application components directly from VS Code or Visual Studio
-- **Kubernetes-Compatible API**: Describe workloads using a familiar, language-agnostic API built on Kubernetes custom resource definitions
+- **Kubernetes-Compatible API**: Describe workloads using a language-agnostic API built on Kubernetes custom resource definitions
 - **Process & Container Lifecycle Management**: Automatically manage the lifecycle and cleanup of executed processes and containers
 - **Port Management**: Dynamically allocate unique ports across multiple concurrent DCP instances
 
