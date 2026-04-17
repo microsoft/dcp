@@ -55,7 +55,7 @@ If you are using SSH to authenticate to GitHub, you want the following in your `
  make generate
  ```
 
-This will populate the repository with auto-generated code files (mostly gRPC- and OpenAPI-related interface definitions), allowing building the repository and running tests.
+This will populate the repository with auto-generated code files (mostly gRPC- and OpenAPI-related interface definitions), allowing you to build the repository and run tests.
 
 ## Making DCP available from $PATH
 
