@@ -21,7 +21,9 @@ Update `tilt-apiserver` dependency to the latest release. Find the latest releas
 
 ### 2. Update packages shared with Tilt
 
-Fetch the `go.mod` from the tilt-apiserver release tag (e.g. `https://raw.githubusercontent.com/tilt-dev/tilt-apiserver/v<VERSION>/go.mod`). Any packages that both `tilt-apiserver` and DCP list in their `go.mod` files should be kept at exactly the same version. This includes both direct and indirect dependencies.
+Fetch the `go.mod` from the tilt-apiserver release tag (e.g. `https://raw.githubusercontent.com/tilt-dev/tilt-apiserver/v<VERSION>/go.mod`). Any *Kubernetes-related* packages (those that have names starting with `k8s.io` or `sigs.k8s.io`) that both `tilt-apiserver` and DCP list in their `go.mod` files should be kept at exactly the same version. This includes both direct and indirect dependencies.
+
+Other (non-Kubernetes) packages that are shared between `tilt-apiserver` and DCP do not need to be kept at the same version. Upgrade them like any other packages (see next step).
 
 ### 3. Update other packages
 
@@ -36,7 +38,7 @@ Use `go mod edit -require=<module>@<version>` to apply version changes (does not
 
 Run `make generate` after updating dependencies. This is especially important after k8s.io package upgrades, as OpenAPI definitions may need regeneration.
 
-## Verification
+## Verification and final steps
 
 ### 1. Tidy modules
 
@@ -49,3 +51,7 @@ Run `make lint` and ensure there are no errors or warnings. If you encounter err
 ### 3. Test
 
 Run `make test` and ensure all tests pass. Fix any errors you encounter.
+
+### 4. Update the NOTICE file
+
+Run `make generate-licenses` to update the NOTICE file with the new dependencies.
