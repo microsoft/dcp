@@ -21,7 +21,7 @@ Update `tilt-apiserver` dependency to the latest release. Find the latest releas
 
 ### 2. Update packages shared with Tilt
 
-Fetch the `go.mod` from the tilt-apiserver release tag (e.g. `https://raw.githubusercontent.com/tilt-dev/tilt-apiserver/v<VERSION>/go.mod`). Any *Kubernetes-related* packages (those that have names starting with `k8s.io` or `sigs.k8s.io`)  that both `tilt-apiserver` and DCP list in their `go.mod` files should be kept at exactly the same version. This includes both direct and indirect dependencies.
+Fetch the `go.mod` from the tilt-apiserver release tag (e.g. `https://raw.githubusercontent.com/tilt-dev/tilt-apiserver/v<VERSION>/go.mod`). Any *Kubernetes-related* packages (those that have names starting with `k8s.io` or `sigs.k8s.io`) that both `tilt-apiserver` and DCP list in their `go.mod` files should be kept at exactly the same version. This includes both direct and indirect dependencies.
 
 Other (non-Kubernetes) packages that are shared between `tilt-apiserver` and DCP do not need to be kept at the same version. Upgrade them like any other packages (see next step).
 
