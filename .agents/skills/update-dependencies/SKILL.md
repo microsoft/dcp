@@ -54,4 +54,4 @@ Run `make test` and ensure all tests pass. Fix any errors you encounter.
 
 ### 4. Update the NOTICE file
 
-Run `make generate-licenses` to update the NOTICE file with the new dependencies. 
+Run `make generate-licenses` to update the NOTICE file with the new dependencies.
