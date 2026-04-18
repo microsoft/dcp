@@ -23,8 +23,11 @@ type nopWriteCloserReaderFrom struct {
 }
 
 // NopWriteCloser returns an io.WriteCloser that wraps the provided io.Writer, with a no-op Close method.
+// If the provided writer is nil, it returns nil.
 func NopWriteCloser(w io.Writer) io.WriteCloser {
-	if r, ok := w.(io.ReaderFrom); ok {
+	if w == nil {
+		return nil
+	} else if r, ok := w.(io.ReaderFrom); ok {
 		return nopWriteCloserReaderFrom{nopWriteCloser{w}, r}
 	} else {
 		return nopWriteCloser{w}
