@@ -68,7 +68,7 @@ type startupLogCloseOption uint
 
 const (
 	startupLogCloseOptionDefault startupLogCloseOption = 0
-	startupLogDisposeOnClose     startupLogCloseOption = 1 << iota
+	startupLogDisposeOnClose     startupLogCloseOption = 1
 )
 
 // Close closes, and optionally disposes (deletes) the startup log file.
