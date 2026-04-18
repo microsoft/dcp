@@ -268,12 +268,9 @@ func startContainer(
 
 			case containers.ContainerStatusExited:
 				// It is possible that the container starts and then exits very quickly afterwards.
-				// For the sake of determining whether the startup was successful, we will assume that it was if exit code == 0.
-				if i.ExitCode == 0 {
-					return nil
-				} else {
-					return resiliency.Permanent(fmt.Errorf("container '%s' start failed (exit code %d)", containerName, i.ExitCode))
-				}
+				// We treat it as successful start, even if exit code is non-zero
+				// (which will be reported via ContainerStatus.ExitCode).
+				return nil
 
 			default:
 				errMsg := fmt.Sprintf("status of container '%s' is '%s' (was expecting '%s')", containerName, i.Status, containers.ContainerStatusRunning)
