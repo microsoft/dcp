@@ -72,7 +72,7 @@ const (
 )
 
 // Close closes, and optionally disposes (deletes) the startup log file.
-// Close is idempotent and safe to call multiple times. Any errors are logger using the provided logger.
+// Close is idempotent and safe to call multiple times. Any errors are logged using the provided logger.
 func (sl *startupLog) Close(opt startupLogCloseOption, log logr.Logger) {
 	closeErr := sl.doClose(opt)
 	if closeErr != nil {
