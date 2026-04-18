@@ -47,8 +47,6 @@ func newStartupLog(ctr *apiv1.Container, logSource apiv1.LogStreamSource) (*star
 	// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
 	writer := usvc_io.NewParagraphWriter(usvc_io.NewTimestampWriter(file), osutil.LineSep())
 
-	disposed := make(chan struct{})
-
 	result := &startupLog{
 		file:   file,
 		writer: writer,
@@ -60,7 +58,6 @@ func newStartupLog(ctr *apiv1.Container, logSource apiv1.LogStreamSource) (*star
 			return nil
 		}),
 		disposeOnce: sync.OnceValue(func() error {
-			close(disposed)
 			return os.Remove(file.Name())
 		}),
 	}
