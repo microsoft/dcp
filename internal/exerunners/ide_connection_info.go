@@ -44,8 +44,8 @@ type ideConnectionInfo struct {
 }
 
 func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideConnectionInfo, error) {
-	const runnerNotAvailable = "Executables cannot be started via IDE: "
-	const missingRequiredEnvVar = "missing required environment variable '%s'"
+	const runnerNotAvailable = "IDE execution is not configured (this is expected in non-IDE environments): "
+	const missingRequiredEnvVar = "environment variable '%s' is not set"
 
 	createAndLogError := func(format string, a ...any) error {
 		err := fmt.Errorf(format, a...)

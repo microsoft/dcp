@@ -109,7 +109,7 @@ func NewIdeNotificationHandler(
 }
 
 func (nh *ideNotificationHandler) WaitConnected(ctx context.Context) error {
-	const errDisposed = "the IDE session endpoint is not available"
+	const errDisposed = "IDE session endpoint has been disposed (this is expected during shutdown)"
 
 	nhState := nh.getState()
 	switch nhState {
