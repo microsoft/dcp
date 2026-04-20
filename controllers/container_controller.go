@@ -902,12 +902,8 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 				Pull:                  container.Spec.PullPolicy == apiv1.PullPolicyAlways,
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
-
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-			buildOptions.StreamCommandOptions = containers.StreamCommandOptions{
-				StdOutStream: startupStdoutWriter,
-				StdErrStream: startupStderrWriter,
-			}
+			buildOptions.StreamCommandOptions = getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
 			buildErr := r.orchestrator.BuildImage(buildCtx, buildOptions)
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
@@ -1316,10 +1312,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-			streamOptions := containers.StreamCommandOptions{
-				StdOutStream: startupStdoutWriter,
-				StdErrStream: startupStderrWriter,
-			}
+			streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
 			// Use the effective image (original or derived) for container creation
 			runSpecForCreation := *rcd.runSpec
@@ -1554,7 +1547,6 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
-	rcd.closeStartupLogFiles(log)
 	defer rcd.deleteStartupLogFiles(log)
 
 	if container.Spec.Persistent {
@@ -1644,8 +1636,8 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 // Creates initial set of ContainerNetworkConnection objects for this Container,
 // and if all connections are satisfied, starts the container.
 // Returns the inspected container data (if the container has been started successfully), and an error, if any.
-// The error should be treated as permanent startup failure. If a startup error is returned, the inspected container data
-// might be missing.
+// The error should be treated as permanent startup failure.
+// If a startup error is returned, the inspected container data might be missing.
 // This method is executed as part of the reconciliation loop.
 func (r *ContainerReconciler) handleInitialNetworkConnections(
 	ctx context.Context,
@@ -1666,10 +1658,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 
 	cID := rcd.containerID
 	startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-	streamOptions := containers.StreamCommandOptions{
-		StdOutStream: startupStdoutWriter,
-		StdErrStream: startupStderrWriter,
-	}
+	streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
 	inspected, startupErr := r.startContainerWithTimeout(ctx, container.Name, cID, streamOptions)
 	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
@@ -2202,7 +2191,6 @@ func (r *ContainerReconciler) onShutdown() {
 	r.cancelContainerWatch()
 
 	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
-		rcd.closeStartupLogFiles(r.Log)
 		rcd.deleteStartupLogFiles(r.Log)
 		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
@@ -2215,5 +2203,14 @@ func startupTaskFinished(writers ...usvc_io.ParagraphWriter) {
 		if writer != nil {
 			writer.NewParagraph()
 		}
+	}
+}
+
+func getStartupCommandOptions(startupStdoutWriter, startupStderrWriter usvc_io.ParagraphWriter) containers.StreamCommandOptions {
+	return containers.StreamCommandOptions{
+		// Do not allow the container orchestrator command to close startup log files--we might want to add to the log upon
+		// command completion. The controller decides when the startup log is "done" and should be closed.
+		StdOutStream: usvc_io.NopWriteCloser(startupStdoutWriter),
+		StdErrStream: usvc_io.NopWriteCloser(startupStderrWriter),
 	}
 }
