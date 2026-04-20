@@ -453,7 +453,7 @@ func (r *ExecutableReconciler) startExecutable(
 		runner, runnerNotFoundErr := r.getExecutableRunner(exe, ri.startupStage)
 		if runnerNotFoundErr != nil {
 			log.V(1).Info("Executable runner is not available for current startup stage, will try next stage if available",
-				"StartupStage", ri.startupStage, "reason", runnerNotFoundErr.Error())
+				"StartupStage", ri.startupStage, "Error", runnerNotFoundErr)
 			continue
 		}
 
