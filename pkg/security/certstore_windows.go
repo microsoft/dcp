@@ -1,9 +1,9 @@
+//go:build windows
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-
-//go:build windows
 
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
@@ -36,7 +36,6 @@ var (
 	procPFXExportCertStoreEx = modCrypt32.NewProc("PFXExportCertStoreEx")
 )
 
-
 func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error) {
 	thumbprint = normalizeThumbprint(thumbprint)
 
@@ -57,7 +56,7 @@ func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error
 	if openErr != nil {
 		return nil, "", fmt.Errorf("could not open CurrentUser\\My certificate store: %w", openErr)
 	}
-	defer windows.CertCloseStore(store, 0)
+	defer func() { _ = windows.CertCloseStore(store, 0) }()
 
 	hashBlob := windows.CryptHashBlob{
 		Size: uint32(len(hashBytes)),
@@ -75,7 +74,7 @@ func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error
 	if findErr != nil {
 		return nil, "", fmt.Errorf("certificate with thumbprint %q not found in CurrentUser\\My store: %w", thumbprint, findErr)
 	}
-	defer windows.CertFreeCertificateContext(certCtx)
+	defer func() { _ = windows.CertFreeCertificateContext(certCtx) }()
 
 	return exportViaPFX(certCtx, thumbprint)
 }
@@ -116,7 +115,7 @@ func exportViaPFX(certCtx *windows.CertContext, thumbprint string) (*ServerCerti
 	if openErr != nil {
 		return nil, "", fmt.Errorf("could not create in-memory certificate store: %w", openErr)
 	}
-	defer windows.CertCloseStore(memStore, 0)
+	defer func() { _ = windows.CertCloseStore(memStore, 0) }()
 
 	// Add the certificate (with its private key link) to the temporary store.
 	addErr := windows.CertAddCertificateContextToStore(
