@@ -70,6 +70,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		"github.com/microsoft/dcp/api/v1.HealthProbeSchedule":               schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
 		"github.com/microsoft/dcp/api/v1.HttpHeader":                        schema_microsoft_dcp_api_v1_HttpHeader(ref),
 		"github.com/microsoft/dcp/api/v1.HttpProbe":                         schema_microsoft_dcp_api_v1_HttpProbe(ref),
+		"github.com/microsoft/dcp/api/v1.ImageLayer":                        schema_microsoft_dcp_api_v1_ImageLayer(ref),
 		"github.com/microsoft/dcp/api/v1.LogOptions":                        schema_microsoft_dcp_api_v1_LogOptions(ref),
 		"github.com/microsoft/dcp/api/v1.LogStreamer":                       schema_microsoft_dcp_api_v1_LogStreamer(ref),
 		"github.com/microsoft/dcp/api/v1.PemCertificate":                    schema_microsoft_dcp_api_v1_PemCertificate(ref),
@@ -1820,6 +1821,25 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 							},
 						},
 					},
+					"imageLayers": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Tar files to apply as additional image layers when running the container. Each layer tar will be applied on top of the base image, producing a derived image that is used to create the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("github.com/microsoft/dcp/api/v1.ImageLayer"),
+									},
+								},
+							},
+						},
+					},
 					"pemCertificates": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PEM formatted public certificates to be created in the container",
@@ -1830,7 +1850,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerBuildContext", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/dcp/api/v1.ContainerPemCertificates", "github.com/microsoft/dcp/api/v1.ContainerPort", "github.com/microsoft/dcp/api/v1.CreateFileSystem", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbe", "github.com/microsoft/dcp/api/v1.VolumeMount"},
+			"github.com/microsoft/dcp/api/v1.ContainerBuildContext", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/dcp/api/v1.ContainerPemCertificates", "github.com/microsoft/dcp/api/v1.ContainerPort", "github.com/microsoft/dcp/api/v1.CreateFileSystem", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbe", "github.com/microsoft/dcp/api/v1.ImageLayer", "github.com/microsoft/dcp/api/v1.VolumeMount"},
 	}
 }
 
@@ -3439,6 +3459,49 @@ func schema_microsoft_dcp_api_v1_HttpProbe(ref common.ReferenceCallback) common.
 		},
 		Dependencies: []string{
 			"github.com/microsoft/dcp/api/v1.HttpHeader"},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_ImageLayer(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Represents a tar file to be applied as an additional image layer when running the container. The layer can be provided either as a path to a tar file (with a SHA256 hash for verification) or as base64-encoded tar contents.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"digest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "An opaque identifier for this layer used in lifecycle key generation. This allows tracking whether a layer has meaningfully changed independently of the raw binary content (which may vary due to timestamps or other materially unimportant differences in the tar file).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Path to a tar file on the host filesystem. Mutually exclusive with RawContents.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"sha256": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SHA256 hash of the tar file referenced by Source, used for integrity verification. Required when Source is set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"rawContents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Base64-encoded tar file contents. Mutually exclusive with Source.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"digest"},
+			},
+		},
 	}
 }
 
