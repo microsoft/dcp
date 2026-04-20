@@ -6,13 +6,10 @@
 package controllers
 
 import (
-	"errors"
 	"fmt"
 	stdmaps "maps"
-	"os"
 	stdslices "slices"
 	"strings"
-	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,59 +27,6 @@ import (
 const (
 	RuntimeContainerHealthProbeName = "__runtime"
 )
-
-// A structure representing startup log file with an associated ParagraphWriter.
-// Having a shared writer enables separation of logs from multiple startup activities
-// (image build, container creation, container start, network configuration).
-type startupLog struct {
-	file     *os.File
-	writer   usvc_io.ParagraphWriter
-	disposed atomic.Bool
-}
-
-func newStartupLog(ctr *apiv1.Container, logSource apiv1.LogStreamSource) (*startupLog, error) {
-	var fileNameTemplate string
-	switch logSource {
-	case apiv1.LogStreamSourceStartupStdout:
-		fileNameTemplate = "%s_startout_%s"
-	case apiv1.LogStreamSourceStartupStderr:
-		fileNameTemplate = "%s_starterr_%s"
-	default:
-		return nil, fmt.Errorf("unknown log source %v", logSource) // Should never happen
-	}
-
-	file, err := usvc_io.OpenTempFile(fmt.Sprintf(fileNameTemplate, ctr.Name, ctr.UID), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		return nil, err
-	}
-
-	// Always append timestamp to startup logs; we'll strip them out if the streaming request doesn't ask for them
-	writer := usvc_io.NewParagraphWriter(usvc_io.NewTimestampWriter(file), osutil.LineSep())
-
-	return &startupLog{file: file, writer: writer}, nil
-}
-
-func (sl *startupLog) Close() error {
-	return sl.writer.Close() // Will close the underlying file
-}
-
-func (sl *startupLog) Dispose() error {
-	alive := sl.disposed.CompareAndSwap(false, true)
-	if !alive {
-		return nil
-	}
-
-	var disposeErr error
-	closeErr := sl.Close()
-	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-		disposeErr = closeErr
-	}
-
-	if err := os.Remove(sl.file.Name()); err != nil {
-		disposeErr = errors.Join(disposeErr, err)
-	}
-	return disposeErr
-}
 
 type containerNetworkConnectionKey struct {
 	Container types.NamespacedName
@@ -309,35 +253,26 @@ func (rcd *runningContainerData) ensureStartupLogFiles(ctr *apiv1.Container, log
 func (rcd *runningContainerData) closeStartupLogFiles(log logr.Logger) {
 	stdoutLog := rcd.startupStdoutLog
 	if stdoutLog != nil {
-		closeErr := stdoutLog.Close()
-		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.Error(closeErr, "Failed to close startup standard output file")
-		}
+		stdoutLog.Close(startupLogCloseOptionDefault, log)
 	}
 
 	stderrLog := rcd.startupStderrLog
 	if stderrLog != nil {
-		closeErr := stderrLog.Close()
-		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.Error(closeErr, "Failed to close startup standard error file")
-		}
+		stderrLog.Close(startupLogCloseOptionDefault, log)
 	}
 }
 
-func (rcd *runningContainerData) deleteStartupLogFiles(_ logr.Logger) {
+func (rcd *runningContainerData) deleteStartupLogFiles(log logr.Logger) {
 	stdoutLog := rcd.startupStdoutLog
 	rcd.startupStdoutLog = nil
 	if stdoutLog != nil {
-		// Best effort. In particular, if multiple clones of runningContainerData share a file,
-		// only first deletion attempt will succeed.
-		_ = stdoutLog.Dispose()
+		stdoutLog.Close(startupLogDisposeOnClose, log)
 	}
 
 	stderrLog := rcd.startupStderrLog
 	rcd.startupStderrLog = nil
 	if stderrLog != nil {
-		// Best effort, see comment above.
-		_ = stderrLog.Dispose()
+		stderrLog.Close(startupLogDisposeOnClose, log)
 	}
 }
 

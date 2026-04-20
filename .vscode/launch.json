@@ -77,27 +77,11 @@
         },
 
         {
-            "name": "attach to controllers process",
-            "type": "go",
-            "request": "attach",
-            "mode": "local",
-            "processId": "dcpctrl"
-        },
-
-        {
             "name": "attach to dcp process",
             "type": "go",
             "request": "attach",
             "mode": "local",
             "processId": "dcp"
-        },
-
-        {
-            "name": "attach to dcpproc process",
-            "type": "go",
-            "request": "attach",
-            "mode": "local",
-            "processId": "dcpproc"
         },
 
         {
