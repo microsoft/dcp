@@ -333,6 +333,13 @@ endif
 
 ##@ Test targets
 
+# NOTE: The Windows github and CI pipelines run Windows tests via scripts/test-ci.ps1
+# instead of invoking `make test-ci`, so the Windows agent does not need to acquire
+# GNU make. Keep scripts/test-ci.ps1 in sync with the TEST_PREREQS list below and
+# with the `test-ci` / `test-ci-prereqs` targets: any change to the set of
+# prerequisites, the build flags, or the final `go test` invocation must be
+# mirrored there.
+
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
 TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
 else
@@ -343,6 +350,7 @@ endif
 test-prereqs: BUILD_ARGS := $(BUILD_ARGS) -gcflags="all=-N -l" -ldflags "$(version_values)"
 test-prereqs: $(TEST_PREREQS) ## Ensures all prerequisites for running tests are built (run this before running tests selectively)
 
+# NOTE: Keep scripts/test-ci.ps1 in sync with test-ci-prereqs (see comment above TEST_PREREQS).
 .PHONY: test-ci-prereqs
 test-ci-prereqs: $(TEST_PREREQS)
 
@@ -357,6 +365,7 @@ endif
 test: test-prereqs ## Run all tests in the repository
 	$(GO_BIN) test ./... $(TEST_OPTS) -parallel 32
 
+# NOTE: Keep scripts/test-ci.ps1 in sync with test-ci (see comment above TEST_PREREQS).
 .PHONY: test-ci
 test-ci: test-ci-prereqs ## Runs tests in a way appropriate for CI pipeline, with linting etc.
 	$(GO_BIN) test ./... $(TEST_OPTS)

@@ -27,10 +27,13 @@ jobs:
         include:
         - os: ubuntu-latest
           prereqsCommand: ''
+          testCommand: make test-ci
         - os: windows-latest
-          prereqsCommand: choco install make mingw -y
+          prereqsCommand: ''
+          testCommand: pwsh ./scripts/test-ci.ps1
         - os: macos-latest
           prereqsCommand: ''
+          testCommand: make test-ci
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
 
@@ -49,7 +52,7 @@ jobs:
 
     - name: Run tests
       id: test
-      run: make test-ci
+      run: ${{ matrix.testCommand }}
       env:
         TEST_CONTEXT_TIMEOUT: 180 # Increase test timeout to three minutes
         DCP_DIAGNOSTICS_LOG_LEVEL: debug
