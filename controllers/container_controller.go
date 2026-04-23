@@ -780,12 +780,13 @@ func ensureContainerStoppingState(
 // states (Exited, Stopped, or Dead), the method does nothing and returns no error.
 // Returns containers.ErrNotFound if the container resource was not found.
 // Returns an error if the container resource could not be stopped.
+// On success, the most recent inspected container data is returned (nil if the container is gone).
 func (r *ContainerReconciler) stopContainerIfNecessary(
 	ctx context.Context,
 	containerID containerID,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) error {
+) (*containers.InspectedContainer, error) {
 	needsStopping := func() bool {
 		if inspected == nil {
 			return true // Assume the container needs stopping, worst case the stop attempt will fail/time out.
@@ -801,21 +802,24 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 		if inspectErr != nil {
 			if errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Info("Container resource not found, assuming it was removed... ")
-				return containers.ErrNotFound
+				return nil, containers.ErrNotFound
 			}
 		}
 	}
 
 	if needsStopping() {
 		log.V(1).Info("Calling container orchestrator to stop the existing container...")
-		stopErr := stopContainer(ctx, r.orchestrator, string(containerID))
+		stopInspected, stopErr := stopContainer(ctx, r.orchestrator, string(containerID))
 		if stopErr != nil {
 			log.Error(stopErr, "Could not stop the running container")
+			return nil, stopErr
 		}
-		return stopErr
+		if stopInspected != nil {
+			inspected = stopInspected
+		}
 	}
 
-	return nil
+	return inspected, nil
 }
 
 func (r *ContainerReconciler) removeExistingContainer(
@@ -824,7 +828,7 @@ func (r *ContainerReconciler) removeExistingContainer(
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) error {
-	stopErr := r.stopContainerIfNecessary(ctx, containerID, inspected, log)
+	_, stopErr := r.stopContainerIfNecessary(ctx, containerID, inspected, log)
 	if errors.Is(stopErr, containers.ErrNotFound) {
 		// Already logged (at info level) by stopExistingContainer()
 		return nil // Nothing to do
@@ -1526,11 +1530,15 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
 		log.V(1).Info("Calling container orchestrator to stop the container...")
-		err := r.stopContainerIfNecessary(stopCtx, rcd.containerID, nil, log)
+		inspected, err := r.stopContainerIfNecessary(stopCtx, rcd.containerID, nil, log)
 		if err != nil {
 			log.Error(err, "Could not stop the running container corresponding to Container object")
 			rcd.containerState = apiv1.ContainerStateUnknown
 		} else {
+			// Capture the exit code (and other final state) from the inspected container
+			if inspected != nil {
+				rcd.updateFromInspectedContainer(inspected)
+			}
 			rcd.containerState = apiv1.ContainerStateExited
 		}
 
