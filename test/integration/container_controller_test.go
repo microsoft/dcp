@@ -933,6 +933,55 @@ func TestContainerStop(t *testing.T) {
 	require.Len(t, inspected, 0, "expected the container to be gone")
 }
 
+// Verifies that when a Container reaches the Exited state in response to Spec.Stop = true,
+// the very first observation of State == Exited already carries Status.ExitCode,
+// rather than ExitCode being populated only by a subsequent status update.
+func TestContainerStopReportsExitCode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-stop-reports-exit-code"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	_, _ = ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Stop = true
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Log("Ensure that the first observation of State=Exited also carries ExitCode...")
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		if c.Status.State != apiv1.ContainerStateExited {
+			return false, nil
+		}
+		if c.Status.ExitCode == apiv1.UnknownExitCode {
+			return false, fmt.Errorf("Container reached state '%s' but Status.ExitCode is not populated; the stop path should publish State and ExitCode in the same Status update", apiv1.ContainerStateExited)
+		}
+		return true, nil
+	})
+	require.NotNil(t, updatedCtr.Status.ExitCode, "Status.ExitCode must be populated alongside State=Exited")
+	require.False(t, updatedCtr.Status.FinishTimestamp.IsZero(), "Status.FinishTimestamp must be populated alongside State=Exited")
+}
+
 func TestContainerDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

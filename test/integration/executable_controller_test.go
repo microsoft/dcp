@@ -220,6 +220,52 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 	}
 }
 
+// Verifies that when an IDE run completes synchronously during startup (the IDE delivers a
+// session termination notification before the run session creation request returns),
+// the resulting ExecutableStartResult carries both ExeState=Finished and ExitCode,
+// and the Executable status reaches Finished with ExitCode populated in a single update --
+// not in a follow-up update.
+func TestExecutableSynchronousIdeFinish(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const expectedEC int32 = 7
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "executable-ide-synchronous-finish",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/executable-ide-synchronous-finish",
+			ExecutionType:  apiv1.ExecutionTypeIDE,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	runID, err := findIdeRun(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, err, "IDE run session was not created for Executable")
+
+	t.Log("Simulating synchronous IDE Finished outcome (with ExitCode) during startup...")
+	require.NoError(t, ideRunner.SimulateSynchronousFinish(runID, expectedEC), "Could not simulate synchronous IDE finish")
+
+	t.Log("Ensuring that the first observation of State=Finished also carries ExitCode...")
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(e *apiv1.Executable) (bool, error) {
+		if e.Status.State != apiv1.ExecutableStateFinished {
+			return false, nil
+		}
+		if e.Status.ExitCode == apiv1.UnknownExitCode {
+			return false, fmt.Errorf("Executable reached state '%s' but Status.ExitCode is not populated; the synchronous finish path should publish State and ExitCode in the same Status update", apiv1.ExecutableStateFinished)
+		}
+		return true, nil
+	})
+	require.NotNil(t, updatedExe.Status.ExitCode, "Status.ExitCode must be populated alongside State=Finished")
+	require.Equal(t, expectedEC, *updatedExe.Status.ExitCode, "Status.ExitCode must match the simulated exit code")
+}
+
 // Ensure the run is terminated if stop is set to true
 func TestExecutableStopState(t *testing.T) {
 	type testcase struct {
