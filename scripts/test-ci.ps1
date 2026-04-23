@@ -110,7 +110,7 @@ function Invoke-GenerateGrpc {
     Push-Location $RepoRoot
     try {
         foreach ($proto in $protoSources) {
-            $rel = [System.IO.Path]::GetRelativePath($RepoRoot, $proto)
+            $rel = Resolve-Path -Relative -LiteralPath $proto
             Write-Host "protoc (go) $rel"
             Invoke-Native -Description "protoc-gen-go on $rel" -Script {
                 & $ProtocExe `
