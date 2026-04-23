@@ -149,7 +149,7 @@ func verifyNetworkState(
 	}
 }
 
-func stopContainer(stopContext context.Context, o containers.ContainerOrchestrator, containerID string) error {
+func stopContainer(stopContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
 	action := func(ctx context.Context) error {
 		_, stopErr := o.StopContainers(ctx, containers.StopContainersOptions{
 			Containers:    []string{containerID},
@@ -159,8 +159,8 @@ func stopContainer(stopContext context.Context, o containers.ContainerOrchestrat
 		return stopErr
 	}
 
-	verify := func(ctx context.Context) (any, error) {
-		_, verifyErr := verifyContainerState(ctx, o, containerID, func(i *containers.InspectedContainer) error {
+	verify := func(ctx context.Context) (*containers.InspectedContainer, error) {
+		inspected, verifyErr := verifyContainerState(ctx, o, containerID, func(i *containers.InspectedContainer) error {
 			if i.Status == containers.ContainerStatusExited {
 				return nil
 			} else {
@@ -172,11 +172,10 @@ func stopContainer(stopContext context.Context, o containers.ContainerOrchestrat
 			return nil, nil // Special case: treat missing container as "stopped"
 		}
 
-		return nil, verifyErr
+		return inspected, verifyErr
 	}
 
-	_, stopErr := callWithRetryAndVerification(stopContext, defaultContainerOrchestratorBackoff(), action, verify)
-	return stopErr
+	return callWithRetryAndVerification(stopContext, defaultContainerOrchestratorBackoff(), action, verify)
 }
 
 func removeContainer(removeContext context.Context, o containers.ContainerOrchestrator, containerID string) error {

@@ -189,6 +189,24 @@ func (r *TestIdeRunner) SimulateRunEnd(runID controllers.RunID, exitCode int32) 
 	return r.doStopRun(runID, exitCode)
 }
 
+// SimulateSynchronousFinish reports a Finished outcome (with the given exit code) directly from
+// the IDE runner's startup attempt, mirroring the case where the IDE delivers a session
+// termination notification before the run session creation request returns.
+func (r *TestIdeRunner) SimulateSynchronousFinish(runID controllers.RunID, exitCode int32) error {
+	return r.SimulateRunStart(
+		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
+		func(run *TestIdeRun, result *controllers.ExecutableStartResult) {
+			run.FinishTimestamp = metav1.NowMicro()
+			pointers.SetValue(&run.ExitCode, exitCode)
+
+			result.RunID = runID
+			result.ExeState = apiv1.ExecutableStateFinished
+			pointers.SetValue(&result.ExitCode, exitCode)
+			result.CompletionTimestamp = metav1.NowMicro()
+		},
+	)
+}
+
 func (r *TestIdeRunner) FindAll(exePath string, cond func(run TestIdeRun) bool) []TestIdeRun {
 	r.m.RLock()
 	defer r.m.RUnlock()
