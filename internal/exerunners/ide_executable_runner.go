@@ -29,6 +29,7 @@ import (
 	"github.com/microsoft/dcp/internal/logs"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
@@ -241,6 +242,7 @@ func (r *IdeExecutableRunner) doStartRun(
 		r.activeRuns.Delete(runID)
 		r.lock.Unlock()
 
+		result.ExitCode = pointers.Duplicate(rd.exitCode)
 		if rd.state == runStateFailedToStart {
 			result.ExeState = apiv1.ExecutableStateFailedToStart
 		} else {
