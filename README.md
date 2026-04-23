@@ -1,6 +1,22 @@
 # Developer Control Plane
 
-This repository contains the Developer Control Plane tool (or DCP for short). DCP is implemented as a single binary (`dcp`) that can run in one of several modes depending on how it is invoked. The main modes of operation are:
+## Overview
+
+**Developer Control Plane (DCP)** is a local application runner for multi-service, polyglot applications. It integrates your code, emulators, and containers to give you a development environment with minimum remote dependencies and maximum ease of use.
+
+DCP exposes a Kubernetes-compatible API (using custom resource definitions) for describing and managing workloads. Object status change notifications allow clients to monitor the state of the application as the run progresses. 
+
+DCP integrates with development tools such as [Microsoft Aspire](https://learn.microsoft.com/dotnet/aspire/), Visual Studio, and VS Code, enabling IDE-based execution and debugging of application components.
+
+### Key Features
+
+- **Local Multi-Service Orchestration**: Run multi-service applications composed of processes and containers on your local machine
+- **IDE Integration**: Execute and debug application components directly from VS Code or Visual Studio
+- **Kubernetes-Compatible API**: Describe workloads using a language-agnostic API built on Kubernetes custom resource definitions
+- **Process & Container Lifecycle Management**: Automatically manage the lifecycle and cleanup of executed processes and containers
+- **Network management**: DCP has several facilities to help with service-to-service and service-to-container communication such as dynamic port allocation, injecting port information into services and containers via command-line arguments and environment variables, stable ports for clients of  multi-replica services, isolated container networks, and a tunnel for container-to-host communication 
+
+DCP is implemented as a single binary (`dcp`) that can run in one of several modes depending on how it is invoked. The main modes of operation are:
 - `dcp start-apiserver` - runs the DCP API server that holds the workload model and exposes a Kubernetes-compatible API for managing workloads using the [Tilt API server library](https://github.com/tilt-dev/tilt-apiserver). The API server is Kubernetes-compatible but using custom resource definitions. This is the main entry point for DCP; users or other tools such as Aspire invoke DCP in this mode to launch the API server and controllers.
 - `dcp run-controllers` - runs the core DCP controllers that implement the standard behavior for DCP workload models. This mode is typically invoked as a child process of the API server.
 - `dcp monitor-process` - monitors a given process and ensures that it's cleaned up properly when a DCP session ends. This mode is typically invoked as a child process of the controllers.
