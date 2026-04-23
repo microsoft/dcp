@@ -172,8 +172,10 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 		updated = true
 	}
 
-	if rcd.stopAttemptInitiated != other.stopAttemptInitiated {
-		rcd.stopAttemptInitiated = other.stopAttemptInitiated
+	// stopAttemptInitiated is a one-way latch: once a stop has been initiated,
+	// stale clones replayed via deferred ops must not reset it back to false.
+	if other.stopAttemptInitiated && !rcd.stopAttemptInitiated {
+		rcd.stopAttemptInitiated = true
 		updated = true
 	}
 
