@@ -171,7 +171,7 @@ func (r *TestIdeRunner) SimulateRunStart(
 		return nil
 	})
 	if changeErr != nil {
-		return fmt.Errorf("could not start Executable '%s': %w", run.Exe.NamespacedName().String(), changeErr)
+		return fmt.Errorf("could not start Executable: %w", changeErr)
 	}
 
 	if run.ChangeHandler != nil {
