@@ -235,7 +235,7 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 		func(run *TestIdeRun) error {
 			if !run.FinishTimestamp.IsZero() {
 				// Real IDE runners typically forget the run after it is stopped and return "not found" error
-				// for any subsequent stop attempts.
+				// for any subsequent stop attempts. We simulate the same behavior here by returning an error.
 				return fmt.Errorf("run '%s' is already finished", runID)
 			}
 
