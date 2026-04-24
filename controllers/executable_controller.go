@@ -307,8 +307,7 @@ func ensureExecutableStoppingState(
 	}
 
 	if !runInfo.stopAttemptInitiated {
-		log.V(1).Info("Attempting to stop the Executable...",
-			"RunID", runInfo.RunID)
+		log.V(1).Info("Attempting to stop the Executable...", "RunID", runInfo.RunID)
 		runInfo.stopAttemptInitiated = true
 		runInfo.ExeState = apiv1.ExecutableStateStopping
 		runInfoCopy := runInfo.Clone()
