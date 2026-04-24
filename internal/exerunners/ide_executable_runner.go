@@ -281,7 +281,7 @@ func (r *IdeExecutableRunner) doStartRun(
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	const runSessionCouldNotBeStopped = "run session could not be stopped: "
 
-	runState, found := r.activeRuns.Load(runID)
+	rd, found := r.activeRuns.Load(runID)
 	if !found {
 		r.log.Info("Attempted to stop IDE run session which was not found", "RunID", runID)
 		return nil
@@ -301,18 +301,29 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 
 	if resp.StatusCode == http.StatusOK {
 		r.log.V(1).Info("IDE run session stopped", "RunID", runID)
-		// Wrap in a function to make it easier to ensure context cancel is called
-		return func() error {
-			// Wait up to 10 seconds for the IDE to send confirmation that the run session has been terminated (and stdio closed)
-			ideExitCtx, ideExitCancel := context.WithTimeout(ctx, 10*time.Second)
-			defer ideExitCancel()
-			select {
-			case <-ideExitCtx.Done():
-				return fmt.Errorf("timeout waiting for IDE to confirm run session termination: %w", ideExitCtx.Err())
-			case <-runState.exitCh:
-				return nil
-			}
-		}()
+
+		// Wait up to 10 seconds for the IDE to send confirmation that the run session has been terminated
+		// (and that we completed our run cleanup as a result).
+
+		ideExitCtx, ideExitCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer ideExitCancel()
+
+		select {
+		case <-ideExitCtx.Done():
+			// The IDE has not sent a confirmation despite reporting the run as stopped successfully.
+			// Exit code will not be available, but otherwise we can assume everything else is OK and do the cleanup.
+			r.log.V(1).Info("timeout waiting for IDE to confirm run session termination", "RunID", runID)
+			r.lock.Lock()
+			defer r.lock.Unlock()
+			r.activeRuns.Delete(runID)
+			rd.CloseOutputWriters()
+			close(rd.exitCh)
+			rd.NotifyRunCompletedAsync(r.lock)
+		case <-rd.exitCh:
+			// Run termination notification received from the IDE, everything is cleaned up by the notification handler.
+		}
+
+		return nil
 	}
 
 	if resp.StatusCode == http.StatusNoContent {

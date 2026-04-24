@@ -7,11 +7,13 @@ package ctrlutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -28,6 +30,7 @@ import (
 )
 
 const AutoStartExecutableAnnotation = "test.usvc-dev.developer.microsoft.com/auto-start-executable"
+const ideRunStopProcessingTime = time.Millisecond * 500
 
 type TestIdeRun struct {
 	ID                   controllers.RunID
@@ -163,11 +166,12 @@ func (r *TestIdeRunner) SimulateRunStart(
 	// Do not take a lock here. findAndChangeRun() will take a lock internally for the duration of its working.
 
 	var result controllers.ExecutableStartResult
-	run, found := r.findAndChangeRun(isDesiredRun, func(run *TestIdeRun) {
+	run, changeErr := r.findAndChangeRun(isDesiredRun, func(run *TestIdeRun) error {
 		changeToStarted(run, &result)
+		return nil
 	})
-	if !found {
-		return fmt.Errorf("run for Executable '%s' was not found", run.Exe.NamespacedName().String())
+	if changeErr != nil {
+		return fmt.Errorf("could not start Executable: %w", changeErr)
 	}
 
 	if run.ChangeHandler != nil {
@@ -226,16 +230,30 @@ func (r *TestIdeRunner) FindAll(exePath string, cond func(run TestIdeRun) bool) 
 func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error {
 	// Do not take a lock here. findAndChangeRun() will take a lock internally for the duration of its working.
 
-	var run, found = r.findAndChangeRun(
+	var run, stopErr = r.findAndChangeRun(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },
-		func(run *TestIdeRun) {
+		func(run *TestIdeRun) error {
+			if !run.FinishTimestamp.IsZero() {
+				// Real IDE runners typically forget the run after it is stopped and return "not found" error
+				// for any subsequent stop attempts. We simulate the same behavior here by returning an error.
+				return fmt.Errorf("run '%s' is already finished", runID)
+			}
+
+			// Simulate processing time for the stop request.
+			select {
+			case <-r.lifetimeCtx.Done():
+				return r.lifetimeCtx.Err()
+			case <-time.After(ideRunStopProcessingTime):
+				// continue
+			}
+
 			run.FinishTimestamp = metav1.NowMicro()
 			pointers.SetValue(&run.ExitCode, int32(exitCode))
+			return nil
 		},
 	)
-
-	if !found {
-		return fmt.Errorf("run '%s' was not found, cannot be stopped", runID)
+	if stopErr != nil {
+		return fmt.Errorf("run '%s' could not be stopped: %w", runID, stopErr)
 	}
 
 	if run.ChangeHandler != nil {
@@ -257,15 +275,17 @@ func (r *TestIdeRunner) doStopRun(runID controllers.RunID, exitCode int32) error
 	return nil
 }
 
-func (r *TestIdeRunner) findAndChangeRun(matches func(types.NamespacedName, *TestIdeRun) bool, change func(*TestIdeRun)) (TestIdeRun, bool) {
+func (r *TestIdeRunner) findAndChangeRun(matches func(types.NamespacedName, *TestIdeRun) bool, change func(*TestIdeRun) error) (TestIdeRun, error) {
 	r.m.Lock()
 	defer r.m.Unlock()
 
 	var foundRun *TestIdeRun
+	var changeErr error
+
 	r.Runs.Range(func(_ types.NamespacedName, run *TestIdeRun) bool {
 		if matches(run.Exe.NamespacedName(), run) {
-			change(run)
 			foundRun = run
+			changeErr = change(run)
 			return false
 		}
 
@@ -273,9 +293,9 @@ func (r *TestIdeRunner) findAndChangeRun(matches func(types.NamespacedName, *Tes
 	})
 
 	if foundRun == nil {
-		return TestIdeRun{}, false
+		return TestIdeRun{}, errors.New("run was not found")
 	} else {
-		return *foundRun, true
+		return *foundRun, changeErr
 	}
 }
 
