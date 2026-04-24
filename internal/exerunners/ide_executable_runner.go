@@ -310,7 +310,7 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 
 		select {
 		case <-ideExitCtx.Done():
-			// The IDE has not send a confirmation despite reporting the run as stopped successfully.
+			// The IDE has not sent a confirmation despite reporting the run as stopped successfully.
 			// Exit code will not be available, but otherwise we can assume everything else is OK and do the cleanup.
 			r.log.V(1).Info("timeout waiting for IDE to confirm run session termination", "RunID", runID)
 			r.lock.Lock()
