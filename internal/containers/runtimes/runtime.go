@@ -83,7 +83,10 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 		return nil, errNoRuntimeFound
 	}
 
-	log.V(1).Info("Runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
+	log.V(1).Info("Container runtime selected (non-installed runtimes are expected and can be ignored)",
+		"SelectedRuntime", availableRuntime.orchestrator.Name(),
+		"Installed", availableRuntime.status.Installed,
+		"Running", availableRuntime.status.Running)
 
 	return availableRuntime.orchestrator, nil
 }
