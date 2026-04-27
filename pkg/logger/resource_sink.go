@@ -26,7 +26,7 @@ const (
 	// This values acts as a special key for any logger that has a resource sink enabled. If the first argument to WithValues is this key, the second argument
 	// will be treated as a resource log stream ID. In this case neither of the first two arguments will be included in the final log entries, but the resource
 	// sink will track the resource ID value and use it to route a copy of log entries to a separate log file named based on the resource ID (i.e. resource-<resource_id>.log).
-	// This log file will contain only the log entries partaining to that specific resource ID, allowing system logs pertaining to a given resource to be retrieved in isolation.
+	// This log file will contain only the log entries pertaining to that specific resource ID, allowing system logs pertaining to a given resource to be retrieved in isolation.
 	RESOURCE_LOG_STREAM_ID = "resource_log_stream_id"
 )
 

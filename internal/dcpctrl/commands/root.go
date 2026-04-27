@@ -46,7 +46,7 @@ func NewRootCommand(log *logger.Logger) (*cobra.Command, error) {
 	}
 
 	rootCmd.AddCommand(NewGetCapabilitiesCommand(log.Logger))
-	rootCmd.AddCommand(NewRunControllersCommand(log.Logger))
+	rootCmd.AddCommand(NewRunControllersCommand(log))
 
 	ctrlruntime.SetLogger(log.V(1))
 
