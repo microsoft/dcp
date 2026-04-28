@@ -179,6 +179,11 @@ func (tpd *containerNetworkTunnelProxyData) UpdateFrom(other *containerNetworkTu
 		updated = true
 	}
 
+	if tpd.Message != other.Message {
+		tpd.Message = other.Message
+		updated = true
+	}
+
 	if tpd.startupScheduled != other.startupScheduled {
 		tpd.startupScheduled = other.startupScheduled
 		updated = true
@@ -279,6 +284,11 @@ func (tpd *containerNetworkTunnelProxyData) applyTo(tunnelProxy *apiv1.Container
 
 	if tpd.ServerProxyControlPort != tunnelProxy.Status.ServerProxyControlPort {
 		tunnelProxy.Status.ServerProxyControlPort = tpd.ServerProxyControlPort
+		change |= statusChanged
+	}
+
+	if tpd.Message != tunnelProxy.Status.Message {
+		tunnelProxy.Status.Message = tpd.Message
 		change |= statusChanged
 	}
 
