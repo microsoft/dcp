@@ -189,17 +189,22 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 			return false, nil // Not enough data yet
 		}
 
-		var matchErr error
-		allLinesMatch := std_slices.EqualFunc(receivedLines[len(receivedLines)-len(expectedLines):], expectedLines, func(read, pattern []byte) bool {
-			var matched bool
-			matched, matchErr = regexp.Match(string(pattern), read)
-			return matched
-		})
-		if matchErr != nil {
-			return false, fmt.Errorf("error occurred while matching logs: %w", matchErr)
+		for i := 0; i <= len(receivedLines)-len(expectedLines); i++ {
+			var matchErr error
+			allLinesMatch := std_slices.EqualFunc(receivedLines[i:i+len(expectedLines)], expectedLines, func(read, pattern []byte) bool {
+				var matched bool
+				matched, matchErr = regexp.Match(string(pattern), read)
+				return matched
+			})
+			if matchErr != nil {
+				return false, fmt.Errorf("error occurred while matching logs: %w", matchErr)
+			}
+			if allLinesMatch {
+				return true, nil
+			}
 		}
 
-		return allLinesMatch, nil
+		return false, nil
 	}
 
 	if opts.Follow {
