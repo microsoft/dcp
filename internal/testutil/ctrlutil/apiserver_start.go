@@ -154,11 +154,13 @@ func StartApiServer(
 
 	dcpPath, dcpPathErr := getDcpExecutablePath()
 	if dcpPathErr != nil {
+		cleanup()
 		return nil, fmt.Errorf("failed to find the DCP executable: %w", dcpPathErr)
 	}
 
 	suffix, randErr := randdata.MakeRandomString(8)
 	if randErr != nil {
+		cleanup()
 		return nil, fmt.Errorf("failed to generate random string for kubeconfig file suffix: %w", randErr)
 	}
 	info.kubeconfigPath = filepath.Join(testutil.TestTempDir(), fmt.Sprintf("kubeconfig-test-%s", suffix))

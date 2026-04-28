@@ -98,19 +98,19 @@ func ReleaseAllResourceLogs() {
 }
 
 type resourceSink struct {
-	resourceName             string
-	resourceId               string
-	values                   []any
-	atomicLevel              zap.AtomicLevel
-	innerSink                logr.LogSink
-	resouceLogFolderOverride string
+	resourceName              string
+	resourceId                string
+	values                    []any
+	atomicLevel               zap.AtomicLevel
+	innerSink                 logr.LogSink
+	resourceLogFolderOverride string
 }
 
 func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink, resourceLogFolderOverride string) *resourceSink {
 	sink := &resourceSink{
-		atomicLevel:              zap.NewAtomicLevel(),
-		innerSink:                innerSink,
-		resouceLogFolderOverride: resourceLogFolderOverride,
+		atomicLevel:               zap.NewAtomicLevel(),
+		innerSink:                 innerSink,
+		resourceLogFolderOverride: resourceLogFolderOverride,
 	}
 	sink.atomicLevel.SetLevel(atomicLevel.Level())
 
@@ -165,12 +165,12 @@ func (s *resourceSink) WithName(name string) logr.LogSink {
 	}
 
 	newSink := &resourceSink{
-		resourceName:             name,
-		resourceId:               s.resourceId,
-		values:                   s.values,
-		atomicLevel:              zap.NewAtomicLevel(),
-		innerSink:                s.innerSink.WithName(name),
-		resouceLogFolderOverride: s.resouceLogFolderOverride,
+		resourceName:              name,
+		resourceId:                s.resourceId,
+		values:                    s.values,
+		atomicLevel:               zap.NewAtomicLevel(),
+		innerSink:                 s.innerSink.WithName(name),
+		resourceLogFolderOverride: s.resourceLogFolderOverride,
 	}
 	newSink.atomicLevel.SetLevel(s.atomicLevel.Level())
 
@@ -188,11 +188,11 @@ func (s *resourceSink) WithValues(keysAndValues ...any) logr.LogSink {
 	}
 
 	newSink := resourceSink{
-		resourceName:             s.resourceName,
-		resourceId:               resourceId,
-		atomicLevel:              zap.NewAtomicLevel(),
-		innerSink:                s.innerSink.WithValues(keysAndValues...),
-		resouceLogFolderOverride: s.resouceLogFolderOverride,
+		resourceName:              s.resourceName,
+		resourceId:                resourceId,
+		atomicLevel:               zap.NewAtomicLevel(),
+		innerSink:                 s.innerSink.WithValues(keysAndValues...),
+		resourceLogFolderOverride: s.resourceLogFolderOverride,
 	}
 	newSink.atomicLevel.SetLevel(s.atomicLevel.Level())
 	values := stdslices.Clone(s.values)
@@ -251,7 +251,7 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 }
 
 func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink, error) {
-	resourceLogPath := makeResourceLogPath(resourceId, s.resouceLogFolderOverride)
+	resourceLogPath := makeResourceLogPath(resourceId, s.resourceLogFolderOverride)
 	file, err := usvc_io.OpenFile(resourceLogPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, err

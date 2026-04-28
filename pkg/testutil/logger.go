@@ -34,6 +34,6 @@ func makeTestLogger(name string) *logger.Logger {
 	if testing.Verbose() {
 		log.SetLevel(zapcore.DebugLevel)
 	}
-	log.WithValues("test", true)
+	log.Logger = log.Logger.WithValues("test", true)
 	return log
 }
