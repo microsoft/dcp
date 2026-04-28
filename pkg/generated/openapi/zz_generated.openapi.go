@@ -1428,6 +1428,13 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 							Format:      "int32",
 						},
 					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "A human-readable message that provides additional information about ContainerNetworkTunnelProxy state.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
