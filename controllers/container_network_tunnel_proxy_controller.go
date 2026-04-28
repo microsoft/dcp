@@ -875,7 +875,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
 				return
 			}
 
-			log.Error(imageCheckErr, "Container image for container netwwork tunnel could not be built, or its presence could not be verified")
+			log.Error(imageCheckErr, "Container image for container network tunnel could not be built, or its presence could not be verified")
 			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
 			pd.Message = fmt.Sprintf("Container image for container network tunnel could not be built, or its presence could not be verified: %v", imageCheckErr)
 		} else {
