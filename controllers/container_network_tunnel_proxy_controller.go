@@ -875,8 +875,9 @@ func (r *ContainerNetworkTunnelProxyReconciler) ensureContainerProxyImage(
 				return
 			}
 
-			log.Error(imageCheckErr, "Container image check for container network tunnel could not be queued")
+			log.Error(imageCheckErr, "Container image for container network tunnel could not be built, or its presence could not be verified")
 			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+			pd.Message = fmt.Sprintf("Container image for container network tunnel could not be built, or its presence could not be verified: %v", imageCheckErr)
 		} else {
 			log.V(1).Info("Container image check for container network tunnel completed successfully", "Image", image)
 			pd.State = apiv1.ContainerNetworkTunnelProxyStateStarting
@@ -908,6 +909,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startProxyPair(
 		if certErr != nil {
 			log.Error(certErr, "Failed to create tunnel proxy connection certificates")
 			pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+			pd.Message = fmt.Sprintf("Failed to create tunnel proxy connection certificates: %v", certErr)
 		} else {
 			var clientCtrCreated bool
 			clientCtrCreated, reconciliationDelay = r.startClientProxy(ctx, tunnelProxy, pd, log)
@@ -949,6 +951,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) createProxyConnectionCertificate
 	if secConfErr != nil {
 		log.Error(secConfErr, "Failed to create security configuration for tunnel proxy connection")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to create security configuration for tunnel proxy connection: %v", secConfErr)
 		return secConfErr
 	}
 
@@ -1064,6 +1067,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if createErr != nil {
 		log.Error(createErr, "Failed to create client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to create client proxy container: %v", createErr)
 		return false, NoDelay
 	}
 
@@ -1088,6 +1092,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if disconnectErr != nil {
 		log.Error(disconnectErr, "Failed to disconnect client proxy container from default network")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to disconnect client proxy container from default network: %v", disconnectErr)
 		return false, NoDelay
 	}
 
@@ -1146,6 +1151,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if connectionWaitErr != nil {
 		log.Error(connectionWaitErr, "Error waiting for client proxy container to be connected to target network")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Client proxy container '%s' (id: %s) failed to connect to target network '%s': %v", created.Name, created.Id, containerNetworkName.String(), connectionWaitErr)
 		return false, NoDelay
 	}
 
@@ -1159,6 +1165,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if startErr != nil {
 		log.Error(startErr, "Failed to start client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to start client proxy container '%s' (id: %s): %v", created.Name, created.Id, startErr)
 		return false, NoDelay
 	}
 
@@ -1166,6 +1173,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if controlEndpointErr != nil {
 		log.Error(controlEndpointErr, "Failed to determine control connection host port for the client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to determine control connection host port for the client proxy container '%s' (id: %s): %v", created.Name, created.Id, controlEndpointErr)
 		return false, NoDelay
 	}
 
@@ -1173,6 +1181,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if dataEndpointErr != nil {
 		log.Error(dataEndpointErr, "Failed to determine data connection host port for the client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to determine data connection host port for the client proxy container '%s' (id: %s): %v", created.Name, created.Id, dataEndpointErr)
 		return false, NoDelay
 	}
 
@@ -1199,6 +1208,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 	if dcpExePathErr != nil {
 		log.Error(dcpExePathErr, "Failed to get DCP executable path")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to get DCP executable path: %v", dcpExePathErr)
 		return false
 	}
 
@@ -1224,6 +1234,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		startFailed = true
 		log.Error(stdoutErr, "Failed to create stdout temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to create stdout temp file for container tunnel server proxy: %v", stdoutErr)
 		return false
 	} else {
 		pd.ServerProxyStdOutFile = stdoutFile.Name()
@@ -1235,6 +1246,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		startFailed = true
 		log.Error(stderrErr, "Failed to create stderr temp file for container tunnel server proxy")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to create stderr temp file for container tunnel server proxy: %v", stderrErr)
 		return false
 	} else {
 		pd.ServerProxyStdErrFile = stderrFile.Name()
@@ -1264,6 +1276,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		log.Error(startErr, "Failed to start server proxy process")
 		startFailed = true
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		pd.Message = fmt.Sprintf("Failed to start server proxy process: %v", startErr)
 		return false
 	}
 	startWaitForExit()
@@ -1464,6 +1477,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 		pd.ServerProxyProcessID = nil
 		pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+		message := fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d", pid, exitCode)
+		if err != nil {
+			message = fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d: %v", pid, exitCode, err)
+		}
+		pd.Message = message
 		pdMap.Update(pName, pName, pd)
 	})
 	r.ScheduleReconciliation(pName)
@@ -1486,6 +1504,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) processContainerEvent(em contain
 				pdMap.QueueDeferredOp(pName, func(types.NamespacedName, types.NamespacedName, *apiv1.ContainerNetworkTunnelProxy) {
 					_, pd = pdMap.BorrowByNamespacedName(pName)
 					pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
+					pd.Message = fmt.Sprintf("Client proxy container (id: %s) stopped unexpectedly", containerID)
 					pdMap.Update(pName, pName, pd)
 				})
 				r.ScheduleReconciliation(pName)

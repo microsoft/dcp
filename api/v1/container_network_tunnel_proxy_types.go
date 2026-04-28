@@ -205,6 +205,9 @@ type ContainerNetworkTunnelProxyStatus struct {
 
 	// Server proxy control port (for controlling the proxy pair).
 	ServerProxyControlPort int32 `json:"serverProxyControlPort,omitempty"`
+
+	// A human-readable message that provides additional information about ContainerNetworkTunnelProxy state.
+	Message string `json:"message,omitempty"`
 }
 
 func (s ContainerNetworkTunnelProxyStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
