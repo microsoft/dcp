@@ -26,7 +26,7 @@ const (
 	// This values acts as a special key for any logger that has a resource sink enabled. If the first argument to WithValues is this key, the second argument
 	// will be treated as a resource log stream ID. In this case neither of the first two arguments will be included in the final log entries, but the resource
 	// sink will track the resource ID value and use it to route a copy of log entries to a separate log file named based on the resource ID (i.e. resource-<resource_id>.log).
-	// This log file will contain only the log entries partaining to that specific resource ID, allowing system logs pertaining to a given resource to be retrieved in isolation.
+	// This log file will contain only the log entries pertaining to that specific resource ID, allowing system logs pertaining to a given resource to be retrieved in isolation.
 	RESOURCE_LOG_STREAM_ID = "resource_log_stream_id"
 )
 
@@ -44,11 +44,19 @@ type resourceFileSink struct {
 }
 
 func GetResourceLogPath(resourceId string) string {
+	return makeResourceLogPath(resourceId, tempDir)
+}
+
+func makeResourceLogPath(resourceId string, dir string) string {
 	if resourceId == "" {
 		return ""
 	}
 
-	return filepath.Join(tempDir, fmt.Sprintf("resource-%s.log", resourceId))
+	if dir == "" {
+		dir = tempDir
+	}
+
+	return filepath.Join(dir, fmt.Sprintf("resource-%s.log", resourceId))
 }
 
 func ReleaseResourceLog(resourceId string) {
@@ -90,17 +98,19 @@ func ReleaseAllResourceLogs() {
 }
 
 type resourceSink struct {
-	resourceName string
-	resourceId   string
-	values       []any
-	atomicLevel  zap.AtomicLevel
-	innerSink    logr.LogSink
+	resourceName              string
+	resourceId                string
+	values                    []any
+	atomicLevel               zap.AtomicLevel
+	innerSink                 logr.LogSink
+	resourceLogFolderOverride string
 }
 
-func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink) *resourceSink {
+func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink, resourceLogFolderOverride string) *resourceSink {
 	sink := &resourceSink{
-		atomicLevel: zap.NewAtomicLevel(),
-		innerSink:   innerSink,
+		atomicLevel:               zap.NewAtomicLevel(),
+		innerSink:                 innerSink,
+		resourceLogFolderOverride: resourceLogFolderOverride,
 	}
 	sink.atomicLevel.SetLevel(atomicLevel.Level())
 
@@ -155,11 +165,12 @@ func (s *resourceSink) WithName(name string) logr.LogSink {
 	}
 
 	newSink := &resourceSink{
-		resourceName: name,
-		resourceId:   s.resourceId,
-		values:       s.values,
-		atomicLevel:  zap.NewAtomicLevel(),
-		innerSink:    s.innerSink.WithName(name),
+		resourceName:              name,
+		resourceId:                s.resourceId,
+		values:                    s.values,
+		atomicLevel:               zap.NewAtomicLevel(),
+		innerSink:                 s.innerSink.WithName(name),
+		resourceLogFolderOverride: s.resourceLogFolderOverride,
 	}
 	newSink.atomicLevel.SetLevel(s.atomicLevel.Level())
 
@@ -177,10 +188,11 @@ func (s *resourceSink) WithValues(keysAndValues ...any) logr.LogSink {
 	}
 
 	newSink := resourceSink{
-		resourceName: s.resourceName,
-		resourceId:   resourceId,
-		atomicLevel:  zap.NewAtomicLevel(),
-		innerSink:    s.innerSink.WithValues(keysAndValues...),
+		resourceName:              s.resourceName,
+		resourceId:                resourceId,
+		atomicLevel:               zap.NewAtomicLevel(),
+		innerSink:                 s.innerSink.WithValues(keysAndValues...),
+		resourceLogFolderOverride: s.resourceLogFolderOverride,
 	}
 	newSink.atomicLevel.SetLevel(s.atomicLevel.Level())
 	values := stdslices.Clone(s.values)
@@ -239,7 +251,8 @@ func (s *resourceSink) getSink(resourceId string) *resourceFileSink {
 }
 
 func (s *resourceSink) newResourceFileSink(resourceId string) (*resourceFileSink, error) {
-	file, err := usvc_io.OpenFile(GetResourceLogPath(resourceId), os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
+	resourceLogPath := makeResourceLogPath(resourceId, s.resourceLogFolderOverride)
+	file, err := usvc_io.OpenFile(resourceLogPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, osutil.PermissionOnlyOwnerReadWrite)
 	if err != nil {
 		return nil, err
 	}

@@ -24,7 +24,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgorest "k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -38,7 +37,6 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
-	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 var (
@@ -53,24 +51,22 @@ var (
 const pollImmediately = true // Don't wait before polling for the first time
 
 func TestMain(m *testing.M) {
-	log := testutil.NewLogForTesting("IntegrationTests")
-	ctrl.SetLogger(log)
-
-	networking.EnableStrictMruPortHandling(log)
-
 	ctx, cancel := context.WithCancel(context.Background())
 
-	serverInfo, teInfo, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "", log)
+	serverInfo, teInfo, envStartErr := StartTestEnvironment(ctx, AllControllers, "IntegrationTests", "")
 	if envStartErr != nil {
 		cancel()
 		panic(envStartErr)
 	}
+	log := teInfo.Log
 	client = serverInfo.Client
 	restClient = serverInfo.RestClient
 	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
 	testProcessExecutableRunner = teInfo.TestProcessExecutableRunner
 	ideRunner = teInfo.TestIdeRunner
+
+	networking.EnableStrictMruPortHandling(log)
 
 	var code int = 0
 	defer func() {
@@ -189,17 +185,22 @@ func waitForObjectLogs[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](
 			return false, nil // Not enough data yet
 		}
 
-		var matchErr error
-		allLinesMatch := std_slices.EqualFunc(receivedLines[len(receivedLines)-len(expectedLines):], expectedLines, func(read, pattern []byte) bool {
-			var matched bool
-			matched, matchErr = regexp.Match(string(pattern), read)
-			return matched
-		})
-		if matchErr != nil {
-			return false, fmt.Errorf("error occurred while matching logs: %w", matchErr)
+		for i := 0; i <= len(receivedLines)-len(expectedLines); i++ {
+			var matchErr error
+			allLinesMatch := std_slices.EqualFunc(receivedLines[i:i+len(expectedLines)], expectedLines, func(read, pattern []byte) bool {
+				var matched bool
+				matched, matchErr = regexp.Match(string(pattern), read)
+				return matched
+			})
+			if matchErr != nil {
+				return false, fmt.Errorf("error occurred while matching logs: %w", matchErr)
+			}
+			if allLinesMatch {
+				return true, nil
+			}
 		}
 
-		return allLinesMatch, nil
+		return false, nil
 	}
 
 	if opts.Follow {

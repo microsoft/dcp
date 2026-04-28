@@ -21,12 +21,14 @@ import (
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // AdvancedTestEnvironmentInfo provides information about the test environment created via StartAdvancedTestEnvironment().
 type AdvancedTestEnvironmentInfo struct {
 	ProcessExecutor process.Executor
 	*ctrl_testutil.TestProcessExecutableRunner
+	Log logr.Logger
 }
 
 // Starts an test environment for advanced tests that use real process executor and true container orchestrator (Docker or Podman).
@@ -36,13 +38,20 @@ func StartAdvancedTestEnvironment(
 	inclCtrl IncludedController,
 	instanceTag string,
 	testTempDir string,
-	log logr.Logger,
 ) (
 	*ctrl_testutil.ApiServerInfo,
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerUseTrueContainerOrchestrator, log)
+	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
+	if sessionFolderErr != nil {
+		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
+	}
+
+	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
+	ctrl.SetLogger(log)
+
+	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerUseTrueContainerOrchestrator, log, sessionFolder)
 	if serverErr != nil {
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
@@ -217,6 +226,7 @@ func StartAdvancedTestEnvironment(
 	teInfo := &AdvancedTestEnvironmentInfo{
 		ProcessExecutor:             pe,
 		TestProcessExecutableRunner: exeRunner,
+		Log:                         log,
 	}
 	return serverInfo, teInfo, nil
 }

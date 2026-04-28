@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
+	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
@@ -42,11 +43,12 @@ var (
 	shutdownPerftraceStarted atomic.Bool
 )
 
-func NewRunControllersCommand(log logr.Logger) *cobra.Command {
+func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
+	controllerLog := log.WithResourceSink().Logger
 	runControllersCmd := &cobra.Command{
 		Use:   "run-controllers",
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
-		RunE:  runControllers(log),
+		RunE:  runControllers(controllerLog),
 		Args:  cobra.NoArgs,
 	}
 
@@ -104,6 +106,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		if err != nil {
 			log.Error(err, "failed to capture startup profile")
 		}
+		defer logger.ReleaseAllResourceLogs()
 
 		ctrlCtx, ctrlCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log)
 		defer ctrlCtxCancel()
