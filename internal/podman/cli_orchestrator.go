@@ -396,9 +396,9 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 	if options.Timeout == 0 {
 		options.Timeout = defaultBuildImageTimeout
 	}
-	_, _, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	_, errBuf, err := pco.runBufferedPodmanCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
-		return err
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -583,8 +583,9 @@ func (pco *PodmanCliOrchestrator) CreateContainer(ctx context.Context, options c
 		options.Timeout = defaultCreateContainerTimeout
 	}
 
-	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
+		err = errors.Join(err, normalizeCliErrors(errBuf))
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
 			return id, err
@@ -616,9 +617,9 @@ func (pco *PodmanCliOrchestrator) RunContainer(ctx context.Context, options cont
 		options.Timeout = defaultRunContainerTimeout
 	}
 
-	outBuf, _, err := pco.runBufferedPodmanCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return asId(outBuf)
