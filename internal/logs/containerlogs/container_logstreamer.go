@@ -184,7 +184,7 @@ func (c *containerLogStreamer) StreamLogs(
 
 	default:
 		// opts.Source has an unexpected value -- this should never happen, request parameter validation should have prevented this.
-		return apiv1.ResourceStreamStatusDone, nil, nil // Fail fast
+		return apiv1.ResourceStreamStatusDone, nil, apierrors.NewBadRequest(fmt.Sprintf("invalid log stream source %q", opts.Source)) // Fail fast
 	}
 
 	if logFilePath == "" {

@@ -1143,8 +1143,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 						isValid = isValid && !winNamedPipeRegex.MatchString(volume.Source)
 					}
 					if !isValid {
-						// This seems to be an invalid bind mount or a named pipe, so don't try to create it
-						// May be a reference to a linux mount point on Windows
+						// This seems to be an invalid bind mount or a named pipe, so don't try to create it.
+						// May be a reference to a linux mount point on Windows.
+						log.Info("Skipping creation of bind mount because the source path appears invalid on this platform", "Source", volume.Source, "Target", volume.Target)
 						continue
 					}
 

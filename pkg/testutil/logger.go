@@ -16,7 +16,7 @@ import (
 )
 
 func NewLogForTesting(name string) logr.Logger {
-	log := logger.New(name)
+	log := logger.New(name).WithResourceSink()
 	log.SetLevel(zapcore.ErrorLevel)
 	if !flag.Parsed() {
 		flag.Parse() // Needed to test if verbose flag was present.
