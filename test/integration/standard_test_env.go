@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // TestEnvironmentInfo provides information about the test environment created via StartTestEnvironment().
@@ -33,6 +34,7 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
+	Log logr.Logger
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -41,13 +43,20 @@ func StartTestEnvironment(
 	inclCtrl IncludedController,
 	instanceTag string,
 	testTempDir string,
-	log logr.Logger,
 ) (
 	*ctrl_testutil.ApiServerInfo,
 	*TestEnvironmentInfo,
 	error,
 ) {
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log)
+	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
+	if sessionFolderErr != nil {
+		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
+	}
+
+	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
+	ctrl.SetLogger(log)
+
+	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log, sessionFolder)
 	if serverErr != nil {
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
@@ -247,6 +256,7 @@ func StartTestEnvironment(
 		TestProcessExecutableRunner: exeRunner,
 		TestIdeRunner:               ir,
 		TestTunnelControlClient:     tcc,
+		Log:                         log,
 	}
 	return serverInfo, teInfo, nil
 }

@@ -288,12 +288,10 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	const testName = "container-runtime-unhealthy"
 	const imageName = testName + "-image"
 
-	log := testutil.NewLogForTesting(t.Name())
-
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir, log)
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -2478,6 +2476,50 @@ func TestContainerLogsFollowStreamEndsOnDelete(t *testing.T) {
 	if scanner.Err() != nil {
 		require.ErrorContains(t, scanner.Err(), "response body closed", "The log stream for Container '%s' was not closed as expected")
 	}
+}
+
+// Verify that system logs (source=system) are available for a Container that fails to start.
+func TestContainerSystemLogsOnStartupFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-system-logs-startup-failure"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	// Cause the orchestrator to fail to create the container
+	errMsg := fmt.Sprintf("Simulating container '%s' startup failure for system log test", testName)
+	containerOrchestrator.FailMatchingContainers(ctx, testName, 1, errMsg)
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Waiting for container to reach 'failed to start' state...")
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateFailedToStart, nil
+	})
+
+	t.Log("Verifying system logs are available for the failed Container...")
+	opts := apiv1.LogOptions{
+		Follow: false,
+		Source: string(apiv1.LogStreamSourceSystem),
+	}
+	expectedLines := [][]byte{
+		[]byte(errMsg),
+	}
+	logsErr := waitForObjectLogs(ctx, updatedCtr, opts, expectedLines, nil)
+	require.NoError(t, logsErr, "System logs should be available for Container '%s' that failed to start", ctr.ObjectMeta.Name)
 }
 
 // Ensure that the Container health status changes according to its state (no health probes).
