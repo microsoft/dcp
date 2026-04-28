@@ -262,10 +262,10 @@ func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
 	cmd := makeDockerCommand("volume", "create", options.Name)
-	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		// Note: unlike Podman, Docker does not return an error if the volume already exists.
-		return err
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return containers.ExpectCliStrings(outBuf, []string{options.Name})
@@ -410,9 +410,9 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	if options.Timeout == 0 {
 		options.Timeout = defaultBuildImageTimeout
 	}
-	_, _, err := dco.runBufferedDockerCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
-		return err
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -598,8 +598,9 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 		options.Timeout = defaultCreateContainerTimeout
 	}
 
-	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
+		err = errors.Join(err, normalizeCliErrors(errBuf))
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
 			return id, err
@@ -631,9 +632,9 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 		options.Timeout = defaultRunContainerTimeout
 	}
 
-	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, normalizeCliErrors(errBuf))
 	}
 	return asId(outBuf)
 }
