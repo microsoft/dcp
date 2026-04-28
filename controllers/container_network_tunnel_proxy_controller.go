@@ -951,7 +951,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) createProxyConnectionCertificate
 	if secConfErr != nil {
 		log.Error(secConfErr, "Failed to create security configuration for tunnel proxy connection")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Failed to create tunnel proxy connection certificates: %v", secConfErr)
+		pd.Message = fmt.Sprintf("Failed to create security configuration for tunnel proxy connection: %v", secConfErr)
 		return secConfErr
 	}
 
