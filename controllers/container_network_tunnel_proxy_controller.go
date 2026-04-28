@@ -1477,7 +1477,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) onServerProcessExit(
 		pd.ServerProxyProcessID = nil
 		pd.ServerProxyStartupTimestamp = metav1.MicroTime{} // Zero value
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d: %v", pid, exitCode, err)
+		message := fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d", pid, exitCode)
+		if err != nil {
+			message = fmt.Sprintf("Server proxy process '%d' exited unexpectedly with exit code %d: %v", pid, exitCode, err)
+		}
+		pd.Message = message
 		pdMap.Update(pName, pName, pd)
 	})
 	r.ScheduleReconciliation(pName)
