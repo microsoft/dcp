@@ -102,16 +102,12 @@ func StartApiServer(
 	testRunCtx context.Context,
 	flags ApiServerFlag,
 	log logr.Logger,
+	sessionFolder string,
 ) (*ApiServerInfo, error) {
 	info := ApiServerInfo{
 		lock:                      &sync.Mutex{},
 		ApiServerExited:           concurrency.NewAutoResetEvent(false),
 		ApiServerDisposalComplete: concurrency.NewAutoResetEvent(false),
-	}
-
-	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
-	if sessionFolderErr != nil {
-		return nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
 	}
 
 	cleanup := func() {

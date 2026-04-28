@@ -16,7 +16,17 @@ import (
 )
 
 func NewLogForTesting(name string) logr.Logger {
-	log := logger.New(name).WithResourceSink()
+	log := makeTestLogger(name)
+	return log.Logger
+}
+
+func NewLogWithResourceSinkForTesting(name string, resourceLogFolder string) logr.Logger {
+	log := makeTestLogger(name).WithResourceSinkInto(resourceLogFolder)
+	return log.Logger
+}
+
+func makeTestLogger(name string) *logger.Logger {
+	log := logger.New(name)
 	log.SetLevel(zapcore.ErrorLevel)
 	if !flag.Parsed() {
 		flag.Parse() // Needed to test if verbose flag was present.
@@ -24,6 +34,6 @@ func NewLogForTesting(name string) logr.Logger {
 	if testing.Verbose() {
 		log.SetLevel(zapcore.DebugLevel)
 	}
-	retval := log.Logger.WithValues("test", true)
-	return retval
+	log.WithValues("test", true)
+	return log
 }

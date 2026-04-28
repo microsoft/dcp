@@ -135,7 +135,11 @@ func (l *Logger) WithName(name string) *Logger {
 }
 
 func (l *Logger) WithResourceSink() *Logger {
-	resourceSink := newResourceSink(l.atomicLevel, l.Logger.GetSink())
+	return l.WithResourceSinkInto("") // Use standard resource log path (session folder or temp dir)
+}
+
+func (l *Logger) WithResourceSinkInto(resourceLogFolder string) *Logger {
+	resourceSink := newResourceSink(l.atomicLevel, l.Logger.GetSink(), resourceLogFolder)
 	l.Logger = l.Logger.WithSink(resourceSink)
 	flushInner := l.flush
 	l.flush = func() {

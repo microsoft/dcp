@@ -8,6 +8,7 @@ package integration_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -2728,6 +2729,60 @@ func TestExecutableLogsTimestampedNumbered(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// Verify that system logs (source=system) are available for an Executable that fails to start.
+func TestExecutableSystemLogsOnStartupFailure(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	exeName := "executable-system-logs-startup-failure"
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + exeName,
+		},
+	}
+
+	t.Logf("Preparing run for Executable '%s'... (should fail)", exeName)
+	errMsg := fmt.Sprintf("simulated startup failure for Executable '%s'", exeName)
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		StartupError: func(_ *internal_testutil.ProcessExecution) error {
+			return errors.New(errMsg)
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s'", exeName)
+	createErr := client.Create(ctx, exe)
+	require.NoError(t, createErr, "Could not create Executable '%s'", exeName)
+
+	t.Logf("Waiting for Executable '%s' to end up in 'failed to start' state...", exeName)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart, nil
+	})
+
+	t.Logf("Verifying system logs are available for the failed Executable '%s'...", exeName)
+	opts := apiv1.LogOptions{
+		Follow: false,
+		Source: string(apiv1.LogStreamSourceSystem),
+	}
+	expectedLines := [][]byte{
+		[]byte(errMsg),
+	}
+	logsErr := waitForObjectLogs(ctx, updatedExe, opts, expectedLines, nil)
+	require.NoError(t, logsErr, "System logs should be available for Executable '%s' that failed to start", exeName)
 }
 
 // Verify that logs in follow mode end when Executable is deleted
