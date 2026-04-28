@@ -8,6 +8,7 @@ package apiserver_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -239,7 +240,7 @@ func TestCannotChangeExecutionWhenNotAuthenticated(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		serverInfo.Dispose()
@@ -278,7 +279,7 @@ func TestCanStopApiServer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server
@@ -316,7 +317,7 @@ func TestCanRunCleanupWithoutStoppingApiServer(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server
@@ -377,7 +378,7 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
 	defer cancel()
 
-	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, testutil.NewLogForTesting(t.Name()))
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer func() {
 		// Still want to call this because disposal is not limited to stopping the API server
@@ -475,4 +476,16 @@ func TestCanCapturePerfTrace(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	require.True(t, perfTraceCaptured)
 	require.True(t, receivedPerfTraceNotification)
+}
+
+func createApiServerForHttpHandlerTests(testName string, ctx context.Context) (*ctrl_testutil.ApiServerInfo, error) {
+	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
+	if sessionFolderErr != nil {
+		return nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
+	}
+
+	log := testutil.NewLogWithResourceSinkForTesting(testName, sessionFolder)
+
+	serverInfo, startupErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerFlagsNone, log, sessionFolder)
+	return serverInfo, startupErr
 }

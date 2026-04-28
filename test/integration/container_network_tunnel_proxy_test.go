@@ -52,12 +52,11 @@ func TestTunnelProxyCreateDelete(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-create-delete"
-	log := testutil.NewLogForTesting(t.Name())
 
 	// Use dedicated test environment because otherwise it is difficult to differentiate
 	// between different server proxy processes running in parallel tests.
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -120,10 +119,9 @@ func TestTunnelProxyDelayedNetworkCreation(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-delayed-network-creation"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -184,10 +182,9 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-running-status"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -281,10 +278,9 @@ func TestTunnelProxyCleanup(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-cleanup"
-	log := testutil.NewLogForTesting(t.Name())
 
 	controllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, controllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -376,10 +372,9 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-tunnel-management"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -436,10 +431,9 @@ func TestTunnelProxyTunnelFailure(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-tunnel-failure"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -498,10 +492,9 @@ func TestTunnelProxyServerServiceTransition(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-server-service-transition"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -609,10 +602,9 @@ func TestTunnelProxyMultipleTunnels(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-multiple-tunnels"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -696,10 +688,9 @@ func TestTunnelProxyClientProxyAliases(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-client-proxy-aliases"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -762,10 +753,9 @@ func TestTunnelProxyServerStartupFailure(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-server-startup-failure"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -839,10 +829,9 @@ func TestTunnelProxyClientContainerStartupFailure(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-client-container-startup-failure"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -903,10 +892,9 @@ func TestTunnelProxyServerUnexpectedExit(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-server-unexpected-exit"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -998,10 +986,9 @@ func TestTunnelProxyClientUnexpectedExit(t *testing.T) {
 	defer cancel()
 	dcppaths.EnableTestPathProbing()
 	const testName = "test-tunnel-proxy-client-unexpected-exit"
-	log := testutil.NewLogForTesting(t.Name())
 
 	includedControllers := ServiceController | NetworkController | ContainerNetworkTunnelProxyController
-	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	defer shutdownTestEnvironment(serverInfo, cancel)
 
@@ -1111,10 +1098,9 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, testTimeout)
 	defer cancel()
 	const testName = "test-tunnel-proxy-with-real-orchestrator"
-	log := testutil.NewLogForTesting(t.Name())
 	dcppaths.EnableTestPathProbing()
 
-	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironment(ctx, AllControllers, t.Name(), t.TempDir(), log)
+	serverInfo, teInfo, startupErr := StartAdvancedTestEnvironment(ctx, AllControllers, t.Name(), t.TempDir())
 	require.NoError(t, startupErr, "Failed to start the API server")
 	t.Logf("API server started with PID %d", serverInfo.ApiServerPID)
 	defer teInfo.ProcessExecutor.Dispose()

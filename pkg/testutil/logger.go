@@ -16,6 +16,16 @@ import (
 )
 
 func NewLogForTesting(name string) logr.Logger {
+	log := makeTestLogger(name)
+	return log.Logger
+}
+
+func NewLogWithResourceSinkForTesting(name string, resourceLogFolder string) logr.Logger {
+	log := makeTestLogger(name).WithResourceSinkInto(resourceLogFolder)
+	return log.Logger
+}
+
+func makeTestLogger(name string) *logger.Logger {
 	log := logger.New(name)
 	log.SetLevel(zapcore.ErrorLevel)
 	if !flag.Parsed() {
@@ -24,6 +34,6 @@ func NewLogForTesting(name string) logr.Logger {
 	if testing.Verbose() {
 		log.SetLevel(zapcore.DebugLevel)
 	}
-	retval := log.Logger.WithValues("test", true)
-	return retval
+	log.Logger = log.Logger.WithValues("test", true)
+	return log
 }
