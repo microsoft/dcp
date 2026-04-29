@@ -10,11 +10,17 @@
 package commands
 
 import (
+	"time"
+
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/pkg/process"
 )
 
-func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) error {
-	return nil // No-op on non-Windows platforms.
+func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (attached bool, err error) {
+	return false, nil // No-op on non-Windows platforms.
+}
+
+func stopViaConsole(_ logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time) error {
+	return pe.StopProcess(pid, startTime)
 }

@@ -35,10 +35,11 @@ func main() {
 }
 
 type delayFlagData struct {
-	delay         time.Duration
-	exitCode      int
-	childSpec     string
-	ignoreSigTerm bool
+	delay          time.Duration
+	exitCode       int
+	childSpec      string
+	ignoreSigTerm  bool
+	coupleChildren bool
 }
 
 var (
@@ -46,10 +47,11 @@ var (
 )
 
 const (
-	delayFlag         = "delay"
-	exitCodeFlag      = "exit-code"
-	childSpecFlag     = "child-spec"
-	ignoreSigtermFlag = "ignore-sigterm"
+	delayFlag          = "delay"
+	exitCodeFlag       = "exit-code"
+	childSpecFlag      = "child-spec"
+	ignoreSigtermFlag  = "ignore-sigterm"
+	coupleChildrenFlag = "couple-children"
 )
 
 func newMainCommand(log *logger.Logger) *cobra.Command {
@@ -70,6 +72,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().IntVarP(&flags.exitCode, exitCodeFlag, "e", 0, "The exit code to return when the program exits. If omitted, the program will exit with code 0.")
 	cmd.Flags().StringVar(&flags.childSpec, childSpecFlag, "", "How many child, grandchild, etc. processes to run. For example, the value '2,1' will result in running 2 child processes, each of which will run 1 child on their own (two children, and two grandchildren total). The children will use the same values for delay and exit code as the parent process. The parent process will NOT pass any signals to the children, so if signals are used to stop the program, they have to be sent to each descendant separately.")
 	cmd.Flags().BoolVar(&flags.ignoreSigTerm, ignoreSigtermFlag, false, "If specified, the program will ignore SIGTERM signal. SIGINT will still work as an early exit request.")
+	cmd.Flags().BoolVar(&flags.coupleChildren, coupleChildrenFlag, false, "If specified, child processes stay in the parent's process group instead of being decoupled.")
 
 	return cmd
 }
@@ -156,11 +159,16 @@ func runChildrenAsNeeded() error {
 	if len(descendantCounts) > 0 {
 		childExecArgs = append(childExecArgs, fmt.Sprintf("--%s", childSpecFlag), strings.Join(descendantCounts, ","))
 	}
+	if flags.coupleChildren {
+		childExecArgs = append(childExecArgs, fmt.Sprintf("--%s", coupleChildrenFlag))
+	}
 
 	for i := uint64(0); i < childCount; i++ {
 		cmd := exec.Command(delayExec, childExecArgs...)
 
-		process.DecoupleFromParent(cmd)
+		if !flags.coupleChildren {
+			process.DecoupleFromParent(cmd)
+		}
 
 		err = cmd.Start()
 		if err != nil {

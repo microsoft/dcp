@@ -72,7 +72,7 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 				// If the monitor process is already terminated, stop the service immediately
 				log.Info("Monitored process already exited, shutting down child process...")
 				executor := process.NewOSExecutor(log)
-				stopErr := executor.StopProcess(childPid, childProcessStartTime)
+				stopErr := stopViaConsole(log, executor, childPid, childProcessStartTime)
 				if stopErr != nil {
 					log.Error(stopErr, "Failed to stop child process")
 					return stopErr
@@ -93,19 +93,13 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 			return nil
 		}
 
-		attachErr := attachToTargetProcessConsole(log, childPid)
-		if attachErr != nil {
-			// Error already logged in attachToTargetProcessConsole
-			return attachErr
-		}
-
 		select {
 
 		case <-monitorCtx.Done():
 			if childProcessCtx.Err() == nil {
 				log.Info("Monitored process exited, shutting down child process")
 				executor := process.NewOSExecutor(log)
-				stopErr := executor.StopProcess(childPid, childProcessStartTime)
+				stopErr := stopViaConsole(log, executor, childPid, childProcessStartTime)
 				if stopErr != nil {
 					log.Error(stopErr, "Failed to stop child service process")
 					return stopErr

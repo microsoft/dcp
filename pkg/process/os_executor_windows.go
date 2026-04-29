@@ -33,6 +33,16 @@ const (
 
 var (
 	cleanupJobDisabled = sync.OnceValue(func() bool { return osutil.EnvVarSwitchEnabled(DCP_DISABLE_PROCESS_CLEANUP_JOB) })
+
+	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+
+	// kernel32FreeConsole is used to detach the current process from its console after a
+	// console-group signal has been sent, allowing the console host (conhost.exe) to exit
+	// naturally once all user processes have left the console session.
+	kernel32FreeConsole           = kernel32.NewProc("FreeConsole")
+	kernel32SetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
+
+	ignoreConsoleCtrlEventsCallback = windows.NewCallback(ignoreConsoleCtrlEvent)
 )
 
 type OSExecutor struct {
@@ -86,16 +96,42 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 
 	if (opts & optTrySignal) == optTrySignal {
 		// Give the process a chance to gracefully exit.
-		// The only signal we can send on Windows is CTRL_BREAK_EVENT.
-		err = e.signalAndWaitForExit(proc, windows.CTRL_BREAK_EVENT, ws)
+		//
+		// When attached to the target's console group, send CTRL_C_EVENT to
+		// process group 0 to signal all processes in that console group.
+		// Otherwise send CTRL_BREAK_EVENT to the specific PID, which is valid
+		// because DCP-started processes are always created with
+		// CREATE_NEW_PROCESS_GROUP (via DecoupleFromParent).
+		var sig uint32
+		var processGroupID uint32
+		if (opts & optSignalConsoleGroup) != 0 {
+			sig = windows.CTRL_C_EVENT
+			processGroupID = 0
+		} else {
+			sig = windows.CTRL_BREAK_EVENT
+			processGroupID = uint32(proc.Pid)
+		}
+
+		err = e.signalAndWaitForExit(proc, sig, processGroupID, ws)
 		switch {
 		case err == nil:
-			e.log.V(1).Info("Process stopped by CTRL_BREAK_EVENT", "PID", pid)
+			e.log.V(1).Info("Process stopped by signal", "PID", pid, "Signal", sig)
 			return waitEndedCh, nil
 		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
 			return nil, err
 		default:
-			e.log.V(1).Info("Process did not stop upon CTRL_BREAK_EVENT", "PID", pid)
+			e.log.V(1).Info("Process did not stop upon signal", "PID", pid, "Signal", sig)
+		}
+	} else if (opts & optSignalConsoleGroup) != 0 {
+		// The process was not signaled directly here, but a CTRL_C_EVENT was already
+		// broadcast to the entire console group (for the root process). Give this process
+		// time to exit from that broadcast before force-killing it.
+		select {
+		case <-ws.waitEndedCh:
+			e.log.V(1).Info("Process exited after console group signal", "PID", pid)
+			return waitEndedCh, nil
+		case <-time.After(signalAndWaitTimeout):
+			e.log.V(1).Info("Process did not exit after console group signal, force-killing", "PID", pid)
 		}
 	}
 
@@ -110,11 +146,20 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 }
 
 // Sends a given signal to a process and waits for it to exit.
-// If the process does not exit within 6 seconds, the function returns context.DeadlineExceeded.
-func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, ws *waitState) error {
-	err := windows.GenerateConsoleCtrlEvent(sig, uint32(proc.Pid))
+// processGroupID specifies the target process group; use 0 to signal all processes
+// in the current console group (as required when attached to a foreign console).
+// If the process does not exit within 6 seconds, the function returns ErrTimedOutWaitingForProcessToStop.
+func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, processGroupID uint32, ws *waitState) error {
+	err := windows.GenerateConsoleCtrlEvent(sig, processGroupID)
 	if err != nil {
 		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
+	}
+
+	if processGroupID == 0 {
+		// We no longer need to be attached to the target's console. Detaching now allows
+		// conhost.exe to exit naturally once all user processes in the session have left,
+		// rather than waiting for this process to exit.
+		_, _, _ = kernel32FreeConsole.Call(0)
 	}
 
 	select {
@@ -280,3 +325,48 @@ func tryCloseHandle(handle windows.Handle) {
 		_ = windows.CloseHandle(handle)
 	}
 }
+
+func ignoreConsoleCtrlEvent(ctrlType uint32) uintptr {
+	switch ctrlType {
+	case windows.CTRL_C_EVENT, windows.CTRL_BREAK_EVENT:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func installIgnoreConsoleCtrlEventHandler() error {
+	retval, _, win32err := kernel32SetConsoleCtrlHandler.Call(ignoreConsoleCtrlEventsCallback, 1)
+	if retval == 0 {
+		return win32err
+	}
+	return nil
+}
+
+// ConsoleGroupStopper can stop a process by signaling the entire attached console group.
+// This interface is satisfied by OSExecutor on Windows.
+type ConsoleGroupStopper interface {
+	// StopProcessInConsoleGroup stops the process tree rooted at pid by sending
+	// CTRL_C_EVENT to process group 0 (all processes sharing the current console).
+	// The caller must have already attached to the target's console via AttachConsole.
+	StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time) error
+}
+
+// StopProcessInConsoleGroup implements ConsoleGroupStopper.
+func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time) error {
+	e.acquireLock()
+	if e.disposed {
+		e.releaseLock()
+		return ErrDisposed
+	}
+	e.releaseLock()
+
+	handlerErr := installIgnoreConsoleCtrlEventHandler()
+	if handlerErr != nil {
+		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
+	}
+
+	return e.stopProcessInternal(pid, processStartTime, optSignalConsoleGroup)
+}
+
+var _ ConsoleGroupStopper = (*OSExecutor)(nil)

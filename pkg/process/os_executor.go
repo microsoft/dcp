@@ -454,6 +454,12 @@ const (
 
 	// The caller is responsible for stopping the process, disregard "shouldStopProcess" value returned by tryStartWaiting().
 	optIsResponsibleForStopping processStoppingOpts = 0x8
+
+	// When combined with optTrySignal on Windows, sends CTRL_C_EVENT to process group 0
+	// (all processes sharing the current console) instead of CTRL_BREAK_EVENT to the specific PID.
+	// Only meaningful when the caller has already attached to the target's console
+	// via AttachConsole. Has no effect on non-Windows platforms.
+	optSignalConsoleGroup processStoppingOpts = 0x10
 )
 
 func makeClosedChan() chan struct{} {
