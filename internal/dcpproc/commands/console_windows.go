@@ -11,7 +11,6 @@ package commands
 
 import (
 	"time"
-	"unsafe"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
@@ -22,22 +21,16 @@ import (
 const attachParentProcess = uintptr(^uint32(0))
 
 var (
-	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
-	attachConsoleProc         = kernel32.NewProc("AttachConsole")
-	freeConsoleProc           = kernel32.NewProc("FreeConsole")
-	getConsoleProcessListProc = kernel32.NewProc("GetConsoleProcessList")
+	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
+	attachConsoleProc = kernel32.NewProc("AttachConsole")
+	freeConsoleProc   = kernel32.NewProc("FreeConsole")
 )
 
 // attachToTargetProcessConsole detaches from the current console and attaches to the console
 // of the target process. Returns true if attachment was successful, or false if the target
-// process already shares the current console, has no console, or has already exited.
+// process has no console or has already exited.
 // Returns a non-nil error only on unexpected failures.
 func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (attached bool, err error) {
-	if currentConsoleContainsProcess(log, targetPid) {
-		log.Info("Target process is already attached to the current console; using direct process stop to avoid signaling unrelated console processes")
-		return false, nil
-	}
-
 	retval, _, win32err := freeConsoleProc.Call()
 	if retval == 0 {
 		// https://learn.microsoft.com/windows/console/freeconsole says
@@ -71,52 +64,11 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (att
 	return true, nil
 }
 
-func currentConsoleContainsProcess(log logr.Logger, targetPid process.Pid_t) bool {
-	targetOSPid, pidErr := process.PidT_ToUint32(targetPid)
-	if pidErr != nil {
-		log.Error(pidErr, "Could not convert target PID to Windows PID", "PID", targetPid)
-		return true
+func detachFromConsole(log logr.Logger) {
+	retval, _, win32err := freeConsoleProc.Call()
+	if retval == 0 {
+		log.Error(win32err, "Could not detach from console")
 	}
-
-	processIDs := make([]uint32, 16)
-	count, callErr := getConsoleProcessList(processIDs)
-	if count == 0 {
-		return consoleProcessListFailed(log, callErr)
-	}
-	if count > uintptr(len(processIDs)) {
-		processIDs = make([]uint32, int(count))
-		count, callErr = getConsoleProcessList(processIDs)
-		if count == 0 {
-			return consoleProcessListFailed(log, callErr)
-		}
-		if count > uintptr(len(processIDs)) {
-			log.Info("Console process list grew while reading it; using direct process stop to avoid signaling unrelated console processes")
-			return true
-		}
-	}
-
-	for _, consolePID := range processIDs[:int(count)] {
-		if consolePID == targetOSPid {
-			return true
-		}
-	}
-	return false
-}
-
-func getConsoleProcessList(processIDs []uint32) (uintptr, error) {
-	count, _, callErr := getConsoleProcessListProc.Call(
-		uintptr(unsafe.Pointer(&processIDs[0])),
-		uintptr(len(processIDs)),
-	)
-	return count, callErr
-}
-
-func consoleProcessListFailed(log logr.Logger, callErr error) bool {
-	if callErr != nil && callErr != windows.ERROR_SUCCESS {
-		log.Error(callErr, "Could not get console process list; using direct process stop to avoid signaling unrelated console processes")
-		return true
-	}
-	return false
 }
 
 func reattachToParentConsole(log logr.Logger) {
@@ -126,11 +78,15 @@ func reattachToParentConsole(log logr.Logger) {
 	}
 }
 
+func restoreParentConsole(log logr.Logger) {
+	detachFromConsole(log)
+	reattachToParentConsole(log)
+}
+
 // stopViaConsole attaches to the target process's console, then stops the process tree.
 // If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
 // DCP from its own signal.
-// If the target already shares the current console, has no console, or has already exited,
-// it falls back to a regular StopProcess call.
+// If the target has no console or has already exited, it falls back to a regular StopProcess call.
 func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time) error {
 	attached, attachErr := attachToTargetProcessConsole(log, pid)
 	if attachErr != nil {
@@ -141,6 +97,7 @@ func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, sta
 	if !attached {
 		return pe.StopProcess(pid, startTime)
 	}
+	defer restoreParentConsole(log)
 
 	cgs, ok := pe.(process.ConsoleGroupStopper)
 	if !ok {

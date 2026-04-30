@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	ps "github.com/shirou/gopsutil/v4/process"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
@@ -28,6 +30,7 @@ import (
 const (
 	processQueryLimitedInfo = 0x1000
 	stillActive             = 259
+	expectedDelayProcesses  = 3
 )
 
 // TestStopProcessTreeDeliversSIGINT verifies that all processes in the target tree receive
@@ -54,7 +57,7 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 	//   1. AttachConsole(rootPid) succeeds deterministically in stopViaConsole.
 	//   2. CTRL_C_EVENT with PID 0 reaches exactly the delay tree, not the test process.
 	// child-spec=1,1 -> root + 1 child + 1 grandchild; +1 for conhost = 4 total.
-	const expectedCount = 4
+	const expectedCount = expectedDelayProcesses + 1
 	delayFlag := fmt.Sprintf("--delay=%s", testTimeout.String())
 	childrenCmd := exec.CommandContext(testCtx, "./delay", delayFlag, "--child-spec=1,1", "--couple-children")
 	childrenCmd.Dir = delayToolDir
@@ -94,31 +97,49 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 
 	require.NoError(t, childrenCmd.Wait(), "root delay process should exit cleanly via SIGINT")
 
-	// Wait for every process in the tree to exit, then assert all used exit code 0.
+	// Wait for every delay process in the tree to exit, then assert all used exit code 0.
 	// A non-zero code means the process was force-killed rather than interrupted gracefully.
 	requireAllExitedWithCode(t, handles, 0, 10*time.Second)
 }
 
-// openProcessHandles opens a PROCESS_QUERY_LIMITED_INFORMATION handle for each process in
-// the tree. Holding these handles prevents Windows from releasing the process objects before
-// we can query their exit codes.
+// openProcessHandles opens a PROCESS_QUERY_LIMITED_INFORMATION handle for each delay process
+// in the tree. Holding these handles prevents Windows from releasing the process objects before
+// we can query their exit codes. The console host process is intentionally skipped.
 func openProcessHandles(t *testing.T, tree []process.ProcessTreeItem) map[process.Pid_t]syscall.Handle {
 	t.Helper()
 	handles := make(map[process.Pid_t]syscall.Handle, len(tree))
 	for _, item := range tree {
-		osPid, err := process.PidT_ToUint32(item.Pid)
-		if err != nil {
+		osPid, processName := getProcessInfo(t, item)
+		if strings.EqualFold(processName, "conhost.exe") {
+			t.Logf("Skipping console host PID %d", osPid)
 			continue
 		}
-		handle, err := syscall.OpenProcess(processQueryLimitedInfo, false, osPid)
-		if err != nil {
-			// The process may have already exited by the time we try to open it.
-			t.Logf("Could not open handle for PID %d (may have already exited): %v", osPid, err)
-			continue
-		}
+
+		require.True(t, strings.EqualFold(processName, "delay.exe") || strings.EqualFold(processName, "delay"),
+			"unexpected process %q with PID %d in delay process tree", processName, osPid)
+
+		handle, openErr := syscall.OpenProcess(processQueryLimitedInfo, false, osPid)
+		require.NoError(t, openErr, "could not open handle for delay process PID %d", osPid)
 		handles[item.Pid] = handle
 	}
+
+	require.Len(t, handles, expectedDelayProcesses, "expected handles for every delay process in the tree")
 	return handles
+}
+
+func getProcessInfo(t *testing.T, item process.ProcessTreeItem) (uint32, string) {
+	t.Helper()
+
+	osPid, pidErr := process.PidT_ToUint32(item.Pid)
+	require.NoError(t, pidErr, "could not convert PID %d to Windows PID", item.Pid)
+
+	psProcess, processErr := ps.NewProcess(int32(osPid))
+	require.NoError(t, processErr, "could not inspect process PID %d", osPid)
+
+	processName, nameErr := psProcess.Name()
+	require.NoError(t, nameErr, "could not get process name for PID %d", osPid)
+
+	return osPid, processName
 }
 
 func closeHandles(handles map[process.Pid_t]syscall.Handle) {
