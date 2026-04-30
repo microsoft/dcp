@@ -44,7 +44,7 @@ var (
 
 	ignoreConsoleCtrlEventsCallback = windows.NewCallback(ignoreConsoleCtrlEvent)
 
-	ignoreConsoleCtrlEventHandlerLock      sync.Mutex
+	ignoreConsoleCtrlEventHandlerLock      = &sync.Mutex{}
 	ignoreConsoleCtrlEventHandlerInstalled bool
 	ignoreConsoleCtrlEventHandlerUseCount  int
 )
