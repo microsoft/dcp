@@ -109,15 +109,12 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		}
 
 		err = e.signalAndWaitForExit(proc, sig, processGroupID, ws)
-		switch {
-		case err == nil:
+		if err == nil {
 			e.log.V(1).Info("Process stopped by signal", "PID", pid, "Signal", sig)
 			return waitEndedCh, nil
-		case !errors.Is(err, ErrTimedOutWaitingForProcessToStop):
-			return nil, err
-		default:
-			e.log.V(1).Info("Process did not stop upon signal", "PID", pid, "Signal", sig)
 		}
+
+		e.log.V(1).Info("Process did not stop upon signal; falling back to SIGKILL", "PID", pid, "Signal", sig, "Error", err)
 	} else if (opts & optSignalConsoleGroup) != 0 {
 		// The process was not signaled directly here, but a CTRL_C_EVENT was already
 		// broadcast to the entire console group (for the root process). Give this process
