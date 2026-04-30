@@ -80,6 +80,15 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 			expectedChildCount: getExpectedChildCount(true),
 		},
 	}
+	if osutil.IsWindows() {
+		testCases = []testcase{
+			{
+				description:        "fork from parent",
+				prepareChildCmd:    process.ForkFromParent,
+				expectedChildCount: getExpectedChildCount(true),
+			},
+		}
+	}
 
 	t.Parallel()
 
@@ -454,6 +463,15 @@ func TestStopProcessTreeWorks(t *testing.T) {
 			prepareChildCmd:    process.ForkFromParent,
 			expectedChildCount: getExpectedChildCount(true),
 		},
+	}
+	if osutil.IsWindows() {
+		testCases = []testcase{
+			{
+				description:        "fork from parent",
+				prepareChildCmd:    process.ForkFromParent,
+				expectedChildCount: getExpectedChildCount(true),
+			},
+		}
 	}
 
 	t.Parallel()
