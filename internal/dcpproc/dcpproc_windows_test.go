@@ -20,6 +20,7 @@ import (
 
 	ps "github.com/shirou/gopsutil/v4/process"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/windows"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -27,11 +28,7 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
-const (
-	processQueryLimitedInfo = 0x1000
-	stillActive             = 259
-	expectedDelayProcesses  = 3
-)
+const expectedDelayProcesses = 3
 
 // TestStopProcessTreeDeliversSIGINT verifies that all processes in the target tree receive
 // SIGINT (and therefore exit with code 0) rather than being force-killed (exit code 1) when
@@ -141,7 +138,7 @@ func openProcessHandles(t *testing.T, tree []process.ProcessTreeItem) map[proces
 		require.True(t, strings.EqualFold(processName, "delay.exe") || strings.EqualFold(processName, "delay"),
 			"unexpected process %q with PID %d in delay process tree", processName, osPid)
 
-		handle, openErr := syscall.OpenProcess(processQueryLimitedInfo, false, osPid)
+		handle, openErr := syscall.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, osPid)
 		require.NoError(t, openErr, "could not open handle for delay process PID %d", osPid)
 		handles[item.Pid] = handle
 	}
@@ -186,7 +183,7 @@ func requireAllExitedWithCode(t *testing.T, handles map[process.Pid_t]syscall.Ha
 				if err := syscall.GetExitCodeProcess(h, &code); err != nil {
 					return false, fmt.Errorf("could not get exit code for PID %d: %w", pid, err)
 				}
-				if code == stillActive {
+				if code == uint32(windows.STATUS_PENDING) {
 					return false, nil
 				}
 			}
