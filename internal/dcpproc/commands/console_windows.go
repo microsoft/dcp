@@ -10,6 +10,7 @@
 package commands
 
 import (
+	"errors"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -90,8 +91,12 @@ func restoreParentConsole(log logr.Logger) {
 func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time) error {
 	attached, attachErr := attachToTargetProcessConsole(log, pid)
 	if attachErr != nil {
-		// Error already logged in attachToTargetProcessConsole.
-		return attachErr
+		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
+		stopErr := pe.StopProcess(pid, startTime)
+		if stopErr != nil {
+			return errors.Join(attachErr, stopErr)
+		}
+		return nil
 	}
 
 	if !attached {
