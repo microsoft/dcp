@@ -1,16 +1,16 @@
+//go:build windows
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-//go:build windows
-
 package dcpproc_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -61,6 +61,11 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 	delayFlag := fmt.Sprintf("--delay=%s", testTimeout.String())
 	childrenCmd := exec.CommandContext(testCtx, "./delay", delayFlag, "--child-spec=1,1", "--couple-children")
 	childrenCmd.Dir = delayToolDir
+	var childrenStdout, childrenStderr bytes.Buffer
+	childrenCmd.Stdout = &childrenStdout
+	childrenCmd.Stderr = &childrenStderr
+	defer logCommandOutput(t, "delay process tree", &childrenStdout, &childrenStderr)
+
 	process.ForkFromParent(childrenCmd)
 	require.NoError(t, childrenCmd.Start(), "delay tree should start without error")
 
@@ -89,8 +94,11 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 		"--pid", strconv.Itoa(childrenCmd.Process.Pid),
 		"--process-start-time", childIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 	)
-	dcpProcCmd.Stdout = os.Stdout
-	dcpProcCmd.Stderr = os.Stderr
+	var dcpProcStdout, dcpProcStderr bytes.Buffer
+	dcpProcCmd.Stdout = &dcpProcStdout
+	dcpProcCmd.Stderr = &dcpProcStderr
+	defer logCommandOutput(t, "dcpproc stop-process-tree", &dcpProcStdout, &dcpProcStderr)
+
 	process.DecoupleFromParent(dcpProcCmd)
 	require.NoError(t, dcpProcCmd.Start())
 	require.NoError(t, dcpProcCmd.Wait(), "dcpproc stop-process-tree should exit cleanly (not killed by its own signal)")
@@ -100,6 +108,21 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 	// Wait for every delay process in the tree to exit, then assert all used exit code 0.
 	// A non-zero code means the process was force-killed rather than interrupted gracefully.
 	requireAllExitedWithCode(t, handles, 0, 10*time.Second)
+}
+
+func logCommandOutput(t *testing.T, name string, stdout *bytes.Buffer, stderr *bytes.Buffer) {
+	t.Helper()
+
+	if !t.Failed() && !testing.Verbose() {
+		return
+	}
+
+	if stdout.Len() > 0 {
+		t.Logf("%s stdout:\n%s", name, stdout.String())
+	}
+	if stderr.Len() > 0 {
+		t.Logf("%s stderr:\n%s", name, stderr.String())
+	}
 }
 
 // openProcessHandles opens a PROCESS_QUERY_LIMITED_INFORMATION handle for each delay process
@@ -158,9 +181,12 @@ func requireAllExitedWithCode(t *testing.T, handles map[process.Pid_t]syscall.Ha
 
 	pollErr := wait.PollUntilContextCancel(waitCtx, 100*time.Millisecond, true,
 		func(_ context.Context) (bool, error) {
-			for _, h := range handles {
+			for pid, h := range handles {
 				var code uint32
-				if err := syscall.GetExitCodeProcess(h, &code); err != nil || code == stillActive {
+				if err := syscall.GetExitCodeProcess(h, &code); err != nil {
+					return false, fmt.Errorf("could not get exit code for PID %d: %w", pid, err)
+				}
+				if code == stillActive {
 					return false, nil
 				}
 			}
