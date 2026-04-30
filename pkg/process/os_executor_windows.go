@@ -43,10 +43,6 @@ var (
 	kernel32SetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
 
 	ignoreConsoleCtrlEventsCallback = windows.NewCallback(ignoreConsoleCtrlEvent)
-
-	ignoreConsoleCtrlEventHandlerLock      = &sync.Mutex{}
-	ignoreConsoleCtrlEventHandlerInstalled bool
-	ignoreConsoleCtrlEventHandlerUseCount  int
 )
 
 type OSExecutor struct {
@@ -342,54 +338,11 @@ func ignoreConsoleCtrlEvent(ctrlType uint32) uintptr {
 	}
 }
 
-func setIgnoreConsoleCtrlEventHandler(add bool) error {
-	var addFlag uintptr
-	if add {
-		addFlag = 1
-	}
-
-	retval, _, win32err := kernel32SetConsoleCtrlHandler.Call(ignoreConsoleCtrlEventsCallback, addFlag)
+func installIgnoreConsoleCtrlEventHandler() error {
+	retval, _, win32err := kernel32SetConsoleCtrlHandler.Call(ignoreConsoleCtrlEventsCallback, 1)
 	if retval == 0 {
 		return win32err
 	}
-	return nil
-}
-
-func acquireIgnoreConsoleCtrlEventHandler() error {
-	ignoreConsoleCtrlEventHandlerLock.Lock()
-	defer ignoreConsoleCtrlEventHandlerLock.Unlock()
-
-	if !ignoreConsoleCtrlEventHandlerInstalled {
-		installErr := setIgnoreConsoleCtrlEventHandler(true)
-		if installErr != nil {
-			return installErr
-		}
-		ignoreConsoleCtrlEventHandlerInstalled = true
-	}
-
-	ignoreConsoleCtrlEventHandlerUseCount++
-	return nil
-}
-
-func releaseIgnoreConsoleCtrlEventHandler() error {
-	ignoreConsoleCtrlEventHandlerLock.Lock()
-	defer ignoreConsoleCtrlEventHandlerLock.Unlock()
-
-	if ignoreConsoleCtrlEventHandlerUseCount == 0 {
-		return nil
-	}
-
-	ignoreConsoleCtrlEventHandlerUseCount--
-	if ignoreConsoleCtrlEventHandlerUseCount > 0 {
-		return nil
-	}
-
-	removeErr := setIgnoreConsoleCtrlEventHandler(false)
-	if removeErr != nil {
-		return removeErr
-	}
-
-	ignoreConsoleCtrlEventHandlerInstalled = false
 	return nil
 }
 
@@ -411,16 +364,12 @@ func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.
 	}
 	e.releaseLock()
 
-	handlerErr := acquireIgnoreConsoleCtrlEventHandler()
+	handlerErr := installIgnoreConsoleCtrlEventHandler()
 	if handlerErr != nil {
 		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
 	}
-	defer func() {
-		removeHandlerErr := releaseIgnoreConsoleCtrlEventHandler()
-		if removeHandlerErr != nil {
-			e.log.Error(removeHandlerErr, "Could not remove console ctrl handler")
-		}
-	}()
+	// No explicit removal: FreeConsole resets the process control-handler table,
+	// and this path detaches from the target console after sending the signal.
 
 	return e.stopProcessInternal(pid, processStartTime, optSignalConsoleGroup)
 }
