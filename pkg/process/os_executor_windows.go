@@ -36,10 +36,6 @@ var (
 
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
 
-	// kernel32FreeConsole is used to detach the current process from its console after a
-	// console-group signal has been sent, allowing the console host (conhost.exe) to exit
-	// naturally once all user processes have left the console session.
-	kernel32FreeConsole           = kernel32.NewProc("FreeConsole")
 	kernel32SetConsoleCtrlHandler = kernel32.NewProc("SetConsoleCtrlHandler")
 
 	ignoreConsoleCtrlEventsCallback = windows.NewCallback(ignoreConsoleCtrlEvent)
@@ -153,16 +149,6 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, processG
 	err := windows.GenerateConsoleCtrlEvent(sig, processGroupID)
 	if err != nil {
 		return fmt.Errorf("could not send signal to process %d: %w", proc.Pid, err)
-	}
-
-	if processGroupID == 0 {
-		// We no longer need to be attached to the target's console. Detaching now allows
-		// conhost.exe to exit naturally once all user processes in the session have left,
-		// rather than waiting for this process to exit.
-		retval, _, win32err := kernel32FreeConsole.Call()
-		if retval == 0 {
-			e.log.Error(win32err, "Could not detach from target console after console group signal")
-		}
 	}
 
 	select {
@@ -351,7 +337,8 @@ func installIgnoreConsoleCtrlEventHandler() error {
 type ConsoleGroupStopper interface {
 	// StopProcessInConsoleGroup stops the process tree rooted at pid by sending
 	// CTRL_C_EVENT to process group 0 (all processes sharing the current console).
-	// The caller must have already attached to the target's console via AttachConsole.
+	// The caller must have already attached to the target's console via AttachConsole,
+	// and is responsible for detaching from it after this call.
 	StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time) error
 }
 
@@ -368,8 +355,8 @@ func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.
 	if handlerErr != nil {
 		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
 	}
-	// No explicit removal: FreeConsole resets the process control-handler table,
-	// and this path detaches from the target console after sending the signal.
+	// No explicit removal: the stopViaConsole caller detaches from the target console,
+	// which resets the process control-handler table.
 
 	return e.stopProcessInternal(pid, processStartTime, optSignalConsoleGroup)
 }
