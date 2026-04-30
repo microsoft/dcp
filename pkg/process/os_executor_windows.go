@@ -159,7 +159,10 @@ func (e *OSExecutor) signalAndWaitForExit(proc *os.Process, sig uint32, processG
 		// We no longer need to be attached to the target's console. Detaching now allows
 		// conhost.exe to exit naturally once all user processes in the session have left,
 		// rather than waiting for this process to exit.
-		_, _, _ = kernel32FreeConsole.Call(0)
+		retval, _, win32err := kernel32FreeConsole.Call()
+		if retval == 0 {
+			e.log.Error(win32err, "Could not detach from target console after console group signal")
+		}
 	}
 
 	select {
@@ -343,6 +346,14 @@ func installIgnoreConsoleCtrlEventHandler() error {
 	return nil
 }
 
+func removeIgnoreConsoleCtrlEventHandler() error {
+	retval, _, win32err := kernel32SetConsoleCtrlHandler.Call(ignoreConsoleCtrlEventsCallback, 0)
+	if retval == 0 {
+		return win32err
+	}
+	return nil
+}
+
 // ConsoleGroupStopper can stop a process by signaling the entire attached console group.
 // This interface is satisfied by OSExecutor on Windows.
 type ConsoleGroupStopper interface {
@@ -365,6 +376,12 @@ func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.
 	if handlerErr != nil {
 		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
 	}
+	defer func() {
+		removeHandlerErr := removeIgnoreConsoleCtrlEventHandler()
+		if removeHandlerErr != nil {
+			e.log.Error(removeHandlerErr, "Could not remove console ctrl handler")
+		}
+	}()
 
 	return e.stopProcessInternal(pid, processStartTime, optSignalConsoleGroup)
 }

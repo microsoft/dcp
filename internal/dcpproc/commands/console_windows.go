@@ -19,6 +19,8 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
+const attachParentProcess = uintptr(^uint32(0))
+
 var (
 	kernel32                  = windows.NewLazySystemDLL("kernel32.dll")
 	attachConsoleProc         = kernel32.NewProc("AttachConsole")
@@ -31,12 +33,12 @@ var (
 // process already shares the current console, has no console, or has already exited.
 // Returns a non-nil error only on unexpected failures.
 func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (attached bool, err error) {
-	if currentConsoleContainsProcess(targetPid) {
+	if currentConsoleContainsProcess(log, targetPid) {
 		log.Info("Target process is already attached to the current console; using direct process stop to avoid signaling unrelated console processes")
 		return false, nil
 	}
 
-	retval, _, win32err := freeConsoleProc.Call(0)
+	retval, _, win32err := freeConsoleProc.Call()
 	if retval == 0 {
 		// https://learn.microsoft.com/windows/console/freeconsole says
 		// "If the calling process is not already attached to a console, the FreeConsole request still succeeds."
@@ -44,6 +46,11 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (att
 		log.Error(win32err, "Could not detach the process from its current console")
 		return false, win32err
 	}
+	defer func() {
+		if !attached {
+			reattachToParentConsole(log)
+		}
+	}()
 
 	retval, _, win32err = attachConsoleProc.Call(uintptr(targetPid))
 	if retval == 0 {
@@ -64,28 +71,27 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (att
 	return true, nil
 }
 
-func currentConsoleContainsProcess(targetPid process.Pid_t) bool {
+func currentConsoleContainsProcess(log logr.Logger, targetPid process.Pid_t) bool {
 	targetOSPid, pidErr := process.PidT_ToUint32(targetPid)
 	if pidErr != nil {
-		return false
+		log.Error(pidErr, "Could not convert target PID to Windows PID", "PID", targetPid)
+		return true
 	}
 
 	processIDs := make([]uint32, 16)
-	count, _, _ := getConsoleProcessListProc.Call(
-		uintptr(unsafe.Pointer(&processIDs[0])),
-		uintptr(len(processIDs)),
-	)
+	count, callErr := getConsoleProcessList(processIDs)
 	if count == 0 {
-		return false
+		return consoleProcessListFailed(log, callErr)
 	}
 	if count > uintptr(len(processIDs)) {
 		processIDs = make([]uint32, int(count))
-		count, _, _ = getConsoleProcessListProc.Call(
-			uintptr(unsafe.Pointer(&processIDs[0])),
-			uintptr(len(processIDs)),
-		)
+		count, callErr = getConsoleProcessList(processIDs)
 		if count == 0 {
-			return false
+			return consoleProcessListFailed(log, callErr)
+		}
+		if count > uintptr(len(processIDs)) {
+			log.Info("Console process list grew while reading it; using direct process stop to avoid signaling unrelated console processes")
+			return true
 		}
 	}
 
@@ -95,6 +101,29 @@ func currentConsoleContainsProcess(targetPid process.Pid_t) bool {
 		}
 	}
 	return false
+}
+
+func getConsoleProcessList(processIDs []uint32) (uintptr, error) {
+	count, _, callErr := getConsoleProcessListProc.Call(
+		uintptr(unsafe.Pointer(&processIDs[0])),
+		uintptr(len(processIDs)),
+	)
+	return count, callErr
+}
+
+func consoleProcessListFailed(log logr.Logger, callErr error) bool {
+	if callErr != nil && callErr != windows.ERROR_SUCCESS {
+		log.Error(callErr, "Could not get console process list; using direct process stop to avoid signaling unrelated console processes")
+		return true
+	}
+	return false
+}
+
+func reattachToParentConsole(log logr.Logger) {
+	retval, _, win32err := attachConsoleProc.Call(attachParentProcess)
+	if retval == 0 {
+		log.Error(win32err, "Could not reattach to parent console")
+	}
 }
 
 // stopViaConsole attaches to the target process's console, then stops the process tree.
