@@ -32,6 +32,11 @@ var (
 // process has no console or has already exited.
 // Returns a non-nil error only on unexpected failures.
 func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (attached bool, err error) {
+	targetOSPid, pidErr := process.PidT_ToUint32(targetPid)
+	if pidErr != nil {
+		return false, pidErr
+	}
+
 	retval, _, win32err := freeConsoleProc.Call()
 	if retval == 0 {
 		// https://learn.microsoft.com/windows/console/freeconsole says
@@ -46,7 +51,7 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (att
 		}
 	}()
 
-	retval, _, win32err = attachConsoleProc.Call(uintptr(targetPid))
+	retval, _, win32err = attachConsoleProc.Call(uintptr(targetOSPid))
 	if retval == 0 {
 		errno, isErrno := win32err.(windows.Errno)
 		switch {
@@ -75,7 +80,13 @@ func detachFromConsole(log logr.Logger) {
 func reattachToParentConsole(log logr.Logger) {
 	retval, _, win32err := attachConsoleProc.Call(attachParentProcess)
 	if retval == 0 {
-		log.Error(win32err, "Could not reattach to parent console")
+		errno, isErrno := win32err.(windows.Errno)
+		switch {
+		case isErrno && (errno == windows.ERROR_INVALID_HANDLE || errno == windows.ERROR_INVALID_PARAMETER):
+			log.V(1).Info("Parent console is not available; skipping console reattach", "Error", win32err)
+		default:
+			log.Error(win32err, "Could not reattach to parent console")
+		}
 	}
 }
 
