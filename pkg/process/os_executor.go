@@ -303,22 +303,20 @@ func (e *OSExecutor) releaseLock() {
 }
 
 func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
-	tree, err := GetProcessTree(ProcessTreeItem{pid, processStartTime})
-	if err != nil {
-		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
-	}
-
 	procTreeLog := e.log.WithValues("Root", pid)
-	procTreeLog.V(1).Info("Stopping process tree...", "Root", pid, "Tree", getIDs(tree))
 
-	procEndedCh, stopErr := e.stopSingleProcess(pid, processStartTime, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
-	if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
-		// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
-		procTreeLog.Error(stopErr, "Could not stop root process")
-		return stopErr
+	stopRootProcess := func() (<-chan struct{}, error, error) {
+		procEndedCh, stopErr := e.stopSingleProcess(pid, processStartTime, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+		if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+			// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
+			procTreeLog.Error(stopErr, "Could not stop root process")
+			return nil, stopErr, stopErr
+		}
+
+		return procEndedCh, stopErr, nil
 	}
 
-	waitForRootProcessToEnd := func() error {
+	waitForRootProcessToEnd := func(procEndedCh <-chan struct{}, stopErr error) error {
 		if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
 			// Do not bother waiting for the confirmation of root process exit, it probably is not going to happen
 			// if a timeout occurred already...
@@ -338,14 +336,31 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 	}
 
 	if (opts & optSkipDescendants) != 0 {
-		procTreeLog.V(1).Info("Skipping descendant process cleanup")
-		return waitForRootProcessToEnd()
+		procTreeLog.V(1).Info("Stopping root process without enumerating descendants")
+		procEndedCh, stopErr, rootStopErr := stopRootProcess()
+		if rootStopErr != nil {
+			return rootStopErr
+		}
+
+		return waitForRootProcessToEnd(procEndedCh, stopErr)
+	}
+
+	tree, err := GetProcessTree(ProcessTreeItem{pid, processStartTime})
+	if err != nil {
+		return fmt.Errorf("could not get process tree for process %d: %w", pid, err)
+	}
+
+	procTreeLog.V(1).Info("Stopping process tree...", "Root", pid, "Tree", getIDs(tree))
+
+	procEndedCh, stopErr, rootStopErr := stopRootProcess()
+	if rootStopErr != nil {
+		return rootStopErr
 	}
 
 	tree = tree[1:] // We have processed the root
 	if len(tree) == 0 {
 		procTreeLog.V(1).Info("The root process has no children")
-		return waitForRootProcessToEnd()
+		return waitForRootProcessToEnd(procEndedCh, stopErr)
 	}
 
 	procTreeLog.V(1).Info("Make sure children of the root processes are gone...")
@@ -389,7 +404,7 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 	//     b. we have a time-of-check vs time-of-use problem  with the process tree, which is a snapshot,
 	//        and may be out-of-date for processes spawn children vigorously,
 	// So that is why the following wait operation employs a timeout.
-	rootWaitErr := waitForRootProcessToEnd()
+	rootWaitErr := waitForRootProcessToEnd(procEndedCh, stopErr)
 
 	return errors.Join(append([]error{rootWaitErr}, childStoppingErrors...)...)
 }
