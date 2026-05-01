@@ -75,7 +75,7 @@ You can also ask it to exit with a specific exit code.`,
 	cmd.Flags().StringVar(&flags.childSpec, childSpecFlag, "", "How many child, grandchild, etc. processes to run. For example, the value '2,1' will result in running 2 child processes, each of which will run 1 child on their own (two children, and two grandchildren total). The children will use the same values for delay and exit code as the parent process. The parent process will NOT pass any signals to the children, so if signals are used to stop the program, they have to be sent to each descendant separately.")
 	cmd.Flags().BoolVar(&flags.ignoreSigTerm, ignoreSigtermFlag, false, "If specified, the program will ignore SIGTERM signal. SIGINT will still work as an early exit request.")
 	cmd.Flags().BoolVar(&flags.coupleChildren, coupleChildrenFlag, false, "If specified, child processes stay in the parent's process group instead of being decoupled.")
-	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate console and process group.")
+	cmd.Flags().BoolVar(&flags.forkChildren, forkChildrenFlag, false, "If specified, child processes are started in a separate process group; on Windows they are also started in a separate console.")
 
 	return cmd
 }
