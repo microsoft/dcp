@@ -158,15 +158,7 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (P
 	return pid, processStartTime, nil
 }
 
-func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
-	return e.stopProcessWithOpts(pid, processStartTime, optNone)
-}
-
-func (e *OSExecutor) StopRootProcess(pid Pid_t, processStartTime time.Time) error {
-	return e.stopProcessWithOpts(pid, processStartTime, optSkipDescendants)
-}
-
-func (e *OSExecutor) stopProcessWithOpts(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
+func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time, options ...ProcessStopOption) error {
 	e.acquireLock()
 	if e.disposed {
 		e.releaseLock()
@@ -174,7 +166,12 @@ func (e *OSExecutor) stopProcessWithOpts(pid Pid_t, processStartTime time.Time, 
 	}
 	e.releaseLock()
 
-	return e.stopProcessInternal(pid, processStartTime, opts)
+	stopOptions := processStopOptions{opts: optNone}
+	for _, option := range options {
+		option(&stopOptions)
+	}
+
+	return e.stopProcessInternal(pid, processStartTime, stopOptions.opts)
 }
 
 // Returns the PID, process identity time (to distinguish between process instances with the same PID), and error.
@@ -500,4 +497,3 @@ func makeClosedChan() chan struct{} {
 }
 
 var _ Executor = (*OSExecutor)(nil)
-var _ RootProcessStopper = (*OSExecutor)(nil)

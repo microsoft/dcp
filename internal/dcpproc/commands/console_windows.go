@@ -103,7 +103,7 @@ func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, sta
 	attached, attachErr := attachToTargetProcessConsole(log, pid)
 	if attachErr != nil {
 		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
-		stopErr := stopDirectly(log, pe, pid, startTime, skipDescendants)
+		stopErr := stopDirectly(pe, pid, startTime, skipDescendants)
 		if stopErr != nil {
 			return errors.Join(attachErr, stopErr)
 		}
@@ -111,7 +111,7 @@ func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, sta
 	}
 
 	if !attached {
-		return stopDirectly(log, pe, pid, startTime, skipDescendants)
+		return stopDirectly(pe, pid, startTime, skipDescendants)
 	}
 	defer restoreParentConsole(log)
 
@@ -119,7 +119,7 @@ func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, sta
 	if !ok {
 		// Should not happen in production; fall back gracefully.
 		log.Info("Process executor does not support console group stopping; falling back to regular stop")
-		return stopDirectly(log, pe, pid, startTime, skipDescendants)
+		return stopDirectly(pe, pid, startTime, skipDescendants)
 	}
 
 	return cgs.StopProcessInConsoleGroup(pid, startTime, skipDescendants)

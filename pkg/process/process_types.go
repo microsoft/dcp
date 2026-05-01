@@ -36,6 +36,20 @@ const (
 	CreationFlagEnsureKillOnDispose = 0x1
 )
 
+// ProcessStopOption configures how a process is stopped.
+type ProcessStopOption func(*processStopOptions)
+
+type processStopOptions struct {
+	opts processStoppingOpts
+}
+
+// StopRootOnly stops only the requested process and skips cleanup of descendants in the process tree.
+func StopRootOnly() ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.opts |= optSkipDescendants
+	}
+}
+
 // Pid_t is a type used to represent process IDs.
 // The domain is all unsigned 32-bit integers, but we use a signed type to align with Kubernetes API conventions.
 type Pid_t int64
@@ -55,7 +69,7 @@ type Executor interface {
 	// Stops the process with a given PID.
 	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped.
 	// (to protect against stopping a wrong process, if the PID was reused).
-	StopProcess(pid Pid_t, processStartTime time.Time) error
+	StopProcess(pid Pid_t, processStartTime time.Time, options ...ProcessStopOption) error
 
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.
@@ -64,13 +78,6 @@ type Executor interface {
 	// Disposes the executor. Processes started with CreationFlagEnsureKillOnDispose will be terminated.
 	// Other processes will be waited on (so that they do not become zombies), but not terminated.
 	Dispose()
-}
-
-// RootProcessStopper stops a root process without stopping its descendants.
-type RootProcessStopper interface {
-	// StopRootProcess stops the process with a given PID without stopping its descendants.
-	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped.
-	StopRootProcess(pid Pid_t, processStartTime time.Time) error
 }
 
 type ProcessExitHandler interface {

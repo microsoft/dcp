@@ -68,16 +68,10 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 	}
 }
 
-func stopDirectly(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
-	if !skipDescendants {
-		return pe.StopProcess(pid, startTime)
+func stopDirectly(pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
+	if skipDescendants {
+		return pe.StopProcess(pid, startTime, process.StopRootOnly())
 	}
 
-	rootStopper, ok := pe.(process.RootProcessStopper)
-	if !ok {
-		log.Info("Process executor does not support root-only stopping; falling back to regular stop")
-		return pe.StopProcess(pid, startTime)
-	}
-
-	return rootStopper.StopRootProcess(pid, startTime)
+	return pe.StopProcess(pid, startTime)
 }

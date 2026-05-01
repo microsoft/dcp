@@ -18,5 +18,5 @@ import (
 )
 
 func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
-	return stopDirectly(log, pe, pid, startTime, skipDescendants)
+	return stopDirectly(pe, pid, startTime, skipDescendants)
 }

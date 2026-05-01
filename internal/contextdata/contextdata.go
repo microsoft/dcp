@@ -62,7 +62,7 @@ func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ proc
 	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
 }
 
-func (*dummyProcessExecutor) StopProcess(_ process.Pid_t, _ time.Time) error {
+func (*dummyProcessExecutor) StopProcess(_ process.Pid_t, _ time.Time, _ ...process.ProcessStopOption) error {
 	return fmt.Errorf("there is no process executor configured, no processes can be stopped")
 }
 
