@@ -159,6 +159,14 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (P
 }
 
 func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
+	return e.stopProcessWithOpts(pid, processStartTime, optNone)
+}
+
+func (e *OSExecutor) StopRootProcess(pid Pid_t, processStartTime time.Time) error {
+	return e.stopProcessWithOpts(pid, processStartTime, optSkipDescendants)
+}
+
+func (e *OSExecutor) stopProcessWithOpts(pid Pid_t, processStartTime time.Time, opts processStoppingOpts) error {
 	e.acquireLock()
 	if e.disposed {
 		e.releaseLock()
@@ -166,7 +174,7 @@ func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time) error {
 	}
 	e.releaseLock()
 
-	return e.stopProcessInternal(pid, processStartTime, optNone)
+	return e.stopProcessInternal(pid, processStartTime, opts)
 }
 
 // Returns the PID, process identity time (to distinguish between process instances with the same PID), and error.
@@ -329,6 +337,11 @@ func (e *OSExecutor) stopProcessInternal(pid Pid_t, processStartTime time.Time, 
 		}
 	}
 
+	if (opts & optSkipDescendants) != 0 {
+		procTreeLog.V(1).Info("Skipping descendant process cleanup")
+		return waitForRootProcessToEnd()
+	}
+
 	tree = tree[1:] // We have processed the root
 	if len(tree) == 0 {
 		procTreeLog.V(1).Info("The root process has no children")
@@ -460,6 +473,9 @@ const (
 	// Only meaningful when the caller has already attached to the target's console
 	// via AttachConsole. Has no effect on non-Windows platforms.
 	optSignalConsoleGroup processStoppingOpts = 0x10
+
+	// Stops only the root process and skips cleanup of descendants in the process tree.
+	optSkipDescendants processStoppingOpts = 0x20
 )
 
 func makeClosedChan() chan struct{} {
@@ -469,3 +485,4 @@ func makeClosedChan() chan struct{} {
 }
 
 var _ Executor = (*OSExecutor)(nil)
+var _ RootProcessStopper = (*OSExecutor)(nil)

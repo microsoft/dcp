@@ -17,6 +17,6 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
-func stopViaConsole(_ logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time) error {
-	return pe.StopProcess(pid, startTime)
+func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
+	return stopDirectly(log, pe, pid, startTime, skipDescendants)
 }

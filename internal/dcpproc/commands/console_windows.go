@@ -99,11 +99,11 @@ func restoreParentConsole(log logr.Logger) {
 // If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
 // DCP from its own signal.
 // If the target has no console or has already exited, it falls back to a regular StopProcess call.
-func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time) error {
+func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
 	attached, attachErr := attachToTargetProcessConsole(log, pid)
 	if attachErr != nil {
 		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
-		stopErr := pe.StopProcess(pid, startTime)
+		stopErr := stopDirectly(log, pe, pid, startTime, skipDescendants)
 		if stopErr != nil {
 			return errors.Join(attachErr, stopErr)
 		}
@@ -111,7 +111,7 @@ func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, sta
 	}
 
 	if !attached {
-		return pe.StopProcess(pid, startTime)
+		return stopDirectly(log, pe, pid, startTime, skipDescendants)
 	}
 	defer restoreParentConsole(log)
 
@@ -119,8 +119,8 @@ func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, sta
 	if !ok {
 		// Should not happen in production; fall back gracefully.
 		log.Info("Process executor does not support console group stopping; falling back to regular stop")
-		return pe.StopProcess(pid, startTime)
+		return stopDirectly(log, pe, pid, startTime, skipDescendants)
 	}
 
-	return cgs.StopProcessInConsoleGroup(pid, startTime)
+	return cgs.StopProcessInConsoleGroup(pid, startTime, skipDescendants)
 }

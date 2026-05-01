@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	ps "github.com/shirou/gopsutil/v4/process"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -107,6 +108,64 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 	requireAllExitedWithCode(t, handles, 0, 10*time.Second)
 }
 
+func TestStopProcessTreeSkipDescendantsLeavesForkedChildRunning(t *testing.T) {
+	t.Parallel()
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr)
+
+	delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
+	require.NoError(t, toolLaunchErr)
+
+	const testTimeout = time.Second * 30
+	testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
+	defer testCancel()
+
+	delayFlag := fmt.Sprintf("--delay=%s", testTimeout.String())
+	rootCmd := exec.CommandContext(testCtx, "./delay", delayFlag, "--child-spec=1", "--fork-children")
+	rootCmd.Dir = delayToolDir
+	var rootStdout, rootStderr bytes.Buffer
+	rootCmd.Stdout = &rootStdout
+	rootCmd.Stderr = &rootStderr
+	defer logCommandOutput(t, "delay root process", &rootStdout, &rootStderr)
+
+	process.ForkFromParent(rootCmd)
+	require.NoError(t, rootCmd.Start(), "delay root process should start without error")
+
+	rootPid := process.Uint32_ToPidT(uint32(rootCmd.Process.Pid))
+	rootIdentityTime := process.ProcessIdentityTime(rootPid)
+	require.False(t, rootIdentityTime.IsZero(), "root process identity time should not be zero")
+	rootItem := process.ProcessTreeItem{Pid: rootPid, IdentityTime: rootIdentityTime}
+
+	forkedChild := requireDelayDescendant(t, rootItem, testTimeout/3)
+	cleanupExecutor := process.NewOSExecutor(logr.Discard())
+	defer func() {
+		_ = cleanupExecutor.StopProcess(forkedChild.Pid, forkedChild.IdentityTime)
+		_ = cleanupExecutor.StopProcess(rootItem.Pid, rootItem.IdentityTime)
+		_ = rootCmd.Wait()
+	}()
+
+	childHandle := openProcessHandle(t, forkedChild)
+	defer func() { _ = syscall.CloseHandle(childHandle) }()
+
+	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
+		"stop-process-tree",
+		"--pid", strconv.Itoa(rootCmd.Process.Pid),
+		"--process-start-time", rootIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--skip-descendants",
+	)
+	var dcpProcStdout, dcpProcStderr bytes.Buffer
+	dcpProcCmd.Stdout = &dcpProcStdout
+	dcpProcCmd.Stderr = &dcpProcStderr
+	defer logCommandOutput(t, "dcpproc stop-process-tree --skip-descendants", &dcpProcStdout, &dcpProcStderr)
+
+	process.DecoupleFromParent(dcpProcCmd)
+	require.NoError(t, dcpProcCmd.Start())
+	require.NoError(t, dcpProcCmd.Wait(), "dcpproc stop-process-tree should exit cleanly")
+
+	requireProcessStillActive(t, childHandle, forkedChild.Pid)
+}
+
 func logCommandOutput(t *testing.T, name string, stdout *bytes.Buffer, stderr *bytes.Buffer) {
 	t.Helper()
 
@@ -138,9 +197,7 @@ func openProcessHandles(t *testing.T, tree []process.ProcessTreeItem) map[proces
 		require.True(t, strings.EqualFold(processName, "delay.exe") || strings.EqualFold(processName, "delay"),
 			"unexpected process %q with PID %d in delay process tree", processName, osPid)
 
-		handle, openErr := syscall.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, osPid)
-		require.NoError(t, openErr, "could not open handle for delay process PID %d", osPid)
-		handles[item.Pid] = handle
+		handles[item.Pid] = openProcessHandle(t, item)
 	}
 
 	require.Len(t, handles, expectedDelayProcesses, "expected handles for every delay process in the tree")
@@ -150,16 +207,80 @@ func openProcessHandles(t *testing.T, tree []process.ProcessTreeItem) map[proces
 func getProcessInfo(t *testing.T, item process.ProcessTreeItem) (uint32, string) {
 	t.Helper()
 
+	osPid, processName, processInfoErr := tryGetProcessInfo(item)
+	require.NoError(t, processInfoErr, "could not inspect process PID %d", item.Pid)
+
+	return osPid, processName
+}
+
+func tryGetProcessInfo(item process.ProcessTreeItem) (uint32, string, error) {
+	osPid, pidErr := process.PidT_ToUint32(item.Pid)
+	if pidErr != nil {
+		return 0, "", fmt.Errorf("could not convert PID %d to Windows PID: %w", item.Pid, pidErr)
+	}
+
+	psProcess, processErr := ps.NewProcess(int32(osPid))
+	if processErr != nil {
+		return 0, "", fmt.Errorf("could not inspect process PID %d: %w", osPid, processErr)
+	}
+
+	processName, nameErr := psProcess.Name()
+	if nameErr != nil {
+		return 0, "", fmt.Errorf("could not get process name for PID %d: %w", osPid, nameErr)
+	}
+
+	return osPid, processName, nil
+}
+
+func openProcessHandle(t *testing.T, item process.ProcessTreeItem) syscall.Handle {
+	t.Helper()
+
 	osPid, pidErr := process.PidT_ToUint32(item.Pid)
 	require.NoError(t, pidErr, "could not convert PID %d to Windows PID", item.Pid)
 
-	psProcess, processErr := ps.NewProcess(int32(osPid))
-	require.NoError(t, processErr, "could not inspect process PID %d", osPid)
+	handle, openErr := syscall.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, osPid)
+	require.NoError(t, openErr, "could not open handle for delay process PID %d", osPid)
+	return handle
+}
 
-	processName, nameErr := psProcess.Name()
-	require.NoError(t, nameErr, "could not get process name for PID %d", osPid)
+func requireDelayDescendant(t *testing.T, root process.ProcessTreeItem, timeout time.Duration) process.ProcessTreeItem {
+	t.Helper()
 
-	return osPid, processName
+	waitCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var descendant process.ProcessTreeItem
+	pollErr := wait.PollUntilContextCancel(waitCtx, 100*time.Millisecond, true,
+		func(_ context.Context) (bool, error) {
+			tree, treeErr := process.GetProcessTree(root)
+			if treeErr != nil {
+				return false, treeErr
+			}
+
+			for _, item := range tree[1:] {
+				_, processName, processInfoErr := tryGetProcessInfo(item)
+				if processInfoErr != nil {
+					continue
+				}
+				if strings.EqualFold(processName, "delay.exe") || strings.EqualFold(processName, "delay") {
+					descendant = item
+					return true, nil
+				}
+			}
+
+			return false, nil
+		},
+	)
+	require.NoError(t, pollErr, "delay descendant was not found in the process tree")
+	return descendant
+}
+
+func requireProcessStillActive(t *testing.T, handle syscall.Handle, pid process.Pid_t) {
+	t.Helper()
+
+	var code uint32
+	require.NoError(t, syscall.GetExitCodeProcess(handle, &code), "could not get exit code for PID %d", pid)
+	require.Equal(t, uint32(windows.STATUS_PENDING), code, "PID %d should still be running", pid)
 }
 
 func closeHandles(handles map[process.Pid_t]syscall.Handle) {

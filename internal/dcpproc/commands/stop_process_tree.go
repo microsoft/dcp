@@ -19,6 +19,7 @@ import (
 var (
 	stopPid              process.Pid_t = process.UnknownPID
 	stopProcessStartTime time.Time
+	stopSkipDescendants  bool
 )
 
 func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
@@ -37,6 +38,7 @@ func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	stopProcessTreeCmd.Flags().Var(flags.NewTimeFlag(&stopProcessStartTime, osutil.RFC3339MiliTimestampFormat), "process-start-time", "If present, specifies the start time of the root process of the process tree to be stopped. This is used to ensure the correct process tree will be stopped. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	stopProcessTreeCmd.Flags().BoolVar(&stopSkipDescendants, "skip-descendants", false, "If specified, stops only the root process and skips force-killing descendants.")
 
 	return stopProcessTreeCmd, nil
 }
@@ -46,6 +48,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		log = log.WithName("StopProcessTree").WithValues(
 			"PID", stopPid,
 			"ProcessStartTime", stopProcessStartTime,
+			"SkipDescendants", stopSkipDescendants,
 		)
 
 		_, procErr := process.FindWaitableProcess(stopPid, stopProcessStartTime)
@@ -55,7 +58,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		}
 
 		pe := process.NewOSExecutor(log)
-		stopErr := stopViaConsole(log, pe, stopPid, stopProcessStartTime)
+		stopErr := stopViaConsole(log, pe, stopPid, stopProcessStartTime, stopSkipDescendants)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop process tree")
 			return stopErr
@@ -63,4 +66,18 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 
 		return nil
 	}
+}
+
+func stopDirectly(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
+	if !skipDescendants {
+		return pe.StopProcess(pid, startTime)
+	}
+
+	rootStopper, ok := pe.(process.RootProcessStopper)
+	if !ok {
+		log.Info("Process executor does not support root-only stopping; falling back to regular stop")
+		return pe.StopProcess(pid, startTime)
+	}
+
+	return rootStopper.StopRootProcess(pid, startTime)
 }

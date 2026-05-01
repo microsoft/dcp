@@ -66,6 +66,13 @@ type Executor interface {
 	Dispose()
 }
 
+// RootProcessStopper stops a root process without stopping its descendants.
+type RootProcessStopper interface {
+	// StopRootProcess stops the process with a given PID without stopping its descendants.
+	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped.
+	StopRootProcess(pid Pid_t, processStartTime time.Time) error
+}
+
 type ProcessExitHandler interface {
 	// Indicates that process with a given PID has finished execution
 	// If err is nil, the process exit code was properly captured and the exitCode value is valid.

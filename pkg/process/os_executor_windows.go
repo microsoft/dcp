@@ -336,11 +336,11 @@ type ConsoleGroupStopper interface {
 	// CTRL_C_EVENT to process group 0 (all processes sharing the current console).
 	// The caller must have already attached to the target's console via AttachConsole,
 	// and is responsible for detaching from it after this call.
-	StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time) error
+	StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time, skipDescendants bool) error
 }
 
 // StopProcessInConsoleGroup implements ConsoleGroupStopper.
-func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time) error {
+func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.Time, skipDescendants bool) error {
 	e.acquireLock()
 	if e.disposed {
 		e.releaseLock()
@@ -355,7 +355,12 @@ func (e *OSExecutor) StopProcessInConsoleGroup(pid Pid_t, processStartTime time.
 	// No explicit removal: the stopViaConsole caller detaches from the target console,
 	// which resets the process control-handler table.
 
-	return e.stopProcessInternal(pid, processStartTime, optSignalConsoleGroup)
+	opts := optSignalConsoleGroup
+	if skipDescendants {
+		opts |= optSkipDescendants
+	}
+
+	return e.stopProcessInternal(pid, processStartTime, opts)
 }
 
 var _ ConsoleGroupStopper = (*OSExecutor)(nil)
