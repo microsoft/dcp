@@ -67,11 +67,3 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		return nil
 	}
 }
-
-func stopDirectly(pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
-	if skipDescendants {
-		return pe.StopProcess(pid, startTime, process.StopRootOnly())
-	}
-
-	return pe.StopProcess(pid, startTime)
-}
