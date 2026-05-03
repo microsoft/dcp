@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-
 package telemetry
 
 import (
@@ -173,6 +172,13 @@ func SetAttribute[T TelemetryAttribute](ctx context.Context, key string, value T
 func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
 	span := trace.SpanFromContext(ctx)
 	span.AddEvent(name, options...)
+}
+
+func SetError(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
 }
 
 var hash = sha256.New()

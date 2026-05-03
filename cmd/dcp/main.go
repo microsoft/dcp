@@ -8,12 +8,16 @@ package main
 //go:generate goversioninfo
 
 import (
+	"context"
 	"os"
+	"sync"
+	"time"
 
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcp/commands"
+	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -46,15 +50,46 @@ func main() {
 
 	ctx := kubeapiserver.SetupSignalContext()
 
+	telemetrySystem := telemetry.GetTelemetrySystem()
+	var shutdownTelemetryOnce sync.Once
+	shutdownTelemetry := func() {
+		shutdownTelemetryOnce.Do(func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = telemetrySystem.Shutdown(shutdownCtx)
+		})
+	}
+	defer shutdownTelemetry()
+
+	ctx, commandSpan := telemetry.StartStartupSpan(ctx, "dcp.command")
+	if len(os.Args) > 1 && os.Args[1] != "" && os.Args[1][0] != '-' {
+		telemetry.SetAttribute(ctx, "dcp.command.name", os.Args[1])
+	}
+	spanEnded := false
+	endCommandSpan := func() {
+		if !spanEnded {
+			commandSpan.End()
+			spanEnded = true
+		}
+	}
+	defer endCommandSpan()
+
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
+		telemetry.SetError(commandSpan, err)
+		endCommandSpan()
+		shutdownTelemetry()
 		cmdutil.ErrorExit(log, err, errSetup)
 	}
 
 	err = root.ExecuteContext(ctx)
 	if err != nil {
+		telemetry.SetError(commandSpan, err)
+		endCommandSpan()
+		shutdownTelemetry()
 		cmdutil.ErrorExit(log, err, errCommand)
 	} else {
+		endCommandSpan()
 		log.Flush()
 	}
 }

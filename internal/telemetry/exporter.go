@@ -3,18 +3,20 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-
 package telemetry
 
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -23,7 +25,20 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+const (
+	otelExporterOtlpEndpointEnvVar       = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	otelExporterOtlpTracesEndpointEnvVar = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+	otelExporterOtlpHeadersEnvVar        = "OTEL_EXPORTER_OTLP_HEADERS"
+	otelExporterOtlpTracesHeadersEnvVar  = "OTEL_EXPORTER_OTLP_TRACES_HEADERS"
+	otelExporterOtlpProtocolEnvVar       = "OTEL_EXPORTER_OTLP_PROTOCOL"
+	aspireDashboardOtlpEndpointEnvVar    = "ASPIRE_DASHBOARD_OTLP_ENDPOINT_URL"
+)
+
 func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
+	if otlpEndpoint := getOtlpEndpoint(); otlpEndpoint != "" {
+		return newOtlpTraceExporter(context.Background(), otlpEndpoint)
+	}
+
 	logLevel, err := logger.GetDiagnosticsLogLevel()
 
 	if err == nil && logLevel == zapcore.DebugLevel {
@@ -44,6 +59,69 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 	} else {
 		return discardExporter{}, nil
 	}
+}
+
+func getOtlpEndpoint() string {
+	if endpoint := os.Getenv(otelExporterOtlpTracesEndpointEnvVar); endpoint != "" {
+		return endpoint
+	}
+
+	if endpoint := os.Getenv(otelExporterOtlpEndpointEnvVar); endpoint != "" {
+		return endpoint
+	}
+
+	return os.Getenv(aspireDashboardOtlpEndpointEnvVar)
+}
+
+func newOtlpTraceExporter(ctx context.Context, endpoint string) (sdktrace.SpanExporter, error) {
+	protocol := strings.ToLower(os.Getenv(otelExporterOtlpProtocolEnvVar))
+	if protocol != "" && protocol != "grpc" {
+		return nil, fmt.Errorf("unsupported OTLP trace exporter protocol %q", protocol)
+	}
+
+	options := []otlptracegrpc.Option{}
+	if parsedEndpoint, err := url.Parse(endpoint); err == nil && parsedEndpoint.Host != "" {
+		options = append(options, otlptracegrpc.WithEndpoint(parsedEndpoint.Host))
+		if parsedEndpoint.Scheme == "http" {
+			options = append(options, otlptracegrpc.WithInsecure())
+		}
+	} else {
+		options = append(options, otlptracegrpc.WithEndpoint(endpoint))
+	}
+
+	if headers := getOtlpHeaders(); len(headers) > 0 {
+		options = append(options, otlptracegrpc.WithHeaders(headers))
+	}
+
+	return otlptracegrpc.New(ctx, options...)
+}
+
+func getOtlpHeaders() map[string]string {
+	headers := parseOtlpHeaders(os.Getenv(otelExporterOtlpTracesHeadersEnvVar))
+	if len(headers) > 0 {
+		return headers
+	}
+
+	return parseOtlpHeaders(os.Getenv(otelExporterOtlpHeadersEnvVar))
+}
+
+func parseOtlpHeaders(rawHeaders string) map[string]string {
+	headers := map[string]string{}
+	for _, pair := range strings.Split(rawHeaders, ",") {
+		key, value, found := strings.Cut(pair, "=")
+		if !found {
+			continue
+		}
+
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+
+		headers[key] = strings.TrimSpace(value)
+	}
+
+	return headers
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {

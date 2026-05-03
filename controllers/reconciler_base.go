@@ -14,7 +14,9 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -99,6 +101,22 @@ func (rb *ReconcilerBase[T, PT]) StartReconciliation(req ctrl.Request) (ctrl_cli
 	)
 
 	return reader, log
+}
+
+func (rb *ReconcilerBase[T, PT]) StartReconciliationSpan(ctx context.Context, req ctrl.Request) (context.Context, trace.Span) {
+	return telemetry.StartStartupSpan(
+		ctx,
+		"dcp.controller.reconcile",
+		attribute.String("dcp.controller.kind", rb.kind),
+		attribute.String("dcp.resource.kind", rb.kind),
+		attribute.String("dcp.resource.name", req.Name),
+		attribute.String("dcp.resource.namespace", req.Namespace),
+	)
+}
+
+func (rb *ReconcilerBase[T, PT]) SetObjectAttributes(ctx context.Context, obj PT) {
+	objectMeta := obj.GetObjectMeta()
+	telemetry.SetDcpResourceAttributes(ctx, rb.kind, objectMeta.GetNamespace(), objectMeta.GetName(), objectMeta.GetAnnotations())
 }
 
 // Schedules reconciliation for specific object identified by namespaced name.

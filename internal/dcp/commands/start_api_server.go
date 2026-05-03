@@ -17,6 +17,7 @@ import (
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcp/bootstrap"
 	"github.com/microsoft/dcp/internal/perftrace"
+	"github.com/microsoft/dcp/internal/telemetry"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -55,13 +56,23 @@ func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 }
 
 func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
-	return func(cmd *cobra.Command, _ []string) error {
+	return func(cmd *cobra.Command, _ []string) (err error) {
 		log = log.WithName("start-apiserver")
+		cmdCtx, span := telemetry.StartStartupSpan(cmd.Context(), "dcp.start_apiserver")
+		telemetry.SetAttribute(cmdCtx, "dcp.command.name", "start-apiserver")
+		telemetry.SetAttribute(cmdCtx, "dcp.detach", detach)
+		telemetry.SetAttribute(cmdCtx, "dcp.server_only", serverOnly)
+		defer func() {
+			telemetry.SetError(span, err)
+			span.End()
+		}()
+		cmd.SetContext(cmdCtx)
 
-		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log.WithName("monitor"))
+		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmdCtx, log.WithName("monitor"))
 		defer apiServerCtxCancel()
 
 		if detach {
+			forkCtx, forkSpan := telemetry.StartStartupSpan(cmdCtx, "dcp.start_apiserver.fork")
 			args := make([]string, 0, len(os.Args)-2)
 
 			hasContainerRuntimeFlag := false
@@ -80,6 +91,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 
 			log.V(1).Info("Forking command", "Cmd", os.Args[0], "Args", args)
+			telemetry.SetAttribute(forkCtx, "dcp.fork.argument_count", len(args))
 
 			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
@@ -90,20 +102,26 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 
 			if err := forked.Start(); err != nil {
 				log.Error(err, "Forked process failed to run")
+				telemetry.SetError(forkSpan, err)
+				forkSpan.End()
 				return err
 			} else {
 				log.V(1).Info("Forked process started", "PID", forked.Process.Pid)
+				telemetry.SetAttribute(forkCtx, "dcp.fork.pid", forked.Process.Pid)
 			}
 
 			if err := forked.Process.Release(); err != nil {
 				log.Error(err, "Release failed for process", "PID", forked.Process.Pid)
+				telemetry.SetError(forkSpan, err)
+				forkSpan.End()
 				return err
 			}
 
+			forkSpan.End()
 			return nil
 		}
 
-		err := perftrace.CaptureStartupProfileIfRequested(apiServerCtx, log)
+		err = perftrace.CaptureStartupProfileIfRequested(apiServerCtx, log)
 		if err != nil {
 			log.Error(err, "Failed to capture startup profile")
 		}

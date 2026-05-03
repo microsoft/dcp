@@ -22,6 +22,7 @@ import (
 	"github.com/microsoft/dcp/internal/hosting"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
+	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/pkg/extensions"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -46,7 +47,15 @@ func DcpRun(
 	allExtensions []DcpExtension,
 	invocationFlags []string,
 	log logr.Logger,
-) error {
+) (err error) {
+	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.run")
+	telemetry.SetAttribute(ctx, "dcp.server_only", serverOnly)
+	telemetry.SetAttribute(ctx, "dcp.extensions.count", len(allExtensions))
+	defer func() {
+		telemetry.SetError(span, err)
+		span.End()
+	}()
+
 	// If the context is already complete, we should not proceed with running the API server and controllers.
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -129,14 +138,20 @@ func DcpRun(
 			return perftrace.StartProfiling(ctx, ctxCancel, perftrace.ProfileTypeSnapshot, log)
 		},
 	}
+	_, apiServerStartSpan := telemetry.StartStartupSpan(ctx, "dcp.apiserver.start")
 	apiServerShutdown, apiServerErr := apiServer.Run(apiServerCtx, runConfig)
+	telemetry.SetError(apiServerStartSpan, apiServerErr)
+	apiServerStartSpan.End()
 	if apiServerErr != nil {
 		return apiServerErr
 	}
 
 	log.V(1).Info("About to launch host services")
 
+	hostStartCtx, hostStartSpan := telemetry.StartStartupSpan(ctx, "dcp.hosted_services.start")
+	telemetry.SetAttribute(hostStartCtx, "dcp.hosted_services.count", len(hostedServices))
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
+	hostStartSpan.End()
 	shutdownHost := func() error {
 		cancelHostCtx()
 		var allErrors error
@@ -151,7 +166,6 @@ func DcpRun(
 		return allErrors
 	}
 
-	var err error
 	// Wait for the user to signal that they want to shut down.
 	for {
 		select {

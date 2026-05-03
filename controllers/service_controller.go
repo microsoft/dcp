@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/trace"
@@ -151,11 +150,14 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 	}
 }
 
-func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues(
-		"Service", req.NamespacedName.String(),
-		"Reconciliation", atomic.AddUint32(&r.reconciliationSeqNo, 1),
-	)
+func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
+	ctx, span := r.StartReconciliationSpan(ctx, req)
+	defer func() {
+		telemetry.SetError(span, err)
+		span.End()
+	}()
+
+	reader, log := r.StartReconciliation(req)
 
 	if ctx.Err() != nil {
 		log.V(1).Info("Request context expired, nothing to do...")
@@ -163,7 +165,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	svc := apiv1.Service{}
-	if err := r.Get(ctx, req.NamespacedName, &svc); err != nil {
+	if err := reader.Get(ctx, req.NamespacedName, &svc); err != nil {
 		if apimachinery_errors.IsNotFound(err) {
 			log.V(1).Info("The Service object does not exist yet or was deleted")
 			r.stopService(req.NamespacedName, nil, log)
@@ -177,6 +179,9 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	} else {
 		getSucceededCounter.Add(ctx, 1)
 	}
+
+	r.SetObjectAttributes(ctx, &svc)
+	telemetry.SetAttribute(ctx, "dcp.resource.state", string(svc.Status.State))
 
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
 
@@ -198,7 +203,8 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	result, err := r.SaveChangesWithDelay(ctx, &svc, patch, change, r.config.AdditionalReconciliationDelay, nil, log)
+	result, err = r.SaveChangesWithDelay(ctx, &svc, patch, change, r.config.AdditionalReconciliationDelay, nil, log)
+	telemetry.SetAttribute(ctx, "dcp.resource.final_state", string(svc.Status.State))
 	return result, err
 }
 
@@ -214,7 +220,20 @@ func (r *ServiceReconciler) stopService(svcName types.NamespacedName, svc *apiv1
 }
 
 func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Context, svc *apiv1.Service, log logr.Logger) objectChange {
+	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.service.ensure_effective_address")
+	r.SetObjectAttributes(ctx, svc)
+	defer func() {
+		telemetry.SetAttribute(ctx, "dcp.service.final_state", string(svc.Status.State))
+		if svc.Status.EffectivePort != 0 {
+			telemetry.SetAttribute(ctx, "dcp.service.effective_port", int(svc.Status.EffectivePort))
+		}
+		span.End()
+	}()
+
 	oldState := svc.Status.State
+	telemetry.SetAttribute(ctx, "dcp.service.previous_state", string(oldState))
+	telemetry.SetAttribute(ctx, "dcp.service.address_allocation_mode", string(svc.Spec.AddressAllocationMode))
+
 	oldEffectiveAddress := svc.Status.EffectiveAddress
 	oldEffectivePort := svc.Status.EffectivePort
 	oldEndpointNamespacedName := types.NamespacedName{

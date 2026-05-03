@@ -29,6 +29,7 @@ import (
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
+	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
@@ -63,7 +64,13 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 	return runControllersCmd
 }
 
-func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, error) {
+func getManager(ctx context.Context, log logr.Logger) (mgr ctrl_manager.Manager, err error) {
+	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.controllers.create_manager")
+	defer func() {
+		telemetry.SetError(span, err)
+		span.End()
+	}()
+
 	retryCtx, cancelRetryCtx := context.WithTimeout(ctx, dcpclient.DefaultServerConnectTimeout)
 	defer cancelRetryCtx()
 
@@ -71,7 +78,7 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 
 	// Depending on the usage pattern, the API server may not be available immediately.
 	// Do some retries with exponential back-off before giving up
-	mgr, err := resiliency.RetryGetExponential(retryCtx, func() (ctrl_manager.Manager, error) {
+	mgr, err = resiliency.RetryGetExponential(retryCtx, func() (ctrl_manager.Manager, error) {
 		config := ctrlruntime.GetConfigOrDie()
 		dcpclient.ApplyDcpOptions(config)
 		ctrlMgrOpts := controllers.NewControllerManagerOptions(ctx, scheme, log)
@@ -101,14 +108,22 @@ func getManager(ctx context.Context, log logr.Logger) (ctrl_manager.Manager, err
 }
 
 func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
-	return func(cmd *cobra.Command, _ []string) error {
-		err := perftrace.CaptureStartupProfileIfRequested(cmd.Context(), log)
+	return func(cmd *cobra.Command, _ []string) (err error) {
+		cmdCtx, span := telemetry.StartStartupSpan(cmd.Context(), "dcp.controllers.run")
+		telemetry.SetAttribute(cmdCtx, "dcp.command.name", "run-controllers")
+		defer func() {
+			telemetry.SetError(span, err)
+			span.End()
+		}()
+		cmd.SetContext(cmdCtx)
+
+		err = perftrace.CaptureStartupProfileIfRequested(cmdCtx, log)
 		if err != nil {
 			log.Error(err, "failed to capture startup profile")
 		}
 		defer logger.ReleaseAllResourceLogs()
 
-		ctrlCtx, ctrlCtxCancel := cmds.GetMonitorContextFromFlags(cmd.Context(), log)
+		ctrlCtx, ctrlCtxCancel := cmds.GetMonitorContextFromFlags(cmdCtx, log)
 		defer ctrlCtxCancel()
 
 		_, err = kubeconfig.RequireKubeconfigFlagValue(cmd.Flags())
@@ -276,8 +291,11 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		go func() {
 			log.Info("Starting controller manager")
 			var mgrRunErr error
+			managerCtx, managerSpan := telemetry.StartStartupSpan(ctrlCtx, "dcp.controllers.manager.start")
 
 			defer func() {
+				telemetry.SetError(managerSpan, mgrRunErr)
+				managerSpan.End()
 				panicErr := resiliency.MakePanicError(recover(), log)
 				if panicErr != nil {
 					// Already logged by MakePanicError()
@@ -292,7 +310,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				close(mgrRunResultCh)
 			}()
 
-			mgrRunErr = mgr.Start(ctrlCtx)
+			mgrRunErr = mgr.Start(managerCtx)
 		}()
 
 		<-ctrlCtx.Done()
