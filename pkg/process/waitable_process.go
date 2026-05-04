@@ -20,11 +20,14 @@ const (
 
 type WaitableProcess struct {
 	WaitPollInterval time.Duration
-	process          *os.Process
-	processStartTime time.Time
-	err              error
-	waitChan         chan struct{}
-	waitLock         sync.Mutex
+	PID              Pid_t
+	ProcessStartTime time.Time
+	ExitCode         int32
+
+	process  *os.Process
+	err      error
+	waitChan chan struct{}
+	waitLock sync.Mutex
 }
 
 func FindWaitableProcess(pid Pid_t, processStartTime time.Time) (*WaitableProcess, error) {
@@ -35,10 +38,13 @@ func FindWaitableProcess(pid Pid_t, processStartTime time.Time) (*WaitableProces
 
 	dcpProcess := &WaitableProcess{
 		WaitPollInterval: defaultWaitPollInterval,
-		process:          foundProcess,
-		processStartTime: processStartTime,
-		err:              nil,
-		waitLock:         sync.Mutex{},
+		PID:              pid,
+		ProcessStartTime: processStartTime,
+		ExitCode:         UnknownExitCode,
+
+		process:  foundProcess,
+		err:      nil,
+		waitLock: sync.Mutex{},
 	}
 
 	return dcpProcess, nil
@@ -55,13 +61,19 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 		go func() {
 			defer close(p.waitChan)
 
-			_, err := p.process.Wait()
+			pstate, err := p.process.Wait()
+			p.ExitCode, err = getProcessExecResult(err, pstate)
 			if err == nil {
 				return
 			}
 
 			var syscallErr syscall.Errno
 			if found := errors.As(err, &syscallErr); found && syscallErr == syscall.ECHILD {
+
+				// Most likely we are not the parent of the process, so the ordinary Wait() call does not work.
+				// Could also be that we already started waiting for this process, but that would be a programming error.
+				// Ether way, we can still poll-wait, we just won't get the exit code.
+
 				timer := time.NewTimer(p.WaitPollInterval)
 				defer timer.Stop()
 
@@ -70,7 +82,7 @@ func (p *WaitableProcess) pollingWait(ctx context.Context) {
 					case <-timer.C:
 						pid := Uint32_ToPidT(uint32(p.process.Pid))
 
-						_, pollErr := FindProcess(pid, p.processStartTime)
+						_, pollErr := FindProcess(pid, p.ProcessStartTime)
 						// We couldn't find the PID, so the process has exited
 						if pollErr != nil {
 							p.err = nil

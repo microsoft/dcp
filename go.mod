@@ -3,6 +3,7 @@ module github.com/microsoft/dcp
 go 1.26.3
 
 require (
+	github.com/UserExistsError/conpty v0.1.4
 	github.com/cenkalti/backoff/v4 v4.3.0
 	github.com/davidwartell/go-onecontext v1.0.2
 	github.com/emirpasic/gods v1.18.1

@@ -83,7 +83,7 @@ func (e *OSExecutor) StartProcess(
 		case <-ws.waitEndedCh:
 			// The process exited before the context expired.
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
+				exitCode, execError := getProcessExecResult(ws.waitErr, cmd.ProcessState)
 				handler.OnProcessExited(pid, exitCode, errors.Join(ctx.Err(), execError))
 			}
 
@@ -115,7 +115,7 @@ func (e *OSExecutor) StartProcess(
 			<-ws.waitEndedCh
 
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
+				exitCode, execError := getProcessExecResult(ws.waitErr, cmd.ProcessState)
 				handler.OnProcessExited(pid, exitCode, errors.Join(stopProcessErr, execError, ctx.Err()))
 			}
 		}
@@ -263,10 +263,10 @@ func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
 }
 
 // Returns the process execution error and process exit code depending on the result of command wait call.
-func getProcessExecResult(waitErr error, cmd *exec.Cmd) (int32, error) {
+func getProcessExecResult(waitErr error, pstate *os.ProcessState) (int32, error) {
 	var ee *exec.ExitError
 	if waitErr == nil {
-		return int32(cmd.ProcessState.ExitCode()), nil
+		return int32(pstate.ExitCode()), nil
 	} else if errors.As(waitErr, &ee) {
 		return int32(ee.ExitCode()), nil
 	} else {

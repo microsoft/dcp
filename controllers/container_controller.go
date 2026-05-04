@@ -546,6 +546,10 @@ func ensureContainerStartingState(
 			rcd.containerState = apiv1.ContainerStateRunning
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
+
+			if termErr := r.ensureContainerTerminalSession(ctx, rcd, log); termErr != nil {
+				log.Error(termErr, "Failed to attach terminal session to running container; container is running but interactive terminal will be unavailable")
+			}
 		case inspected != nil && inspected.Status == containers.ContainerStatusExited:
 			rcd.containerState = apiv1.ContainerStateExited
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -1481,6 +1485,13 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				if inspected.Status == containers.ContainerStatusRunning {
 					log.V(1).Info("Container started")
 					rcd.containerState = apiv1.ContainerStateRunning
+
+					if err := r.ensureContainerTerminalSession(startupCtx, rcd, log); err != nil {
+						// Terminal attach failure is non-fatal: the container is
+						// running and observable via the orchestrator, but no
+						// interactive PTY is available. We log and continue.
+						log.Error(err, "Failed to attach terminal session to running container; container is running but interactive terminal will be unavailable")
+					}
 				} else {
 					log.V(1).Info("Container started and exited shortly after", "ContainerStatus", inspected.Status)
 					rcd.containerState = apiv1.ContainerStateExited
@@ -1557,6 +1568,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
 	defer rcd.deleteStartupLogFiles(log)
+	defer rcd.closeTerminalSession(log)
 
 	if container.Spec.Persistent {
 		log.V(1).Info("Container is not using Managed mode, leaving underlying resources")
@@ -1586,6 +1598,53 @@ func (r *ContainerReconciler) cleanupContainerResources(ctx context.Context, con
 func (r *ContainerReconciler) cleanupDcpContainerResources(ctx context.Context, container *apiv1.Container, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, container, nil, log)
 	r.ReleaseContainerWatchForResource(container.UID, log)
+}
+
+// ensureContainerTerminalSession attaches a host-side PTY to the running
+// container and starts the HMP v1 listener at the configured UDS path,
+// storing the resulting session on rcd. No-op if the container does not
+// have terminal enabled or a session is already active.
+//
+// The container must have been created with `-t -i` for the attach to
+// deliver a usable terminal; that is handled by applyCreateContainerOptions
+// in the docker/podman orchestrator when ContainerSpec.Terminal is set.
+//
+// Errors here are non-fatal to the container lifecycle: the container is
+// already running by the time this is called. The caller is expected to
+// log the error and move on.
+func (r *ContainerReconciler) ensureContainerTerminalSession(
+	ctx context.Context,
+	rcd *runningContainerData,
+	log logr.Logger,
+) error {
+	if rcd == nil || rcd.runSpec == nil {
+		return nil
+	}
+
+	terminal := rcd.runSpec.Terminal
+	if terminal == nil || !terminal.Enabled {
+		return nil
+	}
+
+	if rcd.terminalSession != nil {
+		return nil
+	}
+
+	if !rcd.hasValidContainerID() {
+		return errors.New("ensureContainerTerminalSession called without a valid container ID")
+	}
+
+	runner, ok := r.orchestrator.(containers.CLICommandRunner)
+	if !ok {
+		return fmt.Errorf("container orchestrator %T does not implement containers.CLICommandRunner; terminal attach not supported", r.orchestrator)
+	}
+
+	session, err := startContainerTerminalSession(ctx, runner, string(rcd.containerID), terminal, log)
+	if err != nil {
+		return err
+	}
+	rcd.terminalSession = session
+	return nil
 }
 
 func (r *ContainerReconciler) startContainerWithTimeout(

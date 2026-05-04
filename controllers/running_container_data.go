@@ -18,6 +18,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -87,6 +88,14 @@ type runningContainerData struct {
 
 	// Whether health probes are enabled for the Container
 	healthProbesEnabled *bool
+
+	// terminalSession owns the host-side PTY + HMP v1 listener bridging the
+	// container's primary process to the Aspire terminal host. Non-nil only
+	// when the container was created with Spec.Terminal.Enabled and the
+	// attach to the running container succeeded. Closing the session tears
+	// down both the listener and the underlying CLI attach process (which
+	// in turn closes the container's stdin and detaches).
+	terminalSession *termpty.Session
 }
 
 const placeholderContainerIdPrefix = "__placeholder-"
@@ -134,6 +143,10 @@ func (rcd *runningContainerData) Clone() *runningContainerData {
 		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
 		healthProbeResults:     stdmaps.Clone(rcd.healthProbeResults),
+		// terminalSession is shared (one runtime resource per container).
+		// Clones must reference the same Session; otherwise UpdateFrom
+		// would lose track of the in-flight attach process.
+		terminalSession: rcd.terminalSession,
 	}
 
 	pointers.SetValueFrom(&clone.exitCode, rcd.exitCode)
@@ -228,6 +241,14 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 		updated = true
 	}
 
+	// terminalSession is a one-shot pointer assignment: once attached, it
+	// must not be cleared by stale clones replayed via deferred ops, so
+	// only propagate non-nil values forward.
+	if other.terminalSession != nil && rcd.terminalSession != other.terminalSession {
+		rcd.terminalSession = other.terminalSession
+		updated = true
+	}
+
 	return updated
 }
 
@@ -275,6 +296,19 @@ func (rcd *runningContainerData) deleteStartupLogFiles(log logr.Logger) {
 	rcd.startupStderrLog = nil
 	if stderrLog != nil {
 		stderrLog.Close(startupLogDisposeOnClose, log)
+	}
+}
+
+// closeTerminalSession tears down any host-side PTY + HMP v1 listener
+// previously stood up for this container. Safe to call multiple times.
+func (rcd *runningContainerData) closeTerminalSession(log logr.Logger) {
+	session := rcd.terminalSession
+	rcd.terminalSession = nil
+	if session == nil {
+		return
+	}
+	if err := session.Close(); err != nil {
+		log.V(1).Info("Error closing container terminal session", "Error", err.Error())
 	}
 }
 
