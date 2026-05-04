@@ -229,7 +229,7 @@ func shouldBuildClientProxyImage(
 	}
 	defer imageBuildLock.Unlock()
 
-	haveImage, imageCheckErr := haveExistingImage(ctx, opts, ior, imageName)
+	haveImage, imageCheckErr := haveExistingImage(ctx, opts, ior, imageName, log)
 	if imageCheckErr != nil {
 		return proxyImageNeedUnknown, fmt.Errorf("failed to check if the client proxy image exists: %w", imageCheckErr)
 	}
@@ -292,20 +292,16 @@ func haveExistingImage(
 	opts BuildClientProxyImageOptions,
 	ior containers.ImageOrchestrator,
 	imageName string,
+	log logr.Logger,
 ) (bool, error) {
 	baseImageDigest, found := baseImageDigests[opts.BaseImage]
 	if !found {
-		baseImageID, pullErr := ior.PullImage(ctx, containers.PullImageOptions{Image: opts.BaseImage})
-		if pullErr != nil {
-			return false, fmt.Errorf("failed to pull client proxy base image %s: %w", opts.BaseImage, pullErr)
+		var digestErr error
+		baseImageDigest, digestErr = getBestEffortBaseImageDigest(ctx, opts.BaseImage, ior, log)
+		if digestErr != nil {
+			return false, digestErr
 		}
 
-		baseImageInspect, inspectErr := ior.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{baseImageID}})
-		if inspectErr != nil {
-			return false, fmt.Errorf("failed to inspect client proxy base image %s: %w", opts.BaseImage, inspectErr)
-		}
-
-		baseImageDigest = imageDigest(baseImageInspect[0].Digest)
 		baseImageDigests[opts.BaseImage] = baseImageDigest
 	}
 
@@ -323,6 +319,55 @@ func haveExistingImage(
 	existing := images[0]
 	retval := imageDigest(existing.Labels[baseImageDigestLabel]) == baseImageDigest
 	return retval, nil
+}
+
+func getBestEffortBaseImageDigest(
+	ctx context.Context,
+	baseImage string,
+	ior containers.ImageOrchestrator,
+	log logr.Logger,
+) (imageDigest, error) {
+	baseImageID, pullErr := ior.PullImage(ctx, containers.PullImageOptions{Image: baseImage})
+	if pullErr == nil {
+		baseImageDigest, inspectErr := inspectBaseImageDigest(ctx, ior, baseImageID)
+		if inspectErr != nil {
+			return "", fmt.Errorf("failed to inspect client proxy base image %s: %w", baseImage, inspectErr)
+		}
+
+		return baseImageDigest, nil
+	}
+
+	baseImageDigest, inspectLocalErr := inspectBaseImageDigest(ctx, ior, baseImage)
+	if inspectLocalErr != nil {
+		return "", fmt.Errorf("failed to pull client proxy base image %s and no local copy was available: %w", baseImage, errors.Join(pullErr, inspectLocalErr))
+	}
+
+	log.V(1).Info("Failed to pull client proxy base image, using local image", "Image", baseImage, "Error", pullErr.Error())
+	return baseImageDigest, nil
+}
+
+func inspectBaseImageDigest(
+	ctx context.Context,
+	ior containers.ImageOrchestrator,
+	imageRef string,
+) (imageDigest, error) {
+	baseImageInspect, inspectErr := ior.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{imageRef}})
+	if inspectErr != nil {
+		return "", inspectErr
+	}
+	if len(baseImageInspect) == 0 {
+		return "", fmt.Errorf("base image %s was not found", imageRef)
+	}
+
+	inspectedBaseImage := baseImageInspect[0]
+	if inspectedBaseImage.Digest != "" {
+		return imageDigest(inspectedBaseImage.Digest), nil
+	}
+	if inspectedBaseImage.Id != "" {
+		return imageDigest(inspectedBaseImage.Id), nil
+	}
+
+	return "", fmt.Errorf("base image %s has no digest or ID", imageRef)
 }
 
 // setupImageBuildContext creates a temporary directory for building the client proxy image,
