@@ -261,6 +261,13 @@ type ExecutableSpec struct {
 	// PEM formatted certificates to be written for the Executable
 	// +optional
 	PemCertificates *ExecutablePemCertificates `json:"pemCertificates,omitempty"`
+
+	// Terminal, when non-nil and Enabled, allocates a pseudo-terminal for the
+	// Executable's process and exposes an HMP v1 producer endpoint that the
+	// Aspire terminal host connects to as a client. See TerminalSpec for
+	// details.
+	// +optional
+	Terminal *TerminalSpec `json:"terminal,omitempty"`
 }
 
 func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
@@ -314,6 +321,10 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
+	if !es.Terminal.Equal(other.Terminal) {
+		return false
+	}
+
 	return true
 }
 
@@ -354,6 +365,8 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	}
 
 	errorList = append(errorList, es.PemCertificates.Validate(specPath.Child("pemCertificates"))...)
+
+	errorList = append(errorList, es.Terminal.Validate(specPath.Child("terminal"))...)
 
 	return errorList
 }

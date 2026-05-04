@@ -35,6 +35,11 @@ type processRunState struct {
 	stdOutFile   *os.File
 	stdErrFile   *os.File
 	cmdInfo      string // Command line used to start the process, for logging purposes
+
+	// terminalSession is non-nil when the run was started under a PTY via
+	// startTerminalRun. It owns the PTY and the HMP v1 listener; closing it
+	// terminates both.
+	terminalSession *terminalSession
 }
 
 type ProcessExecutableRunner struct {
@@ -55,6 +60,10 @@ func (r *ProcessExecutableRunner) StartRun(
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) *controllers.ExecutableStartResult {
+	if exe.Spec.Terminal != nil && exe.Spec.Terminal.Enabled {
+		return r.startTerminalRun(ctx, exe, runChangeHandler, log)
+	}
+
 	cmd := makeCommand(exe)
 	if osutil.IsWindows() {
 		// On Windows we have seen some apps (e.g. Python uvicorn runner) sending Ctrl-C to the whole console group
@@ -157,6 +166,19 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 
 	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
 	stopLog.V(1).Info("Stopping run...")
+
+	// Terminal-attached runs don't go through the OSExecutor and don't have
+	// an entry in the underlying waiter table. Closing the terminal session
+	// closes the PTY master, which delivers SIGHUP / detaches the ConPTY and
+	// causes the child process to exit on its own. We then return without
+	// touching the OSExecutor stop machinery.
+	if runState.terminalSession != nil {
+		closeErr := runState.terminalSession.Close()
+		if closeErr != nil {
+			stopLog.Error(closeErr, "Failed to close terminal session cleanly")
+		}
+		return closeErr
+	}
 
 	// We want to make progress eventually, so we don't want to wait indefinitely for the process to stop.
 	const ProcessStopTimeout = 15 * time.Second
