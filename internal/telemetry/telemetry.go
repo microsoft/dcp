@@ -24,6 +24,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
@@ -51,7 +52,7 @@ func GetTelemetrySystem() *TelemetrySystem {
 
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithSpanProcessor(NewSuppressIfSuccessfulSpanProcessor(sdktrace.NewBatchSpanProcessor(spanExp))),
-			sdktrace.WithResource(resource.Default()),
+			sdktrace.WithResource(newTelemetryResource(logName)),
 		)
 
 		metricExp, err := newMetricExporter()
@@ -78,6 +79,24 @@ func GetTelemetrySystem() *TelemetrySystem {
 	})
 
 	return instance
+}
+
+func newTelemetryResource(logName string) *resource.Resource {
+	versionInfo := version.Version()
+	attributes := []attribute.KeyValue{
+		attribute.String("service.name", logName),
+		attribute.String("service.instance.id", fmt.Sprintf("%d", os.Getpid())),
+		attribute.Int("process.pid", os.Getpid()),
+		attribute.String("process.executable.name", logName),
+	}
+	if versionInfo.Version != "" {
+		attributes = append(attributes, attribute.String("service.version", versionInfo.Version))
+	}
+	if versionInfo.CommitHash != "" {
+		attributes = append(attributes, attribute.String("service.version.revision", versionInfo.CommitHash))
+	}
+
+	return resource.NewWithAttributes("", attributes...)
 }
 
 func GetTracer(tracerName string) trace.Tracer {
@@ -169,9 +188,14 @@ func SetAttribute[T TelemetryAttribute](ctx context.Context, key string, value T
 	}
 }
 
-func AddEvent(ctx context.Context, name string, options ...trace.EventOption) {
+func AddEvent(ctx context.Context, name string, attributes ...attribute.KeyValue) {
 	span := trace.SpanFromContext(ctx)
-	span.AddEvent(name, options...)
+	if len(attributes) == 0 {
+		span.AddEvent(name)
+		return
+	}
+
+	span.AddEvent(name, trace.WithAttributes(attributes...))
 }
 
 func SetError(span trace.Span, err error) {

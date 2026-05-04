@@ -32,8 +32,8 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/networking"
-	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
@@ -208,7 +208,7 @@ func (r *ContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) er
 func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	ctx, span := r.StartReconciliationSpan(ctx, req)
 	defer func() {
-		telemetry.SetError(span, err)
+		span.SetError(err)
 		span.End()
 	}()
 
@@ -220,7 +220,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	container := apiv1.Container{}
-	err := reader.Get(ctx, req.NamespacedName, &container)
+	err = reader.Get(ctx, req.NamespacedName, &container)
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -237,7 +237,7 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	r.SetObjectAttributes(ctx, &container)
-	telemetry.SetAttribute(ctx, "dcp.resource.state", string(container.Status.State))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceState, string(container.Status.State))
 
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, container.GetResourceId())
 
@@ -271,23 +271,23 @@ func (r *ContainerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	result, err = r.SaveChangesWithDelay(ctx, &container, patch, change, additionalReconcileDelay, nil, log)
-	telemetry.SetAttribute(ctx, "dcp.resource.final_state", string(container.Status.State))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceFinalState, string(container.Status.State))
 	return result, err
 }
 
 func (r *ContainerReconciler) manageContainer(ctx context.Context, container *apiv1.Container, log logr.Logger) objectChange {
-	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.container.manage")
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanContainerManage)
 	r.SetObjectAttributes(ctx, container)
 	defer span.End()
 
 	targetContainerState := container.Status.State
-	telemetry.SetAttribute(ctx, "dcp.container.target_state", string(targetContainerState))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeContainerTargetState, string(targetContainerState))
 	_, rcd := r.runningContainers.BorrowByNamespacedName(container.NamespacedName())
 	if rcd != nil {
 		// In-memory container state is not subject to issues related to caching and
 		// status updates failed due to conflict, so it is fresher and has precedence.
 		targetContainerState = rcd.containerState
-		telemetry.SetAttribute(ctx, "dcp.container.run_state", string(rcd.containerState))
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeContainerRunState, string(rcd.containerState))
 	}
 
 	// Even if the new container state is (as it is usually the case) the same as the target state,

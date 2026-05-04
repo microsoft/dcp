@@ -48,12 +48,20 @@ func DcpRun(
 	invocationFlags []string,
 	log logr.Logger,
 ) (err error) {
-	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.run")
-	telemetry.SetAttribute(ctx, "dcp.server_only", serverOnly)
-	telemetry.SetAttribute(ctx, "dcp.extensions.count", len(allExtensions))
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanRun)
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeServerOnly, serverOnly)
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionsCount, len(allExtensions))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeInvocationFlagsCount, len(invocationFlags))
+	spanEnded := false
+	endRunSpan := func(runErr error) {
+		if !spanEnded {
+			span.SetError(runErr)
+			span.End()
+			spanEnded = true
+		}
+	}
 	defer func() {
-		telemetry.SetError(span, err)
-		span.End()
+		endRunSpan(err)
 	}()
 
 	// If the context is already complete, we should not proceed with running the API server and controllers.
@@ -79,6 +87,7 @@ func DcpRun(
 	var notifySrc notifications.UnixSocketNotificationSource
 
 	if !serverOnly {
+		notifyCreateCtx, notifyCreateSpan := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanNotificationSourceCreate)
 		// Do not use apiServerCtx for the notification source because it is a monitor context
 		// that gets cancelled monitored process exits, triggering API server shutdown.
 		// We want to be able to send notifications throughout the shutdown process, so we use a separate context.
@@ -87,6 +96,9 @@ func DcpRun(
 
 		var notifySrcErr error
 		notifySrc, notifySrcErr = createNotificationSource(notifyCtx, log)
+		telemetry.SetAttribute(notifyCreateCtx, telemetry.StartupAttributeNotificationSourceCreated, notifySrcErr == nil)
+		notifyCreateSpan.SetError(notifySrcErr)
+		notifyCreateSpan.End()
 		if notifySrcErr == nil {
 			appmgmt.AddBeforeCleanupTask("SendCleanupStartedNotification", func() {
 				// Best effort
@@ -100,24 +112,39 @@ func DcpRun(
 	controllerExtensions := slices.Select(allExtensions, func(ext DcpExtension) bool {
 		return slices.Contains(ext.Capabilities, extensions.ControllerCapability)
 	})
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeControllerExtensionsCount, len(controllerExtensions))
 
+	hostedServicesCtx, hostedServicesSpan := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanHostedServicesCreate)
 	hostedServices := []hosting.Service{}
+	var hostedServicesErr error
 	if !serverOnly {
 		// Always run the built-in controllers
 		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, log)
 		if controllerServiceErr != nil {
-			return fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
+			hostedServicesErr = fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
+		} else {
+			hostedServices = append(hostedServices, controllerService)
 		}
-		hostedServices = append(hostedServices, controllerService)
 
 		// Also run any extension controllers
 		for _, ext := range controllerExtensions {
+			if hostedServicesErr != nil {
+				break
+			}
+
 			extService, extCreationErr := NewDcpExtensionService(cwd, ext, "run-controllers", invocationFlags, log)
 			if extCreationErr != nil {
-				return fmt.Errorf("could not start controller extension '%s': %w", ext.Name, extCreationErr)
+				hostedServicesErr = fmt.Errorf("could not start controller extension '%s': %w", ext.Name, extCreationErr)
+				break
 			}
 			hostedServices = append(hostedServices, extService)
 		}
+	}
+	telemetry.SetAttribute(hostedServicesCtx, telemetry.StartupAttributeHostedServicesCount, len(hostedServices))
+	hostedServicesSpan.SetError(hostedServicesErr)
+	hostedServicesSpan.End()
+	if hostedServicesErr != nil {
+		return hostedServicesErr
 	}
 
 	host := &hosting.Host{
@@ -138,9 +165,13 @@ func DcpRun(
 			return perftrace.StartProfiling(ctx, ctxCancel, perftrace.ProfileTypeSnapshot, log)
 		},
 	}
-	_, apiServerStartSpan := telemetry.StartStartupSpan(ctx, "dcp.apiserver.start")
+	telemetry.AddEvent(ctx, telemetry.StartupEventRunApiServerStarting)
+	apiServerStartCtx, apiServerStartSpan := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanApiServerStart)
 	apiServerShutdown, apiServerErr := apiServer.Run(apiServerCtx, runConfig)
-	telemetry.SetError(apiServerStartSpan, apiServerErr)
+	if apiServerErr == nil {
+		telemetry.AddEvent(apiServerStartCtx, telemetry.StartupEventRunApiServerStarted)
+	}
+	apiServerStartSpan.SetError(apiServerErr)
 	apiServerStartSpan.End()
 	if apiServerErr != nil {
 		return apiServerErr
@@ -148,10 +179,13 @@ func DcpRun(
 
 	log.V(1).Info("About to launch host services")
 
-	hostStartCtx, hostStartSpan := telemetry.StartStartupSpan(ctx, "dcp.hosted_services.start")
-	telemetry.SetAttribute(hostStartCtx, "dcp.hosted_services.count", len(hostedServices))
+	telemetry.AddEvent(ctx, telemetry.StartupEventRunHostedServicesStarting)
+	hostStartCtx, hostStartSpan := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanHostedServicesStart)
+	telemetry.SetAttribute(hostStartCtx, telemetry.StartupAttributeHostedServicesCount, len(hostedServices))
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
+	telemetry.AddEvent(hostStartCtx, telemetry.StartupEventRunHostedServicesStarted)
 	hostStartSpan.End()
+	endRunSpan(nil)
 	shutdownHost := func() error {
 		cancelHostCtx()
 		var allErrors error
@@ -172,9 +206,11 @@ func DcpRun(
 		case <-cleanupCtx.Done():
 			// We are being asked to shut down.
 			log.Info("Shutting down...")
+			telemetry.AddEvent(ctx, telemetry.StartupEventRunShutdownRequested)
 
 			// Determine what level of resource cleanup is requested.
 			resourceCleanup := requestedResourceCleanup.Load().(apiserver.ApiServerResourceCleanup)
+			telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceCleanup, string(resourceCleanup))
 			log.V(1).Info("Invoking BeforeApiSrvShutdown event handler.", "ResourceCleanup", resourceCleanup)
 
 			// If we are in server-only mode (no standard controllers) such as when running tests,
@@ -197,6 +233,7 @@ func DcpRun(
 		case <-apiServerShutdown:
 			err = fmt.Errorf("API server shut down unexpectedly. Graceful shutdown is not possible.")
 			log.Error(err, "Terminating...")
+			telemetry.AddEvent(ctx, telemetry.StartupEventRunApiServerStopped)
 			return errors.Join(err, shutdownHost())
 
 		case msg, isOpen := <-lifecycleMsgs:
@@ -207,6 +244,7 @@ func DcpRun(
 
 			if msg.Err != nil {
 				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
+				telemetry.AddEvent(ctx, telemetry.StartupEventHostedServiceError)
 				// Let the user decide whether to continue or not, do not break the loop yet.
 			}
 		}

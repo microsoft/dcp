@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
@@ -58,21 +59,29 @@ func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) (err error) {
 		log = log.WithName("start-apiserver")
-		cmdCtx, span := telemetry.StartStartupSpan(cmd.Context(), "dcp.start_apiserver")
-		telemetry.SetAttribute(cmdCtx, "dcp.command.name", "start-apiserver")
-		telemetry.SetAttribute(cmdCtx, "dcp.detach", detach)
-		telemetry.SetAttribute(cmdCtx, "dcp.server_only", serverOnly)
+		cmdCtx, span := telemetry.StartStartupSpan(cmd.Context(), telemetry.StartupSpanStartApiServer)
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeCommandName, "start-apiserver")
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeDetach, detach)
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeServerOnly, serverOnly)
+		spanEnded := false
+		endStartupSpan := func(startErr error) {
+			if !spanEnded {
+				span.SetError(startErr)
+				span.End()
+				spanEnded = true
+			}
+		}
 		defer func() {
-			telemetry.SetError(span, err)
-			span.End()
+			endStartupSpan(err)
 		}()
 		cmd.SetContext(cmdCtx)
 
 		apiServerCtx, apiServerCtxCancel := cmds.GetMonitorContextFromFlags(cmdCtx, log.WithName("monitor"))
 		defer apiServerCtxCancel()
+		telemetry.AddEvent(cmdCtx, telemetry.StartupEventStartApiServerMonitorConfigured)
 
 		if detach {
-			forkCtx, forkSpan := telemetry.StartStartupSpan(cmdCtx, "dcp.start_apiserver.fork")
+			forkCtx, forkSpan := telemetry.StartStartupSpan(cmdCtx, telemetry.StartupSpanStartApiServerFork)
 			args := make([]string, 0, len(os.Args)-2)
 
 			hasContainerRuntimeFlag := false
@@ -91,7 +100,8 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 
 			log.V(1).Info("Forking command", "Cmd", os.Args[0], "Args", args)
-			telemetry.SetAttribute(forkCtx, "dcp.fork.argument_count", len(args))
+			telemetry.SetAttribute(forkCtx, telemetry.StartupAttributeForkArgumentCount, len(args))
+			telemetry.AddEvent(forkCtx, telemetry.StartupEventStartApiServerForkStarting)
 
 			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
 
@@ -102,22 +112,24 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 
 			if err := forked.Start(); err != nil {
 				log.Error(err, "Forked process failed to run")
-				telemetry.SetError(forkSpan, err)
+				forkSpan.SetError(err)
 				forkSpan.End()
 				return err
 			} else {
 				log.V(1).Info("Forked process started", "PID", forked.Process.Pid)
-				telemetry.SetAttribute(forkCtx, "dcp.fork.pid", forked.Process.Pid)
+				telemetry.SetAttribute(forkCtx, telemetry.StartupAttributeForkPID, forked.Process.Pid)
+				telemetry.AddEvent(forkCtx, telemetry.StartupEventStartApiServerForkStarted)
 			}
 
 			if err := forked.Process.Release(); err != nil {
 				log.Error(err, "Release failed for process", "PID", forked.Process.Pid)
-				telemetry.SetError(forkSpan, err)
+				forkSpan.SetError(err)
 				forkSpan.End()
 				return err
 			}
 
 			forkSpan.End()
+			endStartupSpan(nil)
 			return nil
 		}
 
@@ -129,24 +141,33 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		defer usvc_io.CleanupSessionFolderIfNeeded()
 
 		if rootDir == "" {
+			telemetry.AddEvent(cmdCtx, telemetry.StartupEventStartApiServerRootDirResolving)
 			rootDir, err = os.Getwd()
 			if err != nil {
 				return fmt.Errorf("could not determine the working directory: %w", err)
 			}
 		}
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeRootDirectoryBasename, filepath.Base(rootDir))
 
+		kubeconfigCtx, kubeconfigSpan := telemetry.StartStartupSpan(cmdCtx, telemetry.StartupSpanStartApiServerEnsureKubeconfig)
 		kconfig, err := kubeconfig.EnsureKubeconfigData(cmd.Flags(), log)
+		if err == nil {
+			telemetry.AddEvent(kubeconfigCtx, telemetry.StartupEventStartApiServerKubeconfigReady)
+		}
+		kubeconfigSpan.SetError(err)
+		kubeconfigSpan.End()
 		if err != nil {
 			return err
 		}
 
 		var allExtensions []bootstrap.DcpExtension
 		if !serverOnly {
-			allExtensions, err = bootstrap.GetExtensions(apiServerCtx, log)
+			allExtensions, err = bootstrap.GetExtensions(cmdCtx, log)
 			if err != nil {
 				return err
 			}
 		}
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeExtensionsCount, len(allExtensions))
 
 		invocationFlags := []string{"--kubeconfig", kconfig.Path()}
 		if container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
@@ -155,9 +176,15 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		if verbosityArg := logger.GetVerbosityArg(cmd.Flags()); verbosityArg != "" {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeInvocationFlagsCount, len(invocationFlags))
 
+		endStartupSpan(nil)
+
+		lifetimeCtx, lifetimeSpan := telemetry.StartStartupSpan(apiServerCtx, telemetry.StartupSpanStartApiServerLifetime)
+		telemetry.SetAttribute(lifetimeCtx, telemetry.StartupAttributeServerOnly, serverOnly)
+		telemetry.SetAttribute(lifetimeCtx, telemetry.StartupAttributeExtensionsCount, len(allExtensions))
 		err = bootstrap.DcpRun(
-			apiServerCtx,
+			lifetimeCtx,
 			rootDir,
 			kconfig,
 			serverOnly,
@@ -165,6 +192,8 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			invocationFlags,
 			log,
 		)
+		lifetimeSpan.SetError(err)
+		lifetimeSpan.End()
 
 		return err
 	}

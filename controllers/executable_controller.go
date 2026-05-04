@@ -30,8 +30,8 @@ import (
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/networking"
-	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
@@ -146,7 +146,7 @@ the Executable is deleted.
 func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	ctx, span := r.StartReconciliationSpan(ctx, req)
 	defer func() {
-		telemetry.SetError(span, err)
+		span.SetError(err)
 		span.End()
 	}()
 
@@ -177,7 +177,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	r.SetObjectAttributes(ctx, &exe)
-	telemetry.SetAttribute(ctx, "dcp.resource.state", string(exe.Status.State))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceState, string(exe.Status.State))
 
 	// Route logs to the resource sink
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, exe.GetResourceId())
@@ -196,7 +196,7 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	result, err = r.SaveChanges(ctx, &exe, patch, change, nil, log)
-	telemetry.SetAttribute(ctx, "dcp.resource.final_state", string(exe.Status.State))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceFinalState, string(exe.Status.State))
 	if exe.Done() {
 		log.V(1).Info("Executable reached done state")
 	}
@@ -237,18 +237,18 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 }
 
 func (r *ExecutableReconciler) manageExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
-	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.executable.manage")
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanExecutableManage)
 	r.SetObjectAttributes(ctx, exe)
 	defer span.End()
 
 	targetExecutableState := exe.Status.State
-	telemetry.SetAttribute(ctx, "dcp.executable.target_state", string(targetExecutableState))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeExecutableTargetState, string(targetExecutableState))
 	_, runInfo := r.runs.BorrowByNamespacedName(exe.NamespacedName())
 	if runInfo != nil {
 		// In-memory run info is not subject to issues related to caching
 		// and failure to update Executable Status due to conflict, so it takes precedence.
 		targetExecutableState = runInfo.ExeState
-		telemetry.SetAttribute(ctx, "dcp.executable.run_state", string(runInfo.ExeState))
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeExecutableRunState, string(runInfo.ExeState))
 	}
 
 	// Even if Executable.State == targetExecutableState, we still want to run the initializer

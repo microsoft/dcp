@@ -153,7 +153,7 @@ func (r *ServiceReconciler) requestReconcileForEndpoint(ctx context.Context, obj
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	ctx, span := r.StartReconciliationSpan(ctx, req)
 	defer func() {
-		telemetry.SetError(span, err)
+		span.SetError(err)
 		span.End()
 	}()
 
@@ -181,7 +181,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (re
 	}
 
 	r.SetObjectAttributes(ctx, &svc)
-	telemetry.SetAttribute(ctx, "dcp.resource.state", string(svc.Status.State))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceState, string(svc.Status.State))
 
 	log = log.WithValues(logger.RESOURCE_LOG_STREAM_ID, svc.GetResourceId())
 
@@ -204,7 +204,7 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (re
 	}
 
 	result, err = r.SaveChangesWithDelay(ctx, &svc, patch, change, r.config.AdditionalReconciliationDelay, nil, log)
-	telemetry.SetAttribute(ctx, "dcp.resource.final_state", string(svc.Status.State))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeResourceFinalState, string(svc.Status.State))
 	return result, err
 }
 
@@ -220,19 +220,19 @@ func (r *ServiceReconciler) stopService(svcName types.NamespacedName, svc *apiv1
 }
 
 func (r *ServiceReconciler) ensureServiceEffectiveAddressAndPort(ctx context.Context, svc *apiv1.Service, log logr.Logger) objectChange {
-	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.service.ensure_effective_address")
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanServiceEnsureEffectiveAddress)
 	r.SetObjectAttributes(ctx, svc)
 	defer func() {
-		telemetry.SetAttribute(ctx, "dcp.service.final_state", string(svc.Status.State))
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeServiceFinalState, string(svc.Status.State))
 		if svc.Status.EffectivePort != 0 {
-			telemetry.SetAttribute(ctx, "dcp.service.effective_port", int(svc.Status.EffectivePort))
+			telemetry.SetAttribute(ctx, telemetry.StartupAttributeServiceEffectivePort, int(svc.Status.EffectivePort))
 		}
 		span.End()
 	}()
 
 	oldState := svc.Status.State
-	telemetry.SetAttribute(ctx, "dcp.service.previous_state", string(oldState))
-	telemetry.SetAttribute(ctx, "dcp.service.address_allocation_mode", string(svc.Spec.AddressAllocationMode))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeServicePreviousState, string(oldState))
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeServiceAddressAllocation, string(svc.Spec.AddressAllocationMode))
 
 	oldEffectiveAddress := svc.Status.EffectiveAddress
 	oldEffectivePort := svc.Status.EffectivePort

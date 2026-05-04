@@ -16,7 +16,6 @@ import (
 	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
 
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -103,14 +102,14 @@ func (rb *ReconcilerBase[T, PT]) StartReconciliation(req ctrl.Request) (ctrl_cli
 	return reader, log
 }
 
-func (rb *ReconcilerBase[T, PT]) StartReconciliationSpan(ctx context.Context, req ctrl.Request) (context.Context, trace.Span) {
+func (rb *ReconcilerBase[T, PT]) StartReconciliationSpan(ctx context.Context, req ctrl.Request) (context.Context, telemetry.StartupSpan) {
 	return telemetry.StartStartupSpan(
 		ctx,
-		"dcp.controller.reconcile",
-		attribute.String("dcp.controller.kind", rb.kind),
-		attribute.String("dcp.resource.kind", rb.kind),
-		attribute.String("dcp.resource.name", req.Name),
-		attribute.String("dcp.resource.namespace", req.Namespace),
+		telemetry.StartupSpanControllerReconcile,
+		attribute.String(telemetry.StartupAttributeControllerKind, rb.kind),
+		attribute.String(telemetry.StartupAttributeResourceKind, rb.kind),
+		attribute.String(telemetry.StartupAttributeResourceName, req.Name),
+		attribute.String(telemetry.StartupAttributeResourceNamespace, req.Namespace),
 	)
 }
 

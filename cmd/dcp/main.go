@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -61,9 +62,14 @@ func main() {
 	}
 	defer shutdownTelemetry()
 
-	ctx, commandSpan := telemetry.StartStartupSpan(ctx, "dcp.command")
-	if len(os.Args) > 1 && os.Args[1] != "" && os.Args[1][0] != '-' {
-		telemetry.SetAttribute(ctx, "dcp.command.name", os.Args[1])
+	ctx, commandSpan := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanCommand)
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeProcessPID, os.Getpid())
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeProcessExecutableName, filepath.Base(os.Args[0]))
+	if len(os.Args) > 1 {
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeCommandArgumentCount, len(os.Args)-1)
+	}
+	if commandName := getCommandName(os.Args); commandName != "" {
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeCommandName, commandName)
 	}
 	spanEnded := false
 	endCommandSpan := func() {
@@ -74,22 +80,48 @@ func main() {
 	}
 	defer endCommandSpan()
 
+	telemetry.AddEvent(ctx, telemetry.StartupEventCommandRootCommandCreating)
 	root, err := commands.NewRootCmd(log)
 	if err != nil {
-		telemetry.SetError(commandSpan, err)
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeCommandExitCode, errSetup)
+		commandSpan.SetError(err)
 		endCommandSpan()
 		shutdownTelemetry()
 		cmdutil.ErrorExit(log, err, errSetup)
 	}
+	telemetry.AddEvent(ctx, telemetry.StartupEventCommandRootCommandCreated)
 
-	err = root.ExecuteContext(ctx)
+	telemetry.AddEvent(ctx, telemetry.StartupEventCommandExecuteStart)
+	endCommandSpan()
+
+	lifetimeCtx, lifetimeSpan := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanCommandLifetime)
+	if commandName := getCommandName(os.Args); commandName != "" {
+		telemetry.SetAttribute(lifetimeCtx, telemetry.StartupAttributeCommandName, commandName)
+	}
+	telemetry.SetAttribute(lifetimeCtx, telemetry.StartupAttributeCommandArgumentCount, max(len(os.Args)-1, 0))
+
+	err = root.ExecuteContext(lifetimeCtx)
 	if err != nil {
-		telemetry.SetError(commandSpan, err)
-		endCommandSpan()
+		telemetry.SetAttribute(lifetimeCtx, telemetry.StartupAttributeCommandExitCode, errCommand)
+		telemetry.AddEvent(lifetimeCtx, telemetry.StartupEventCommandExecuteFailed)
+		lifetimeSpan.SetError(err)
+		lifetimeSpan.End()
 		shutdownTelemetry()
 		cmdutil.ErrorExit(log, err, errCommand)
 	} else {
-		endCommandSpan()
+		telemetry.SetAttribute(lifetimeCtx, telemetry.StartupAttributeCommandExitCode, 0)
+		telemetry.AddEvent(lifetimeCtx, telemetry.StartupEventCommandExecuteSucceeded)
+		lifetimeSpan.End()
 		log.Flush()
 	}
+}
+
+func getCommandName(args []string) string {
+	for _, arg := range args[1:] {
+		if arg != "" && arg[0] != '-' {
+			return arg
+		}
+	}
+
+	return ""
 }

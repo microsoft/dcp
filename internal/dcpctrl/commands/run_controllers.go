@@ -65,9 +65,9 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 }
 
 func getManager(ctx context.Context, log logr.Logger) (mgr ctrl_manager.Manager, err error) {
-	ctx, span := telemetry.StartStartupSpan(ctx, "dcp.controllers.create_manager")
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanControllersCreateManager)
 	defer func() {
-		telemetry.SetError(span, err)
+		span.SetError(err)
 		span.End()
 	}()
 
@@ -109,10 +109,10 @@ func getManager(ctx context.Context, log logr.Logger) (mgr ctrl_manager.Manager,
 
 func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 	return func(cmd *cobra.Command, _ []string) (err error) {
-		cmdCtx, span := telemetry.StartStartupSpan(cmd.Context(), "dcp.controllers.run")
-		telemetry.SetAttribute(cmdCtx, "dcp.command.name", "run-controllers")
+		cmdCtx, span := telemetry.StartStartupSpan(cmd.Context(), telemetry.StartupSpanControllersRun)
+		telemetry.SetAttribute(cmdCtx, telemetry.StartupAttributeCommandName, "run-controllers")
 		defer func() {
-			telemetry.SetError(span, err)
+			span.SetError(err)
 			span.End()
 		}()
 		cmd.SetContext(cmdCtx)
@@ -291,10 +291,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		go func() {
 			log.Info("Starting controller manager")
 			var mgrRunErr error
-			managerCtx, managerSpan := telemetry.StartStartupSpan(ctrlCtx, "dcp.controllers.manager.start")
+			managerCtx, managerSpan := telemetry.StartStartupSpan(ctrlCtx, telemetry.StartupSpanControllersManagerStart)
 
 			defer func() {
-				telemetry.SetError(managerSpan, mgrRunErr)
+				managerSpan.SetError(mgrRunErr)
 				managerSpan.End()
 				panicErr := resiliency.MakePanicError(recover(), log)
 				if panicErr != nil {

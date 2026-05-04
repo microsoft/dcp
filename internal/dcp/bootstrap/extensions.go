@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/pkg/extensions"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -57,13 +58,19 @@ var (
 	}
 )
 
-func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error) {
+func GetExtensions(ctx context.Context, log logr.Logger) (discoveredExtensions []DcpExtension, err error) {
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanExtensionsDiscover)
+	defer func() {
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionsCount, len(discoveredExtensions))
+		span.SetError(err)
+		span.End()
+	}()
+
 	extDirs, err := dcppaths.GetExtensionsDirs()
 	if err != nil {
 		return nil, err
 	}
-
-	extensions := []DcpExtension{}
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionsDirectoryCount, len(extDirs))
 
 	for _, extDir := range extDirs {
 		if _, statErr := os.Stat(extDir); statErr != nil {
@@ -117,7 +124,7 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 					return capabilityQueryErr
 				}
 
-				extensions = append(extensions, ext)
+				discoveredExtensions = append(discoveredExtensions, ext)
 			}
 
 			return nil
@@ -127,10 +134,24 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 		return nil, fmt.Errorf("could not determine installed DCP extensions: %w", err)
 	}
 
-	return extensions, nil
+	return discoveredExtensions, nil
 }
 
-func getExtensionCapabilities(ctx context.Context, path string, log logr.Logger) (DcpExtension, error) {
+func getExtensionCapabilities(ctx context.Context, path string, log logr.Logger) (ext DcpExtension, err error) {
+	ctx, span := telemetry.StartStartupSpan(ctx, telemetry.StartupSpanExtensionGetCapabilities)
+	telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionExecutableName, filepath.Base(path))
+	defer func() {
+		if ext.Id != "" {
+			telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionID, ext.Id)
+		}
+		if ext.Name != "" {
+			telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionName, ext.Name)
+		}
+		telemetry.SetAttribute(ctx, telemetry.StartupAttributeExtensionCapabilityCount, len(ext.Capabilities))
+		span.SetError(err)
+		span.End()
+	}()
+
 	processExecutor := process.NewOSExecutor(log.WithName("extensions"))
 	defer processExecutor.Dispose()
 	if expandedPath, err := filepath.EvalSymlinks(path); err == nil {
