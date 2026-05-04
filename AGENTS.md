@@ -38,6 +38,9 @@ This codebase implements several custom Kubernetes types and controllers. Implem
 ### Avoid variable reuse (especially for errors)
 - If a function invokes multiple error-returning functions, use a different variable name for each error to avoid confusion.
 
+## Prefer extending existing interfaces over creating new ones
+- It's safe to extend existing interfaces when we need new functionality; we don't need to worry about breaking existing implementations because we control all of them. This also helps to keep the codebase simpler and more consistent.
+
 ## Adhere to Code Placement Rules
 Place new code in the correct location according to the project's structure:
 - **API Definitions:** Go in `api/v1/`.

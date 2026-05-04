@@ -5,22 +5,16 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Copyright (c) Microsoft Corporation. All rights reserved.
-
-package commands
+package process
 
 import (
 	"time"
 
 	"github.com/go-logr/logr"
-
-	"github.com/microsoft/dcp/pkg/process"
 )
 
-func stopViaConsole(_ logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
-	if skipDescendants {
-		return pe.StopProcess(pid, startTime, process.StopRootOnly())
-	}
-
-	return pe.StopProcess(pid, startTime)
+// StopViaConsole stops the process. Console attachment is Windows-specific, so this is a
+// regular StopProcess call on non-Windows platforms.
+func StopViaConsole(_ logr.Logger, executor Executor, pid Pid_t, startTime time.Time, options ...ProcessStopOption) error {
+	return executor.StopProcess(pid, startTime, options...)
 }

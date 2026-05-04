@@ -43,11 +43,20 @@ type processStopOptions struct {
 	opts processStoppingOpts
 }
 
-// StopRootOnly stops only the requested process and skips cleanup of descendants in the process tree.
+// StopRootOnly skips descendant enumeration and cleanup after stopping the requested process.
+// Descendants may still receive signals sent to a shared console or process group.
 func StopRootOnly() ProcessStopOption {
 	return func(options *processStopOptions) {
 		options.opts |= optSkipDescendants
 	}
+}
+
+func newProcessStopOptions(options []ProcessStopOption) processStopOptions {
+	stopOptions := processStopOptions{opts: optNone}
+	for _, option := range options {
+		option(&stopOptions)
+	}
+	return stopOptions
 }
 
 // Pid_t is a type used to represent process IDs.

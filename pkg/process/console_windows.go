@@ -5,34 +5,69 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Copyright (c) Microsoft Corporation. All rights reserved.
-
-package commands
+package process
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
-
-	"github.com/microsoft/dcp/pkg/process"
 )
 
 const attachParentProcess = uintptr(^uint32(0))
 
 var (
-	kernel32          = windows.NewLazySystemDLL("kernel32.dll")
 	attachConsoleProc = kernel32.NewProc("AttachConsole")
 	freeConsoleProc   = kernel32.NewProc("FreeConsole")
 )
+
+// StopViaConsole attaches to the target process's console, then stops the process tree.
+// If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
+// the caller from its own signal.
+// If the target has no console or has already exited, it falls back to a regular StopProcess call.
+func StopViaConsole(log logr.Logger, executor Executor, pid Pid_t, startTime time.Time, options ...ProcessStopOption) error {
+	attached, attachErr := attachToTargetProcessConsole(log, pid)
+	if attachErr != nil {
+		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
+		stopErr := executor.StopProcess(pid, startTime, options...)
+		if stopErr != nil {
+			return errors.Join(attachErr, stopErr)
+		}
+		return nil
+	}
+
+	if !attached {
+		return executor.StopProcess(pid, startTime, options...)
+	}
+	defer restoreParentConsole(log)
+
+	handlerErr := installIgnoreConsoleCtrlEventHandler()
+	if handlerErr != nil {
+		return fmt.Errorf("could not install console ctrl handler: %w", handlerErr)
+	}
+	// No explicit removal: StopViaConsole detaches from the target console,
+	// which resets the process control-handler table.
+
+	consoleOptions := make([]ProcessStopOption, 0, len(options)+1)
+	consoleOptions = append(consoleOptions, options...)
+	consoleOptions = append(consoleOptions, stopConsoleGroup())
+	return executor.StopProcess(pid, startTime, consoleOptions...)
+}
+
+func stopConsoleGroup() ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.opts |= optSignalConsoleGroup
+	}
+}
 
 // attachToTargetProcessConsole detaches from the current console and attaches to the console
 // of the target process. Returns true if attachment was successful, or false if the target
 // process has no console or has already exited.
 // Returns a non-nil error only on unexpected failures.
-func attachToTargetProcessConsole(log logr.Logger, targetPid process.Pid_t) (attached bool, err error) {
-	targetOSPid, pidErr := process.PidT_ToUint32(targetPid)
+func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (attached bool, err error) {
+	targetOSPid, pidErr := PidT_ToUint32(targetPid)
 	if pidErr != nil {
 		return false, pidErr
 	}
@@ -93,39 +128,4 @@ func reattachToParentConsole(log logr.Logger) {
 func restoreParentConsole(log logr.Logger) {
 	detachFromConsole(log)
 	reattachToParentConsole(log)
-}
-
-// stopViaConsole attaches to the target process's console, then stops the process tree.
-// If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
-// DCP from its own signal.
-// If the target has no console or has already exited, it falls back to a regular StopProcess call.
-func stopViaConsole(log logr.Logger, pe process.Executor, pid process.Pid_t, startTime time.Time, skipDescendants bool) error {
-	var stopOptions []process.ProcessStopOption
-	if skipDescendants {
-		stopOptions = append(stopOptions, process.StopRootOnly())
-	}
-
-	attached, attachErr := attachToTargetProcessConsole(log, pid)
-	if attachErr != nil {
-		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
-		stopErr := pe.StopProcess(pid, startTime, stopOptions...)
-		if stopErr != nil {
-			return errors.Join(attachErr, stopErr)
-		}
-		return nil
-	}
-
-	if !attached {
-		return pe.StopProcess(pid, startTime, stopOptions...)
-	}
-	defer restoreParentConsole(log)
-
-	cgs, ok := pe.(process.ConsoleGroupStopper)
-	if !ok {
-		// Should not happen in production; fall back gracefully.
-		log.Info("Process executor does not support console group stopping; falling back to regular stop")
-		return pe.StopProcess(pid, startTime, stopOptions...)
-	}
-
-	return cgs.StopProcessInConsoleGroup(pid, startTime, skipDescendants)
 }

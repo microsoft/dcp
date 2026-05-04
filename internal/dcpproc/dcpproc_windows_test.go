@@ -35,7 +35,7 @@ const expectedDelayProcesses = 3
 // SIGINT (and therefore exit with code 0) rather than being force-killed (exit code 1) when
 // stop-process-tree is invoked against a process that has its own console (ForkFromParent).
 //
-// The key behavior under test: stopViaConsole attaches to the target's console and sends
+// The key behavior under test: process.StopViaConsole attaches to the target's console and sends
 // CTRL_C_EVENT to process group 0, which Windows delivers as SIGINT to every process sharing
 // that console, including the root's children and grandchildren.
 func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
@@ -52,7 +52,7 @@ func TestStopProcessTreeDeliversSIGINT(t *testing.T) {
 	defer testCancel()
 
 	// ForkFromParent gives the delay tree its own isolated console so that:
-	//   1. AttachConsole(rootPid) succeeds deterministically in stopViaConsole.
+	//   1. AttachConsole(rootPid) succeeds deterministically in process.StopViaConsole.
 	//   2. CTRL_C_EVENT with PID 0 reaches exactly the delay tree, not the test process.
 	// child-spec=1,1 -> root + 1 child + 1 grandchild; +1 for conhost = 4 total.
 	const expectedCount = expectedDelayProcesses + 1

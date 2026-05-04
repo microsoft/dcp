@@ -58,7 +58,12 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		}
 
 		pe := process.NewOSExecutor(log)
-		stopErr := stopViaConsole(log, pe, stopPid, stopProcessStartTime, stopSkipDescendants)
+		var stopOptions []process.ProcessStopOption
+		if stopSkipDescendants {
+			stopOptions = append(stopOptions, process.StopRootOnly())
+		}
+
+		stopErr := process.StopViaConsole(log, pe, stopPid, stopProcessStartTime, stopOptions...)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop process tree")
 			return stopErr

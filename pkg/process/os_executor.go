@@ -166,11 +166,7 @@ func (e *OSExecutor) StopProcess(pid Pid_t, processStartTime time.Time, options 
 	}
 	e.releaseLock()
 
-	stopOptions := processStopOptions{opts: optNone}
-	for _, option := range options {
-		option(&stopOptions)
-	}
-
+	stopOptions := newProcessStopOptions(options)
 	return e.stopProcessInternal(pid, processStartTime, stopOptions.opts)
 }
 
@@ -486,7 +482,8 @@ const (
 	// via AttachConsole. Has no effect on non-Windows platforms.
 	optSignalConsoleGroup processStoppingOpts = 0x10
 
-	// Stops only the root process and skips cleanup of descendants in the process tree.
+	// Skips descendant enumeration and cleanup after stopping the root process.
+	// Descendants may still receive signals sent to a shared console or process group.
 	optSkipDescendants processStoppingOpts = 0x20
 )
 
