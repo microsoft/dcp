@@ -66,7 +66,7 @@ func stopConsoleGroup() ProcessStopOption {
 // of the target process. Returns true if attachment was successful, or false if the target
 // process has no console or has already exited.
 // Returns a non-nil error only on unexpected failures.
-func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (attached bool, err error) {
+func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (bool, error) {
 	targetOSPid, pidErr := PidT_ToUint32(targetPid)
 	if pidErr != nil {
 		return false, pidErr
@@ -80,6 +80,8 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (attached bo
 		log.Error(win32err, "Could not detach the process from its current console")
 		return false, win32err
 	}
+
+	attached := false
 	defer func() {
 		if !attached {
 			reattachToParentConsole(log)
@@ -102,6 +104,7 @@ func attachToTargetProcessConsole(log logr.Logger, targetPid Pid_t) (attached bo
 		}
 	}
 
+	attached = true
 	return true, nil
 }
 
