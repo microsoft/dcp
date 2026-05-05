@@ -11,11 +11,11 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -116,7 +116,6 @@ func (c *containerLogStreamer) StreamLogs(
 		return apiv1.ResourceStreamStatusNotReady, nil, err
 	}
 
-	follow := opts.Follow
 	var logFilePath string
 	cleanup := func() {}
 
@@ -124,11 +123,9 @@ func (c *containerLogStreamer) StreamLogs(
 
 	case string(apiv1.LogStreamSourceStartupStdout):
 		logFilePath = ctr.Status.StartupStdOutFile
-		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
 
 	case string(apiv1.LogStreamSourceStartupStderr):
 		logFilePath = ctr.Status.StartupStdErrFile
-		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
 
 	case string(apiv1.LogStreamSourceSystem):
 		logFilePath = logger.GetResourceLogPath(ctr.GetResourceId())
@@ -264,15 +261,9 @@ func (c *containerLogStreamer) StreamLogs(
 		}
 	}()
 
-	if shouldStopContainerLogStreamImmediately(follow, ctr, time.Now()) {
-		// FollowWriter will keep pushing data until EOF (it will not stop immediately when we call StopFollow()).
-		followWriter.StopFollow()
-	} else if ctr.Done() {
-		logs.DelayCancelFollowStreams([]*usvc_io.FollowWriter{followWriter}, (*usvc_io.FollowWriter).StopFollow)
-	}
+	appropriatelyCancel(followWriter, ctr, opts)
 
 	return apiv1.ResourceStreamStatusStreaming, followWriter.Done(), nil
-
 }
 
 // OnResourceUpdated implements v1.ResourceLogStreamer.
@@ -338,31 +329,30 @@ func stopLogStreamsForContainer(
 			)
 		}
 
-		if shouldStopContainerFollowStreamImmediately(ctr, time.Now()) {
-			for _, followWriter := range ctrStreams {
-				followWriter.StopFollow()
-			}
-		} else {
-			logs.DelayCancelFollowStreams(maps.Values(ctrStreams), (*usvc_io.FollowWriter).StopFollow)
-		}
+		logs.DelayCancelFollowStreams(maps.Values(ctrStreams), (*usvc_io.FollowWriter).StopFollow)
 	}
 }
 
-func shouldStopContainerLogStreamImmediately(follow bool, ctr *apiv1.Container, now time.Time) bool {
-	return !follow || shouldStopContainerFollowStreamImmediately(ctr, now)
-}
+// Cancels the follow writer depending on Container state and requested log options
+func appropriatelyCancel(fw *usvc_io.FollowWriter, ctr *apiv1.Container, opts *apiv1.LogOptions) {
+	follow := opts.Follow
 
-func shouldStopContainerFollowStreamImmediately(ctr *apiv1.Container, now time.Time) bool {
-	if !ctr.Done() || ctr.Status.FinishTimestamp.IsZero() {
-		return false
+	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) || opts.Source == string(apiv1.LogStreamSourceStartupStderr) {
+		// Only follow startup logs while the container is still starting or building
+		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
 	}
 
-	finishTime := ctr.Status.FinishTimestamp.Time
-	if finishTime.After(now) {
-		return false
+	if ctr.Done() && !ctr.Status.FinishTimestamp.IsZero() {
+		// Do not follow logs of finished containers if they have been finished for longer than the follow stream cancellation delay
+		now := metav1.NowMicro()
+		follow = follow && ctr.Status.FinishTimestamp.Add(logs.FollowStreamCancellationDelay).Before(now.Time)
 	}
 
-	return now.Sub(finishTime) > logs.FollowStreamCancellationDelay
+	if !follow {
+		fw.StopFollow() // Will stop writing after first EOF is reached
+	} else if ctr.Done() {
+		logs.DelayCancelFollowStreams([]*usvc_io.FollowWriter{fw}, (*usvc_io.FollowWriter).StopFollow)
+	}
 }
 
 func (c *containerLogStreamer) Dispose() error {
