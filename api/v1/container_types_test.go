@@ -318,3 +318,35 @@ func TestGetLifecycleKeyIncludesBuildPlatform(t *testing.T) {
 	assert.NotEqual(t, keyNoPlatform, keyAmd64, "lifecycle key should differ when platform is added")
 	assert.NotEqual(t, keyAmd64, keyArm64, "lifecycle key should differ between platforms")
 }
+
+func TestGetLifecycleKeyDisambiguatesStageAndPlatform(t *testing.T) {
+	t.Parallel()
+
+	// Without length framing, (Stage="ab", Platform="c") and
+	// (Stage="a", Platform="bc") would hash identically.
+	specA := ContainerSpec{
+		Build: &ContainerBuildContext{
+			Context:    "/nonexistent/context",
+			Dockerfile: "Dockerfile",
+			Stage:      "ab",
+			Platform:   "c",
+		},
+	}
+
+	specB := ContainerSpec{
+		Build: &ContainerBuildContext{
+			Context:    "/nonexistent/context",
+			Dockerfile: "Dockerfile",
+			Stage:      "a",
+			Platform:   "bc",
+		},
+	}
+
+	keyA, _, errA := specA.GetLifecycleKey()
+	require.NoError(t, errA)
+
+	keyB, _, errB := specB.GetLifecycleKey()
+	require.NoError(t, errB)
+
+	assert.NotEqual(t, keyA, keyB, "stage/platform boundary must be unambiguous")
+}

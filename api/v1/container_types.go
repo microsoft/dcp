@@ -863,8 +863,12 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 
 		// Add the build platform to the hash; changing the target platform
 		// produces a different image, so persistent containers must rebuild.
-		_, writeErr = fnvHash.Write([]byte(cs.Build.Platform))
-		hashErr = errors.Join(hashErr, writeErr)
+		// Encoded via gob (length-framed) and only when set, to keep the
+		// hash unambiguous against the adjacent Stage write and to preserve
+		// the legacy key for existing workloads where Platform is unset.
+		if cs.Build.Platform != "" {
+			hashErr = errors.Join(hashErr, encoder.Encode(cs.Build.Platform))
+		}
 
 		if len(cs.Build.Labels) > 0 {
 			// Add the build labels to the hash
