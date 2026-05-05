@@ -345,7 +345,8 @@ func appropriatelyCancel(fw *usvc_io.FollowWriter, ctr *apiv1.Container, opts *a
 	if ctr.Done() && !ctr.Status.FinishTimestamp.IsZero() {
 		// Do not follow logs of finished containers if they have been finished for longer than the follow stream cancellation delay
 		now := metav1.NowMicro()
-		follow = follow && ctr.Status.FinishTimestamp.Add(logs.FollowStreamCancellationDelay).Before(now.Time)
+		longFinished := ctr.Status.FinishTimestamp.Add(logs.FollowStreamCancellationDelay).Before(now.Time)
+		follow = follow && !longFinished
 	}
 
 	if !follow {
