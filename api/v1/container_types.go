@@ -682,6 +682,15 @@ type ContainerSpec struct {
 	// PEM formatted public certificates to be created in the container
 	// +optional
 	PemCertificates *ContainerPemCertificates `json:"pemCertificates,omitempty"`
+
+	// Optional terminal/PTY configuration. When set and Enabled is true, the
+	// container's primary process is started under a host pseudo-terminal
+	// and its stdin/stdout/stderr are bridged to the configured UDS via
+	// HMP v1, instead of the container being run detached with separate log
+	// capture. Terminal mode requires Windows on the host (ConPTY) for the
+	// initial slice; non-Windows hosts return ErrTerminalNotSupported at
+	// startup.
+	Terminal *TerminalSpec `json:"terminal,omitempty"`
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -788,6 +797,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	if !slices.EqualFunc(cs.ImageLayers, other.ImageLayers, func(l1, l2 ImageLayer) bool {
 		return l1.Equal(&l2)
 	}) {
+		return false
+	}
+
+	if !cs.Terminal.Equal(other.Terminal) {
 		return false
 	}
 

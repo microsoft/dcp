@@ -5,17 +5,22 @@
 
 //go:build !windows
 
-package exerunners
+package termpty
 
 import (
 	"context"
-
-	apiv1 "github.com/microsoft/dcp/api/v1"
 )
 
-// startTerminalProcessImpl is the non-Windows fallback. The initial slice
+// startProcessImpl is the non-Windows fallback. The initial slice
 // (Aspire 13.4) implements PTY support on Windows via ConPTY only; Linux and
 // macOS support is tracked as follow-up work.
-func startTerminalProcessImpl(_ context.Context, _ *apiv1.Executable) (*terminalProcess, error) {
+func startProcessImpl(_ context.Context, _ CommandSpec) (*Process, error) {
 	return nil, ErrTerminalNotSupported
+}
+
+// BuildWindowsCommandLine is a no-op stub on non-Windows platforms; it lets
+// callers reference it unconditionally without a build tag. Returns the
+// empty string so accidental use surfaces obviously.
+func BuildWindowsCommandLine(_ string, _ []string) string {
+	return ""
 }

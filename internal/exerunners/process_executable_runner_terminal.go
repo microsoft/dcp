@@ -8,6 +8,7 @@ package exerunners
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/termpty"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -38,7 +40,8 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	result := controllers.NewExecutableStartResult()
 
-	tp, err := startTerminalProcess(ctx, exe)
+	cmdSpec := executableTerminalCommandSpec(exe)
+	tp, err := termpty.StartProcess(ctx, cmdSpec)
 	if err != nil {
 		startLog.Error(err, "Failed to start process under PTY")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -48,7 +51,12 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		return result
 	}
 
-	session, err := startTerminalSession(ctx, exe, tp, startLog)
+	sessionCfg := termpty.SessionConfig{
+		UDSPath: exe.Spec.Terminal.UDSPath,
+		Cols:    int(exe.Spec.Terminal.Cols),
+		Rows:    int(exe.Spec.Terminal.Rows),
+	}
+	session, err := termpty.StartSession(ctx, sessionCfg, tp, startLog)
 	if err != nil {
 		startLog.Error(err, "Failed to start terminal session listener")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -58,7 +66,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		return result
 	}
 
-	pid := process.Pid_t(tp.pid)
+	pid := process.Pid_t(tp.PID)
 	identityTime := time.Now()
 	runID := pidToRunID(pid)
 
@@ -117,4 +125,23 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 	return result
+}
+
+// executableTerminalCommandSpec builds a termpty.CommandSpec from the
+// Executable's effective configuration. Currently this is Windows-shaped
+// (single command-line string for CreateProcessW); cross-platform support
+// is tracked by ErrTerminalNotSupported on non-Windows hosts.
+func executableTerminalCommandSpec(exe *apiv1.Executable) termpty.CommandSpec {
+	envBlock := make([]string, 0, len(exe.Status.EffectiveEnv))
+	for _, e := range exe.Status.EffectiveEnv {
+		envBlock = append(envBlock, fmt.Sprintf("%s=%s", e.Name, e.Value))
+	}
+
+	return termpty.CommandSpec{
+		CommandLine:      termpty.BuildWindowsCommandLine(exe.Spec.ExecutablePath, exe.Status.EffectiveArgs),
+		Env:              envBlock,
+		WorkingDirectory: exe.Spec.WorkingDirectory,
+		Cols:             int(exe.Spec.Terminal.Cols),
+		Rows:             int(exe.Spec.Terminal.Rows),
+	}
 }

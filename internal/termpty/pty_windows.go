@@ -5,7 +5,7 @@
 
 //go:build windows
 
-package exerunners
+package termpty
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/UserExistsError/conpty"
-	apiv1 "github.com/microsoft/dcp/api/v1"
 )
 
 // conPtyAdapter wraps a *conpty.ConPty so it satisfies hmp1.PTY (specifically
@@ -27,40 +26,35 @@ func (a *conPtyAdapter) Write(p []byte) (int, error) { return a.cp.Write(p) }
 func (a *conPtyAdapter) Close() error                { return a.cp.Close() }
 func (a *conPtyAdapter) Resize(cols, rows int) error { return a.cp.Resize(cols, rows) }
 
-// startTerminalProcessImpl allocates a Windows ConPTY, spawns the executable
-// attached to it, and returns a terminalProcess. The caller is responsible for
-// calling pty.Close() on shutdown.
-func startTerminalProcessImpl(ctx context.Context, exe *apiv1.Executable) (*terminalProcess, error) {
+// startProcessImpl allocates a Windows ConPTY, spawns a process attached to
+// it, and returns a Process. The caller is responsible for calling
+// PTY.Close() on shutdown.
+func startProcessImpl(_ context.Context, spec CommandSpec) (*Process, error) {
 	if !conpty.IsConPtyAvailable() {
 		return nil, fmt.Errorf("ConPTY is not available on this Windows version: %w", conpty.ErrConPtyUnsupported)
 	}
 
-	commandLine := buildWindowsCommandLine(exe.Spec.ExecutablePath, exe.Status.EffectiveArgs)
-
-	envBlock := make([]string, 0, len(exe.Status.EffectiveEnv))
-	for _, e := range exe.Status.EffectiveEnv {
-		envBlock = append(envBlock, fmt.Sprintf("%s=%s", e.Name, e.Value))
-	}
-
-	cols, rows := terminalDimensions(exe.Spec.Terminal)
+	cols, rows := normalizeDimensions(spec.Cols, spec.Rows)
 
 	options := []conpty.ConPtyOption{
 		conpty.ConPtyDimensions(cols, rows),
-		conpty.ConPtyEnv(envBlock),
 	}
-	if exe.Spec.WorkingDirectory != "" {
-		options = append(options, conpty.ConPtyWorkDir(exe.Spec.WorkingDirectory))
+	if spec.Env != nil {
+		options = append(options, conpty.ConPtyEnv(spec.Env))
+	}
+	if spec.WorkingDirectory != "" {
+		options = append(options, conpty.ConPtyWorkDir(spec.WorkingDirectory))
 	}
 
-	cp, err := conpty.Start(commandLine, options...)
+	cp, err := conpty.Start(spec.CommandLine, options...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start process under ConPTY: %w", err)
 	}
 
-	return &terminalProcess{
-		pty: &conPtyAdapter{cp: cp},
-		pid: cp.Pid(),
-		waitExit: func() int32 {
+	return &Process{
+		PTY: &conPtyAdapter{cp: cp},
+		PID: cp.Pid(),
+		WaitExit: func() int32 {
 			exitCode, waitErr := cp.Wait(context.Background())
 			if waitErr != nil {
 				// Wait failures are best-effort: the connection's about to
@@ -73,10 +67,11 @@ func startTerminalProcessImpl(ctx context.Context, exe *apiv1.Executable) (*term
 	}, nil
 }
 
-// buildWindowsCommandLine constructs a single command-line string suitable for
-// CreateProcessW from a path + argv. Each token is wrapped in quotes and
-// embedded quotes are escaped per the documented Windows argv parsing rules.
-func buildWindowsCommandLine(executablePath string, args []string) string {
+// BuildWindowsCommandLine constructs a single command-line string suitable
+// for CreateProcessW from a path + argv. Each token is wrapped in quotes
+// and embedded quotes are escaped per the documented Windows argv parsing
+// rules.
+func BuildWindowsCommandLine(executablePath string, args []string) string {
 	var sb strings.Builder
 	sb.WriteString(quoteWindowsArg(executablePath))
 	for _, a := range args {
@@ -123,18 +118,4 @@ func quoteWindowsArg(arg string) string {
 	}
 	sb.WriteByte('"')
 	return sb.String()
-}
-
-func terminalDimensions(t *apiv1.TerminalSpec) (cols, rows int) {
-	cols, rows = 80, 24
-	if t == nil {
-		return
-	}
-	if t.Cols > 0 {
-		cols = int(t.Cols)
-	}
-	if t.Rows > 0 {
-		rows = int(t.Rows)
-	}
-	return
 }

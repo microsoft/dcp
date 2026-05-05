@@ -22,6 +22,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
@@ -39,7 +40,7 @@ type processRunState struct {
 	// terminalSession is non-nil when the run was started under a PTY via
 	// startTerminalRun. It owns the PTY and the HMP v1 listener; closing it
 	// terminates both.
-	terminalSession *terminalSession
+	terminalSession *termpty.Session
 }
 
 type ProcessExecutableRunner struct {

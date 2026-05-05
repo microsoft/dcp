@@ -5,7 +5,7 @@
 
 //go:build windows
 
-package exerunners
+package termpty
 
 import (
 	"bytes"
@@ -24,7 +24,6 @@ import (
 
 	"github.com/go-logr/logr/testr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/hmp1"
 )
 
@@ -42,33 +41,26 @@ func TestTerminalSessionEndToEndWindows(t *testing.T) {
 
 	udsPath := filepath.Join(t.TempDir(), "term.sock")
 
-	exe := &apiv1.Executable{
-		Spec: apiv1.ExecutableSpec{
-			ExecutablePath: `C:\Windows\System32\cmd.exe`,
-			Terminal: &apiv1.TerminalSpec{
-				Enabled: true,
-				UDSPath: udsPath,
-				Cols:    100,
-				Rows:    30,
-			},
-		},
-		Status: apiv1.ExecutableStatus{
-			EffectiveArgs: []string{"/c", "echo hello-world-from-conpty && exit 0"},
-		},
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	tp, err := startTerminalProcess(ctx, exe)
+	tp, err := StartProcess(ctx, CommandSpec{
+		CommandLine: BuildWindowsCommandLine(`C:\Windows\System32\cmd.exe`, []string{"/c", "echo hello-world-from-conpty && exit 0"}),
+		Cols:        100,
+		Rows:        30,
+	})
 	if err != nil {
-		t.Fatalf("startTerminalProcess: %v", err)
+		t.Fatalf("StartProcess: %v", err)
 	}
 
-	session, err := startTerminalSession(ctx, exe, tp, log)
+	session, err := StartSession(ctx, SessionConfig{
+		UDSPath: udsPath,
+		Cols:    100,
+		Rows:    30,
+	}, tp, log)
 	if err != nil {
-		_ = tp.pty.Close()
-		t.Fatalf("startTerminalSession: %v", err)
+		_ = tp.PTY.Close()
+		t.Fatalf("StartSession: %v", err)
 	}
 	defer session.Close()
 
