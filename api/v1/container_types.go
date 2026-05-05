@@ -163,6 +163,9 @@ type ContainerBuildContext struct {
 	// +listType=map
 	// +listMapKey=key
 	Labels []ContainerLabel `json:"labels,omitempty"`
+
+	// Optional target platform for the build (e.g. "linux/amd64")
+	Platform string `json:"platform,omitempty"`
 }
 
 // +k8s:openapi-gen=true
@@ -858,6 +861,11 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		_, writeErr = fnvHash.Write([]byte(cs.Build.Stage))
 		hashErr = errors.Join(hashErr, writeErr)
 
+		// Add the build platform to the hash; changing the target platform
+		// produces a different image, so persistent containers must rebuild.
+		_, writeErr = fnvHash.Write([]byte(cs.Build.Platform))
+		hashErr = errors.Join(hashErr, writeErr)
+
 		if len(cs.Build.Labels) > 0 {
 			// Add the build labels to the hash
 			sortedLabels := slices.Clone(cs.Build.Labels)
@@ -1418,6 +1426,10 @@ func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
 	}
 
 	if c1.Stage != c2.Stage {
+		return false
+	}
+
+	if c1.Platform != c2.Platform {
 		return false
 	}
 

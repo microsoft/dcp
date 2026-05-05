@@ -311,6 +311,13 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 							},
 						},
 					},
+					"platform": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional target platform for the build (e.g. \"linux/amd64\")",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"context"},
 			},

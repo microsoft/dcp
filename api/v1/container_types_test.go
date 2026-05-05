@@ -238,3 +238,83 @@ func TestGetLifecycleKeyIncludesImageLayers(t *testing.T) {
 	assert.NotEqual(t, keyNoLayers, keyWithLayers, "lifecycle key should differ when layers are added")
 	assert.NotEqual(t, keyWithLayers, keyDifferentLayers, "lifecycle key should differ when layer digests differ")
 }
+
+func TestContainerBuildContextEqual(t *testing.T) {
+	t.Parallel()
+
+	build1 := ContainerBuildContext{
+		Context:    "/path/to/context",
+		Dockerfile: "Dockerfile",
+		Stage:      "runner",
+		Platform:   "linux/amd64",
+	}
+
+	build2 := ContainerBuildContext{
+		Context:    "/path/to/context",
+		Dockerfile: "Dockerfile",
+		Stage:      "runner",
+		Platform:   "linux/amd64",
+	}
+
+	buildDifferentPlatform := ContainerBuildContext{
+		Context:    "/path/to/context",
+		Dockerfile: "Dockerfile",
+		Stage:      "runner",
+		Platform:   "linux/arm64",
+	}
+
+	buildNoPlatform := ContainerBuildContext{
+		Context:    "/path/to/context",
+		Dockerfile: "Dockerfile",
+		Stage:      "runner",
+	}
+
+	assert.True(t, build1.Equal(&build2), "identical build contexts should be equal")
+	assert.False(t, build1.Equal(&buildDifferentPlatform), "build contexts with different platforms should not be equal")
+	assert.False(t, build1.Equal(&buildNoPlatform), "build context with platform should not equal one without")
+	assert.True(t, build1.Equal(&build1), "build context should be equal to itself")
+	assert.False(t, build1.Equal(nil), "build context should not be equal to nil")
+
+	var nilBuild *ContainerBuildContext
+	assert.True(t, nilBuild.Equal(nil), "two nil build contexts should be equal")
+	assert.False(t, nilBuild.Equal(&build1), "nil build context should not be equal to non-nil")
+}
+
+func TestGetLifecycleKeyIncludesBuildPlatform(t *testing.T) {
+	t.Parallel()
+
+	specNoPlatform := ContainerSpec{
+		Build: &ContainerBuildContext{
+			Context:    "/nonexistent/context",
+			Dockerfile: "Dockerfile",
+		},
+	}
+
+	specAmd64 := ContainerSpec{
+		Build: &ContainerBuildContext{
+			Context:    "/nonexistent/context",
+			Dockerfile: "Dockerfile",
+			Platform:   "linux/amd64",
+		},
+	}
+
+	specArm64 := ContainerSpec{
+		Build: &ContainerBuildContext{
+			Context:    "/nonexistent/context",
+			Dockerfile: "Dockerfile",
+			Platform:   "linux/arm64",
+		},
+	}
+
+	keyNoPlatform, _, errNoPlatform := specNoPlatform.GetLifecycleKey()
+	require.NoError(t, errNoPlatform)
+
+	keyAmd64, _, errAmd64 := specAmd64.GetLifecycleKey()
+	require.NoError(t, errAmd64)
+
+	keyArm64, _, errArm64 := specArm64.GetLifecycleKey()
+	require.NoError(t, errArm64)
+
+	assert.NotEqual(t, keyNoPlatform, keyAmd64, "lifecycle key should differ when platform is added")
+	assert.NotEqual(t, keyAmd64, keyArm64, "lifecycle key should differ between platforms")
+}
