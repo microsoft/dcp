@@ -350,6 +350,7 @@ func appropriatelyCancel(fw *usvc_io.FollowWriter, ctr *apiv1.Container, opts *a
 	}
 }
 
+// shouldFollowContainerLogs determines whether a stream should keep following logs based on the log options and container state.
 func shouldFollowContainerLogs(ctr *apiv1.Container, opts *apiv1.LogOptions) bool {
 	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) || opts.Source == string(apiv1.LogStreamSourceStartupStderr) {
 		// Only follow startup logs while the container is still starting or building
@@ -359,10 +360,12 @@ func shouldFollowContainerLogs(ctr *apiv1.Container, opts *apiv1.LogOptions) boo
 	return opts.Follow
 }
 
+// shouldStopContainerLogStreamImmediately determines whether a log stream should stop without a cancellation delay.
 func shouldStopContainerLogStreamImmediately(follow bool, ctr *apiv1.Container, now time.Time) bool {
 	return !follow || shouldStopCompletedContainerFollowStreamImmediately(ctr, now)
 }
 
+// shouldStopCompletedContainerFollowStreamImmediately determines whether a completed container finished before the cancellation delay window.
 func shouldStopCompletedContainerFollowStreamImmediately(ctr *apiv1.Container, now time.Time) bool {
 	if !ctr.Done() || ctr.Status.FinishTimestamp.IsZero() {
 		return false
