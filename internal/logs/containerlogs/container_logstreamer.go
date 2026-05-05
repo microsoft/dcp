@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -263,7 +264,7 @@ func (c *containerLogStreamer) StreamLogs(
 		}
 	}()
 
-	if !follow {
+	if shouldStopContainerLogStreamImmediately(follow, ctr, time.Now()) {
 		// FollowWriter will keep pushing data until EOF (it will not stop immediately when we call StopFollow()).
 		followWriter.StopFollow()
 	} else if ctr.Done() {
@@ -337,8 +338,31 @@ func stopLogStreamsForContainer(
 			)
 		}
 
-		logs.DelayCancelFollowStreams(maps.Values(ctrStreams), (*usvc_io.FollowWriter).StopFollow)
+		if shouldStopContainerFollowStreamImmediately(ctr, time.Now()) {
+			for _, followWriter := range ctrStreams {
+				followWriter.StopFollow()
+			}
+		} else {
+			logs.DelayCancelFollowStreams(maps.Values(ctrStreams), (*usvc_io.FollowWriter).StopFollow)
+		}
 	}
+}
+
+func shouldStopContainerLogStreamImmediately(follow bool, ctr *apiv1.Container, now time.Time) bool {
+	return !follow || shouldStopContainerFollowStreamImmediately(ctr, now)
+}
+
+func shouldStopContainerFollowStreamImmediately(ctr *apiv1.Container, now time.Time) bool {
+	if !ctr.Done() || ctr.Status.FinishTimestamp.IsZero() {
+		return false
+	}
+
+	finishTime := ctr.Status.FinishTimestamp.Time
+	if finishTime.After(now) {
+		return false
+	}
+
+	return now.Sub(finishTime) > logs.FollowStreamCancellationDelay
 }
 
 func (c *containerLogStreamer) Dispose() error {
