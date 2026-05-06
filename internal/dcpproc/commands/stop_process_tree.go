@@ -19,6 +19,7 @@ import (
 var (
 	stopPid              process.Pid_t = process.UnknownPID
 	stopProcessStartTime time.Time
+	stopSkipDescendants  bool
 )
 
 func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
@@ -37,6 +38,7 @@ func NewStopProcessTreeCommand(log logr.Logger) (*cobra.Command, error) {
 	}
 
 	stopProcessTreeCmd.Flags().Var(flags.NewTimeFlag(&stopProcessStartTime, osutil.RFC3339MiliTimestampFormat), "process-start-time", "If present, specifies the start time of the root process of the process tree to be stopped. This is used to ensure the correct process tree will be stopped. The time format is RFC3339 with millisecond precision, for example "+osutil.RFC3339MiliTimestampFormat)
+	stopProcessTreeCmd.Flags().BoolVar(&stopSkipDescendants, "skip-descendants", false, "If specified, stops only the root process and skips force-killing descendants.")
 
 	return stopProcessTreeCmd, nil
 }
@@ -46,6 +48,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		log = log.WithName("StopProcessTree").WithValues(
 			"PID", stopPid,
 			"ProcessStartTime", stopProcessStartTime,
+			"SkipDescendants", stopSkipDescendants,
 		)
 
 		_, procErr := process.FindWaitableProcess(stopPid, stopProcessStartTime)
@@ -54,14 +57,13 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			return procErr
 		}
 
-		attachErr := attachToTargetProcessConsole(log, stopPid)
-		if attachErr != nil {
-			// Error already logged in attachToTargetProcessConsole
-			return attachErr
+		pe := process.NewOSExecutor(log)
+		var stopOptions []process.ProcessStopOption
+		if stopSkipDescendants {
+			stopOptions = append(stopOptions, process.StopRootOnly())
 		}
 
-		pe := process.NewOSExecutor(log)
-		stopErr := pe.StopProcess(stopPid, stopProcessStartTime)
+		stopErr := process.StopViaConsole(log, pe, stopPid, stopProcessStartTime, stopOptions...)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop process tree")
 			return stopErr

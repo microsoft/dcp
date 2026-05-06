@@ -3440,8 +3440,8 @@ https://github.com/google/gnostic-models/blob/v0.7.0/LICENSE
 
 ----------------------------------------------------------
 
-github.com/google/pprof/profile v0.0.0-20250403155104-27863c87afa6 - Apache-2.0
-https://github.com/google/pprof/blob/27863c87afa6/LICENSE
+github.com/google/pprof/profile v0.0.0-20260115054156-294ebfa9ad83 - Apache-2.0
+https://github.com/google/pprof/blob/294ebfa9ad83/LICENSE
 
 
                                  Apache License
@@ -10168,8 +10168,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-golang.org/x/exp/slices v0.0.0-20241217172543-b2144cdd0a67 - BSD-3-Clause
-https://cs.opensource.google/go/x/exp/+/b2144cdd:LICENSE
+golang.org/x/exp/slices v0.0.0-20250620022241-b7579e27df2b - BSD-3-Clause
+https://cs.opensource.google/go/x/exp/+/b7579e27:LICENSE
 
 Copyright 2009 The Go Authors.
 

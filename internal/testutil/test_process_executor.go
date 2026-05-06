@@ -208,7 +208,7 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 }
 
 // Called by the controller (via Executor interface)
-func (e *TestProcessExecutor) StopProcess(pid process.Pid_t, processStartTime time.Time) error {
+func (e *TestProcessExecutor) StopProcess(pid process.Pid_t, processStartTime time.Time, _ ...process.ProcessStopOption) error {
 	return e.stopProcessImpl(pid, processStartTime, KilledProcessExitCode)
 }
 
