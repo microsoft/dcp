@@ -83,6 +83,24 @@ type BridgeSession struct {
 
 	// Error holds any error message if State is BridgeSessionStateError.
 	Error string
+
+	// ParentSessionID is the ID of the parent session for child sessions.
+	// Empty for primary (root) sessions.
+	ParentSessionID string
+
+	// AdapterAddress is the TCP address (host:port) of the adapter for TCP modes.
+	// For child sessions, this is inherited from the parent and used to create
+	// a new connection to the same adapter instance.
+	AdapterAddress string
+
+	// AdapterConfig is the debug adapter configuration from the parent session.
+	// For child sessions with stdio adapters, this is used to launch a new
+	// adapter instance with the same binary and arguments.
+	AdapterConfig *DebugAdapterConfig
+
+	// cancelFunc cancels the context for this session's bridge.
+	// Used by parent sessions to cascade termination to children.
+	cancelFunc context.CancelFunc
 }
 
 // Error constants for session management.
@@ -107,6 +125,17 @@ var (
 // runInTerminal process output will be discarded.
 type BridgeConnectionHandler func(sessionID string, runID string) (OutputHandler, io.Writer, io.Writer)
 
+// BridgeTerminationHandler is called when a bridge session terminates, either because
+// the debug adapter exited or because of an error. This acts as a safety net to ensure
+// the resource transitions to a stopped state even if the IDE does not send a
+// sessionTerminated notification.
+//
+// sessionID is the bridge session identifier (typically the Executable UID).
+// runID is the IDE run session identifier provided during the handshake.
+// exitCode is the exit code captured from the adapter's ExitedEvent, or nil if unavailable.
+// err is non-nil if the bridge terminated due to an error.
+type BridgeTerminationHandler func(sessionID string, runID string, exitCode *int32, err error)
+
 // BridgeManagerConfig contains configuration for the BridgeManager.
 type BridgeManagerConfig struct {
 	// SocketDir is the root directory where the secure socket directory will be created.
@@ -130,6 +159,12 @@ type BridgeManagerConfig struct {
 	// the OutputHandler and stdout/stderr writers for the session. If nil, output
 	// from debug sessions will not be captured to executable log files.
 	ConnectionHandler BridgeConnectionHandler
+
+	// TerminationHandler is called when a bridge session terminates. This provides
+	// a fallback mechanism to ensure the resource transitions to a stopped state
+	// even if the IDE does not send a sessionTerminated notification. If nil,
+	// the caller relies entirely on IDE notifications for session lifecycle.
+	TerminationHandler BridgeTerminationHandler
 }
 
 // BridgeManager manages DAP bridge sessions and a shared Unix socket for IDE connections.
@@ -209,6 +244,48 @@ func (m *BridgeManager) RegisterSession(sessionID string, token string) (*Bridge
 	m.sessions[sessionID] = session
 	m.log.Info("Registered bridge session", "sessionID", sessionID)
 	return session, nil
+}
+
+// RegisterChildSession registers a child debug session that is associated with a parent session.
+// The child session inherits the parent's authentication token, adapter address, and adapter config.
+// This is called by the bridge when handling a startDebugging reverse request.
+func (m *BridgeManager) RegisterChildSession(parentSessionID, childSessionID string) (*BridgeSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	parent, parentExists := m.sessions[parentSessionID]
+	if !parentExists {
+		return nil, fmt.Errorf("parent session %s: %w", parentSessionID, ErrBridgeSessionNotFound)
+	}
+
+	if _, childExists := m.sessions[childSessionID]; childExists {
+		return nil, ErrBridgeSessionAlreadyExists
+	}
+
+	// Determine adapter address: inherit from parent, or from the active bridge's adapter.
+	adapterAddress := parent.AdapterAddress
+	if adapterAddress == "" {
+		if bridge, ok := m.activeBridges[parentSessionID]; ok && bridge.adapter != nil {
+			adapterAddress = bridge.adapter.Address
+		}
+	}
+
+	child := &BridgeSession{
+		ID:              childSessionID,
+		Token:           parent.Token,
+		State:           BridgeSessionStateCreated,
+		CreatedAt:       time.Now(),
+		ParentSessionID: parentSessionID,
+		AdapterAddress:  adapterAddress,
+		AdapterConfig:   parent.AdapterConfig,
+	}
+
+	m.sessions[childSessionID] = child
+	m.log.Info("Registered child bridge session",
+		"childSessionID", childSessionID,
+		"parentSessionID", parentSessionID,
+		"adapterAddress", adapterAddress)
+	return child, nil
 }
 
 // SocketPath returns the path to the Unix socket.
@@ -418,8 +495,11 @@ func (m *BridgeManager) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Check if adapter config is provided in handshake
-	if req.DebugAdapterConfig == nil {
+	// Check if adapter config is provided in handshake.
+	// Child sessions (those with a parent) do not need adapter config in the handshake
+	// because they inherit connection info from the parent.
+	isChildSession := session.ParentSessionID != ""
+	if req.DebugAdapterConfig == nil && !isChildSession {
 		log.Error(nil, "Handshake missing debug adapter configuration")
 		resp := &HandshakeResponse{
 			Success: false,
@@ -485,12 +565,31 @@ func (m *BridgeManager) runBridge(
 	adapterConfig *DebugAdapterConfig,
 	log logr.Logger,
 ) {
+	// Create a cancellable context for this session so parent cleanup can
+	// cascade termination to child sessions.
+	sessionCtx, sessionCancel := context.WithCancel(ctx)
+	defer sessionCancel()
+
+	// Store the cancel function on the session for parent-child lifecycle management.
+	m.mu.Lock()
+	session.cancelFunc = sessionCancel
+	// For primary sessions, store the adapter config so child sessions can inherit it.
+	if session.ParentSessionID == "" && adapterConfig != nil {
+		session.AdapterConfig = adapterConfig
+	}
+	m.mu.Unlock()
+
 	// Create the bridge configuration
 	bridgeConfig := BridgeConfig{
 		SessionID:     session.ID,
 		AdapterConfig: adapterConfig,
 		Executor:      m.executor,
 		Logger:        log.WithName("DapBridge"),
+	}
+
+	// Set up the StartDebuggingHandler so the bridge can register child sessions.
+	bridgeConfig.StartDebuggingHandler = func(parentSessionID string, configuration map[string]any, request string) (string, error) {
+		return m.handleStartDebugging(parentSessionID, configuration, request)
 	}
 
 	// Resolve output handlers via the connection callback if configured
@@ -510,6 +609,9 @@ func (m *BridgeManager) runBridge(
 	m.mu.Unlock()
 
 	defer func() {
+		// Cancel all child sessions when this session terminates
+		m.cancelChildSessions(session.ID)
+
 		m.mu.Lock()
 		delete(m.activeBridges, session.ID)
 		m.mu.Unlock()
@@ -518,12 +620,127 @@ func (m *BridgeManager) runBridge(
 	// Update session state
 	_ = m.updateSessionState(session.ID, BridgeSessionStateConnected, "")
 
-	// Run the bridge with the already-connected IDE connection
-	bridgeErr := bridge.RunWithConnection(ctx, conn)
+	// Run the bridge. For child sessions, connect to the existing adapter
+	// instead of launching a new one.
+	var bridgeErr error
+	isChildSession := session.ParentSessionID != ""
+	if isChildSession {
+		bridgeErr = m.runChildBridge(sessionCtx, bridge, conn, session, log)
+	} else {
+		bridgeErr = bridge.RunWithConnection(sessionCtx, conn)
+	}
+
+	// Update session state based on the result
 	if bridgeErr != nil && !isExpectedShutdownErr(bridgeErr) {
 		log.Error(bridgeErr, "Bridge terminated with error")
 		_ = m.updateSessionState(session.ID, BridgeSessionStateError, bridgeErr.Error())
 	} else {
 		_ = m.updateSessionState(session.ID, BridgeSessionStateTerminated, "")
+	}
+
+	// Notify the termination handler so the resource can transition to stopped.
+	// This acts as a safety net in case the IDE does not send a sessionTerminated
+	// notification. The handler must be idempotent.
+	if m.config.TerminationHandler != nil {
+		var termErr error
+		if bridgeErr != nil && !isExpectedShutdownErr(bridgeErr) {
+			termErr = bridgeErr
+		}
+		m.config.TerminationHandler(session.ID, runID, bridge.ExitCode(), termErr)
+	}
+}
+
+// runChildBridge runs a bridge for a child session by connecting to an existing adapter.
+// For TCP adapters, it creates a new TCP connection to the parent's adapter address.
+// For stdio adapters, it launches a new adapter instance with the parent's config.
+func (m *BridgeManager) runChildBridge(
+	ctx context.Context,
+	bridge *DapBridge,
+	conn net.Conn,
+	session *BridgeSession,
+	log logr.Logger,
+) error {
+	adapterMode := DebugAdapterModeStdio
+	if session.AdapterConfig != nil {
+		adapterMode = session.AdapterConfig.EffectiveMode()
+	}
+
+	switch adapterMode {
+	case DebugAdapterModeTCPCallback, DebugAdapterModeTCPConnect:
+		if session.AdapterAddress == "" {
+			bridge.sendErrorToIDE("No adapter address available for child session")
+			return errors.New("no adapter address available for child TCP session")
+		}
+		log.Info("Connecting child session to existing adapter",
+			"adapterAddress", session.AdapterAddress)
+		return bridge.runWithConnectionAndAdapter(ctx, conn, session.AdapterAddress)
+
+	default:
+		// Stdio mode: launch a new adapter instance with the parent's config
+		if session.AdapterConfig == nil {
+			bridge.sendErrorToIDE("No adapter config available for child stdio session")
+			return errors.New("no adapter config available for child stdio session")
+		}
+		log.Info("Launching new adapter instance for child stdio session")
+		return bridge.runWithConnectionAndConfig(ctx, conn, session.AdapterConfig)
+	}
+}
+
+// handleStartDebugging is called by the bridge when it receives a startDebugging
+// reverse request from the adapter. It registers a child session.
+func (m *BridgeManager) handleStartDebugging(parentSessionID string, _ map[string]any, _ string) (string, error) {
+	// Generate a unique child session ID
+	m.mu.Lock()
+	parentSession, exists := m.sessions[parentSessionID]
+	if !exists {
+		m.mu.Unlock()
+		return "", fmt.Errorf("parent session %s: %w", parentSessionID, ErrBridgeSessionNotFound)
+	}
+
+	// Use a counter-based child session ID
+	childCount := 0
+	for _, s := range m.sessions {
+		if s.ParentSessionID == parentSessionID {
+			childCount++
+		}
+	}
+	childSessionID := fmt.Sprintf("%s:%d", parentSessionID, childCount)
+
+	// Determine adapter address from the active parent bridge
+	adapterAddress := parentSession.AdapterAddress
+	if adapterAddress == "" {
+		if bridge, ok := m.activeBridges[parentSessionID]; ok && bridge.adapter != nil {
+			adapterAddress = bridge.adapter.Address
+		}
+	}
+	m.mu.Unlock()
+
+	child, regErr := m.RegisterChildSession(parentSessionID, childSessionID)
+	if regErr != nil {
+		return "", fmt.Errorf("failed to register child session: %w", regErr)
+	}
+
+	// Update the adapter address in case it was resolved from the active bridge
+	if child.AdapterAddress == "" && adapterAddress != "" {
+		m.mu.Lock()
+		child.AdapterAddress = adapterAddress
+		m.mu.Unlock()
+	}
+
+	return childSessionID, nil
+}
+
+// cancelChildSessions cancels all child sessions of the given parent session.
+func (m *BridgeManager) cancelChildSessions(parentSessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, session := range m.sessions {
+		if session.ParentSessionID == parentSessionID && session.cancelFunc != nil {
+			m.log.Info("Cancelling child session due to parent termination",
+				"childSessionID", session.ID,
+				"parentSessionID", parentSessionID)
+			session.cancelFunc()
+		}
 	}
 }

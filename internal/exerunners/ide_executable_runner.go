@@ -31,6 +31,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
@@ -81,7 +82,8 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 	// Create and start the bridge manager if the IDE supports debug bridge
 	if connInfo.SupportsDebugBridge() {
 		r.bridgeManager = dap.NewBridgeManager(dap.BridgeManagerConfig{
-			ConnectionHandler: r.handleBridgeConnection,
+			ConnectionHandler:  r.handleBridgeConnection,
+			TerminationHandler: r.handleBridgeTermination,
 		}, log.WithName("BridgeManager"))
 
 		// Run the bridge manager in a background goroutine
@@ -381,16 +383,20 @@ func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte
 			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
 		}
 
-		// Check if at least one launch configuration is of a supported type
-		var lcs []launchConfigurationBase
-		unmarshalErr = json.Unmarshal(launchConfigs, &lcs)
-		if unmarshalErr != nil {
-			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
-		}
-		requestedConfigurations := slices.Map[string](lcs, func(lc launchConfigurationBase) string { return lc.Type })
-		if len(slices.Intersect(r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)) == 0 {
-			return nil, fmt.Errorf("Executable cannot be run because its launch configuration type is not supported by the connected IDE; supported types: %v, requested types: %v",
-				r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)
+		// For protocol versions older than 2026-02-01, check if at least one launch configuration is of a type
+		// supported by the IDE. In 2026-02-01 and later, the app host debug adapter config determines
+		// what can be run, so this check is not needed.
+		if !equalOrNewer(r.connectionInfo.apiVersion, version20260201) {
+			var lcs []launchConfigurationBase
+			unmarshalErr = json.Unmarshal(launchConfigs, &lcs)
+			if unmarshalErr != nil {
+				return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
+			}
+			requestedConfigurations := slices.Map[string](lcs, func(lc launchConfigurationBase) string { return lc.Type })
+			if len(slices.Intersect(r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)) == 0 {
+				return nil, fmt.Errorf("Executable cannot be run because its launch configuration type is not supported by the connected IDE; supported types: %v, requested types: %v",
+					r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)
+			}
 		}
 
 		isr := ideRunSessionRequestV1{
@@ -502,6 +508,11 @@ func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminat
 	case runStateRunning:
 		rd.state = runStateCompleted
 		close(rd.exitCh)
+	case runStateCompleted, runStateFailedToStart:
+		// Already terminated (e.g., bridge termination callback arrived before IDE notification).
+		// This is expected and safe to ignore — the first termination already triggered
+		// the state transition and notification.
+		return
 	}
 	rd.NotifyRunCompletedAsync(r.lock)
 }
@@ -585,6 +596,41 @@ func (r *IdeExecutableRunner) handleBridgeConnection(sessionID string, runID str
 	rd := r.ensureRunData(controllers.RunID(runID))
 	handler := newBridgeOutputHandler(rd.stdOut, rd.stdErr)
 	return handler, rd.stdOut, rd.stdErr
+}
+
+// handleBridgeTermination is the BridgeTerminationHandler callback invoked by the
+// BridgeManager when a bridge session terminates. This acts as a safety net to ensure
+// the resource transitions to a stopped state even if the IDE does not send a
+// sessionTerminated notification. If the IDE notification arrives first, the call
+// to HandleSessionTermination is idempotent (the run data is already in a terminal state).
+func (r *IdeExecutableRunner) handleBridgeTermination(sessionID string, runID string, exitCode *int32, bridgeErr error) {
+	r.log.V(1).Info("Bridge session terminated",
+		"sessionID", sessionID,
+		"runID", runID,
+		"exitCode", exitCode,
+		"error", bridgeErr)
+
+	if runID == "" {
+		return
+	}
+
+	// Synthesize a termination notification with the exit code from the bridge's
+	// ExitedEvent (if available) and unknown PID.
+	stn := ideRunSessionTerminatedNotification{
+		ideRunSessionProcessChangedNotification: ideRunSessionProcessChangedNotification{
+			ideSessionNotificationBase: ideSessionNotificationBase{
+				SessionID: runID,
+			},
+			PID: process.UnknownPID,
+		},
+	}
+
+	if exitCode != nil {
+		ec := int64(*exitCode)
+		stn.ExitCode = &ec
+	}
+
+	r.HandleSessionTermination(stn)
 }
 
 func (r *IdeExecutableRunner) makeRequest(

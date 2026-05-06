@@ -147,12 +147,17 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 					connInfo.apiVersion = version20240303
 				}
 
-				if len(info.SupportedLaunchConfigurationTypes) > 0 {
-					connInfo.supportedLaunchConfigurations = info.SupportedLaunchConfigurationTypes
-				} else {
-					// For backward compatibility, assume that if the IDE does not report supported launch configurations,
-					// it supports "project" configuration.
-					connInfo.supportedLaunchConfigurations = []string{vsProjectLaunchConfiguration}
+				// For protocol versions older than 2026-02-01, track the launch configurations
+				// supported by the IDE. In 2026-02-01 and later, the app host debug adapter config
+				// determines what can be run, so this information is not needed.
+				if !equalOrNewer(connInfo.apiVersion, version20260201) {
+					if len(info.SupportedLaunchConfigurationTypes) > 0 {
+						connInfo.supportedLaunchConfigurations = info.SupportedLaunchConfigurationTypes
+					} else {
+						// For backward compatibility, assume that if the IDE does not report supported launch configurations,
+						// it supports "project" configuration.
+						connInfo.supportedLaunchConfigurations = []string{vsProjectLaunchConfiguration}
+					}
 				}
 			}
 		}

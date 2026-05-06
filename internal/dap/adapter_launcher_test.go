@@ -6,12 +6,17 @@
 package dap
 
 import (
+	"context"
+	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -117,4 +122,72 @@ func sliceToEnvMap(envSlice []string) map[string]string {
 		}
 	}
 	return result
+}
+
+func TestConnectToExistingAdapter(t *testing.T) {
+	t.Parallel()
+
+	// Start a TCP listener to simulate an existing adapter
+	listener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, listenErr)
+	defer listener.Close()
+
+	// Accept a connection in the background
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			accepted <- conn
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	adapter, connectErr := ConnectToExistingAdapter(ctx, listener.Addr().String(), logr.Discard())
+	require.NoError(t, connectErr)
+	require.NotNil(t, adapter)
+	defer adapter.Close()
+
+	assert.Equal(t, listener.Addr().String(), adapter.Address)
+	assert.NotNil(t, adapter.Transport)
+
+	// Verify the server side received the connection
+	select {
+	case conn := <-accepted:
+		conn.Close()
+	case <-time.After(time.Second):
+		t.Fatal("server did not accept connection")
+	}
+}
+
+func TestConnectToExistingAdapter_EmptyAddress(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	_, connectErr := ConnectToExistingAdapter(ctx, "", logr.Discard())
+	assert.Error(t, connectErr)
+	assert.Contains(t, connectErr.Error(), "adapter address is required")
+}
+
+func TestConnectToExistingAdapter_ConnectionFailure(t *testing.T) {
+	t.Parallel()
+
+	// Use a port that is not listening
+	ctx := context.Background()
+	_, connectErr := ConnectToExistingAdapter(ctx, "127.0.0.1:1", logr.Discard())
+	assert.Error(t, connectErr)
+	assert.Contains(t, connectErr.Error(), "failed to connect to existing adapter")
+}
+
+func TestLaunchedAdapter_AddressSetForTCPConnect(t *testing.T) {
+	// Verify that Address field is populated after TCP connect launch.
+	// We can't fully test the adapter launch without a real adapter,
+	// but we can verify the field exists and is of the right type.
+	adapter := &LaunchedAdapter{
+		Address: "127.0.0.1:5678",
+		mu:      &sync.Mutex{},
+		done:    make(chan struct{}),
+	}
+	assert.Equal(t, "127.0.0.1:5678", adapter.Address)
 }

@@ -45,6 +45,11 @@ type MessagePipe struct {
 
 	// name identifies this pipe in log messages (e.g., "adapterPipe", "idePipe").
 	name string
+
+	// logFilter, when non-nil, gates the "Writing message" diagnostic log.
+	// Only messages for which logFilter returns true are logged.
+	// When nil, all messages are logged.
+	logFilter func(*MessageEnvelope) bool
 }
 
 // NewMessagePipe creates a new MessagePipe that writes to the given transport.
@@ -90,11 +95,13 @@ func (p *MessagePipe) Run(ctx context.Context) error {
 			p.seqMap.Store(newSeq, originalSeq)
 		}
 
-		p.log.V(1).Info("Writing message",
-			"pipe", p.name,
-			"message", env.Describe(),
-			"originalSeq", originalSeq,
-			"assignedSeq", newSeq)
+		if p.logFilter == nil || p.logFilter(env) {
+			p.log.V(1).Info("Writing message",
+				"pipe", p.name,
+				"message", env.Describe(),
+				"originalSeq", originalSeq,
+				"assignedSeq", newSeq)
+		}
 
 		finalizedMsg, finalizeErr := env.Finalize()
 		if finalizeErr != nil {

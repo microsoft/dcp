@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"sync"
 	"sync/atomic"
 
@@ -48,6 +47,12 @@ type BridgeConfig struct {
 	// StderrWriter is where debugee process stderr (from runInTerminal) will be written.
 	// If nil, stderr is discarded.
 	StderrWriter io.Writer
+
+	// StartDebuggingHandler is called when the debug adapter sends a startDebugging
+	// reverse request. It should register a child session and return the child session ID
+	// to include in the augmented configuration forwarded to the IDE.
+	// If nil, startDebugging requests are forwarded to the IDE without interception.
+	StartDebuggingHandler StartDebuggingHandler
 }
 
 // OutputHandler is called when output events are received from the debug adapter.
@@ -57,6 +62,10 @@ type OutputHandler interface {
 	// output is the actual output text.
 	HandleOutput(category string, output string)
 }
+
+// StartDebuggingHandler is called when a debug adapter sends a startDebugging reverse request.
+// It registers a child session and returns the child session ID.
+type StartDebuggingHandler func(parentSessionID string, configuration map[string]any, request string) (childSessionID string, err error)
 
 // DapBridge provides a bridge between an IDE's debug adapter client and a debug adapter host.
 // It can either listen on a Unix domain socket for the IDE to connect (via Run),
@@ -72,11 +81,16 @@ type DapBridge struct {
 	// adapter is the launched debug adapter
 	adapter *LaunchedAdapter
 
-	// runInTerminalUsed tracks whether runInTerminal was invoked
-	runInTerminalUsed atomic.Bool
+	// clientSupportsStartDebugging tracks whether the client indicated
+	// supportsStartDebuggingRequest in its InitializeRequest.
+	clientSupportsStartDebugging atomic.Bool
 
 	// terminatedEventSeen tracks whether the adapter sent a TerminatedEvent
 	terminatedEventSeen atomic.Bool
+
+	// exitCode stores the exit code from the adapter's ExitedEvent (if received).
+	// Written by the adapter reader goroutine, read after the bridge loop exits.
+	exitCode atomic.Pointer[int32]
 
 	// terminateCh is closed when the bridge terminates
 	terminateCh chan struct{}
@@ -155,6 +169,37 @@ func (b *DapBridge) runWithConnectionAndConfig(ctx context.Context, ideConn net.
 	return b.runMessageLoop(ctx)
 }
 
+// runWithConnectionAndAdapter runs the bridge by connecting to an already-running
+// debug adapter at the given TCP address. This is used for child sessions created
+// via startDebugging reverse requests where the adapter is shared with the parent.
+func (b *DapBridge) runWithConnectionAndAdapter(ctx context.Context, ideConn net.Conn, adapterAddress string) error {
+	defer b.terminate()
+
+	b.log.Info("Child bridge starting with pre-connected IDE",
+		"sessionID", b.config.SessionID,
+		"adapterAddress", adapterAddress)
+
+	// Create transport for IDE connection
+	b.ideTransport = NewUnixTransportWithContext(ctx, ideConn)
+
+	// Connect to existing adapter
+	b.log.V(1).Info("Connecting to existing debug adapter", "address", adapterAddress)
+	var connectErr error
+	b.adapter, connectErr = ConnectToExistingAdapter(ctx, adapterAddress, b.log)
+	if connectErr != nil {
+		b.sendErrorToIDE(fmt.Sprintf("Failed to connect to debug adapter: %v", connectErr))
+		return fmt.Errorf("failed to connect to existing adapter: %w", connectErr)
+	}
+	defer b.adapter.Close()
+
+	b.log.Info("Connected to existing debug adapter for child session",
+		"address", adapterAddress)
+
+	// Start message forwarding
+	b.log.V(1).Info("Child bridge connected, starting message loop")
+	return b.runMessageLoop(ctx)
+}
+
 // launchAdapterWithConfig launches the debug adapter with the specified config.
 func (b *DapBridge) launchAdapterWithConfig(ctx context.Context, config *DebugAdapterConfig) error {
 	var launchErr error
@@ -175,6 +220,9 @@ func (b *DapBridge) runMessageLoop(ctx context.Context) error {
 	// Create message pipes for both directions.
 	b.adapterPipe = NewMessagePipe(pipeCtx, b.adapter.Transport, "adapterPipe", b.log)
 	b.idePipe = NewMessagePipe(pipeCtx, b.ideTransport, "idePipe", b.log)
+	// Suppress the generic "Writing message" log for the IDE-bound pipe.
+	// Failure responses from the adapter are logged explicitly in forwardAdapterToIDE.
+	b.idePipe.logFilter = func(*MessageEnvelope) bool { return false }
 
 	// Track each goroutine independently so the shutdown sequence can
 	// wait for specific goroutines in the correct order.
@@ -345,7 +393,6 @@ func (b *DapBridge) forwardAdapterToIDE(ctx context.Context) error {
 		}
 
 		env := NewMessageEnvelope(msg)
-		b.logEnvelopeMessage("Adapter -> IDE: received message from adapter", env)
 
 		// Intercept and potentially handle the message
 		modifiedMsg, forward, asyncResponse := b.interceptDownstreamMessage(ctx, msg)
@@ -372,7 +419,11 @@ func (b *DapBridge) forwardAdapterToIDE(ctx context.Context) error {
 		// request_seq so the IDE can correlate the response with its request.
 		b.adapterPipe.RemapResponseSeq(env)
 
-		b.logEnvelopeMessage("Adapter -> IDE: enqueueing message for IDE", env)
+		// Log only failure/cancelled responses — success responses and events are omitted
+		// to avoid high-frequency noise during normal operation.
+		if env.IsResponse() && env.Success != nil && !*env.Success {
+			b.logEnvelopeMessage("Adapter -> IDE: forwarding failure response", env)
+		}
 		b.idePipe.Send(env)
 	}
 }
@@ -382,9 +433,12 @@ func (b *DapBridge) forwardAdapterToIDE(ctx context.Context) error {
 func (b *DapBridge) interceptUpstreamMessage(msg dap.Message) (dap.Message, bool) {
 	switch req := msg.(type) {
 	case *dap.InitializeRequest:
-		// Ensure supportsRunInTerminalRequest is true
-		req.Arguments.SupportsRunInTerminalRequest = true
-		b.log.V(1).Info("Set supportsRunInTerminalRequest=true on InitializeRequest")
+		// Observe whether the client supports startDebugging
+		if req.Arguments.SupportsStartDebuggingRequest {
+			b.clientSupportsStartDebugging.Store(true)
+			b.log.V(1).Info("Client supports startDebugging reverse request")
+		}
+
 		return req, true
 
 	default:
@@ -398,6 +452,13 @@ func (b *DapBridge) interceptDownstreamMessage(ctx context.Context, msg dap.Mess
 	switch m := msg.(type) {
 	case *dap.TerminatedEvent:
 		b.terminatedEventSeen.Store(true)
+		b.log.Info("Sending TerminatedEvent to IDE", "origin", "adapter")
+		return msg, true, nil
+
+	case *dap.ExitedEvent:
+		ec := int32(m.Body.ExitCode)
+		b.exitCode.Store(&ec)
+		b.log.V(1).Info("Captured exit code from ExitedEvent", "exitCode", ec)
 		return msg, true, nil
 
 	case *dap.OutputEvent:
@@ -406,9 +467,12 @@ func (b *DapBridge) interceptDownstreamMessage(ctx context.Context, msg dap.Mess
 		return msg, true, nil
 
 	case *dap.RunInTerminalRequest:
-		// Handle runInTerminal locally, don't forward to IDE
-		response := b.handleRunInTerminalRequest(ctx, m)
-		return nil, false, response
+		// Do not handle runInTerminal locally; forward to the IDE so the adapter
+		// falls back to its own process launch when the IDE does not support it.
+		return msg, true, nil
+
+	case *dap.StartDebuggingRequest:
+		return b.handleStartDebuggingRequest(m)
 
 	default:
 		return msg, true, nil
@@ -417,89 +481,62 @@ func (b *DapBridge) interceptDownstreamMessage(ctx context.Context, msg dap.Mess
 
 // handleOutputEvent processes output events from the debug adapter.
 func (b *DapBridge) handleOutputEvent(event *dap.OutputEvent) {
-	// Only capture output if runInTerminal wasn't used
-	// (if runInTerminal was used, we capture directly from the process)
-	if !b.runInTerminalUsed.Load() && b.config.OutputHandler != nil {
+	if b.config.OutputHandler != nil {
 		b.config.OutputHandler.HandleOutput(event.Body.Category, event.Body.Output)
 	}
 }
 
-// handleRunInTerminalRequest handles the runInTerminal reverse request.
-// Returns the response to send back to the debug adapter.
-// The response's Seq field is set to 0 because the adapterPipe will assign
-// the actual sequence number when the message is dequeued for writing.
-func (b *DapBridge) handleRunInTerminalRequest(ctx context.Context, req *dap.RunInTerminalRequest) *dap.RunInTerminalResponse {
-	b.log.Info("Handling RunInTerminal request",
+// childSessionIDKey is the key used to inject the child session ID into
+// the startDebugging configuration forwarded to the IDE.
+const childSessionIDKey = "__dcp_child_session_id"
+
+// handleStartDebuggingRequest handles the startDebugging reverse request from
+// the debug adapter. If the client supports startDebugging and a handler is
+// configured, the bridge registers a child session and augments the
+// configuration with bridge metadata before forwarding to the IDE.
+// The IDE is responsible for sending the response back to the adapter.
+// Returns (modifiedMsg, forward, asyncResponse).
+func (b *DapBridge) handleStartDebuggingRequest(req *dap.StartDebuggingRequest) (dap.Message, bool, dap.Message) {
+	if !b.clientSupportsStartDebugging.Load() || b.config.StartDebuggingHandler == nil {
+		// Client doesn't support it or no handler configured — forward unchanged
+		b.log.V(1).Info("Forwarding startDebugging to IDE without interception",
+			"seq", req.Seq,
+			"clientSupports", b.clientSupportsStartDebugging.Load(),
+			"handlerConfigured", b.config.StartDebuggingHandler != nil)
+		return req, true, nil
+	}
+
+	b.log.Info("Handling startDebugging reverse request",
 		"seq", req.Seq,
-		"kind", req.Arguments.Kind,
-		"title", req.Arguments.Title,
-		"cwd", req.Arguments.Cwd,
-		"args", req.Arguments.Args,
-		"envCount", len(req.Arguments.Env))
+		"request", req.Arguments.Request)
 
-	// Mark that runInTerminal was used
-	b.runInTerminalUsed.Store(true)
-
-	// Build the command
-	if len(req.Arguments.Args) == 0 {
-		b.log.Error(fmt.Errorf("runInTerminal request has no arguments"), "RunInTerminal failed",
+	childSessionID, handleErr := b.config.StartDebuggingHandler(
+		b.config.SessionID,
+		req.Arguments.Configuration,
+		req.Arguments.Request,
+	)
+	if handleErr != nil {
+		b.log.Error(handleErr, "Failed to register child session for startDebugging",
 			"requestSeq", req.Seq)
-		return &dap.RunInTerminalResponse{
-			Response: dap.Response{
-				ProtocolMessage: dap.ProtocolMessage{
-					Type: "response",
-				},
-				RequestSeq: req.Seq,
-				Command:    req.Command,
-				Message:    "runInTerminal requires at least one argument",
-			},
-		}
+		// Forward unchanged — let the IDE deal with it without bridge metadata
+		return req, true, nil
 	}
 
-	cmd := exec.Command(req.Arguments.Args[0], req.Arguments.Args[1:]...)
-	cmd.Dir = req.Arguments.Cwd
-	cmd.Stdout = b.config.StdoutWriter
-	cmd.Stderr = b.config.StderrWriter
-
-	// Set environment from the request only (do not inherit current process environment)
-	if len(req.Arguments.Env) > 0 {
-		env := make([]string, 0, len(req.Arguments.Env))
-		for k, v := range req.Arguments.Env {
-			if strVal, ok := v.(string); ok {
-				env = append(env, fmt.Sprintf("%s=%s", k, strVal))
-			}
-		}
-		cmd.Env = env
+	// Augment the configuration with the child session ID so the IDE
+	// knows to connect through the bridge for this child session.
+	if req.Arguments.Configuration == nil {
+		req.Arguments.Configuration = make(map[string]any)
 	}
+	req.Arguments.Configuration[childSessionIDKey] = childSessionID
 
-	handle, startErr := b.executor.StartAndForget(cmd, process.CreationFlagsNone)
+	b.log.Info("StartDebugging child session registered, forwarding to IDE",
+		"requestSeq", req.Seq,
+		"childSessionID", childSessionID)
 
-	response := &dap.RunInTerminalResponse{
-		Response: dap.Response{
-			ProtocolMessage: dap.ProtocolMessage{
-				Type: "response",
-			},
-			RequestSeq: req.Seq,
-			Command:    req.Command,
-			Success:    startErr == nil,
-		},
-	}
-
-	if startErr == nil {
-		response.Body.ProcessId = int(handle.Pid)
-		b.log.Info("RunInTerminal succeeded",
-			"requestSeq", req.Seq,
-			"processId", handle.Pid)
-	} else {
-		response.Message = startErr.Error()
-		b.log.Error(startErr, "RunInTerminal failed",
-			"requestSeq", req.Seq)
-	}
-
-	return response
+	// Forward the augmented request to the IDE. The IDE will send the
+	// response back to the adapter once the child session is established.
+	return req, true, nil
 }
-
-// sendErrorToIDE sends an OutputEvent with category "stderr" followed by a TerminatedEvent
 // to the IDE. When the idePipe is available, messages are enqueued through it so that
 // sequence numbering and write serialization are handled by the pipe's writer goroutine.
 // When the idePipe is not yet created (e.g., adapter launch failure before the message loop),
@@ -530,6 +567,7 @@ func (b *DapBridge) sendErrorToIDE(message string) {
 // When the idePipe is available, the event is enqueued through it; otherwise it is written
 // directly to the IDE transport.
 func (b *DapBridge) sendTerminatedToIDE() {
+	b.log.Info("Sending TerminatedEvent to IDE", "origin", "bridge")
 	terminatedEvent := newTerminatedEvent(0)
 
 	if b.idePipe != nil {
@@ -552,6 +590,12 @@ func (b *DapBridge) terminate() {
 	b.terminateOnce.Do(func() {
 		close(b.terminateCh)
 	})
+}
+
+// ExitCode returns the exit code captured from the adapter's ExitedEvent, or nil
+// if no ExitedEvent was received. Safe to call after RunWithConnection returns.
+func (b *DapBridge) ExitCode() *int32 {
+	return b.exitCode.Load()
 }
 
 // logEnvelopeMessage logs a DAP message envelope at V(1) level, including raw JSON.

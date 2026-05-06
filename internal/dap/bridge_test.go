@@ -82,19 +82,6 @@ func TestDapBridge_RunWithConnection(t *testing.T) {
 	}
 }
 
-func TestDapBridge_RunInTerminalUsed(t *testing.T) {
-	t.Parallel()
-
-	config := BridgeConfig{
-		SessionID: "session",
-	}
-
-	bridge := NewDapBridge(config)
-
-	// Initially false
-	assert.False(t, bridge.runInTerminalUsed.Load())
-}
-
 func TestDapBridge_Done(t *testing.T) {
 	t.Parallel()
 

@@ -46,6 +46,11 @@ type LaunchedAdapter struct {
 	// listener is the TCP listener for callback mode (nil for other modes).
 	listener net.Listener
 
+	// Address is the TCP address of the adapter (host:port) for TCP modes.
+	// This is used by child sessions to connect to the same adapter instance.
+	// Empty for stdio mode.
+	Address string
+
 	// done signals when the process has exited.
 	done chan struct{}
 
@@ -297,6 +302,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 	}
 
 	adapter.Transport = NewTCPTransportWithContext(ctx, conn)
+	adapter.Address = listenerAddr
 	return adapter, nil
 }
 
@@ -401,6 +407,34 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 	log.Info("Connected to debug adapter", "address", addr)
 
 	adapter.Transport = NewTCPTransportWithContext(ctx, conn)
+	adapter.Address = addr
+	return adapter, nil
+}
+
+// ConnectToExistingAdapter creates a new TCP connection to an already-running debug adapter.
+// This is used for child debug sessions (e.g., from startDebugging reverse requests)
+// where the adapter process is already running and accepting connections on a known address.
+// Unlike LaunchDebugAdapter, no new process is launched.
+func ConnectToExistingAdapter(ctx context.Context, address string, log logr.Logger) (*LaunchedAdapter, error) {
+	if address == "" {
+		return nil, errors.New("adapter address is required for connecting to existing adapter")
+	}
+
+	conn, dialErr := net.DialTimeout("tcp", address, DefaultAdapterConnectionTimeout)
+	if dialErr != nil {
+		return nil, fmt.Errorf("failed to connect to existing adapter at %s: %w", address, dialErr)
+	}
+
+	log.Info("Connected to existing debug adapter for child session", "address", address)
+
+	adapter := &LaunchedAdapter{
+		Transport: NewTCPTransportWithContext(ctx, conn),
+		Address:   address,
+		mu:        &sync.Mutex{},
+		done:      make(chan struct{}),
+		exitCode:  process.UnknownExitCode,
+	}
+
 	return adapter, nil
 }
 

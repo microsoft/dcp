@@ -30,9 +30,9 @@ const (
 )
 
 type ServerCertificateData struct {
-	CACertPEM      []byte // Root CA certificate, PEM-encoded (for client trust / kubeconfig)
-	CertChainPEM   []byte // Server certificate chain (leaf + intermediates), PEM-encoded
-	ServerKeyPEM   []byte // Server private key, PEM-encoded
+	CACertPEM    []byte // Root CA certificate, PEM-encoded (for client trust / kubeconfig)
+	CertChainPEM []byte // Server certificate chain (leaf + intermediates), PEM-encoded
+	ServerKeyPEM []byte // Server private key, PEM-encoded
 }
 
 // Generates a self-signed certificate authority, server certificate, and a server private key
@@ -80,7 +80,7 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		Subject: pkix.Name{
 			CommonName: ip.String(),
 		},
-		NotBefore:             now,
+		NotBefore:             now.Add(-5 * time.Minute), // Valid 5 minutes in the past to account for clock skew
 		NotAfter:              now.AddDate(0, 0, defaultExpirationDays),
 		SubjectKeyId:          caSubjectKeyId[:],
 		IsCA:                  true,

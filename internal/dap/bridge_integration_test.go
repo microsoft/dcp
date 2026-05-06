@@ -226,8 +226,7 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 func TestBridge_OutputEventCapture(t *testing.T) {
 	t.Parallel()
 
-	// This test verifies that output events are captured when runInTerminal is not used.
-	// We use a simpler approach: directly test the handleOutputEvent function behavior.
+	// This test verifies that output events are captured via the OutputHandler.
 
 	stdoutBuf := &bytes.Buffer{}
 	stderrBuf := &bytes.Buffer{}
@@ -243,9 +242,6 @@ func TestBridge_OutputEventCapture(t *testing.T) {
 	}
 
 	bridge := NewDapBridge(config)
-
-	// Initially runInTerminal not used
-	assert.False(t, bridge.runInTerminalUsed.Load())
 
 	// Simulate handling an output event
 	outputEvent := &dap.OutputEvent{
@@ -285,7 +281,8 @@ func (h *testOutputHandler) HandleOutput(category string, output string) {
 func TestBridge_InitializeInterception(t *testing.T) {
 	t.Parallel()
 
-	// Test that the bridge intercepts initialize requests to force supportsRunInTerminalRequest=true
+	// Test that the bridge forwards initialize requests without modifying
+	// supportsRunInTerminalRequest (runInTerminal is not handled locally)
 
 	config := BridgeConfig{
 		SessionID: "session",
@@ -293,7 +290,6 @@ func TestBridge_InitializeInterception(t *testing.T) {
 
 	bridge := NewDapBridge(config)
 
-	// Create an initialize request with supportsRunInTerminalRequest=false
 	initReq := &dap.InitializeRequest{
 		Request: dap.Request{
 			ProtocolMessage: dap.ProtocolMessage{
@@ -304,7 +300,7 @@ func TestBridge_InitializeInterception(t *testing.T) {
 		},
 		Arguments: dap.InitializeRequestArguments{
 			ClientID:                     "test",
-			SupportsRunInTerminalRequest: false, // IDE says it doesn't support it
+			SupportsRunInTerminalRequest: false,
 		},
 	}
 
@@ -314,14 +310,14 @@ func TestBridge_InitializeInterception(t *testing.T) {
 	assert.True(t, forward, "initialize should be forwarded")
 	modifiedInit, ok := modified.(*dap.InitializeRequest)
 	require.True(t, ok)
-	assert.True(t, modifiedInit.Arguments.SupportsRunInTerminalRequest,
-		"supportsRunInTerminalRequest should be forced to true")
+	assert.False(t, modifiedInit.Arguments.SupportsRunInTerminalRequest,
+		"supportsRunInTerminalRequest should not be modified")
 }
 
-func TestBridge_RunInTerminalInterception(t *testing.T) {
+func TestBridge_RunInTerminalForwarded(t *testing.T) {
 	t.Parallel()
 
-	// Test that runInTerminal requests are intercepted and not forwarded
+	// Test that runInTerminal requests are forwarded to the IDE (not handled locally)
 
 	config := BridgeConfig{
 		SessionID: "session",
@@ -350,19 +346,236 @@ func TestBridge_RunInTerminalInterception(t *testing.T) {
 	defer cancel()
 
 	// Apply downstream interception
-	_, forward, asyncResponse := bridge.interceptDownstreamMessage(ctx, ritReq)
+	modified, forward, asyncResponse := bridge.interceptDownstreamMessage(ctx, ritReq)
 
-	assert.False(t, forward, "runInTerminal should NOT be forwarded to IDE")
-	assert.NotNil(t, asyncResponse, "should return an async response")
+	assert.True(t, forward, "runInTerminal should be forwarded to IDE")
+	assert.Equal(t, ritReq, modified)
+	assert.Nil(t, asyncResponse, "should not return an async response")
+}
 
-	// The response should be a RunInTerminalResponse
-	ritResp, ok := asyncResponse.(*dap.RunInTerminalResponse)
-	require.True(t, ok, "async response should be RunInTerminalResponse")
-	assert.Equal(t, "runInTerminal", ritResp.Command)
-	assert.Equal(t, 1, ritResp.RequestSeq)
+func TestBridge_InitializeObservesStartDebuggingCapability(t *testing.T) {
+	t.Parallel()
 
-	// runInTerminalUsed should now be true
-	assert.True(t, bridge.runInTerminalUsed.Load())
+	config := BridgeConfig{
+		SessionID: "session",
+	}
+
+	bridge := NewDapBridge(config)
+
+	// When client sets supportsStartDebuggingRequest=true, bridge should observe it
+	initReq := &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "request",
+			},
+			Command: "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			ClientID:                        "test",
+			SupportsStartDebuggingRequest:   true,
+			SupportsRunInTerminalRequest:    false,
+		},
+	}
+
+	modified, forward := bridge.interceptUpstreamMessage(initReq)
+
+	assert.True(t, forward)
+	modifiedInit := modified.(*dap.InitializeRequest)
+	// Bridge should NOT modify supportsStartDebuggingRequest
+	assert.True(t, modifiedInit.Arguments.SupportsStartDebuggingRequest,
+		"supportsStartDebuggingRequest should not be modified")
+	// Bridge should NOT modify supportsRunInTerminalRequest
+	assert.False(t, modifiedInit.Arguments.SupportsRunInTerminalRequest,
+		"supportsRunInTerminalRequest should not be modified")
+	// Bridge should have recorded the capability
+	assert.True(t, bridge.clientSupportsStartDebugging.Load())
+}
+
+func TestBridge_InitializeDoesNotSetStartDebuggingCapability(t *testing.T) {
+	t.Parallel()
+
+	config := BridgeConfig{
+		SessionID: "session",
+	}
+
+	bridge := NewDapBridge(config)
+
+	// When client does NOT set supportsStartDebuggingRequest, bridge should not add it
+	initReq := &dap.InitializeRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "request",
+			},
+			Command: "initialize",
+		},
+		Arguments: dap.InitializeRequestArguments{
+			ClientID: "test",
+		},
+	}
+
+	modified, forward := bridge.interceptUpstreamMessage(initReq)
+
+	assert.True(t, forward)
+	modifiedInit := modified.(*dap.InitializeRequest)
+	assert.False(t, modifiedInit.Arguments.SupportsStartDebuggingRequest,
+		"bridge should NOT set supportsStartDebuggingRequest")
+	assert.False(t, bridge.clientSupportsStartDebugging.Load())
+}
+
+func TestBridge_StartDebuggingInterception_WithHandler(t *testing.T) {
+	t.Parallel()
+
+	handlerCalled := false
+	config := BridgeConfig{
+		SessionID: "parent-session",
+		StartDebuggingHandler: func(parentSessionID string, configuration map[string]any, request string) (string, error) {
+			handlerCalled = true
+			assert.Equal(t, "parent-session", parentSessionID)
+			assert.Equal(t, "launch", request)
+			assert.Equal(t, "node", configuration["type"])
+			return "parent-session:0", nil
+		},
+	}
+
+	bridge := NewDapBridge(config)
+	bridge.clientSupportsStartDebugging.Store(true)
+
+	sdReq := &dap.StartDebuggingRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  5,
+				Type: "request",
+			},
+			Command: "startDebugging",
+		},
+		Arguments: dap.StartDebuggingRequestArguments{
+			Request:       "launch",
+			Configuration: map[string]any{"type": "node", "program": "app.js"},
+		},
+	}
+
+	modifiedMsg, forward, asyncResponse := bridge.handleStartDebuggingRequest(sdReq)
+
+	assert.True(t, handlerCalled, "handler should be called")
+	assert.True(t, forward, "request should be forwarded to IDE")
+
+	// Verify the configuration was augmented with child session ID
+	modifiedReq, ok := modifiedMsg.(*dap.StartDebuggingRequest)
+	require.True(t, ok)
+	assert.Equal(t, "parent-session:0", modifiedReq.Arguments.Configuration[childSessionIDKey])
+	// Original config should be preserved
+	assert.Equal(t, "node", modifiedReq.Arguments.Configuration["type"])
+	assert.Equal(t, "app.js", modifiedReq.Arguments.Configuration["program"])
+
+	// No async response — the IDE sends the response back to the adapter
+	assert.Nil(t, asyncResponse, "bridge should not generate a response")
+}
+
+func TestBridge_StartDebuggingInterception_NoHandler(t *testing.T) {
+	t.Parallel()
+
+	// When no handler is configured, startDebugging should be forwarded unchanged
+	config := BridgeConfig{
+		SessionID: "session",
+	}
+
+	bridge := NewDapBridge(config)
+	bridge.clientSupportsStartDebugging.Store(true)
+
+	sdReq := &dap.StartDebuggingRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "request",
+			},
+			Command: "startDebugging",
+		},
+		Arguments: dap.StartDebuggingRequestArguments{
+			Request:       "launch",
+			Configuration: map[string]any{"type": "node"},
+		},
+	}
+
+	modifiedMsg, forward, asyncResponse := bridge.handleStartDebuggingRequest(sdReq)
+
+	assert.True(t, forward, "should be forwarded when no handler")
+	assert.Equal(t, sdReq, modifiedMsg, "message should not be modified")
+	assert.Nil(t, asyncResponse, "no async response when not intercepted")
+}
+
+func TestBridge_StartDebuggingInterception_ClientDoesNotSupport(t *testing.T) {
+	t.Parallel()
+
+	handlerCalled := false
+	config := BridgeConfig{
+		SessionID: "session",
+		StartDebuggingHandler: func(string, map[string]any, string) (string, error) {
+			handlerCalled = true
+			return "child", nil
+		},
+	}
+
+	bridge := NewDapBridge(config)
+	// Client did NOT set supportsStartDebuggingRequest
+
+	sdReq := &dap.StartDebuggingRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "request",
+			},
+			Command: "startDebugging",
+		},
+		Arguments: dap.StartDebuggingRequestArguments{
+			Request: "launch",
+		},
+	}
+
+	modifiedMsg, forward, asyncResponse := bridge.handleStartDebuggingRequest(sdReq)
+
+	assert.False(t, handlerCalled, "handler should NOT be called when client doesn't support it")
+	assert.True(t, forward, "should be forwarded unchanged")
+	assert.Equal(t, sdReq, modifiedMsg)
+	assert.Nil(t, asyncResponse)
+}
+
+func TestBridge_StartDebuggingInterception_HandlerError(t *testing.T) {
+	t.Parallel()
+
+	config := BridgeConfig{
+		SessionID: "session",
+		StartDebuggingHandler: func(string, map[string]any, string) (string, error) {
+			return "", fmt.Errorf("registration failed")
+		},
+	}
+
+	bridge := NewDapBridge(config)
+	bridge.clientSupportsStartDebugging.Store(true)
+
+	sdReq := &dap.StartDebuggingRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  3,
+				Type: "request",
+			},
+			Command: "startDebugging",
+		},
+		Arguments: dap.StartDebuggingRequestArguments{
+			Request: "launch",
+		},
+	}
+
+	modifiedMsg, forward, asyncResponse := bridge.handleStartDebuggingRequest(sdReq)
+
+	// On handler error, the request is forwarded unchanged (without bridge metadata)
+	// so the IDE can handle it or fail naturally
+	assert.True(t, forward, "should still be forwarded on handler error")
+	assert.Equal(t, sdReq, modifiedMsg, "message should be unmodified")
+	assert.Nil(t, asyncResponse, "no async response")
+	assert.NotContains(t, sdReq.Arguments.Configuration, childSessionIDKey,
+		"child session ID should not be injected on error")
 }
 
 func TestBridge_MessageForwarding(t *testing.T) {
@@ -459,55 +672,11 @@ func TestBridge_OutputEventForwarding(t *testing.T) {
 	assert.Contains(t, stdoutBuf.String(), "test output")
 }
 
-func TestBridge_OutputEventNotCapturedWhenRunInTerminalUsed(t *testing.T) {
-	t.Parallel()
-
-	// Test that output events are NOT captured when runInTerminal was used
-
-	stdoutBuf := &bytes.Buffer{}
-
-	config := BridgeConfig{
-		SessionID: "session",
-		OutputHandler: &testOutputHandler{
-			stdout: stdoutBuf,
-		},
-	}
-
-	bridge := NewDapBridge(config)
-
-	// Simulate runInTerminal being used
-	bridge.runInTerminalUsed.Store(true)
-
-	outputEvent := &dap.OutputEvent{
-		Event: dap.Event{
-			ProtocolMessage: dap.ProtocolMessage{
-				Seq:  1,
-				Type: "event",
-			},
-			Event: "output",
-		},
-		Body: dap.OutputEventBody{
-			Category: "stdout",
-			Output:   "should not be captured",
-		},
-	}
-
-	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
-	defer cancel()
-
-	_, forward, _ := bridge.interceptDownstreamMessage(ctx, outputEvent)
-
-	// Output event should still be forwarded
-	assert.True(t, forward)
-
-	// But should NOT have been captured (buffer should be empty)
-	assert.Empty(t, stdoutBuf.String(), "output should not be captured when runInTerminal was used")
-}
-
 func TestBridge_TerminatedEventTracking(t *testing.T) {
 	t.Parallel()
 
 	// Test that interceptDownstreamMessage tracks TerminatedEvent
+	// but does not set exit code (TerminatedEvent has no exit code)
 
 	config := BridgeConfig{
 		SessionID: "session",
@@ -517,6 +686,7 @@ func TestBridge_TerminatedEventTracking(t *testing.T) {
 
 	// Initially terminatedEventSeen should be false
 	assert.False(t, bridge.terminatedEventSeen.Load())
+	assert.Nil(t, bridge.ExitCode())
 
 	terminatedEvent := &dap.TerminatedEvent{
 		Event: dap.Event{
@@ -539,6 +709,145 @@ func TestBridge_TerminatedEventTracking(t *testing.T) {
 
 	// terminatedEventSeen should now be true
 	assert.True(t, bridge.terminatedEventSeen.Load(), "bridge should track that TerminatedEvent was seen")
+
+	// ExitCode should still be nil (TerminatedEvent does not carry exit code)
+	assert.Nil(t, bridge.ExitCode(), "exit code should remain nil after TerminatedEvent")
+}
+
+func TestBridge_ExitedEventTracking(t *testing.T) {
+	t.Parallel()
+
+	// Test that interceptDownstreamMessage captures exit code from ExitedEvent
+
+	config := BridgeConfig{
+		SessionID: "session",
+		Logger:    logr.Discard(),
+	}
+
+	bridge := NewDapBridge(config)
+
+	assert.Nil(t, bridge.ExitCode())
+	assert.False(t, bridge.terminatedEventSeen.Load())
+
+	exitedEvent := &dap.ExitedEvent{
+		Event: dap.Event{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "event",
+			},
+			Event: "exited",
+		},
+		Body: dap.ExitedEventBody{
+			ExitCode: 42,
+		},
+	}
+
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
+	modified, forward, asyncResp := bridge.interceptDownstreamMessage(ctx, exitedEvent)
+
+	assert.True(t, forward, "exited event should be forwarded to IDE")
+	assert.Equal(t, exitedEvent, modified)
+	assert.Nil(t, asyncResp)
+
+	// Exit code should be captured
+	require.NotNil(t, bridge.ExitCode(), "exit code should be captured from ExitedEvent")
+	assert.Equal(t, int32(42), *bridge.ExitCode())
+
+	// terminatedEventSeen should remain false (ExitedEvent is semantically different)
+	assert.False(t, bridge.terminatedEventSeen.Load(),
+		"ExitedEvent should not set terminatedEventSeen")
+}
+
+func TestBridge_ExitedAndTerminatedEvents(t *testing.T) {
+	t.Parallel()
+
+	// Test that both ExitedEvent and TerminatedEvent can be received gracefully.
+	// Typical DAP flow: ExitedEvent (with exit code) arrives first, then TerminatedEvent.
+
+	config := BridgeConfig{
+		SessionID: "session",
+		Logger:    logr.Discard(),
+	}
+
+	bridge := NewDapBridge(config)
+
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
+	// Simulate ExitedEvent arriving first
+	exitedEvent := &dap.ExitedEvent{
+		Event: dap.Event{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "event",
+			},
+			Event: "exited",
+		},
+		Body: dap.ExitedEventBody{
+			ExitCode: 0,
+		},
+	}
+
+	_, exitedForward, _ := bridge.interceptDownstreamMessage(ctx, exitedEvent)
+	assert.True(t, exitedForward)
+	require.NotNil(t, bridge.ExitCode())
+	assert.Equal(t, int32(0), *bridge.ExitCode())
+	assert.False(t, bridge.terminatedEventSeen.Load())
+
+	// Simulate TerminatedEvent arriving second
+	terminatedEvent := &dap.TerminatedEvent{
+		Event: dap.Event{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  2,
+				Type: "event",
+			},
+			Event: "terminated",
+		},
+	}
+
+	_, termForward, _ := bridge.interceptDownstreamMessage(ctx, terminatedEvent)
+	assert.True(t, termForward)
+	assert.True(t, bridge.terminatedEventSeen.Load())
+
+	// Exit code should still be the value from ExitedEvent
+	require.NotNil(t, bridge.ExitCode())
+	assert.Equal(t, int32(0), *bridge.ExitCode())
+}
+
+func TestBridge_ExitedEventZeroExitCode(t *testing.T) {
+	t.Parallel()
+
+	// Test that exit code 0 is properly captured (not confused with nil/unset)
+
+	config := BridgeConfig{
+		SessionID: "session",
+		Logger:    logr.Discard(),
+	}
+
+	bridge := NewDapBridge(config)
+
+	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+
+	exitedEvent := &dap.ExitedEvent{
+		Event: dap.Event{
+			ProtocolMessage: dap.ProtocolMessage{
+				Seq:  1,
+				Type: "event",
+			},
+			Event: "exited",
+		},
+		Body: dap.ExitedEventBody{
+			ExitCode: 0,
+		},
+	}
+
+	bridge.interceptDownstreamMessage(ctx, exitedEvent)
+
+	require.NotNil(t, bridge.ExitCode(), "exit code 0 should be captured, not nil")
+	assert.Equal(t, int32(0), *bridge.ExitCode())
 }
 
 func TestBridge_SendErrorToIDE(t *testing.T) {
