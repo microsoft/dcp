@@ -32,6 +32,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -132,6 +133,13 @@ type NetworkReconciler struct {
 
 	// The resource harvester used to clean up abandoned resources on startup
 	harvester *resourceHarvester
+
+	config NetworkReconcilerConfig
+}
+
+type NetworkReconcilerConfig struct {
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessTreeItem
 }
 
 var (
@@ -146,6 +154,26 @@ func NewNetworkReconciler(
 	orchestrator containers.ContainerOrchestrator,
 	harvester *resourceHarvester,
 ) *NetworkReconciler {
+	return NewNetworkReconcilerWithConfig(
+		lifetimeCtx,
+		client,
+		noCacheClient,
+		log,
+		orchestrator,
+		harvester,
+		NetworkReconcilerConfig{},
+	)
+}
+
+func NewNetworkReconcilerWithConfig(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+	orchestrator containers.ContainerOrchestrator,
+	harvester *resourceHarvester,
+	config NetworkReconcilerConfig,
+) *NetworkReconciler {
 	base := NewReconcilerBase[apiv1.ContainerNetwork](client, noCacheClient, log, lifetimeCtx)
 
 	r := NetworkReconciler{
@@ -159,6 +187,7 @@ func NewNetworkReconciler(
 		lock:                 &sync.Mutex{},
 		orchestratorHealthy:  &atomic.Bool{},
 		harvester:            harvester,
+		config:               config,
 	}
 
 	go r.onShutdown()
@@ -353,7 +382,42 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	r.ensureNetworkWatch(network, log)
 
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
+	if network.Spec.Persistent {
+		var change objectChange
+		if r.config.StateStore == nil {
+			log.Error(fmt.Errorf("state store is not configured"), "Could not acquire persistent network lease")
+			return additionalReconciliationNeeded
+		}
 
+		resourceKey := statestore.RuntimeResourceKey(statestore.ResourceKindNetwork, networkName)
+		leaseErr := r.config.StateStore.WithResourceLease(
+			ctx,
+			resourceKey,
+			r.config.ResourceLeaseOwner,
+			resourceLeaseTTL,
+			"",
+			func(context.Context, *statestore.ResourceLease) error {
+				log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
+				change = r.ensureNetworkWithName(ctx, network, networkName, log)
+				return nil
+			},
+		)
+		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+			log.V(1).Info("Persistent network is locked by another DCP instance, retrying")
+			return additionalReconciliationNeeded
+		}
+		if leaseErr != nil {
+			log.Error(leaseErr, "Could not acquire persistent network lease")
+			return additionalReconciliationNeeded
+		}
+
+		return change
+	}
+
+	return r.ensureNetworkWithName(ctx, network, networkName, log)
+}
+
+func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *apiv1.ContainerNetwork, networkName string, log logr.Logger) objectChange {
 	if network.Spec.Persistent {
 		isNetworkSafeToReuse := r.harvester.IsDone() || r.harvester.TryProtectNetwork(ctx, networkName)
 		existing, err := inspectNetworkIfExists(ctx, r.orchestrator, networkName)

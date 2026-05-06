@@ -7,6 +7,7 @@ package ctrlutil
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"sync"
 	"time"
@@ -107,4 +108,19 @@ func (r *TestProcessExecutableRunner) StopRun(ctx context.Context, runID control
 	return r.inner.StopRun(ctx, runID, log)
 }
 
+func (r *TestProcessExecutableRunner) AdoptRun(
+	ctx context.Context,
+	run controllers.ExecutableRunAdoptionInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	log logr.Logger,
+) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent run adoption")
+	}
+
+	return persistentRunner.AdoptRun(ctx, run, runChangeHandler, log)
+}
+
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)
+var _ controllers.PersistentExecutableRunner = (*TestProcessExecutableRunner)(nil)

@@ -18,6 +18,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
@@ -56,6 +57,17 @@ func StartAdvancedTestEnvironment(
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
+	stateStore, stateStoreCleanup, stateStoreErr := createTestStateStore(ctx, testTempDir)
+	if stateStoreErr != nil {
+		serverInfo.Dispose()
+		return nil, nil, fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
+	}
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		serverInfo.Dispose()
+		stateStoreCleanup()
+		return nil, nil, fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
+	}
 	pe := process.NewOSExecutor(log)
 	exeRunner := ctrl_testutil.NewTestProcessExecutableRunner(pe)
 
@@ -66,6 +78,7 @@ func StartAdvancedTestEnvironment(
 		<-managerDone.Wait()
 
 		serverInfo.Dispose()
+		stateStoreCleanup()
 		pe.Dispose()
 	})
 
@@ -84,7 +97,7 @@ func StartAdvancedTestEnvironment(
 	)
 
 	if inclCtrl&ExecutableController != 0 {
-		execR := controllers.NewExecutableReconciler(
+		execR := controllers.NewExecutableReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
@@ -93,6 +106,9 @@ func StartAdvancedTestEnvironment(
 				apiv1.ExecutionTypeProcess: exeRunner,
 			},
 			hpSet,
+			controllers.ExecutableReconcilerConfig{
+				StateStore: stateStore,
+			},
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
@@ -116,13 +132,17 @@ func StartAdvancedTestEnvironment(
 		harvester := controllers.NewResourceHarvester()
 		go harvester.Harvest(ctx, serverInfo.ContainerOrchestrator, log.WithName("ResourceCleanup"))
 
-		networkR := controllers.NewNetworkReconciler(
+		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("NetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
 			harvester,
+			controllers.NetworkReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
@@ -139,6 +159,8 @@ func StartAdvancedTestEnvironment(
 			hpSet,
 			controllers.ContainerReconcilerConfig{
 				MaxParallelContainerStarts: math.MaxUint8,
+				StateStore:                 stateStore,
+				ResourceLeaseOwner:         leaseOwner,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {

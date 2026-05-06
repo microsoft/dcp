@@ -32,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -94,6 +95,8 @@ var (
 type ContainerReconcilerConfig struct {
 	MaxParallelContainerStarts      uint8
 	ContainerStartupTimeoutOverride time.Duration
+	StateStore                      *statestore.Store
+	ResourceLeaseOwner              process.ProcessTreeItem
 }
 
 type containerStateInitializerFunc = stateInitializerFunc[
@@ -522,6 +525,15 @@ func ensureContainerStartingState(
 
 	} else if templating.IsTransientTemplateError(rcd.startupError) {
 		// Retry startup after transient error.
+
+		rcd.startupError = nil
+		rcd.startAttemptFinishedAt = metav1.MicroTime{}
+		rcd.containerName = ""
+
+		r.scheduleContainerCreation(container, rcd, log, startupRetryDelay)
+		change |= statusChanged
+	} else if errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld) {
+		// Another DCP instance is currently creating the persistent container. Retry so we can either acquire the lease or adopt it after it appears.
 
 		rcd.startupError = nil
 		rcd.startAttemptFinishedAt = metav1.MicroTime{}
@@ -1333,7 +1345,64 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				Network:              defaultNetwork,
 				StreamCommandOptions: streamOptions,
 			}
-			inspected, err := createContainer(startupCtx, r.orchestrator, creationOptions)
+			var inspected *containers.InspectedContainer
+			inspectPersistentContainer := func() (bool, error) {
+				existingContainer, inspectErr := inspectContainerIfExists(startupCtx, r.orchestrator, containerName)
+				if errors.Is(inspectErr, containers.ErrNotFound) {
+					return false, nil
+				}
+				if inspectErr != nil {
+					return false, inspectErr
+				}
+				inspected = existingContainer
+				log.V(1).Info("Persistent container appeared before create; reusing existing container")
+				return true, nil
+			}
+			createOrReuseContainer := func() error {
+				if rcd.runSpec.Persistent {
+					foundExisting, inspectErr := inspectPersistentContainer()
+					if inspectErr != nil || foundExisting {
+						return inspectErr
+					}
+				}
+
+				var createContainerErr error
+				inspected, createContainerErr = createContainer(startupCtx, r.orchestrator, creationOptions)
+				return createContainerErr
+			}
+			if rcd.runSpec.Persistent {
+				if r.config.StateStore == nil {
+					return fmt.Errorf("state store is not configured")
+				}
+
+				resourceKey := statestore.RuntimeResourceKey(statestore.ResourceKindContainer, containerName)
+				leaseErr := r.config.StateStore.WithResourceLease(
+					startupCtx,
+					resourceKey,
+					r.config.ResourceLeaseOwner,
+					resourceLeaseTTL,
+					"",
+					func(context.Context, *statestore.ResourceLease) error {
+						log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
+						return createOrReuseContainer()
+					},
+				)
+				if leaseErr == nil {
+					err = nil
+				} else if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+					foundExisting, inspectErr := inspectPersistentContainer()
+					if inspectErr != nil {
+						err = inspectErr
+					} else if !foundExisting {
+						log.V(1).Info("Persistent container is locked by another DCP instance and is not yet visible, retrying")
+						err = leaseErr
+					}
+				} else {
+					err = leaseErr
+				}
+			} else {
+				err = createOrReuseContainer()
+			}
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 			if err != nil {
 				log.Error(err, "Could not create the container")
@@ -1511,8 +1580,8 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 
-			// Keep in "starting" state if the error is a transient error, otherwise initiate the transition to "failed to start".
-			if !templating.IsTransientTemplateError(err) {
+			// Keep in "starting" state if the error is transient, otherwise initiate the transition to "failed to start".
+			if !templating.IsTransientTemplateError(err) && !errors.Is(err, statestore.ErrResourceLeaseHeld) {
 				rcd.containerState = apiv1.ContainerStateFailedToStart
 			}
 		}

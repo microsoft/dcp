@@ -30,6 +30,7 @@ import (
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/templating"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
@@ -63,6 +64,10 @@ var executableStateInitializers = map[apiv1.ExecutableState]executableStateIniti
 
 type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, *apiv1.Executable]
 
+type ExecutableReconcilerConfig struct {
+	StateStore *statestore.Store
+}
+
 // ExecutableReconciler reconciles a Executable object
 type ExecutableReconciler struct {
 	*ReconcilerBase[apiv1.Executable, *apiv1.Executable]
@@ -81,6 +86,8 @@ type ExecutableReconciler struct {
 
 	// A WorkQueue for operations related to stopping Executables (which might take a while).
 	stopQueue *resiliency.WorkQueue
+
+	config ExecutableReconcilerConfig
 }
 
 var (
@@ -103,6 +110,26 @@ func NewExecutableReconciler(
 	executableRunners map[apiv1.ExecutionType]ExecutableRunner,
 	healthProbeSet *health.HealthProbeSet,
 ) *ExecutableReconciler {
+	return NewExecutableReconcilerWithConfig(
+		lifetimeCtx,
+		client,
+		noCacheClient,
+		log,
+		executableRunners,
+		healthProbeSet,
+		ExecutableReconcilerConfig{},
+	)
+}
+
+func NewExecutableReconcilerWithConfig(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+	executableRunners map[apiv1.ExecutionType]ExecutableRunner,
+	healthProbeSet *health.HealthProbeSet,
+	config ExecutableReconcilerConfig,
+) *ExecutableReconciler {
 	base := NewReconcilerBase[apiv1.Executable](client, noCacheClient, log, lifetimeCtx)
 
 	r := ExecutableReconciler{
@@ -112,6 +139,7 @@ func NewExecutableReconciler(
 		hpSet:             healthProbeSet,
 		healthProbeCh:     concurrency.NewUnboundedChan[health.HealthProbeReport](lifetimeCtx),
 		stopQueue:         resiliency.NewWorkQueue(lifetimeCtx, maxParallelExecutableStops),
+		config:            config,
 	}
 
 	go r.handleHealthProbeResults()
@@ -195,6 +223,13 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
 	_, runInfo := r.runs.BorrowByNamespacedName(exe.NamespacedName())
 
+	if exe.Spec.Persistent {
+		log.V(1).Info("Persistent Executable is being deleted; leaving underlying process running")
+		r.releasePersistentExecutableResources(ctx, exe, runInfo, log)
+		r.runs.DeleteByNamespacedName(exe.NamespacedName())
+		return deleteFinalizer(exe, executableFinalizer, log)
+	}
+
 	var change objectChange
 
 	switch {
@@ -261,6 +296,17 @@ func handleNewExecutable(
 		return statusChanged
 	}
 
+	if !exe.ShouldStart() && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
+		return noChange
+	}
+
+	if exe.Spec.Persistent && runInfo == nil {
+		adopted, adoptionChange := r.tryAdoptPersistentExecutable(ctx, exe, log)
+		if adopted || adoptionChange != noChange {
+			return adoptionChange
+		}
+	}
+
 	return r.startExecutable(ctx, exe, runInfo, log)
 }
 
@@ -278,6 +324,23 @@ func ensureExecutableRunningState(
 		// Might happen if the Executable is being deleted and the run was already terminated
 		// (we are seeing stale Executable data due to Kubernetes container-runtime caching).
 		return change
+	}
+
+	if exe.Spec.Persistent && runInfo.Pid != apiv1.UnknownPID && !runInfo.ProcessIdentityTime.IsZero() {
+		pid, pidErr := process.Int64_ToPidT(*runInfo.Pid)
+		if pidErr != nil {
+			log.Error(pidErr, "Persistent Executable run has invalid PID")
+			runInfo.ExeState = apiv1.ExecutableStateUnknown
+			return change | r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
+		}
+		if _, findErr := process.FindProcess(pid, runInfo.ProcessIdentityTime); findErr != nil {
+			log.Info("Persistent Executable process is no longer running", "PID", pid, "Error", findErr.Error())
+			r.deletePersistentProcessRecord(ctx, exe.NamespacedName(), log)
+			runInfo.ExeState = apiv1.ExecutableStateFinished
+			runInfo.FinishTimestamp = metav1.NowMicro()
+			r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
+			return change | runInfo.ApplyTo(exe, log) | r.setExecutableState(exe, apiv1.ExecutableStateFinished)
+		}
 	}
 
 	if exe.Spec.Stop {
@@ -342,6 +405,147 @@ func ensureExecutableFinalState(
 	return change
 }
 
+func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (bool, objectChange) {
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		log.Error(stateStoreErr, "Persistent Executable cannot be reconciled without a state store")
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	resourceKey := persistentExecutableResourceKey(exe)
+	record, recordErr := stateStore.GetPersistentProcess(ctx, resourceKey)
+	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
+		return false, noChange
+	}
+	if recordErr != nil {
+		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", resourceKey)
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	lifecycleKey, _, lifecycleKeyErr := exe.Spec.GetLifecycleKey()
+	if lifecycleKeyErr != nil {
+		log.Error(lifecycleKeyErr, "Could not calculate Executable lifecycle key")
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	if record.LifecycleKey != lifecycleKey {
+		log.Info("Found existing persistent Executable process record, but lifecycle key does not match",
+			"OldLifecycleKey", record.LifecycleKey,
+			"NewLifecycleKey", lifecycleKey)
+		if deleteErr := stateStore.DeletePersistentProcess(ctx, resourceKey); deleteErr != nil {
+			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
+			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		}
+		return false, noChange
+	}
+
+	if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr != nil {
+		log.Info("Persistent Executable process record is stale; process is no longer running",
+			"PID", record.PID,
+			"Error", findErr.Error())
+		if deleteErr := stateStore.DeletePersistentProcess(ctx, resourceKey); deleteErr != nil {
+			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
+			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		}
+		return false, noChange
+	}
+
+	runner, runnerErr := r.getExecutableRunner(exe, StartupStageDefaultRunner)
+	if runnerErr != nil {
+		log.Error(runnerErr, "The persistent Executable runner is not available")
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+	persistentRunner, ok := runner.(PersistentExecutableRunner)
+	if !ok {
+		log.Error(fmt.Errorf("runner for execution type %s does not support persistent run adoption", record.ExecutionType), "The persistent Executable cannot be adopted")
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	runID := RunID(record.RunID)
+	adoptionErr := persistentRunner.AdoptRun(ctx, ExecutableRunAdoptionInfo{
+		RunID:               runID,
+		Pid:                 record.PID,
+		ProcessIdentityTime: record.IdentityTime,
+		StdOutFile:          record.StdOutFile,
+		StdErrFile:          record.StdErrFile,
+		CommandInfo:         exe.Spec.ExecutablePath,
+	}, r, log)
+	if adoptionErr != nil {
+		log.Error(adoptionErr, "Could not adopt persistent Executable process")
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	ri := NewRunInfo(exe)
+	ri.ExeState = apiv1.ExecutableStateRunning
+	ri.RunID = runID
+	pointers.SetValue(&ri.Pid, int64(record.PID))
+	ri.ProcessIdentityTime = record.IdentityTime
+	ri.DisplayStartTime = record.DisplayStartTime
+	ri.StartupTimestamp = metav1.NewMicroTime(record.DisplayStartTime)
+	ri.StdOutFile = record.StdOutFile
+	ri.StdErrFile = record.StdErrFile
+	ri.startupStage = StartupStageDefaultRunner
+	r.runs.Store(exe.NamespacedName(), ri.RunID, ri.Clone())
+
+	log.Info("Adopted persistent Executable process", "PID", record.PID, "RunID", runID)
+	return true, ri.ApplyTo(exe, log) | r.setExecutableState(exe, apiv1.ExecutableStateRunning)
+}
+
+func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context, exe *apiv1.Executable, res *ExecutableStartResult) error {
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		return stateStoreErr
+	}
+	if res.Pid == apiv1.UnknownPID || res.Pid == nil {
+		return fmt.Errorf("cannot persist Executable process record without a valid PID")
+	}
+
+	pid, pidErr := process.Int64_ToPidT(*res.Pid)
+	if pidErr != nil {
+		return fmt.Errorf("cannot persist Executable process record with invalid PID %d: %w", *res.Pid, pidErr)
+	}
+
+	lifecycleKey, _, lifecycleKeyErr := exe.Spec.GetLifecycleKey()
+	if lifecycleKeyErr != nil {
+		return fmt.Errorf("could not calculate Executable lifecycle key: %w", lifecycleKeyErr)
+	}
+
+	displayStartTime := res.DisplayStartTime
+	if displayStartTime.IsZero() {
+		displayStartTime = res.CompletionTimestamp.Time
+	}
+	executionType := exe.Spec.ExecutionType
+	if executionType == "" {
+		executionType = apiv1.ExecutionTypeProcess
+	}
+
+	return stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:      persistentExecutableResourceKey(exe),
+		Name:             exe.NamespacedName(),
+		UID:              exe.UID,
+		LifecycleKey:     lifecycleKey,
+		PID:              pid,
+		IdentityTime:     res.ProcessIdentityTime,
+		DisplayStartTime: displayStartTime,
+		RunID:            string(res.RunID),
+		StdOutFile:       res.StdOutFile,
+		StdErrFile:       res.StdErrFile,
+		ExecutionType:    string(executionType),
+	})
+}
+
+func (r *ExecutableReconciler) deletePersistentProcessRecord(ctx context.Context, name types.NamespacedName, log logr.Logger) {
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		return
+	}
+
+	deleteErr := stateStore.DeletePersistentProcess(ctx, statestore.ResourceKey(statestore.ResourceKindExecutable, name))
+	if deleteErr != nil {
+		log.Error(deleteErr, "Could not delete persistent Executable process record", "Executable", name.String())
+	}
+}
+
 // Performs an attempt to start an Executable run.
 // Main runner is tried first (Spec.ExecutionType), and if that fails and fallback runners are allowed (Spec.FallbackExecutionTypes),
 // they are in the order specified, one at a time.
@@ -401,7 +605,17 @@ func (r *ExecutableReconciler) startExecutable(
 	}
 
 	// Helper function to update Executable status when the start attempt was successful.
-	handleSuccessfulStart := func(res *ExecutableStartResult) {
+	handleSuccessfulStart := func(res *ExecutableStartResult) objectChange {
+		if exe.Spec.Persistent {
+			persistErr := r.upsertPersistentProcessRecord(ctx, exe, res)
+			if persistErr != nil {
+				log.Error(persistErr, "Could not persist Executable process record")
+				ri.ExeState = apiv1.ExecutableStateUnknown
+				r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
+				return statusChanged
+			}
+		}
+
 		startingRunID := ri.RunID // Might be the temporary starting run ID. We need that to update the runs map.
 		res.applyTo(ri)
 		ri.ApplyTo(exe, log)
@@ -411,6 +625,7 @@ func (r *ExecutableReconciler) startExecutable(
 		if res.ExeState == apiv1.ExecutableStateRunning && res.StartWaitForRunCompletion != nil {
 			res.StartWaitForRunCompletion()
 		}
+		return statusChanged
 	}
 
 	var unknownStartupFailureErr error = errors.New("the reason for the Executable startup failure is unknown")
@@ -419,8 +634,7 @@ func (r *ExecutableReconciler) startExecutable(
 	// or because the previous, asynchronous attempt has completed (successfully or not).
 	// So first we need to check the result of the previous startup attempt (if any).
 	if startResult.IsSuccessfullyCompleted() {
-		handleSuccessfulStart(startResult)
-		return statusChanged | environmentChanged
+		return handleSuccessfulStart(startResult) | environmentChanged
 	} else if startResult != nil {
 		runErr := startResult.StartupError
 		if runErr != nil {
@@ -475,8 +689,7 @@ func (r *ExecutableReconciler) startExecutable(
 		}
 
 		if startResult.IsSuccessfullyCompleted() {
-			handleSuccessfulStart(startResult)
-			return statusChanged | environmentChanged
+			return handleSuccessfulStart(startResult) | environmentChanged
 		}
 
 		// Asynchronous start in progress, wait for OnStartupCompleted() to be called
@@ -545,6 +758,10 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 	runInfo.ExitCode = effectiveExitCode
 	if pid > 0 {
 		pointers.SetValue(&runInfo.Pid, int64(pid))
+	}
+
+	if runInfo.ExeState.IsTerminal() {
+		r.deletePersistentProcessRecord(context.Background(), name, log)
 	}
 
 	runMap := r.runs
@@ -713,6 +930,17 @@ func (r *ExecutableReconciler) getExecutableRunner(exe *apiv1.Executable, startu
 	return runner, nil
 }
 
+func (r *ExecutableReconciler) getStateStore() (*statestore.Store, error) {
+	if r.config.StateStore == nil {
+		return nil, fmt.Errorf("state store is not configured")
+	}
+	return r.config.StateStore, nil
+}
+
+func persistentExecutableResourceKey(exe *apiv1.Executable) string {
+	return statestore.ResourceKey(statestore.ResourceKindExecutable, exe.NamespacedName())
+}
+
 func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Executable) bool {
 	return int(currentStage) == len(exe.Spec.FallbackExecutionTypes)
 }
@@ -721,6 +949,11 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
 	r.deleteOutputFiles(exe, log)
 	r.deleteCertificateFiles(exe, log)
+	logger.ReleaseResourceLog(exe.GetResourceId())
+}
+
+func (r *ExecutableReconciler) releasePersistentExecutableResources(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) {
+	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
 }
 

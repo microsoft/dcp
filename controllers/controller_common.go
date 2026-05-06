@@ -40,6 +40,7 @@ const (
 	conflictRequeueDelay        = 100 * time.Millisecond
 	reconciliationDebounceDelay = 500 * time.Millisecond
 	reconciliationMaxDelay      = 5 * time.Second
+	resourceLeaseTTL            = 30 * time.Second
 
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"

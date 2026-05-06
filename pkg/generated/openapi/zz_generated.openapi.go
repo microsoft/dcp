@@ -2904,10 +2904,31 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 							Ref:         ref("github.com/microsoft/dcp/api/v1.AmbientEnvironment"),
 						},
 					},
+					"start": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should the controller attempt to start the Executable?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
 					"stop": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should the controller attempt to stop the Executable",
 							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"persistent": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Should this Executable be created and persisted between DCP runs?",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"lifecycleKey": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional key used to identify if an existing persistent Executable process should be reused. If not set, the controller will calculate a key based on a hash of specific fields in the ExecutableSpec.",
+							Type:        []string{"string"},
 							Format:      "",
 						},
 					},

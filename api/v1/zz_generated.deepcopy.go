@@ -1245,6 +1245,11 @@ func (in *ExecutableSpec) DeepCopyInto(out *ExecutableSpec) {
 		copy(*out, *in)
 	}
 	out.AmbientEnvironment = in.AmbientEnvironment
+	if in.Start != nil {
+		in, out := &in.Start, &out.Start
+		*out = new(bool)
+		**out = **in
+	}
 	if in.HealthProbes != nil {
 		in, out := &in.HealthProbes, &out.HealthProbes
 		*out = make([]HealthProbe, len(*in))

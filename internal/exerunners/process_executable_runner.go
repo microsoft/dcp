@@ -31,10 +31,12 @@ import (
 )
 
 type processRunState struct {
-	identityTime time.Time
-	stdOutFile   *os.File
-	stdErrFile   *os.File
-	cmdInfo      string // Command line used to start the process, for logging purposes
+	identityTime     time.Time
+	stdOutFile       *os.File
+	stdErrFile       *os.File
+	cmdInfo          string // Command line used to start the process, for logging purposes
+	adopted          bool
+	runChangeHandler controllers.RunChangeHandler
 }
 
 type ProcessExecutableRunner struct {
@@ -105,8 +107,14 @@ func (r *ProcessExecutableRunner) StartRun(
 		}
 	})
 
-	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
-	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(ctx, cmd, processExitHandler, process.CreationFlagEnsureKillOnDispose)
+	var creationFlags process.ProcessCreationFlag = process.CreationFlagEnsureKillOnDispose
+	processCtx := ctx
+	if exe.Spec.Persistent {
+		creationFlags = process.CreationFlagsNone
+		processCtx = context.WithoutCancel(ctx)
+	}
+
+	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -130,22 +138,56 @@ func (r *ProcessExecutableRunner) StartRun(
 		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
 
 		r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-			identityTime: processIdentityTime,
-			stdOutFile:   stdOutFile,
-			stdErrFile:   stdErrFile,
-			cmdInfo:      cmd.String(),
+			identityTime:     processIdentityTime,
+			stdOutFile:       stdOutFile,
+			stdErrFile:       stdErrFile,
+			cmdInfo:          cmd.String(),
+			runChangeHandler: runChangeHandler,
 		})
 
+		displayStartTime := process.StartTimeForProcess(pid)
 		result.RunID = pidToRunID(pid)
 		pointers.SetValue(&result.Pid, int64(pid))
 		result.ExeState = apiv1.ExecutableStateRunning
-		result.CompletionTimestamp = metav1.NewMicroTime(process.StartTimeForProcess(pid))
+		result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
+		result.ProcessIdentityTime = processIdentityTime
+		result.DisplayStartTime = displayStartTime
 		result.StartWaitForRunCompletion = startWaitForProcessExit
 
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 
 		return result
 	}
+}
+
+func (r *ProcessExecutableRunner) AdoptRun(
+	_ context.Context,
+	run controllers.ExecutableRunAdoptionInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	_ logr.Logger,
+) error {
+	if run.RunID == controllers.UnknownRunID {
+		return fmt.Errorf("cannot adopt a process run without a run ID")
+	}
+	if run.Pid == process.UnknownPID {
+		return fmt.Errorf("cannot adopt process run %s without a valid PID", run.RunID)
+	}
+	if run.ProcessIdentityTime.IsZero() {
+		return fmt.Errorf("cannot adopt process run %s without process identity time", run.RunID)
+	}
+
+	if _, findErr := process.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
+		return fmt.Errorf("cannot adopt process run %s: %w", run.RunID, findErr)
+	}
+
+	r.runningProcesses.Store(run.RunID, &processRunState{
+		identityTime:     run.ProcessIdentityTime,
+		cmdInfo:          run.CommandInfo,
+		adopted:          true,
+		runChangeHandler: runChangeHandler,
+	})
+
+	return nil
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -197,6 +239,8 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 
 	if stopErr != nil {
 		stopLog.Error(stopErr, "Failed to stop run")
+	} else if runState.adopted && runState.runChangeHandler != nil {
+		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
 	return stopErr
 }
@@ -229,3 +273,4 @@ func runIdToPID(runID controllers.RunID) process.Pid_t {
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)
+var _ controllers.PersistentExecutableRunner = (*ProcessExecutableRunner)(nil)

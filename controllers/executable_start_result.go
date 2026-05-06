@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -37,6 +38,12 @@ type ExecutableStartResult struct {
 
 	// Timestamp for when the startup attempt was completed
 	CompletionTimestamp metav1.MicroTime
+
+	// Raw process identity time used to protect against PID reuse.
+	ProcessIdentityTime time.Time
+
+	// Process start time intended for display.
+	DisplayStartTime time.Time
 
 	// The error that occurred during startup, if any.
 	// NOTE: if StartupError is nil, this does NOT necessarily mean that the startup was successful.
@@ -94,6 +101,14 @@ func (res *ExecutableStartResult) Equal(other *ExecutableStartResult) bool {
 		return false
 	}
 
+	if !res.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
+		return false
+	}
+
+	if !res.DisplayStartTime.Equal(other.DisplayStartTime) {
+		return false
+	}
+
 	// Check for error presence, not if errors are "equal" (which is not well defined).
 	// We do not have a scenario where we set the StartupError more than once on a given result,
 	// so this is sufficient.
@@ -118,6 +133,8 @@ func (res *ExecutableStartResult) applyTo(ri *ExecutableRunInfo) {
 	ri.StdOutFile = res.StdOutFile
 	ri.StdErrFile = res.StdErrFile
 	ri.StartupTimestamp = res.CompletionTimestamp
+	ri.ProcessIdentityTime = res.ProcessIdentityTime
+	ri.DisplayStartTime = res.DisplayStartTime
 	if res.ExeState == apiv1.ExecutableStateFinished {
 		ri.FinishTimestamp = res.CompletionTimestamp
 	}
@@ -145,6 +162,8 @@ func (res *ExecutableStartResult) Clone() *ExecutableStartResult {
 		StdOutFile:                res.StdOutFile,
 		StdErrFile:                res.StdErrFile,
 		CompletionTimestamp:       res.CompletionTimestamp,
+		ProcessIdentityTime:       res.ProcessIdentityTime,
+		DisplayStartTime:          res.DisplayStartTime,
 		StartupError:              res.StartupError,
 		StartWaitForRunCompletion: res.StartWaitForRunCompletion,
 	}
@@ -193,6 +212,16 @@ func (res *ExecutableStartResult) UpdateFrom(other *ExecutableStartResult) bool 
 
 	updated = setTimestampIfAfterOrUnknown(other.CompletionTimestamp, &res.CompletionTimestamp) || updated
 
+	if !other.ProcessIdentityTime.IsZero() && !res.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
+		res.ProcessIdentityTime = other.ProcessIdentityTime
+		updated = true
+	}
+
+	if !other.DisplayStartTime.IsZero() && !res.DisplayStartTime.Equal(other.DisplayStartTime) {
+		res.DisplayStartTime = other.DisplayStartTime
+		updated = true
+	}
+
 	if other.StartupError != nil && res.StartupError != other.StartupError {
 		res.StartupError = other.StartupError
 		updated = true
@@ -211,7 +240,7 @@ func (res *ExecutableStartResult) String() string {
 		return "{}"
 	}
 
-	return fmt.Sprintf("{exeState: %s, pid: %v, runID: %s, exitCode: %s, stdOutFile: %s, stdErrFile: %s, startupCompletedTimestamp: %s, startupError: %s}",
+	return fmt.Sprintf("{exeState: %s, pid: %v, runID: %s, exitCode: %s, stdOutFile: %s, stdErrFile: %s, startupCompletedTimestamp: %s, processIdentityTime: %s, startupError: %s}",
 		res.ExeState,
 		logger.IntPtrValToString(res.Pid),
 		logger.FriendlyString(string(res.RunID)),
@@ -219,6 +248,7 @@ func (res *ExecutableStartResult) String() string {
 		logger.FriendlyString(res.StdOutFile),
 		logger.FriendlyString(res.StdErrFile),
 		logger.FriendlyMetav1Timestamp(res.CompletionTimestamp),
+		logger.FriendlyString(res.ProcessIdentityTime.Format(osutil.RFC3339MiliTimestampFormat)),
 		logger.FriendlyErrorString(res.StartupError),
 	)
 }
