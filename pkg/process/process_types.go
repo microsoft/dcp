@@ -35,6 +35,29 @@ const (
 	CreationFlagEnsureKillOnDispose = 0x1
 )
 
+// ProcessStopOption configures how a process is stopped.
+type ProcessStopOption func(*processStopOptions)
+
+type processStopOptions struct {
+	opts processStoppingOpts
+}
+
+// StopRootOnly skips descendant enumeration and cleanup after stopping the requested process.
+// Descendants may still receive signals sent to a shared console or process group.
+func StopRootOnly() ProcessStopOption {
+	return func(options *processStopOptions) {
+		options.opts |= optSkipDescendants
+	}
+}
+
+func newProcessStopOptions(options []ProcessStopOption) processStopOptions {
+	stopOptions := processStopOptions{opts: optNone}
+	for _, option := range options {
+		option(&stopOptions)
+	}
+	return stopOptions
+}
+
 // Pid_t is a type used to represent process IDs.
 // The domain is all unsigned 32-bit integers, but we use a signed type to align with Kubernetes API conventions.
 type Pid_t int64
@@ -54,7 +77,7 @@ type Executor interface {
 	// Stops the process identified by the given ProcessHandle.
 	// The handle's IdentityTime, if provided (time.IsZero() returns false), is used to further validate the process to be stopped
 	// (to protect against stopping a wrong process, if the PID was reused).
-	StopProcess(handle ProcessHandle) error
+	StopProcess(handle ProcessHandle, options ...ProcessStopOption) error
 
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.

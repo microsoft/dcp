@@ -210,7 +210,7 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 }
 
 // Called by the controller (via Executor interface)
-func (e *TestProcessExecutor) StopProcess(handle process.ProcessHandle) error {
+func (e *TestProcessExecutor) StopProcess(handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
 	return e.stopProcessImpl(handle, KilledProcessExitCode)
 }
 

@@ -155,7 +155,7 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (P
 	return handle, nil
 }
 
-func (e *OSExecutor) StopProcess(handle ProcessHandle) error {
+func (e *OSExecutor) StopProcess(handle ProcessHandle, options ...ProcessStopOption) error {
 	e.acquireLock()
 	if e.disposed {
 		e.releaseLock()
@@ -163,7 +163,8 @@ func (e *OSExecutor) StopProcess(handle ProcessHandle) error {
 	}
 	e.releaseLock()
 
-	return e.stopProcessInternal(handle, optNone)
+	stopOptions := newProcessStopOptions(options)
+	return e.stopProcessInternal(handle, stopOptions.opts)
 }
 
 // Returns a ProcessHandle identifying the started process, or an error.
@@ -292,22 +293,20 @@ func (e *OSExecutor) releaseLock() {
 }
 
 func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStoppingOpts) error {
-	tree, treeErr := GetProcessTree(handle)
-	if treeErr != nil {
-		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
-	}
-
 	procTreeLog := e.log.WithValues("Root", handle.Pid)
-	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
 
-	procEndedCh, stopErr := e.stopSingleProcess(handle, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
-	if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
-		// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
-		procTreeLog.Error(stopErr, "Could not stop root process")
-		return stopErr
+	stopRootProcess := func() (<-chan struct{}, error, error) {
+		procEndedCh, stopErr := e.stopSingleProcess(handle, opts|optNotFoundIsError|optTrySignal|optWaitForStdio)
+		if stopErr != nil && !errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
+			// If the root process cannot be stopped (and it is not just a timeout error), don't bother with the rest of the tree.
+			procTreeLog.Error(stopErr, "Could not stop root process")
+			return nil, stopErr, stopErr
+		}
+
+		return procEndedCh, stopErr, nil
 	}
 
-	waitForRootProcessToEnd := func() error {
+	waitForRootProcessToEnd := func(procEndedCh <-chan struct{}, stopErr error) error {
 		if errors.Is(stopErr, ErrTimedOutWaitingForProcessToStop) {
 			// Do not bother waiting for the confirmation of root process exit, it probably is not going to happen
 			// if a timeout occurred already...
@@ -326,10 +325,32 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 		}
 	}
 
+	if (opts & optSkipDescendants) != 0 {
+		procTreeLog.V(1).Info("Stopping root process without enumerating descendants")
+		procEndedCh, stopErr, rootStopErr := stopRootProcess()
+		if rootStopErr != nil {
+			return rootStopErr
+		}
+
+		return waitForRootProcessToEnd(procEndedCh, stopErr)
+	}
+
+	tree, treeErr := GetProcessTree(handle)
+	if treeErr != nil {
+		return fmt.Errorf("could not get process tree for process %d: %w", handle.Pid, treeErr)
+	}
+
+	procTreeLog.V(1).Info("Stopping process tree...", "Root", handle.Pid, "Tree", getIDs(tree))
+
+	procEndedCh, stopErr, rootStopErr := stopRootProcess()
+	if rootStopErr != nil {
+		return rootStopErr
+	}
+
 	tree = tree[1:] // We have processed the root
 	if len(tree) == 0 {
 		procTreeLog.V(1).Info("The root process has no children")
-		return waitForRootProcessToEnd()
+		return waitForRootProcessToEnd(procEndedCh, stopErr)
 	}
 
 	procTreeLog.V(1).Info("Make sure children of the root processes are gone...")
@@ -352,7 +373,7 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 		})
 
 		if retryErr != nil {
-			childLog.Error(treeErr, "Could not stop child process")
+			childLog.Error(retryErr, "Could not stop child process")
 		}
 		return retryErr
 
@@ -373,7 +394,7 @@ func (e *OSExecutor) stopProcessInternal(handle ProcessHandle, opts processStopp
 	//     b. we have a time-of-check vs time-of-use problem  with the process tree, which is a snapshot,
 	//        and may be out-of-date for processes spawn children vigorously,
 	// So that is why the following wait operation employs a timeout.
-	rootWaitErr := waitForRootProcessToEnd()
+	rootWaitErr := waitForRootProcessToEnd(procEndedCh, stopErr)
 
 	return errors.Join(append([]error{rootWaitErr}, childStoppingErrors...)...)
 }
@@ -451,6 +472,16 @@ const (
 
 	// The caller is responsible for stopping the process, disregard "shouldStopProcess" value returned by tryStartWaiting().
 	optIsResponsibleForStopping processStoppingOpts = 0x8
+
+	// When combined with optTrySignal on Windows, sends CTRL_C_EVENT to process group 0
+	// (all processes sharing the current console) instead of CTRL_BREAK_EVENT to the specific PID.
+	// Only meaningful when the caller has already attached to the target's console
+	// via AttachConsole. Has no effect on non-Windows platforms.
+	optSignalConsoleGroup processStoppingOpts = 0x10
+
+	// Skips descendant enumeration and cleanup after stopping the root process.
+	// Descendants may still receive signals sent to a shared console or process group.
+	optSkipDescendants processStoppingOpts = 0x20
 )
 
 func makeClosedChan() chan struct{} {

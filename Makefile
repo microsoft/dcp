@@ -105,7 +105,7 @@ DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
 # Locations and definitions for tool binaries
 GO_BIN ?= go
 TOOL_BIN ?= $(repo_dir)/.toolbin
-GOLANGCI_LINT ?= $(TOOL_BIN)/golangci-lint$(exe_suffix)
+GOLANGCI_LINT ?= $(GOTOOL_BIN) github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 GOTOOL_BIN ?= $(GO_BIN) tool
 CONTROLLER_GEN ?= $(GOTOOL_BIN) sigs.k8s.io/controller-tools/cmd/controller-gen
 OPENAPI_GEN ?= $(GOTOOL_BIN) k8s.io/kube-openapi/cmd/openapi-gen
@@ -119,7 +119,6 @@ GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
 # Tool Versions
-GOLANGCI_LINT_VERSION ?= v2.11.2
 PROTOC_VERSION ?= 33.5
 GO_LICENSES_VERSION ?= a8e910054a1e8bc3104cbe074fb7b2251b377a28
 
@@ -309,12 +308,7 @@ clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and a
 
 .PHONY: lint
 lint: golangci-lint generate-grpc ## Runs the linter
-# On Windows we use the global golangci-lint binary.
-ifeq ($(detected_OS),windows)
-	golangci-lint run --timeout 10m
-else
-	$(GOLANGCI_LINT) run --timeout 10m
-endif
+	$(CLEAR_GOARGS) $(GOLANGCI_LINT) run --timeout 10m
 
 .PHONY: install
 install: compile | $(DCP_DIR) ## Installs all binaries to their destinations
@@ -387,15 +381,8 @@ $(DCP_DIR):
 	$(mkdir) $(DCP_DIR)
 
 .PHONY: golangci-lint
-ifeq ($(detected_OS),windows)
-# golangci-lint does not have pwsh-compatible install script, so the user must install it manually
 golangci-lint:
-	@ try { golangci-lint --version } catch { throw "golangci-lint tool is missing. See https://golangci-lint.run/usage/install/#local-installation for installation instructions." }
-else
-golangci-lint: $(GOLANGCI_LINT)
-$(GOLANGCI_LINT): | $(TOOL_BIN)
-	[[ -s $(GOLANGCI_LINT) ]] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TOOL_BIN) $(GOLANGCI_LINT_VERSION)
-endif
+	@$(CLEAR_GOARGS) $(GOLANGCI_LINT) --version
 
 .PHONY: protoc
 protoc: $(PROTOC)

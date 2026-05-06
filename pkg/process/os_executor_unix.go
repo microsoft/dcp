@@ -43,6 +43,9 @@ func NewOSExecutor(log logr.Logger) Executor {
 }
 
 func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppingOpts) (<-chan struct{}, error) {
+	// Console group signaling is Windows-specific; keep the shared option as an explicit no-op on Unix.
+	opts &^= optSignalConsoleGroup
+
 	proc, err := FindProcess(handle)
 	if err != nil {
 		e.acquireLock()

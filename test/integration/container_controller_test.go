@@ -38,6 +38,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/networking"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
@@ -2227,8 +2228,23 @@ func TestContainerLogsFollowFromStart(t *testing.T) {
 
 // Verify that logs can be captured in follow mode when log stream is opened after the Container has exited.
 func TestContainerLogsFollowAfterExit(t *testing.T) {
-	const containerName = "test-container-logs-follow-after-exit"
-	const imageName = containerName + "-image"
+	const testName = "test-container-logs-follow-after-exit"
+
+	type testcase struct {
+		description   string
+		waitAfterExit time.Duration
+	}
+
+	testcases := []testcase{
+		{
+			description:   "immediately",
+			waitAfterExit: 0,
+		},
+		{
+			description:   "after-cancellation-delay",
+			waitAfterExit: logs.FollowStreamCancellationDelay + time.Second,
+		},
+	}
 
 	lines := [][]byte{
 		[]byte("Standard output log line 1"),
@@ -2238,44 +2254,61 @@ func TestContainerLogsFollowAfterExit(t *testing.T) {
 
 	t.Parallel()
 
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			t.Parallel()
 
-	ctr := apiv1.Container{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      containerName,
-			Namespace: metav1.NamespaceNone,
-		},
-		Spec: apiv1.ContainerSpec{
-			Image: imageName,
-		},
+			ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+			defer cancel()
+
+			containerName := testName + "-" + tc.description
+
+			ctr := apiv1.Container{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      containerName,
+					Namespace: metav1.NamespaceNone,
+				},
+				Spec: apiv1.ContainerSpec{
+					Image: containerName + "-image",
+				},
+			}
+
+			t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+			err := client.Create(ctx, &ctr)
+			require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
+
+			updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+			t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
+			for _, line := range lines {
+				logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
+				require.NoError(t, logErr, "could not simulate logging to stdout")
+			}
+
+			t.Logf("Transitioning Container '%s' to 'Exited' state...", ctr.ObjectMeta.Name)
+			exitErr := containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, 0)
+			require.NoError(t, exitErr)
+			updatedCtr = ensureContainerState(t, ctx, client, updatedCtr, apiv1.ContainerStateExited)
+
+			if tc.waitAfterExit > 0 {
+				t.Logf("Waiting %v after container exit before requesting logs...", tc.waitAfterExit)
+				select {
+				case <-time.After(tc.waitAfterExit):
+				case <-ctx.Done():
+					require.NoError(t, ctx.Err())
+				}
+			}
+
+			t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
+			opts := apiv1.LogOptions{
+				Follow:     true,
+				Source:     "stdout",
+				Timestamps: false,
+			}
+			logsErr := waitForObjectLogs(ctx, updatedCtr, opts, lines, nil)
+			require.NoError(t, logsErr, "Could not follow logs for Container '%s'", ctr.ObjectMeta.Name)
+		})
 	}
-
-	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
-	err := client.Create(ctx, &ctr)
-	require.NoError(t, err, "Could not create Container '%s'", ctr.ObjectMeta.Name)
-
-	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
-
-	t.Logf("Simulating logging for Container '%s'...", ctr.ObjectMeta.Name)
-	for _, line := range lines {
-		logErr := containerOrchestrator.SimulateContainerLogging(updatedCtr.Status.ContainerID, apiv1.LogStreamSourceStdout, osutil.WithNewline(line))
-		require.NoError(t, logErr, "could not simulate logging to stdout")
-	}
-
-	t.Logf("Transitioning Container '%s' to 'Exited' state...", ctr.ObjectMeta.Name)
-	exitErr := containerOrchestrator.SimulateContainerExit(ctx, updatedCtr.Status.ContainerID, 0)
-	require.NoError(t, exitErr)
-	updatedCtr = ensureContainerState(t, ctx, client, updatedCtr, apiv1.ContainerStateExited)
-
-	t.Logf("Start following logs for Container '%s'...", ctr.ObjectMeta.Name)
-	opts := apiv1.LogOptions{
-		Follow:     true,
-		Source:     "stdout",
-		Timestamps: false,
-	}
-	logsErr := waitForObjectLogs(ctx, updatedCtr, opts, lines, nil)
-	require.NoError(t, logsErr, "Could not follow logs for Container '%s'", ctr.ObjectMeta.Name)
 }
 
 // Verify that Container startup logs can be captured.

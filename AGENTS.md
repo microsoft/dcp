@@ -41,6 +41,9 @@ This codebase implements several custom Kubernetes types and controllers. Implem
 ### Use sync.Mutex as pointers
 - In this codebase, `sync.Mutex` instances are used as pointers (`*sync.Mutex`). Create them with `&sync.Mutex{}` and pass them around as pointer values.
 
+## Prefer extending existing interfaces over creating new ones
+- It's safe to extend existing interfaces when we need new functionality; we don't need to worry about breaking existing implementations because we control all of them. This also helps to keep the codebase simpler and more consistent.
+
 ## Adhere to Code Placement Rules
 Place new code in the correct location according to the project's structure:
 - **API Definitions:** Go in `api/v1/`.
