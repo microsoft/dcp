@@ -391,6 +391,11 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
+	// If a target platform is specified, build for that platform
+	if options.Platform != "" {
+		args = append(args, "--platform", options.Platform)
+	}
+
 	// Enable plain output mode (Docker only)
 	args = append(args, "--progress", "plain")
 

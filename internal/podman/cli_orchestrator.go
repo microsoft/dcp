@@ -380,6 +380,11 @@ func (pco *PodmanCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
+	// If a target platform is specified, build for that platform
+	if options.Platform != "" {
+		args = append(args, "--platform", options.Platform)
+	}
+
 	// Append the build context argument
 	args = append(args, options.Context)
 
