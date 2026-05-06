@@ -11,27 +11,30 @@ import (
 	"time"
 )
 
+type runStateAction struct {
+	timer     *time.Timer
+	threshold time.Time
+}
+
 // A variant of DebounceLast that calls an "action" (function with no return value).
 // Because there is no return value, the Run method does not wait for the action to complete
 // (the action is executed in a separate goroutine, fully asynchronously).
 // The action will be called after the specified delay, but only if no new calls arrive in the meantime.
 // If new calls arrive, the action will be delayed further, but no more than maxDelay.
-type DebounceLastAction[T any] struct {
-	delay     time.Duration
-	maxDelay  time.Duration
-	timer     *time.Timer
-	threshold time.Time
-	runC      chan struct{}
-	m         *sync.Mutex
-	action    func(T)
+type DebounceLastAction struct {
+	delay    time.Duration
+	maxDelay time.Duration
+	run      *runStateAction
+	m        *sync.Mutex
+	action   func()
 }
 
-func NewDebounceLastAction[T any](action func(T), delay, maxDelay time.Duration) *DebounceLastAction[T] {
+func NewDebounceLastAction(action func(), delay, maxDelay time.Duration) *DebounceLastAction {
 	if maxDelay < delay {
 		maxDelay = delay
 	}
 
-	return &DebounceLastAction[T]{
+	return &DebounceLastAction{
 		delay:    delay,
 		maxDelay: maxDelay,
 		action:   action,
@@ -39,38 +42,44 @@ func NewDebounceLastAction[T any](action func(T), delay, maxDelay time.Duration)
 	}
 }
 
-func (dl *DebounceLastAction[T]) Run(ctx context.Context, arg T) {
+func (dl *DebounceLastAction) Run(ctx context.Context) {
 	dl.m.Lock()
-	defer dl.m.Unlock()
 
-	if dl.runC == nil {
+	if dl.run == nil {
 		// New run
-		dl.timer = time.NewTimer(dl.delay)
-		dl.runC = make(chan struct{}, 1)
-		dl.threshold = time.Now().Add(dl.maxDelay)
-		go dl.execRunnerIfThresholdExceeded(ctx, arg)
+		run := &runStateAction{
+			timer:     time.NewTimer(dl.delay),
+			threshold: time.Now().Add(dl.maxDelay),
+		}
+		dl.run = run
+		dl.m.Unlock()
+
+		go dl.execRunnerIfThresholdExceeded(ctx, run)
+		return
 	} else {
-		if time.Now().Add(dl.delay).Before(dl.threshold) {
-			dl.timer.Reset(dl.delay)
+		if time.Now().Add(dl.delay).Before(dl.run.threshold) {
+			dl.run.timer.Reset(dl.delay)
 		}
 	}
+
+	dl.m.Unlock()
 }
 
-func (dl *DebounceLastAction[T]) execRunnerIfThresholdExceeded(ctx context.Context, arg T) {
+func (dl *DebounceLastAction) execRunnerIfThresholdExceeded(ctx context.Context, run *runStateAction) {
 	select {
-	case <-dl.timer.C:
-		dl.stopCurrentRun()
-		dl.action(arg)
+	case <-run.timer.C:
+		dl.stopCurrentRun(run)
+		dl.action()
 	case <-ctx.Done():
-		dl.stopCurrentRun()
+		dl.stopCurrentRun(run)
 	}
 }
 
-func (dl *DebounceLastAction[T]) stopCurrentRun() {
+func (dl *DebounceLastAction) stopCurrentRun(run *runStateAction) {
 	dl.m.Lock()
 	defer dl.m.Unlock()
-	dl.timer.Stop()
-	close(dl.runC)
-	dl.runC = nil
-	dl.threshold = time.Time{}
+	run.timer.Stop()
+	if dl.run == run {
+		dl.run = nil
+	}
 }

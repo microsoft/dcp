@@ -149,7 +149,7 @@ func verifyNetworkState(
 	}
 }
 
-func stopContainer(stopContext context.Context, o containers.ContainerOrchestrator, containerID string) error {
+func stopContainer(stopContext context.Context, o containers.ContainerOrchestrator, containerID string) (*containers.InspectedContainer, error) {
 	action := func(ctx context.Context) error {
 		_, stopErr := o.StopContainers(ctx, containers.StopContainersOptions{
 			Containers:    []string{containerID},
@@ -159,8 +159,8 @@ func stopContainer(stopContext context.Context, o containers.ContainerOrchestrat
 		return stopErr
 	}
 
-	verify := func(ctx context.Context) (any, error) {
-		_, verifyErr := verifyContainerState(ctx, o, containerID, func(i *containers.InspectedContainer) error {
+	verify := func(ctx context.Context) (*containers.InspectedContainer, error) {
+		inspected, verifyErr := verifyContainerState(ctx, o, containerID, func(i *containers.InspectedContainer) error {
 			if i.Status == containers.ContainerStatusExited {
 				return nil
 			} else {
@@ -172,11 +172,10 @@ func stopContainer(stopContext context.Context, o containers.ContainerOrchestrat
 			return nil, nil // Special case: treat missing container as "stopped"
 		}
 
-		return nil, verifyErr
+		return inspected, verifyErr
 	}
 
-	_, stopErr := callWithRetryAndVerification(stopContext, defaultContainerOrchestratorBackoff(), action, verify)
-	return stopErr
+	return callWithRetryAndVerification(stopContext, defaultContainerOrchestratorBackoff(), action, verify)
 }
 
 func removeContainer(removeContext context.Context, o containers.ContainerOrchestrator, containerID string) error {
@@ -268,12 +267,9 @@ func startContainer(
 
 			case containers.ContainerStatusExited:
 				// It is possible that the container starts and then exits very quickly afterwards.
-				// For the sake of determining whether the startup was successful, we will assume that it was if exit code == 0.
-				if i.ExitCode == 0 {
-					return nil
-				} else {
-					return resiliency.Permanent(fmt.Errorf("container '%s' start failed (exit code %d)", containerName, i.ExitCode))
-				}
+				// We treat it as successful start, even if exit code is non-zero
+				// (which will be reported via ContainerStatus.ExitCode).
+				return nil
 
 			default:
 				errMsg := fmt.Sprintf("status of container '%s' is '%s' (was expecting '%s')", containerName, i.Status, containers.ContainerStatusRunning)
@@ -554,4 +550,66 @@ func normalizeHostAddress(hostIP string) string {
 	}
 
 	return hostAddress
+}
+
+// ensureBaseImageForLayers ensures the base image is available locally and returns its
+// inspected metadata. It respects the pull policy: "always" pulls first, "never" only
+// inspects, and "missing" (or empty/default) inspects first then pulls if not found.
+func ensureBaseImageForLayers(
+	ctx context.Context,
+	o containers.ContainerOrchestrator,
+	image string,
+	pullPolicy apiv1.PullPolicy,
+	log logr.Logger,
+) (*containers.InspectedImage, error) {
+	if pullPolicy == apiv1.PullPolicyAlways {
+		log.V(1).Info("Pulling base image (pull policy: always)", "Image", image)
+		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
+		if pullErr != nil {
+			return nil, fmt.Errorf("pulling base image %q: %w", image, pullErr)
+		}
+	}
+
+	inspected, inspectErr := inspectBaseImage(ctx, o, image)
+	if inspectErr == nil {
+		return inspected, nil
+	}
+
+	// Only attempt to pull if the image was not found; other errors are returned directly
+	if !errors.Is(inspectErr, containers.ErrNotFound) {
+		return nil, fmt.Errorf("inspecting base image %q: %w", image, inspectErr)
+	}
+
+	if pullPolicy == apiv1.PullPolicyNever {
+		return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
+	}
+
+	// Default / "missing" behavior: image not found, so pull and retry inspect
+	if pullPolicy != apiv1.PullPolicyAlways {
+		log.V(1).Info("Base image not found locally, pulling", "Image", image)
+		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
+		if pullErr != nil {
+			return nil, fmt.Errorf("pulling base image %q: %w", image, pullErr)
+		}
+	}
+
+	inspected, inspectErr = inspectBaseImage(ctx, o, image)
+	if inspectErr != nil {
+		return nil, fmt.Errorf("inspecting base image %q after pull: %w", image, inspectErr)
+	}
+
+	return inspected, nil
+}
+
+func inspectBaseImage(ctx context.Context, o containers.ContainerOrchestrator, image string) (*containers.InspectedImage, error) {
+	inspected, inspectErr := o.InspectImages(ctx, containers.InspectImagesOptions{
+		Images: []string{image},
+	})
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+	if len(inspected) == 0 {
+		return nil, containers.ErrNotFound
+	}
+	return &inspected[0], nil
 }

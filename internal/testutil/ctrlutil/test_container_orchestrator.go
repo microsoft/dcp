@@ -67,6 +67,7 @@ type TestContainerOrchestrator struct {
 	volumes                 map[string]containerVolume
 	networks                map[string]*containerNetwork
 	images                  []*testImage
+	pullImageErr            error
 	containers              map[string]*testContainer
 	startupLogs             map[string]containerStartupLogs
 	containersToFail        map[string]containerExit
@@ -1212,6 +1213,10 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 		return "", errRuntimeUnhealthy
 	}
 
+	if to.pullImageErr != nil {
+		return "", to.pullImageErr
+	}
+
 	image, found := to.findImage(options.Image)
 	if found {
 		return image.id, nil
@@ -1234,6 +1239,17 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 	to.images = append(to.images, image)
 
 	return image.id, nil
+}
+
+func (to *TestContainerOrchestrator) FailPullImage(pullImageErr error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if pullImageErr == nil {
+		pullImageErr = errors.New("simulated image pull failure")
+	}
+
+	to.pullImageErr = pullImageErr
 }
 
 func (to *TestContainerOrchestrator) HasImage(id string) bool {
@@ -2015,6 +2031,11 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 		}
 	}
 
+	if tarWriter.Empty() {
+		// Can happen if all ContinueOnError items fail
+		return nil
+	}
+
 	buffer, bufferErr := tarWriter.Buffer()
 	if bufferErr != nil {
 		return bufferErr
@@ -2382,6 +2403,26 @@ func (to *TestContainerOrchestrator) SimulateContainerExecCommandLogging(contain
 
 	_, writeErr := writer.Write(content)
 	return writeErr
+}
+
+func (to *TestContainerOrchestrator) ApplyImageLayers(ctx context.Context, options containers.ApplyImageLayersOptions) (string, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		return "", errRuntimeUnhealthy
+	}
+
+	// In test mode, just return the tag without actually building anything
+	if options.Tag != "" {
+		return options.Tag, nil
+	}
+
+	return options.BaseImage.Id, nil
 }
 
 var _ containers.ContainerOrchestrator = (*TestContainerOrchestrator)(nil)

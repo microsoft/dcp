@@ -67,6 +67,7 @@ const (
 	portsLabel           = "com.microsoft.developer.usvc-dev.ports"
 	createFilesLabel     = "com.microsoft.developer.usvc-dev.createFiles"
 	pemCertificatesLabel = "com.microsoft.developer.usvc-dev.pemCertificates"
+	imageLayersLabel     = "com.microsoft.developer.usvc-dev.imageLayers"
 )
 
 var (
@@ -779,12 +780,13 @@ func ensureContainerStoppingState(
 // states (Exited, Stopped, or Dead), the method does nothing and returns no error.
 // Returns containers.ErrNotFound if the container resource was not found.
 // Returns an error if the container resource could not be stopped.
+// On success, the most recent inspected container data is returned (nil if the container is gone).
 func (r *ContainerReconciler) stopContainerIfNecessary(
 	ctx context.Context,
 	containerID containerID,
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
-) error {
+) (*containers.InspectedContainer, error) {
 	needsStopping := func() bool {
 		if inspected == nil {
 			return true // Assume the container needs stopping, worst case the stop attempt will fail/time out.
@@ -800,21 +802,24 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 		if inspectErr != nil {
 			if errors.Is(inspectErr, containers.ErrNotFound) {
 				log.Info("Container resource not found, assuming it was removed... ")
-				return containers.ErrNotFound
+				return nil, containers.ErrNotFound
 			}
 		}
 	}
 
 	if needsStopping() {
 		log.V(1).Info("Calling container orchestrator to stop the existing container...")
-		stopErr := stopContainer(ctx, r.orchestrator, string(containerID))
+		stopInspected, stopErr := stopContainer(ctx, r.orchestrator, string(containerID))
 		if stopErr != nil {
 			log.Error(stopErr, "Could not stop the running container")
+			return nil, stopErr
 		}
-		return stopErr
+		if stopInspected != nil {
+			inspected = stopInspected
+		}
 	}
 
-	return nil
+	return inspected, nil
 }
 
 func (r *ContainerReconciler) removeExistingContainer(
@@ -823,7 +828,7 @@ func (r *ContainerReconciler) removeExistingContainer(
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) error {
-	stopErr := r.stopContainerIfNecessary(ctx, containerID, inspected, log)
+	_, stopErr := r.stopContainerIfNecessary(ctx, containerID, inspected, log)
 	if errors.Is(stopErr, containers.ErrNotFound) {
 		// Already logged (at info level) by stopExistingContainer()
 		return nil // Nothing to do
@@ -901,12 +906,8 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 				Pull:                  container.Spec.PullPolicy == apiv1.PullPolicyAlways,
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
-
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-			buildOptions.StreamCommandOptions = containers.StreamCommandOptions{
-				StdOutStream: startupStdoutWriter,
-				StdErrStream: startupStderrWriter,
-			}
+			buildOptions.StreamCommandOptions = getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
 			buildErr := r.orchestrator.BuildImage(buildCtx, buildOptions)
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
@@ -1142,8 +1143,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 						isValid = isValid && !winNamedPipeRegex.MatchString(volume.Source)
 					}
 					if !isValid {
-						// This seems to be an invalid bind mount or a named pipe, so don't try to create it
-						// May be a reference to a linux mount point on Windows
+						// This seems to be an invalid bind mount or a named pipe, so don't try to create it.
+						// May be a reference to a linux mount point on Windows.
+						log.Info("Skipping creation of bind mount because the source path appears invalid on this platform", "Source", volume.Source, "Target", volume.Target)
 						continue
 					}
 
@@ -1261,13 +1263,72 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				})
 			}
 
+			// If image layers are specified, build a derived image with the layers applied
+			effectiveImage := rcd.runSpec.Image
+			if len(rcd.runSpec.ImageLayers) > 0 {
+				digests := make([]string, len(rcd.runSpec.ImageLayers))
+				for i, layer := range rcd.runSpec.ImageLayers {
+					digests[i] = layer.Digest
+				}
+				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+					Key:   imageLayersLabel,
+					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(digests, "\n")))),
+				})
+
+				// When applying image layers, we need the base image locally before
+				// constructing the derived image. Normally docker create --pull handles
+				// pulling, but since we intercept before that, we must respect PullPolicy here.
+				baseImageInspected, ensureErr := ensureBaseImageForLayers(
+					startupCtx, r.orchestrator, rcd.runSpec.Image, rcd.runSpec.PullPolicy, log,
+				)
+				if ensureErr != nil {
+					log.Error(ensureErr, "Could not ensure base image is available for image layers")
+					return ensureErr
+				}
+
+				// Derive a tag by replacing the base image's tag/digest with the lifecycle key.
+				// The image ref may be name:tag or name@sha256:digest — we need just the name part.
+				baseRepo := rcd.runSpec.Image
+				if atidx := strings.Index(baseRepo, "@"); atidx != -1 {
+					baseRepo = baseRepo[:atidx]
+				} else if colonidx := strings.LastIndex(baseRepo, ":"); colonidx != -1 {
+					// Only strip at colon if it's a tag separator, not part of a port/registry.
+					// A tag separator colon comes after the last slash (or is the only colon).
+					slashIdx := strings.LastIndex(baseRepo, "/")
+					if colonidx > slashIdx {
+						baseRepo = baseRepo[:colonidx]
+					}
+				}
+				sanitizedKey := strings.ReplaceAll(lifecycleKey, ":", "-")
+				derivedTag := fmt.Sprintf("%s:dcp-%s", baseRepo, sanitizedKey)
+				applyLayersOptions := containers.ApplyImageLayersOptions{
+					BaseImage: *baseImageInspected,
+					Layers:    rcd.runSpec.ImageLayers,
+					Tag:       derivedTag,
+				}
+				derivedImage, applyErr := r.orchestrator.ApplyImageLayers(startupCtx, applyLayersOptions)
+				if applyErr != nil {
+					log.Error(applyErr, "Could not apply image layers")
+					return applyErr
+				}
+
+				log.V(1).Info("Applied image layers to create derived image", "DerivedImage", derivedImage)
+				effectiveImage = derivedImage
+			}
+
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-			streamOptions := containers.StreamCommandOptions{
-				StdOutStream: startupStdoutWriter,
-				StdErrStream: startupStderrWriter,
+			streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
+
+			// Use the effective image (original or derived) for container creation
+			runSpecForCreation := *rcd.runSpec
+			runSpecForCreation.Image = effectiveImage
+			if effectiveImage != rcd.runSpec.Image {
+				// The derived image only exists locally; prevent docker create from
+				// attempting to pull it from a registry.
+				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
 			}
 			creationOptions := containers.CreateContainerOptions{
-				ContainerSpec:        *rcd.runSpec,
+				ContainerSpec:        runSpecForCreation,
 				Name:                 containerName,
 				Network:              defaultNetwork,
 				StreamCommandOptions: streamOptions,
@@ -1470,11 +1531,15 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 func (r *ContainerReconciler) stopContainerFunc(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(stopCtx context.Context) {
 		log.V(1).Info("Calling container orchestrator to stop the container...")
-		err := r.stopContainerIfNecessary(stopCtx, rcd.containerID, nil, log)
+		inspected, err := r.stopContainerIfNecessary(stopCtx, rcd.containerID, nil, log)
 		if err != nil {
 			log.Error(err, "Could not stop the running container corresponding to Container object")
 			rcd.containerState = apiv1.ContainerStateUnknown
 		} else {
+			// Capture the exit code (and other final state) from the inspected container
+			if inspected != nil {
+				rcd.updateFromInspectedContainer(inspected)
+			}
 			rcd.containerState = apiv1.ContainerStateExited
 		}
 
@@ -1491,7 +1556,6 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// This method is called only when we never attempted to start the container,
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
-	rcd.closeStartupLogFiles(log)
 	defer rcd.deleteStartupLogFiles(log)
 
 	if container.Spec.Persistent {
@@ -1581,8 +1645,8 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 // Creates initial set of ContainerNetworkConnection objects for this Container,
 // and if all connections are satisfied, starts the container.
 // Returns the inspected container data (if the container has been started successfully), and an error, if any.
-// The error should be treated as permanent startup failure. If a startup error is returned, the inspected container data
-// might be missing.
+// The error should be treated as permanent startup failure.
+// If a startup error is returned, the inspected container data might be missing.
 // This method is executed as part of the reconciliation loop.
 func (r *ContainerReconciler) handleInitialNetworkConnections(
 	ctx context.Context,
@@ -1603,10 +1667,7 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 
 	cID := rcd.containerID
 	startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-	streamOptions := containers.StreamCommandOptions{
-		StdOutStream: startupStdoutWriter,
-		StdErrStream: startupStderrWriter,
-	}
+	streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
 	inspected, startupErr := r.startContainerWithTimeout(ctx, container.Name, cID, streamOptions)
 	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
@@ -2139,7 +2200,6 @@ func (r *ContainerReconciler) onShutdown() {
 	r.cancelContainerWatch()
 
 	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
-		rcd.closeStartupLogFiles(r.Log)
 		rcd.deleteStartupLogFiles(r.Log)
 		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
@@ -2152,5 +2212,14 @@ func startupTaskFinished(writers ...usvc_io.ParagraphWriter) {
 		if writer != nil {
 			writer.NewParagraph()
 		}
+	}
+}
+
+func getStartupCommandOptions(startupStdoutWriter, startupStderrWriter usvc_io.ParagraphWriter) containers.StreamCommandOptions {
+	return containers.StreamCommandOptions{
+		// Do not allow the container orchestrator command to close startup log files--we might want to add to the log upon
+		// command completion. The controller decides when the startup log is "done" and should be closed.
+		StdOutStream: usvc_io.NopWriteCloser(startupStdoutWriter),
+		StdErrStream: usvc_io.NopWriteCloser(startupStderrWriter),
 	}
 }

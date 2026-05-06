@@ -119,15 +119,20 @@ func (c *containerLogStreamer) StreamLogs(
 	var logFilePath string
 	cleanup := func() {}
 
-	if opts.Source == string(apiv1.LogStreamSourceStartupStdout) {
-		// Startup stdout log streaming
+	switch opts.Source {
+
+	case string(apiv1.LogStreamSourceStartupStdout):
 		logFilePath = ctr.Status.StartupStdOutFile
 		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
-	} else if opts.Source == string(apiv1.LogStreamSourceStartupStderr) {
-		// Startup stderr log streaming
+
+	case string(apiv1.LogStreamSourceStartupStderr):
 		logFilePath = ctr.Status.StartupStdErrFile
 		follow = follow && (ctr.Status.State == apiv1.ContainerStateStarting || ctr.Status.State == apiv1.ContainerStateBuilding)
-	} else {
+
+	case string(apiv1.LogStreamSourceSystem):
+		logFilePath = logger.GetResourceLogPath(ctr.GetResourceId())
+
+	case "", string(apiv1.LogStreamSourceStdout), string(apiv1.LogStreamSourceStderr):
 		if ctr.Status.ContainerID == "" {
 			streamLog.V(1).Info("Container has no container ID yet, not ready to stream logs")
 			// We're not ready to start streaming logs for this container yet
@@ -139,7 +144,6 @@ func (c *containerLogStreamer) StreamLogs(
 			return apiv1.ResourceStreamStatusNotReady, nil, nil
 		}
 
-		// Standard stdout/stderr log streaming
 		hostLifetimeCtx := contextdata.GetHostLifetimeContext(ctx)
 		logDescriptorCtx, cancel := context.WithCancel(hostLifetimeCtx)
 		ld, stdOutWriter, stdErrWriter, newlyCreated, acquireErr := c.containerLogs.AcquireForResource(logDescriptorCtx, cancel, ctr.NamespacedName(), ctr.UID)
@@ -172,14 +176,15 @@ func (c *containerLogStreamer) StreamLogs(
 			// We just report not found in this case
 			return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewNotFound(ctr.GetGroupVersionResource().GroupResource(), ctr.NamespacedName().Name)
 		}
-
-		if opts.Source == string(apiv1.LogStreamSourceStdout) || opts.Source == "" {
-			logFilePath = stdOutPath
-		} else if opts.Source == string(apiv1.LogStreamSourceStderr) {
+		if opts.Source == string(apiv1.LogStreamSourceStderr) {
 			logFilePath = stdErrPath
-		} else if opts.Source == string(apiv1.LogStreamSourceSystem) {
-			logFilePath = logger.GetResourceLogPath(ctr.GetResourceId())
+		} else {
+			logFilePath = stdOutPath
 		}
+
+	default:
+		// opts.Source has an unexpected value -- this should never happen, request parameter validation should have prevented this.
+		return apiv1.ResourceStreamStatusDone, nil, apierrors.NewBadRequest(fmt.Sprintf("invalid log stream source %q", opts.Source)) // Fail fast
 	}
 
 	if logFilePath == "" {
@@ -208,7 +213,9 @@ func (c *containerLogStreamer) StreamLogs(
 
 	// We always want to use a FollowWriter, even if not in "follow" mode,
 	// to account for the fact that ContainerLogSource.CaptureContainerLogs() is an asynchronous operation.
-	followWriter := usvc_io.NewFollowWriter(ctx, src, dest)
+	// A few no-data stop retries will allow us to get log lines from a container that we just started capturing logs for, regardless of follow/non-follow mode.
+	const noDataStopRetries = 3
+	followWriter := usvc_io.NewFollowWriter(ctx, src, dest, usvc_io.WithNoDataStopRetries(noDataStopRetries))
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -256,7 +263,10 @@ func (c *containerLogStreamer) StreamLogs(
 		}
 	}()
 
-	if !follow || ctr.Done() {
+	if !follow {
+		// FollowWriter will keep pushing data until EOF (it will not stop immediately when we call StopFollow()).
+		followWriter.StopFollow()
+	} else if ctr.Done() {
 		logs.DelayCancelFollowStreams([]*usvc_io.FollowWriter{followWriter}, (*usvc_io.FollowWriter).StopFollow)
 	}
 

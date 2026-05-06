@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -65,6 +66,15 @@ func GetExtensions(ctx context.Context, log logr.Logger) ([]DcpExtension, error)
 	extensions := []DcpExtension{}
 
 	for _, extDir := range extDirs {
+		if _, statErr := os.Stat(extDir); statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				log.V(1).Info("Extensions directory does not exist, extensions will not be loaded from this directory..", "Directory", extDir)
+				continue
+			} else {
+				return nil, fmt.Errorf("could not access extensions directory '%s': %w", extDir, statErr)
+			}
+		}
+
 		// Evaluate symlinks for the directory
 		realExtDir, evalErr := filepath.EvalSymlinks(extDir)
 		if evalErr != nil {

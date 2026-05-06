@@ -29,13 +29,6 @@ func (nnk NamespacedNameWithKind) String() string {
 	return nnk.NamespacedName.String() + " (" + nnk.Kind.String() + ")"
 }
 
-// +kubebuilder:object:generate=false
-// +k8s:openapi-gen=false
-type NamespacedNameWithKindAndUid struct {
-	NamespacedNameWithKind
-	Uid types.UID
-}
-
 func GetNamespacedNameWithKind(obj ctrl_client.Object) NamespacedNameWithKind {
 	return NamespacedNameWithKind{
 		NamespacedName: types.NamespacedName{

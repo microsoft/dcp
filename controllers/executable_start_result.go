@@ -27,6 +27,10 @@ type ExecutableStartResult struct {
 	// Run ID for the Executable
 	RunID RunID
 
+	// Exit code of the Executable process.
+	// Populated when the run completed synchronously during startup (ExeState == Finished).
+	ExitCode *int32
+
 	// Paths to captured standard output and standard error files
 	StdOutFile string
 	StdErrFile string
@@ -50,6 +54,7 @@ func NewExecutableStartResult() *ExecutableStartResult {
 		ExeState: apiv1.ExecutableStateStarting,
 		Pid:      apiv1.UnknownPID,
 		RunID:    UnknownRunID,
+		ExitCode: apiv1.UnknownExitCode,
 	}
 }
 
@@ -70,6 +75,10 @@ func (res *ExecutableStartResult) Equal(other *ExecutableStartResult) bool {
 	}
 
 	if res.RunID != other.RunID {
+		return false
+	}
+
+	if !pointers.EqualValue(res.ExitCode, other.ExitCode) {
 		return false
 	}
 
@@ -112,6 +121,9 @@ func (res *ExecutableStartResult) applyTo(ri *ExecutableRunInfo) {
 	if res.ExeState == apiv1.ExecutableStateFinished {
 		ri.FinishTimestamp = res.CompletionTimestamp
 	}
+	if res.ExeState.IsTerminal() && res.ExitCode != apiv1.UnknownExitCode {
+		ri.ExitCode = pointers.Duplicate(res.ExitCode)
+	}
 }
 
 func (res *ExecutableStartResult) IsSuccessfullyCompleted() bool {
@@ -129,6 +141,7 @@ func (res *ExecutableStartResult) Clone() *ExecutableStartResult {
 		ExeState:                  res.ExeState,
 		Pid:                       pointers.Duplicate(res.Pid),
 		RunID:                     res.RunID,
+		ExitCode:                  pointers.Duplicate(res.ExitCode),
 		StdOutFile:                res.StdOutFile,
 		StdErrFile:                res.StdErrFile,
 		CompletionTimestamp:       res.CompletionTimestamp,
@@ -163,6 +176,11 @@ func (res *ExecutableStartResult) UpdateFrom(other *ExecutableStartResult) bool 
 		updated = true
 	}
 
+	if other.ExitCode != apiv1.UnknownExitCode && !pointers.EqualValue(res.ExitCode, other.ExitCode) {
+		pointers.SetValueFrom(&res.ExitCode, other.ExitCode)
+		updated = true
+	}
+
 	if other.StdOutFile != "" && res.StdOutFile != other.StdOutFile {
 		res.StdOutFile = other.StdOutFile
 		updated = true
@@ -193,10 +211,11 @@ func (res *ExecutableStartResult) String() string {
 		return "{}"
 	}
 
-	return fmt.Sprintf("{exeState: %s, pid: %v, runID: %s, stdOutFile: %s, stdErrFile: %s, startupCompletedTimestamp: %s, startupError: %s}",
+	return fmt.Sprintf("{exeState: %s, pid: %v, runID: %s, exitCode: %s, stdOutFile: %s, stdErrFile: %s, startupCompletedTimestamp: %s, startupError: %s}",
 		res.ExeState,
 		logger.IntPtrValToString(res.Pid),
 		logger.FriendlyString(string(res.RunID)),
+		logger.IntPtrValToString(res.ExitCode),
 		logger.FriendlyString(res.StdOutFile),
 		logger.FriendlyString(res.StdErrFile),
 		logger.FriendlyMetav1Timestamp(res.CompletionTimestamp),

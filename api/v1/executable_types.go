@@ -505,6 +505,11 @@ func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 
 	errorList = append(errorList, e.Spec.Validate(field.NewPath("spec"))...)
 
+	// Validate that annotations don't exceed the Kubernetes size limit.
+	// This provides a clearer error message than the generic Kubernetes API server error,
+	// especially when long arguments or environment variables are stored in annotations.
+	errorList = append(errorList, ValidateAnnotationsSize(e.Annotations, field.NewPath("metadata", "annotations"))...)
+
 	return errorList
 }
 

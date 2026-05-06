@@ -48,6 +48,14 @@ If you are using SSH to authenticate to GitHub, you want the following in your `
 
  For more information see [Go configuration for SSH Git authentication](https://go.dev/doc/faq#git_https).
 
+ ### Run code generation target
+ On a fresh repository, before doing anything else do
+
+ ```shell
+ make generate
+ ```
+
+This will populate the repository with auto-generated code files (mostly gRPC- and OpenAPI-related interface definitions), allowing you to build the repository and run tests.
 
 ## Making DCP available from $PATH
 

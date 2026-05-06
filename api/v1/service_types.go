@@ -222,6 +222,8 @@ func (svc *Service) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
+	errorList = append(errorList, ValidateAnnotationsSize(svc.Annotations, field.NewPath("metadata", "annotations"))...)
+
 	return errorList
 }
 

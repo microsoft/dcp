@@ -288,12 +288,10 @@ func TestContainerRuntimeUnhealthy(t *testing.T) {
 	const testName = "container-runtime-unhealthy"
 	const imageName = testName + "-image"
 
-	log := testutil.NewLogForTesting(t.Name())
-
 	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
 	// and that might interfere with other tests if we used the shared container orchestrator.
 
-	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir, log)
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
 	require.NoError(t, startupErr, "Failed to start the API server")
 
 	defer func() {
@@ -931,6 +929,55 @@ func TestContainerStop(t *testing.T) {
 	})
 	require.Error(t, err, "expected the container to be gone")
 	require.Len(t, inspected, 0, "expected the container to be gone")
+}
+
+// Verifies that when a Container reaches the Exited state in response to Spec.Stop = true,
+// the very first observation of State == Exited already carries Status.ExitCode,
+// rather than ExitCode being populated only by a subsequent status update.
+func TestContainerStopReportsExitCode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-stop-reports-exit-code"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	_, _ = ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Stopping Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		containerPatch := currentCtr.DeepCopy()
+		containerPatch.Spec.Stop = true
+		return client.Patch(ctx, containerPatch, ctrl_client.MergeFromWithOptions(currentCtr, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Container object could not be patched")
+
+	t.Log("Ensure that the first observation of State=Exited also carries ExitCode...")
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		if c.Status.State != apiv1.ContainerStateExited {
+			return false, nil
+		}
+		if c.Status.ExitCode == apiv1.UnknownExitCode {
+			return false, fmt.Errorf("Container reached state '%s' but Status.ExitCode is not populated; the stop path should publish State and ExitCode in the same Status update", apiv1.ContainerStateExited)
+		}
+		return true, nil
+	})
+	require.NotNil(t, updatedCtr.Status.ExitCode, "Status.ExitCode must be populated alongside State=Exited")
+	require.False(t, updatedCtr.Status.FinishTimestamp.IsZero(), "Status.FinishTimestamp must be populated alongside State=Exited")
 }
 
 func TestContainerDeletion(t *testing.T) {
@@ -2431,6 +2478,50 @@ func TestContainerLogsFollowStreamEndsOnDelete(t *testing.T) {
 	}
 }
 
+// Verify that system logs (source=system) are available for a Container that fails to start.
+func TestContainerSystemLogsOnStartupFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-system-logs-startup-failure"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+		},
+	}
+
+	// Cause the orchestrator to fail to create the container
+	errMsg := fmt.Sprintf("Simulating container '%s' startup failure for system log test", testName)
+	containerOrchestrator.FailMatchingContainers(ctx, testName, 1, errMsg)
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Waiting for container to reach 'failed to start' state...")
+	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateFailedToStart, nil
+	})
+
+	t.Log("Verifying system logs are available for the failed Container...")
+	opts := apiv1.LogOptions{
+		Follow: false,
+		Source: string(apiv1.LogStreamSourceSystem),
+	}
+	expectedLines := [][]byte{
+		[]byte(errMsg),
+	}
+	logsErr := waitForObjectLogs(ctx, updatedCtr, opts, expectedLines, nil)
+	require.NoError(t, logsErr, "System logs should be available for Container '%s' that failed to start", ctr.ObjectMeta.Name)
+}
+
 // Ensure that the Container health status changes according to its state (no health probes).
 // When running the Container should be Healthy.
 // If the container fails to start, it should be Unhealthy.
@@ -3181,6 +3272,57 @@ func TestContainerCreateFilesContinueOnError(t *testing.T) {
 	require.Equal(t, 0, items[0].Uid, "copied file item owner id does not match expected default value")
 	require.Equal(t, 0, items[0].Gid, "copied file item group id does not match expected default value")
 	require.Equal(t, int64(osutil.PermissionOwnerReadWriteOthersRead), items[0].Mode, "copied file item mode does not match expected default value")
+}
+
+// When all CreateFiles entries have ContinueOnError set to true and they all fail,
+// the container should still start successfully.
+func TestContainerCreateFilesAllContinueOnErrorItemsFail(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-create-files-all-continue-on-error-fail"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			CreateFiles: []apiv1.CreateFileSystem{
+				{
+					Destination: "/tmp",
+					Entries: []apiv1.FileSystemEntry{
+						{
+							Name:            "badcert1.pem",
+							Contents:        "this is not a valid certificate",
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							ContinueOnError: true,
+						},
+						{
+							Name:            "badcert2.pem",
+							Contents:        "this is also not a valid certificate",
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							ContinueOnError: true,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container object")
+
+	_, inspected := ensureContainerRunning(t, ctx, &ctr)
+	files, getFileErr := containerOrchestrator.GetCreatedFiles(inspected.Id)
+	require.NoError(t, getFileErr, "could not get created files")
+
+	// All entries failed with ContinueOnError, so no files should have been created
+	require.Empty(t, files, "expected no created files when all ContinueOnError items fail")
 }
 
 // Even if Docker container stops very quickly, the state of corresponding Container should be "Exited"

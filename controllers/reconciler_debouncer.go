@@ -18,55 +18,51 @@ import (
 // ReconcilerDebouncer helps debounce calls that trigger reconciliation. Useful for processing external events
 // that require reconciliation for an object, and that might come in "batches" of quick succession.
 
-type reconcileTriggerInput[ReconcileInput any] struct {
-	target types.NamespacedName
-	input  ReconcileInput
+type reconcileTrigger func(types.NamespacedName)
+
+type objectDebounce struct {
+	debounce *resiliency.DebounceLastAction
 }
 
-type reconcileTrigger[ReconcileInput any] func(reconcileTriggerInput[ReconcileInput])
-
-type objectDebounce[ReconcileInput any] resiliency.DebounceLastAction[reconcileTriggerInput[ReconcileInput]]
-
-func (od *objectDebounce[ReconcileInput]) run(ctx context.Context, input reconcileTriggerInput[ReconcileInput]) {
-	debounceRaw := resiliency.DebounceLastAction[reconcileTriggerInput[ReconcileInput]](*od)
-	debounceRaw.Run(ctx, input)
+func (od *objectDebounce) run(ctx context.Context) {
+	od.debounce.Run(ctx)
 }
 
-type reconcilerDebouncer[ReconcileInput any] struct {
-	debounceMap   *syncmap.Map[types.NamespacedName, *objectDebounce[ReconcileInput]]
+type reconcilerDebouncer struct {
+	debounceMap   *syncmap.Map[types.NamespacedName, *objectDebounce]
 	debounceDelay time.Duration
 	maxDelay      time.Duration
+	trigger       reconcileTrigger
 }
 
-func newReconcilerDebouncer[ReconcileInput any]() *reconcilerDebouncer[ReconcileInput] {
-	return &reconcilerDebouncer[ReconcileInput]{
-		debounceMap:   &syncmap.Map[types.NamespacedName, *objectDebounce[ReconcileInput]]{},
+func newReconcilerDebouncer(trigger reconcileTrigger) *reconcilerDebouncer {
+	return &reconcilerDebouncer{
+		debounceMap:   &syncmap.Map[types.NamespacedName, *objectDebounce]{},
 		debounceDelay: reconciliationDebounceDelay,
 		maxDelay:      reconciliationMaxDelay,
+		trigger:       trigger,
 	}
 }
 
-func objectDebounceFactory[ReconcileInput any](trigger reconcileTrigger[ReconcileInput], debounceDelay, maxDelay time.Duration) *objectDebounce[ReconcileInput] {
-	debounce := resiliency.NewDebounceLastAction(trigger, debounceDelay, maxDelay)
-	return (*objectDebounce[ReconcileInput])(debounce)
+func objectDebounceFactory(trigger reconcileTrigger, name types.NamespacedName, debounceDelay, maxDelay time.Duration) *objectDebounce {
+	return &objectDebounce{
+		debounce: resiliency.NewDebounceLastAction(func() {
+			trigger(name)
+		}, debounceDelay, maxDelay),
+	}
 }
 
 // Call OnReconcile when an object is being reconciled. This prevents the inner debouncer map from growing indefinitely.
 // This method is safe to call regardless whether the name was ever seen.
-func (rd *reconcilerDebouncer[ReconcileInput]) OnReconcile(name types.NamespacedName) {
+func (rd *reconcilerDebouncer) OnReconcile(name types.NamespacedName) {
 	rd.debounceMap.Delete(name)
 }
 
 // Tries to trigger reconciliation for an object identified by name, after appropriate debouncing.
-func (rd *reconcilerDebouncer[ReconcileInput]) ReconciliationNeeded(ctx context.Context, name types.NamespacedName, ri ReconcileInput, trigger reconcileTrigger[ReconcileInput]) {
-	debounce, _ := rd.debounceMap.LoadOrStoreNew(name, func() *objectDebounce[ReconcileInput] {
-		return objectDebounceFactory(trigger, rd.debounceDelay, rd.maxDelay)
+func (rd *reconcilerDebouncer) ReconciliationNeeded(ctx context.Context, name types.NamespacedName) {
+	debounce, _ := rd.debounceMap.LoadOrStoreNew(name, func() *objectDebounce {
+		return objectDebounceFactory(rd.trigger, name, rd.debounceDelay, rd.maxDelay)
 	})
 
-	input := reconcileTriggerInput[ReconcileInput]{
-		target: name,
-		input:  ri,
-	}
-
-	debounce.run(ctx, input)
+	debounce.run(ctx)
 }

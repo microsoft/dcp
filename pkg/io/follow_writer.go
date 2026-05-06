@@ -17,24 +17,45 @@ const (
 	readRetryInterval = 200 * time.Millisecond
 )
 
+// FollowWriterOption is a functional option for the FollowWriter.
+type FollowWriterOption func(*FollowWriter)
+
+// WithNoDataStopRetries sets the number of extra read attempts the FollowWriter will make
+// after StopFollow() is called, but only if it has never read any data.
+// If the FollowWriter has already seen data when StopFollow() is called, it stops immediately after zero-byte read
+// or EOF is encountered.
+func WithNoDataStopRetries(n uint) FollowWriterOption {
+	return func(fw *FollowWriter) {
+		fw.noDataStopRetries = n
+	}
+}
+
 type FollowWriter struct {
-	err      atomic.Value
-	follow   atomic.Bool
-	cancel   context.CancelFunc
-	doneChan chan struct{}
+	err               atomic.Value
+	follow            atomic.Bool
+	cancel            context.CancelFunc
+	doneChan          chan struct{}
+	noDataStopRetries uint
 }
 
 // Creates a FollowWriter that reads content from the reader source and writes it to the writer destination.
 // Keeps trying to read new content even after EOF until StopFollow() is called, after which the next EOF
 // received will cause the reader and writer to stop.
 // If the source is an io.Closer, it will be closed when the FollowWriter is cancelled.
-func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *FollowWriter {
+//
+// Use WithNoDataStopRetries option to specify extra read attempts after StopFollow() is called
+// when no data has been seen yet. This is useful when the data source might not be ready immediately.
+func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts ...FollowWriterOption) *FollowWriter {
 	followCtx, cancel := context.WithCancel(ctx)
 	fw := &FollowWriter{
 		err:      atomic.Value{},
 		follow:   atomic.Bool{},
 		cancel:   cancel,
 		doneChan: make(chan struct{}),
+	}
+
+	for _, opt := range opts {
+		opt(fw)
 	}
 
 	fw.follow.Store(true)
@@ -54,12 +75,17 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 		timer.Stop() // Stop the timer initially
 		defer timer.Stop()
 
+		sawData := false
+		remainingStopRetries := fw.noDataStopRetries
+
 		for {
 			read := 0
 			var readErr error
 
 			read, readErr = source.Read(buf)
 			if read > 0 {
+				sawData = true
+
 				out, writeErr := dest.Write(buf[:read])
 				if writeErr != nil {
 					fw.err.Store(writeErr)
@@ -79,7 +105,12 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer) *Fol
 
 			if read <= 0 || readErr == io.EOF {
 				if !fw.follow.Load() {
-					return
+					// If we have seen data, stop immediately.
+					// If we have never seen data, use remaining stop retries before giving up.
+					if sawData || remainingStopRetries <= 0 {
+						return
+					}
+					remainingStopRetries--
 				}
 
 				// We didn't have any data to read, so wait for a bit and try again

@@ -214,6 +214,13 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 		updated = true
 	}
 
+	// stopAttemptInitiated is a one-way latch: once a stop has been initiated,
+	// stale clones replayed via deferred ops must not reset it back to false.
+	if other.stopAttemptInitiated && !ri.stopAttemptInitiated {
+		ri.stopAttemptInitiated = true
+		updated = true
+	}
+
 	if other.startupStage != StartupStageInitial && ri.startupStage != other.startupStage {
 		ri.startupStage = other.startupStage
 		updated = true

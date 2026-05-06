@@ -133,25 +133,10 @@ func NewTunnelProxySecurityConfig() (TunnelProxySecurityConfig, error) {
 		return TunnelProxySecurityConfig{}, certsErr
 	}
 	// Base64-encode certificates for passing as command-line arguments
-	caCertPEM, caCertErr := srvCert.CA()
-	if caCertErr != nil {
-		return TunnelProxySecurityConfig{}, caCertErr
-	}
-
-	serverCertPEM, serverCertErr := srvCert.Certificate()
-	if serverCertErr != nil {
-		return TunnelProxySecurityConfig{}, serverCertErr
-	}
-
-	serverKeyPEM, serverKeyErr := srvCert.ServerPrivateKey()
-	if serverKeyErr != nil {
-		return TunnelProxySecurityConfig{}, serverKeyErr
-	}
-
 	config := TunnelProxySecurityConfig{
-		CACertBase64:     base64.StdEncoding.EncodeToString(caCertPEM),
-		ServerCertBase64: base64.StdEncoding.EncodeToString(serverCertPEM),
-		ServerKeyBase64:  base64.StdEncoding.EncodeToString(serverKeyPEM),
+		CACertBase64:     base64.StdEncoding.EncodeToString(srvCert.CACertPEM),
+		ServerCertBase64: base64.StdEncoding.EncodeToString(srvCert.CertChainPEM),
+		ServerKeyBase64:  base64.StdEncoding.EncodeToString(srvCert.ServerKeyPEM),
 	}
 	return config, nil
 }

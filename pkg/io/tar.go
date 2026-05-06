@@ -8,6 +8,7 @@ package io
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -15,10 +16,13 @@ import (
 )
 
 type TarWriter struct {
-	writer *tar.Writer
-	buffer *bytes.Buffer
+	writer   *tar.Writer
+	buffer   *bytes.Buffer
+	hasItems bool
 }
 
+// NewTarWriter creates a TarWriter that buffers the tar archive in memory.
+// Use Buffer() to retrieve the completed archive.
 func NewTarWriter() *TarWriter {
 	buffer := &bytes.Buffer{}
 	return &TarWriter{
@@ -27,13 +31,36 @@ func NewTarWriter() *TarWriter {
 	}
 }
 
-func (tw *TarWriter) Buffer() (*bytes.Buffer, error) {
-	err := tw.writer.Close()
+// NewTarWriterTo creates a TarWriter that writes directly to the provided writer.
+// Use Close() to finalize the tar archive when done writing entries.
+// Buffer() is not supported on writers created with NewTarWriterTo.
+func NewTarWriterTo(w io.Writer) *TarWriter {
+	return &TarWriter{
+		writer: tar.NewWriter(w),
+	}
+}
 
+// Empty returns true if no items have been written to the tar archive.
+func (tw *TarWriter) Empty() bool {
+	return !tw.hasItems
+}
+
+func (tw *TarWriter) Buffer() (*bytes.Buffer, error) {
+	if tw.buffer == nil {
+		return nil, fmt.Errorf("Buffer() is not supported on TarWriters created with NewTarWriterTo; use Close() instead")
+	}
+
+	err := tw.writer.Close()
 	if err != nil {
 		return nil, err
 	}
 	return tw.buffer, nil
+}
+
+// Close finalizes the tar archive. Use this instead of Buffer() when
+// the TarWriter was created with NewTarWriterTo.
+func (tw *TarWriter) Close() error {
+	return tw.writer.Close()
 }
 
 func (tw *TarWriter) WriteDir(name string, uid int32, gid int32, mode os.FileMode, modTime time.Time, changeTime time.Time, accessTime time.Time) error {
@@ -53,6 +80,7 @@ func (tw *TarWriter) WriteDir(name string, uid int32, gid int32, mode os.FileMod
 		return err
 	}
 
+	tw.hasItems = true
 	return nil
 }
 
@@ -73,6 +101,7 @@ func (tw *TarWriter) WriteSymlink(name string, linkTarget string, uid int32, gid
 		return err
 	}
 
+	tw.hasItems = true
 	return nil
 }
 
@@ -103,6 +132,7 @@ func (tw *TarWriter) WriteFile(contents []byte, name string, uid int32, gid int3
 		return io.ErrShortWrite
 	}
 
+	tw.hasItems = true
 	return nil
 }
 
@@ -133,5 +163,6 @@ func (tw *TarWriter) CopyFile(src io.Reader, size int64, name string, uid int32,
 		return io.ErrShortWrite
 	}
 
+	tw.hasItems = true
 	return nil
 }

@@ -262,10 +262,10 @@ func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 
 func (dco *DockerCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
 	cmd := makeDockerCommand("volume", "create", options.Name)
-	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryDockerCommandTimeout)
 	if err != nil {
 		// Note: unlike Podman, Docker does not return an error if the volume already exists.
-		return err
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return containers.ExpectCliStrings(outBuf, []string{options.Name})
@@ -391,6 +391,11 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
+	// If a target platform is specified, build for that platform
+	if options.Platform != "" {
+		args = append(args, "--platform", options.Platform)
+	}
+
 	// Enable plain output mode (Docker only)
 	args = append(args, "--progress", "plain")
 
@@ -410,9 +415,9 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	if options.Timeout == 0 {
 		options.Timeout = defaultBuildImageTimeout
 	}
-	_, _, err := dco.runBufferedDockerCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	_, errBuf, err := dco.runBufferedDockerCommand(ctx, "BuildImage", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
-		return err
+		return errors.Join(err, normalizeCliErrors(errBuf))
 	}
 
 	return nil
@@ -598,8 +603,9 @@ func (dco *DockerCliOrchestrator) CreateContainer(ctx context.Context, options c
 		options.Timeout = defaultCreateContainerTimeout
 	}
 
-	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "CreateContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
+		err = errors.Join(err, normalizeCliErrors(errBuf))
 		if id, err2 := asId(outBuf); err2 == nil {
 			// We got an ID, so the container was created, but the command failed.
 			return id, err
@@ -631,9 +637,9 @@ func (dco *DockerCliOrchestrator) RunContainer(ctx context.Context, options cont
 		options.Timeout = defaultRunContainerTimeout
 	}
 
-	outBuf, _, err := dco.runBufferedDockerCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "RunContainer", cmd, options.StdOutStream, options.StdErrStream, options.Timeout)
 	if err != nil {
-		return "", err
+		return "", errors.Join(err, normalizeCliErrors(errBuf))
 	}
 	return asId(outBuf)
 }
@@ -867,6 +873,11 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 		}
 	}
 
+	if tarWriter.Empty() {
+		// Can happen if all ContinueOnError items fail
+		return nil
+	}
+
 	buffer, bufferErr := tarWriter.Buffer()
 	if bufferErr != nil {
 		return bufferErr
@@ -880,6 +891,10 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	}
 
 	return nil
+}
+
+func (dco *DockerCliOrchestrator) ApplyImageLayers(ctx context.Context, options containers.ApplyImageLayersOptions) (string, error) {
+	return containers.ApplyImageLayersImpl(ctx, dco.log, options, dco)
 }
 
 func (dco *DockerCliOrchestrator) WatchContainers(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
@@ -1268,6 +1283,14 @@ func (dco *DockerCliOrchestrator) runBufferedDockerCommand(
 func makeDockerCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...)
 	return cmd
+}
+
+func (dco *DockerCliOrchestrator) MakeCommand(args ...string) *exec.Cmd {
+	return makeDockerCommand(args...)
+}
+
+func (dco *DockerCliOrchestrator) RunBufferedCommand(ctx context.Context, opName string, cmd *exec.Cmd, stdout io.WriteCloser, stderr io.WriteCloser, timeout time.Duration) (*bytes.Buffer, *bytes.Buffer, error) {
+	return dco.runBufferedDockerCommand(ctx, opName, cmd, stdout, stderr, timeout)
 }
 
 // Docker CLI returns JSON lines for most output, so split the lines before unmarshaling.

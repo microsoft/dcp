@@ -152,7 +152,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 
 // For an existing kubeconfig file, read the data and return it. If no kubeconfig file exists, generate the
 // data and return that (to be persisted after API server starts).
-func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, generateToken bool, log logr.Logger) (*Kubeconfig, error) {
+func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*Kubeconfig, error) {
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
@@ -163,7 +163,7 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 		}
 
 		// Create a new config
-		config, certificateData, err = createKubeconfig(port, useCertificate, generateToken, log)
+		config, certificateData, err = createKubeconfig(port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 		if err != nil {
 			return nil, err
 		}
@@ -184,17 +184,9 @@ func getKubeconfig(kubeconfigPath string, port int32, useCertificate bool, gener
 	}, nil
 }
 
-func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
-	ips, err := networking.GetPreferredHostIps(networking.Localhost)
-	if err != nil {
-		return nil, nil, fmt.Errorf("kubeconfig file creation failed: %w", err)
-	}
-
-	ip := ips[0]
-	address := networking.IpToString(ip)
-
+func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
-		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, address, log); newPortErr != nil {
+		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, serverAddress, log); newPortErr != nil {
 			return nil, nil, newPortErr
 		} else {
 			port = newPort
@@ -202,24 +194,26 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log lo
 	}
 
 	cluster := clientcmd_api.Cluster{
-		Server: "https://" + networking.AddressAndPort(address, port),
+		Server: "https://" + networking.AddressAndPort(serverAddress, port),
 	}
 
-	var certificateData security.ServerCertificateData
-	var certificateErr error
-	if useCertifiate {
+	var certificateData *security.ServerCertificateData
+
+	if storeCertData != nil {
+		// Certificate was loaded from the system certificate store.
+		cluster.CertificateAuthorityData = storeCertData.CACertPEM
+		certificateData = storeCertData
+	} else if generateEphemeral {
 		// Generate certificates to secure the connection
-		certificateData, certificateErr = security.GenerateServerCertificate(ip)
+		ip := net.ParseIP(networking.ToStandaloneAddress(serverAddress))
+		generatedCert, certificateErr := security.GenerateServerCertificate(ip)
 		if certificateErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not generate certificates: %w", certificateErr)
 		}
 
-		caPEM, caErr := certificateData.CA()
-		if caErr != nil {
-			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not encode CA certificate: %w", caErr)
-		}
 		// We're generating a certificate, so we need to tell the client how to verify it
-		cluster.CertificateAuthorityData = caPEM
+		cluster.CertificateAuthorityData = generatedCert.CACertPEM
+		certificateData = &generatedCert
 	} else {
 		// If we aren't generating certificates, we need to skip TLS verification
 		cluster.InsecureSkipTLSVerify = true
@@ -254,5 +248,5 @@ func createKubeconfig(port int32, useCertifiate bool, generateToken bool, log lo
 			"apiserver": &context,
 		},
 		CurrentContext: "apiserver",
-	}, &certificateData, nil
+	}, certificateData, nil
 }

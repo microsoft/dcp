@@ -23,12 +23,12 @@ func TestExecutesActionRunnerAfterDelay(t *testing.T) {
 	const testTimeoutDelay = time.Millisecond * 1000
 
 	done := make(chan struct{})
-	deb := NewDebounceLastAction(func(_ int) { close(done) }, debounceDelay, testTimeoutDelay)
+	deb := NewDebounceLastAction(func() { close(done) }, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
 	start := time.Now()
-	deb.Run(ctx, 0)
+	deb.Run(ctx)
 	<-done
 	finish := time.Now()
 
@@ -46,8 +46,8 @@ func TestDebounceActionRapidInvocations(t *testing.T) {
 	const debounceDelay = time.Millisecond * 200
 	const testTimeoutDelay = time.Millisecond * 1000
 
-	deb := NewDebounceLastAction(func(c *atomic.Int32) {
-		c.Add(1)
+	deb := NewDebounceLastAction(func() {
+		counter.Add(1)
 		lastFinished.Store(time.Now())
 	}, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
@@ -56,7 +56,7 @@ func TestDebounceActionRapidInvocations(t *testing.T) {
 	start := time.Now()
 	// Make numCalls calls to runner, in order, as fast as possible
 	for i := 0; i < numCalls; i++ {
-		deb.Run(ctx, &counter)
+		deb.Run(ctx)
 	}
 
 	time.Sleep(testTimeoutDelay)
@@ -73,7 +73,7 @@ func TestDebounceActionIsReusable(t *testing.T) {
 	const numCalls = 3
 	event := concurrency.NewAutoResetEvent(false)
 
-	deb := NewDebounceLastAction(func(e *concurrency.AutoResetEvent) { e.Set() }, debounceDelay, testTimeoutDelay)
+	deb := NewDebounceLastAction(func() { event.Set() }, debounceDelay, testTimeoutDelay)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
 	defer cancel()
 
@@ -81,7 +81,7 @@ func TestDebounceActionIsReusable(t *testing.T) {
 		event.Clear()
 
 		for i := 0; i < numCalls; i++ {
-			deb.Run(ctx, event)
+			deb.Run(ctx)
 		}
 
 		<-event.Wait()
@@ -110,12 +110,12 @@ func TestDebounceActionDoesNotExecuteRunnerIfContextCancelled(t *testing.T) {
 	const contextTimeoutDelay = time.Millisecond * 100
 
 	called := atomic.Bool{}
-	deb := NewDebounceLastAction(func(b *atomic.Bool) { b.Store(true) }, debounceDelay, time.Second)
+	deb := NewDebounceLastAction(func() { called.Store(true) }, debounceDelay, time.Second)
 
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeoutDelay)
 	defer cancel()
-	deb.Run(ctx, &called)
+	deb.Run(ctx)
 
 	<-ctx.Done()
 	finish := time.Now()
@@ -124,4 +124,60 @@ func TestDebounceActionDoesNotExecuteRunnerIfContextCancelled(t *testing.T) {
 	// Assuming debounceDelay is significantly larger than contextTimeoutDelay, the call should return
 	// before debounceDelay.
 	require.WithinRange(t, finish, start.Add(contextTimeoutDelay), start.Add(debounceDelay))
+}
+
+func TestRunDuringActionExecutionStartsNewRun(t *testing.T) {
+	t.Parallel()
+
+	const debounceDelay = time.Millisecond * 20
+	const testTimeoutDelay = time.Second * 2
+
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	firstFinished := make(chan struct{})
+	secondFinished := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	actionCalls := atomic.Int32{}
+
+	deb := NewDebounceLastAction(func() {
+		call := actionCalls.Add(1)
+		switch call {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			close(firstFinished)
+		case 2:
+			close(secondStarted)
+			<-releaseSecond
+			close(secondFinished)
+		}
+	}, debounceDelay, testTimeoutDelay)
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeoutDelay)
+	defer cancel()
+
+	deb.Run(ctx)
+
+	select {
+	case <-firstStarted:
+	case <-time.After(testTimeoutDelay):
+		require.FailNow(t, "first action did not start in time")
+	}
+
+	deb.Run(ctx)
+
+	select {
+	case <-secondStarted:
+	case <-time.After(testTimeoutDelay):
+		require.FailNow(t, "second action did not start as a new run")
+	}
+
+	close(releaseFirst)
+	<-firstFinished
+
+	close(releaseSecond)
+	<-secondFinished
+
+	require.Equal(t, int32(2), actionCalls.Load())
 }
