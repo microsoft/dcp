@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const (
@@ -231,10 +232,10 @@ func (m *BridgeManager) Ready() <-chan struct{} {
 	return m.readyCh
 }
 
-// Start begins listening on the Unix socket and accepting connections.
+// Run begins listening on the Unix socket and accepting connections.
 // This method blocks until the context is cancelled.
 // Connections are handled in separate goroutines.
-func (m *BridgeManager) Start(ctx context.Context) error {
+func (m *BridgeManager) Run(ctx context.Context) error {
 	// Create the Unix socket listener
 	var listenerErr error
 	m.listener, listenerErr = networking.NewPrivateUnixSocketListener(m.socketDir, m.socketPrefix)
@@ -252,10 +253,10 @@ func (m *BridgeManager) Start(ctx context.Context) error {
 	// Close the listener when the context is cancelled so that Accept() unblocks.
 	// PrivateUnixSocketListener.Close() is idempotent, so the deferred Close above
 	// is still safe.
-	go func() {
-		<-ctx.Done()
-		m.listener.Close()
-	}()
+	stopCloseListener := context.AfterFunc(ctx, func() {
+		_ = m.listener.Close()
+	})
+	defer stopCloseListener()
 
 	// Signal that we're ready to accept connections
 	m.readyOnce.Do(func() {
@@ -267,12 +268,10 @@ func (m *BridgeManager) Start(ctx context.Context) error {
 		// Accept the next connection
 		conn, acceptErr := m.listener.Accept()
 		if acceptErr != nil {
-			// Check if context was cancelled (listener was closed by the goroutine above)
-			select {
-			case <-ctx.Done():
+			// Check if context was cancelled (listener was closed by context.AfterFunc above).
+			if ctxErr := ctx.Err(); ctxErr != nil {
 				m.log.V(1).Info("Bridge manager shutting down")
-				return ctx.Err()
-			default:
+				return ctxErr
 			}
 			m.log.Error(acceptErr, "Failed to accept connection")
 			continue
@@ -372,8 +371,8 @@ func (m *BridgeManager) updateSessionState(sessionID string, state BridgeSession
 // handleConnection processes a single incoming connection.
 func (m *BridgeManager) handleConnection(ctx context.Context, conn net.Conn) {
 	defer func() {
-		if r := recover(); r != nil {
-			m.log.Error(fmt.Errorf("panic: %v", r), "Panic in connection handler")
+		panicErr := resiliency.MakePanicError(recover(), m.log)
+		if panicErr != nil {
 			conn.Close()
 		}
 	}()

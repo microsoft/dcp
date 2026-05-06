@@ -12,10 +12,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 	"sync/atomic"
 
 	"github.com/google/go-dap"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	dcpio "github.com/microsoft/dcp/pkg/io"
 )
 
@@ -56,11 +56,12 @@ type connTransport struct {
 	// distinguish intentional shutdown from unexpected failures.
 	closed *atomic.Bool
 
-	// writeMu serializes message writes. Each DAP message is sent as a
+	// writeSem serializes message writes. Each DAP message is sent as a
 	// content-length header followed by the message body in separate writes,
-	// then flushed. The mutex ensures this multi-write sequence is atomic
-	// so concurrent WriteMessage calls cannot interleave their bytes.
-	writeMu sync.Mutex
+	// then flushed. The semaphore ensures this multi-write sequence is atomic
+	// so concurrent WriteMessage calls cannot interleave their bytes. Unlike
+	// sync.Mutex, this semaphore wakes waiters in FIFO order.
+	writeSem *concurrency.Semaphore
 }
 
 // NewTCPTransportWithContext creates a new Transport backed by a TCP connection
@@ -89,10 +90,11 @@ func NewUnixTransportWithContext(ctx context.Context, conn net.Conn) Transport {
 func newConnTransport(ctx context.Context, r io.Reader, w io.Writer, closer io.Closer) Transport {
 	contextReader := dcpio.NewContextReader(ctx, r, true)
 	return &connTransport{
-		reader: bufio.NewReader(contextReader),
-		writer: bufio.NewWriter(w),
-		closer: closer,
-		closed: &atomic.Bool{},
+		reader:   bufio.NewReader(contextReader),
+		writer:   bufio.NewWriter(w),
+		closer:   closer,
+		closed:   &atomic.Bool{},
+		writeSem: concurrency.NewSemaphoreWithCount(1),
 	}
 }
 
@@ -109,8 +111,9 @@ func (t *connTransport) ReadMessage() (dap.Message, error) {
 }
 
 func (t *connTransport) WriteMessage(msg dap.Message) error {
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
+	writeWaiter := t.writeSem.Wait()
+	<-writeWaiter.Chan
+	defer t.writeSem.Signal()
 
 	writeErr := WriteMessageWithFallback(t.writer, msg)
 	if writeErr != nil {

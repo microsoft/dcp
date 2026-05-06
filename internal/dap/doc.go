@@ -40,9 +40,9 @@ For debug session implementations, use DapBridge:
 	// Create and start the bridge manager
 	manager := dap.NewBridgeManager(dap.BridgeManagerConfig{}, log)
 
-	// Register a session and start the manager
+	// Register a session and run the manager
 	session, _ := manager.RegisterSession(sessionID, token)
-	err := manager.Start(ctx)
+	err := manager.Run(ctx)
 
 # Handshake Protocol
 

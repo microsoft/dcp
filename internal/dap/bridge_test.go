@@ -172,7 +172,7 @@ func TestBridgeManager_DefaultSocketNamePrefix(t *testing.T) {
 	assert.Equal(t, DefaultSocketNamePrefix, manager.socketPrefix)
 }
 
-func TestBridgeManager_StartAndReady(t *testing.T) {
+func TestBridgeManager_RunAndReady(t *testing.T) {
 	t.Parallel()
 
 	socketDir := shortTempDir(t)
@@ -184,9 +184,9 @@ func TestBridgeManager_StartAndReady(t *testing.T) {
 		SocketDir: socketDir,
 	}, logr.Discard())
 
-	// Start in background
+	// Run in background
 	go func() {
-		_ = manager.Start(ctx)
+		_ = manager.Run(ctx)
 	}()
 
 	// Wait for ready
@@ -220,7 +220,7 @@ func TestBridgeManager_DuplicateSession(t *testing.T) {
 	_, _ = manager.RegisterSession("dup-session", "token")
 
 	go func() {
-		_ = manager.Start(ctx)
+		_ = manager.Run(ctx)
 	}()
 
 	<-manager.Ready()

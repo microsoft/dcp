@@ -100,9 +100,9 @@ func TestBridgeManager_HandshakeValidation(t *testing.T) {
 	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
-	// Start bridge manager in background
+	// Run bridge manager in background
 	go func() {
-		_ = manager.Start(ctx)
+		_ = manager.Run(ctx)
 	}()
 
 	// Wait for it to be ready
@@ -142,9 +142,9 @@ func TestBridgeManager_SessionNotFound(t *testing.T) {
 	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
-	// Start bridge manager in background
+	// Run bridge manager in background
 	go func() {
-		_ = manager.Start(ctx)
+		_ = manager.Run(ctx)
 	}()
 
 	// Wait for it to be ready
@@ -183,9 +183,9 @@ func TestBridgeManager_HandshakeTimeout(t *testing.T) {
 	ctx, cancel := pkgtestutil.GetTestContext(t, 5*time.Second)
 	defer cancel()
 
-	// Start bridge manager in background
+	// Run bridge manager in background
 	go func() {
-		_ = manager.Start(ctx)
+		_ = manager.Run(ctx)
 	}()
 
 	// Wait for it to be ready
@@ -731,9 +731,9 @@ func TestBridge_DelveEndToEnd(t *testing.T) {
 	require.NoError(t, regErr)
 	require.NotNil(t, session)
 
-	// Start bridge manager in background.
+	// Run bridge manager in background.
 	go func() {
-		_ = manager.Start(ctx)
+		_ = manager.Run(ctx)
 	}()
 
 	select {

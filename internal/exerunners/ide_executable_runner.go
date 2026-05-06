@@ -84,9 +84,9 @@ func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeE
 			ConnectionHandler: r.handleBridgeConnection,
 		}, log.WithName("BridgeManager"))
 
-		// Start the bridge manager in a background goroutine
+		// Run the bridge manager in a background goroutine
 		go func() {
-			managerErr := r.bridgeManager.Start(lifetimeCtx)
+			managerErr := r.bridgeManager.Run(lifetimeCtx)
 			if managerErr != nil && !errors.Is(managerErr, context.Canceled) {
 				log.Error(managerErr, "Bridge manager terminated with error")
 			}
