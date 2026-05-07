@@ -117,159 +117,27 @@ The initial schema includes:
 
 These changes are relevant to code that constructs Executable objects, implements Executable runners, or creates controller reconcilers in tests.
 
-### `api/v1.ExecutableSpec`
+### Executable construction and comparison
 
-`ExecutableSpec` now includes:
+Code that constructs Executable specs can now opt into three additional behaviors: deferring initial start, making the run persistent, and controlling the lifecycle key used for reuse. Spec comparisons use effective start behavior, so omitted `start` and explicit `true` are treated as equivalent.
 
-```go
-Start        *bool  `json:"start,omitempty"`
-Persistent   bool   `json:"persistent,omitempty"`
-LifecycleKey string `json:"lifecycleKey,omitempty"`
-```
+When callers omit `lifecycleKey`, the controller computes one from launch-relevant inputs. That computation can depend on resolved arguments, explicitly configured environment variables, environment files, and certificate configuration, so tests that exercise default lifecycle-key behavior need those referenced inputs to be available.
 
-The `Equal` implementation includes all three fields. Code that compares specs or creates expected specs in tests should include these fields when they are relevant.
+### Runner responsibilities
 
-`ExecutableSpec` also has:
+Executable runners now need to distinguish between ordinary controller-owned runs and persistent runs. For ordinary runs, cancellation of the controller lifetime should still clean up the process. For persistent runs, the runner must let the process outlive the controller instance and must avoid any monitor or process flags that would kill the process when DCP exits.
 
-```go
-func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error)
-```
+Runners that support persistence also need an adoption path. Adoption reattaches DCP bookkeeping to a process started by an earlier controller instance rather than launching a new process. Implementations should validate the stored run metadata, verify the process by both PID and process identity time to protect against PID reuse, and reconnect the run to the normal completion/stop notification flow.
 
-The return values are:
+Runner results distinguish between the process identity timestamp and the display start timestamp. The identity timestamp is for correctness checks and persistence; the display timestamp is for user-facing status. Persistent runs must provide enough process identity information for the controller to safely adopt or reject a stored record later.
 
-1. The lifecycle key to use.
-2. `true` if the key was computed from the spec, or `false` if `spec.lifecycleKey` supplied it.
-3. An error if computing the default key failed, most commonly because an `envFiles` entry could not be read.
+### Reconciler and state-store behavior
 
-### `api/v1.Executable`
+The Executable reconciler can be configured with a specific state store, which is useful for tests and hosts that need isolation. If no explicit store is provided, persistence code opens the default local SQLite store when needed.
 
-`Executable` now has:
+Persistent Executable records are keyed by the Executable's namespaced name because the persistent-process table already scopes the record type. Runtime resource leases for containers and networks use a separate lease-key interface because those leases coordinate external Docker/Podman resources in a shared table; those keys are based on runtime resource names rather than Kubernetes object names.
 
-```go
-func (e *Executable) ShouldStart() bool
-```
-
-This returns `true` when `spec.start` is omitted or set to `true`, and `false` only when `spec.start` is explicitly `false`.
-
-### `controllers.ExecutableRunner`
-
-The `ExecutableRunner.StartRun` contract now distinguishes persistent and non-persistent runs:
-
-```go
-// When the passed context is cancelled, the run should be automatically
-// terminated unless the Executable is persistent.
-StartRun(ctx context.Context, exe *apiv1.Executable, runChangeHandler RunChangeHandler, log logr.Logger) *ExecutableStartResult
-```
-
-Runner implementations must not tie a persistent process lifetime to the controller lifetime context. The process runner does this by using `context.WithoutCancel(ctx)`, avoiding kill-on-dispose process creation flags, and skipping the DCP monitor cleanup process when `exe.Spec.Persistent` is true.
-
-### `controllers.PersistentExecutableRunner`
-
-Runners that support persistent process adoption implement this new interface:
-
-```go
-type PersistentExecutableRunner interface {
-    ExecutableRunner
-
-    AdoptRun(
-        ctx context.Context,
-        run ExecutableRunAdoptionInfo,
-        runChangeHandler RunChangeHandler,
-        log logr.Logger,
-    ) error
-}
-```
-
-`ExecutableRunAdoptionInfo` contains the metadata needed to reattach to a process started by an earlier DCP controller:
-
-```go
-type ExecutableRunAdoptionInfo struct {
-    RunID               RunID
-    Pid                 process.Pid_t
-    ProcessIdentityTime time.Time
-    StdOutFile          string
-    StdErrFile          string
-    CommandInfo         string
-}
-```
-
-An adoption implementation should:
-
-1. Validate that the run ID, PID, and process identity time are present.
-2. Verify the process still exists using both PID and identity time, not PID alone.
-3. Register the run so future stop/completion notifications go through the supplied `RunChangeHandler`.
-
-### `controllers.ExecutableStartResult` and `ExecutableRunInfo`
-
-Both types now carry two process-time values:
-
-```go
-ProcessIdentityTime time.Time
-DisplayStartTime    time.Time
-```
-
-Use `ProcessIdentityTime` for correctness checks that protect against PID reuse. Use `DisplayStartTime` for user-visible start timestamps and status.
-
-Persistent process records require a valid PID and non-zero `ProcessIdentityTime`. If a runner returns `Running` for a persistent Executable without those values, the controller cannot safely persist/adopt the run.
-
-### `controllers.ExecutableReconcilerConfig`
-
-`NewExecutableReconciler` remains available for default construction. Tests or specialized hosts can use:
-
-```go
-func NewExecutableReconcilerWithConfig(
-    lifetimeCtx context.Context,
-    client ctrl_client.Client,
-    noCacheClient ctrl_client.Reader,
-    log logr.Logger,
-    executableRunners map[apiv1.ExecutionType]ExecutableRunner,
-    healthProbeSet *health.HealthProbeSet,
-    config ExecutableReconcilerConfig,
-) *ExecutableReconciler
-```
-
-The config currently contains:
-
-```go
-type ExecutableReconcilerConfig struct {
-    StateStore *statestore.Store
-}
-```
-
-Pass a test-specific `StateStore` when tests need deterministic persistent Executable behavior. If no store is supplied, the reconciler opens the default local state store when persistence requires it.
-
-### `internal/statestore`
-
-The new state store package exposes the internal records used by the controllers:
-
-```go
-type PersistentProcessRecord struct {
-    ResourceKey      string
-    Name             types.NamespacedName
-    UID              types.UID
-    LifecycleKey     string
-    PID              process.Pid_t
-    IdentityTime     time.Time
-    DisplayStartTime time.Time
-    RunID            string
-    StdOutFile       string
-    StdErrFile       string
-    ExecutionType    string
-    UpdatedAt        time.Time
-}
-```
-
-Relevant methods:
-
-```go
-func Open(ctx context.Context, options Options) (*Store, error)
-func DefaultPath() (string, error)
-func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentProcessRecord) error
-func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*PersistentProcessRecord, error)
-func (s *Store) DeletePersistentProcess(ctx context.Context, resourceKey string) error
-```
-
-Use `statestore.ResourceKey(statestore.ResourceKindExecutable, name)` to produce the resource key used for persistent Executable records.
+The state store owns the details of persisting process identity, lifecycle metadata, and resource lease ownership. Callers should treat stored records as controller coordination data, not as a stable public serialization contract.
 
 ## Compatibility and validation checklist
 
