@@ -499,7 +499,8 @@ func ensureContainerStartingState(
 ) objectChange {
 	change := r.setContainerState(container, apiv1.ContainerStateStarting)
 
-	if rcd == nil {
+	switch {
+	case rcd == nil:
 		// This is brand new Container and we need to start it.
 		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateStarting
@@ -515,7 +516,7 @@ func ensureContainerStartingState(
 
 		change |= statusChanged
 
-	} else if !rcd.startupAttempted {
+	case !rcd.startupAttempted:
 		// We haven't attempted to start the Container yet (likely we're here after build completed).
 
 		rcd.ensureStartupLogFiles(container, log)
@@ -523,17 +524,8 @@ func ensureContainerStartingState(
 		r.scheduleContainerCreation(container, rcd, log, startupWithNoDelay)
 		change |= statusChanged
 
-	} else if templating.IsTransientTemplateError(rcd.startupError) {
-		// Retry startup after transient error.
-
-		rcd.startupError = nil
-		rcd.startAttemptFinishedAt = metav1.MicroTime{}
-		rcd.containerName = ""
-
-		r.scheduleContainerCreation(container, rcd, log, startupRetryDelay)
-		change |= statusChanged
-	} else if errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld) {
-		// Another DCP instance is currently creating the persistent container. Retry so we can either acquire the lease or adopt it after it appears.
+	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld):
+		// Retry startup after a transient error or while another DCP instance is creating the persistent container.
 
 		rcd.startupError = nil
 		rcd.startAttemptFinishedAt = metav1.MicroTime{}
@@ -542,7 +534,7 @@ func ensureContainerStartingState(
 		r.scheduleContainerCreation(container, rcd, log, startupRetryDelay)
 		change |= statusChanged
 
-	} else if container.Spec.Networks != nil && rcd.hasValidContainerID() {
+	case container.Spec.Networks != nil && rcd.hasValidContainerID():
 		// The second portion of startup sequence of a container with custom networks.
 		// Need to create ContainerNetworkConnection objects and start the container resource.
 
