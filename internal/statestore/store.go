@@ -297,3 +297,21 @@ func timeFromUnixNano(v int64) time.Time {
 	}
 	return time.Unix(0, v).UTC()
 }
+
+func timeString(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func timeFromString(v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	parsed, parseErr := time.Parse(time.RFC3339Nano, v)
+	if parseErr != nil {
+		return time.Time{}, parseErr
+	}
+	return parsed.UTC(), nil
+}

@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS resource_locks (
 	resource_key TEXT PRIMARY KEY,
 	owner_pid INTEGER NOT NULL,
-	owner_identity_time_unix_nano INTEGER NOT NULL,
+	owner_identity_time TEXT NOT NULL,
 	lease_until_unix_nano INTEGER NOT NULL,
 	updated_at_unix_nano INTEGER NOT NULL,
 	metadata TEXT NOT NULL DEFAULT ''
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS persistent_processes (
 	uid TEXT NOT NULL,
 	lifecycle_key TEXT NOT NULL,
 	pid INTEGER NOT NULL,
-	identity_time_unix_nano INTEGER NOT NULL,
+	identity_time TEXT NOT NULL,
 	display_start_time_unix_nano INTEGER NOT NULL,
 	run_id TEXT NOT NULL,
 	stdout_file TEXT NOT NULL,

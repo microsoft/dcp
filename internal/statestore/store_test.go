@@ -108,11 +108,11 @@ func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testi
 	now := time.Now().UTC()
 	_, insertErr := db.ExecContext(
 		ctx,
-		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time_unix_nano, lease_until_unix_nano, updated_at_unix_nano, metadata)
+		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
 		 VALUES(?, ?, ?, ?, ?, ?)`,
 		"container/existing",
 		owner.Pid,
-		unixNano(owner.IdentityTime),
+		timeString(owner.IdentityTime),
 		unixNano(now.Add(time.Minute)),
 		unixNano(now),
 		"",
@@ -198,6 +198,28 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	require.Equal(t, owner2, lease.OwnerProcess)
 }
 
+func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, storePath)
+
+	owner, ownerErr := normalizeResourceLeaseOwner(process.ProcessTreeItem{
+		Pid:          process.Pid_t(1234),
+		IdentityTime: time.Date(1, time.January, 1, 0, 3, 10, 720000000, time.UTC),
+	})
+	require.NoError(t, ownerErr)
+
+	lease, acquireErr := store.AcquireResourceLease(ctx, "container/test", owner, time.Minute, "")
+	require.NoError(t, acquireErr)
+	require.Equal(t, owner, lease.OwnerProcess)
+
+	renewed, renewErr := store.RenewResourceLease(ctx, "container/test", owner, time.Minute)
+	require.NoError(t, renewErr)
+	require.Equal(t, owner, renewed.OwnerProcess)
+}
+
 func TestResourceLeaseCanBeAcquiredAfterExpiration(t *testing.T) {
 	t.Parallel()
 
@@ -275,11 +297,11 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, staleAcquireErr)
 	_, invalidOwnerInsertErr := store1.db.ExecContext(
 		ctx,
-		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time_unix_nano, lease_until_unix_nano, updated_at_unix_nano, metadata)
+		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
 		 VALUES(?, ?, ?, ?, ?, ?)`,
 		"container/invalid-owner",
 		process.UnknownPID,
-		unixNano(now),
+		timeString(now),
 		unixNano(now.Add(time.Minute)),
 		unixNano(now),
 		"",
@@ -287,11 +309,11 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, invalidOwnerInsertErr)
 	_, expiredInsertErr := store1.db.ExecContext(
 		ctx,
-		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time_unix_nano, lease_until_unix_nano, updated_at_unix_nano, metadata)
+		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
 		 VALUES(?, ?, ?, ?, ?, ?)`,
 		"container/expired",
 		activeOwner.Pid,
-		unixNano(activeOwner.IdentityTime),
+		timeString(activeOwner.IdentityTime),
 		unixNano(now.Add(-time.Second)),
 		unixNano(now),
 		"",

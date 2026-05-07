@@ -34,15 +34,19 @@ func normalizeResourceLeaseOwner(owner process.ProcessTreeItem) (process.Process
 	}, nil
 }
 
-func resourceLeaseOwnerFromDB(ownerPID int64, ownerIdentityTimeUnixNano int64) (process.ProcessTreeItem, error) {
+func resourceLeaseOwnerFromDB(ownerPID int64, ownerIdentityTime string) (process.ProcessTreeItem, error) {
 	pid, pidConvertErr := process.Int64_ToPidT(ownerPID)
 	if pidConvertErr != nil {
 		return process.ProcessTreeItem{}, fmt.Errorf("could not convert resource lease owner process ID: %w", pidConvertErr)
 	}
+	identityTime, identityTimeErr := timeFromString(ownerIdentityTime)
+	if identityTimeErr != nil {
+		return process.ProcessTreeItem{}, fmt.Errorf("could not parse resource lease owner process identity time: %w", identityTimeErr)
+	}
 
 	owner := process.ProcessTreeItem{
 		Pid:          pid,
-		IdentityTime: timeFromUnixNano(ownerIdentityTimeUnixNano),
+		IdentityTime: identityTime,
 	}
 	return normalizeResourceLeaseOwner(owner)
 }

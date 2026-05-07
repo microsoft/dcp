@@ -45,7 +45,7 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resourceKey string, ow
 	now := time.Now().UTC()
 	leaseUntil := now.Add(ttl)
 	ownerPID := normalizedOwner.Pid
-	ownerIdentityTimeUnixNano := unixNano(normalizedOwner.IdentityTime)
+	ownerIdentityTime := timeString(normalizedOwner.IdentityTime)
 	lease := &ResourceLease{
 		ResourceKey:  resourceKey,
 		OwnerProcess: normalizedOwner,
@@ -57,25 +57,25 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resourceKey string, ow
 	txErr := s.withImmediateTx(ctx, func(conn *sql.Conn) error {
 		result, execErr := conn.ExecContext(
 			ctx,
-			`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time_unix_nano, lease_until_unix_nano, updated_at_unix_nano, metadata)
+			`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
 			 VALUES(?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(resource_key) DO UPDATE SET
 				owner_pid = excluded.owner_pid,
-				owner_identity_time_unix_nano = excluded.owner_identity_time_unix_nano,
+				owner_identity_time = excluded.owner_identity_time,
 				lease_until_unix_nano = excluded.lease_until_unix_nano,
 				updated_at_unix_nano = excluded.updated_at_unix_nano,
 				metadata = excluded.metadata
 			 WHERE resource_locks.lease_until_unix_nano <= ?
-				OR (resource_locks.owner_pid = ? AND resource_locks.owner_identity_time_unix_nano = ?)`,
+				OR (resource_locks.owner_pid = ? AND resource_locks.owner_identity_time = ?)`,
 			resourceKey,
 			ownerPID,
-			ownerIdentityTimeUnixNano,
+			ownerIdentityTime,
 			unixNano(leaseUntil),
 			unixNano(now),
 			metadata,
 			unixNano(now),
 			ownerPID,
-			ownerIdentityTimeUnixNano,
+			ownerIdentityTime,
 		)
 		if execErr != nil {
 			return fmt.Errorf("could not acquire resource lease '%s': %w", resourceKey, execErr)
@@ -114,7 +114,7 @@ func (s *Store) RenewResourceLease(ctx context.Context, resourceKey string, owne
 	now := time.Now().UTC()
 	leaseUntil := now.Add(ttl)
 	ownerPID := normalizedOwner.Pid
-	ownerIdentityTimeUnixNano := unixNano(normalizedOwner.IdentityTime)
+	ownerIdentityTime := timeString(normalizedOwner.IdentityTime)
 	var lease *ResourceLease
 
 	txErr := s.withImmediateTx(ctx, func(conn *sql.Conn) error {
@@ -122,12 +122,12 @@ func (s *Store) RenewResourceLease(ctx context.Context, resourceKey string, owne
 			ctx,
 			`UPDATE resource_locks
 			 SET lease_until_unix_nano = ?, updated_at_unix_nano = ?
-			 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time_unix_nano = ? AND lease_until_unix_nano > ?`,
+			 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time = ? AND lease_until_unix_nano > ?`,
 			unixNano(leaseUntil),
 			unixNano(now),
 			resourceKey,
 			ownerPID,
-			ownerIdentityTimeUnixNano,
+			ownerIdentityTime,
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -166,16 +166,16 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resourceKey string, ow
 		return fmt.Errorf("%w: %w", ErrInvalidArgument, ownerErr)
 	}
 	ownerPID := normalizedOwner.Pid
-	ownerIdentityTimeUnixNano := unixNano(normalizedOwner.IdentityTime)
+	ownerIdentityTime := timeString(normalizedOwner.IdentityTime)
 
 	return s.withImmediateTx(ctx, func(conn *sql.Conn) error {
 		_, execErr := conn.ExecContext(
 			ctx,
 			`DELETE FROM resource_locks
-			 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time_unix_nano = ?`,
+			 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time = ?`,
 			resourceKey,
 			ownerPID,
-			ownerIdentityTimeUnixNano,
+			ownerIdentityTime,
 		)
 		if execErr != nil {
 			return fmt.Errorf("could not release resource lease '%s': %w", resourceKey, execErr)
@@ -212,11 +212,11 @@ func (s *Store) DeleteExpiredResourceLeases(ctx context.Context) error {
 }
 
 type inactiveResourceLeaseCandidate struct {
-	resourceKey               string
-	ownerPID                  int64
-	ownerIdentityTimeUnixNano int64
-	leaseUntilUnixNano        int64
-	updatedAtUnixNano         int64
+	resourceKey        string
+	ownerPID           int64
+	ownerIdentityTime  string
+	leaseUntilUnixNano int64
+	updatedAtUnixNano  int64
 }
 
 func (s *Store) DeleteInactiveResourceLeases(ctx context.Context) error {
@@ -234,11 +234,11 @@ func (s *Store) DeleteInactiveResourceLeases(ctx context.Context) error {
 			_, execErr := conn.ExecContext(
 				ctx,
 				`DELETE FROM resource_locks
-				 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time_unix_nano = ?
+				 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time = ?
 					AND lease_until_unix_nano = ? AND updated_at_unix_nano = ?`,
 				candidate.resourceKey,
 				candidate.ownerPID,
-				candidate.ownerIdentityTimeUnixNano,
+				candidate.ownerIdentityTime,
 				candidate.leaseUntilUnixNano,
 				candidate.updatedAtUnixNano,
 			)
@@ -258,7 +258,7 @@ func (s *Store) inactiveResourceLeaseCandidates(ctx context.Context, now time.Ti
 
 	rows, queryErr := db.QueryContext(
 		ctx,
-		`SELECT resource_key, owner_pid, owner_identity_time_unix_nano, lease_until_unix_nano, updated_at_unix_nano
+		`SELECT resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano
 		 FROM resource_locks`,
 	)
 	if queryErr != nil {
@@ -275,7 +275,7 @@ func (s *Store) inactiveResourceLeaseCandidates(ctx context.Context, now time.Ti
 		scanErr := rows.Scan(
 			&candidate.resourceKey,
 			&candidate.ownerPID,
-			&candidate.ownerIdentityTimeUnixNano,
+			&candidate.ownerIdentityTime,
 			&candidate.leaseUntilUnixNano,
 			&candidate.updatedAtUnixNano,
 		)
@@ -299,27 +299,27 @@ func resourceLeaseIsInactive(candidate inactiveResourceLeaseCandidate, nowUnixNa
 		return true
 	}
 
-	ownerProcess, ownerErr := resourceLeaseOwnerFromDB(candidate.ownerPID, candidate.ownerIdentityTimeUnixNano)
+	ownerProcess, ownerErr := resourceLeaseOwnerFromDB(candidate.ownerPID, candidate.ownerIdentityTime)
 	return ownerErr != nil || !resourceLeaseOwnerIsActive(ownerProcess)
 }
 
 func getResourceLease(ctx context.Context, conn *sql.Conn, resourceKey string) (*ResourceLease, error) {
 	row := conn.QueryRowContext(
 		ctx,
-		`SELECT resource_key, owner_pid, owner_identity_time_unix_nano, lease_until_unix_nano, updated_at_unix_nano, metadata
+		`SELECT resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata
 		 FROM resource_locks WHERE resource_key = ?`,
 		resourceKey,
 	)
 
 	var lease ResourceLease
 	var ownerPID int64
-	var ownerIdentityTimeUnixNano int64
+	var ownerIdentityTime string
 	var leaseUntilUnixNano int64
 	var updatedAtUnixNano int64
 	scanErr := row.Scan(
 		&lease.ResourceKey,
 		&ownerPID,
-		&ownerIdentityTimeUnixNano,
+		&ownerIdentityTime,
 		&leaseUntilUnixNano,
 		&updatedAtUnixNano,
 		&lease.Metadata,
@@ -328,7 +328,7 @@ func getResourceLease(ctx context.Context, conn *sql.Conn, resourceKey string) (
 		return nil, fmt.Errorf("could not read resource lease '%s': %w", resourceKey, scanErr)
 	}
 
-	ownerProcess, ownerErr := resourceLeaseOwnerFromDB(ownerPID, ownerIdentityTimeUnixNano)
+	ownerProcess, ownerErr := resourceLeaseOwnerFromDB(ownerPID, ownerIdentityTime)
 	if ownerErr != nil {
 		return nil, fmt.Errorf("could not read resource lease owner '%s': %w", resourceKey, ownerErr)
 	}

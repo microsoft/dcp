@@ -60,7 +60,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			ctx,
 			`INSERT INTO persistent_processes(
 				resource_key, namespace, name, uid, lifecycle_key, pid,
-				identity_time_unix_nano, display_start_time_unix_nano, run_id,
+				identity_time, display_start_time_unix_nano, run_id,
 				stdout_file, stderr_file, execution_type, lifecycle_metadata, updated_at_unix_nano
 			 )
 			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -70,7 +70,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 				uid = excluded.uid,
 				lifecycle_key = excluded.lifecycle_key,
 				pid = excluded.pid,
-				identity_time_unix_nano = excluded.identity_time_unix_nano,
+				identity_time = excluded.identity_time,
 				display_start_time_unix_nano = excluded.display_start_time_unix_nano,
 				run_id = excluded.run_id,
 				stdout_file = excluded.stdout_file,
@@ -84,7 +84,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			string(record.UID),
 			record.LifecycleKey,
 			int64(record.PID),
-			unixNano(record.IdentityTime),
+			timeString(record.IdentityTime),
 			unixNano(record.DisplayStartTime),
 			record.RunID,
 			record.StdOutFile,
@@ -115,7 +115,7 @@ func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*
 	row := db.QueryRowContext(
 		ctx,
 		`SELECT resource_key, namespace, name, uid, lifecycle_key, pid,
-			identity_time_unix_nano, display_start_time_unix_nano, run_id,
+			identity_time, display_start_time_unix_nano, run_id,
 			stdout_file, stderr_file, execution_type, lifecycle_metadata, updated_at_unix_nano
 		 FROM persistent_processes WHERE resource_key = ?`,
 		resourceKey,
@@ -155,7 +155,7 @@ func scanPersistentProcess(row persistentProcessScanner) (*PersistentProcessReco
 	var record PersistentProcessRecord
 	var uid string
 	var pid int64
-	var identityTimeUnixNano int64
+	var identityTime string
 	var displayStartTimeUnixNano int64
 	var updatedAtUnixNano int64
 
@@ -166,7 +166,7 @@ func scanPersistentProcess(row persistentProcessScanner) (*PersistentProcessReco
 		&uid,
 		&record.LifecycleKey,
 		&pid,
-		&identityTimeUnixNano,
+		&identityTime,
 		&displayStartTimeUnixNano,
 		&record.RunID,
 		&record.StdOutFile,
@@ -186,7 +186,11 @@ func scanPersistentProcess(row persistentProcessScanner) (*PersistentProcessReco
 
 	record.UID = types.UID(uid)
 	record.PID = pidValue
-	record.IdentityTime = timeFromUnixNano(identityTimeUnixNano)
+	identityTimeValue, identityTimeErr := timeFromString(identityTime)
+	if identityTimeErr != nil {
+		return nil, identityTimeErr
+	}
+	record.IdentityTime = identityTimeValue
 	record.DisplayStartTime = timeFromUnixNano(displayStartTimeUnixNano)
 	record.UpdatedAt = timeFromUnixNano(updatedAtUnixNano)
 	return &record, nil
