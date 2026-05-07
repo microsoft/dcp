@@ -1,8 +1,8 @@
-# Executable persistence API changes
+# Executable persistence
 
-This branch adds API fields that let callers create Executable resources whose underlying OS process can survive a DCP controller restart and be adopted by the next controller instance.
+Executable resources can be configured so their underlying OS process survives a DCP controller restart and can be adopted by the next controller instance.
 
-## New `ExecutableSpec` fields
+## `ExecutableSpec` fields
 
 ### `spec.start`
 
@@ -34,7 +34,7 @@ spec:
 Behavior:
 
 - Omitted means `false`; existing Executables keep their previous non-persistent behavior.
-- Persistent Executables are currently supported only with `executionType: Process`, or with `executionType` omitted because `Process` is the default.
+- Persistent Executables are supported only with `executionType: Process`, or with `executionType` omitted because `Process` is the default.
 - Persistent Executables cannot specify `fallbackExecutionTypes`.
 - `persistent` is immutable after creation.
 - Deleting a persistent Executable object releases DCP's ownership/lease metadata but intentionally leaves the underlying process running.
@@ -108,24 +108,24 @@ The backing store is a local SQLite database used for DCP coordination metadata,
 - DCP uses WAL mode and a busy timeout to coordinate concurrent controller processes.
 - Migration SQL is embedded into the DCP binary, so runtime schema initialization does not depend on external migration files.
 
-The initial schema includes:
+The schema includes:
 
 - `persistent_processes`: process records used to adopt persistent Executables.
 - `resource_locks`: lease records used for coordination between DCP processes.
 
-## Go type and interface changes
+## Go behavior
 
-These changes are relevant to code that constructs Executable objects, implements Executable runners, or creates controller reconcilers in tests.
+The following behavior is relevant to code that constructs Executable objects, implements Executable runners, or creates controller reconcilers in tests.
 
 ### Executable construction and comparison
 
-Code that constructs Executable specs can now opt into three additional behaviors: deferring initial start, making the run persistent, and controlling the lifecycle key used for reuse. Spec comparisons use effective start behavior, so omitted `start` and explicit `true` are treated as equivalent.
+Code that constructs Executable specs can opt into three behaviors: deferring initial start, making the run persistent, and controlling the lifecycle key used for reuse. Spec comparisons use effective start behavior, so omitted `start` and explicit `true` are treated as equivalent.
 
 When callers omit `lifecycleKey`, the controller computes one from launch-relevant inputs. That computation can depend on resolved arguments, explicitly configured environment variables, environment files, and certificate configuration, so tests that exercise default lifecycle-key behavior need those referenced inputs to be available.
 
 ### Runner responsibilities
 
-Executable runners now need to distinguish between ordinary controller-owned runs and persistent runs. For ordinary runs, cancellation of the controller lifetime should still clean up the process. For persistent runs, the runner must let the process outlive the controller instance and must avoid any monitor or process flags that would kill the process when DCP exits.
+Executable runners distinguish between ordinary controller-owned runs and persistent runs. For ordinary runs, cancellation of the controller lifetime should still clean up the process. For persistent runs, the runner must let the process outlive the controller instance and must avoid any monitor or process flags that would kill the process when DCP exits.
 
 Runners that support persistence also need an adoption path. Adoption reattaches DCP bookkeeping to a process started by an earlier controller instance rather than launching a new process. Implementations should validate the stored run metadata, verify the process by both PID and process identity time to protect against PID reuse, and reconnect the run to the normal completion/stop notification flow.
 
@@ -139,9 +139,9 @@ Persistent Executable records are keyed by the Executable's namespaced name beca
 
 The state store owns the details of persisting process identity, lifecycle metadata, and resource lease ownership. Callers should treat stored records as controller coordination data, not as a stable public serialization contract.
 
-## Compatibility and validation checklist
+## Configuration checklist
 
-When updating callers or generated manifests for this branch:
+When configuring persistent Executables:
 
 1. Add `spec.persistent: true` only for Executables that should keep running when DCP exits or restarts.
 2. Keep persistent Executables on `executionType: Process`; do not use IDE execution or fallback execution types with persistence.
