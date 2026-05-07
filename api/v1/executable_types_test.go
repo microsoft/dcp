@@ -56,6 +56,16 @@ func TestExecutableShouldStart(t *testing.T) {
 	}
 }
 
+func TestExecutableGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	exe := &Executable{}
+	exe.Namespace = "default"
+	exe.Name = "api"
+
+	require.Equal(t, "default/api", exe.GetLeaseKey())
+}
+
 func TestExecutableSpecEqualTreatsOmittedStartAsExplicitTrue(t *testing.T) {
 	t.Parallel()
 

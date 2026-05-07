@@ -34,6 +34,7 @@ import (
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/pointers"
 )
@@ -1554,3 +1555,4 @@ var _ apiserver_resourcestrategy.Validater = (*Container)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*Container)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*Container)(nil)
 var _ apiserver_resource.GenericSubResource = (*ContainerLogResource)(nil)
+var _ statestore.LeasableResource = (*Container)(nil)

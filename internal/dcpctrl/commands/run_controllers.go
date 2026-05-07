@@ -201,7 +201,8 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			exeRunners,
 			hpSet,
 			controllers.ExecutableReconcilerConfig{
-				StateStore: stateStore,
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
 			},
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {

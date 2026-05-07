@@ -29,6 +29,7 @@ import (
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -560,6 +561,10 @@ func (e *Executable) GetResourceId() string {
 	return fmt.Sprintf("executable-%s", e.UID)
 }
 
+func (e *Executable) GetLeaseKey() string {
+	return e.NamespacedName().String()
+}
+
 func (e *Executable) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
@@ -749,3 +754,4 @@ var _ apiserver_resourcestrategy.ValidateUpdater = (*Executable)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*Executable)(nil)
 var _ apiserver_resource.GenericSubResource = (*ExecutableLogResource)(nil)
 var _ StdIoStreamableResource = (*Executable)(nil)
+var _ statestore.LeasableResource = (*Executable)(nil)

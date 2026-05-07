@@ -162,7 +162,7 @@ func TestHandleNewPersistentExecutableWithStartFalseAdoptsMatchingRecord(t *test
 	record := persistentProcessRecordForTest(t, exe)
 	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
 
-	change := handleNewExecutable(ctx, reconciler, exe, apiv1.ExecutableStateEmpty, nil, logr.Discard())
+	change := reconciler.manageExecutable(ctx, exe, logr.Discard())
 
 	require.NotEqual(t, noChange, change)
 	require.Equal(t, apiv1.ExecutableStateRunning, exe.Status.State)
@@ -187,7 +187,7 @@ func TestHandleNewPersistentExecutableWithStartFalseStopsMismatchedRecordAndWait
 	record.LifecycleKey = "stale"
 	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
 
-	change := handleNewExecutable(ctx, reconciler, exe, apiv1.ExecutableStateEmpty, nil, logr.Discard())
+	change := reconciler.manageExecutable(ctx, exe, logr.Discard())
 
 	require.NotEqual(t, noChange, change)
 	require.Equal(t, apiv1.ExecutableStateEmpty, exe.Status.State)
@@ -196,6 +196,33 @@ func TestHandleNewPersistentExecutableWithStartFalseStopsMismatchedRecordAndWait
 	require.Zero(t, runner.startRunCount)
 	_, getErr := store.GetPersistentProcess(ctx, record.ResourceKey)
 	require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
+}
+
+func TestHandleNewPersistentExecutableWaitsWhenLeaseHeld(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Name = "api"
+	exe.Spec.Start = pointersTo(false)
+	exe.Spec.Args = []string{"--port", "5000"}
+	exe.Spec.Env = []apiv1.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	record := persistentProcessRecordForTest(t, exe)
+	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
+	otherOwner := reconciler.config.ResourceLeaseOwner
+	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(-time.Hour)
+	_, acquireErr := store.AcquireResourceLease(ctx, exe, otherOwner, time.Minute, "")
+	require.NoError(t, acquireErr)
+
+	change := reconciler.manageExecutable(ctx, exe, logr.Discard())
+
+	require.Equal(t, additionalReconciliationNeeded, change)
+	require.Equal(t, apiv1.ExecutableStateEmpty, exe.Status.State)
+	require.Empty(t, runner.adoptedRuns)
+	require.Empty(t, runner.stoppedRuns)
+	require.Zero(t, runner.startRunCount)
 }
 
 func persistentLifecycleKeyTestExecutable() *apiv1.Executable {
@@ -248,13 +275,15 @@ func newPersistentExecutableAdoptionTestReconciler(t *testing.T) (*ExecutableRec
 	})
 
 	runner := &persistentExecutableTestRunner{}
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
 	reconciler := &ExecutableReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv1.Executable](nil, nil, logr.Discard(), context.Background()),
 		ExecutableRunners: map[apiv1.ExecutionType]ExecutableRunner{
 			apiv1.ExecutionTypeProcess: runner,
 		},
 		runs:   NewObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, *apiv1.Executable](),
-		config: ExecutableReconcilerConfig{StateStore: store},
+		config: ExecutableReconcilerConfig{StateStore: store, ResourceLeaseOwner: leaseOwner},
 	}
 	return reconciler, runner, store
 }
@@ -268,7 +297,7 @@ func persistentProcessRecordForTest(t *testing.T, exe *apiv1.Executable) statest
 	require.NoError(t, lifecycleInfoErr)
 
 	return statestore.PersistentProcessRecord{
-		ResourceKey:       persistentExecutableResourceKey(exe.NamespacedName()),
+		ResourceKey:       exe.GetLeaseKey(),
 		Name:              exe.NamespacedName(),
 		UID:               exe.UID,
 		LifecycleKey:      lifecycleInfo.Key,

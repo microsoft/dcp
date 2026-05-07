@@ -70,7 +70,8 @@ var executableStateInitializers = map[apiv1.ExecutableState]executableStateIniti
 type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, *apiv1.Executable]
 
 type ExecutableReconcilerConfig struct {
-	StateStore *statestore.Store
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessTreeItem
 }
 
 // ExecutableReconciler reconciles a Executable object
@@ -230,9 +231,14 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 
 	if exe.Spec.Persistent {
 		log.V(1).Info("Persistent Executable is being deleted; leaving underlying process running")
-		r.releasePersistentExecutableResources(ctx, exe, runInfo, log)
-		r.runs.DeleteByNamespacedName(exe.NamespacedName())
-		return deleteFinalizer(exe, executableFinalizer, log)
+		var deletionChange objectChange
+		leaseChange := r.withPersistentExecutableLease(ctx, exe, log, func(context.Context, *statestore.ResourceLease) objectChange {
+			r.releasePersistentExecutableResources(ctx, exe, runInfo, log)
+			r.runs.DeleteByNamespacedName(exe.NamespacedName())
+			deletionChange = deleteFinalizer(exe, executableFinalizer, log)
+			return deletionChange
+		})
+		return leaseChange | deletionChange
 	}
 
 	var change objectChange
@@ -277,11 +283,57 @@ func (r *ExecutableReconciler) manageExecutable(ctx context.Context, exe *apiv1.
 	// Even if Executable.State == targetExecutableState, we still want to run the initializer
 	// to ensure that Executable.Status is up to date and that the real-world resources
 	// associated with Executable object are up to date.
-	initializer := getStateInitializer(executableStateInitializers, targetExecutableState, log)
-	change := initializer(ctx, r, exe, targetExecutableState, runInfo, log)
+	runInitializer := func(ctx context.Context) objectChange {
+		initializer := getStateInitializer(executableStateInitializers, targetExecutableState, log)
+		return initializer(ctx, r, exe, targetExecutableState, runInfo, log)
+	}
+
+	var change objectChange
+	if exe.Spec.Persistent {
+		change = r.withPersistentExecutableLease(ctx, exe, log, func(ctx context.Context, _ *statestore.ResourceLease) objectChange {
+			return runInitializer(ctx)
+		})
+	} else {
+		change = runInitializer(ctx)
+	}
 
 	if runInfo != nil {
 		r.runs.Update(exe.NamespacedName(), runInfo.RunID, runInfo)
+	}
+
+	return change
+}
+
+func (r *ExecutableReconciler) withPersistentExecutableLease(ctx context.Context, exe *apiv1.Executable, log logr.Logger, f func(context.Context, *statestore.ResourceLease) objectChange) objectChange {
+	if f == nil {
+		log.Error(fmt.Errorf("persistent Executable lease callback cannot be nil"), "Could not acquire persistent Executable resource lease")
+		return r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
+	}
+
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		log.Error(stateStoreErr, "Persistent Executable cannot be reconciled without a state store")
+		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+	leaseOwner, leaseOwnerErr := r.getResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		log.Error(leaseOwnerErr, "Could not determine persistent Executable resource lease owner")
+		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	var change objectChange
+	leaseErr := stateStore.WithResourceLease(ctx, exe, leaseOwner, resourceLeaseRevalidationInterval, "", func(ctx context.Context, lease *statestore.ResourceLease) error {
+		log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
+		change = f(ctx, lease)
+		return nil
+	})
+	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+		log.V(1).Info("Persistent Executable resource lease is held by another owner", "ResourceKey", exe.GetLeaseKey())
+		return additionalReconciliationNeeded
+	}
+	if leaseErr != nil {
+		log.Error(leaseErr, "Could not acquire persistent Executable resource lease", "ResourceKey", exe.GetLeaseKey())
+		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
 	return change
@@ -324,12 +376,12 @@ func (r *ExecutableReconciler) tryAdoptExistingPersistentExecutable(ctx context.
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	record, recordErr := stateStore.GetPersistentProcess(ctx, persistentExecutableResourceKey(exe.NamespacedName()))
+	record, recordErr := stateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
 	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
 		return false, noChange
 	}
 	if recordErr != nil {
-		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", persistentExecutableResourceKey(exe.NamespacedName()))
+		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", exe.GetLeaseKey())
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
@@ -445,7 +497,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	resourceKey := persistentExecutableResourceKey(exe.NamespacedName())
+	resourceKey := exe.GetLeaseKey()
 	record, recordErr := stateStore.GetPersistentProcess(ctx, resourceKey)
 	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
 		return false, noChange
@@ -459,7 +511,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 }
 
 func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, record *statestore.PersistentProcessRecord, log logr.Logger) (bool, objectChange) {
-	resourceKey := persistentExecutableResourceKey(exe.NamespacedName())
+	resourceKey := exe.GetLeaseKey()
 	lifecycleInfo, lifecycleKeyErr := persistentExecutableLifecycleInfo(exe)
 	if lifecycleKeyErr != nil {
 		log.Error(lifecycleKeyErr, "Could not calculate Executable lifecycle key")
@@ -623,7 +675,7 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 	}
 
 	return stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
-		ResourceKey:       persistentExecutableResourceKey(exe.NamespacedName()),
+		ResourceKey:       exe.GetLeaseKey(),
 		Name:              exe.NamespacedName(),
 		UID:               exe.UID,
 		LifecycleKey:      lifecycleInfo.Key,
@@ -865,10 +917,26 @@ func (r *ExecutableReconciler) deletePersistentProcessRecord(ctx context.Context
 		return
 	}
 
-	deleteErr := stateStore.DeletePersistentProcess(ctx, persistentExecutableResourceKey(name))
+	deleteErr := stateStore.DeletePersistentProcess(ctx, name.String())
 	if deleteErr != nil {
 		log.Error(deleteErr, "Could not delete persistent Executable process record", "Executable", name.String())
 	}
+}
+
+func (r *ExecutableReconciler) deletePersistentProcessRecordWithLease(ctx context.Context, name types.NamespacedName, log logr.Logger) {
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: name.Namespace,
+			Name:      name.Name,
+		},
+		Spec: apiv1.ExecutableSpec{
+			Persistent: true,
+		},
+	}
+	_ = r.withPersistentExecutableLease(ctx, exe, log, func(ctx context.Context, _ *statestore.ResourceLease) objectChange {
+		r.deletePersistentProcessRecord(ctx, name, log)
+		return noChange
+	})
 }
 
 // Performs an attempt to start an Executable run.
@@ -1093,7 +1161,7 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 	}
 
 	if runInfo.ExeState.IsTerminal() {
-		r.deletePersistentProcessRecord(context.Background(), name, log)
+		r.deletePersistentProcessRecordWithLease(context.Background(), name, log)
 	}
 
 	runMap := r.runs
@@ -1269,8 +1337,11 @@ func (r *ExecutableReconciler) getStateStore() (*statestore.Store, error) {
 	return r.config.StateStore, nil
 }
 
-func persistentExecutableResourceKey(name types.NamespacedName) string {
-	return name.String()
+func (r *ExecutableReconciler) getResourceLeaseOwner() (process.ProcessTreeItem, error) {
+	if r.config.ResourceLeaseOwner.Pid > 0 && !r.config.ResourceLeaseOwner.IdentityTime.IsZero() {
+		return r.config.ResourceLeaseOwner, nil
+	}
+	return statestore.CurrentResourceLeaseOwner()
 }
 
 func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Executable) bool {
@@ -1287,6 +1358,7 @@ func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, e
 func (r *ExecutableReconciler) releasePersistentExecutableResources(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
+	r.deletePersistentProcessRecord(ctx, exe.NamespacedName(), log)
 }
 
 func (r *ExecutableReconciler) cleanUpFailedStartResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
