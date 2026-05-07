@@ -134,8 +134,10 @@ func (r *ProcessExecutableRunner) StartRun(
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	} else {
-		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
+		if !exe.Spec.Persistent {
+			// Use original log here, the watcher is a different process.
+			dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
+		}
 
 		r.runningProcesses.Store(pidToRunID(pid), &processRunState{
 			identityTime:     processIdentityTime,

@@ -322,17 +322,18 @@ func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	store := openTestStore(t, storePath)
 
 	record := PersistentProcessRecord{
-		ResourceKey:      ResourceKey(ResourceKindExecutable, types.NamespacedName{Name: "api"}),
-		Name:             types.NamespacedName{Name: "api"},
-		UID:              types.UID("uid1"),
-		LifecycleKey:     "lk1",
-		PID:              process.Pid_t(1234),
-		IdentityTime:     time.Unix(100, 200).UTC(),
-		DisplayStartTime: time.Unix(101, 300).UTC(),
-		RunID:            "1234",
-		StdOutFile:       "/tmp/stdout",
-		StdErrFile:       "/tmp/stderr",
-		ExecutionType:    "Process",
+		ResourceKey:       ResourceKey(ResourceKindExecutable, types.NamespacedName{Name: "api"}),
+		Name:              types.NamespacedName{Name: "api"},
+		UID:               types.UID("uid1"),
+		LifecycleKey:      "lk1",
+		PID:               process.Pid_t(1234),
+		IdentityTime:      time.Unix(100, 200).UTC(),
+		DisplayStartTime:  time.Unix(101, 300).UTC(),
+		RunID:             "1234",
+		StdOutFile:        "/tmp/stdout",
+		StdErrFile:        "/tmp/stderr",
+		ExecutionType:     "Process",
+		LifecycleMetadata: `{"args":["--port","5000"]}`,
 	}
 
 	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
@@ -350,6 +351,7 @@ func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	require.Equal(t, record.StdOutFile, actual.StdOutFile)
 	require.Equal(t, record.StdErrFile, actual.StdErrFile)
 	require.Equal(t, record.ExecutionType, actual.ExecutionType)
+	require.Equal(t, record.LifecycleMetadata, actual.LifecycleMetadata)
 	require.False(t, actual.UpdatedAt.IsZero())
 
 	require.NoError(t, store.DeletePersistentProcess(ctx, record.ResourceKey))

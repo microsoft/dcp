@@ -7,13 +7,18 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	stdslices "slices"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -297,14 +302,9 @@ func handleNewExecutable(
 	}
 
 	if !exe.ShouldStart() && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
+		// We should wait to create an executable until the user clears Start = false
+		log.V(1).Info("Waiting for the executable to be started")
 		return noChange
-	}
-
-	if exe.Spec.Persistent && runInfo == nil {
-		adopted, adoptionChange := r.tryAdoptPersistentExecutable(ctx, exe, log)
-		if adopted || adoptionChange != noChange {
-			return adoptionChange
-		}
 	}
 
 	return r.startExecutable(ctx, exe, runInfo, log)
@@ -405,7 +405,7 @@ func ensureExecutableFinalState(
 	return change
 }
 
-func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (bool, objectChange) {
+func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) (bool, objectChange) {
 	stateStore, stateStoreErr := r.getStateStore()
 	if stateStoreErr != nil {
 		log.Error(stateStoreErr, "Persistent Executable cannot be reconciled without a state store")
@@ -422,16 +422,26 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	lifecycleKey, _, lifecycleKeyErr := exe.Spec.GetLifecycleKey()
+	lifecycleInfo, lifecycleKeyErr := persistentExecutableLifecycleInfo(exe)
 	if lifecycleKeyErr != nil {
 		log.Error(lifecycleKeyErr, "Could not calculate Executable lifecycle key")
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	if record.LifecycleKey != lifecycleKey {
-		log.Info("Found existing persistent Executable process record, but lifecycle key does not match",
-			"OldLifecycleKey", record.LifecycleKey,
-			"NewLifecycleKey", lifecycleKey)
+	if record.LifecycleKey != lifecycleInfo.Key {
+		if lifecycleInfo.HasDefaultKey {
+			args, env, other := calculatePersistentExecutableChanges(record.LifecycleMetadata, lifecycleInfo.Metadata)
+			log.Info("Found existing persistent Executable process record, but calculated lifecycle key does not match",
+				"OldLifecycleKey", record.LifecycleKey,
+				"NewLifecycleKey", lifecycleInfo.Key,
+				"ArgChanges", args,
+				"EnvChanges", env,
+				"OtherChanges", other)
+		} else {
+			log.Info("Found existing persistent Executable process record, but custom lifecycle key does not match",
+				"OldLifecycleKey", record.LifecycleKey,
+				"NewLifecycleKey", lifecycleInfo.Key)
+		}
 		if deleteErr := stateStore.DeletePersistentProcess(ctx, resourceKey); deleteErr != nil {
 			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
 			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -475,7 +485,11 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	ri := NewRunInfo(exe)
+	ri := runInfo
+	if ri == nil {
+		ri = NewRunInfo(exe)
+	}
+	startingRunID := ri.RunID
 	ri.ExeState = apiv1.ExecutableStateRunning
 	ri.RunID = runID
 	pointers.SetValue(&ri.Pid, int64(record.PID))
@@ -485,7 +499,11 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 	ri.StdOutFile = record.StdOutFile
 	ri.StdErrFile = record.StdErrFile
 	ri.startupStage = StartupStageDefaultRunner
-	r.runs.Store(exe.NamespacedName(), ri.RunID, ri.Clone())
+	if startingRunID == UnknownRunID {
+		r.runs.Store(exe.NamespacedName(), ri.RunID, ri.Clone())
+	} else {
+		r.runs.UpdateChangingStateKey(exe.NamespacedName(), startingRunID, ri.RunID, ri.Clone())
+	}
 
 	log.Info("Adopted persistent Executable process", "PID", record.PID, "RunID", runID)
 	return true, ri.ApplyTo(exe, log) | r.setExecutableState(exe, apiv1.ExecutableStateRunning)
@@ -505,7 +523,7 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 		return fmt.Errorf("cannot persist Executable process record with invalid PID %d: %w", *res.Pid, pidErr)
 	}
 
-	lifecycleKey, _, lifecycleKeyErr := exe.Spec.GetLifecycleKey()
+	lifecycleInfo, lifecycleKeyErr := persistentExecutableLifecycleInfo(exe)
 	if lifecycleKeyErr != nil {
 		return fmt.Errorf("could not calculate Executable lifecycle key: %w", lifecycleKeyErr)
 	}
@@ -520,18 +538,249 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 	}
 
 	return stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
-		ResourceKey:      persistentExecutableResourceKey(exe),
-		Name:             exe.NamespacedName(),
-		UID:              exe.UID,
-		LifecycleKey:     lifecycleKey,
-		PID:              pid,
-		IdentityTime:     res.ProcessIdentityTime,
-		DisplayStartTime: displayStartTime,
-		RunID:            string(res.RunID),
-		StdOutFile:       res.StdOutFile,
-		StdErrFile:       res.StdErrFile,
-		ExecutionType:    string(executionType),
+		ResourceKey:       persistentExecutableResourceKey(exe),
+		Name:              exe.NamespacedName(),
+		UID:               exe.UID,
+		LifecycleKey:      lifecycleInfo.Key,
+		PID:               pid,
+		IdentityTime:      res.ProcessIdentityTime,
+		DisplayStartTime:  displayStartTime,
+		RunID:             string(res.RunID),
+		StdOutFile:        res.StdOutFile,
+		StdErrFile:        res.StdErrFile,
+		ExecutionType:     string(executionType),
+		LifecycleMetadata: lifecycleInfo.Metadata,
 	})
+}
+
+func persistentExecutableLifecycleKey(exe *apiv1.Executable) (string, bool, error) {
+	lifecycleInfo, lifecycleInfoErr := persistentExecutableLifecycleInfo(exe)
+	if lifecycleInfoErr != nil {
+		return "", false, lifecycleInfoErr
+	}
+	return lifecycleInfo.Key, lifecycleInfo.HasDefaultKey, nil
+}
+
+type persistentExecutableLifecycleData struct {
+	Key           string
+	HasDefaultKey bool
+	Metadata      string
+}
+
+type persistentExecutableLifecycleMetadata struct {
+	ExecutablePath                 string                            `json:"executablePath"`
+	WorkingDirectory               string                            `json:"workingDirectory,omitempty"`
+	ExecutionType                  string                            `json:"executionType,omitempty"`
+	AmbientEnvironment             string                            `json:"ambientEnvironment,omitempty"`
+	EffectiveArgs                  []string                          `json:"effectiveArgs,omitempty"`
+	ExplicitEffectiveEnv           []persistentExecutableEnvMetadata `json:"explicitEffectiveEnv,omitempty"`
+	PEMCertificates                []string                          `json:"pemCertificates,omitempty"`
+	PEMCertificatesContinueOnError bool                              `json:"pemCertificatesContinueOnError,omitempty"`
+}
+
+type persistentExecutableEnvMetadata struct {
+	Name      string `json:"name"`
+	ValueHash string `json:"valueHash"`
+}
+
+func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecutableLifecycleData, error) {
+	if exe.Spec.LifecycleKey != "" {
+		return persistentExecutableLifecycleData{
+			Key:           exe.Spec.LifecycleKey,
+			HasDefaultKey: false,
+		}, nil
+	}
+
+	fnvHash := fnv.New128()
+	encoder := gob.NewEncoder(fnvHash)
+
+	var writeErr error
+	var hashErr error
+
+	writeString := func(value string) {
+		_, writeErr = fnvHash.Write([]byte(value))
+		hashErr = errors.Join(hashErr, writeErr)
+	}
+
+	writeString(exe.Spec.ExecutablePath)
+	writeString(exe.Spec.WorkingDirectory)
+	writeString(string(exe.Spec.ExecutionType))
+	writeString(string(exe.Spec.AmbientEnvironment.Behavior))
+
+	lifecycleMetadata := persistentExecutableLifecycleMetadata{
+		ExecutablePath:     exe.Spec.ExecutablePath,
+		WorkingDirectory:   exe.Spec.WorkingDirectory,
+		ExecutionType:      string(exe.Spec.ExecutionType),
+		AmbientEnvironment: string(exe.Spec.AmbientEnvironment.Behavior),
+	}
+
+	effectiveArgs := exe.Status.EffectiveArgs
+	if len(effectiveArgs) == 0 && len(exe.Spec.Args) > 0 {
+		effectiveArgs = exe.Spec.Args
+	}
+	lifecycleMetadata.EffectiveArgs = stdslices.Clone(effectiveArgs)
+	for _, arg := range effectiveArgs {
+		writeString(arg)
+	}
+
+	explicitEffectiveEnv := explicitEffectiveExecutableEnv(exe)
+	lifecycleMetadata.ExplicitEffectiveEnv = make([]persistentExecutableEnvMetadata, 0, len(explicitEffectiveEnv))
+	for _, envVar := range explicitEffectiveEnv {
+		hashErr = errors.Join(hashErr, encoder.Encode(envVar))
+		lifecycleMetadata.ExplicitEffectiveEnv = append(lifecycleMetadata.ExplicitEffectiveEnv, persistentExecutableEnvMetadata{
+			Name:      envVar.Name,
+			ValueHash: fmt.Sprintf("%x", sha256.Sum256([]byte(envVar.Value))),
+		})
+	}
+
+	if exe.Spec.PemCertificates != nil {
+		sortedPemCertificates := stdslices.Clone(exe.Spec.PemCertificates.Certificates)
+		stdslices.SortFunc(sortedPemCertificates, func(c1, c2 apiv1.PemCertificate) int {
+			return strings.Compare(c1.Thumbprint, c2.Thumbprint)
+		})
+
+		for i := range sortedPemCertificates {
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedPemCertificates[i]))
+			lifecycleMetadata.PEMCertificates = append(lifecycleMetadata.PEMCertificates, sortedPemCertificates[i].Thumbprint)
+		}
+		hashErr = errors.Join(hashErr, encoder.Encode(exe.Spec.PemCertificates.ContinueOnError))
+		lifecycleMetadata.PEMCertificatesContinueOnError = exe.Spec.PemCertificates.ContinueOnError
+	}
+
+	metadataBytes, metadataErr := json.Marshal(lifecycleMetadata)
+	hashErr = errors.Join(hashErr, metadataErr)
+
+	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
+	return persistentExecutableLifecycleData{
+		Key:           lifecycleKey,
+		HasDefaultKey: true,
+		Metadata:      string(metadataBytes),
+	}, hashErr
+}
+
+func calculatePersistentExecutableChanges(oldMetadata, newMetadata string) (args []string, env []string, other []string) {
+	if oldMetadata == "" {
+		return nil, nil, []string{"Executable lifecycle metadata was not recorded for the existing process"}
+	}
+
+	var oldLifecycleMetadata persistentExecutableLifecycleMetadata
+	var newLifecycleMetadata persistentExecutableLifecycleMetadata
+	oldMetadataErr := json.Unmarshal([]byte(oldMetadata), &oldLifecycleMetadata)
+	newMetadataErr := json.Unmarshal([]byte(newMetadata), &newLifecycleMetadata)
+	if oldMetadataErr != nil || newMetadataErr != nil {
+		return nil, nil, []string{"Executable lifecycle metadata could not be decoded"}
+	}
+
+	if !reflect.DeepEqual(oldLifecycleMetadata.EffectiveArgs, newLifecycleMetadata.EffectiveArgs) {
+		args = append(args, "Effective arguments changed")
+	}
+
+	env = changedExecutableEnvNames(oldLifecycleMetadata.ExplicitEffectiveEnv, newLifecycleMetadata.ExplicitEffectiveEnv)
+
+	if oldLifecycleMetadata.ExecutablePath != newLifecycleMetadata.ExecutablePath {
+		other = append(other, "Executable path changed")
+	}
+	if oldLifecycleMetadata.WorkingDirectory != newLifecycleMetadata.WorkingDirectory {
+		other = append(other, "Working directory changed")
+	}
+	if oldLifecycleMetadata.ExecutionType != newLifecycleMetadata.ExecutionType {
+		other = append(other, "Execution type changed")
+	}
+	if oldLifecycleMetadata.AmbientEnvironment != newLifecycleMetadata.AmbientEnvironment {
+		other = append(other, "Ambient environment behavior changed")
+	}
+	if !reflect.DeepEqual(oldLifecycleMetadata.PEMCertificates, newLifecycleMetadata.PEMCertificates) ||
+		oldLifecycleMetadata.PEMCertificatesContinueOnError != newLifecycleMetadata.PEMCertificatesContinueOnError {
+		other = append(other, "Executable PEM certificates entries changed")
+	}
+
+	return args, env, other
+}
+
+func changedExecutableEnvNames(oldEnv, newEnv []persistentExecutableEnvMetadata) []string {
+	oldEnvByName := map[string]string{}
+	newEnvByName := map[string]string{}
+	for _, envVar := range oldEnv {
+		oldEnvByName[envVar.Name] = envVar.ValueHash
+	}
+	for _, envVar := range newEnv {
+		newEnvByName[envVar.Name] = envVar.ValueHash
+	}
+
+	changedEnv := map[string]bool{}
+	for name, oldValueHash := range oldEnvByName {
+		if newValueHash, found := newEnvByName[name]; !found || oldValueHash != newValueHash {
+			changedEnv[name] = true
+		}
+	}
+	for name := range newEnvByName {
+		if _, found := oldEnvByName[name]; !found {
+			changedEnv[name] = true
+		}
+	}
+
+	return maps.Keys(changedEnv)
+}
+
+func explicitEffectiveExecutableEnv(exe *apiv1.Executable) []apiv1.EnvVar {
+	if len(exe.Spec.Env) == 0 && len(exe.Spec.EnvFiles) == 0 {
+		return nil
+	}
+
+	explicitNames := map[string]string{}
+	addExplicitName := func(name string) {
+		if name == "" {
+			return
+		}
+		explicitNames[executableEnvKey(name)] = name
+	}
+
+	if len(exe.Spec.EnvFiles) > 0 {
+		if fileEnv, readErr := godotenv.Read(exe.Spec.EnvFiles...); readErr == nil {
+			for name := range fileEnv {
+				addExplicitName(name)
+			}
+		}
+	}
+
+	for _, envVar := range exe.Spec.Env {
+		addExplicitName(envVar.Name)
+	}
+
+	if len(explicitNames) == 0 {
+		return nil
+	}
+
+	effectiveEnvByName := map[string]string{}
+	for _, envVar := range exe.Status.EffectiveEnv {
+		effectiveEnvByName[executableEnvKey(envVar.Name)] = envVar.Value
+	}
+	if len(effectiveEnvByName) == 0 {
+		for _, envVar := range exe.Spec.Env {
+			effectiveEnvByName[executableEnvKey(envVar.Name)] = envVar.Value
+		}
+	}
+
+	explicitEffectiveEnv := make([]apiv1.EnvVar, 0, len(explicitNames))
+	for key, name := range explicitNames {
+		value, found := effectiveEnvByName[key]
+		if !found {
+			continue
+		}
+		explicitEffectiveEnv = append(explicitEffectiveEnv, apiv1.EnvVar{Name: name, Value: value})
+	}
+
+	stdslices.SortFunc(explicitEffectiveEnv, func(e1, e2 apiv1.EnvVar) int {
+		return strings.Compare(executableEnvKey(e1.Name), executableEnvKey(e2.Name))
+	})
+	return explicitEffectiveEnv
+}
+
+func executableEnvKey(name string) string {
+	if osutil.IsWindows() {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 func (r *ExecutableReconciler) deletePersistentProcessRecord(ctx context.Context, name types.NamespacedName, log logr.Logger) {
@@ -584,6 +833,13 @@ func (r *ExecutableReconciler) startExecutable(
 		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
 			return environmentChanged
+		}
+	}
+
+	if exe.Spec.Persistent && len(ri.startResults) == 0 {
+		adopted, adoptionChange := r.tryAdoptPersistentExecutable(ctx, exe, ri, log)
+		if adopted || adoptionChange != noChange {
+			return adoptionChange | environmentChanged
 		}
 	}
 

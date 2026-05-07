@@ -21,18 +21,19 @@ import (
 var ErrPersistentProcessNotFound = errors.New("persistent process record not found")
 
 type PersistentProcessRecord struct {
-	ResourceKey      string
-	Name             types.NamespacedName
-	UID              types.UID
-	LifecycleKey     string
-	PID              process.Pid_t
-	IdentityTime     time.Time
-	DisplayStartTime time.Time
-	RunID            string
-	StdOutFile       string
-	StdErrFile       string
-	ExecutionType    string
-	UpdatedAt        time.Time
+	ResourceKey       string
+	Name              types.NamespacedName
+	UID               types.UID
+	LifecycleKey      string
+	PID               process.Pid_t
+	IdentityTime      time.Time
+	DisplayStartTime  time.Time
+	RunID             string
+	StdOutFile        string
+	StdErrFile        string
+	ExecutionType     string
+	LifecycleMetadata string
+	UpdatedAt         time.Time
 }
 
 func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentProcessRecord) error {
@@ -60,9 +61,9 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			`INSERT INTO persistent_processes(
 				resource_key, namespace, name, uid, lifecycle_key, pid,
 				identity_time_unix_nano, display_start_time_unix_nano, run_id,
-				stdout_file, stderr_file, execution_type, updated_at_unix_nano
+				stdout_file, stderr_file, execution_type, lifecycle_metadata, updated_at_unix_nano
 			 )
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(resource_key) DO UPDATE SET
 				namespace = excluded.namespace,
 				name = excluded.name,
@@ -75,6 +76,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 				stdout_file = excluded.stdout_file,
 				stderr_file = excluded.stderr_file,
 				execution_type = excluded.execution_type,
+				lifecycle_metadata = excluded.lifecycle_metadata,
 				updated_at_unix_nano = excluded.updated_at_unix_nano`,
 			record.ResourceKey,
 			record.Name.Namespace,
@@ -88,6 +90,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			record.StdOutFile,
 			record.StdErrFile,
 			record.ExecutionType,
+			record.LifecycleMetadata,
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -113,7 +116,7 @@ func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*
 		ctx,
 		`SELECT resource_key, namespace, name, uid, lifecycle_key, pid,
 			identity_time_unix_nano, display_start_time_unix_nano, run_id,
-			stdout_file, stderr_file, execution_type, updated_at_unix_nano
+			stdout_file, stderr_file, execution_type, lifecycle_metadata, updated_at_unix_nano
 		 FROM persistent_processes WHERE resource_key = ?`,
 		resourceKey,
 	)
@@ -169,6 +172,7 @@ func scanPersistentProcess(row persistentProcessScanner) (*PersistentProcessReco
 		&record.StdOutFile,
 		&record.StdErrFile,
 		&record.ExecutionType,
+		&record.LifecycleMetadata,
 		&updatedAtUnixNano,
 	)
 	if scanErr != nil {

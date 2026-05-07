@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS persistent_processes (
 	stdout_file TEXT NOT NULL,
 	stderr_file TEXT NOT NULL,
 	execution_type TEXT NOT NULL,
+	lifecycle_metadata TEXT NOT NULL DEFAULT '',
 	updated_at_unix_nano INTEGER NOT NULL
 );
 

@@ -317,10 +317,6 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
-	if !pointers.EqualValue(es.Start, other.Start) {
-		return false
-	}
-
 	if es.Stop != other.Stop {
 		return false
 	}
