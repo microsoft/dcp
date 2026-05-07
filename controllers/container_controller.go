@@ -1118,208 +1118,40 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		placeholderContainerID := rcd.containerID
 
 		err := func() error {
-			err := r.computeEffectiveEnvironment(startupCtx, container, rcd, log)
+			// Compute effective environment and invocation arguments for the container
+			err := r.computeContainerStartupInputs(startupCtx, container, rcd, log)
 			if err != nil {
-				if templating.IsTransientTemplateError(err) {
-					log.Info("Could not compute effective environment for the Container, retrying startup...", "Cause", err.Error())
-				} else {
-					log.Error(err, "Could not compute effective environment for the Container")
-				}
-
 				return err
 			}
 
-			err = r.computeEffectiveInvocationArgs(startupCtx, container, rcd, log)
+			// Process any bind mounts to ensure there are valid sources on the host
+			err = ensureContainerBindMountSources(container, log)
 			if err != nil {
-				if templating.IsTransientTemplateError(err) {
-					log.Info("Could not compute effective invocation arguments for the Container, retrying startup...", "Cause", err.Error())
-				} else {
-					log.Error(err, "Could not compute effective invocation arguments for the Container")
-				}
-
 				return err
-			}
-
-			for _, volume := range container.Spec.VolumeMounts {
-				if volume.Type == apiv1.BindMount {
-					isValid := filepath.IsAbs(volume.Source)
-					if runtime.GOOS == "windows" {
-						isValid = isValid && !winNamedPipeRegex.MatchString(volume.Source)
-					}
-					if !isValid {
-						// This seems to be an invalid bind mount or a named pipe, so don't try to create it.
-						// May be a reference to a linux mount point on Windows.
-						log.Info("Skipping creation of bind mount because the source path appears invalid on this platform", "Source", volume.Source, "Target", volume.Target)
-						continue
-					}
-
-					_, volErr := os.Stat(volume.Source)
-					if errors.Is(volErr, os.ErrNotExist) {
-						volErr = os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
-						if volErr != nil {
-							log.Error(volErr, "Could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
-							return volErr
-						}
-					} else if volErr != nil {
-						log.Error(volErr, "Could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
-						return volErr
-					}
-				}
 			}
 
 			log.V(1).Info("Starting container", "Image", container.SpecifiedImageNameOrDefault())
 
+			// Determine the default bridge network name used by the active orchestrator
 			defaultNetwork := ""
 			if rcd.runSpec.Networks != nil {
 				// See comment below why we create the container with default network explicitly enabled here.
 				defaultNetwork = r.orchestrator.DefaultNetworkName()
 			}
 
-			lifecycleKey, _, hashErr := rcd.runSpec.GetLifecycleKey()
+			// Add labels to the container for lifecycle management and other metadata
+			lifecycleKey, hashErr := r.addContainerCreationLabels(container, rcd, log)
 			if hashErr != nil {
-				log.Error(hashErr, "Could not compute lifecycle key for the container")
 				return hashErr
 			}
 
-			rcd.runSpec.Labels = append(rcd.runSpec.Labels, []apiv1.ContainerLabel{
-				{
-					Key:   dcpBuildLabel,
-					Value: version.ProductVersion,
-				},
-				{
-					Key:   groupVersionLabel,
-					Value: apiv1.GroupVersion.String(),
-				},
-				{
-					Key:   uidLabel,
-					Value: string(container.UID),
-				},
-				{
-					Key:   nameLabel,
-					Value: string(container.Name),
-				},
-				{
-					Key:   lifecycleKeyLabel,
-					Value: lifecycleKey,
-				},
-				{
-					Key:   PersistentLabel,
-					Value: fmt.Sprintf("%t", rcd.runSpec.Persistent),
-				},
-			}...)
-
-			thisProcess, thisProcessErr := process.This()
-			if thisProcessErr != nil {
-				log.Error(thisProcessErr, "Could not get the current process information; container will not have creator process information")
-			} else {
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key:   CreatorProcessIdLabel,
-					Value: fmt.Sprintf("%d", thisProcess.Pid),
-				})
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key:   CreatorProcessStartTimeLabel,
-					Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-				})
+			// Apply any image layers that are specified in the container spec, and get the effective image to use for container creation
+			effectiveImage, imageLayersErr := r.applyContainerImageLayers(startupCtx, rcd, lifecycleKey, log)
+			if imageLayersErr != nil {
+				return imageLayersErr
 			}
 
-			if len(rcd.runSpec.Env) > 0 {
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key: envLabel,
-					Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
-						return env.Name
-					}), "\n"),
-				})
-			}
-
-			if len(rcd.runSpec.Ports) > 0 {
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key: portsLabel,
-					Value: strings.Join(slices.Map[string](rcd.runSpec.Ports, func(port apiv1.ContainerPort) string {
-						protocol := "tcp"
-						if port.Protocol != "" {
-							protocol = strings.ToLower(string(port.Protocol))
-						}
-						return fmt.Sprintf("%d/%s", port.ContainerPort, protocol)
-					}), "\n"),
-				})
-			}
-
-			if len(rcd.runSpec.VolumeMounts) > 0 {
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key: mountsLabel,
-					Value: strings.Join(slices.Map[string](rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) string {
-						return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source)
-					}), "\n"),
-				})
-			}
-
-			if len(rcd.runSpec.CreateFiles) > 0 {
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key:   createFilesLabel,
-					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles)))),
-				})
-			}
-
-			if rcd.runSpec.PemCertificates != nil {
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key:   pemCertificatesLabel,
-					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.PemCertificates)))),
-				})
-			}
-
-			// If image layers are specified, build a derived image with the layers applied
-			effectiveImage := rcd.runSpec.Image
-			if len(rcd.runSpec.ImageLayers) > 0 {
-				digests := make([]string, len(rcd.runSpec.ImageLayers))
-				for i, layer := range rcd.runSpec.ImageLayers {
-					digests[i] = layer.Digest
-				}
-				rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
-					Key:   imageLayersLabel,
-					Value: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(digests, "\n")))),
-				})
-
-				// When applying image layers, we need the base image locally before
-				// constructing the derived image. Normally docker create --pull handles
-				// pulling, but since we intercept before that, we must respect PullPolicy here.
-				baseImageInspected, ensureErr := ensureBaseImageForLayers(
-					startupCtx, r.orchestrator, rcd.runSpec.Image, rcd.runSpec.PullPolicy, log,
-				)
-				if ensureErr != nil {
-					log.Error(ensureErr, "Could not ensure base image is available for image layers")
-					return ensureErr
-				}
-
-				// Derive a tag by replacing the base image's tag/digest with the lifecycle key.
-				// The image ref may be name:tag or name@sha256:digest — we need just the name part.
-				baseRepo := rcd.runSpec.Image
-				if atidx := strings.Index(baseRepo, "@"); atidx != -1 {
-					baseRepo = baseRepo[:atidx]
-				} else if colonidx := strings.LastIndex(baseRepo, ":"); colonidx != -1 {
-					// Only strip at colon if it's a tag separator, not part of a port/registry.
-					// A tag separator colon comes after the last slash (or is the only colon).
-					slashIdx := strings.LastIndex(baseRepo, "/")
-					if colonidx > slashIdx {
-						baseRepo = baseRepo[:colonidx]
-					}
-				}
-				sanitizedKey := strings.ReplaceAll(lifecycleKey, ":", "-")
-				derivedTag := fmt.Sprintf("%s:dcp-%s", baseRepo, sanitizedKey)
-				applyLayersOptions := containers.ApplyImageLayersOptions{
-					BaseImage: *baseImageInspected,
-					Layers:    rcd.runSpec.ImageLayers,
-					Tag:       derivedTag,
-				}
-				derivedImage, applyErr := r.orchestrator.ApplyImageLayers(startupCtx, applyLayersOptions)
-				if applyErr != nil {
-					log.Error(applyErr, "Could not apply image layers")
-					return applyErr
-				}
-
-				log.V(1).Info("Applied image layers to create derived image", "DerivedImage", derivedImage)
-				effectiveImage = derivedImage
-			}
-
+			// Get the writers for the startup log files and prepare the stream options for container creation
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
@@ -1331,70 +1163,17 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// attempting to pull it from a registry.
 				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
 			}
+
+			// Create (or reuse for valid persistent containers) the container using the active orchestrator
 			creationOptions := containers.CreateContainerOptions{
 				ContainerSpec:        runSpecForCreation,
 				Name:                 containerName,
 				Network:              defaultNetwork,
 				StreamCommandOptions: streamOptions,
 			}
-			var inspected *containers.InspectedContainer
-			inspectPersistentContainer := func() (bool, error) {
-				existingContainer, inspectErr := inspectContainerIfExists(startupCtx, r.orchestrator, containerName)
-				if errors.Is(inspectErr, containers.ErrNotFound) {
-					return false, nil
-				}
-				if inspectErr != nil {
-					return false, inspectErr
-				}
-				inspected = existingContainer
-				log.V(1).Info("Persistent container appeared before create; reusing existing container")
-				return true, nil
-			}
-			createOrReuseContainer := func() error {
-				if rcd.runSpec.Persistent {
-					foundExisting, inspectErr := inspectPersistentContainer()
-					if inspectErr != nil || foundExisting {
-						return inspectErr
-					}
-				}
+			inspected, err := r.createOrReuseContainerResource(startupCtx, rcd, containerName, creationOptions, log)
 
-				var createContainerErr error
-				inspected, createContainerErr = createContainer(startupCtx, r.orchestrator, creationOptions)
-				return createContainerErr
-			}
-			if rcd.runSpec.Persistent {
-				if r.config.StateStore == nil {
-					return fmt.Errorf("state store is not configured")
-				}
-
-				resourceKey := statestore.RuntimeResourceKey(statestore.ResourceKindContainer, containerName)
-				leaseErr := r.config.StateStore.WithResourceLease(
-					startupCtx,
-					resourceKey,
-					r.config.ResourceLeaseOwner,
-					resourceLeaseTTL,
-					"",
-					func(context.Context, *statestore.ResourceLease) error {
-						log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
-						return createOrReuseContainer()
-					},
-				)
-				if leaseErr == nil {
-					err = nil
-				} else if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
-					foundExisting, inspectErr := inspectPersistentContainer()
-					if inspectErr != nil {
-						err = inspectErr
-					} else if !foundExisting {
-						log.V(1).Info("Persistent container is locked by another DCP instance and is not yet visible, retrying")
-						err = leaseErr
-					}
-				} else {
-					err = leaseErr
-				}
-			} else {
-				err = createOrReuseContainer()
-			}
+			// Close the startup log writers to ensure all output is flushed and resources are released
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 			if err != nil {
 				log.Error(err, "Could not create the container")
@@ -1406,163 +1185,23 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
 
+			// Copy any general files specified in the container spec to the container's filesystem
 			fileModTime := time.Now()
-			for _, createFileRequest := range rcd.runSpec.CreateFiles {
-				umask := osutil.DefaultUmaskBitmask
-				if createFileRequest.Umask != nil {
-					umask = *createFileRequest.Umask
-				}
-
-				createFilesOptions := containers.CreateFilesOptions{
-					Container:    inspected.Id,
-					Entries:      createFileRequest.Entries,
-					Destination:  createFileRequest.Destination,
-					DefaultOwner: createFileRequest.DefaultOwner,
-					DefaultGroup: createFileRequest.DefaultGroup,
-					Umask:        umask,
-					ModTime:      fileModTime,
-				}
-
-				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
-				if copyErr != nil {
-					log.Error(copyErr, "Could not copy files to the container", "Destination", createFileRequest.Destination)
-					return copyErr
-				}
-
-				log.V(1).Info("Files copied to the container", "Destination", createFileRequest.Destination)
+			copyFilesErr := r.copyContainerCreateFiles(startupCtx, rcd, inspected, fileModTime, log)
+			if copyFilesErr != nil {
+				return copyFilesErr
 			}
 
-			if rcd.runSpec.PemCertificates != nil {
-				fingerprints := []string{}
-				certFiles := []apiv1.FileSystemEntry{}
-				bundle := []string{}
-				for _, cert := range rcd.runSpec.PemCertificates.Certificates {
-					fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
-					if fingerprintErr != nil {
-						if rcd.runSpec.PemCertificates.ContinueOnError {
-							log.Info("Could not compute certificate fingerprint, skipping certificate", "Thumbprint", cert.Thumbprint, "Error", fingerprintErr.Error())
-							continue
-						}
-
-						return fingerprintErr
-					}
-
-					collisions := 0
-					for _, existingFingerprint := range fingerprints {
-						if existingFingerprint == fingerprint {
-							collisions++
-						}
-					}
-
-					fingerprints = append(fingerprints, fingerprint)
-
-					certFiles = append(
-						certFiles,
-						apiv1.FileSystemEntry{
-							Name:            fmt.Sprintf("%s.pem", cert.Thumbprint),
-							Contents:        cert.Contents,
-							ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
-						},
-						apiv1.FileSystemEntry{
-							Name:            fmt.Sprintf("%s.%d", fingerprint, collisions),
-							Type:            apiv1.FileSystemEntryTypeSymlink,
-							Target:          fmt.Sprintf("./%s.pem", cert.Thumbprint),
-							ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
-						})
-
-					bundle = append(bundle, cert.Contents)
-				}
-
-				createFilesOptions := containers.CreateFilesOptions{
-					Container:   inspected.Id,
-					Destination: rcd.runSpec.PemCertificates.Destination,
-					Entries: []apiv1.FileSystemEntry{
-						{
-							Name:     "cert.pem",
-							Contents: strings.Join(bundle, "\n"),
-						},
-						{
-							Name:    "certs",
-							Type:    apiv1.FileSystemEntryTypeDir,
-							Entries: certFiles,
-						},
-					},
-					Umask:   osutil.DefaultUmaskBitmask,
-					ModTime: fileModTime,
-				}
-
-				copyErr := r.orchestrator.CreateFiles(startupCtx, createFilesOptions)
-				if copyErr != nil {
-					log.Error(copyErr, "Could not copy certificates to the container", "Destination", createFilesOptions.Destination)
-					return copyErr
-				}
-
-				overwritePaths := slices.GroupBy[[]string, string](rcd.runSpec.PemCertificates.OverwriteBundlePaths, func(bundlePath string) string {
-					return path.Dir(bundlePath)
-				})
-
-				for bundleDir, files := range overwritePaths {
-					bundleCreateFilesOptions := containers.CreateFilesOptions{
-						Container:   inspected.Id,
-						Destination: bundleDir,
-						Entries: slices.Map[apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
-							return apiv1.FileSystemEntry{
-								Name:            path.Base(file),
-								Contents:        strings.Join(bundle, "\n"),
-								ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
-							}
-						}),
-						Umask:   osutil.DefaultUmaskBitmask,
-						ModTime: fileModTime,
-					}
-
-					bundleCopyErr := r.orchestrator.CreateFiles(startupCtx, bundleCreateFilesOptions)
-					if bundleCopyErr != nil {
-						if rcd.runSpec.PemCertificates.ContinueOnError {
-							log.Info("Could not overwrite certificate bundle in the container, continuing...", "Destination", bundleDir, "Error", bundleCopyErr.Error())
-						} else {
-							log.Error(bundleCopyErr, "Could not overwrite certificate bundle in the container", "Destination", bundleDir)
-							return bundleCopyErr
-						}
-					}
-				}
-
-				log.V(1).Info("Certificates copied to the container", "Destination", createFilesOptions.Destination)
+			// Copy any PEM certificates specified in the container spec to the container's filesystem
+			copyCertsErr := r.copyContainerPemCertificates(startupCtx, rcd, inspected, fileModTime, log)
+			if copyCertsErr != nil {
+				return copyCertsErr
 			}
 
-			if rcd.runSpec.Networks == nil {
-				inspected, err = r.startContainerWithTimeout(startupCtx, containerName, rcd.containerID, streamOptions)
-				rcd.startAttemptFinishedAt = metav1.NowMicro()
-				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
-				if err != nil {
-					log.Error(err, "Could not start the container")
-					return err
-				}
-
-				if inspected.Status == containers.ContainerStatusRunning {
-					log.V(1).Info("Container started")
-					rcd.containerState = apiv1.ContainerStateRunning
-				} else {
-					log.V(1).Info("Container started and exited shortly after", "ContainerStatus", inspected.Status)
-					rcd.containerState = apiv1.ContainerStateExited
-				}
-			} else {
-				// If a container resource is created without a network, it cannot be connected to a network later (orchestrator limitation).
-				// So for Containers that request attaching to custom networks via Spec, we create the corresponding container resource
-				// attached to default network(s) (usually one: "bridge" for Docker or "podman" for Podman).
-				// Here we detach it from the default network(s). Then we leave the Container object in "starting" state,
-				// and save the changes.
-				//
-				// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
-				// The Network controller takes care of connecting the container resource to requested networks.
-				for i := range inspected.Networks {
-					networkID := inspected.Networks[i].Id
-					err = disconnectNetwork(startupCtx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
-					if err != nil {
-						log.Error(err, "Could not detach network from the container", "NetworkID", networkID)
-						return err
-					}
-				}
+			// Finish the container startup process, including any finalization steps
+			finishErr := r.finishCreatedContainerStartup(startupCtx, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
+			if finishErr != nil {
+				return finishErr
 			}
 
 			return nil
@@ -1584,6 +1223,489 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		})
 		r.ScheduleReconciliation(container.NamespacedName())
 	}
+}
+
+// computeContainerStartupInputs resolves environment variables and invocation args before container creation.
+func (r *ContainerReconciler) computeContainerStartupInputs(ctx context.Context, container *apiv1.Container, rcd *runningContainerData, log logr.Logger) error {
+	envErr := r.computeEffectiveEnvironment(ctx, container, rcd, log)
+	if envErr != nil {
+		if templating.IsTransientTemplateError(envErr) {
+			log.Info("Could not compute effective environment for the Container, retrying startup...", "Cause", envErr.Error())
+		} else {
+			log.Error(envErr, "Could not compute effective environment for the Container")
+		}
+
+		return envErr
+	}
+
+	invocErr := r.computeEffectiveInvocationArgs(ctx, container, rcd, log)
+	if invocErr != nil {
+		if templating.IsTransientTemplateError(invocErr) {
+			log.Info("Could not compute effective invocation arguments for the Container, retrying startup...", "Cause", invocErr.Error())
+		} else {
+			log.Error(invocErr, "Could not compute effective invocation arguments for the Container")
+		}
+
+		return invocErr
+	}
+
+	return nil
+}
+
+// ensureContainerBindMountSources creates missing host paths for valid bind-mount sources.
+func ensureContainerBindMountSources(container *apiv1.Container, log logr.Logger) error {
+	for _, volume := range container.Spec.VolumeMounts {
+		if volume.Type != apiv1.BindMount {
+			continue
+		}
+
+		isValid := filepath.IsAbs(volume.Source)
+		if runtime.GOOS == "windows" {
+			isValid = isValid && !winNamedPipeRegex.MatchString(volume.Source)
+		}
+		if !isValid {
+			// This seems to be an invalid bind mount or a named pipe, so don't try to create it.
+			// May be a reference to a linux mount point on Windows.
+			log.Info("Skipping creation of bind mount because the source path appears invalid on this platform", "Source", volume.Source, "Target", volume.Target)
+			continue
+		}
+
+		_, volErr := os.Stat(volume.Source)
+		if errors.Is(volErr, os.ErrNotExist) {
+			mkdirErr := os.MkdirAll(volume.Source, osutil.PermissionDirectoryOthersRead)
+			if mkdirErr != nil {
+				log.Error(mkdirErr, "Could not create bind mount source path", "Source", volume.Source, "Target", volume.Target)
+				return mkdirErr
+			}
+		} else if volErr != nil {
+			log.Error(volErr, "Could not verify existence of bind mount source path", "Volume", volume.Source, "Target", volume.Target)
+			return volErr
+		}
+	}
+
+	return nil
+}
+
+// addContainerCreationLabels adds lifecycle and diagnostic labels used to manage or inspect the container later.
+func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) (string, error) {
+	lifecycleKey, _, hashErr := rcd.runSpec.GetLifecycleKey()
+	if hashErr != nil {
+		log.Error(hashErr, "Could not compute lifecycle key for the container")
+		return "", hashErr
+	}
+
+	rcd.runSpec.Labels = append(rcd.runSpec.Labels, []apiv1.ContainerLabel{
+		{
+			Key:   dcpBuildLabel,
+			Value: version.ProductVersion,
+		},
+		{
+			Key:   groupVersionLabel,
+			Value: apiv1.GroupVersion.String(),
+		},
+		{
+			Key:   uidLabel,
+			Value: string(container.UID),
+		},
+		{
+			Key:   nameLabel,
+			Value: string(container.Name),
+		},
+		{
+			Key:   lifecycleKeyLabel,
+			Value: lifecycleKey,
+		},
+		{
+			Key:   PersistentLabel,
+			Value: fmt.Sprintf("%t", rcd.runSpec.Persistent),
+		},
+	}...)
+
+	thisProcess, thisProcessErr := process.This()
+	if thisProcessErr != nil {
+		log.Error(thisProcessErr, "Could not get the current process information; container will not have creator process information")
+	} else {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key:   CreatorProcessIdLabel,
+			Value: fmt.Sprintf("%d", thisProcess.Pid),
+		})
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key:   CreatorProcessStartTimeLabel,
+			Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		})
+	}
+
+	if len(rcd.runSpec.Env) > 0 {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key: envLabel,
+			Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
+				return env.Name
+			}), "\n"),
+		})
+	}
+
+	if len(rcd.runSpec.Ports) > 0 {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key: portsLabel,
+			Value: strings.Join(slices.Map[string](rcd.runSpec.Ports, func(port apiv1.ContainerPort) string {
+				protocol := "tcp"
+				if port.Protocol != "" {
+					protocol = strings.ToLower(string(port.Protocol))
+				}
+				return fmt.Sprintf("%d/%s", port.ContainerPort, protocol)
+			}), "\n"),
+		})
+	}
+
+	if len(rcd.runSpec.VolumeMounts) > 0 {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key: mountsLabel,
+			Value: strings.Join(slices.Map[string](rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) string {
+				return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source)
+			}), "\n"),
+		})
+	}
+
+	if len(rcd.runSpec.CreateFiles) > 0 {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key:   createFilesLabel,
+			Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles)))),
+		})
+	}
+
+	if rcd.runSpec.PemCertificates != nil {
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+			Key:   pemCertificatesLabel,
+			Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.PemCertificates)))),
+		})
+	}
+
+	return lifecycleKey, nil
+}
+
+// applyContainerImageLayers builds a derived image when image layers are configured and returns the image to create.
+func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd *runningContainerData, lifecycleKey string, log logr.Logger) (string, error) {
+	effectiveImage := rcd.runSpec.Image
+	if len(rcd.runSpec.ImageLayers) == 0 {
+		return effectiveImage, nil
+	}
+
+	digests := make([]string, len(rcd.runSpec.ImageLayers))
+	for i, layer := range rcd.runSpec.ImageLayers {
+		digests[i] = layer.Digest
+	}
+	rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		Key:   imageLayersLabel,
+		Value: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(digests, "\n")))),
+	})
+
+	// When applying image layers, we need the base image locally before
+	// constructing the derived image. Normally docker create --pull handles
+	// pulling, but since we intercept before that, we must respect PullPolicy here.
+	baseImageInspected, ensureErr := ensureBaseImageForLayers(
+		ctx, r.orchestrator, rcd.runSpec.Image, rcd.runSpec.PullPolicy, log,
+	)
+	if ensureErr != nil {
+		log.Error(ensureErr, "Could not ensure base image is available for image layers")
+		return "", ensureErr
+	}
+
+	// Derive a tag by replacing the base image's tag/digest with the lifecycle key.
+	// The image ref may be name:tag or name@sha256:digest — we need just the name part.
+	baseRepo := rcd.runSpec.Image
+	if atidx := strings.Index(baseRepo, "@"); atidx != -1 {
+		baseRepo = baseRepo[:atidx]
+	} else if colonidx := strings.LastIndex(baseRepo, ":"); colonidx != -1 {
+		// Only strip at colon if it's a tag separator, not part of a port/registry.
+		// A tag separator colon comes after the last slash (or is the only colon).
+		slashIdx := strings.LastIndex(baseRepo, "/")
+		if colonidx > slashIdx {
+			baseRepo = baseRepo[:colonidx]
+		}
+	}
+	sanitizedKey := strings.ReplaceAll(lifecycleKey, ":", "-")
+	derivedTag := fmt.Sprintf("%s:dcp-%s", baseRepo, sanitizedKey)
+	applyLayersOptions := containers.ApplyImageLayersOptions{
+		BaseImage: *baseImageInspected,
+		Layers:    rcd.runSpec.ImageLayers,
+		Tag:       derivedTag,
+	}
+	derivedImage, applyErr := r.orchestrator.ApplyImageLayers(ctx, applyLayersOptions)
+	if applyErr != nil {
+		log.Error(applyErr, "Could not apply image layers")
+		return "", applyErr
+	}
+
+	log.V(1).Info("Applied image layers to create derived image", "DerivedImage", derivedImage)
+	return derivedImage, nil
+}
+
+// createOrReuseContainerResource creates the runtime container, or adopts an existing one for persistent containers.
+func (r *ContainerReconciler) createOrReuseContainerResource(
+	ctx context.Context,
+	rcd *runningContainerData,
+	containerName string,
+	creationOptions containers.CreateContainerOptions,
+	log logr.Logger,
+) (*containers.InspectedContainer, error) {
+	inspectPersistentContainer := func() (*containers.InspectedContainer, bool, error) {
+		existingContainer, inspectErr := inspectContainerIfExists(ctx, r.orchestrator, containerName)
+		if errors.Is(inspectErr, containers.ErrNotFound) {
+			return nil, false, nil
+		}
+		if inspectErr != nil {
+			return nil, false, inspectErr
+		}
+		log.V(1).Info("Persistent container appeared before create; reusing existing container")
+		return existingContainer, true, nil
+	}
+
+	createOrReuseContainer := func() (*containers.InspectedContainer, error) {
+		if rcd.runSpec.Persistent {
+			existingContainer, foundExisting, inspectErr := inspectPersistentContainer()
+			if inspectErr != nil || foundExisting {
+				return existingContainer, inspectErr
+			}
+		}
+
+		return createContainer(ctx, r.orchestrator, creationOptions)
+	}
+
+	if !rcd.runSpec.Persistent {
+		return createOrReuseContainer()
+	}
+	if r.config.StateStore == nil {
+		return nil, fmt.Errorf("state store is not configured")
+	}
+
+	var inspected *containers.InspectedContainer
+	resourceKey := statestore.RuntimeResourceKey(statestore.ResourceKindContainer, containerName)
+	leaseErr := r.config.StateStore.WithResourceLease(
+		ctx,
+		resourceKey,
+		r.config.ResourceLeaseOwner,
+		resourceLeaseTTL,
+		"",
+		func(context.Context, *statestore.ResourceLease) error {
+			log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
+			var createErr error
+			inspected, createErr = createOrReuseContainer()
+			return createErr
+		},
+	)
+	if leaseErr == nil {
+		return inspected, nil
+	}
+	if !errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+		return nil, leaseErr
+	}
+
+	existingContainer, foundExisting, inspectErr := inspectPersistentContainer()
+	if inspectErr != nil {
+		return nil, inspectErr
+	}
+	if foundExisting {
+		return existingContainer, nil
+	}
+
+	log.V(1).Info("Persistent container is locked by another DCP instance and is not yet visible, retrying")
+	return nil, leaseErr
+}
+
+// copyContainerCreateFiles copies configured file entries into the created container before it starts.
+func (r *ContainerReconciler) copyContainerCreateFiles(
+	ctx context.Context,
+	rcd *runningContainerData,
+	inspected *containers.InspectedContainer,
+	fileModTime time.Time,
+	log logr.Logger,
+) error {
+	for _, createFileRequest := range rcd.runSpec.CreateFiles {
+		umask := osutil.DefaultUmaskBitmask
+		if createFileRequest.Umask != nil {
+			umask = *createFileRequest.Umask
+		}
+
+		createFilesOptions := containers.CreateFilesOptions{
+			Container:    inspected.Id,
+			Entries:      createFileRequest.Entries,
+			Destination:  createFileRequest.Destination,
+			DefaultOwner: createFileRequest.DefaultOwner,
+			DefaultGroup: createFileRequest.DefaultGroup,
+			Umask:        umask,
+			ModTime:      fileModTime,
+		}
+
+		copyErr := r.orchestrator.CreateFiles(ctx, createFilesOptions)
+		if copyErr != nil {
+			log.Error(copyErr, "Could not copy files to the container", "Destination", createFileRequest.Destination)
+			return copyErr
+		}
+
+		log.V(1).Info("Files copied to the container", "Destination", createFileRequest.Destination)
+	}
+
+	return nil
+}
+
+// copyContainerPemCertificates installs configured PEM certificates and optional bundle overwrites into the container.
+func (r *ContainerReconciler) copyContainerPemCertificates(
+	ctx context.Context,
+	rcd *runningContainerData,
+	inspected *containers.InspectedContainer,
+	fileModTime time.Time,
+	log logr.Logger,
+) error {
+	if rcd.runSpec.PemCertificates == nil {
+		return nil
+	}
+
+	fingerprints := []string{}
+	certFiles := []apiv1.FileSystemEntry{}
+	bundle := []string{}
+	for _, cert := range rcd.runSpec.PemCertificates.Certificates {
+		fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
+		if fingerprintErr != nil {
+			if rcd.runSpec.PemCertificates.ContinueOnError {
+				log.Info("Could not compute certificate fingerprint, skipping certificate", "Thumbprint", cert.Thumbprint, "Error", fingerprintErr.Error())
+				continue
+			}
+
+			return fingerprintErr
+		}
+
+		collisions := 0
+		for _, existingFingerprint := range fingerprints {
+			if existingFingerprint == fingerprint {
+				collisions++
+			}
+		}
+
+		fingerprints = append(fingerprints, fingerprint)
+
+		certFiles = append(
+			certFiles,
+			apiv1.FileSystemEntry{
+				Name:            fmt.Sprintf("%s.pem", cert.Thumbprint),
+				Contents:        cert.Contents,
+				ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
+			},
+			apiv1.FileSystemEntry{
+				Name:            fmt.Sprintf("%s.%d", fingerprint, collisions),
+				Type:            apiv1.FileSystemEntryTypeSymlink,
+				Target:          fmt.Sprintf("./%s.pem", cert.Thumbprint),
+				ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
+			})
+
+		bundle = append(bundle, cert.Contents)
+	}
+
+	createFilesOptions := containers.CreateFilesOptions{
+		Container:   inspected.Id,
+		Destination: rcd.runSpec.PemCertificates.Destination,
+		Entries: []apiv1.FileSystemEntry{
+			{
+				Name:     "cert.pem",
+				Contents: strings.Join(bundle, "\n"),
+			},
+			{
+				Name:    "certs",
+				Type:    apiv1.FileSystemEntryTypeDir,
+				Entries: certFiles,
+			},
+		},
+		Umask:   osutil.DefaultUmaskBitmask,
+		ModTime: fileModTime,
+	}
+
+	copyErr := r.orchestrator.CreateFiles(ctx, createFilesOptions)
+	if copyErr != nil {
+		log.Error(copyErr, "Could not copy certificates to the container", "Destination", createFilesOptions.Destination)
+		return copyErr
+	}
+
+	overwritePaths := slices.GroupBy[[]string, string](rcd.runSpec.PemCertificates.OverwriteBundlePaths, func(bundlePath string) string {
+		return path.Dir(bundlePath)
+	})
+
+	for bundleDir, files := range overwritePaths {
+		bundleCreateFilesOptions := containers.CreateFilesOptions{
+			Container:   inspected.Id,
+			Destination: bundleDir,
+			Entries: slices.Map[apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
+				return apiv1.FileSystemEntry{
+					Name:            path.Base(file),
+					Contents:        strings.Join(bundle, "\n"),
+					ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
+				}
+			}),
+			Umask:   osutil.DefaultUmaskBitmask,
+			ModTime: fileModTime,
+		}
+
+		bundleCopyErr := r.orchestrator.CreateFiles(ctx, bundleCreateFilesOptions)
+		if bundleCopyErr != nil {
+			if rcd.runSpec.PemCertificates.ContinueOnError {
+				log.Info("Could not overwrite certificate bundle in the container, continuing...", "Destination", bundleDir, "Error", bundleCopyErr.Error())
+			} else {
+				log.Error(bundleCopyErr, "Could not overwrite certificate bundle in the container", "Destination", bundleDir)
+				return bundleCopyErr
+			}
+		}
+	}
+
+	log.V(1).Info("Certificates copied to the container", "Destination", createFilesOptions.Destination)
+	return nil
+}
+
+// finishCreatedContainerStartup either starts the container immediately or prepares it for custom network attachment.
+func (r *ContainerReconciler) finishCreatedContainerStartup(
+	ctx context.Context,
+	containerName string,
+	rcd *runningContainerData,
+	inspected *containers.InspectedContainer,
+	streamOptions containers.StreamCommandOptions,
+	startupStdoutWriter usvc_io.ParagraphWriter,
+	startupStderrWriter usvc_io.ParagraphWriter,
+	log logr.Logger,
+) error {
+	if rcd.runSpec.Networks == nil {
+		inspected, startErr := r.startContainerWithTimeout(ctx, containerName, rcd.containerID, streamOptions)
+		rcd.startAttemptFinishedAt = metav1.NowMicro()
+		startupTaskFinished(startupStdoutWriter, startupStderrWriter)
+		if startErr != nil {
+			log.Error(startErr, "Could not start the container")
+			return startErr
+		}
+
+		if inspected.Status == containers.ContainerStatusRunning {
+			log.V(1).Info("Container started")
+			rcd.containerState = apiv1.ContainerStateRunning
+		} else {
+			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", inspected.Status)
+			rcd.containerState = apiv1.ContainerStateExited
+		}
+		return nil
+	}
+
+	// If a container resource is created without a network, it cannot be connected to a network later (orchestrator limitation).
+	// So for Containers that request attaching to custom networks via Spec, we create the corresponding container resource
+	// attached to default network(s) (usually one: "bridge" for Docker or "podman" for Podman).
+	// Here we detach it from the default network(s). Then we leave the Container object in "starting" state,
+	// and save the changes.
+	//
+	// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
+	// The Network controller takes care of connecting the container resource to requested networks.
+	for i := range inspected.Networks {
+		networkID := inspected.Networks[i].Id
+		disconnectErr := disconnectNetwork(ctx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
+		if disconnectErr != nil {
+			log.Error(disconnectErr, "Could not detach network from the container", "NetworkID", networkID)
+			return disconnectErr
+		}
+	}
+
+	return nil
 }
 
 // Returns a function that stops the container resource by calling the container orchestrator.
