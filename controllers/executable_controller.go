@@ -302,12 +302,45 @@ func handleNewExecutable(
 	}
 
 	if !exe.ShouldStart() && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
+		if exe.Spec.Persistent {
+			adopted, adoptionChange := r.tryAdoptExistingPersistentExecutable(ctx, exe, log)
+			if adopted || adoptionChange != noChange {
+				return adoptionChange
+			}
+		}
+
 		// We should wait to create an executable until the user clears Start = false
 		log.V(1).Info("Waiting for the executable to be started")
 		return noChange
 	}
 
 	return r.startExecutable(ctx, exe, runInfo, log)
+}
+
+func (r *ExecutableReconciler) tryAdoptExistingPersistentExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (bool, objectChange) {
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		log.Error(stateStoreErr, "Persistent Executable cannot be reconciled without a state store")
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	record, recordErr := stateStore.GetPersistentProcess(ctx, persistentExecutableResourceKey(exe))
+	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
+		return false, noChange
+	}
+	if recordErr != nil {
+		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", persistentExecutableResourceKey(exe))
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
+	ri := NewRunInfo(exe)
+	computed, environmentChange := r.computeExecutableEnvironment(ctx, exe, log, ri)
+	if !computed {
+		return false, environmentChange
+	}
+
+	adopted, adoptionChange := r.tryAdoptPersistentExecutableRecord(ctx, exe, ri, record, log)
+	return adopted, environmentChange | adoptionChange
 }
 
 func ensureExecutableRunningState(
@@ -422,6 +455,11 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
+	return r.tryAdoptPersistentExecutableRecord(ctx, exe, runInfo, record, log)
+}
+
+func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, record *statestore.PersistentProcessRecord, log logr.Logger) (bool, objectChange) {
+	resourceKey := persistentExecutableResourceKey(exe)
 	lifecycleInfo, lifecycleKeyErr := persistentExecutableLifecycleInfo(exe)
 	if lifecycleKeyErr != nil {
 		log.Error(lifecycleKeyErr, "Could not calculate Executable lifecycle key")
@@ -442,6 +480,22 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 				"OldLifecycleKey", record.LifecycleKey,
 				"NewLifecycleKey", lifecycleInfo.Key)
 		}
+		if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr == nil {
+			stopErr := r.stopPersistentExecutableRecord(ctx, exe, record, log)
+			if stopErr != nil {
+				log.Error(stopErr, "Could not stop persistent Executable process with stale lifecycle key", "PID", record.PID)
+				return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+			}
+		} else {
+			log.Info("Persistent Executable process record with stale lifecycle key is no longer running",
+				"PID", record.PID,
+				"Error", findErr.Error())
+		}
+		stateStore, stateStoreErr := r.getStateStore()
+		if stateStoreErr != nil {
+			log.Error(stateStoreErr, "Could not open state store to delete stale persistent Executable process record", "ResourceKey", resourceKey)
+			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		}
 		if deleteErr := stateStore.DeletePersistentProcess(ctx, resourceKey); deleteErr != nil {
 			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
 			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -453,6 +507,11 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 		log.Info("Persistent Executable process record is stale; process is no longer running",
 			"PID", record.PID,
 			"Error", findErr.Error())
+		stateStore, stateStoreErr := r.getStateStore()
+		if stateStoreErr != nil {
+			log.Error(stateStoreErr, "Could not open state store to delete stale persistent Executable process record", "ResourceKey", resourceKey)
+			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		}
 		if deleteErr := stateStore.DeletePersistentProcess(ctx, resourceKey); deleteErr != nil {
 			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
 			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
@@ -507,6 +566,32 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 
 	log.Info("Adopted persistent Executable process", "PID", record.PID, "RunID", runID)
 	return true, ri.ApplyTo(exe, log) | r.setExecutableState(exe, apiv1.ExecutableStateRunning)
+}
+
+func (r *ExecutableReconciler) stopPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {
+	runner, runnerErr := r.getExecutableRunner(exe, StartupStageDefaultRunner)
+	if runnerErr != nil {
+		return fmt.Errorf("persistent Executable runner is not available: %w", runnerErr)
+	}
+	persistentRunner, ok := runner.(PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("runner for execution type %s does not support persistent run adoption", record.ExecutionType)
+	}
+
+	runID := RunID(record.RunID)
+	adoptionErr := persistentRunner.AdoptRun(ctx, ExecutableRunAdoptionInfo{
+		RunID:               runID,
+		Pid:                 record.PID,
+		ProcessIdentityTime: record.IdentityTime,
+		StdOutFile:          record.StdOutFile,
+		StdErrFile:          record.StdErrFile,
+		CommandInfo:         exe.Spec.ExecutablePath,
+	}, nil, log)
+	if adoptionErr != nil {
+		return fmt.Errorf("could not adopt persistent Executable process before stopping it: %w", adoptionErr)
+	}
+
+	return runner.StopRun(ctx, runID, log)
 }
 
 func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context, exe *apiv1.Executable, res *ExecutableStartResult) error {

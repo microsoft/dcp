@@ -6,14 +6,20 @@
 package controllers
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 func TestPersistentExecutableLifecycleKeyIgnoresImplicitEffectiveEnv(t *testing.T) {
@@ -142,6 +148,56 @@ func TestCalculatePersistentExecutableChanges(t *testing.T) {
 	require.Empty(t, other)
 }
 
+func TestHandleNewPersistentExecutableWithStartFalseAdoptsMatchingRecord(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Name = "api"
+	exe.Spec.Start = pointersTo(false)
+	exe.Spec.Args = []string{"--port", "5000"}
+	exe.Spec.Env = []apiv1.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	record := persistentProcessRecordForTest(t, exe)
+	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
+
+	change := handleNewExecutable(ctx, reconciler, exe, apiv1.ExecutableStateEmpty, nil, logr.Discard())
+
+	require.NotEqual(t, noChange, change)
+	require.Equal(t, apiv1.ExecutableStateRunning, exe.Status.State)
+	require.Equal(t, int64(record.PID), *exe.Status.PID)
+	require.Len(t, runner.adoptedRuns, 1)
+	require.Empty(t, runner.stoppedRuns)
+	require.Zero(t, runner.startRunCount)
+}
+
+func TestHandleNewPersistentExecutableWithStartFalseStopsMismatchedRecordAndWaits(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Name = "api"
+	exe.Spec.Start = pointersTo(false)
+	exe.Spec.Args = []string{"--port", "5000"}
+	exe.Spec.Env = []apiv1.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	record := persistentProcessRecordForTest(t, exe)
+	record.LifecycleKey = "stale"
+	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
+
+	change := handleNewExecutable(ctx, reconciler, exe, apiv1.ExecutableStateEmpty, nil, logr.Discard())
+
+	require.NotEqual(t, noChange, change)
+	require.Equal(t, apiv1.ExecutableStateEmpty, exe.Status.State)
+	require.Len(t, runner.adoptedRuns, 1)
+	require.Equal(t, []RunID{RunID(record.RunID)}, runner.stoppedRuns)
+	require.Zero(t, runner.startRunCount)
+	_, getErr := store.GetPersistentProcess(ctx, record.ResourceKey)
+	require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
+}
+
 func persistentLifecycleKeyTestExecutable() *apiv1.Executable {
 	return &apiv1.Executable{
 		Spec: apiv1.ExecutableSpec{
@@ -157,4 +213,76 @@ func persistentLifecycleKeyTestExecutable() *apiv1.Executable {
 			Persistent: true,
 		},
 	}
+}
+
+type persistentExecutableTestRunner struct {
+	startRunCount int
+	adoptedRuns   []ExecutableRunAdoptionInfo
+	stoppedRuns   []RunID
+}
+
+func (r *persistentExecutableTestRunner) StartRun(context.Context, *apiv1.Executable, RunChangeHandler, logr.Logger) *ExecutableStartResult {
+	r.startRunCount++
+	return &ExecutableStartResult{ExeState: apiv1.ExecutableStateStarting}
+}
+
+func (r *persistentExecutableTestRunner) StopRun(_ context.Context, runID RunID, _ logr.Logger) error {
+	r.stoppedRuns = append(r.stoppedRuns, runID)
+	return nil
+}
+
+func (r *persistentExecutableTestRunner) AdoptRun(_ context.Context, run ExecutableRunAdoptionInfo, _ RunChangeHandler, _ logr.Logger) error {
+	r.adoptedRuns = append(r.adoptedRuns, run)
+	return nil
+}
+
+func newPersistentExecutableAdoptionTestReconciler(t *testing.T) (*ExecutableReconciler, *persistentExecutableTestRunner, *statestore.Store) {
+	t.Helper()
+
+	store, storeErr := statestore.Open(context.Background(), statestore.Options{
+		Path: filepath.Join(t.TempDir(), "state.sqlite3"),
+	})
+	require.NoError(t, storeErr)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close())
+	})
+
+	runner := &persistentExecutableTestRunner{}
+	reconciler := &ExecutableReconciler{
+		ReconcilerBase: NewReconcilerBase[apiv1.Executable](nil, nil, logr.Discard(), context.Background()),
+		ExecutableRunners: map[apiv1.ExecutionType]ExecutableRunner{
+			apiv1.ExecutionTypeProcess: runner,
+		},
+		runs:   NewObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, *apiv1.Executable](),
+		config: ExecutableReconcilerConfig{StateStore: store},
+	}
+	return reconciler, runner, store
+}
+
+func persistentProcessRecordForTest(t *testing.T, exe *apiv1.Executable) statestore.PersistentProcessRecord {
+	t.Helper()
+
+	currentProcess, currentProcessErr := process.This()
+	require.NoError(t, currentProcessErr)
+	lifecycleInfo, lifecycleInfoErr := persistentExecutableLifecycleInfo(exe)
+	require.NoError(t, lifecycleInfoErr)
+
+	return statestore.PersistentProcessRecord{
+		ResourceKey:       persistentExecutableResourceKey(exe),
+		Name:              exe.NamespacedName(),
+		UID:               exe.UID,
+		LifecycleKey:      lifecycleInfo.Key,
+		PID:               currentProcess.Pid,
+		IdentityTime:      currentProcess.IdentityTime,
+		DisplayStartTime:  time.Now().UTC(),
+		RunID:             fmt.Sprintf("%d", currentProcess.Pid),
+		StdOutFile:        filepath.Join(t.TempDir(), "stdout.log"),
+		StdErrFile:        filepath.Join(t.TempDir(), "stderr.log"),
+		ExecutionType:     string(apiv1.ExecutionTypeProcess),
+		LifecycleMetadata: lifecycleInfo.Metadata,
+	}
+}
+
+func pointersTo[T any](value T) *T {
+	return &value
 }
