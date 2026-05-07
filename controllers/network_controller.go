@@ -402,7 +402,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 			},
 		)
 		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
-			log.V(1).Info("Persistent network is locked by another DCP instance, retrying")
+			logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network is being updated by another DCP instance, retrying")
 			return additionalReconciliationNeeded
 		}
 		if leaseErr != nil {

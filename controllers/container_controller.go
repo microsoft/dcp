@@ -1508,7 +1508,7 @@ func (r *ContainerReconciler) createOrReuseContainerResource(
 		return existingContainer, nil
 	}
 
-	log.V(1).Info("Persistent container is locked by another DCP instance and is not yet visible, retrying")
+	logResourceLeaseHeld(log, leaseErr, container.GetLeaseKey(), "Persistent container is being updated by another DCP instance and is not yet visible, retrying")
 	return nil, leaseErr
 }
 

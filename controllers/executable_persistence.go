@@ -55,7 +55,7 @@ func (r *ExecutableReconciler) withPersistentExecutableLease(ctx context.Context
 		return nil
 	})
 	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
-		log.V(1).Info("Persistent Executable resource lease is held by another owner", "ResourceKey", exe.GetLeaseKey())
+		logResourceLeaseHeld(log, leaseErr, exe.GetLeaseKey(), "Persistent Executable is being updated by another DCP instance, retrying")
 		return additionalReconciliationNeeded
 	}
 	if leaseErr != nil {

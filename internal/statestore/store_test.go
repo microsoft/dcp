@@ -205,6 +205,10 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 
 	_, blockedErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute, "")
 	require.ErrorIs(t, blockedErr, ErrResourceLeaseHeld)
+	heldLease, foundHeldLease := HeldResourceLease(blockedErr)
+	require.True(t, foundHeldLease)
+	require.Equal(t, "container/test", heldLease.ResourceKey)
+	require.Equal(t, owner1, heldLease.OwnerProcess)
 
 	renewed, renewErr := store1.RenewResourceLease(ctx, testLeasableResource("container/test"), owner1)
 	require.NoError(t, renewErr)

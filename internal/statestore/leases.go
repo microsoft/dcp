@@ -28,6 +28,28 @@ type ResourceLease struct {
 	Metadata     string
 }
 
+type ResourceLeaseHeldError struct {
+	Lease ResourceLease
+}
+
+func (e *ResourceLeaseHeldError) Error() string {
+	return fmt.Sprintf("%s: %s", ErrResourceLeaseHeld, e.Lease.ResourceKey)
+}
+
+func (e *ResourceLeaseHeldError) Unwrap() error {
+	return ErrResourceLeaseHeld
+}
+
+func HeldResourceLease(err error) (*ResourceLease, bool) {
+	var heldErr *ResourceLeaseHeldError
+	if !errors.As(err, &heldErr) {
+		return nil, false
+	}
+
+	lease := heldErr.Lease
+	return &lease, true
+}
+
 type LeasableResource interface {
 	GetLeaseKey() string
 }
@@ -93,14 +115,14 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 		sameOwner := existingLease.OwnerProcess.Pid == normalizedOwner.Pid &&
 			existingLease.OwnerProcess.IdentityTime.Equal(normalizedOwner.IdentityTime)
 		if !sameOwner && now.Sub(existingLease.UpdatedAt) < revalidationInterval {
-			return fmt.Errorf("%w: %s", ErrResourceLeaseHeld, resourceKey)
+			return &ResourceLeaseHeldError{Lease: *existingLease}
 		}
 		if !sameOwner && resourceLeaseOwnerIsActive(existingLease.OwnerProcess) {
 			updateErr := updateResourceLeaseTimestamp(ctx, conn, resourceKey, existingLease, now)
 			if updateErr != nil {
 				return updateErr
 			}
-			return fmt.Errorf("%w: %s", ErrResourceLeaseHeld, resourceKey)
+			return &ResourceLeaseHeldError{Lease: *existingLease}
 		}
 
 		updateErr := updateResourceLeaseOwner(ctx, conn, resourceKey, normalizedOwner, now, metadata)
