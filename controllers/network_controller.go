@@ -389,15 +389,14 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 			return additionalReconciliationNeeded
 		}
 
-		resourceKey := statestore.RuntimeResourceKey(statestore.ResourceKindNetwork, networkName)
 		leaseErr := r.config.StateStore.WithResourceLease(
 			ctx,
-			resourceKey,
+			network,
 			r.config.ResourceLeaseOwner,
 			resourceLeaseRevalidationInterval,
 			"",
-			func(context.Context, *statestore.ResourceLease) error {
-				log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
+			func(_ context.Context, lease *statestore.ResourceLease) error {
+				log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
 				change = r.ensureNetworkWithName(ctx, network, networkName, log)
 				return nil
 			},

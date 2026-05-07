@@ -44,6 +44,12 @@ func openTestStore(t *testing.T, path string) *Store {
 	return store
 }
 
+type testLeasableResource string
+
+func (r testLeasableResource) GetLeaseKey() string {
+	return string(r)
+}
+
 func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 	t.Parallel()
 
@@ -139,7 +145,7 @@ func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testi
 
 	otherOwner, otherOwnerErr := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, otherOwnerErr)
-	_, acquireErr := store.AcquireResourceLease(ctx, "container/existing", otherOwner, time.Minute, "")
+	_, acquireErr := store.AcquireResourceLease(ctx, testLeasableResource("container/existing"), otherOwner, time.Minute, "")
 	require.ErrorIs(t, acquireErr, ErrResourceLeaseHeld)
 }
 
@@ -193,20 +199,20 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, owner2Err)
 
-	lease, acquireErr := store1.AcquireResourceLease(ctx, "container/test", owner1, time.Minute, "metadata")
+	lease, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute, "metadata")
 	require.NoError(t, acquireErr)
 	require.Equal(t, owner1, lease.OwnerProcess)
 
-	_, blockedErr := store2.AcquireResourceLease(ctx, "container/test", owner2, time.Minute, "")
+	_, blockedErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute, "")
 	require.ErrorIs(t, blockedErr, ErrResourceLeaseHeld)
 
-	renewed, renewErr := store1.RenewResourceLease(ctx, "container/test", owner1)
+	renewed, renewErr := store1.RenewResourceLease(ctx, testLeasableResource("container/test"), owner1)
 	require.NoError(t, renewErr)
 	require.Equal(t, owner1, renewed.OwnerProcess)
 
-	require.NoError(t, store1.ReleaseResourceLease(ctx, "container/test", owner1))
+	require.NoError(t, store1.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner1))
 
-	lease, acquireErr = store2.AcquireResourceLease(ctx, "container/test", owner2, time.Minute, "")
+	lease, acquireErr = store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute, "")
 	require.NoError(t, acquireErr)
 	require.Equal(t, owner2, lease.OwnerProcess)
 }
@@ -224,11 +230,11 @@ func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T)
 	})
 	require.NoError(t, ownerErr)
 
-	lease, acquireErr := store.AcquireResourceLease(ctx, "container/test", owner, time.Minute, "")
+	lease, acquireErr := store.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner, time.Minute, "")
 	require.NoError(t, acquireErr)
 	require.Equal(t, owner, lease.OwnerProcess)
 
-	renewed, renewErr := store.RenewResourceLease(ctx, "container/test", owner)
+	renewed, renewErr := store.RenewResourceLease(ctx, testLeasableResource("container/test"), owner)
 	require.NoError(t, renewErr)
 	require.Equal(t, owner, renewed.OwnerProcess)
 }
@@ -246,11 +252,11 @@ func TestResourceLeaseDoesNotExpireWhileOwnerIsActive(t *testing.T) {
 	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, owner2Err)
 
-	_, acquireErr := store1.AcquireResourceLease(ctx, "container/test", owner1, 20*time.Millisecond, "")
+	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, 20*time.Millisecond, "")
 	require.NoError(t, acquireErr)
 
 	require.Eventually(t, func() bool {
-		_, retryErr := store2.AcquireResourceLease(ctx, "container/test", owner2, 20*time.Millisecond, "")
+		_, retryErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, 20*time.Millisecond, "")
 		return errors.Is(retryErr, ErrResourceLeaseHeld)
 	}, time.Second, 20*time.Millisecond)
 }
@@ -273,11 +279,11 @@ func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t 
 	activeOwner, activeOwnerErr := normalizeResourceLeaseOwner(currentProcess)
 	require.NoError(t, activeOwnerErr)
 
-	_, acquireErr := store1.AcquireResourceLease(ctx, "container/test", staleOwner, 20*time.Millisecond, "")
+	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), staleOwner, 20*time.Millisecond, "")
 	require.NoError(t, acquireErr)
 
 	require.Eventually(t, func() bool {
-		_, retryErr := store2.AcquireResourceLease(ctx, "container/test", activeOwner, 20*time.Millisecond, "")
+		_, retryErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), activeOwner, 20*time.Millisecond, "")
 		return retryErr == nil
 	}, time.Second, 20*time.Millisecond)
 }
@@ -295,14 +301,14 @@ func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, owner2Err)
 
-	_, acquireErr := store1.AcquireResourceLease(ctx, "container/test", owner1, time.Minute, "")
+	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute, "")
 	require.NoError(t, acquireErr)
 
 	retryCtx, retryCtxCancel := context.WithTimeout(ctx, 20*time.Millisecond)
 	defer retryCtxCancel()
 
 	callbackCalled := false
-	leaseErr := store2.WithResourceLease(retryCtx, "container/test", owner2, time.Minute, "", func(context.Context, *ResourceLease) error {
+	leaseErr := store2.WithResourceLease(retryCtx, testLeasableResource("container/test"), owner2, time.Minute, "", func(context.Context, *ResourceLease) error {
 		callbackCalled = true
 		return nil
 	})
@@ -331,9 +337,9 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, staleOwnerErr)
 
 	now := time.Now().UTC()
-	_, activeAcquireErr := store1.AcquireResourceLease(ctx, "container/active", activeOwner, time.Minute, "")
+	_, activeAcquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/active"), activeOwner, time.Minute, "")
 	require.NoError(t, activeAcquireErr)
-	_, staleAcquireErr := store1.AcquireResourceLease(ctx, "container/stale", staleOwner, time.Minute, "")
+	_, staleAcquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/stale"), staleOwner, time.Minute, "")
 	require.NoError(t, staleAcquireErr)
 	_, invalidOwnerInsertErr := store1.db.ExecContext(
 		ctx,
@@ -352,12 +358,12 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	otherOwner, otherOwnerErr := testResourceLeaseOwner(t, -2*time.Hour)
 	require.NoError(t, otherOwnerErr)
 
-	_, activeBlockedErr := store2.AcquireResourceLease(ctx, "container/active", otherOwner, time.Minute, "")
+	_, activeBlockedErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/active"), otherOwner, time.Minute, "")
 	require.ErrorIs(t, activeBlockedErr, ErrResourceLeaseHeld)
 
-	_, staleReacquireErr := store2.AcquireResourceLease(ctx, "container/stale", otherOwner, time.Minute, "")
+	_, staleReacquireErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/stale"), otherOwner, time.Minute, "")
 	require.NoError(t, staleReacquireErr)
-	_, invalidOwnerReacquireErr := store2.AcquireResourceLease(ctx, "container/invalid-owner", otherOwner, time.Minute, "")
+	_, invalidOwnerReacquireErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/invalid-owner"), otherOwner, time.Minute, "")
 	require.NoError(t, invalidOwnerReacquireErr)
 }
 
@@ -369,7 +375,7 @@ func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	store := openTestStore(t, storePath)
 
 	record := PersistentProcessRecord{
-		ResourceKey:       ResourceKey(ResourceKindExecutable, types.NamespacedName{Name: "api"}),
+		ResourceKey:       types.NamespacedName{Name: "api"}.String(),
 		Name:              types.NamespacedName{Name: "api"},
 		UID:               types.UID("uid1"),
 		LifecycleKey:      "lk1",

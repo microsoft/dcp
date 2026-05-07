@@ -28,10 +28,25 @@ type ResourceLease struct {
 	Metadata     string
 }
 
-func (s *Store) AcquireResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration, metadata string) (*ResourceLease, error) {
-	resourceKey = strings.TrimSpace(resourceKey)
+type LeasableResource interface {
+	GetLeaseKey() string
+}
+
+func resourceLeaseKey(resource LeasableResource) (string, error) {
+	if resource == nil {
+		return "", fmt.Errorf("%w: resource cannot be nil", ErrInvalidArgument)
+	}
+	resourceKey := strings.TrimSpace(resource.GetLeaseKey())
 	if resourceKey == "" {
-		return nil, fmt.Errorf("%w: resource key cannot be empty", ErrInvalidArgument)
+		return "", fmt.Errorf("%w: resource lease key cannot be empty", ErrInvalidArgument)
+	}
+	return resourceKey, nil
+}
+
+func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration, metadata string) (*ResourceLease, error) {
+	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
+	if resourceKeyErr != nil {
+		return nil, resourceKeyErr
 	}
 	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
 	if ownerErr != nil {
@@ -102,10 +117,10 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resourceKey string, ow
 	return lease, nil
 }
 
-func (s *Store) RenewResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessTreeItem) (*ResourceLease, error) {
-	resourceKey = strings.TrimSpace(resourceKey)
-	if resourceKey == "" {
-		return nil, fmt.Errorf("%w: resource key cannot be empty", ErrInvalidArgument)
+func (s *Store) RenewResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) (*ResourceLease, error) {
+	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
+	if resourceKeyErr != nil {
+		return nil, resourceKeyErr
 	}
 	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
 	if ownerErr != nil {
@@ -154,10 +169,10 @@ func (s *Store) RenewResourceLease(ctx context.Context, resourceKey string, owne
 	return lease, nil
 }
 
-func (s *Store) ReleaseResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessTreeItem) error {
-	resourceKey = strings.TrimSpace(resourceKey)
-	if resourceKey == "" {
-		return fmt.Errorf("%w: resource key cannot be empty", ErrInvalidArgument)
+func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) error {
+	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
+	if resourceKeyErr != nil {
+		return resourceKeyErr
 	}
 	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
 	if ownerErr != nil {
@@ -183,18 +198,18 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resourceKey string, ow
 	})
 }
 
-func (s *Store) WithResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration, metadata string, f func(context.Context, *ResourceLease) error) error {
+func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration, metadata string, f func(context.Context, *ResourceLease) error) error {
 	if f == nil {
 		return fmt.Errorf("%w: lease callback cannot be nil", ErrInvalidArgument)
 	}
 
-	lease, acquireErr := s.AcquireResourceLease(ctx, resourceKey, ownerProcess, revalidationInterval, metadata)
+	lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval, metadata)
 	if acquireErr != nil {
 		return acquireErr
 	}
 
 	callbackErr := f(ctx, lease)
-	releaseErr := s.ReleaseResourceLease(context.Background(), resourceKey, ownerProcess)
+	releaseErr := s.ReleaseResourceLease(context.Background(), resource, ownerProcess)
 	return errors.Join(callbackErr, releaseErr)
 }
 

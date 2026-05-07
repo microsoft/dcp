@@ -324,12 +324,12 @@ func (r *ExecutableReconciler) tryAdoptExistingPersistentExecutable(ctx context.
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	record, recordErr := stateStore.GetPersistentProcess(ctx, persistentExecutableResourceKey(exe))
+	record, recordErr := stateStore.GetPersistentProcess(ctx, persistentExecutableResourceKey(exe.NamespacedName()))
 	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
 		return false, noChange
 	}
 	if recordErr != nil {
-		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", persistentExecutableResourceKey(exe))
+		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", persistentExecutableResourceKey(exe.NamespacedName()))
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
@@ -445,7 +445,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	resourceKey := persistentExecutableResourceKey(exe)
+	resourceKey := persistentExecutableResourceKey(exe.NamespacedName())
 	record, recordErr := stateStore.GetPersistentProcess(ctx, resourceKey)
 	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
 		return false, noChange
@@ -459,7 +459,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutable(ctx context.Context,
 }
 
 func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, record *statestore.PersistentProcessRecord, log logr.Logger) (bool, objectChange) {
-	resourceKey := persistentExecutableResourceKey(exe)
+	resourceKey := persistentExecutableResourceKey(exe.NamespacedName())
 	lifecycleInfo, lifecycleKeyErr := persistentExecutableLifecycleInfo(exe)
 	if lifecycleKeyErr != nil {
 		log.Error(lifecycleKeyErr, "Could not calculate Executable lifecycle key")
@@ -623,7 +623,7 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 	}
 
 	return stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
-		ResourceKey:       persistentExecutableResourceKey(exe),
+		ResourceKey:       persistentExecutableResourceKey(exe.NamespacedName()),
 		Name:              exe.NamespacedName(),
 		UID:               exe.UID,
 		LifecycleKey:      lifecycleInfo.Key,
@@ -865,7 +865,7 @@ func (r *ExecutableReconciler) deletePersistentProcessRecord(ctx context.Context
 		return
 	}
 
-	deleteErr := stateStore.DeletePersistentProcess(ctx, statestore.ResourceKey(statestore.ResourceKindExecutable, name))
+	deleteErr := stateStore.DeletePersistentProcess(ctx, persistentExecutableResourceKey(name))
 	if deleteErr != nil {
 		log.Error(deleteErr, "Could not delete persistent Executable process record", "Executable", name.String())
 	}
@@ -1269,8 +1269,8 @@ func (r *ExecutableReconciler) getStateStore() (*statestore.Store, error) {
 	return r.config.StateStore, nil
 }
 
-func persistentExecutableResourceKey(exe *apiv1.Executable) string {
-	return statestore.ResourceKey(statestore.ResourceKindExecutable, exe.NamespacedName())
+func persistentExecutableResourceKey(name types.NamespacedName) string {
+	return name.String()
 }
 
 func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Executable) bool {

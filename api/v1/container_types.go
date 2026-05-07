@@ -1175,6 +1175,10 @@ func (c *Container) GetGroupVersionResource() schema.GroupVersionResource {
 	}
 }
 
+func (c *Container) GetLeaseKey() string {
+	return fmt.Sprintf("%s/%s", c.GetGroupVersionResource().Resource, strings.TrimSpace(c.Spec.ContainerName))
+}
+
 func (c *Container) GetObjectMeta() *metav1.ObjectMeta {
 	return &c.ObjectMeta
 }

@@ -13,6 +13,24 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+func TestContainerGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	container := &Container{}
+	container.Spec.ContainerName = " api "
+
+	require.Equal(t, "containers/api", container.GetLeaseKey())
+}
+
+func TestContainerNetworkGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	network := &ContainerNetwork{}
+	network.Spec.NetworkName = " app-network "
+
+	require.Equal(t, "containernetworks/app-network", network.GetLeaseKey())
+}
+
 func TestImageLayerValidate(t *testing.T) {
 	t.Parallel()
 

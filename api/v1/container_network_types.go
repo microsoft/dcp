@@ -7,6 +7,8 @@ package v1
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -105,6 +107,10 @@ func (cn *ContainerNetwork) GetGroupVersionResource() schema.GroupVersionResourc
 		Version:  GroupVersion.Version,
 		Resource: "containernetworks",
 	}
+}
+
+func (cn *ContainerNetwork) GetLeaseKey() string {
+	return fmt.Sprintf("%s/%s", cn.GetGroupVersionResource().Resource, strings.TrimSpace(cn.Spec.NetworkName))
 }
 
 func (cn *ContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {

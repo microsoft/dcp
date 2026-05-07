@@ -268,7 +268,7 @@ func persistentProcessRecordForTest(t *testing.T, exe *apiv1.Executable) statest
 	require.NoError(t, lifecycleInfoErr)
 
 	return statestore.PersistentProcessRecord{
-		ResourceKey:       persistentExecutableResourceKey(exe),
+		ResourceKey:       persistentExecutableResourceKey(exe.NamespacedName()),
 		Name:              exe.NamespacedName(),
 		UID:               exe.UID,
 		LifecycleKey:      lifecycleInfo.Key,

@@ -1171,7 +1171,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				Network:              defaultNetwork,
 				StreamCommandOptions: streamOptions,
 			}
-			inspected, err := r.createOrReuseContainerResource(startupCtx, rcd, containerName, creationOptions, log)
+			inspected, err := r.createOrReuseContainerResource(startupCtx, container, rcd, containerName, creationOptions, log)
 
 			// Close the startup log writers to ensure all output is flushed and resources are released
 			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
@@ -1443,6 +1443,7 @@ func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd
 // createOrReuseContainerResource creates the runtime container, or adopts an existing one for persistent containers.
 func (r *ContainerReconciler) createOrReuseContainerResource(
 	ctx context.Context,
+	container *apiv1.Container,
 	rcd *runningContainerData,
 	containerName string,
 	creationOptions containers.CreateContainerOptions,
@@ -1479,15 +1480,14 @@ func (r *ContainerReconciler) createOrReuseContainerResource(
 	}
 
 	var inspected *containers.InspectedContainer
-	resourceKey := statestore.RuntimeResourceKey(statestore.ResourceKindContainer, containerName)
 	leaseErr := r.config.StateStore.WithResourceLease(
 		ctx,
-		resourceKey,
+		container,
 		r.config.ResourceLeaseOwner,
 		resourceLeaseRevalidationInterval,
 		"",
-		func(context.Context, *statestore.ResourceLease) error {
-			log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
+		func(_ context.Context, lease *statestore.ResourceLease) error {
+			log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
 			var createErr error
 			inspected, createErr = createOrReuseContainer()
 			return createErr
