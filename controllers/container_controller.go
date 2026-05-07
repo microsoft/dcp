@@ -1484,7 +1484,7 @@ func (r *ContainerReconciler) createOrReuseContainerResource(
 		ctx,
 		resourceKey,
 		r.config.ResourceLeaseOwner,
-		resourceLeaseTTL,
+		resourceLeaseRevalidationInterval,
 		"",
 		func(context.Context, *statestore.ResourceLease) error {
 			log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)
@@ -1670,7 +1670,7 @@ func (r *ContainerReconciler) finishCreatedContainerStartup(
 	log logr.Logger,
 ) error {
 	if rcd.runSpec.Networks == nil {
-		inspected, startErr := r.startContainerWithTimeout(ctx, containerName, rcd.containerID, streamOptions)
+		startedContainer, startErr := r.startContainerWithTimeout(ctx, containerName, rcd.containerID, streamOptions)
 		rcd.startAttemptFinishedAt = metav1.NowMicro()
 		startupTaskFinished(startupStdoutWriter, startupStderrWriter)
 		if startErr != nil {
@@ -1678,11 +1678,11 @@ func (r *ContainerReconciler) finishCreatedContainerStartup(
 			return startErr
 		}
 
-		if inspected.Status == containers.ContainerStatusRunning {
+		if startedContainer.Status == containers.ContainerStatusRunning {
 			log.V(1).Info("Container started")
 			rcd.containerState = apiv1.ContainerStateRunning
 		} else {
-			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", inspected.Status)
+			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", startedContainer.Status)
 			rcd.containerState = apiv1.ContainerStateExited
 		}
 		return nil

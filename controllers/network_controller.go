@@ -394,7 +394,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 			ctx,
 			resourceKey,
 			r.config.ResourceLeaseOwner,
-			resourceLeaseTTL,
+			resourceLeaseRevalidationInterval,
 			"",
 			func(context.Context, *statestore.ResourceLease) error {
 				log.V(1).Info("Acquired resource lease", "ResourceKey", resourceKey)

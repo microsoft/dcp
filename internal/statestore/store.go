@@ -136,14 +136,25 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 }
 
 func sqliteDSN(path string, busyTimeout time.Duration) string {
-	dsn := url.URL{
-		Scheme: "file",
-		Path:   path,
+	sqlitePath := strings.ReplaceAll(path, "\\", "/")
+	dsn := url.URL{Scheme: "file"}
+	if isWindowsDrivePath(sqlitePath) {
+		dsn.Opaque = sqlitePath
+	} else {
+		dsn.Path = sqlitePath
 	}
 	query := dsn.Query()
 	query.Add("_pragma", fmt.Sprintf("busy_timeout=%d", busyTimeout.Milliseconds()))
 	dsn.RawQuery = query.Encode()
 	return dsn.String()
+}
+
+func isWindowsDrivePath(path string) bool {
+	if len(path) < 3 || path[1] != ':' || path[2] != '/' {
+		return false
+	}
+	driveLetter := path[0]
+	return (driveLetter >= 'A' && driveLetter <= 'Z') || (driveLetter >= 'a' && driveLetter <= 'z')
 }
 
 func (s *Store) Path() string {

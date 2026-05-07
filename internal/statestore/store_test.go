@@ -44,6 +44,21 @@ func openTestStore(t *testing.T, path string) *Store {
 	return store
 }
 
+func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(
+		t,
+		"file:///tmp/dcp/state.sqlite3?_pragma=busy_timeout%3D500",
+		sqliteDSN("/tmp/dcp/state.sqlite3", 500*time.Millisecond),
+	)
+	require.Equal(
+		t,
+		"file:C:/Users/runner/AppData/Local/Temp/state.sqlite3?_pragma=busy_timeout%3D500",
+		sqliteDSN(`C:\Users\runner\AppData\Local\Temp\state.sqlite3`, 500*time.Millisecond),
+	)
+}
+
 func requireMigrationVersion(t *testing.T, store *Store, expectedVersion int) {
 	t.Helper()
 
@@ -108,12 +123,11 @@ func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testi
 	now := time.Now().UTC()
 	_, insertErr := db.ExecContext(
 		ctx,
-		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
-		 VALUES(?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, updated_at_unix_nano, metadata)
+		 VALUES(?, ?, ?, ?, ?)`,
 		"container/existing",
 		owner.Pid,
 		timeString(owner.IdentityTime),
-		unixNano(now.Add(time.Minute)),
 		unixNano(now),
 		"",
 	)
@@ -141,7 +155,6 @@ func TestOpenMigratesUnversionedLegacyResourceLocksTable(t *testing.T) {
 		`CREATE TABLE resource_locks (
 			resource_key TEXT PRIMARY KEY,
 			owner_instance_id TEXT NOT NULL,
-			lease_until_unix_nano INTEGER NOT NULL,
 			updated_at_unix_nano INTEGER NOT NULL,
 			metadata TEXT NOT NULL DEFAULT ''
 		)`,
@@ -187,7 +200,7 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	_, blockedErr := store2.AcquireResourceLease(ctx, "container/test", owner2, time.Minute, "")
 	require.ErrorIs(t, blockedErr, ErrResourceLeaseHeld)
 
-	renewed, renewErr := store1.RenewResourceLease(ctx, "container/test", owner1, time.Minute)
+	renewed, renewErr := store1.RenewResourceLease(ctx, "container/test", owner1)
 	require.NoError(t, renewErr)
 	require.Equal(t, owner1, renewed.OwnerProcess)
 
@@ -215,12 +228,12 @@ func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T)
 	require.NoError(t, acquireErr)
 	require.Equal(t, owner, lease.OwnerProcess)
 
-	renewed, renewErr := store.RenewResourceLease(ctx, "container/test", owner, time.Minute)
+	renewed, renewErr := store.RenewResourceLease(ctx, "container/test", owner)
 	require.NoError(t, renewErr)
 	require.Equal(t, owner, renewed.OwnerProcess)
 }
 
-func TestResourceLeaseCanBeAcquiredAfterExpiration(t *testing.T) {
+func TestResourceLeaseDoesNotExpireWhileOwnerIsActive(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -237,7 +250,34 @@ func TestResourceLeaseCanBeAcquiredAfterExpiration(t *testing.T) {
 	require.NoError(t, acquireErr)
 
 	require.Eventually(t, func() bool {
-		_, retryErr := store2.AcquireResourceLease(ctx, "container/test", owner2, time.Minute, "")
+		_, retryErr := store2.AcquireResourceLease(ctx, "container/test", owner2, 20*time.Millisecond, "")
+		return errors.Is(retryErr, ErrResourceLeaseHeld)
+	}, time.Second, 20*time.Millisecond)
+}
+
+func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, storePath)
+	store2 := openTestStore(t, storePath)
+
+	currentProcess, currentProcessErr := process.This()
+	require.NoError(t, currentProcessErr)
+	staleOwner, staleOwnerErr := normalizeResourceLeaseOwner(process.ProcessTreeItem{
+		Pid:          currentProcess.Pid,
+		IdentityTime: currentProcess.IdentityTime.Add(-time.Hour),
+	})
+	require.NoError(t, staleOwnerErr)
+	activeOwner, activeOwnerErr := normalizeResourceLeaseOwner(currentProcess)
+	require.NoError(t, activeOwnerErr)
+
+	_, acquireErr := store1.AcquireResourceLease(ctx, "container/test", staleOwner, 20*time.Millisecond, "")
+	require.NoError(t, acquireErr)
+
+	require.Eventually(t, func() bool {
+		_, retryErr := store2.AcquireResourceLease(ctx, "container/test", activeOwner, 20*time.Millisecond, "")
 		return retryErr == nil
 	}, time.Second, 20*time.Millisecond)
 }
@@ -297,28 +337,15 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, staleAcquireErr)
 	_, invalidOwnerInsertErr := store1.db.ExecContext(
 		ctx,
-		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
-		 VALUES(?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, updated_at_unix_nano, metadata)
+		 VALUES(?, ?, ?, ?, ?)`,
 		"container/invalid-owner",
 		process.UnknownPID,
 		timeString(now),
-		unixNano(now.Add(time.Minute)),
 		unixNano(now),
 		"",
 	)
 	require.NoError(t, invalidOwnerInsertErr)
-	_, expiredInsertErr := store1.db.ExecContext(
-		ctx,
-		`INSERT INTO resource_locks(resource_key, owner_pid, owner_identity_time, lease_until_unix_nano, updated_at_unix_nano, metadata)
-		 VALUES(?, ?, ?, ?, ?, ?)`,
-		"container/expired",
-		activeOwner.Pid,
-		timeString(activeOwner.IdentityTime),
-		unixNano(now.Add(-time.Second)),
-		unixNano(now),
-		"",
-	)
-	require.NoError(t, expiredInsertErr)
 
 	require.NoError(t, store1.DeleteInactiveResourceLeases(ctx))
 
@@ -332,8 +359,6 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, staleReacquireErr)
 	_, invalidOwnerReacquireErr := store2.AcquireResourceLease(ctx, "container/invalid-owner", otherOwner, time.Minute, "")
 	require.NoError(t, invalidOwnerReacquireErr)
-	_, expiredReacquireErr := store2.AcquireResourceLease(ctx, "container/expired", otherOwner, time.Minute, "")
-	require.NoError(t, expiredReacquireErr)
 }
 
 func TestPersistentProcessRecordRoundTrip(t *testing.T) {

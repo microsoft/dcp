@@ -37,10 +37,10 @@ const (
 	specChanged                    objectChange = 0x4
 	additionalReconciliationNeeded objectChange = 0x8
 
-	conflictRequeueDelay        = 100 * time.Millisecond
-	reconciliationDebounceDelay = 500 * time.Millisecond
-	reconciliationMaxDelay      = 5 * time.Second
-	resourceLeaseTTL            = 30 * time.Second
+	conflictRequeueDelay              = 100 * time.Millisecond
+	reconciliationDebounceDelay       = 500 * time.Millisecond
+	reconciliationMaxDelay            = 5 * time.Second
+	resourceLeaseRevalidationInterval = 30 * time.Second
 
 	PersistentLabel              = "com.microsoft.developer.usvc-dev.persistent"
 	CreatorProcessIdLabel        = "com.microsoft.developer.usvc-dev.creatorProcessId"

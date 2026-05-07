@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS resource_locks (
 	resource_key TEXT PRIMARY KEY,
 	owner_pid INTEGER NOT NULL,
 	owner_identity_time TEXT NOT NULL,
-	lease_until_unix_nano INTEGER NOT NULL,
 	updated_at_unix_nano INTEGER NOT NULL,
 	metadata TEXT NOT NULL DEFAULT ''
 );
@@ -24,5 +23,5 @@ CREATE TABLE IF NOT EXISTS persistent_processes (
 	updated_at_unix_nano INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_resource_locks_lease_until ON resource_locks(lease_until_unix_nano);
+CREATE INDEX IF NOT EXISTS idx_resource_locks_updated_at ON resource_locks(updated_at_unix_nano);
 CREATE INDEX IF NOT EXISTS idx_persistent_processes_name ON persistent_processes(namespace, name);
