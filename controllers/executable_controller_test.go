@@ -80,6 +80,27 @@ func TestPersistentExecutableLifecycleKeyIncludesEffectiveArgs(t *testing.T) {
 	require.NotEqual(t, key, keyWithDifferentEffectiveArgs)
 }
 
+func TestPersistentExecutableLifecycleKeyPreservesStringBoundaries(t *testing.T) {
+	t.Parallel()
+
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Spec.ExecutablePath = "A"
+	exe.Spec.WorkingDirectory = "BC"
+	exe.Spec.Args = []string{"A", "BC"}
+
+	key, _, keyErr := persistentExecutableLifecycleKey(exe)
+	require.NoError(t, keyErr)
+
+	exeWithAmbiguousConcatenation := persistentLifecycleKeyTestExecutable()
+	exeWithAmbiguousConcatenation.Spec.ExecutablePath = "AB"
+	exeWithAmbiguousConcatenation.Spec.WorkingDirectory = "C"
+	exeWithAmbiguousConcatenation.Spec.Args = []string{"AB", "C"}
+
+	keyWithAmbiguousConcatenation, _, ambiguousConcatenationErr := persistentExecutableLifecycleKey(exeWithAmbiguousConcatenation)
+	require.NoError(t, ambiguousConcatenationErr)
+	require.NotEqual(t, key, keyWithAmbiguousConcatenation)
+}
+
 func TestPersistentExecutableLifecycleInfoSanitizesEnvMetadata(t *testing.T) {
 	t.Parallel()
 

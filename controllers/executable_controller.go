@@ -594,18 +594,11 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
 
-	var writeErr error
 	var hashErr error
-
-	writeString := func(value string) {
-		_, writeErr = fnvHash.Write([]byte(value))
-		hashErr = errors.Join(hashErr, writeErr)
-	}
-
-	writeString(exe.Spec.ExecutablePath)
-	writeString(exe.Spec.WorkingDirectory)
-	writeString(string(exe.Spec.ExecutionType))
-	writeString(string(exe.Spec.AmbientEnvironment.Behavior))
+	hashErr = errors.Join(hashErr, encoder.Encode(exe.Spec.ExecutablePath))
+	hashErr = errors.Join(hashErr, encoder.Encode(exe.Spec.WorkingDirectory))
+	hashErr = errors.Join(hashErr, encoder.Encode(string(exe.Spec.ExecutionType)))
+	hashErr = errors.Join(hashErr, encoder.Encode(string(exe.Spec.AmbientEnvironment.Behavior)))
 
 	lifecycleMetadata := persistentExecutableLifecycleMetadata{
 		ExecutablePath:     exe.Spec.ExecutablePath,
@@ -619,9 +612,7 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 		effectiveArgs = exe.Spec.Args
 	}
 	lifecycleMetadata.EffectiveArgs = stdslices.Clone(effectiveArgs)
-	for _, arg := range effectiveArgs {
-		writeString(arg)
-	}
+	hashErr = errors.Join(hashErr, encoder.Encode(effectiveArgs))
 
 	explicitEffectiveEnv := explicitEffectiveExecutableEnv(exe)
 	lifecycleMetadata.ExplicitEffectiveEnv = make([]persistentExecutableEnvMetadata, 0, len(explicitEffectiveEnv))
