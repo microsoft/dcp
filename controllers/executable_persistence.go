@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	"github.com/joho/godotenv"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -24,7 +23,6 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/maps"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -313,7 +311,7 @@ type persistentExecutableEnvMetadata struct {
 }
 
 func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecutableLifecycleData, error) {
-	lifecycleKey, hasDefaultLifecycleKey, lifecycleKeyErr := exe.Spec.GetLifecycleKey()
+	lifecycleKey, hasDefaultLifecycleKey, lifecycleKeyErr := exe.GetLifecycleKey()
 	if lifecycleKeyErr != nil {
 		return persistentExecutableLifecycleData{}, lifecycleKeyErr
 	}
@@ -324,30 +322,28 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 		}, nil
 	}
 
+	lifecycleSpec, lifecycleSpecErr := exe.EffectiveLifecycleSpec()
+	if lifecycleSpecErr != nil {
+		return persistentExecutableLifecycleData{}, lifecycleSpecErr
+	}
 	lifecycleMetadata := persistentExecutableLifecycleMetadata{
-		ExecutablePath:     exe.Spec.ExecutablePath,
-		WorkingDirectory:   exe.Spec.WorkingDirectory,
-		ExecutionType:      string(exe.Spec.ExecutionType),
-		AmbientEnvironment: string(exe.Spec.AmbientEnvironment.Behavior),
+		ExecutablePath:     lifecycleSpec.ExecutablePath,
+		WorkingDirectory:   lifecycleSpec.WorkingDirectory,
+		ExecutionType:      string(lifecycleSpec.ExecutionType),
+		AmbientEnvironment: string(lifecycleSpec.AmbientEnvironment.Behavior),
+		EffectiveArgs:      stdslices.Clone(lifecycleSpec.Args),
 	}
 
-	effectiveArgs := exe.Status.EffectiveArgs
-	if len(effectiveArgs) == 0 && len(exe.Spec.Args) > 0 {
-		effectiveArgs = exe.Spec.Args
-	}
-	lifecycleMetadata.EffectiveArgs = stdslices.Clone(effectiveArgs)
-
-	explicitEffectiveEnv := explicitEffectiveExecutableEnv(exe)
-	lifecycleMetadata.ExplicitEffectiveEnv = make([]persistentExecutableEnvMetadata, 0, len(explicitEffectiveEnv))
-	for _, envVar := range explicitEffectiveEnv {
+	lifecycleMetadata.ExplicitEffectiveEnv = make([]persistentExecutableEnvMetadata, 0, len(lifecycleSpec.Env))
+	for _, envVar := range lifecycleSpec.Env {
 		lifecycleMetadata.ExplicitEffectiveEnv = append(lifecycleMetadata.ExplicitEffectiveEnv, persistentExecutableEnvMetadata{
 			Name:      envVar.Name,
 			ValueHash: fmt.Sprintf("%x", sha256.Sum256([]byte(envVar.Value))),
 		})
 	}
 
-	if exe.Spec.PemCertificates != nil {
-		sortedPemCertificates := stdslices.Clone(exe.Spec.PemCertificates.Certificates)
+	if lifecycleSpec.PemCertificates != nil {
+		sortedPemCertificates := stdslices.Clone(lifecycleSpec.PemCertificates.Certificates)
 		stdslices.SortFunc(sortedPemCertificates, func(c1, c2 apiv1.PemCertificate) int {
 			return strings.Compare(c1.Thumbprint, c2.Thumbprint)
 		})
@@ -355,7 +351,7 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 		for i := range sortedPemCertificates {
 			lifecycleMetadata.PEMCertificates = append(lifecycleMetadata.PEMCertificates, sortedPemCertificates[i].Thumbprint)
 		}
-		lifecycleMetadata.PEMCertificatesContinueOnError = exe.Spec.PemCertificates.ContinueOnError
+		lifecycleMetadata.PEMCertificatesContinueOnError = lifecycleSpec.PemCertificates.ContinueOnError
 	}
 
 	metadataBytes, metadataErr := json.Marshal(lifecycleMetadata)
@@ -432,67 +428,6 @@ func changedExecutableEnvNames(oldEnv, newEnv []persistentExecutableEnvMetadata)
 	}
 
 	return maps.Keys(changedEnv)
-}
-
-func explicitEffectiveExecutableEnv(exe *apiv1.Executable) []apiv1.EnvVar {
-	if len(exe.Spec.Env) == 0 && len(exe.Spec.EnvFiles) == 0 {
-		return nil
-	}
-
-	explicitNames := map[string]string{}
-	addExplicitName := func(name string) {
-		if name == "" {
-			return
-		}
-		explicitNames[executableEnvKey(name)] = name
-	}
-
-	if len(exe.Spec.EnvFiles) > 0 {
-		if fileEnv, readErr := godotenv.Read(exe.Spec.EnvFiles...); readErr == nil {
-			for name := range fileEnv {
-				addExplicitName(name)
-			}
-		}
-	}
-
-	for _, envVar := range exe.Spec.Env {
-		addExplicitName(envVar.Name)
-	}
-
-	if len(explicitNames) == 0 {
-		return nil
-	}
-
-	effectiveEnvByName := map[string]string{}
-	for _, envVar := range exe.Status.EffectiveEnv {
-		effectiveEnvByName[executableEnvKey(envVar.Name)] = envVar.Value
-	}
-	if len(effectiveEnvByName) == 0 {
-		for _, envVar := range exe.Spec.Env {
-			effectiveEnvByName[executableEnvKey(envVar.Name)] = envVar.Value
-		}
-	}
-
-	explicitEffectiveEnv := make([]apiv1.EnvVar, 0, len(explicitNames))
-	for key, name := range explicitNames {
-		value, found := effectiveEnvByName[key]
-		if !found {
-			continue
-		}
-		explicitEffectiveEnv = append(explicitEffectiveEnv, apiv1.EnvVar{Name: name, Value: value})
-	}
-
-	stdslices.SortFunc(explicitEffectiveEnv, func(e1, e2 apiv1.EnvVar) int {
-		return strings.Compare(executableEnvKey(e1.Name), executableEnvKey(e2.Name))
-	})
-	return explicitEffectiveEnv
-}
-
-func executableEnvKey(name string) string {
-	if osutil.IsWindows() {
-		return strings.ToUpper(name)
-	}
-	return name
 }
 
 func (r *ExecutableReconciler) deletePersistentProcessRecord(ctx context.Context, name types.NamespacedName, log logr.Logger) {

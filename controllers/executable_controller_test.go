@@ -29,6 +29,7 @@ func TestPersistentExecutableLifecycleInfoSanitizesEnvMetadata(t *testing.T) {
 	t.Parallel()
 
 	exe := persistentLifecycleKeyTestExecutable()
+	exe.Status.EffectiveArgs = exe.Spec.Args
 	exe.Status.EffectiveEnv = []apiv1.EnvVar{
 		{Name: "EXPLICIT", Value: "super-secret-value"},
 	}
@@ -179,6 +180,35 @@ func TestPersistentExecutableDeletionPreservesReusableRecord(t *testing.T) {
 	require.Equal(t, record.PID, preservedRecord.PID)
 }
 
+func TestRunCompletionSkipsPersistentRecordCleanupForNonPersistentExecutable(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Spec.Persistent = false
+	exe.ObjectMeta = metav1.ObjectMeta{
+		Namespace: "default",
+		Name:      "api",
+		UID:       "api-uid",
+	}
+
+	record := persistentProcessRecordForTest(t, exe)
+	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
+
+	runID := RunID("run-1")
+	runInfo := NewRunInfo(exe)
+	runInfo.RunID = runID
+	runInfo.ExeState = apiv1.ExecutableStateRunning
+	reconciler.runs.Store(exe.NamespacedName(), runID, runInfo)
+
+	reconciler.OnRunCompleted(runID, pointersTo(int32(0)), nil)
+	reconciler.runs.RunDeferredOps(exe.NamespacedName(), exe)
+
+	_, preservedErr := store.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.NoError(t, preservedErr)
+}
+
 func persistentLifecycleKeyTestExecutable() *apiv1.Executable {
 	return &apiv1.Executable{
 		Spec: apiv1.ExecutableSpec{
@@ -247,6 +277,12 @@ func persistentProcessRecordForTest(t *testing.T, exe *apiv1.Executable) statest
 
 	currentProcess, currentProcessErr := process.This()
 	require.NoError(t, currentProcessErr)
+	if len(exe.Status.EffectiveArgs) == 0 {
+		exe.Status.EffectiveArgs = append([]string(nil), exe.Spec.Args...)
+	}
+	if len(exe.Status.EffectiveEnv) == 0 {
+		exe.Status.EffectiveEnv = append([]apiv1.EnvVar(nil), exe.Spec.Env...)
+	}
 	lifecycleInfo, lifecycleInfoErr := persistentExecutableLifecycleInfo(exe)
 	require.NoError(t, lifecycleInfoErr)
 

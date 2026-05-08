@@ -645,14 +645,14 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 		pointers.SetValue(&runInfo.Pid, int64(pid))
 	}
 
-	if runInfo.ExeState.IsTerminal() {
-		r.deletePersistentProcessRecordWithLease(context.Background(), name, log)
-	}
-
 	runMap := r.runs
-	r.runs.QueueDeferredOp(name, func(types.NamespacedName, RunID, *apiv1.Executable) {
+	runIsTerminal := runInfo.ExeState.IsTerminal()
+	r.runs.QueueDeferredOp(name, func(_ types.NamespacedName, _ RunID, exe *apiv1.Executable) {
 		// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 		_ = runMap.Update(name, runID, runInfo)
+		if runIsTerminal && exe != nil && exe.Spec.Persistent {
+			r.deletePersistentProcessRecordWithLease(context.Background(), name, log)
+		}
 	})
 
 	r.ScheduleReconciliation(name)

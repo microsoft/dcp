@@ -16,6 +16,7 @@ import (
 	stdslices "slices"
 	"strings"
 
+	"github.com/joho/godotenv"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -31,6 +32,8 @@ import (
 
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_maps "github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -401,6 +404,103 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 
 	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
 	return lifecycleKey, true, hashErr
+}
+
+func (e *Executable) GetLifecycleKey() (string, bool, error) {
+	lifecycleSpec, lifecycleSpecErr := e.EffectiveLifecycleSpec()
+	if lifecycleSpecErr != nil {
+		return "", false, lifecycleSpecErr
+	}
+	return lifecycleSpec.GetLifecycleKey()
+}
+
+func (e *Executable) EffectiveLifecycleSpec() (ExecutableSpec, error) {
+	lifecycleSpec := *e.Spec.DeepCopy()
+	effectiveArgs, effectiveArgsErr := effectiveLifecycleArgs(e)
+	if effectiveArgsErr != nil {
+		return ExecutableSpec{}, effectiveArgsErr
+	}
+	explicitEffectiveEnv, explicitEffectiveEnvErr := explicitEffectiveLifecycleEnv(e)
+	if explicitEffectiveEnvErr != nil {
+		return ExecutableSpec{}, explicitEffectiveEnvErr
+	}
+	lifecycleSpec.Args = effectiveArgs
+	lifecycleSpec.Env = explicitEffectiveEnv
+	lifecycleSpec.EnvFiles = nil
+	return lifecycleSpec, nil
+}
+
+func effectiveLifecycleArgs(e *Executable) ([]string, error) {
+	if len(e.Status.EffectiveArgs) == 0 {
+		if len(e.Spec.Args) > 0 {
+			return nil, fmt.Errorf("executable lifecycle key cannot be calculated before effective arguments are computed")
+		}
+		return nil, nil
+	}
+	return stdslices.Clone(e.Status.EffectiveArgs), nil
+}
+
+func explicitEffectiveLifecycleEnv(e *Executable) ([]EnvVar, error) {
+	explicitNames := explicitLifecycleEnvNames(e)
+	if explicitNames.Len() == 0 {
+		return nil, nil
+	}
+
+	effectiveEnvByName := lifecycleEnvMap()
+	for _, envVar := range e.Status.EffectiveEnv {
+		effectiveEnvByName.Set(envVar.Name, envVar.Value)
+	}
+	if effectiveEnvByName.Len() == 0 {
+		return nil, fmt.Errorf("executable lifecycle key cannot be calculated before effective environment is computed")
+	}
+
+	explicitEffectiveEnv := make([]EnvVar, 0, explicitNames.Len())
+	for nameKey, name := range explicitNames.Data() {
+		value, found := effectiveEnvByName.Get(nameKey)
+		if !found {
+			continue
+		}
+		explicitEffectiveEnv = append(explicitEffectiveEnv, EnvVar{Name: name, Value: value})
+	}
+	stdslices.SortFunc(explicitEffectiveEnv, func(e1, e2 EnvVar) int {
+		return strings.Compare(lifecycleEnvKey(e1.Name), lifecycleEnvKey(e2.Name))
+	})
+	return explicitEffectiveEnv, nil
+}
+
+func explicitLifecycleEnvNames(e *Executable) usvc_maps.StringKeyMap[string] {
+	explicitNames := lifecycleEnvMap()
+	addExplicitName := func(name string) {
+		if name != "" {
+			explicitNames.Set(name, name)
+		}
+	}
+
+	if len(e.Spec.EnvFiles) > 0 {
+		if fileEnv, readErr := godotenv.Read(e.Spec.EnvFiles...); readErr == nil {
+			for name := range fileEnv {
+				addExplicitName(name)
+			}
+		}
+	}
+	for _, envVar := range e.Spec.Env {
+		addExplicitName(envVar.Name)
+	}
+	return explicitNames
+}
+
+func lifecycleEnvMap() usvc_maps.StringKeyMap[string] {
+	if osutil.IsWindows() {
+		return usvc_maps.NewStringKeyMap[string](usvc_maps.StringMapModeCaseInsensitive)
+	}
+	return usvc_maps.NewStringKeyMap[string](usvc_maps.StringMapModeCaseSensitive)
+}
+
+func lifecycleEnvKey(name string) string {
+	if osutil.IsWindows() {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {

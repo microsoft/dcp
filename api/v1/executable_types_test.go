@@ -90,6 +90,110 @@ func TestExecutableSpecGetLifecycleKeyPreservesStringBoundaries(t *testing.T) {
 	require.NotEqual(t, key, keyWithAmbiguousConcatenation)
 }
 
+func TestExecutableGetLifecycleKeyIgnoresImplicitEffectiveEnv(t *testing.T) {
+	t.Parallel()
+
+	exe := lifecycleKeyTestExecutable()
+	exe.Status.EffectiveArgs = []string{"--port", "5000"}
+	exe.Status.EffectiveEnv = []EnvVar{
+		{Name: "PATH", Value: "/first/path"},
+		{Name: "EXPLICIT", Value: "stable"},
+		{Name: "ASPNETCORE_URLS", Value: "http://127.0.0.1:5000"},
+	}
+
+	key, computed, keyErr := exe.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	require.True(t, computed)
+
+	exeWithDifferentImplicitEnv := lifecycleKeyTestExecutable()
+	exeWithDifferentImplicitEnv.Status.EffectiveArgs = []string{"--port", "5000"}
+	exeWithDifferentImplicitEnv.Status.EffectiveEnv = []EnvVar{
+		{Name: "PATH", Value: "/different/path"},
+		{Name: "EXPLICIT", Value: "stable"},
+		{Name: "ASPNETCORE_URLS", Value: "http://127.0.0.1:5001"},
+	}
+
+	keyWithDifferentImplicitEnv, _, differentImplicitEnvErr := exeWithDifferentImplicitEnv.GetLifecycleKey()
+	require.NoError(t, differentImplicitEnvErr)
+	require.Equal(t, key, keyWithDifferentImplicitEnv)
+}
+
+func TestExecutableGetLifecycleKeyIncludesExplicitEffectiveEnv(t *testing.T) {
+	t.Parallel()
+
+	exe := lifecycleKeyTestExecutable()
+	exe.Status.EffectiveArgs = []string{"--port", "5000"}
+	exe.Status.EffectiveEnv = []EnvVar{
+		{Name: "EXPLICIT", Value: "first"},
+	}
+
+	key, _, keyErr := exe.GetLifecycleKey()
+	require.NoError(t, keyErr)
+
+	exeWithDifferentExplicitEnv := lifecycleKeyTestExecutable()
+	exeWithDifferentExplicitEnv.Status.EffectiveArgs = []string{"--port", "5000"}
+	exeWithDifferentExplicitEnv.Status.EffectiveEnv = []EnvVar{
+		{Name: "EXPLICIT", Value: "second"},
+	}
+
+	keyWithDifferentExplicitEnv, _, differentExplicitEnvErr := exeWithDifferentExplicitEnv.GetLifecycleKey()
+	require.NoError(t, differentExplicitEnvErr)
+	require.NotEqual(t, key, keyWithDifferentExplicitEnv)
+}
+
+func TestExecutableGetLifecycleKeyIncludesEffectiveArgs(t *testing.T) {
+	t.Parallel()
+
+	exe := lifecycleKeyTestExecutable()
+	exe.Status.EffectiveArgs = []string{"--port", "5000"}
+	exe.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	key, _, keyErr := exe.GetLifecycleKey()
+	require.NoError(t, keyErr)
+
+	exeWithDifferentEffectiveArgs := lifecycleKeyTestExecutable()
+	exeWithDifferentEffectiveArgs.Status.EffectiveArgs = []string{"--port", "5001"}
+	exeWithDifferentEffectiveArgs.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	keyWithDifferentEffectiveArgs, _, differentEffectiveArgsErr := exeWithDifferentEffectiveArgs.GetLifecycleKey()
+	require.NoError(t, differentEffectiveArgsErr)
+	require.NotEqual(t, key, keyWithDifferentEffectiveArgs)
+}
+
+func TestExecutableGetLifecycleKeyRequiresEffectiveArgs(t *testing.T) {
+	t.Parallel()
+
+	exe := lifecycleKeyTestExecutable()
+	exe.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	_, _, keyErr := exe.GetLifecycleKey()
+
+	require.ErrorContains(t, keyErr, "effective arguments")
+}
+
+func TestExecutableGetLifecycleKeyRequiresEffectiveEnv(t *testing.T) {
+	t.Parallel()
+
+	exe := lifecycleKeyTestExecutable()
+	exe.Status.EffectiveArgs = []string{"--port", "5000"}
+
+	_, _, keyErr := exe.GetLifecycleKey()
+
+	require.ErrorContains(t, keyErr, "effective environment")
+}
+
+func lifecycleKeyTestExecutable() *Executable {
+	return &Executable{
+		Spec: ExecutableSpec{
+			ExecutablePath:   "/path/to/app",
+			WorkingDirectory: "/path/to/workdir",
+			Args:             []string{"--port", "{{ port }}"},
+			Env:              []EnvVar{{Name: "EXPLICIT", Value: "{{ value }}"}},
+			Persistent:       true,
+		},
+	}
+}
+
 func TestExecutableSpecEqualTreatsOmittedStartAsExplicitTrue(t *testing.T) {
 	t.Parallel()
 
