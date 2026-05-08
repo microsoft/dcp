@@ -355,11 +355,8 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 	if dirErr != nil {
 		return nil, fmt.Errorf("could not determine persistent Executable output directory: %w", dirErr)
 	}
-	if mkdirErr := os.MkdirAll(dir, osutil.PermissionOnlyOwnerReadWriteTraverse); mkdirErr != nil {
-		return nil, fmt.Errorf("could not create persistent Executable output directory '%s': %w", dir, mkdirErr)
-	}
-	if chmodErr := os.Chmod(dir, osutil.PermissionOnlyOwnerReadWriteTraverse); chmodErr != nil {
-		return nil, fmt.Errorf("could not restrict persistent Executable output directory '%s': %w", dir, chmodErr)
+	if ensureDirErr := usvc_io.EnsureRestrictedDirectory(dir, osutil.PermissionOnlyOwnerReadWriteTraverse); ensureDirErr != nil {
+		return nil, fmt.Errorf("could not prepare persistent Executable output directory: %w", ensureDirErr)
 	}
 
 	return usvc_io.OpenFile(filepath.Join(dir, fileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
