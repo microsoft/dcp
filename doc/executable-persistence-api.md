@@ -133,7 +133,7 @@ Runner results distinguish between the process identity timestamp and the displa
 
 ### Reconciler and state-store behavior
 
-The Executable reconciler can be configured with a specific state store, which is useful for tests and hosts that need isolation. If no explicit store is provided, persistence code opens the default local SQLite store when needed.
+Tests can override the state store location when they need isolated persistence state.
 
 Persistent Executable records are keyed by the Executable's namespaced name because the persistent-process table already scopes the record type. Runtime resource leases for containers and networks use a separate lease-key interface because those leases coordinate external Docker/Podman resources in a shared table; those keys are based on runtime resource names rather than Kubernetes object names.
 
