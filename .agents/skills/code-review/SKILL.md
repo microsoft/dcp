@@ -70,10 +70,12 @@ Now read the PR description, labels, linked issues (in full), author information
 
 ### Holistic Assessment
 
-<Your holistic assessment here, summarizing the overall motivation (1-3 sentences), approach (1-3 sentences), and general impression of the PR.
+<
+Your holistic assessment here, summarizing the overall motivation (1-3 sentences), approach (1-3 sentences), and general impression of the PR.
 For the impression use 3-scale rating: ✅ Good, ⚠️ Needs Changes, or ❌ Reject.
 If the PR has "Needs Changes" rating, explicitly state which findings you are uncertain about and what a human reviewer should focus on.
-If the PR has "Reject" rating, explicitly state why you came to this conclusion and if there are any alternative ways to better deal with the problems that the PR is supposed to address.>
+If the PR has "Reject" rating, explicitly state why you came to this conclusion and if there are any alternative ways to better deal with the problems that the PR is supposed to address.
+>
 
 ### Detailed Findings
 
