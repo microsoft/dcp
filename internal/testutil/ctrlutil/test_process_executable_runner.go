@@ -108,6 +108,10 @@ func (r *TestProcessExecutableRunner) StopRun(ctx context.Context, runID control
 	return r.inner.StopRun(ctx, runID, log)
 }
 
+func (r *TestProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
+	return r.inner.ReleaseRun(ctx, runID, log)
+}
+
 func (r *TestProcessExecutableRunner) AdoptRun(
 	ctx context.Context,
 	run controllers.ExecutableRunAdoptionInfo,

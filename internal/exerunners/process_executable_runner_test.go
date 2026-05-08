@@ -95,6 +95,51 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	require.Equal(t, identityTime, processExecutor.stoppedIdentityTime)
 }
 
+func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, delayToolDirErr := testutil.GetTestToolDir("delay")
+	require.NoError(t, delayToolDirErr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "./delay", "--delay=1s")
+	cmd.Dir = delayToolDir
+	require.NoError(t, cmd.Start())
+	go func() {
+		_ = cmd.Wait()
+	}()
+
+	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
+	identityTime := process.ProcessIdentityTime(pid)
+	require.False(t, identityTime.IsZero())
+
+	runner := NewProcessExecutableRunner(&recordingProcessExecutor{})
+	runID := pidToRunID(pid)
+	changeHandler := newRecordingRunChangeHandler()
+
+	adoptErr := runner.AdoptRun(ctx, controllers.ExecutableRunAdoptionInfo{
+		RunID:               runID,
+		Pid:                 pid,
+		ProcessIdentityTime: identityTime,
+		CommandInfo:         "./delay --delay=1s",
+	}, changeHandler, logr.Discard())
+	require.NoError(t, adoptErr)
+
+	select {
+	case completedRun := <-changeHandler.completedRuns:
+		require.Equal(t, runID, completedRun.runID)
+		require.Equal(t, apiv1.UnknownExitCode, completedRun.exitCode)
+		require.NoError(t, completedRun.err)
+	case <-ctx.Done():
+		require.Fail(t, "timed out waiting for adopted process completion notification")
+	}
+
+	_, found := runner.runningProcesses.Load(runID)
+	require.False(t, found)
+}
+
 type recordingProcessExecutor struct {
 	stoppedPID          process.Pid_t
 	stoppedIdentityTime time.Time
@@ -126,3 +171,35 @@ func (*testRunChangeHandler) OnStartupCompleted(types.NamespacedName, *controlle
 }
 
 func (*testRunChangeHandler) OnRunMessage(controllers.RunID, controllers.RunMessageLevel, string) {}
+
+type completedRunNotification struct {
+	runID    controllers.RunID
+	exitCode *int32
+	err      error
+}
+
+type recordingRunChangeHandler struct {
+	completedRuns chan completedRunNotification
+}
+
+func newRecordingRunChangeHandler() *recordingRunChangeHandler {
+	return &recordingRunChangeHandler{
+		completedRuns: make(chan completedRunNotification, 1),
+	}
+}
+
+func (*recordingRunChangeHandler) OnMainProcessChanged(controllers.RunID, process.Pid_t) {}
+
+func (h *recordingRunChangeHandler) OnRunCompleted(runID controllers.RunID, exitCode *int32, err error) {
+	h.completedRuns <- completedRunNotification{
+		runID:    runID,
+		exitCode: exitCode,
+		err:      err,
+	}
+}
+
+func (*recordingRunChangeHandler) OnStartupCompleted(types.NamespacedName, *controllers.ExecutableStartResult) {
+}
+
+func (*recordingRunChangeHandler) OnRunMessage(controllers.RunID, controllers.RunMessageLevel, string) {
+}

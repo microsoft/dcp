@@ -43,6 +43,9 @@ type ExecutableRunner interface {
 
 	// Stops the run with a given ID.
 	StopRun(ctx context.Context, runID RunID, log logr.Logger) error
+
+	// Releases runner-side tracking for a run without stopping the underlying run.
+	ReleaseRun(ctx context.Context, runID RunID, log logr.Logger) error
 }
 
 type ExecutableRunAdoptionInfo struct {

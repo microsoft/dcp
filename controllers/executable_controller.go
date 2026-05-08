@@ -283,14 +283,7 @@ func (r *ExecutableReconciler) manageExecutable(ctx context.Context, exe *apiv1.
 		return initializer(ctx, r, exe, targetExecutableState, runInfo, log)
 	}
 
-	var change objectChange
-	if exe.Spec.Persistent {
-		change = r.withPersistentExecutableLease(ctx, exe, log, func(ctx context.Context, _ *statestore.ResourceLease) objectChange {
-			return runInitializer(ctx)
-		})
-	} else {
-		change = runInitializer(ctx)
-	}
+	change := runInitializer(ctx)
 
 	if runInfo != nil {
 		r.runs.Update(exe.NamespacedName(), runInfo.RunID, runInfo)
@@ -313,9 +306,21 @@ func handleNewExecutable(
 		return statusChanged
 	}
 
+	if exe.Spec.Persistent {
+		leaseErr := r.acquirePersistentExecutableResourceLease(ctx, exe, log)
+		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+			return additionalReconciliationNeeded
+		}
+		if leaseErr != nil {
+			log.Error(leaseErr, "Could not acquire persistent Executable resource lease")
+			return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		}
+	}
+
 	if !exe.ShouldStart() && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
 		if exe.Spec.Persistent {
 			adopted, adoptionChange := r.tryAdoptExistingPersistentExecutable(ctx, exe, log)
+			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log)
 			if adopted || adoptionChange != noChange {
 				return adoptionChange
 			}
@@ -326,7 +331,14 @@ func handleNewExecutable(
 		return noChange
 	}
 
-	return r.startExecutable(ctx, exe, runInfo, log)
+	change := r.startExecutable(ctx, exe, runInfo, log)
+	if exe.Spec.Persistent {
+		_, updatedRunInfo := r.runs.BorrowByNamespacedName(exe.NamespacedName())
+		if !persistentExecutableStartupInProgress(updatedRunInfo) {
+			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log)
+		}
+	}
+	return change
 }
 
 func ensureExecutableRunningState(
@@ -434,6 +446,14 @@ func (r *ExecutableReconciler) startExecutable(
 	ri *ExecutableRunInfo,
 	log logr.Logger,
 ) objectChange {
+	if leaseErr := r.verifyPersistentExecutableResourceLeaseHeld(ctx, exe, log); leaseErr != nil {
+		if ri != nil {
+			ri.ExeState = apiv1.ExecutableStateFailedToStart
+			r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
+		}
+		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+	}
+
 	if ri == nil {
 		log.V(1).Info("Starting Executable...")
 		ri = NewRunInfo(exe)
@@ -447,6 +467,8 @@ func (r *ExecutableReconciler) startExecutable(
 			prepareCertErr := r.prepareCertificateFiles(exe, log)
 			if prepareCertErr != nil {
 				// Error already logged in prepareCertificateFiles()
+				ri.ExeState = apiv1.ExecutableStateFailedToStart
+				r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 				r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 				return statusChanged
 			}

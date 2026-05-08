@@ -144,6 +144,47 @@ func TestHandleNewPersistentExecutableWaitsWhenLeaseHeld(t *testing.T) {
 	require.Zero(t, runner.startRunCount)
 }
 
+func TestHandleNewPersistentExecutableHoldsLeaseDuringStartup(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Name = "api"
+	exe.Spec.Start = pointersTo(true)
+	exe.Spec.Args = nil
+	exe.Spec.Env = nil
+
+	change := reconciler.manageExecutable(ctx, exe, logr.Discard())
+
+	require.Equal(t, additionalReconciliationNeeded|statusChanged, change)
+	require.Equal(t, 1, runner.startRunCount)
+	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, exe, reconciler.config.ResourceLeaseOwner))
+}
+
+func TestPersistentExecutableStartupWorkRequiresHeldLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, _ := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Name = "api"
+	exe.Spec.Start = pointersTo(true)
+	exe.Spec.Args = nil
+	exe.Spec.Env = nil
+
+	runInfo := NewRunInfo(exe)
+	runInfo.RunID = getStartingRunID(exe.NamespacedName())
+	runInfo.ExeState = apiv1.ExecutableStateStarting
+	reconciler.runs.Store(exe.NamespacedName(), runInfo.RunID, runInfo)
+
+	change := reconciler.startExecutable(ctx, exe, runInfo, logr.Discard())
+
+	require.Equal(t, statusChanged, change)
+	require.Equal(t, apiv1.ExecutableStateFailedToStart, exe.Status.State)
+	require.Zero(t, runner.startRunCount)
+}
+
 func TestPersistentExecutableDeletionPreservesReusableRecord(t *testing.T) {
 	t.Parallel()
 
@@ -230,6 +271,7 @@ type persistentExecutableTestRunner struct {
 	startRunCount int
 	adoptedRuns   []ExecutableRunAdoptionInfo
 	stoppedRuns   []RunID
+	releasedRuns  []RunID
 }
 
 func (r *persistentExecutableTestRunner) StartRun(context.Context, *apiv1.Executable, RunChangeHandler, logr.Logger) *ExecutableStartResult {
@@ -239,6 +281,11 @@ func (r *persistentExecutableTestRunner) StartRun(context.Context, *apiv1.Execut
 
 func (r *persistentExecutableTestRunner) StopRun(_ context.Context, runID RunID, _ logr.Logger) error {
 	r.stoppedRuns = append(r.stoppedRuns, runID)
+	return nil
+}
+
+func (r *persistentExecutableTestRunner) ReleaseRun(_ context.Context, runID RunID, _ logr.Logger) error {
+	r.releasedRuns = append(r.releasedRuns, runID)
 	return nil
 }
 

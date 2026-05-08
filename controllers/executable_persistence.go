@@ -62,6 +62,79 @@ func (r *ExecutableReconciler) withPersistentExecutableLease(ctx context.Context
 	return change
 }
 
+func (r *ExecutableReconciler) acquirePersistentExecutableResourceLease(ctx context.Context, exe *apiv1.Executable, log logr.Logger) error {
+	if !exe.Spec.Persistent {
+		return nil
+	}
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		return stateStoreErr
+	}
+	leaseOwner, leaseOwnerErr := r.getResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		return leaseOwnerErr
+	}
+
+	lease, leaseErr := stateStore.AcquireResourceLease(ctx, exe, leaseOwner, resourceLeaseRevalidationInterval, "")
+	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+		logResourceLeaseHeld(log, leaseErr, exe.GetLeaseKey(), "Persistent Executable is being updated by another DCP instance, retrying")
+	}
+	if leaseErr != nil {
+		return leaseErr
+	}
+
+	log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
+	return nil
+}
+
+func (r *ExecutableReconciler) verifyPersistentExecutableResourceLeaseHeld(ctx context.Context, exe *apiv1.Executable, log logr.Logger) error {
+	if !exe.Spec.Persistent {
+		return nil
+	}
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		return stateStoreErr
+	}
+	leaseOwner, leaseOwnerErr := r.getResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		return leaseOwnerErr
+	}
+
+	leaseErr := stateStore.VerifyResourceLeaseHeld(ctx, exe, leaseOwner)
+	if leaseErr != nil {
+		log.Error(leaseErr, "Cannot continue persistent Executable startup because this DCP instance does not hold the resource lease")
+		return leaseErr
+	}
+
+	return nil
+}
+
+func (r *ExecutableReconciler) releasePersistentExecutableResourceLease(ctx context.Context, exe *apiv1.Executable, log logr.Logger) error {
+	if !exe.Spec.Persistent {
+		return nil
+	}
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		return stateStoreErr
+	}
+	leaseOwner, leaseOwnerErr := r.getResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		return leaseOwnerErr
+	}
+
+	releaseErr := stateStore.ReleaseResourceLease(ctx, exe, leaseOwner)
+	if releaseErr != nil {
+		log.Error(releaseErr, "Could not release persistent Executable resource lease")
+		return releaseErr
+	}
+
+	return nil
+}
+
+func persistentExecutableStartupInProgress(runInfo *ExecutableRunInfo) bool {
+	return runInfo != nil && runInfo.ExeState == apiv1.ExecutableStateStarting
+}
+
 func (r *ExecutableReconciler) tryAdoptExistingPersistentExecutable(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (bool, objectChange) {
 	stateStore, stateStoreErr := r.getStateStore()
 	if stateStoreErr != nil {
@@ -475,6 +548,14 @@ func (r *ExecutableReconciler) getResourceLeaseOwner() (process.ProcessTreeItem,
 func (r *ExecutableReconciler) releasePersistentExecutableResources(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
+	if runInfo != nil && runInfo.RunID != UnknownRunID {
+		runner, runnerErr := r.getExecutableRunner(exe, runInfo.startupStage)
+		if runnerErr != nil {
+			log.Error(runnerErr, "Could not release persistent Executable runner tracking", "RunID", runInfo.RunID)
+		} else if releaseErr := runner.ReleaseRun(ctx, runInfo.RunID, log); releaseErr != nil {
+			log.Error(releaseErr, "Could not release persistent Executable runner tracking", "RunID", runInfo.RunID)
+		}
+	}
 	if r.persistentProcessRecordCanBeReused(ctx, exe, log) {
 		log.V(1).Info("Preserving persistent Executable process record for reuse", "ResourceKey", exe.GetLeaseKey())
 		return

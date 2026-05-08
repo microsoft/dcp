@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -36,6 +37,7 @@ type processRunState struct {
 	stdErrFile       *os.File
 	cmdInfo          string // Command line used to start the process, for logging purposes
 	adopted          bool
+	cancelWatch      func()
 	runChangeHandler controllers.RunChangeHandler
 }
 
@@ -161,7 +163,7 @@ func (r *ProcessExecutableRunner) AdoptRun(
 	_ context.Context,
 	run controllers.ExecutableRunAdoptionInfo,
 	runChangeHandler controllers.RunChangeHandler,
-	_ logr.Logger,
+	log logr.Logger,
 ) error {
 	if run.RunID == controllers.UnknownRunID {
 		return fmt.Errorf("cannot adopt a process run without a run ID")
@@ -176,16 +178,62 @@ func (r *ProcessExecutableRunner) AdoptRun(
 	if _, findErr := process.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
 		return fmt.Errorf("cannot adopt process run %s: %w", run.RunID, findErr)
 	}
+	stopWatching := make(chan struct{})
+	var stopWatchingOnce sync.Once
+	cancelWatch := func() {
+		stopWatchingOnce.Do(func() {
+			close(stopWatching)
+		})
+	}
 
 	r.runningProcesses.Store(run.RunID, &processRunState{
 		pid:              run.Pid,
 		identityTime:     run.ProcessIdentityTime,
 		cmdInfo:          run.CommandInfo,
 		adopted:          true,
+		cancelWatch:      cancelWatch,
 		runChangeHandler: runChangeHandler,
 	})
 
+	go r.watchAdoptedProcess(run.RunID, run.Pid, run.ProcessIdentityTime, stopWatching, log)
+
 	return nil
+}
+
+func (r *ProcessExecutableRunner) watchAdoptedProcess(
+	runID controllers.RunID,
+	pid process.Pid_t,
+	identityTime time.Time,
+	stopWatching <-chan struct{},
+	log logr.Logger,
+) {
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-stopWatching:
+			return
+
+		case <-timer.C:
+			if _, findErr := process.FindProcess(pid, identityTime); findErr != nil {
+				runState, found := r.runningProcesses.LoadAndDelete(runID)
+				if !found {
+					return
+				}
+
+				waitErr := closeProcessRunFiles(runState)
+				if runState.runChangeHandler != nil {
+					runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, waitErr)
+				}
+				if waitErr != nil {
+					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.pid)
+				}
+				return
+			}
+			timer.Reset(2 * time.Second)
+		}
+	}
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -193,6 +241,9 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
+	}
+	if runState.cancelWatch != nil {
+		runState.cancelWatch()
 	}
 
 	stopLog := log.WithValues("RunID", runID, "Command", runState.cmdInfo)
@@ -235,6 +286,19 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
 	return stopErr
+}
+
+func (r *ProcessExecutableRunner) ReleaseRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
+	runState, found := r.runningProcesses.LoadAndDelete(runID)
+	if !found {
+		log.V(1).Info("Release of a process run requested, but the run was already released", "RunID", runID)
+		return nil
+	}
+	if runState.cancelWatch != nil {
+		runState.cancelWatch()
+	}
+
+	return nil
 }
 
 func closeProcessRunFiles(runState *processRunState) error {
