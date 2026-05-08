@@ -323,7 +323,7 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 	if stateStoreErr != nil {
 		return stateStoreErr
 	}
-	if res.Pid == apiv1.UnknownPID || res.Pid == nil {
+	if res.Pid == apiv1.UnknownPID {
 		return fmt.Errorf("cannot persist Executable process record without a valid PID")
 	}
 
