@@ -54,8 +54,9 @@ type Options struct {
 }
 
 type Store struct {
-	db   *sql.DB
-	path string
+	db          *sql.DB
+	path        string
+	busyTimeout time.Duration
 }
 
 func DefaultPath() (string, error) {
@@ -113,8 +114,9 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 	db.SetConnMaxLifetime(0)
 
 	store := &Store{
-		db:   db,
-		path: absPath,
+		db:          db,
+		path:        absPath,
+		busyTimeout: busyTimeout,
 	}
 
 	if pingErr := db.PingContext(ctx); pingErr != nil {

@@ -56,36 +56,56 @@ func (s *Store) migrate(ctx context.Context) (err error) {
 	return s.runMigrations(ctx)
 }
 
-func (s *Store) runMigrations(ctx context.Context) error {
+func (s *Store) runMigrations(ctx context.Context) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
 
-	db, dbErr := s.requireDB()
-	if dbErr != nil {
+	if _, dbErr := s.requireDB(); dbErr != nil {
 		return dbErr
+	}
+
+	migrationDB, migrationDBErr := sql.Open(sqliteDriverName, sqliteDSN(s.path, s.busyTimeout))
+	if migrationDBErr != nil {
+		return fmt.Errorf("could not open state store migration database '%s': %w", s.path, migrationDBErr)
+	}
+	migrationDB.SetMaxOpenConns(1)
+	migrationDB.SetMaxIdleConns(1)
+	migrationDB.SetConnMaxLifetime(0)
+	if pingErr := migrationDB.PingContext(ctx); pingErr != nil {
+		closeErr := migrationDB.Close()
+		return fmt.Errorf("could not initialize state store migration database '%s': %w", s.path, errors.Join(pingErr, closeErr))
 	}
 
 	sourceDriver, sourceErr := iofs.New(migrationFiles, "migrations")
 	if sourceErr != nil {
+		closeErr := migrationDB.Close()
+		if closeErr != nil {
+			return fmt.Errorf("could not load state store migrations: %w", errors.Join(sourceErr, closeErr))
+		}
 		return fmt.Errorf("could not load state store migrations: %w", sourceErr)
 	}
-	defer func() {
-		_ = sourceDriver.Close()
-	}()
 
-	databaseDriver, databaseDriverErr := migratesqlite.WithInstance(db, &migratesqlite.Config{
+	databaseDriver, databaseDriverErr := migratesqlite.WithInstance(migrationDB, &migratesqlite.Config{
 		DatabaseName:    s.path,
 		MigrationsTable: migrationTableName,
 	})
 	if databaseDriverErr != nil {
-		return fmt.Errorf("could not initialize state store migration database driver: %w", databaseDriverErr)
+		sourceCloseErr := sourceDriver.Close()
+		databaseCloseErr := migrationDB.Close()
+		return fmt.Errorf("could not initialize state store migration database driver: %w", errors.Join(databaseDriverErr, sourceCloseErr, databaseCloseErr))
 	}
 
 	migrationRunner, runnerErr := gomigrate.NewWithInstance("iofs", sourceDriver, sqliteDriverName, databaseDriver)
 	if runnerErr != nil {
-		return fmt.Errorf("could not initialize state store migration runner: %w", runnerErr)
+		sourceCloseErr := sourceDriver.Close()
+		databaseCloseErr := databaseDriver.Close()
+		return fmt.Errorf("could not initialize state store migration runner: %w", errors.Join(runnerErr, sourceCloseErr, databaseCloseErr))
 	}
+	defer func() {
+		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+		err = errors.Join(err, sourceCloseErr, databaseCloseErr)
+	}()
 	migrationRunner.LockTimeout = DefaultBusyTimeout
 
 	if migrationErr := migrationRunner.Up(); migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
