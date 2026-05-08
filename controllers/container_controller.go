@@ -345,10 +345,20 @@ func handleNewContainer(
 	}
 
 	if container.Spec.Persistent {
+		leaseErr := r.acquirePersistentContainerResourceLease(ctx, container, log)
+		if leaseErr != nil {
+			if !errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+				log.Error(leaseErr, "Could not acquire persistent container resource lease")
+				return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+			}
+			return change | additionalReconciliationNeeded
+		}
+
 		// Check for an existing persistent container
 		inspected, inspectedErr := inspectContainerIfExists(ctx, r.orchestrator, container.Spec.ContainerName)
 		if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
 			log.Error(inspectedErr, "Could not inspect existing container")
+			_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 			return change | additionalReconciliationNeeded
 		}
 
@@ -362,9 +372,11 @@ func handleNewContainer(
 			if envErr != nil {
 				if templating.IsTransientTemplateError(envErr) {
 					log.Info("Could not compute effective environment for the Container, retrying startup...", "Cause", envErr.Error())
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 					return change | additionalReconciliationNeeded
 				} else {
 					log.Error(envErr, "Could not compute effective environment for the Container")
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 					return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 				}
 			}
@@ -373,9 +385,11 @@ func handleNewContainer(
 			if invocErr != nil {
 				if templating.IsTransientTemplateError(invocErr) {
 					log.Info("Could not compute effective invocation arguments for the Container, retrying startup...", "Cause", invocErr.Error())
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 					return change | additionalReconciliationNeeded
 				} else {
 					log.Error(invocErr, "Could not compute effective invocation arguments for the Container")
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 					return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 				}
 			}
@@ -383,6 +397,7 @@ func handleNewContainer(
 			lifecycleKey, hasDefaultLifecycleKey, hashErr := rcd.runSpec.GetLifecycleKey()
 			if hashErr != nil {
 				log.Error(hashErr, "Could not calculate lifecycle key")
+				_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 				return change | additionalReconciliationNeeded
 			}
 
@@ -426,6 +441,7 @@ func handleNewContainer(
 				log.V(1).Info("Removing existing container")
 				if removeErr := r.removeExistingContainer(ctx, containerID(inspected.Id), inspected, log); removeErr != nil {
 					log.Error(removeErr, "Could not remove existing container")
+					_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 					return change | additionalReconciliationNeeded
 				}
 			}
@@ -459,6 +475,10 @@ func ensureContainerBuildingState(
 
 	if rcd == nil {
 		// This is a brand new Container and we need to build it.
+		if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
+			return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
+		}
+
 		rcd = newRunningContainerData(container)
 		rcd.containerState = apiv1.ContainerStateBuilding
 		rcd.ensureStartupLogFiles(container, log)
@@ -468,6 +488,7 @@ func ensureContainerBuildingState(
 		err := r.startupQueue.Enqueue(r.buildImageWithOrchestrator(container, rcd.Clone(), log))
 		if err != nil {
 			log.Error(err, "Image was not built, possibly because the workload is shutting down")
+			_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -508,7 +529,7 @@ func ensureContainerStartingState(
 
 		r.runningContainers.Store(container.NamespacedName(), rcd.containerID, rcd.Clone())
 		r.EnsureContainerWatchForResource(container.UID, log)
-		r.scheduleContainerCreation(container, rcd, log, startupWithNoDelay)
+		r.scheduleContainerCreation(ctx, container, rcd, log, startupWithNoDelay)
 
 		// We need to update the runningContainers map with the new data here
 		// because the caller did not have a runningContainerData instance.
@@ -521,7 +542,7 @@ func ensureContainerStartingState(
 
 		rcd.ensureStartupLogFiles(container, log)
 
-		r.scheduleContainerCreation(container, rcd, log, startupWithNoDelay)
+		r.scheduleContainerCreation(ctx, container, rcd, log, startupWithNoDelay)
 		change |= statusChanged
 
 	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld):
@@ -531,7 +552,7 @@ func ensureContainerStartingState(
 		rcd.startAttemptFinishedAt = metav1.MicroTime{}
 		rcd.containerName = ""
 
-		r.scheduleContainerCreation(container, rcd, log, startupRetryDelay)
+		r.scheduleContainerCreation(ctx, container, rcd, log, startupRetryDelay)
 		change |= statusChanged
 
 	case container.Spec.Networks != nil && rcd.hasValidContainerID():
@@ -851,6 +872,7 @@ func (r *ContainerReconciler) removeExistingContainer(
 
 // Schedules creation of a container resource. If Container is persistent, it will attempt to find and reuse an existing container.
 func (r *ContainerReconciler) scheduleContainerCreation(
+	ctx context.Context,
 	container *apiv1.Container,
 	rcd *runningContainerData,
 	log logr.Logger,
@@ -860,12 +882,20 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 
 	rcd.startupAttempted = true
 
+	if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
+		rcd.startupError = leaseErr
+		rcd.startAttemptFinishedAt = metav1.NowMicro()
+		rcd.containerState = apiv1.ContainerStateFailedToStart
+		return
+	}
+
 	log.V(1).Info("Scheduling container start", "Image", container.SpecifiedImageNameOrDefault())
 
 	if containerName == "" {
 		uniqueContainerName, _, err := MakeUniqueName(container.Name)
 		if err != nil {
 			log.Error(err, "Could not generate a unique container name")
+			_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 			rcd.containerState = apiv1.ContainerStateFailedToStart
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -880,6 +910,7 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 	err := r.startupQueue.Enqueue(r.startContainerWithOrchestrator(container, rcd.Clone(), containerName, log, delay))
 	if err != nil {
 		log.Error(err, "Container was not started, probably because the workload is shutting down")
+		_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 		rcd.containerState = apiv1.ContainerStateFailedToStart
 		rcd.startupError = err
 		rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -892,6 +923,10 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(buildCtx context.Context) {
 		err := func() error {
+			if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(buildCtx, container, log); leaseErr != nil {
+				return leaseErr
+			}
+
 			log.V(1).Info("Building image", "Dockerfile", container.Spec.Build.Dockerfile, "Context", container.Spec.Build.Context)
 
 			rcd.runSpec.Build.Tags = append(rcd.runSpec.Build.Tags, container.SpecifiedImageNameOrDefault())
@@ -926,6 +961,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 		}()
 
 		if err != nil {
+			_ = r.releasePersistentContainerResourceLease(context.WithoutCancel(buildCtx), container, log)
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			rcd.containerState = apiv1.ContainerStateFailedToStart
@@ -1118,6 +1154,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		placeholderContainerID := rcd.containerID
 
 		err := func() error {
+			if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(startupCtx, container, log); leaseErr != nil {
+				return leaseErr
+			}
+
 			// Compute effective environment and invocation arguments for the container
 			err := r.computeContainerStartupInputs(startupCtx, container, rcd, log)
 			if err != nil {
@@ -1145,69 +1185,71 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				return hashErr
 			}
 
-			return r.withPersistentContainerResourceLease(startupCtx, container, log, func(ctx context.Context) error {
-				// Apply any image layers that are specified in the container spec, and get the effective image to use for container creation
-				effectiveImage, imageLayersErr := r.applyContainerImageLayers(ctx, rcd, lifecycleKey, log)
-				if imageLayersErr != nil {
-					return imageLayersErr
-				}
+			// Apply any image layers that are specified in the container spec, and get the effective image to use for container creation
+			effectiveImage, imageLayersErr := r.applyContainerImageLayers(startupCtx, rcd, lifecycleKey, log)
+			if imageLayersErr != nil {
+				return imageLayersErr
+			}
 
-				// Get the writers for the startup log files and prepare the stream options for container creation
-				startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
-				streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
+			// Get the writers for the startup log files and prepare the stream options for container creation
+			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
+			streamOptions := getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
 
-				// Use the effective image (original or derived) for container creation
-				runSpecForCreation := *rcd.runSpec
-				runSpecForCreation.Image = effectiveImage
-				if effectiveImage != rcd.runSpec.Image {
-					// The derived image only exists locally; prevent docker create from
-					// attempting to pull it from a registry.
-					runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
-				}
+			// Use the effective image (original or derived) for container creation
+			runSpecForCreation := *rcd.runSpec
+			runSpecForCreation.Image = effectiveImage
+			if effectiveImage != rcd.runSpec.Image {
+				// The derived image only exists locally; prevent docker create from
+				// attempting to pull it from a registry.
+				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
+			}
 
-				// Create (or reuse for valid persistent containers) the container using the active orchestrator
-				creationOptions := containers.CreateContainerOptions{
-					ContainerSpec:        runSpecForCreation,
-					Name:                 containerName,
-					Network:              defaultNetwork,
-					StreamCommandOptions: streamOptions,
-				}
-				inspected, createErr := r.createOrReuseContainerResource(ctx, rcd, containerName, creationOptions, log)
+			// Create the container using the active orchestrator.
+			// Persistent container reuse happens only in handleNewContainer before startup is scheduled.
+			creationOptions := containers.CreateContainerOptions{
+				ContainerSpec:        runSpecForCreation,
+				Name:                 containerName,
+				Network:              defaultNetwork,
+				StreamCommandOptions: streamOptions,
+			}
+			inspected, createErr := createContainer(startupCtx, r.orchestrator, creationOptions)
 
-				// Close the startup log writers to ensure all output is flushed and resources are released
-				startupTaskFinished(startupStdoutWriter, startupStderrWriter)
-				if createErr != nil {
-					log.Error(createErr, "Could not create the container")
-					return createErr
-				}
+			// Close the startup log writers to ensure all output is flushed and resources are released
+			startupTaskFinished(startupStdoutWriter, startupStderrWriter)
+			if createErr != nil {
+				log.Error(createErr, "Could not create the container")
+				return createErr
+			}
 
-				log = log.WithValues("ContainerID", GetShortId(inspected.Id))
+			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
 
-				log.V(1).Info("Container created")
-				rcd.updateFromInspectedContainer(inspected)
+			log.V(1).Info("Container created")
+			rcd.updateFromInspectedContainer(inspected)
 
-				// Copy any general files specified in the container spec to the container's filesystem
-				fileModTime := time.Now()
-				copyFilesErr := r.copyContainerCreateFiles(ctx, rcd, inspected, fileModTime, log)
-				if copyFilesErr != nil {
-					return copyFilesErr
-				}
+			// Copy any general files specified in the container spec to the container's filesystem
+			fileModTime := time.Now()
+			copyFilesErr := r.copyContainerCreateFiles(startupCtx, rcd, inspected, fileModTime, log)
+			if copyFilesErr != nil {
+				return copyFilesErr
+			}
 
-				// Copy any PEM certificates specified in the container spec to the container's filesystem
-				copyCertsErr := r.copyContainerPemCertificates(ctx, rcd, inspected, fileModTime, log)
-				if copyCertsErr != nil {
-					return copyCertsErr
-				}
+			// Copy any PEM certificates specified in the container spec to the container's filesystem
+			copyCertsErr := r.copyContainerPemCertificates(startupCtx, rcd, inspected, fileModTime, log)
+			if copyCertsErr != nil {
+				return copyCertsErr
+			}
 
-				// Finish the container startup process, including any finalization steps
-				finishErr := r.finishCreatedContainerStartup(ctx, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
-				if finishErr != nil {
-					return finishErr
-				}
+			// Finish the container startup process, including any finalization steps
+			finishErr := r.finishCreatedContainerStartup(startupCtx, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
+			if finishErr != nil {
+				return finishErr
+			}
 
-				return nil
-			})
+			return nil
 		}()
+
+		releaseErr := r.releasePersistentContainerResourceLease(context.WithoutCancel(startupCtx), container, log)
+		err = errors.Join(err, releaseErr)
 
 		if err != nil {
 			rcd.startupError = err
@@ -1473,41 +1515,68 @@ func (r *ContainerReconciler) withPersistentContainerResourceLease(
 	return leaseErr
 }
 
-// createOrReuseContainerResource creates the runtime container, or adopts an existing one for persistent containers.
-func (r *ContainerReconciler) createOrReuseContainerResource(
+func (r *ContainerReconciler) acquirePersistentContainerResourceLease(
 	ctx context.Context,
-	rcd *runningContainerData,
-	containerName string,
-	creationOptions containers.CreateContainerOptions,
+	container *apiv1.Container,
 	log logr.Logger,
-) (*containers.InspectedContainer, error) {
-	inspectPersistentContainer := func() (*containers.InspectedContainer, bool, error) {
-		existingContainer, inspectErr := inspectContainerIfExists(ctx, r.orchestrator, containerName)
-		if errors.Is(inspectErr, containers.ErrNotFound) {
-			return nil, false, nil
-		}
-		if inspectErr != nil {
-			return nil, false, inspectErr
-		}
-		log.V(1).Info("Persistent container appeared before create; reusing existing container")
-		return existingContainer, true, nil
+) error {
+	if !container.Spec.Persistent {
+		return nil
+	}
+	if r.config.StateStore == nil {
+		return fmt.Errorf("state store is not configured")
 	}
 
-	createOrReuseContainer := func() (*containers.InspectedContainer, error) {
-		if rcd.runSpec.Persistent {
-			existingContainer, foundExisting, inspectErr := inspectPersistentContainer()
-			if inspectErr != nil || foundExisting {
-				return existingContainer, inspectErr
-			}
-		}
-
-		return createContainer(ctx, r.orchestrator, creationOptions)
+	lease, leaseErr := r.config.StateStore.AcquireResourceLease(
+		ctx,
+		container,
+		r.config.ResourceLeaseOwner,
+		resourceLeaseRevalidationInterval,
+		"",
+	)
+	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+		logResourceLeaseHeld(log, leaseErr, container.GetLeaseKey(), "Persistent container is being updated by another DCP instance, retrying")
+	}
+	if leaseErr != nil {
+		return leaseErr
 	}
 
-	if !rcd.runSpec.Persistent {
-		return createOrReuseContainer()
+	log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
+	return nil
+}
+
+func (r *ContainerReconciler) ensurePersistentContainerResourceLeaseHeld(ctx context.Context, container *apiv1.Container, log logr.Logger) error {
+	if !container.Spec.Persistent {
+		return nil
 	}
-	return createOrReuseContainer()
+	if r.config.StateStore == nil {
+		return fmt.Errorf("state store is not configured")
+	}
+
+	leaseErr := r.config.StateStore.VerifyResourceLeaseHeld(ctx, container, r.config.ResourceLeaseOwner)
+	if leaseErr != nil {
+		log.Error(leaseErr, "Cannot continue persistent container startup because this DCP instance does not hold the resource lease")
+		return leaseErr
+	}
+
+	return nil
+}
+
+func (r *ContainerReconciler) releasePersistentContainerResourceLease(ctx context.Context, container *apiv1.Container, log logr.Logger) error {
+	if !container.Spec.Persistent {
+		return nil
+	}
+	if r.config.StateStore == nil {
+		return fmt.Errorf("state store is not configured")
+	}
+
+	releaseErr := r.config.StateStore.ReleaseResourceLease(ctx, container, r.config.ResourceLeaseOwner)
+	if releaseErr != nil {
+		log.Error(releaseErr, "Could not release persistent container resource lease")
+		return releaseErr
+	}
+
+	return nil
 }
 
 // copyContainerCreateFiles copies configured file entries into the created container before it starts.

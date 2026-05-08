@@ -175,6 +175,48 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResou
 	})
 }
 
+func (s *Store) VerifyResourceLeaseHeld(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) error {
+	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
+	if resourceKeyErr != nil {
+		return resourceKeyErr
+	}
+	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
+	if ownerErr != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidArgument, ownerErr)
+	}
+
+	db, dbErr := s.requireDB()
+	if dbErr != nil {
+		return dbErr
+	}
+
+	row := db.QueryRowContext(
+		ctx,
+		`SELECT owner_pid, owner_identity_time FROM resource_locks WHERE resource_key = ?`,
+		resourceKey,
+	)
+
+	var ownerPID int64
+	var ownerIdentityTime string
+	scanErr := row.Scan(&ownerPID, &ownerIdentityTime)
+	if errors.Is(scanErr, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %s", ErrResourceLeaseNotHeld, resourceKey)
+	}
+	if scanErr != nil {
+		return fmt.Errorf("could not verify resource lease '%s': %w", resourceKey, scanErr)
+	}
+
+	heldOwner, heldOwnerErr := resourceLeaseOwnerFromDB(ownerPID, ownerIdentityTime)
+	if heldOwnerErr != nil {
+		return heldOwnerErr
+	}
+	if heldOwner.Pid != normalizedOwner.Pid || !heldOwner.IdentityTime.Equal(normalizedOwner.IdentityTime) {
+		return fmt.Errorf("%w: %s", ErrResourceLeaseNotHeld, resourceKey)
+	}
+
+	return nil
+}
+
 func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration, metadata string, f func(context.Context, *ResourceLease) error) error {
 	if f == nil {
 		return fmt.Errorf("%w: lease callback cannot be nil", ErrInvalidArgument)

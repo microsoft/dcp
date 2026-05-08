@@ -273,6 +273,30 @@ func TestResourceLeaseReleaseRequiresOwnedLease(t *testing.T) {
 	require.NoError(t, store.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner1))
 }
 
+func TestResourceLeaseVerifyRequiresOwnedLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, storePath)
+
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
+	require.NoError(t, owner2Err)
+
+	missingVerifyErr := store.VerifyResourceLeaseHeld(ctx, testLeasableResource("container/missing"), owner1)
+	require.ErrorIs(t, missingVerifyErr, ErrResourceLeaseNotHeld)
+
+	_, acquireErr := store.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute, "")
+	require.NoError(t, acquireErr)
+
+	wrongOwnerVerifyErr := store.VerifyResourceLeaseHeld(ctx, testLeasableResource("container/test"), owner2)
+	require.ErrorIs(t, wrongOwnerVerifyErr, ErrResourceLeaseNotHeld)
+
+	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, testLeasableResource("container/test"), owner1))
+}
+
 func TestResourceLeaseDoesNotExpireWhileOwnerIsActive(t *testing.T) {
 	t.Parallel()
 
