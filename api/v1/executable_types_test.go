@@ -66,6 +66,30 @@ func TestExecutableGetLeaseKey(t *testing.T) {
 	require.Equal(t, "default/api", exe.GetLeaseKey())
 }
 
+func TestExecutableSpecGetLifecycleKeyPreservesStringBoundaries(t *testing.T) {
+	t.Parallel()
+
+	spec := ExecutableSpec{
+		ExecutablePath:   "A",
+		WorkingDirectory: "BC",
+		Args:             []string{"A", "BC"},
+	}
+
+	key, computed, keyErr := spec.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	require.True(t, computed)
+
+	specWithAmbiguousConcatenation := ExecutableSpec{
+		ExecutablePath:   "AB",
+		WorkingDirectory: "C",
+		Args:             []string{"AB", "C"},
+	}
+
+	keyWithAmbiguousConcatenation, _, ambiguousConcatenationErr := specWithAmbiguousConcatenation.GetLifecycleKey()
+	require.NoError(t, ambiguousConcatenationErr)
+	require.NotEqual(t, key, keyWithAmbiguousConcatenation)
+}
+
 func TestExecutableSpecEqualTreatsOmittedStartAsExplicitTrue(t *testing.T) {
 	t.Parallel()
 

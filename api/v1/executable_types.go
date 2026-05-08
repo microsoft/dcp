@@ -355,22 +355,12 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 	fnvHash := fnv.New128()
 	encoder := gob.NewEncoder(fnvHash)
 
-	var writeErr error
 	var hashErr error
-
-	writeString := func(value string) {
-		_, writeErr = fnvHash.Write([]byte(value))
-		hashErr = errors.Join(hashErr, writeErr)
-	}
-
-	writeString(es.ExecutablePath)
-	writeString(es.WorkingDirectory)
-	writeString(string(es.ExecutionType))
-	writeString(string(es.AmbientEnvironment.Behavior))
-
-	for _, arg := range es.Args {
-		writeString(arg)
-	}
+	hashErr = errors.Join(hashErr, encoder.Encode(es.ExecutablePath))
+	hashErr = errors.Join(hashErr, encoder.Encode(es.WorkingDirectory))
+	hashErr = errors.Join(hashErr, encoder.Encode(string(es.ExecutionType)))
+	hashErr = errors.Join(hashErr, encoder.Encode(string(es.AmbientEnvironment.Behavior)))
+	hashErr = errors.Join(hashErr, encoder.Encode(es.Args))
 
 	if len(es.Env) > 0 {
 		sortedEnv := stdslices.Clone(es.Env)
@@ -392,8 +382,7 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 			if envFileReadErr != nil {
 				hashErr = errors.Join(hashErr, envFileReadErr)
 			} else {
-				_, writeErr = fnvHash.Write(envFileContents)
-				hashErr = errors.Join(hashErr, writeErr)
+				hashErr = errors.Join(hashErr, encoder.Encode(envFileContents))
 			}
 		}
 	}

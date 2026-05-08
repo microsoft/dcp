@@ -8,11 +8,9 @@ package controllers
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"reflect"
 	stdslices "slices"
 	"strings"
@@ -292,14 +290,6 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 	})
 }
 
-func persistentExecutableLifecycleKey(exe *apiv1.Executable) (string, bool, error) {
-	lifecycleInfo, lifecycleInfoErr := persistentExecutableLifecycleInfo(exe)
-	if lifecycleInfoErr != nil {
-		return "", false, lifecycleInfoErr
-	}
-	return lifecycleInfo.Key, lifecycleInfo.HasDefaultKey, nil
-}
-
 type persistentExecutableLifecycleData struct {
 	Key           string
 	HasDefaultKey bool
@@ -323,21 +313,16 @@ type persistentExecutableEnvMetadata struct {
 }
 
 func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecutableLifecycleData, error) {
-	if exe.Spec.LifecycleKey != "" {
+	lifecycleKey, hasDefaultLifecycleKey, lifecycleKeyErr := exe.Spec.GetLifecycleKey()
+	if lifecycleKeyErr != nil {
+		return persistentExecutableLifecycleData{}, lifecycleKeyErr
+	}
+	if !hasDefaultLifecycleKey {
 		return persistentExecutableLifecycleData{
-			Key:           exe.Spec.LifecycleKey,
+			Key:           lifecycleKey,
 			HasDefaultKey: false,
 		}, nil
 	}
-
-	fnvHash := fnv.New128()
-	encoder := gob.NewEncoder(fnvHash)
-
-	var hashErr error
-	hashErr = errors.Join(hashErr, encoder.Encode(exe.Spec.ExecutablePath))
-	hashErr = errors.Join(hashErr, encoder.Encode(exe.Spec.WorkingDirectory))
-	hashErr = errors.Join(hashErr, encoder.Encode(string(exe.Spec.ExecutionType)))
-	hashErr = errors.Join(hashErr, encoder.Encode(string(exe.Spec.AmbientEnvironment.Behavior)))
 
 	lifecycleMetadata := persistentExecutableLifecycleMetadata{
 		ExecutablePath:     exe.Spec.ExecutablePath,
@@ -351,12 +336,10 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 		effectiveArgs = exe.Spec.Args
 	}
 	lifecycleMetadata.EffectiveArgs = stdslices.Clone(effectiveArgs)
-	hashErr = errors.Join(hashErr, encoder.Encode(effectiveArgs))
 
 	explicitEffectiveEnv := explicitEffectiveExecutableEnv(exe)
 	lifecycleMetadata.ExplicitEffectiveEnv = make([]persistentExecutableEnvMetadata, 0, len(explicitEffectiveEnv))
 	for _, envVar := range explicitEffectiveEnv {
-		hashErr = errors.Join(hashErr, encoder.Encode(envVar))
 		lifecycleMetadata.ExplicitEffectiveEnv = append(lifecycleMetadata.ExplicitEffectiveEnv, persistentExecutableEnvMetadata{
 			Name:      envVar.Name,
 			ValueHash: fmt.Sprintf("%x", sha256.Sum256([]byte(envVar.Value))),
@@ -370,22 +353,21 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 		})
 
 		for i := range sortedPemCertificates {
-			hashErr = errors.Join(hashErr, encoder.Encode(sortedPemCertificates[i]))
 			lifecycleMetadata.PEMCertificates = append(lifecycleMetadata.PEMCertificates, sortedPemCertificates[i].Thumbprint)
 		}
-		hashErr = errors.Join(hashErr, encoder.Encode(exe.Spec.PemCertificates.ContinueOnError))
 		lifecycleMetadata.PEMCertificatesContinueOnError = exe.Spec.PemCertificates.ContinueOnError
 	}
 
 	metadataBytes, metadataErr := json.Marshal(lifecycleMetadata)
-	hashErr = errors.Join(hashErr, metadataErr)
+	if metadataErr != nil {
+		return persistentExecutableLifecycleData{}, metadataErr
+	}
 
-	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
 	return persistentExecutableLifecycleData{
 		Key:           lifecycleKey,
 		HasDefaultKey: true,
 		Metadata:      string(metadataBytes),
-	}, hashErr
+	}, nil
 }
 
 func calculatePersistentExecutableChanges(oldMetadata, newMetadata string) (args []string, env []string, other []string) {
