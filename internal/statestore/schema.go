@@ -32,9 +32,15 @@ const (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-func (s *Store) migrate(ctx context.Context) (err error) {
+func (s *Store) migrate(ctx context.Context, migrationDB *sql.DB) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	if _, dbErr := s.requireDB(); dbErr != nil {
+		return dbErr
+	}
+	if migrationDB == nil {
+		return fmt.Errorf("%w: migration database is nil", ErrInvalidArgument)
 	}
 
 	migrationLock, lockErr := lockfile.NewLockfile(s.path + migrationLockFileSuffix)
@@ -53,36 +59,20 @@ func (s *Store) migrate(ctx context.Context) (err error) {
 		return migrationErr
 	}
 
-	return s.runMigrations(ctx)
+	return s.runMigrations(ctx, migrationDB)
 }
 
-func (s *Store) runMigrations(ctx context.Context) (err error) {
+func (s *Store) runMigrations(ctx context.Context, migrationDB *sql.DB) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
 
-	if _, dbErr := s.requireDB(); dbErr != nil {
-		return dbErr
-	}
-
-	migrationDB, migrationDBErr := sql.Open(sqliteDriverName, sqliteDSN(s.path, s.busyTimeout))
-	if migrationDBErr != nil {
-		return fmt.Errorf("could not open state store migration database '%s': %w", s.path, migrationDBErr)
-	}
-	migrationDB.SetMaxOpenConns(1)
-	migrationDB.SetMaxIdleConns(1)
-	migrationDB.SetConnMaxLifetime(0)
-	if pingErr := migrationDB.PingContext(ctx); pingErr != nil {
-		closeErr := migrationDB.Close()
-		return fmt.Errorf("could not initialize state store migration database '%s': %w", s.path, errors.Join(pingErr, closeErr))
+	if migrationDB == nil {
+		return fmt.Errorf("%w: migration database is nil", ErrInvalidArgument)
 	}
 
 	sourceDriver, sourceErr := iofs.New(migrationFiles, "migrations")
 	if sourceErr != nil {
-		closeErr := migrationDB.Close()
-		if closeErr != nil {
-			return fmt.Errorf("could not load state store migrations: %w", errors.Join(sourceErr, closeErr))
-		}
 		return fmt.Errorf("could not load state store migrations: %w", sourceErr)
 	}
 
@@ -92,8 +82,7 @@ func (s *Store) runMigrations(ctx context.Context) (err error) {
 	})
 	if databaseDriverErr != nil {
 		sourceCloseErr := sourceDriver.Close()
-		databaseCloseErr := migrationDB.Close()
-		return fmt.Errorf("could not initialize state store migration database driver: %w", errors.Join(databaseDriverErr, sourceCloseErr, databaseCloseErr))
+		return fmt.Errorf("could not initialize state store migration database driver: %w", errors.Join(databaseDriverErr, sourceCloseErr))
 	}
 
 	migrationRunner, runnerErr := gomigrate.NewWithInstance("iofs", sourceDriver, sqliteDriverName, databaseDriver)

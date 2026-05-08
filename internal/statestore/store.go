@@ -54,9 +54,8 @@ type Options struct {
 }
 
 type Store struct {
-	db          *sql.DB
-	path        string
-	busyTimeout time.Duration
+	db   *sql.DB
+	path string
 }
 
 func DefaultPath() (string, error) {
@@ -104,24 +103,14 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		busyTimeout = DefaultBusyTimeout
 	}
 
-	db, openErr := sql.Open(sqliteDriverName, sqliteDSN(absPath, busyTimeout))
+	db, openErr := openSQLiteDB(ctx, absPath, busyTimeout)
 	if openErr != nil {
-		return nil, fmt.Errorf("could not open state store database '%s': %w", absPath, openErr)
+		return nil, fmt.Errorf("could not initialize state store database '%s': %w", absPath, openErr)
 	}
-
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
 
 	store := &Store{
-		db:          db,
-		path:        absPath,
-		busyTimeout: busyTimeout,
-	}
-
-	if pingErr := db.PingContext(ctx); pingErr != nil {
-		closeErr := db.Close()
-		return nil, fmt.Errorf("could not initialize state store database '%s': %w", absPath, errors.Join(pingErr, closeErr))
+		db:   db,
+		path: absPath,
 	}
 
 	if configureErr := store.configure(ctx, busyTimeout); configureErr != nil {
@@ -129,9 +118,19 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		return nil, fmt.Errorf("could not configure state store database '%s': %w", absPath, errors.Join(configureErr, closeErr))
 	}
 
-	if migrateErr := store.migrate(ctx); migrateErr != nil {
+	migrationDB, migrationOpenErr := openSQLiteDB(ctx, absPath, busyTimeout)
+	if migrationOpenErr != nil {
 		closeErr := db.Close()
-		return nil, fmt.Errorf("could not migrate state store database '%s': %w", absPath, errors.Join(migrateErr, closeErr))
+		return nil, fmt.Errorf("could not initialize state store migration database '%s': %w", absPath, errors.Join(migrationOpenErr, closeErr))
+	}
+	if migrateErr := store.migrate(ctx, migrationDB); migrateErr != nil {
+		migrationCloseErr := migrationDB.Close()
+		closeErr := db.Close()
+		return nil, fmt.Errorf("could not migrate state store database '%s': %w", absPath, errors.Join(migrateErr, migrationCloseErr, closeErr))
+	}
+	if migrationCloseErr := migrationDB.Close(); migrationCloseErr != nil {
+		closeErr := db.Close()
+		return nil, fmt.Errorf("could not close state store migration database '%s': %w", absPath, errors.Join(migrationCloseErr, closeErr))
 	}
 
 	if ensureErr := ensureRestrictedSQLiteFiles(absPath); ensureErr != nil {
@@ -140,6 +139,24 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 	}
 
 	return store, nil
+}
+
+func openSQLiteDB(ctx context.Context, path string, busyTimeout time.Duration) (*sql.DB, error) {
+	db, openErr := sql.Open(sqliteDriverName, sqliteDSN(path, busyTimeout))
+	if openErr != nil {
+		return nil, openErr
+	}
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	if pingErr := db.PingContext(ctx); pingErr != nil {
+		closeErr := db.Close()
+		return nil, errors.Join(pingErr, closeErr)
+	}
+
+	return db, nil
 }
 
 func sqliteDSN(path string, busyTimeout time.Duration) string {

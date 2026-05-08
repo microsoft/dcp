@@ -475,7 +475,7 @@ func ensureContainerBuildingState(
 
 	if rcd == nil {
 		// This is a brand new Container and we need to build it.
-		if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
+		if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
 			return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 		}
 
@@ -882,7 +882,7 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 
 	rcd.startupAttempted = true
 
-	if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
+	if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(ctx, container, log); leaseErr != nil {
 		rcd.startupError = leaseErr
 		rcd.startAttemptFinishedAt = metav1.NowMicro()
 		rcd.containerState = apiv1.ContainerStateFailedToStart
@@ -923,7 +923,7 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Container, rcd *runningContainerData, log logr.Logger) func(context.Context) {
 	return func(buildCtx context.Context) {
 		err := func() error {
-			if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(buildCtx, container, log); leaseErr != nil {
+			if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(buildCtx, container, log); leaseErr != nil {
 				return leaseErr
 			}
 
@@ -1154,7 +1154,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 		placeholderContainerID := rcd.containerID
 
 		err := func() error {
-			if leaseErr := r.ensurePersistentContainerResourceLeaseHeld(startupCtx, container, log); leaseErr != nil {
+			if leaseErr := r.verifyPersistentContainerResourceLeaseHeld(startupCtx, container, log); leaseErr != nil {
 				return leaseErr
 			}
 
@@ -1248,15 +1248,18 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			return nil
 		}()
 
-		releaseErr := r.releasePersistentContainerResourceLease(context.WithoutCancel(startupCtx), container, log)
-		err = errors.Join(err, releaseErr)
+		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld)
+		if !retryableErr && !errors.Is(err, statestore.ErrResourceLeaseNotHeld) {
+			releaseErr := r.releasePersistentContainerResourceLease(context.WithoutCancel(startupCtx), container, log)
+			err = errors.Join(err, releaseErr)
+		}
 
 		if err != nil {
 			rcd.startupError = err
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 
 			// Keep in "starting" state if the error is transient, otherwise initiate the transition to "failed to start".
-			if !templating.IsTransientTemplateError(err) && !errors.Is(err, statestore.ErrResourceLeaseHeld) {
+			if !retryableErr {
 				rcd.containerState = apiv1.ContainerStateFailedToStart
 			}
 		}
@@ -1545,7 +1548,7 @@ func (r *ContainerReconciler) acquirePersistentContainerResourceLease(
 	return nil
 }
 
-func (r *ContainerReconciler) ensurePersistentContainerResourceLeaseHeld(ctx context.Context, container *apiv1.Container, log logr.Logger) error {
+func (r *ContainerReconciler) verifyPersistentContainerResourceLeaseHeld(ctx context.Context, container *apiv1.Container, log logr.Logger) error {
 	if !container.Spec.Persistent {
 		return nil
 	}
