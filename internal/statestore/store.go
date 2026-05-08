@@ -20,7 +20,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
-	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
@@ -94,7 +93,7 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		return nil, fmt.Errorf("could not determine absolute state store path for '%s': %w", storePath, absPathErr)
 	}
 
-	if ensureErr := ensureRestrictedSQLiteFiles(absPath); ensureErr != nil {
+	if ensureErr := ensureStateStoreDir(absPath); ensureErr != nil {
 		return nil, ensureErr
 	}
 
@@ -131,11 +130,6 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 	if migrationCloseErr := migrationDB.Close(); migrationCloseErr != nil {
 		closeErr := db.Close()
 		return nil, fmt.Errorf("could not close state store migration database '%s': %w", absPath, errors.Join(migrationCloseErr, closeErr))
-	}
-
-	if ensureErr := ensureRestrictedSQLiteFiles(absPath); ensureErr != nil {
-		closeErr := db.Close()
-		return nil, errors.Join(ensureErr, closeErr)
 	}
 
 	return store, nil
@@ -249,44 +243,11 @@ func (s *Store) configure(ctx context.Context, busyTimeout time.Duration) error 
 	return nil
 }
 
-func ensureRestrictedSQLiteFiles(path string) error {
+func ensureStateStoreDir(path string) error {
 	parentDir := filepath.Dir(path)
 	if mkdirErr := os.MkdirAll(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); mkdirErr != nil {
 		return fmt.Errorf("could not create state store directory '%s': %w", parentDir, mkdirErr)
 	}
-
-	for _, filePath := range []string{path, path + "-wal", path + "-shm"} {
-		if ensureErr := ensureRestrictedFile(filePath); ensureErr != nil {
-			return ensureErr
-		}
-	}
-
-	return nil
-}
-
-func ensureRestrictedFile(path string) error {
-	fileInfo, statErr := os.Stat(path)
-	if errors.Is(statErr, os.ErrNotExist) {
-		file, createErr := usvc_io.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-		if createErr != nil {
-			return fmt.Errorf("could not create restricted state store file '%s': %w", path, createErr)
-		}
-		if closeErr := file.Close(); closeErr != nil {
-			return fmt.Errorf("could not close restricted state store file '%s': %w", path, closeErr)
-		}
-		return nil
-	}
-	if statErr != nil {
-		return fmt.Errorf("could not inspect state store file '%s': %w", path, statErr)
-	}
-	if !fileInfo.Mode().IsRegular() {
-		return fmt.Errorf("state store path '%s' exists but is not a regular file", path)
-	}
-
-	if chmodErr := os.Chmod(path, osutil.PermissionOnlyOwnerReadWrite); chmodErr != nil {
-		return fmt.Errorf("could not restrict permissions on state store file '%s': %w", path, chmodErr)
-	}
-
 	return nil
 }
 
