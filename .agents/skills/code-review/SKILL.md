@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: "Review a GitHub pull request for problems and consistenty with project conventions. Use when asked to review a PR, do a code review, check a PR for issues, or review pull request changes."
+description: "Review a GitHub pull request for problems and consistency with project conventions. Use when asked to review a PR, do a code review, check a PR for issues, or review pull request changes."
 ---
 
 # PR Code Review
