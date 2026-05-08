@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +125,72 @@ func TestPersistentExecutableOutputBaseDirDefaultsForEmptyEnvVar(t *testing.T) {
 	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, " ")
 
 	require.Equal(t, filepath.Join(os.TempDir(), persistentExecutableOutputDirName), persistentExecutableOutputBaseDir())
+}
+
+func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T) {
+	testCases := []struct {
+		name       string
+		persistent bool
+	}{
+		{
+			name: "non-persistent output is timestamped",
+		},
+		{
+			name:       "persistent output is written directly",
+			persistent: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			dcppaths.EnableTestPathProbing()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			if testCase.persistent {
+				overridePersistentExecutableOutputDir(t)
+			}
+			processExecutor := testutil.NewTestProcessExecutor(ctx)
+			runner := NewProcessExecutableRunner(processExecutor)
+			exe := &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "api",
+					Namespace: "default",
+					UID:       types.UID(fmt.Sprintf("api-uid-%d", time.Now().UnixNano())),
+				},
+				Spec: apiv1.ExecutableSpec{
+					ExecutablePath: "/test/app",
+					Persistent:     testCase.persistent,
+				},
+			}
+
+			result := runner.StartRun(ctx, exe, &testRunChangeHandler{}, logr.Discard())
+			require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
+			t.Cleanup(func() {
+				require.NoError(t, runner.ReleaseRun(context.Background(), result.RunID, logr.Discard()))
+				removeFileIfExists(t, result.StdOutFile)
+				removeFileIfExists(t, result.StdErrFile)
+			})
+
+			executions := processExecutor.FindAll([]string{"/test/app"}, "", nil)
+			require.Len(t, executions, 1)
+			_, writeErr := executions[0].Cmd.Stdout.Write([]byte("hello\n"))
+			require.NoError(t, writeErr)
+			if syncer, ok := executions[0].Cmd.Stdout.(interface{ Sync() error }); ok {
+				require.NoError(t, syncer.Sync())
+			}
+
+			output, readErr := os.ReadFile(result.StdOutFile)
+			require.NoError(t, readErr)
+			if testCase.persistent {
+				require.Equal(t, "hello\n", string(output))
+			} else {
+				require.True(t, strings.HasPrefix(string(output), "1 "), "expected timestamped output, got %q", string(output))
+				require.Contains(t, string(output), "hello\n")
+			}
+		})
+	}
 }
 
 func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {

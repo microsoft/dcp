@@ -103,7 +103,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	if stdOutFileErr != nil {
 		startLog.Error(stdOutFileErr, "Failed to create temporary file for capturing process standard output data")
 	} else {
-		cmd.Stdout = usvc_io.NewTimestampWriter(stdOutFile)
+		cmd.Stdout = executableOutputWriter(exe, stdOutFile)
 		result.StdOutFile = stdOutFile.Name()
 	}
 
@@ -111,7 +111,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	if stdErrFileErr != nil {
 		startLog.Error(stdErrFileErr, "Failed to create temporary file for capturing process standard error data")
 	} else {
-		cmd.Stderr = usvc_io.NewTimestampWriter(stdErrFile)
+		cmd.Stderr = executableOutputWriter(exe, stdErrFile)
 		result.StdErrFile = stdErrFile.Name()
 	}
 
@@ -363,6 +363,13 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 	}
 
 	return usvc_io.OpenFile(filepath.Join(dir, fileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+}
+
+func executableOutputWriter(exe *apiv1.Executable, file *os.File) usvc_io.WriteSyncerCloser {
+	if exe.Spec.Persistent {
+		return file
+	}
+	return usvc_io.NewTimestampWriter(file)
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {
