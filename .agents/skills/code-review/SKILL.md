@@ -84,7 +84,7 @@ If the PR has "Reject" rating, explicitly state why you came to this conclusion 
 
 ### Step 6: Ask the User What Findings to Post to GitHub
 
-Ask the user what to do next with the finding. The user may respond with:
+Ask the user what to do next with the findings. The user may respond with:
 
 - **"Add 1, 3, 5 as comments"** — post only those numbered items as review comments.
 - **"Add all"** — post every item.
