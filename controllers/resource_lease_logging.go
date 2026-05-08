@@ -17,7 +17,7 @@ func logResourceLeaseHeld(log logr.Logger, leaseErr error, resourceKey string, m
 		logValues = []any{
 			"ResourceKey", heldLease.ResourceKey,
 			"LeaseOwnerPID", heldLease.OwnerProcess.Pid,
-			"LeaseOwnerStartTime", heldLease.OwnerProcess.IdentityTime,
+			"LeaseOwnerIdentityTime", heldLease.OwnerProcess.IdentityTime,
 		}
 	}
 
