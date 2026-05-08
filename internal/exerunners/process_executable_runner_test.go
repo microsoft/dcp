@@ -8,6 +8,7 @@ package exerunners
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -20,6 +21,8 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -136,6 +139,35 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 		require.Fail(t, "timed out waiting for adopted process completion notification")
 	}
 
+	_, found := runner.runningProcesses.Load(runID)
+	require.False(t, found)
+}
+
+func TestReleaseRunClosesProcessRunFiles(t *testing.T) {
+	t.Parallel()
+
+	stdOutFile, stdOutFileErr := usvc_io.OpenTempFile(fmt.Sprintf("stdout_%d", time.Now().UnixNano()), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, stdOutFileErr)
+	t.Cleanup(func() {
+		require.NoError(t, os.Remove(stdOutFile.Name()))
+	})
+	stdErrFile, stdErrFileErr := usvc_io.OpenTempFile(fmt.Sprintf("stderr_%d", time.Now().UnixNano()), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	require.NoError(t, stdErrFileErr)
+	t.Cleanup(func() {
+		require.NoError(t, os.Remove(stdErrFile.Name()))
+	})
+
+	runner := NewProcessExecutableRunner(&recordingProcessExecutor{})
+	runID := controllers.RunID("run-1")
+	runner.runningProcesses.Store(runID, &processRunState{
+		stdOutFile: stdOutFile,
+		stdErrFile: stdErrFile,
+	})
+
+	require.NoError(t, runner.ReleaseRun(context.Background(), runID, logr.Discard()))
+
+	require.ErrorIs(t, stdOutFile.Close(), os.ErrClosed)
+	require.ErrorIs(t, stdErrFile.Close(), os.ErrClosed)
 	_, found := runner.runningProcesses.Load(runID)
 	require.False(t, found)
 }

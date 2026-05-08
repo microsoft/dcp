@@ -298,7 +298,11 @@ func (r *ProcessExecutableRunner) ReleaseRun(_ context.Context, runID controller
 		runState.cancelWatch()
 	}
 
-	return nil
+	closeErr := closeProcessRunFiles(runState)
+	if closeErr != nil {
+		log.Error(closeErr, "Could not close process run files while releasing run", "RunID", runID)
+	}
+	return closeErr
 }
 
 func closeProcessRunFiles(runState *processRunState) error {

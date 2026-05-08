@@ -385,8 +385,9 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	if network.Spec.Persistent {
 		var change objectChange
 		if r.config.StateStore == nil {
-			log.Error(fmt.Errorf("state store is not configured"), "Could not acquire persistent network lease")
-			return additionalReconciliationNeeded
+			stateStoreErr := fmt.Errorf("state store is not configured")
+			log.Error(stateStoreErr, "Could not acquire persistent network lease")
+			return r.failNetworkToStart(network, networkName, stateStoreErr)
 		}
 
 		leaseErr := r.config.StateStore.WithResourceLease(
@@ -407,13 +408,25 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 		}
 		if leaseErr != nil {
 			log.Error(leaseErr, "Could not acquire persistent network lease")
-			return additionalReconciliationNeeded
+			return r.failNetworkToStart(network, networkName, leaseErr)
 		}
 
 		return change
 	}
 
 	return r.ensureNetworkWithName(ctx, network, networkName, log)
+}
+
+func (r *NetworkReconciler) failNetworkToStart(network *apiv1.ContainerNetwork, networkName string, err error) objectChange {
+	if r.existingNetworks != nil {
+		r.existingNetworks.Store(network.NamespacedName(), networkName, &runningNetworkState{
+			state:   apiv1.ContainerNetworkStateFailedToStart,
+			message: err.Error(),
+		})
+	}
+	network.Status.State = apiv1.ContainerNetworkStateFailedToStart
+	network.Status.Message = err.Error()
+	return statusChanged
 }
 
 func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *apiv1.ContainerNetwork, networkName string, log logr.Logger) objectChange {
