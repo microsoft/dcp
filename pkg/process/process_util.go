@@ -29,6 +29,13 @@ type ProcessTreeItem struct {
 	IdentityTime time.Time // Used to distinguish between different instances of processes with the same PID, may not be a valid wall-clock time.
 }
 
+func FormatIdentityTime(identityTime time.Time) string {
+	if identityTime.IsZero() {
+		return ""
+	}
+	return formatIdentityTime(identityTime)
+}
+
 var (
 	This func() (ProcessTreeItem, error)
 

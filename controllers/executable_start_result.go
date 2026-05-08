@@ -15,6 +15,7 @@ import (
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 type ExecutableStartResult struct {
@@ -248,7 +249,7 @@ func (res *ExecutableStartResult) String() string {
 		logger.FriendlyString(res.StdOutFile),
 		logger.FriendlyString(res.StdErrFile),
 		logger.FriendlyMetav1Timestamp(res.CompletionTimestamp),
-		logger.FriendlyString(res.ProcessIdentityTime.Format(osutil.RFC3339MiliTimestampFormat)),
+		logger.FriendlyString(process.FormatIdentityTime(res.ProcessIdentityTime)),
 		logger.FriendlyErrorString(res.StartupError),
 	)
 }

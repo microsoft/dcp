@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,6 +25,17 @@ import (
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/process"
 )
+
+func TestExecutableStartResultStringDoesNotFormatZeroIdentityTimeAsTimestamp(t *testing.T) {
+	t.Parallel()
+
+	result := NewExecutableStartResult()
+
+	formatted := result.String()
+
+	require.Contains(t, formatted, "processIdentityTime: (empty)")
+	require.False(t, strings.Contains(formatted, "0001-01-01"), "zero process identity time should not be formatted as a timestamp")
+}
 
 func TestPersistentExecutableLifecycleInfoSanitizesEnvMetadata(t *testing.T) {
 	t.Parallel()
