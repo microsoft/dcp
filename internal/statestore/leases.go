@@ -139,58 +139,6 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 	return lease, nil
 }
 
-func (s *Store) RenewResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) (*ResourceLease, error) {
-	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
-	if resourceKeyErr != nil {
-		return nil, resourceKeyErr
-	}
-	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
-	if ownerErr != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidArgument, ownerErr)
-	}
-
-	now := time.Now().UTC()
-	ownerPID := normalizedOwner.Pid
-	ownerIdentityTime := timeString(normalizedOwner.IdentityTime)
-	var lease *ResourceLease
-
-	txErr := s.withImmediateTx(ctx, func(conn *sql.Conn) error {
-		result, execErr := conn.ExecContext(
-			ctx,
-			`UPDATE resource_locks
-			 SET updated_at_unix_nano = ?
-			 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time = ?`,
-			unixNano(now),
-			resourceKey,
-			ownerPID,
-			ownerIdentityTime,
-		)
-		if execErr != nil {
-			return fmt.Errorf("could not renew resource lease '%s': %w", resourceKey, execErr)
-		}
-
-		rowsAffected, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			return fmt.Errorf("could not confirm resource lease renewal for '%s': %w", resourceKey, rowsErr)
-		}
-		if rowsAffected == 0 {
-			return fmt.Errorf("%w: %s", ErrResourceLeaseNotHeld, resourceKey)
-		}
-
-		record, getErr := getResourceLease(ctx, conn, resourceKey)
-		if getErr != nil {
-			return getErr
-		}
-		lease = record
-		return nil
-	})
-	if txErr != nil {
-		return nil, txErr
-	}
-
-	return lease, nil
-}
-
 func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) error {
 	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
 	if resourceKeyErr != nil {

@@ -210,10 +210,6 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	require.Equal(t, "container/test", heldLease.ResourceKey)
 	require.Equal(t, owner1, heldLease.OwnerProcess)
 
-	renewed, renewErr := store1.RenewResourceLease(ctx, testLeasableResource("container/test"), owner1)
-	require.NoError(t, renewErr)
-	require.Equal(t, owner1, renewed.OwnerProcess)
-
 	require.NoError(t, store1.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner1))
 
 	lease, acquireErr = store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute, "")
@@ -238,9 +234,7 @@ func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T)
 	require.NoError(t, acquireErr)
 	require.Equal(t, owner, lease.OwnerProcess)
 
-	renewed, renewErr := store.RenewResourceLease(ctx, testLeasableResource("container/test"), owner)
-	require.NoError(t, renewErr)
-	require.Equal(t, owner, renewed.OwnerProcess)
+	require.NoError(t, store.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner))
 }
 
 func TestResourceLeaseDoesNotExpireWhileOwnerIsActive(t *testing.T) {

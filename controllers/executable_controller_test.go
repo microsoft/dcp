@@ -16,6 +16,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -223,6 +226,42 @@ func TestHandleNewPersistentExecutableWaitsWhenLeaseHeld(t *testing.T) {
 	require.Empty(t, runner.adoptedRuns)
 	require.Empty(t, runner.stoppedRuns)
 	require.Zero(t, runner.startRunCount)
+}
+
+func TestPersistentExecutableDeletionPreservesReusableRecord(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	scheme := apiruntime.NewScheme()
+	require.NoError(t, apiv1.AddToScheme(scheme))
+	reconciler.Client = fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.ObjectMeta = metav1.ObjectMeta{
+		Namespace:  "default",
+		Name:       "api",
+		UID:        "api-uid",
+		Finalizers: []string{executableFinalizer},
+	}
+	exe.Spec.Start = pointersTo(false)
+	exe.Spec.Args = []string{"--port", "5000"}
+	exe.Spec.Env = []apiv1.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	record := persistentProcessRecordForTest(t, exe)
+	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
+
+	change := reconciler.handleDeletionRequest(ctx, exe, logr.Discard())
+
+	require.Equal(t, metadataChanged, change)
+	require.Empty(t, exe.Finalizers)
+	require.Empty(t, runner.stoppedRuns)
+	require.Zero(t, runner.startRunCount)
+	preservedRecord, getErr := store.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.NoError(t, getErr)
+	require.Equal(t, record.ResourceKey, preservedRecord.ResourceKey)
+	require.Equal(t, record.LifecycleKey, preservedRecord.LifecycleKey)
+	require.Equal(t, record.PID, preservedRecord.PID)
 }
 
 func persistentLifecycleKeyTestExecutable() *apiv1.Executable {

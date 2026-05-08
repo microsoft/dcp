@@ -558,5 +558,44 @@ func (r *ExecutableReconciler) getResourceLeaseOwner() (process.ProcessTreeItem,
 func (r *ExecutableReconciler) releasePersistentExecutableResources(ctx context.Context, exe *apiv1.Executable, runInfo *ExecutableRunInfo, log logr.Logger) {
 	r.disableEndpointsAndHealthProbes(ctx, exe, runInfo, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
+	if r.persistentProcessRecordCanBeReused(ctx, exe, log) {
+		log.V(1).Info("Preserving persistent Executable process record for reuse", "ResourceKey", exe.GetLeaseKey())
+		return
+	}
 	r.deletePersistentProcessRecord(ctx, exe.NamespacedName(), log)
+}
+
+func (r *ExecutableReconciler) persistentProcessRecordCanBeReused(ctx context.Context, exe *apiv1.Executable, log logr.Logger) bool {
+	stateStore, stateStoreErr := r.getStateStore()
+	if stateStoreErr != nil {
+		log.Error(stateStoreErr, "Could not determine whether persistent Executable process record can be reused", "ResourceKey", exe.GetLeaseKey())
+		return false
+	}
+
+	record, recordErr := stateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
+		return false
+	}
+	if recordErr != nil {
+		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", exe.GetLeaseKey())
+		return false
+	}
+
+	lifecycleInfo, lifecycleKeyErr := persistentExecutableLifecycleInfo(exe)
+	if lifecycleKeyErr != nil {
+		log.Error(lifecycleKeyErr, "Could not calculate Executable lifecycle key")
+		return false
+	}
+	if record.LifecycleKey != lifecycleInfo.Key {
+		return false
+	}
+
+	if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr != nil {
+		log.Info("Persistent Executable process record is not reusable because the process is no longer running",
+			"PID", record.PID,
+			"Error", findErr.Error())
+		return false
+	}
+
+	return true
 }
