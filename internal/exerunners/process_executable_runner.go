@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -31,6 +30,7 @@ import (
 )
 
 type processRunState struct {
+	pid              process.Pid_t
 	identityTime     time.Time
 	stdOutFile       *os.File
 	stdErrFile       *os.File
@@ -93,13 +93,7 @@ func (r *ProcessExecutableRunner) StartRun(
 		runID := pidToRunID(pid)
 
 		if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
-			for _, f := range []io.Closer{runState.stdOutFile, runState.stdErrFile} {
-				if f != nil {
-					if closeErr := f.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-						err = errors.Join(closeErr, err)
-					}
-				}
-			}
+			err = errors.Join(closeProcessRunFiles(runState), err)
 		}
 
 		if runChangeHandler != nil {
@@ -140,6 +134,7 @@ func (r *ProcessExecutableRunner) StartRun(
 		}
 
 		r.runningProcesses.Store(pidToRunID(pid), &processRunState{
+			pid:              pid,
 			identityTime:     processIdentityTime,
 			stdOutFile:       stdOutFile,
 			stdErrFile:       stdErrFile,
@@ -183,6 +178,7 @@ func (r *ProcessExecutableRunner) AdoptRun(
 	}
 
 	r.runningProcesses.Store(run.RunID, &processRunState{
+		pid:              run.Pid,
 		identityTime:     run.ProcessIdentityTime,
 		cmdInfo:          run.CommandInfo,
 		adopted:          true,
@@ -215,9 +211,9 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
 			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
 			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runIdToPID(runID), runState.identityTime, stopLog)
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.pid, runState.identityTime, stopLog)
 		} else {
-			errCh <- r.pe.StopProcess(runIdToPID(runID), runState.identityTime)
+			errCh <- r.pe.StopProcess(runState.pid, runState.identityTime)
 		}
 	}()
 
@@ -230,13 +226,7 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 	}
 
 	if found {
-		for _, f := range []io.Closer{runState.stdOutFile, runState.stdErrFile} {
-			if f != nil {
-				if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-					stopErr = errors.Join(stopErr, err)
-				}
-			}
-		}
+		stopErr = errors.Join(stopErr, closeProcessRunFiles(runState))
 	}
 
 	if stopErr != nil {
@@ -245,6 +235,19 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 		runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, nil)
 	}
 	return stopErr
+}
+
+func closeProcessRunFiles(runState *processRunState) error {
+	var closeErr error
+	for _, file := range []*os.File{runState.stdOutFile, runState.stdErrFile} {
+		if file != nil {
+			fileErr := file.Close()
+			if fileErr != nil && !errors.Is(fileErr, os.ErrClosed) {
+				closeErr = errors.Join(closeErr, fileErr)
+			}
+		}
+	}
+	return closeErr
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {
@@ -260,18 +263,6 @@ func makeCommand(exe *apiv1.Executable) *exec.Cmd {
 
 func pidToRunID(pid process.Pid_t) controllers.RunID {
 	return controllers.RunID(strconv.FormatInt(int64(pid), 10))
-}
-
-func runIdToPID(runID controllers.RunID) process.Pid_t {
-	pid64, err := strconv.ParseInt(string(runID), 10, 64)
-	if err != nil {
-		return process.UnknownPID
-	}
-	pid, err := process.Int64_ToPidT(pid64)
-	if err != nil {
-		return process.UnknownPID
-	}
-	return pid
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)
