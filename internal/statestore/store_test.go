@@ -249,6 +249,30 @@ func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T)
 	require.NoError(t, store.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner))
 }
 
+func TestResourceLeaseReleaseRequiresOwnedLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, storePath)
+
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
+	require.NoError(t, owner2Err)
+
+	missingReleaseErr := store.ReleaseResourceLease(ctx, testLeasableResource("container/missing"), owner1)
+	require.ErrorIs(t, missingReleaseErr, ErrResourceLeaseNotHeld)
+
+	_, acquireErr := store.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute, "")
+	require.NoError(t, acquireErr)
+
+	wrongOwnerReleaseErr := store.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner2)
+	require.ErrorIs(t, wrongOwnerReleaseErr, ErrResourceLeaseNotHeld)
+
+	require.NoError(t, store.ReleaseResourceLease(ctx, testLeasableResource("container/test"), owner1))
+}
+
 func TestResourceLeaseDoesNotExpireWhileOwnerIsActive(t *testing.T) {
 	t.Parallel()
 

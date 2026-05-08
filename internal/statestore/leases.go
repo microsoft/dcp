@@ -152,7 +152,7 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResou
 	ownerIdentityTime := timeString(normalizedOwner.IdentityTime)
 
 	return s.withImmediateTx(ctx, func(conn *sql.Conn) error {
-		_, execErr := conn.ExecContext(
+		result, execErr := conn.ExecContext(
 			ctx,
 			`DELETE FROM resource_locks
 			 WHERE resource_key = ? AND owner_pid = ? AND owner_identity_time = ?`,
@@ -162,6 +162,13 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResou
 		)
 		if execErr != nil {
 			return fmt.Errorf("could not release resource lease '%s': %w", resourceKey, execErr)
+		}
+		rowsAffected, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("could not confirm resource lease release for '%s': %w", resourceKey, rowsErr)
+		}
+		if rowsAffected == 0 {
+			return fmt.Errorf("%w: %s", ErrResourceLeaseNotHeld, resourceKey)
 		}
 
 		return nil
