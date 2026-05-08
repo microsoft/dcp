@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,31 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
+
+const (
+	DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR = "DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR"
+
+	persistentExecutableOutputDirName = "dcp-peo"
+)
+
+var persistentExecutableOutputDir = func() (string, error) {
+	isAdmin, adminErr := osutil.IsAdmin()
+	if adminErr != nil {
+		return "", fmt.Errorf("could not determine current elevation: %w", adminErr)
+	}
+	baseDir := persistentExecutableOutputBaseDir()
+	if isAdmin {
+		return baseDir + "-admin", nil
+	}
+	return baseDir, nil
+}
+
+func persistentExecutableOutputBaseDir() string {
+	if outputDir, found := os.LookupEnv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR); found && strings.TrimSpace(outputDir) != "" {
+		return strings.TrimSpace(outputDir)
+	}
+	return filepath.Join(os.TempDir(), persistentExecutableOutputDirName)
+}
 
 type processRunState struct {
 	pid              process.Pid_t
@@ -72,7 +99,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	startLog.V(1).Info("Process details", "Env", cmd.Env, "Cwd", cmd.Dir)
 	result := controllers.NewExecutableStartResult()
 
-	stdOutFile, stdOutFileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdOutFile, stdOutFileErr := openExecutableOutputFile(exe, "out")
 	if stdOutFileErr != nil {
 		startLog.Error(stdOutFileErr, "Failed to create temporary file for capturing process standard output data")
 	} else {
@@ -80,7 +107,7 @@ func (r *ProcessExecutableRunner) StartRun(
 		result.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, stdErrFileErr := usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	stdErrFile, stdErrFileErr := openExecutableOutputFile(exe, "err")
 	if stdErrFileErr != nil {
 		startLog.Error(stdErrFileErr, "Failed to create temporary file for capturing process standard error data")
 	} else {
@@ -316,6 +343,26 @@ func closeProcessRunFiles(runState *processRunState) error {
 		}
 	}
 	return closeErr
+}
+
+func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, error) {
+	fileName := fmt.Sprintf("%s_%s", exe.UID, stream)
+	if !exe.Spec.Persistent {
+		return usvc_io.OpenTempFile(fileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	}
+
+	dir, dirErr := persistentExecutableOutputDir()
+	if dirErr != nil {
+		return nil, fmt.Errorf("could not determine persistent Executable output directory: %w", dirErr)
+	}
+	if mkdirErr := os.MkdirAll(dir, osutil.PermissionOnlyOwnerReadWriteTraverse); mkdirErr != nil {
+		return nil, fmt.Errorf("could not create persistent Executable output directory '%s': %w", dir, mkdirErr)
+	}
+	if chmodErr := os.Chmod(dir, osutil.PermissionOnlyOwnerReadWriteTraverse); chmodErr != nil {
+		return nil, fmt.Errorf("could not restrict persistent Executable output directory '%s': %w", dir, chmodErr)
+	}
+
+	return usvc_io.OpenFile(filepath.Join(dir, fileName), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {

@@ -7,14 +7,17 @@ package exerunners
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -27,8 +30,6 @@ import (
 )
 
 func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T) {
-	t.Parallel()
-
 	testCases := []struct {
 		name                  string
 		persistent            bool
@@ -46,8 +47,6 @@ func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
 			dcppaths.EnableTestPathProbing()
 
 			ctx, cancel := context.WithCancel(context.Background())
@@ -55,7 +54,16 @@ func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T
 
 			processExecutor := testutil.NewTestProcessExecutor(ctx)
 			runner := NewProcessExecutableRunner(processExecutor)
+			persistentOutputDir := ""
+			if testCase.persistent {
+				persistentOutputDir = overridePersistentExecutableOutputDir(t)
+			}
 			exe := &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "api",
+					Namespace: "default",
+					UID:       "api-uid",
+				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/test/app",
 					Persistent:     testCase.persistent,
@@ -65,10 +73,57 @@ func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T
 			result := runner.StartRun(ctx, exe, &testRunChangeHandler{}, logr.Discard())
 
 			require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
+			t.Cleanup(func() {
+				require.NoError(t, runner.ReleaseRun(context.Background(), result.RunID, logr.Discard()))
+				removeFileIfExists(t, result.StdOutFile)
+				removeFileIfExists(t, result.StdErrFile)
+			})
+			if testCase.persistent {
+				require.Equal(t, persistentOutputDir, filepath.Dir(result.StdOutFile))
+				require.Equal(t, persistentOutputDir, filepath.Dir(result.StdErrFile))
+			}
 			require.Len(t, processExecutor.FindAll([]string{"/test/app"}, "", nil), 1)
 			require.Len(t, processExecutor.FindAll([]string{"dcp", "monitor-process"}, "", nil), testCase.expectedMonitorStarts)
 		})
 	}
+}
+
+func TestPersistentExecutableOutputFileUsesPersistentOutputDir(t *testing.T) {
+	persistentOutputDir := overridePersistentExecutableOutputDir(t)
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "api/name",
+			Namespace: "default",
+			UID:       "api-uid",
+		},
+		Spec: apiv1.ExecutableSpec{
+			LifecycleKey: "life/key",
+			Persistent:   true,
+		},
+	}
+
+	file, fileErr := openExecutableOutputFile(exe, "out")
+	require.NoError(t, fileErr)
+	t.Cleanup(func() {
+		require.NoError(t, file.Close())
+		removeFileIfExists(t, file.Name())
+	})
+
+	require.Equal(t, persistentOutputDir, filepath.Dir(file.Name()))
+	require.Equal(t, "api-uid_out", filepath.Base(file.Name()))
+}
+
+func TestPersistentExecutableOutputBaseDirCanBeConfigured(t *testing.T) {
+	outputDir := filepath.Join(t.TempDir(), "custom-peo")
+	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, outputDir)
+
+	require.Equal(t, outputDir, persistentExecutableOutputBaseDir())
+}
+
+func TestPersistentExecutableOutputBaseDirDefaultsForEmptyEnvVar(t *testing.T) {
+	t.Setenv(DCP_PERSISTENT_EXECUTABLE_OUTPUT_DIR, " ")
+
+	require.Equal(t, filepath.Join(os.TempDir(), persistentExecutableOutputDirName), persistentExecutableOutputBaseDir())
 }
 
 func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
@@ -170,6 +225,31 @@ func TestReleaseRunClosesProcessRunFiles(t *testing.T) {
 	require.ErrorIs(t, stdErrFile.Close(), os.ErrClosed)
 	_, found := runner.runningProcesses.Load(runID)
 	require.False(t, found)
+}
+
+func overridePersistentExecutableOutputDir(t *testing.T) string {
+	t.Helper()
+
+	outputDir := t.TempDir()
+	originalOutputDir := persistentExecutableOutputDir
+	persistentExecutableOutputDir = func() (string, error) {
+		return outputDir, nil
+	}
+	t.Cleanup(func() {
+		persistentExecutableOutputDir = originalOutputDir
+	})
+	return outputDir
+}
+
+func removeFileIfExists(t *testing.T, path string) {
+	t.Helper()
+	if path == "" {
+		return
+	}
+	removeErr := os.Remove(path)
+	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		require.NoError(t, removeErr)
+	}
 }
 
 type recordingProcessExecutor struct {
