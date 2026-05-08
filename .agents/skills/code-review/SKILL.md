@@ -135,6 +135,6 @@ Before reviewing individual lines of code, evaluate the PR as a whole. Consider 
 
 ### Codebase Fit & History
 
-- **Ensure new code re-uses existing abstractions and primitives.** Avoid introducing new patterns, helpers, or abstractions unless they are clearly justified and substantially different from what already exists. Prefer targeted extenstions to existing abstractions and helpers over introducing new ones.
+- **Ensure new code re-uses existing abstractions and primitives.** Avoid introducing new patterns, helpers, or abstractions unless they are clearly justified and substantially different from what already exists. Prefer targeted extensions to existing abstractions and helpers over introducing new ones.
 - **Ensure new code matches existing patterns and conventions.** Deviations from established patterns create confusion and inconsistency. If a rename or restructuring is warranted, do it uniformly in a dedicated PR — not piecemeal.
 - **Check whether a similar approach has been tried and rejected before.** If a prior attempt didn't work, require a clear explanation of what's different this time.
