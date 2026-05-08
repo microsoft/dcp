@@ -8,6 +8,7 @@ package controllers
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 func TestPersistentContainerLeaseHeldSkipsResourceUpdate(t *testing.T) {
@@ -66,4 +69,144 @@ func TestPersistentContainerLeaseHeldSkipsResourceUpdate(t *testing.T) {
 
 	require.ErrorIs(t, leaseErr, statestore.ErrResourceLeaseHeld)
 	require.False(t, updateCalled)
+}
+
+func TestPersistentContainerReuseReleasesResourceLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	store, leaseOwner, otherOwner := openContainerLeaseTestStore(t, ctx)
+	containerName := "api"
+	container := persistentContainerForLeaseTest(containerName)
+	orchestrator := &containerLeaseTestOrchestrator{
+		inspected: &containers.InspectedContainer{
+			Id:        "api-container-id",
+			Name:      containerName,
+			Image:     container.Spec.Image,
+			StartedAt: time.Now().UTC(),
+			Status:    containers.ContainerStatusRunning,
+		},
+	}
+	reconciler := newContainerReconcilerForLeaseTest(ctx, orchestrator, store, leaseOwner)
+
+	change := handleNewContainer(ctx, reconciler, container, apiv1.ContainerStatePending, nil, logr.Discard())
+
+	require.NotEqual(t, noChange, change)
+	require.Equal(t, apiv1.ContainerStateRunning, container.Status.State)
+	assertContainerLeaseReleased(t, ctx, store, container, otherOwner)
+}
+
+func TestPersistentContainerStartFalseReleasesResourceLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	store, leaseOwner, otherOwner := openContainerLeaseTestStore(t, ctx)
+	orchestrator := &containerLeaseTestOrchestrator{}
+
+	container := persistentContainerForLeaseTest("api")
+	shouldStart := false
+	container.Spec.Start = &shouldStart
+	reconciler := newContainerReconcilerForLeaseTest(ctx, orchestrator, store, leaseOwner)
+
+	change := handleNewContainer(ctx, reconciler, container, apiv1.ContainerStatePending, nil, logr.Discard())
+
+	require.Equal(t, noChange, change)
+	require.Equal(t, apiv1.ContainerStateEmpty, container.Status.State)
+	assertContainerLeaseReleased(t, ctx, store, container, otherOwner)
+}
+
+func openContainerLeaseTestStore(t *testing.T, ctx context.Context) (*statestore.Store, process.ProcessTreeItem, process.ProcessTreeItem) {
+	t.Helper()
+
+	store, storeErr := statestore.Open(ctx, statestore.Options{
+		Path:        filepath.Join(t.TempDir(), "state.sqlite3"),
+		BusyTimeout: 500 * time.Millisecond,
+	})
+	require.NoError(t, storeErr)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close())
+	})
+
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	otherOwner := leaseOwner
+	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(-time.Hour)
+
+	return store, leaseOwner, otherOwner
+}
+
+func persistentContainerForLeaseTest(containerName string) *apiv1.Container {
+	return &apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "api",
+			Namespace: "default",
+			UID:       "api-uid",
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: containerName,
+			Image:         "api:dev",
+			Persistent:    true,
+		},
+	}
+}
+
+func newContainerReconcilerForLeaseTest(
+	ctx context.Context,
+	orchestrator containers.ContainerOrchestrator,
+	store *statestore.Store,
+	leaseOwner process.ProcessTreeItem,
+) *ContainerReconciler {
+	lock := &sync.Mutex{}
+	return &ContainerReconciler{
+		ReconcilerBase:   &ReconcilerBase[apiv1.Container, *apiv1.Container]{Log: logr.Discard(), LifetimeCtx: ctx},
+		ContainerWatcher: NewContainerWatcher[apiv1.Container](orchestrator, lock, ctx),
+		orchestrator:     orchestrator,
+		runningContainers: NewObjectStateMap[
+			containerID,
+			runningContainerData,
+			*runningContainerData,
+			*apiv1.Container,
+		](),
+		lock: lock,
+		config: ContainerReconcilerConfig{
+			StateStore:         store,
+			ResourceLeaseOwner: leaseOwner,
+		},
+	}
+}
+
+func assertContainerLeaseReleased(
+	t *testing.T,
+	ctx context.Context,
+	store *statestore.Store,
+	container *apiv1.Container,
+	owner process.ProcessTreeItem,
+) {
+	t.Helper()
+
+	_, acquireErr := store.AcquireResourceLease(ctx, container, owner, time.Minute)
+	require.NoError(t, acquireErr)
+}
+
+type containerLeaseTestOrchestrator struct {
+	containers.ContainerOrchestrator
+	inspected *containers.InspectedContainer
+}
+
+func (o *containerLeaseTestOrchestrator) CheckStatus(context.Context, containers.CachedRuntimeStatusUsage) containers.ContainerRuntimeStatus {
+	return containers.ContainerRuntimeStatus{
+		Installed: true,
+		Running:   true,
+	}
+}
+
+func (o *containerLeaseTestOrchestrator) InspectContainers(context.Context, containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
+	if o.inspected == nil {
+		return nil, containers.ErrNotFound
+	}
+	return []containers.InspectedContainer{*o.inspected}, nil
 }

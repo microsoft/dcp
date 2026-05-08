@@ -434,6 +434,7 @@ func handleNewContainer(
 
 				change |= rcd.applyTo(container, log)
 
+				_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 				return change | r.setContainerState(container, apiv1.ContainerStateRunning)
 			}
 
@@ -451,6 +452,7 @@ func handleNewContainer(
 	if !container.ShouldStart() {
 		// We should wait to create a container until the user clears Start = false
 		log.V(1).Info("Waiting for the container to be started")
+		_ = r.releasePersistentContainerResourceLease(ctx, container, log)
 		return change
 	}
 
