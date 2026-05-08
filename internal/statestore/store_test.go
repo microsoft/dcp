@@ -115,6 +115,18 @@ func TestOpenCreatesSchema(t *testing.T) {
 	requireMigrationVersion(t, store, currentSchemaVersion)
 }
 
+func TestOpenConfiguresWALAutoCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, storePath)
+
+	row := store.db.QueryRowContext(context.Background(), "PRAGMA wal_autocheckpoint")
+	var autoCheckpointPages int
+	require.NoError(t, row.Scan(&autoCheckpointPages))
+	require.Equal(t, defaultWALAutoCheckpointPages, autoCheckpointPages)
+}
+
 func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testing.T) {
 	t.Parallel()
 

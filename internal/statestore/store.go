@@ -33,6 +33,11 @@ const (
 	defaultElevatedStoreFileName = "state.elevated.sqlite3"
 
 	DefaultBusyTimeout = 5 * time.Second
+
+	// DCP's state store does small, frequent writes with concurrent readers. A 256-page threshold
+	// keeps the WAL bounded to about 1 MiB with SQLite's default 4 KiB page size without
+	// checkpointing on every small transaction.
+	defaultWALAutoCheckpointPages = 256
 )
 
 var (
@@ -207,6 +212,15 @@ func (s *Store) configure(ctx context.Context, busyTimeout time.Duration) error 
 
 	if _, syncErr := db.ExecContext(ctx, "PRAGMA synchronous = NORMAL"); syncErr != nil {
 		return fmt.Errorf("could not configure SQLite synchronous mode: %w", syncErr)
+	}
+
+	var autoCheckpointPages int
+	autoCheckpointRow := db.QueryRowContext(ctx, fmt.Sprintf("PRAGMA wal_autocheckpoint = %d", defaultWALAutoCheckpointPages))
+	if autoCheckpointErr := autoCheckpointRow.Scan(&autoCheckpointPages); autoCheckpointErr != nil {
+		return fmt.Errorf("could not configure SQLite WAL auto-checkpoint threshold: %w", autoCheckpointErr)
+	}
+	if autoCheckpointPages != defaultWALAutoCheckpointPages {
+		return fmt.Errorf("could not configure SQLite WAL auto-checkpoint threshold: got %d pages", autoCheckpointPages)
 	}
 
 	if _, foreignKeyErr := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); foreignKeyErr != nil {
