@@ -1,9 +1,9 @@
+//go:build windows
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-
-//go:build windows
 
 // Copyright (c) Microsoft Corporation. All rights reserved.
 
@@ -183,7 +183,7 @@ func OpenFile(name string, flag int, perm os.FileMode) (*os.File, error) {
 }
 
 // Write to a file on Windows. If the process is running as an administrator, we want to ensure that
-// the file is only readable by other elevated processes. If not running as an administrator, we
+// the file is only readable by other elevated processes. If not running as administrator, we
 // simply use the standard os.WriteFile function.
 func WriteFile(name string, data []byte, perm os.FileMode) error {
 	file, err := OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
