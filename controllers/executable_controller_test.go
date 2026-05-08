@@ -75,8 +75,27 @@ func TestCalculatePersistentExecutableChanges(t *testing.T) {
 
 	args, env, other := calculatePersistentExecutableChanges(oldLifecycleInfo.Metadata, newLifecycleInfo.Metadata)
 	require.Equal(t, []string{"Effective arguments changed"}, args)
-	require.ElementsMatch(t, []string{"EXPLICIT"}, env)
+	require.Equal(t, []string{"EXPLICIT"}, env)
 	require.Empty(t, other)
+}
+
+func TestChangedExecutableEnvNamesReturnsSortedNames(t *testing.T) {
+	t.Parallel()
+
+	changedNames := changedExecutableEnvNames(
+		[]persistentExecutableEnvMetadata{
+			{Name: "Z_REMOVED", ValueHash: "removed"},
+			{Name: "EXPLICIT", ValueHash: "first"},
+			{Name: "UNCHANGED", ValueHash: "same"},
+		},
+		[]persistentExecutableEnvMetadata{
+			{Name: "UNCHANGED", ValueHash: "same"},
+			{Name: "EXPLICIT", ValueHash: "second"},
+			{Name: "A_ADDED", ValueHash: "added"},
+		},
+	)
+
+	require.Equal(t, []string{"A_ADDED", "EXPLICIT", "Z_REMOVED"}, changedNames)
 }
 
 func TestHandleNewPersistentExecutableWithStartFalseAdoptsMatchingRecord(t *testing.T) {
@@ -144,7 +163,7 @@ func TestHandleNewPersistentExecutableWaitsWhenLeaseHeld(t *testing.T) {
 	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
 	otherOwner := reconciler.config.ResourceLeaseOwner
 	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(-time.Hour)
-	_, acquireErr := store.AcquireResourceLease(ctx, exe, otherOwner, time.Minute, "")
+	_, acquireErr := store.AcquireResourceLease(ctx, exe, otherOwner, time.Minute)
 	require.NoError(t, acquireErr)
 
 	change := reconciler.manageExecutable(ctx, exe, logr.Discard())
@@ -347,16 +366,12 @@ func persistentProcessRecordForTest(t *testing.T, exe *apiv1.Executable) statest
 
 	return statestore.PersistentProcessRecord{
 		ResourceKey:       exe.GetLeaseKey(),
-		Name:              exe.NamespacedName(),
-		UID:               exe.UID,
 		LifecycleKey:      lifecycleInfo.Key,
 		PID:               currentProcess.Pid,
 		IdentityTime:      currentProcess.IdentityTime,
-		DisplayStartTime:  time.Now().UTC(),
 		RunID:             fmt.Sprintf("%d", currentProcess.Pid),
 		StdOutFile:        filepath.Join(t.TempDir(), "stdout.log"),
 		StdErrFile:        filepath.Join(t.TempDir(), "stderr.log"),
-		ExecutionType:     string(apiv1.ExecutionTypeProcess),
 		LifecycleMetadata: lifecycleInfo.Metadata,
 	}
 }

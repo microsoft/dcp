@@ -65,7 +65,7 @@ func TestPersistentNetworkLeaseHeldRequeues(t *testing.T) {
 	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(-time.Hour)
 
 	network := persistentTestNetwork()
-	_, acquireErr := store.AcquireResourceLease(ctx, network, otherOwner, time.Minute, "")
+	_, acquireErr := store.AcquireResourceLease(ctx, network, otherOwner, time.Minute)
 	require.NoError(t, acquireErr)
 
 	reconciler := newTestNetworkReconciler(t, NetworkReconcilerConfig{

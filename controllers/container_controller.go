@@ -1505,7 +1505,6 @@ func (r *ContainerReconciler) withPersistentContainerResourceLease(
 		container,
 		r.config.ResourceLeaseOwner,
 		resourceLeaseRevalidationInterval,
-		"",
 		func(updateCtx context.Context, lease *statestore.ResourceLease) error {
 			log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
 			return update(updateCtx)
@@ -1535,7 +1534,6 @@ func (r *ContainerReconciler) acquirePersistentContainerResourceLease(
 		container,
 		r.config.ResourceLeaseOwner,
 		resourceLeaseRevalidationInterval,
-		"",
 	)
 	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 		logResourceLeaseHeld(log, leaseErr, container.GetLeaseKey(), "Persistent container is being updated by another DCP instance, retrying")

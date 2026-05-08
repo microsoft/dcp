@@ -45,7 +45,7 @@ func (r *ExecutableReconciler) withPersistentExecutableLease(ctx context.Context
 	}
 
 	var change objectChange
-	leaseErr := stateStore.WithResourceLease(ctx, exe, leaseOwner, resourceLeaseRevalidationInterval, "", func(ctx context.Context, lease *statestore.ResourceLease) error {
+	leaseErr := stateStore.WithResourceLease(ctx, exe, leaseOwner, resourceLeaseRevalidationInterval, func(ctx context.Context, lease *statestore.ResourceLease) error {
 		log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
 		change = f(ctx, lease)
 		return nil
@@ -75,7 +75,7 @@ func (r *ExecutableReconciler) acquirePersistentExecutableResourceLease(ctx cont
 		return leaseOwnerErr
 	}
 
-	lease, leaseErr := stateStore.AcquireResourceLease(ctx, exe, leaseOwner, resourceLeaseRevalidationInterval, "")
+	lease, leaseErr := stateStore.AcquireResourceLease(ctx, exe, leaseOwner, resourceLeaseRevalidationInterval)
 	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 		logResourceLeaseHeld(log, leaseErr, exe.GetLeaseKey(), "Persistent Executable is being updated by another DCP instance, retrying")
 	}
@@ -241,6 +241,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 		}
 		return false, noChange
 	}
+	displayStartTime := process.StartTimeForProcess(record.PID)
 
 	runner, runnerErr := r.getExecutableRunner(exe, StartupStageDefaultRunner)
 	if runnerErr != nil {
@@ -249,7 +250,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 	}
 	persistentRunner, ok := runner.(PersistentExecutableRunner)
 	if !ok {
-		log.Error(fmt.Errorf("runner for execution type %s does not support persistent run adoption", record.ExecutionType), "The persistent Executable cannot be adopted")
+		log.Error(fmt.Errorf("runner does not support persistent run adoption"), "The persistent Executable cannot be adopted")
 		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
@@ -276,8 +277,8 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 	ri.RunID = runID
 	pointers.SetValue(&ri.Pid, int64(record.PID))
 	ri.ProcessIdentityTime = record.IdentityTime
-	ri.DisplayStartTime = record.DisplayStartTime
-	ri.StartupTimestamp = metav1.NewMicroTime(record.DisplayStartTime)
+	ri.DisplayStartTime = displayStartTime
+	ri.StartupTimestamp = metav1.NewMicroTime(displayStartTime)
 	ri.StdOutFile = record.StdOutFile
 	ri.StdErrFile = record.StdErrFile
 	ri.startupStage = StartupStageDefaultRunner
@@ -298,7 +299,7 @@ func (r *ExecutableReconciler) stopPersistentExecutableRecord(ctx context.Contex
 	}
 	persistentRunner, ok := runner.(PersistentExecutableRunner)
 	if !ok {
-		return fmt.Errorf("runner for execution type %s does not support persistent run adoption", record.ExecutionType)
+		return fmt.Errorf("runner does not support persistent run adoption")
 	}
 
 	runID := RunID(record.RunID)
@@ -336,27 +337,14 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 		return fmt.Errorf("could not calculate Executable lifecycle key: %w", lifecycleKeyErr)
 	}
 
-	displayStartTime := res.DisplayStartTime
-	if displayStartTime.IsZero() {
-		displayStartTime = res.CompletionTimestamp.Time
-	}
-	executionType := exe.Spec.ExecutionType
-	if executionType == "" {
-		executionType = apiv1.ExecutionTypeProcess
-	}
-
 	return stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
 		ResourceKey:       exe.GetLeaseKey(),
-		Name:              exe.NamespacedName(),
-		UID:               exe.UID,
 		LifecycleKey:      lifecycleInfo.Key,
 		PID:               pid,
 		IdentityTime:      res.ProcessIdentityTime,
-		DisplayStartTime:  displayStartTime,
 		RunID:             string(res.RunID),
 		StdOutFile:        res.StdOutFile,
 		StdErrFile:        res.StdErrFile,
-		ExecutionType:     string(executionType),
 		LifecycleMetadata: lifecycleInfo.Metadata,
 	})
 }
@@ -370,7 +358,6 @@ type persistentExecutableLifecycleData struct {
 type persistentExecutableLifecycleMetadata struct {
 	ExecutablePath                 string                            `json:"executablePath"`
 	WorkingDirectory               string                            `json:"workingDirectory,omitempty"`
-	ExecutionType                  string                            `json:"executionType,omitempty"`
 	AmbientEnvironment             string                            `json:"ambientEnvironment,omitempty"`
 	EffectiveArgs                  []string                          `json:"effectiveArgs,omitempty"`
 	ExplicitEffectiveEnv           []persistentExecutableEnvMetadata `json:"explicitEffectiveEnv,omitempty"`
@@ -402,7 +389,6 @@ func persistentExecutableLifecycleInfo(exe *apiv1.Executable) (persistentExecuta
 	lifecycleMetadata := persistentExecutableLifecycleMetadata{
 		ExecutablePath:     lifecycleSpec.ExecutablePath,
 		WorkingDirectory:   lifecycleSpec.WorkingDirectory,
-		ExecutionType:      string(lifecycleSpec.ExecutionType),
 		AmbientEnvironment: string(lifecycleSpec.AmbientEnvironment.Behavior),
 		EffectiveArgs:      stdslices.Clone(lifecycleSpec.Args),
 	}
@@ -464,9 +450,6 @@ func calculatePersistentExecutableChanges(oldMetadata, newMetadata string) (args
 	if oldLifecycleMetadata.WorkingDirectory != newLifecycleMetadata.WorkingDirectory {
 		other = append(other, "Working directory changed")
 	}
-	if oldLifecycleMetadata.ExecutionType != newLifecycleMetadata.ExecutionType {
-		other = append(other, "Execution type changed")
-	}
 	if oldLifecycleMetadata.AmbientEnvironment != newLifecycleMetadata.AmbientEnvironment {
 		other = append(other, "Ambient environment behavior changed")
 	}
@@ -500,7 +483,9 @@ func changedExecutableEnvNames(oldEnv, newEnv []persistentExecutableEnvMetadata)
 		}
 	}
 
-	return maps.Keys(changedEnv)
+	changedNames := maps.Keys(changedEnv)
+	stdslices.Sort(changedNames)
+	return changedNames
 }
 
 func (r *ExecutableReconciler) deletePersistentProcessRecord(ctx context.Context, name types.NamespacedName, log logr.Logger) {

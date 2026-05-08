@@ -48,7 +48,7 @@ func TestPersistentContainerLeaseHeldSkipsResourceUpdate(t *testing.T) {
 		},
 	}
 
-	_, acquireErr := store.AcquireResourceLease(ctx, container, leaseOwner, time.Minute, "")
+	_, acquireErr := store.AcquireResourceLease(ctx, container, leaseOwner, time.Minute)
 	require.NoError(t, acquireErr)
 
 	reconciler := &ContainerReconciler{
