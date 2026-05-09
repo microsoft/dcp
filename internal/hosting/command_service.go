@@ -79,7 +79,7 @@ func (s *CommandService) Run(ctx context.Context) error {
 	pic := make(chan process.ProcessExitInfo, 1)
 	peh := process.NewChannelProcessExitHandler(pic)
 
-	_, _, startWaitForProcessExit, startErr := s.executor.StartProcess(runCtx, s.cmd, peh, process.CreationFlagsNone)
+	_, startWaitForProcessExit, startErr := s.executor.StartProcess(runCtx, s.cmd, peh, process.CreationFlagsNone)
 	if startErr != nil {
 		return startErr
 	}

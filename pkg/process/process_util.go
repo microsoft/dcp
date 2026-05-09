@@ -24,41 +24,41 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
-type ProcessTreeItem struct {
-	Pid          Pid_t
-	IdentityTime time.Time // Used to distinguish between different instances of processes with the same PID, may not be a valid wall-clock time.
-}
+// ProcessTreeItem is an alias for ProcessHandle, retained for backward compatibility.
+//
+// Deprecated: Use ProcessHandle directly.
+type ProcessTreeItem = ProcessHandle
 
 var (
-	This func() (ProcessTreeItem, error)
+	This func() (ProcessHandle, error)
 
 	// Essentially the same as ps.ErrorProcessNotRunning, but we do not want to
 	// expose the ps package outside of this package.
 	ErrorProcessNotFound = errors.New("process does not exist")
 )
 
-func getIDs(items []ProcessTreeItem) []Pid_t {
-	return slices.Map[Pid_t](items, func(item ProcessTreeItem) Pid_t {
+func getIDs(items []ProcessHandle) []Pid_t {
+	return slices.Map[Pid_t](items, func(item ProcessHandle) Pid_t {
 		return item.Pid
 	})
 }
 
 // Returns the list of ID for a given process and its children
 // The list is ordered starting with the root of the hierarchy, then the children, then the grandchildren etc.
-func GetProcessTree(rootP ProcessTreeItem) ([]ProcessTreeItem, error) {
-	root, err := findPsProcess(rootP.Pid, rootP.IdentityTime)
+func GetProcessTree(rootP ProcessHandle) ([]ProcessHandle, error) {
+	root, err := findPsProcess(rootP)
 	if err != nil {
 		return nil, err
 	}
 
-	tree := []ProcessTreeItem{}
+	tree := []ProcessHandle{}
 	next := []*ps.Process{root}
 
 	for len(next) > 0 {
 		current := next[0]
 		next = next[1:]
 		nextPid := Uint32_ToPidT(uint32(current.Pid))
-		tree = append(tree, ProcessTreeItem{nextPid, processIdentityTime(current)})
+		tree = append(tree, ProcessHandle{nextPid, processIdentityTime(current)})
 
 		children, childrenErr := current.Children()
 		if childrenErr != nil {
@@ -82,9 +82,9 @@ func RunToCompletion(ctx context.Context, executor Executor, cmd *exec.Cmd) (int
 	pic := make(chan ProcessExitInfo, 1)
 	peh := NewChannelProcessExitHandler(pic)
 
-	_, _, startWaitForProcessExit, err := executor.StartProcess(ctx, cmd, peh, CreationFlagsNone)
-	if err != nil {
-		return UnknownExitCode, err
+	_, startWaitForProcessExit, startProcessErr := executor.StartProcess(ctx, cmd, peh, CreationFlagsNone)
+	if startProcessErr != nil {
+		return UnknownExitCode, startProcessErr
 	}
 
 	startWaitForProcessExit()
@@ -158,8 +158,8 @@ func ProcessIdentityTime(pid Pid_t) time.Time {
 	return processIdentityTime(proc)
 }
 
-func findPsProcess(pid Pid_t, expectedIdentityTime time.Time) (*ps.Process, error) {
-	osPid, err := PidT_ToUint32(pid)
+func findPsProcess(handle ProcessHandle) (*ps.Process, error) {
+	osPid, err := PidT_ToUint32(handle.Pid)
 	if err != nil {
 		return nil, err
 	}
@@ -170,17 +170,17 @@ func findPsProcess(pid Pid_t, expectedIdentityTime time.Time) (*ps.Process, erro
 		if !errors.Is(procErr, ps.ErrorProcessNotRunning) {
 			return nil, procErr
 		} else {
-			return nil, fmt.Errorf("process with pid %d does not exist: %w", pid, ErrorProcessNotFound)
+			return nil, fmt.Errorf("process with pid %d does not exist: %w", handle.Pid, ErrorProcessNotFound)
 		}
 	}
 
-	if !HasExpectedIdentityTime(proc, expectedIdentityTime) {
+	if !HasExpectedIdentityTime(proc, handle.IdentityTime) {
 		actualIdentityTime := processIdentityTime(proc)
 
 		return nil, fmt.Errorf(
 			"process start time mismatch, pid might have been reused: pid %d, expected start time %s, actual start time %s",
-			pid,
-			expectedIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+			handle.Pid,
+			handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			actualIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		)
 	}
@@ -188,17 +188,17 @@ func findPsProcess(pid Pid_t, expectedIdentityTime time.Time) (*ps.Process, erro
 	return proc, nil
 }
 
-// Returns the process with the given PID. If the expectedStartTime is not zero,
+// Returns the process with the given PID. If the handle's IdentityTime is not zero,
 // the process start time is checked to match the expected start time.
-func FindProcess(pid Pid_t, expectedStartTime time.Time) (*os.Process, error) {
-	proc, err := findPsProcess(pid, expectedStartTime)
+func FindProcess(handle ProcessHandle) (*os.Process, error) {
+	proc, err := findPsProcess(handle)
 	if err != nil {
 		return nil, err
 	}
 
-	process, err := os.FindProcess(int(proc.Pid))
-	if err != nil {
-		return nil, err
+	process, findErr := os.FindProcess(int(proc.Pid))
+	if findErr != nil {
+		return nil, findErr
 	}
 
 	return process, nil
@@ -324,8 +324,8 @@ func makeWaitable(pid Pid_t, proc *os.Process) Waitable {
 func init() {
 	ps.EnableBootTimeCache(true)
 
-	This = sync.OnceValues(func() (ProcessTreeItem, error) {
-		retval := ProcessTreeItem{
+	This = sync.OnceValues(func() (ProcessHandle, error) {
+		retval := ProcessHandle{
 			Pid:          UnknownPID,
 			IdentityTime: time.Time{},
 		}

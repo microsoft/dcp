@@ -140,8 +140,8 @@ func TestStopProcessTreeSkipDescendantsLeavesForkedChildRunning(t *testing.T) {
 	forkedChild := requireDelayDescendant(t, rootItem, testTimeout/3)
 	cleanupExecutor := process.NewOSExecutor(logr.Discard())
 	defer func() {
-		_ = cleanupExecutor.StopProcess(forkedChild.Pid, forkedChild.IdentityTime)
-		_ = cleanupExecutor.StopProcess(rootItem.Pid, rootItem.IdentityTime)
+		_ = cleanupExecutor.StopProcess(forkedChild)
+		_ = cleanupExecutor.StopProcess(rootItem)
 		_ = rootCmd.Wait()
 	}()
 
