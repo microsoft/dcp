@@ -364,9 +364,7 @@ func (r *NetworkReconciler) manageNetwork(ctx context.Context, network *apiv1.Co
 	}
 
 	if network.Status.State != networkState.state {
-		network.Status.State = networkState.state
-		network.Status.Message = networkState.message
-		change |= statusChanged
+		change |= r.setNetworkState(network, networkState.state, networkState.message)
 	}
 
 	if network.Status.State == apiv1.ContainerNetworkStateRunning {
@@ -410,6 +408,11 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 			return r.failNetworkToStart(network, networkName, leaseErr)
 		}
 
+		if persistentNetworkLeaseReleaseState(network.Status.State) {
+			// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
+			_ = r.releasePersistentNetworkResourceLease(context.Background(), network, log)
+		}
+
 		return change
 	}
 
@@ -423,9 +426,7 @@ func (r *NetworkReconciler) failNetworkToStart(network *apiv1.ContainerNetwork, 
 			message: err.Error(),
 		})
 	}
-	network.Status.State = apiv1.ContainerNetworkStateFailedToStart
-	network.Status.Message = err.Error()
-	return statusChanged
+	return r.setNetworkState(network, apiv1.ContainerNetworkStateFailedToStart, err.Error())
 }
 
 func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *apiv1.ContainerNetwork, networkName string, log logr.Logger) objectChange {
@@ -657,9 +658,8 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *apiv1.ContainerNetwork, rns *runningNetworkState, log logr.Logger) objectChange {
 	cnet, err := inspectNetwork(ctx, r.orchestrator, network.Status.ID)
 	if errors.Is(err, containers.ErrNotFound) {
-		network.Status.State = apiv1.ContainerNetworkStateRemoved
 		rns.state = apiv1.ContainerNetworkStateRemoved
-		return statusChanged
+		return r.setNetworkState(network, apiv1.ContainerNetworkStateRemoved, network.Status.Message)
 	} else if err != nil {
 		log.Error(err, "Could not inspect a network")
 		return additionalReconciliationNeeded
@@ -698,6 +698,57 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 	}
 
 	return change
+}
+
+func (r *NetworkReconciler) setNetworkState(network *apiv1.ContainerNetwork, state apiv1.ContainerNetworkState, message string) objectChange {
+	change := noChange
+
+	if network.Status.State != state {
+		network.Status.State = state
+		change = statusChanged
+	}
+	if network.Status.Message != message {
+		network.Status.Message = message
+		change = statusChanged
+	}
+
+	if network.Spec.Persistent && persistentNetworkLeaseReleaseState(state) {
+		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
+		_ = r.releasePersistentNetworkResourceLease(context.Background(), network, r.Log)
+	}
+
+	return change
+}
+
+func persistentNetworkLeaseReleaseState(state apiv1.ContainerNetworkState) bool {
+	switch state {
+	case apiv1.ContainerNetworkStateRunning,
+		apiv1.ContainerNetworkStateFailedToStart,
+		apiv1.ContainerNetworkStateRemoved,
+		apiv1.ContainerNetworkStateNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *NetworkReconciler) releasePersistentNetworkResourceLease(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) error {
+	if !network.Spec.Persistent || r.config.StateStore == nil ||
+		r.config.ResourceLeaseOwner.Pid <= 0 || r.config.ResourceLeaseOwner.IdentityTime.IsZero() {
+		return nil
+	}
+
+	releaseErr := r.config.StateStore.ReleaseResourceLease(ctx, network, r.config.ResourceLeaseOwner)
+	if releaseErr != nil {
+		if errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
+			log.V(1).Info("Persistent network resource lease was not held", "ResourceKey", network.GetLeaseKey())
+			return releaseErr
+		}
+		log.Error(releaseErr, "Could not release persistent network resource lease")
+		return releaseErr
+	}
+
+	return nil
 }
 
 func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, log logr.Logger) {

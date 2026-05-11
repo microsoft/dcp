@@ -1321,6 +1321,7 @@ func (r *ExecutableReconciler) setExecutableState(exe *apiv1.Executable, state a
 	}
 
 	if exe.Spec.Persistent && persistentExecutableLeaseReleaseState(state) {
+		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
 		_ = r.releasePersistentExecutableResourceLease(context.Background(), exe, r.Log)
 	}
 

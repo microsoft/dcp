@@ -80,6 +80,66 @@ func TestPersistentNetworkLeaseHeldRequeues(t *testing.T) {
 	require.Empty(t, network.Status.Message)
 }
 
+func TestSetPersistentNetworkStableStateReleasesLease(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		state apiv1.ContainerNetworkState
+	}{
+		{name: "running", state: apiv1.ContainerNetworkStateRunning},
+		{name: "failed to start", state: apiv1.ContainerNetworkStateFailedToStart},
+		{name: "removed", state: apiv1.ContainerNetworkStateRemoved},
+		{name: "not found", state: apiv1.ContainerNetworkStateNotFound},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			store := openNetworkTestStore(t, ctx)
+			leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+			require.NoError(t, leaseOwnerErr)
+			network := persistentTestNetwork()
+			network.Name = testCase.name
+			reconciler := newTestNetworkReconciler(t, NetworkReconcilerConfig{
+				StateStore:         store,
+				ResourceLeaseOwner: leaseOwner,
+			})
+
+			_, acquireErr := store.AcquireResourceLease(ctx, network, leaseOwner, time.Minute)
+			require.NoError(t, acquireErr)
+
+			reconciler.setNetworkState(network, testCase.state, "")
+
+			verifyErr := store.VerifyResourceLeaseHeld(ctx, network, leaseOwner)
+			require.ErrorIs(t, verifyErr, statestore.ErrResourceLeaseNotHeld)
+		})
+	}
+}
+
+func TestSetPersistentNetworkTransientStateKeepsLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openNetworkTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	network := persistentTestNetwork()
+	reconciler := newTestNetworkReconciler(t, NetworkReconcilerConfig{
+		StateStore:         store,
+		ResourceLeaseOwner: leaseOwner,
+	})
+
+	_, acquireErr := store.AcquireResourceLease(ctx, network, leaseOwner, time.Minute)
+	require.NoError(t, acquireErr)
+
+	reconciler.setNetworkState(network, apiv1.ContainerNetworkStatePending, "")
+
+	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, network, leaseOwner))
+}
+
 func persistentTestNetwork() *apiv1.ContainerNetwork {
 	return &apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{

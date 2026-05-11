@@ -119,6 +119,61 @@ func TestPersistentContainerStartFalseReleasesResourceLease(t *testing.T) {
 	assertContainerLeaseReleased(t, ctx, store, container, otherOwner)
 }
 
+func TestSetPersistentContainerStableStateReleasesLease(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		state apiv1.ContainerState
+	}{
+		{name: "runtime unhealthy", state: apiv1.ContainerStateRuntimeUnhealthy},
+		{name: "failed to start", state: apiv1.ContainerStateFailedToStart},
+		{name: "running", state: apiv1.ContainerStateRunning},
+		{name: "paused", state: apiv1.ContainerStatePaused},
+		{name: "exited", state: apiv1.ContainerStateExited},
+		{name: "unknown", state: apiv1.ContainerStateUnknown},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			store, leaseOwner, _ := openContainerLeaseTestStore(t, ctx)
+			container := persistentContainerForLeaseTest(testCase.name)
+			reconciler := newContainerReconcilerForLeaseTest(ctx, &containerLeaseTestOrchestrator{}, store, leaseOwner)
+
+			_, acquireErr := store.AcquireResourceLease(ctx, container, leaseOwner, time.Minute)
+			require.NoError(t, acquireErr)
+
+			reconciler.setContainerState(container, testCase.state)
+
+			verifyErr := store.VerifyResourceLeaseHeld(ctx, container, leaseOwner)
+			require.ErrorIs(t, verifyErr, statestore.ErrResourceLeaseNotHeld)
+		})
+	}
+}
+
+func TestSetPersistentContainerTransientStateKeepsLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	store, leaseOwner, _ := openContainerLeaseTestStore(t, ctx)
+	container := persistentContainerForLeaseTest("api")
+	reconciler := newContainerReconcilerForLeaseTest(ctx, &containerLeaseTestOrchestrator{}, store, leaseOwner)
+
+	_, acquireErr := store.AcquireResourceLease(ctx, container, leaseOwner, time.Minute)
+	require.NoError(t, acquireErr)
+
+	reconciler.setContainerState(container, apiv1.ContainerStateStarting)
+
+	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, container, leaseOwner))
+}
+
 func openContainerLeaseTestStore(t *testing.T, ctx context.Context) (*statestore.Store, process.ProcessTreeItem, process.ProcessTreeItem) {
 	t.Helper()
 

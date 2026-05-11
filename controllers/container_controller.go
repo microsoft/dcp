@@ -1575,6 +1575,10 @@ func (r *ContainerReconciler) releasePersistentContainerResourceLease(ctx contex
 
 	releaseErr := r.config.StateStore.ReleaseResourceLease(ctx, container, r.config.ResourceLeaseOwner)
 	if releaseErr != nil {
+		if errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
+			log.V(1).Info("Persistent container resource lease was not held", "ResourceKey", container.GetLeaseKey())
+			return releaseErr
+		}
 		log.Error(releaseErr, "Could not release persistent container resource lease")
 		return releaseErr
 	}
@@ -2305,9 +2309,28 @@ func (r *ContainerReconciler) setContainerState(container *apiv1.Container, stat
 		change = statusChanged
 	}
 
+	if container.Spec.Persistent && persistentContainerLeaseReleaseState(state) {
+		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
+		_ = r.releasePersistentContainerResourceLease(context.Background(), container, r.Log)
+	}
+
 	change |= updateContainerHealthStatus(container, state, r.Log)
 
 	return change
+}
+
+func persistentContainerLeaseReleaseState(state apiv1.ContainerState) bool {
+	switch state {
+	case apiv1.ContainerStateRuntimeUnhealthy,
+		apiv1.ContainerStateFailedToStart,
+		apiv1.ContainerStateRunning,
+		apiv1.ContainerStatePaused,
+		apiv1.ContainerStateExited,
+		apiv1.ContainerStateUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 func updateContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerState, log logr.Logger) objectChange {
