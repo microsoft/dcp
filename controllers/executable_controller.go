@@ -1335,7 +1335,8 @@ func persistentExecutableLeaseReleaseState(state apiv1.ExecutableState) bool {
 	case apiv1.ExecutableStateRunning,
 		apiv1.ExecutableStateTerminated,
 		apiv1.ExecutableStateFailedToStart,
-		apiv1.ExecutableStateFinished:
+		apiv1.ExecutableStateFinished,
+		apiv1.ExecutableStateUnknown:
 		return true
 	default:
 		return false

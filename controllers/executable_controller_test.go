@@ -227,6 +227,7 @@ func TestSetPersistentExecutableStableStateReleasesLease(t *testing.T) {
 		{name: "terminated", state: apiv1.ExecutableStateTerminated},
 		{name: "failed to start", state: apiv1.ExecutableStateFailedToStart},
 		{name: "finished", state: apiv1.ExecutableStateFinished},
+		{name: "unknown", state: apiv1.ExecutableStateUnknown},
 	}
 
 	for _, testCase := range testCases {
