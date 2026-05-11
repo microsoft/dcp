@@ -346,6 +346,8 @@ func closeProcessRunFiles(runState *processRunState) error {
 }
 
 func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, error) {
+	// Persistent output files are keyed by resource UID to keep paths unique across persistent Executable instances.
+	// Kubernetes UIDs are effectively unique, so collisions between different Executable objects are not expected.
 	fileName := fmt.Sprintf("%s_%s", exe.UID, stream)
 	if !exe.Spec.Persistent {
 		return usvc_io.OpenTempFile(fileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)

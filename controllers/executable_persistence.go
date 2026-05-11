@@ -124,6 +124,10 @@ func (r *ExecutableReconciler) releasePersistentExecutableResourceLease(ctx cont
 
 	releaseErr := stateStore.ReleaseResourceLease(ctx, exe, leaseOwner)
 	if releaseErr != nil {
+		if errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
+			log.V(1).Info("Persistent Executable resource lease was not held", "ResourceKey", exe.GetLeaseKey())
+			return releaseErr
+		}
 		log.Error(releaseErr, "Could not release persistent Executable resource lease")
 		return releaseErr
 	}

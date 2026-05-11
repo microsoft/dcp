@@ -1320,9 +1320,25 @@ func (r *ExecutableReconciler) setExecutableState(exe *apiv1.Executable, state a
 		}
 	}
 
+	if exe.Spec.Persistent && persistentExecutableLeaseReleaseState(state) {
+		_ = r.releasePersistentExecutableResourceLease(context.Background(), exe, r.Log)
+	}
+
 	change |= updateExecutableHealthStatus(exe, state, r.Log)
 
 	return change
+}
+
+func persistentExecutableLeaseReleaseState(state apiv1.ExecutableState) bool {
+	switch state {
+	case apiv1.ExecutableStateRunning,
+		apiv1.ExecutableStateTerminated,
+		apiv1.ExecutableStateFailedToStart,
+		apiv1.ExecutableStateFinished:
+		return true
+	default:
+		return false
+	}
 }
 
 func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableState, log logr.Logger) objectChange {

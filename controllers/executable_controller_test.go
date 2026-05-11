@@ -216,6 +216,57 @@ func TestPersistentExecutableStartupWorkRequiresHeldLease(t *testing.T) {
 	require.Zero(t, runner.startRunCount)
 }
 
+func TestSetPersistentExecutableStableStateReleasesLease(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name  string
+		state apiv1.ExecutableState
+	}{
+		{name: "running", state: apiv1.ExecutableStateRunning},
+		{name: "terminated", state: apiv1.ExecutableStateTerminated},
+		{name: "failed to start", state: apiv1.ExecutableStateFailedToStart},
+		{name: "finished", state: apiv1.ExecutableStateFinished},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t)
+			exe := persistentLifecycleKeyTestExecutable()
+			exe.Namespace = "default"
+			exe.Name = testCase.name
+
+			_, acquireErr := store.AcquireResourceLease(ctx, exe, reconciler.config.ResourceLeaseOwner, time.Minute)
+			require.NoError(t, acquireErr)
+
+			reconciler.setExecutableState(exe, testCase.state)
+
+			verifyErr := store.VerifyResourceLeaseHeld(ctx, exe, reconciler.config.ResourceLeaseOwner)
+			require.ErrorIs(t, verifyErr, statestore.ErrResourceLeaseNotHeld)
+		})
+	}
+}
+
+func TestSetPersistentExecutableTransientStateKeepsLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Namespace = "default"
+	exe.Name = "api"
+
+	_, acquireErr := store.AcquireResourceLease(ctx, exe, reconciler.config.ResourceLeaseOwner, time.Minute)
+	require.NoError(t, acquireErr)
+
+	reconciler.setExecutableState(exe, apiv1.ExecutableStateStarting)
+
+	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, exe, reconciler.config.ResourceLeaseOwner))
+}
+
 func TestPersistentExecutableDeletionPreservesReusableRecord(t *testing.T) {
 	t.Parallel()
 
