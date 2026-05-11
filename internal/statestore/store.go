@@ -20,6 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
@@ -245,8 +246,8 @@ func (s *Store) configure(ctx context.Context, busyTimeout time.Duration) error 
 
 func ensureStateStoreDir(path string) error {
 	parentDir := filepath.Dir(path)
-	if mkdirErr := os.MkdirAll(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); mkdirErr != nil {
-		return fmt.Errorf("could not create state store directory '%s': %w", parentDir, mkdirErr)
+	if ensureErr := usvc_io.EnsureRestrictedDirectory(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); ensureErr != nil {
+		return fmt.Errorf("could not prepare state store directory '%s': %w", parentDir, ensureErr)
 	}
 	return nil
 }

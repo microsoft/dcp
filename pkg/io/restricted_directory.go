@@ -30,7 +30,7 @@ func EnsureRestrictedDirectory(dir string, perm os.FileMode) error {
 	if !info.IsDir() {
 		return fmt.Errorf("path '%s' is not a directory", dir)
 	}
-	if ownershipErr := validateRestrictedDirectoryOwner(info); ownershipErr != nil {
+	if ownershipErr := validateRestrictedDirectoryOwner(dir, info); ownershipErr != nil {
 		return fmt.Errorf("directory '%s' has invalid ownership: %w", dir, ownershipErr)
 	}
 	if chmodErr := os.Chmod(dir, perm); chmodErr != nil {
