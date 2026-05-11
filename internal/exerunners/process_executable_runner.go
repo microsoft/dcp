@@ -284,15 +284,7 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 	errCh := make(chan error, 1)
 
 	go func() {
-		if osutil.IsWindows() {
-			// See StartRun() for why we need to use separate console for the app process on Windows.
-			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
-			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
-			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.pid, runState.identityTime, stopLog)
-		} else {
-			errCh <- r.pe.StopProcess(runState.pid, runState.identityTime)
-		}
+		errCh <- process.StopViaConsole(stopLog, r.pe, runState.pid, runState.identityTime)
 	}()
 
 	var stopErr error = nil

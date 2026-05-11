@@ -324,8 +324,8 @@ type recordingProcessExecutor struct {
 	stoppedIdentityTime time.Time
 }
 
-func (e *recordingProcessExecutor) StartProcess(context.Context, *exec.Cmd, process.ProcessExitHandler, process.ProcessCreationFlag) (process.Pid_t, time.Time, func(), error) {
-	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("not implemented")
+func (e *recordingProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, func(), error) {
+	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("process start is not supported by recordingProcessExecutor")
 }
 
 func (e *recordingProcessExecutor) StopProcess(pid process.Pid_t, processStartTime time.Time, _ ...process.ProcessStopOption) error {
@@ -335,7 +335,7 @@ func (e *recordingProcessExecutor) StopProcess(pid process.Pid_t, processStartTi
 }
 
 func (e *recordingProcessExecutor) StartAndForget(*exec.Cmd, process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {
-	return process.UnknownPID, time.Time{}, fmt.Errorf("not implemented")
+	return process.UnknownPID, time.Time{}, fmt.Errorf("process start is not supported by recordingProcessExecutor")
 }
 
 func (e *recordingProcessExecutor) Dispose() {}
