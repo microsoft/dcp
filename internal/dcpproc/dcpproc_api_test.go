@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -22,6 +23,15 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
+	monitorPID := int64(12345)
+
+	_, found, monitorErr := MonitorTargetFromFields(&monitorPID, metav1.MicroTime{})
+
+	require.False(t, found)
+	require.ErrorContains(t, monitorErr, "monitor timestamp must be set when monitor PID is set")
+}
 
 func TestRunProcessWatcher(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())

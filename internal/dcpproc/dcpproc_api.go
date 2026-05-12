@@ -32,10 +32,13 @@ func MonitorTargetFromFields(monitorPID *int64, monitorTimestamp metav1.MicroTim
 	if monitorPID == nil {
 		return process.ProcessTreeItem{}, false, nil
 	}
+	if monitorTimestamp.IsZero() {
+		return process.ProcessTreeItem{}, false, fmt.Errorf("monitor timestamp must be set when monitor PID is set")
+	}
 
 	pid, pidErr := process.Int64_ToPidT(*monitorPID)
 	if pidErr != nil {
-		return process.ProcessTreeItem{}, true, fmt.Errorf("invalid monitor PID %d: %w", *monitorPID, pidErr)
+		return process.ProcessTreeItem{}, false, fmt.Errorf("invalid monitor PID %d: %w", *monitorPID, pidErr)
 	}
 
 	return process.ProcessTreeItem{
