@@ -275,6 +275,15 @@ type ExecutableSpec struct {
 	// If not set, the controller will calculate a key based on a hash of specific fields in the ExecutableSpec.
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
+	// Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle.
+	// When set, MonitorTimestamp must also be set and Persistent must be true.
+	// +optional
+	MonitorPID *int64 `json:"monitorPid,omitempty"`
+
+	// Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.
+	// +optional
+	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
+
 	// Health probe configuration for the Executable
 	// +listType=atomic
 	HealthProbes []HealthProbe `json:"healthProbes,omitempty"`
@@ -333,6 +342,14 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
+	if !pointers.EqualValue(es.MonitorPID, other.MonitorPID) {
+		return false
+	}
+
+	if !osutil.MicroEqual(es.MonitorTimestamp, other.MonitorTimestamp) {
+		return false
+	}
+
 	if len(es.HealthProbes) != len(other.HealthProbes) {
 		return false
 	}
@@ -364,6 +381,10 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 	hashErr = errors.Join(hashErr, encoder.Encode(string(es.ExecutionType)))
 	hashErr = errors.Join(hashErr, encoder.Encode(string(es.AmbientEnvironment.Behavior)))
 	hashErr = errors.Join(hashErr, encoder.Encode(es.Args))
+	if es.MonitorPID != nil {
+		hashErr = errors.Join(hashErr, encoder.Encode(*es.MonitorPID))
+		hashErr = errors.Join(hashErr, encoder.Encode(es.MonitorTimestamp.Time))
+	}
 
 	if len(es.Env) > 0 {
 		sortedEnv := stdslices.Clone(es.Env)
@@ -543,6 +564,23 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	}
 	if es.Persistent && len(es.FallbackExecutionTypes) > 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "Persistent Executables cannot use fallback execution types."))
+	}
+
+	monitorTimestampSet := !es.MonitorTimestamp.IsZero()
+	if es.MonitorPID != nil && *es.MonitorPID <= 0 {
+		errorList = append(errorList, field.Invalid(specPath.Child("monitorPid"), *es.MonitorPID, "monitorPid must be positive"))
+	}
+	if !es.Persistent && es.MonitorPID != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorPid"), "monitorPid can only be set when persistent is true"))
+	}
+	if !es.Persistent && monitorTimestampSet {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorTimestamp"), "monitorTimestamp can only be set when persistent is true"))
+	}
+	if es.MonitorPID != nil && !monitorTimestampSet {
+		errorList = append(errorList, field.Required(specPath.Child("monitorTimestamp"), "monitorTimestamp must be set when monitorPid is set"))
+	}
+	if es.MonitorPID == nil && monitorTimestampSet {
+		errorList = append(errorList, field.Required(specPath.Child("monitorPid"), "monitorPid must be set when monitorTimestamp is set"))
 	}
 
 	healthProbesPath := specPath.Child("healthProbes")
@@ -728,6 +766,14 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 
 	if oldExe.Spec.Persistent != e.Spec.Persistent {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
+	}
+
+	if !pointers.EqualValue(oldExe.Spec.MonitorPID, e.Spec.MonitorPID) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorPid"), "monitorPid cannot be changed"))
+	}
+
+	if !osutil.MicroEqual(oldExe.Spec.MonitorTimestamp, e.Spec.MonitorTimestamp) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp cannot be changed"))
 	}
 
 	if oldExe.Spec.AmbientEnvironment.Behavior != e.Spec.AmbientEnvironment.Behavior {

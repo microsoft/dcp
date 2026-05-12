@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -27,6 +28,22 @@ const (
 	DCP_DISABLE_MONITOR_PROCESS = "DCP_DISABLE_MONITOR_PROCESS"
 )
 
+func MonitorTargetFromFields(monitorPID *int64, monitorTimestamp metav1.MicroTime) (process.ProcessTreeItem, bool, error) {
+	if monitorPID == nil {
+		return process.ProcessTreeItem{}, false, nil
+	}
+
+	pid, pidErr := process.Int64_ToPidT(*monitorPID)
+	if pidErr != nil {
+		return process.ProcessTreeItem{}, true, fmt.Errorf("invalid monitor PID %d: %w", *monitorPID, pidErr)
+	}
+
+	return process.ProcessTreeItem{
+		Pid:          pid,
+		IdentityTime: monitorTimestamp.Time,
+	}, true, nil
+}
+
 // Starts the process monitor for the given child process, using current process as the "monitored", or watched, process.
 // The caller should ensure that the current process is the correct process to monitor.
 // Errors are logged, but no error is returned if the process monitor fails to start--
@@ -35,6 +52,18 @@ const (
 // so monitoring DCPCTRL is a safe bet.
 func RunProcessWatcher(
 	pe process.Executor,
+	childPid process.Pid_t,
+	childStartTime time.Time,
+	log logr.Logger,
+) {
+	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
+	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
+	RunProcessWatcherForMonitor(pe, process.ProcessTreeItem{Pid: monitorPid, IdentityTime: monitorIdentityTime}, childPid, childStartTime, log)
+}
+
+func RunProcessWatcherForMonitor(
+	pe process.Executor,
+	monitor process.ProcessTreeItem,
 	childPid process.Pid_t,
 	childStartTime time.Time,
 	log logr.Logger,
@@ -52,7 +81,7 @@ func RunProcessWatcher(
 	if !childStartTime.IsZero() {
 		cmdArgs = append(cmdArgs, "--child-identity-time", childStartTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
-	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
+	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
 
 	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
@@ -69,6 +98,17 @@ func RunContainerWatcher(
 	containerID string,
 	log logr.Logger,
 ) {
+	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
+	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
+	RunContainerWatcherForMonitor(pe, process.ProcessTreeItem{Pid: monitorPid, IdentityTime: monitorIdentityTime}, containerID, log)
+}
+
+func RunContainerWatcherForMonitor(
+	pe process.Executor,
+	monitor process.ProcessTreeItem,
+	containerID string,
+	log logr.Logger,
+) {
 	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
 		return
 	}
@@ -79,7 +119,7 @@ func RunContainerWatcher(
 		"monitor-container",
 		"--containerID", containerID,
 	}
-	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
+	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
 
 	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
@@ -127,17 +167,13 @@ func StopProcessTree(
 	return nil
 }
 
-func getMonitorCmdArgs() []string {
-	monitorPid := os.Getpid()
-
+func getMonitorCmdArgs(monitor process.ProcessTreeItem) []string {
 	// Add monitor PID to the command args
-	cmdArgs := []string{"--monitor", strconv.Itoa(monitorPid)}
+	cmdArgs := []string{"--monitor", strconv.FormatInt(int64(monitor.Pid), 10)}
 
 	// Add monitor start time if available
-	rootPid := process.Uint32_ToPidT(uint32(monitorPid))
-	identityTime := process.ProcessIdentityTime(rootPid)
-	if !identityTime.IsZero() {
-		cmdArgs = append(cmdArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	if !monitor.IdentityTime.IsZero() {
+		cmdArgs = append(cmdArgs, "--monitor-identity-time", monitor.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 
 	return cmdArgs

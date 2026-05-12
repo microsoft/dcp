@@ -184,6 +184,7 @@ func StartTestEnvironment(
 				ContainerStartupTimeoutOverride: 2 * time.Second,
 				StateStore:                      stateStore,
 				ResourceLeaseOwner:              leaseOwner,
+				ProcessExecutor:                 pex,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {

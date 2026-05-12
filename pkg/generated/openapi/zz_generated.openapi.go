@@ -1744,6 +1744,19 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 							Format:      "",
 						},
 					},
+					"monitorPid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional parent process PID used to scope persistent Container cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and Persistent must be true.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"monitorTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.",
+							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
 					"runArgs": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -1867,7 +1880,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerBuildContext", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/dcp/api/v1.ContainerPemCertificates", "github.com/microsoft/dcp/api/v1.ContainerPort", "github.com/microsoft/dcp/api/v1.CreateFileSystem", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbe", "github.com/microsoft/dcp/api/v1.ImageLayer", "github.com/microsoft/dcp/api/v1.VolumeMount"},
+			"github.com/microsoft/dcp/api/v1.ContainerBuildContext", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/dcp/api/v1.ContainerPemCertificates", "github.com/microsoft/dcp/api/v1.ContainerPort", "github.com/microsoft/dcp/api/v1.CreateFileSystem", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbe", "github.com/microsoft/dcp/api/v1.ImageLayer", "github.com/microsoft/dcp/api/v1.VolumeMount", v1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -2935,6 +2948,19 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 							Format:      "",
 						},
 					},
+					"monitorPid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and Persistent must be true.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"monitorTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.",
+							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
 					"healthProbes": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -2965,7 +2991,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.AmbientEnvironment", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.ExecutablePemCertificates", "github.com/microsoft/dcp/api/v1.HealthProbe"},
+			"github.com/microsoft/dcp/api/v1.AmbientEnvironment", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.ExecutablePemCertificates", "github.com/microsoft/dcp/api/v1.HealthProbe", v1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

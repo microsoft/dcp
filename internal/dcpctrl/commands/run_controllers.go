@@ -232,6 +232,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				MaxParallelContainerStarts: controllers.DefaultMaxParallelContainerStarts,
 				StateStore:                 stateStore,
 				ResourceLeaseOwner:         leaseOwner,
+				ProcessExecutor:            processExecutor,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {

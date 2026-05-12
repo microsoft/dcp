@@ -11,7 +11,6 @@ package v1
 
 import (
 	"io/fs"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -709,6 +708,12 @@ func (in *ContainerSpec) DeepCopyInto(out *ContainerSpec) {
 			}
 		}
 	}
+	if in.MonitorPID != nil {
+		in, out := &in.MonitorPID, &out.MonitorPID
+		*out = new(int64)
+		**out = **in
+	}
+	in.MonitorTimestamp.DeepCopyInto(&out.MonitorTimestamp)
 	if in.RunArgs != nil {
 		in, out := &in.RunArgs, &out.RunArgs
 		*out = make([]string, len(*in))
@@ -1254,6 +1259,12 @@ func (in *ExecutableSpec) DeepCopyInto(out *ExecutableSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.MonitorPID != nil {
+		in, out := &in.MonitorPID, &out.MonitorPID
+		*out = new(int64)
+		**out = **in
+	}
+	in.MonitorTimestamp.DeepCopyInto(&out.MonitorTimestamp)
 	if in.HealthProbes != nil {
 		in, out := &in.HealthProbes, &out.HealthProbes
 		*out = make([]HealthProbe, len(*in))

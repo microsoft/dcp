@@ -8,6 +8,7 @@ package controllers
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -18,7 +19,10 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/statestore"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -172,6 +176,42 @@ func TestSetPersistentContainerTransientStateKeepsLease(t *testing.T) {
 	reconciler.setContainerState(container, apiv1.ContainerStateStarting)
 
 	require.NoError(t, store.VerifyResourceLeaseHeld(ctx, container, leaseOwner))
+}
+
+func TestPersistentContainerLifecycleMonitorUsesExplicitMonitor(t *testing.T) {
+	t.Parallel()
+
+	dcppaths.EnableTestPathProbing()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
+	monitorPID := int64(12345)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	rcd := newRunningContainerData(&apiv1.Container{
+		Spec: apiv1.ContainerSpec{
+			Persistent:       true,
+			MonitorPID:       &monitorPID,
+			MonitorTimestamp: monitorTimestamp,
+		},
+	})
+	rcd.containerID = "api-container-id"
+	reconciler := &ContainerReconciler{
+		config: ContainerReconcilerConfig{
+			ProcessExecutor: processExecutor,
+		},
+	}
+
+	reconciler.runPersistentContainerLifecycleMonitor(rcd, logr.Discard())
+
+	monitorProcesses := processExecutor.FindAll([]string{"dcp", "monitor-container"}, "", nil)
+	require.Len(t, monitorProcesses, 1)
+	require.Contains(t, monitorProcesses[0].Cmd.Args, "--containerID")
+	require.Contains(t, monitorProcesses[0].Cmd.Args, string(rcd.containerID))
+	require.Contains(t, monitorProcesses[0].Cmd.Args, "--monitor")
+	require.Contains(t, monitorProcesses[0].Cmd.Args, strconv.FormatInt(monitorPID, 10))
+	require.Contains(t, monitorProcesses[0].Cmd.Args, "--monitor-identity-time")
+	require.Contains(t, monitorProcesses[0].Cmd.Args, monitorTimestamp.Time.Format(osutil.RFC3339MiliTimestampFormat))
 }
 
 func openContainerLeaseTestStore(t *testing.T, ctx context.Context) (*statestore.Store, process.ProcessTreeItem, process.ProcessTreeItem) {

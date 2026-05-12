@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -36,6 +35,7 @@ import (
 
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
 )
 
@@ -653,6 +653,15 @@ type ContainerSpec struct {
 	// Should this container be created and persisted between DCP runs?
 	Persistent bool `json:"persistent,omitempty"`
 
+	// Optional parent process PID used to scope persistent Container cleanup to a process lifecycle.
+	// When set, MonitorTimestamp must also be set and Persistent must be true.
+	// +optional
+	MonitorPID *int64 `json:"monitorPid,omitempty"`
+
+	// Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.
+	// +optional
+	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
+
 	// Additional arguments to pass to the container run command
 	// +listType=atomic
 	RunArgs []string `json:"runArgs,omitempty"`
@@ -763,6 +772,14 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
+	if !pointers.EqualValue(cs.MonitorPID, other.MonitorPID) {
+		return false
+	}
+
+	if !osutil.MicroEqual(cs.MonitorTimestamp, other.MonitorTimestamp) {
+		return false
+	}
+
 	if !slices.Equal(cs.RunArgs, other.RunArgs) {
 		return false
 	}
@@ -796,23 +813,6 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	}
 
 	return true
-}
-
-// To get consistent output from gob encoders, we need to introduce types in
-// a deterministic order as the encoder generates (and globally caches) an incrementing ID
-// for each type it encounters. This is a bit of a hack, but it works.
-// Any types being encoded in GetLifecycleKey need to be registered here.
-func initializeHashEncoder() {
-	initEncoder := gob.NewEncoder(io.Discard)
-
-	_ = initEncoder.Encode(ContainerLabel{})
-	_ = initEncoder.Encode(ContainerBuildSecret{})
-	_ = initEncoder.Encode(VolumeMount{})
-	_ = initEncoder.Encode(ContainerPort{})
-	_ = initEncoder.Encode(EnvVar{})
-	_ = initEncoder.Encode(CreateFileSystem{})
-	_ = initEncoder.Encode(ContainerPemCertificates{})
-	_ = initEncoder.Encode(ImageLayer{})
 }
 
 func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
@@ -970,6 +970,11 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 				_, _ = fnvHash.Write(readBytes)
 			}
 		}
+	}
+
+	if cs.MonitorPID != nil {
+		hashErr = errors.Join(hashErr, encoder.Encode(*cs.MonitorPID))
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.MonitorTimestamp.Time))
 	}
 
 	if len(cs.CreateFiles) > 0 {
@@ -1281,6 +1286,23 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
 	}
 
+	monitorTimestampSet := !c.Spec.MonitorTimestamp.IsZero()
+	if c.Spec.MonitorPID != nil && *c.Spec.MonitorPID <= 0 {
+		errorList = append(errorList, field.Invalid(field.NewPath("spec", "monitorPid"), *c.Spec.MonitorPID, "monitorPid must be positive"))
+	}
+	if !c.Spec.Persistent && c.Spec.MonitorPID != nil {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorPid"), "monitorPid can only be set when persistent is true"))
+	}
+	if !c.Spec.Persistent && monitorTimestampSet {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp can only be set when persistent is true"))
+	}
+	if c.Spec.MonitorPID != nil && !monitorTimestampSet {
+		errorList = append(errorList, field.Required(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp must be set when monitorPid is set"))
+	}
+	if c.Spec.MonitorPID == nil && monitorTimestampSet {
+		errorList = append(errorList, field.Required(field.NewPath("spec", "monitorPid"), "monitorPid must be set when monitorTimestamp is set"))
+	}
+
 	healthProbesPath := field.NewPath("spec", "healthProbes")
 	for i, probe := range c.Spec.HealthProbes {
 		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
@@ -1368,6 +1390,14 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	// Make sure Persistent isn't changed after the container is created
 	if oldContainer.Spec.Persistent != c.Spec.Persistent {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
+	}
+
+	if !pointers.EqualValue(oldContainer.Spec.MonitorPID, c.Spec.MonitorPID) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorPid"), "monitorPid cannot be changed"))
+	}
+
+	if !osutil.MicroEqual(oldContainer.Spec.MonitorTimestamp, c.Spec.MonitorTimestamp) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp cannot be changed"))
 	}
 
 	// Forbid changing labels after the resource is created
@@ -1541,7 +1571,6 @@ func (clr *ContainerLogResource) GetStorageProvider(
 
 func init() {
 	SchemeBuilder.Register(&Container{}, &ContainerList{})
-	initializeHashEncoder()
 }
 
 // Ensure types support interfaces expected by our API server

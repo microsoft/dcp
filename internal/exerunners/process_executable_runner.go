@@ -160,6 +160,11 @@ func (r *ProcessExecutableRunner) StartRun(
 		if !exe.Spec.Persistent {
 			// Use original log here, the watcher is a different process.
 			dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, log)
+		} else if monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp); monitorErr != nil {
+			log.Error(monitorErr, "Could not start persistent Executable lifecycle monitor")
+		} else if found {
+			// Use original log here, the watcher is a different process.
+			dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, pid, processIdentityTime, log)
 		}
 
 		r.runningProcesses.Store(pidToRunID(pid), &processRunState{

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,10 +31,14 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 )
 
-func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T) {
+func TestProcessExecutableRunnerStartsLifecycleMonitor(t *testing.T) {
+	monitorPID := int64(12345)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 	testCases := []struct {
 		name                  string
 		persistent            bool
+		monitorPID            *int64
+		monitorTimestamp      metav1.MicroTime
 		expectedMonitorStarts int
 	}{
 		{
@@ -43,6 +48,13 @@ func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T
 		{
 			name:       "persistent executable skips monitor",
 			persistent: true,
+		},
+		{
+			name:                  "persistent executable with monitor starts monitor",
+			persistent:            true,
+			monitorPID:            &monitorPID,
+			monitorTimestamp:      monitorTimestamp,
+			expectedMonitorStarts: 1,
 		},
 	}
 
@@ -66,8 +78,10 @@ func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T
 					UID:       "api-uid",
 				},
 				Spec: apiv1.ExecutableSpec{
-					ExecutablePath: "/test/app",
-					Persistent:     testCase.persistent,
+					ExecutablePath:   "/test/app",
+					Persistent:       testCase.persistent,
+					MonitorPID:       testCase.monitorPID,
+					MonitorTimestamp: testCase.monitorTimestamp,
 				},
 			}
 
@@ -84,7 +98,14 @@ func TestProcessExecutableRunnerSkipsMonitorForPersistentExecutable(t *testing.T
 				require.Equal(t, persistentOutputDir, filepath.Dir(result.StdErrFile))
 			}
 			require.Len(t, processExecutor.FindAll([]string{"/test/app"}, "", nil), 1)
-			require.Len(t, processExecutor.FindAll([]string{"dcp", "monitor-process"}, "", nil), testCase.expectedMonitorStarts)
+			monitorProcesses := processExecutor.FindAll([]string{"dcp", "monitor-process"}, "", nil)
+			require.Len(t, monitorProcesses, testCase.expectedMonitorStarts)
+			if testCase.monitorPID != nil {
+				require.Contains(t, monitorProcesses[0].Cmd.Args, "--monitor")
+				require.Contains(t, monitorProcesses[0].Cmd.Args, strconv.FormatInt(*testCase.monitorPID, 10))
+				require.Contains(t, monitorProcesses[0].Cmd.Args, "--monitor-identity-time")
+				require.Contains(t, monitorProcesses[0].Cmd.Args, testCase.monitorTimestamp.Time.Format(osutil.RFC3339MiliTimestampFormat))
+			}
 		})
 	}
 }

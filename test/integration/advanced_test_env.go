@@ -161,6 +161,7 @@ func StartAdvancedTestEnvironment(
 				MaxParallelContainerStarts: math.MaxUint8,
 				StateStore:                 stateStore,
 				ResourceLeaseOwner:         leaseOwner,
+				ProcessExecutor:            pe,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {

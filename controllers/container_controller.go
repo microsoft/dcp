@@ -30,6 +30,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -97,6 +98,7 @@ type ContainerReconcilerConfig struct {
 	ContainerStartupTimeoutOverride time.Duration
 	StateStore                      *statestore.Store
 	ResourceLeaseOwner              process.ProcessTreeItem
+	ProcessExecutor                 process.Executor
 }
 
 type containerStateInitializerFunc = stateInitializerFunc[
@@ -1759,6 +1761,7 @@ func (r *ContainerReconciler) finishCreatedContainerStartup(
 			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", startedContainer.Status)
 			rcd.containerState = apiv1.ContainerStateExited
 		}
+		r.runPersistentContainerLifecycleMonitor(rcd, log)
 		return nil
 	}
 
@@ -1932,8 +1935,30 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 		log.Error(startupErr, "Failed to start Container")
 		return nil, startupErr
 	}
+	r.runPersistentContainerLifecycleMonitor(rcd, log)
 
 	return inspected, nil
+}
+
+func (r *ContainerReconciler) runPersistentContainerLifecycleMonitor(rcd *runningContainerData, log logr.Logger) {
+	if rcd == nil || rcd.runSpec == nil || !rcd.runSpec.Persistent {
+		return
+	}
+
+	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(rcd.runSpec.MonitorPID, rcd.runSpec.MonitorTimestamp)
+	if monitorErr != nil {
+		log.Error(monitorErr, "Could not start persistent Container lifecycle monitor")
+		return
+	}
+	if !found {
+		return
+	}
+	if r.config.ProcessExecutor == nil {
+		log.Error(fmt.Errorf("process executor is not configured"), "Could not start persistent Container lifecycle monitor")
+		return
+	}
+
+	dcpproc.RunContainerWatcherForMonitor(r.config.ProcessExecutor, monitor, string(rcd.containerID), log)
 }
 
 // Connects the Container to networks as necessary, updating status.
