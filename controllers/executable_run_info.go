@@ -77,9 +77,6 @@ type ExecutableRunInfo struct {
 	// Raw process identity time used to protect against PID reuse.
 	ProcessIdentityTime time.Time
 
-	// Process start time intended for display.
-	DisplayStartTime time.Time
-
 	// Timestamp when the run was finished
 	FinishTimestamp metav1.MicroTime
 
@@ -182,10 +179,6 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 		ri.ProcessIdentityTime = other.ProcessIdentityTime
 		updated = true
 	}
-	if !other.DisplayStartTime.IsZero() && !ri.DisplayStartTime.Equal(other.DisplayStartTime) {
-		ri.DisplayStartTime = other.DisplayStartTime
-		updated = true
-	}
 	updated = setTimestampIfAfterOrUnknown(other.FinishTimestamp, &ri.FinishTimestamp) || updated
 
 	if other.StdOutFile != "" && ri.StdOutFile != other.StdOutFile {
@@ -273,7 +266,6 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	}
 	retval.StartupTimestamp = ri.StartupTimestamp
 	retval.ProcessIdentityTime = ri.ProcessIdentityTime
-	retval.DisplayStartTime = ri.DisplayStartTime
 	retval.FinishTimestamp = ri.FinishTimestamp
 	retval.StdOutFile = ri.StdOutFile
 	retval.StdErrFile = ri.StdErrFile

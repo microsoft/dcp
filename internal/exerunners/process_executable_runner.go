@@ -182,7 +182,6 @@ func (r *ProcessExecutableRunner) StartRun(
 		result.ExeState = apiv1.ExecutableStateRunning
 		result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
 		result.ProcessIdentityTime = processIdentityTime
-		result.DisplayStartTime = displayStartTime
 		result.StartWaitForRunCompletion = startWaitForProcessExit
 
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)

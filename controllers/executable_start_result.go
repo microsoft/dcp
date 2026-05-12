@@ -43,9 +43,6 @@ type ExecutableStartResult struct {
 	// Raw process identity time used to protect against PID reuse.
 	ProcessIdentityTime time.Time
 
-	// Process start time intended for display.
-	DisplayStartTime time.Time
-
 	// The error that occurred during startup, if any.
 	// NOTE: if StartupError is nil, this does NOT necessarily mean that the startup was successful.
 	// The ExeState field must be checked to determine the actual outcome of the startup attempt.
@@ -106,10 +103,6 @@ func (res *ExecutableStartResult) Equal(other *ExecutableStartResult) bool {
 		return false
 	}
 
-	if !res.DisplayStartTime.Equal(other.DisplayStartTime) {
-		return false
-	}
-
 	// Check for error presence, not if errors are "equal" (which is not well defined).
 	// We do not have a scenario where we set the StartupError more than once on a given result,
 	// so this is sufficient.
@@ -135,7 +128,6 @@ func (res *ExecutableStartResult) applyTo(ri *ExecutableRunInfo) {
 	ri.StdErrFile = res.StdErrFile
 	ri.StartupTimestamp = res.CompletionTimestamp
 	ri.ProcessIdentityTime = res.ProcessIdentityTime
-	ri.DisplayStartTime = res.DisplayStartTime
 	if res.ExeState == apiv1.ExecutableStateFinished {
 		ri.FinishTimestamp = res.CompletionTimestamp
 	}
@@ -164,7 +156,6 @@ func (res *ExecutableStartResult) Clone() *ExecutableStartResult {
 		StdErrFile:                res.StdErrFile,
 		CompletionTimestamp:       res.CompletionTimestamp,
 		ProcessIdentityTime:       res.ProcessIdentityTime,
-		DisplayStartTime:          res.DisplayStartTime,
 		StartupError:              res.StartupError,
 		StartWaitForRunCompletion: res.StartWaitForRunCompletion,
 	}
@@ -215,11 +206,6 @@ func (res *ExecutableStartResult) UpdateFrom(other *ExecutableStartResult) bool 
 
 	if !other.ProcessIdentityTime.IsZero() && !res.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
 		res.ProcessIdentityTime = other.ProcessIdentityTime
-		updated = true
-	}
-
-	if !other.DisplayStartTime.IsZero() && !res.DisplayStartTime.Equal(other.DisplayStartTime) {
-		res.DisplayStartTime = other.DisplayStartTime
 		updated = true
 	}
 

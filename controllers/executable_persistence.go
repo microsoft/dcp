@@ -281,7 +281,6 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 	ri.RunID = runID
 	pointers.SetValue(&ri.Pid, int64(record.PID))
 	ri.ProcessIdentityTime = record.IdentityTime
-	ri.DisplayStartTime = displayStartTime
 	ri.StartupTimestamp = metav1.NewMicroTime(displayStartTime)
 	ri.StdOutFile = record.StdOutFile
 	ri.StdErrFile = record.StdErrFile
