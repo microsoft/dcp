@@ -41,5 +41,7 @@ func TestEnsureRestrictedDirectoryRestrictsExistingDirectory(t *testing.T) {
 	info, statErr := os.Lstat(outputDir)
 	require.NoError(t, statErr)
 	require.True(t, info.IsDir())
-	require.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
+	}
 }
