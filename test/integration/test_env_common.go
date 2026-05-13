@@ -33,22 +33,23 @@ const (
 )
 
 func createTestStateStore(ctx context.Context, testTempDir string) (*statestore.Store, func(), error) {
-	stateStoreDir := testTempDir
+	stateStoreParentDir := testTempDir
 	removeStateStoreDir := false
-	if stateStoreDir == NoSeparateWorkingDir {
+	if stateStoreParentDir == NoSeparateWorkingDir {
 		tempDir, tempDirErr := os.MkdirTemp("", "dcp-state-store-*")
 		if tempDirErr != nil {
 			return nil, nil, tempDirErr
 		}
-		stateStoreDir = tempDir
+		stateStoreParentDir = tempDir
 		removeStateStoreDir = true
 	}
 
+	stateStoreDir := filepath.Join(stateStoreParentDir, "state-store")
 	stateStorePath := filepath.Join(stateStoreDir, "state.sqlite3")
 	stateStore, stateStoreErr := statestore.Open(ctx, statestore.Options{Path: stateStorePath})
 	if stateStoreErr != nil {
 		if removeStateStoreDir {
-			_ = os.RemoveAll(stateStoreDir)
+			_ = os.RemoveAll(stateStoreParentDir)
 		}
 		return nil, nil, stateStoreErr
 	}
@@ -56,7 +57,7 @@ func createTestStateStore(ctx context.Context, testTempDir string) (*statestore.
 	cleanup := func() {
 		_ = stateStore.Close()
 		if removeStateStoreDir {
-			_ = os.RemoveAll(stateStoreDir)
+			_ = os.RemoveAll(stateStoreParentDir)
 		}
 	}
 
