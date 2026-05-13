@@ -1486,36 +1486,6 @@ func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd
 	return derivedImage, nil
 }
 
-func (r *ContainerReconciler) withPersistentContainerResourceLease(
-	ctx context.Context,
-	container *apiv1.Container,
-	log logr.Logger,
-	update func(context.Context) error,
-) error {
-	if !container.Spec.Persistent {
-		return update(ctx)
-	}
-	if r.config.StateStore == nil {
-		return fmt.Errorf("state store is not configured")
-	}
-
-	leaseErr := r.config.StateStore.WithResourceLease(
-		ctx,
-		container,
-		r.config.ResourceLeaseOwner,
-		resourceLeaseRevalidationInterval,
-		func(updateCtx context.Context, lease *statestore.ResourceLease) error {
-			log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
-			return update(updateCtx)
-		},
-	)
-	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
-		logResourceLeaseHeld(log, leaseErr, container.GetLeaseKey(), "Persistent container is being updated by another DCP instance, retrying")
-	}
-
-	return leaseErr
-}
-
 func (r *ContainerReconciler) acquirePersistentContainerResourceLease(
 	ctx context.Context,
 	container *apiv1.Container,
