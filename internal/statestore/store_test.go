@@ -10,12 +10,15 @@ import (
 	"database/sql"
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -35,6 +38,9 @@ func openRawSQLiteDB(t *testing.T, ctx context.Context, path string) *sql.DB {
 func openTestStore(t *testing.T, ctx context.Context, path string) *Store {
 	t.Helper()
 
+	if runtime.GOOS != "windows" {
+		require.NoError(t, os.Chmod(filepath.Dir(path), osutil.PermissionOnlyOwnerReadWriteTraverse))
+	}
 	store, openErr := Open(ctx, Options{
 		Path:        path,
 		BusyTimeout: 500 * time.Millisecond,
@@ -130,6 +136,78 @@ func TestOpenCreatesSchema(t *testing.T) {
 	require.FileExists(t, storePath)
 
 	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
+}
+
+func TestOpenWithExplicitPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows directory permissions are not represented by Unix mode bits")
+	}
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	stateStoreDir := filepath.Join(t.TempDir(), "state-store")
+	require.NoError(t, os.Mkdir(stateStoreDir, osutil.PermissionDirectoryOthersRead))
+	require.NoError(t, os.Chmod(stateStoreDir, osutil.PermissionDirectoryOthersRead))
+	storePath := filepath.Join(stateStoreDir, "state.sqlite3")
+
+	_, openErr := Open(ctx, Options{Path: storePath})
+
+	require.ErrorContains(t, openErr, "explicit state store directory must already be restricted")
+	info, statErr := os.Lstat(stateStoreDir)
+	require.NoError(t, statErr)
+	require.Equal(t, osutil.PermissionDirectoryOthersRead, info.Mode().Perm())
+}
+
+func TestOpenWithEnvPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows directory permissions are not represented by Unix mode bits")
+	}
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	stateStoreDir := filepath.Join(t.TempDir(), "state-store")
+	require.NoError(t, os.Mkdir(stateStoreDir, osutil.PermissionDirectoryOthersRead))
+	require.NoError(t, os.Chmod(stateStoreDir, osutil.PermissionDirectoryOthersRead))
+	storePath := filepath.Join(stateStoreDir, "state.sqlite3")
+	t.Setenv(DCP_STATE_STORE_PATH, storePath)
+
+	_, openErr := Open(ctx, Options{})
+
+	require.ErrorContains(t, openErr, "explicit state store directory must already be restricted")
+	info, statErr := os.Lstat(stateStoreDir)
+	require.NoError(t, statErr)
+	require.Equal(t, osutil.PermissionDirectoryOthersRead, info.Mode().Perm())
+}
+
+func TestOpenWithExplicitPathCreatesMissingParentDirectoryRestricted(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	stateStoreDir := filepath.Join(t.TempDir(), "state-store")
+	storePath := filepath.Join(stateStoreDir, "state.sqlite3")
+
+	store, openErr := Open(ctx, Options{
+		Path:        storePath,
+		BusyTimeout: 500 * time.Millisecond,
+	})
+	require.NoError(t, openErr)
+	t.Cleanup(func() {
+		require.NoError(t, store.Close())
+	})
+
+	require.Equal(t, storePath, store.Path())
+	require.FileExists(t, storePath)
+	info, statErr := os.Lstat(stateStoreDir)
+	require.NoError(t, statErr)
+	require.True(t, info.IsDir())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
+	}
 }
 
 func TestOpenConfiguresWALAutoCheckpoint(t *testing.T) {

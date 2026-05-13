@@ -45,3 +45,21 @@ func TestEnsureRestrictedDirectoryRestrictsExistingDirectory(t *testing.T) {
 		require.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
 	}
 }
+
+func TestValidateRestrictedDirectoryRejectsPermissiveDirectoryWithoutRestricting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows directory permissions are not represented by Unix mode bits")
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "restricted-dir")
+	require.NoError(t, os.Mkdir(outputDir, osutil.PermissionDirectoryOthersRead))
+	require.NoError(t, os.Chmod(outputDir, osutil.PermissionDirectoryOthersRead))
+
+	validateErr := usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
+
+	require.Error(t, validateErr)
+	require.Contains(t, validateErr.Error(), "invalid permissions")
+	info, statErr := os.Lstat(outputDir)
+	require.NoError(t, statErr)
+	require.Equal(t, osutil.PermissionDirectoryOthersRead, info.Mode().Perm())
+}

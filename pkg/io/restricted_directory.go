@@ -39,3 +39,26 @@ func EnsureRestrictedDirectory(dir string, perm os.FileMode) error {
 
 	return nil
 }
+
+// ValidateRestrictedDirectory verifies that the final path exists as a real directory owned
+// by the current user with the requested permissions. It does not create or chmod the directory.
+func ValidateRestrictedDirectory(dir string, perm os.FileMode) error {
+	info, statErr := os.Lstat(dir)
+	if statErr != nil {
+		return fmt.Errorf("could not inspect directory '%s': %w", dir, statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("directory '%s' is a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path '%s' is not a directory", dir)
+	}
+	if ownershipErr := validateRestrictedDirectoryOwner(dir, info); ownershipErr != nil {
+		return fmt.Errorf("directory '%s' has invalid ownership: %w", dir, ownershipErr)
+	}
+	if modeErr := validateRestrictedDirectoryMode(info, perm); modeErr != nil {
+		return fmt.Errorf("directory '%s' has invalid permissions: %w", dir, modeErr)
+	}
+
+	return nil
+}

@@ -59,34 +59,39 @@ type Store struct {
 }
 
 func DefaultPath() (string, error) {
+	stateStorePath, _, stateStorePathErr := resolveStateStorePath("")
+	return stateStorePath, stateStorePathErr
+}
+
+func resolveStateStorePath(path string) (string, bool, error) {
+	if storePath := strings.TrimSpace(path); storePath != "" {
+		return storePath, true, nil
+	}
+
 	if stateStorePath, found := os.LookupEnv(DCP_STATE_STORE_PATH); found && strings.TrimSpace(stateStorePath) != "" {
-		return strings.TrimSpace(stateStorePath), nil
+		return strings.TrimSpace(stateStorePath), true, nil
 	}
 
 	dcpFolder, dcpFolderErr := dcppaths.EnsureUserDcpDir()
 	if dcpFolderErr != nil {
-		return "", dcpFolderErr
+		return "", false, dcpFolderErr
 	}
 
 	isAdmin, isAdminErr := osutil.IsAdmin()
 	if isAdminErr != nil {
-		return "", isAdminErr
+		return "", false, isAdminErr
 	}
 
 	if isAdmin {
-		return filepath.Join(dcpFolder, defaultElevatedStoreFileName), nil
+		return filepath.Join(dcpFolder, defaultElevatedStoreFileName), false, nil
 	}
-	return filepath.Join(dcpFolder, defaultStoreFileName), nil
+	return filepath.Join(dcpFolder, defaultStoreFileName), false, nil
 }
 
 func Open(ctx context.Context, options Options) (*Store, error) {
-	storePath := strings.TrimSpace(options.Path)
-	if storePath == "" {
-		defaultPath, defaultPathErr := DefaultPath()
-		if defaultPathErr != nil {
-			return nil, fmt.Errorf("could not determine default state store path: %w", defaultPathErr)
-		}
-		storePath = defaultPath
+	storePath, explicitPath, stateStorePathErr := resolveStateStorePath(options.Path)
+	if stateStorePathErr != nil {
+		return nil, fmt.Errorf("could not determine state store path: %w", stateStorePathErr)
 	}
 
 	absPath, absPathErr := filepath.Abs(storePath)
@@ -94,7 +99,7 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		return nil, fmt.Errorf("could not determine absolute state store path for '%s': %w", storePath, absPathErr)
 	}
 
-	if ensureErr := ensureStateStoreDir(absPath); ensureErr != nil {
+	if ensureErr := ensureStateStoreDir(absPath, explicitPath); ensureErr != nil {
 		return nil, ensureErr
 	}
 
@@ -244,10 +249,32 @@ func (s *Store) configure(ctx context.Context, busyTimeout time.Duration) error 
 	return nil
 }
 
-func ensureStateStoreDir(path string) error {
+func ensureStateStoreDir(path string, explicitPath bool) error {
 	parentDir := filepath.Dir(path)
+	if explicitPath {
+		if ensureErr := ensureExplicitStateStoreDir(parentDir); ensureErr != nil {
+			return fmt.Errorf("could not prepare state store directory '%s': %w", parentDir, ensureErr)
+		}
+		return nil
+	}
 	if ensureErr := usvc_io.EnsureRestrictedDirectory(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); ensureErr != nil {
 		return fmt.Errorf("could not prepare state store directory '%s': %w", parentDir, ensureErr)
+	}
+	return nil
+}
+
+func ensureExplicitStateStoreDir(parentDir string) error {
+	_, statErr := os.Lstat(parentDir)
+	if errors.Is(statErr, os.ErrNotExist) {
+		if mkdirErr := os.Mkdir(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return fmt.Errorf("could not create explicit state store directory: %w", mkdirErr)
+		}
+	} else if statErr != nil {
+		return fmt.Errorf("could not inspect explicit state store directory: %w", statErr)
+	}
+
+	if validateErr := usvc_io.ValidateRestrictedDirectory(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); validateErr != nil {
+		return fmt.Errorf("explicit state store directory must already be restricted: %w", validateErr)
 	}
 	return nil
 }

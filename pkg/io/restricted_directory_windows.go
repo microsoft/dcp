@@ -59,6 +59,10 @@ func validateRestrictedDirectoryOwner(dir string, _ os.FileInfo) error {
 	return nil
 }
 
+func validateRestrictedDirectoryMode(os.FileInfo, os.FileMode) error {
+	return nil
+}
+
 func tokenOwnerMatches(token windows.Token, owner *windows.SID) (bool, error) {
 	var requiredLength uint32
 	tokenOwnerErr := windows.GetTokenInformation(token, windows.TokenOwner, nil, 0, &requiredLength)
