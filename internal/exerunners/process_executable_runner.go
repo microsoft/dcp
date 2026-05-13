@@ -61,7 +61,7 @@ func (r *ProcessExecutableRunner) StartRun(
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) *controllers.ExecutableStartResult {
-	if exe.Spec.Terminal != nil && exe.Spec.Terminal.Enabled {
+	if exe.Spec.Terminal != nil {
 		return r.startTerminalRun(ctx, exe, runChangeHandler, log)
 	}
 

@@ -13,26 +13,26 @@ import (
 // Container replica and the HMP v1 producer endpoint that the Aspire terminal
 // host connects to as a client.
 //
-// When Enabled is true, DCP allocates a PTY for the underlying process and
-// listens on UDSPath (a Unix Domain Socket path on Linux/macOS, or a named pipe
-// path on Windows in a follow-up). When the terminal host opens an HMP v1
-// connection, DCP starts an HMP v1 server on the connection and bridges:
+// Presence of this field on an Executable or Container spec activates the
+// terminal path: DCP allocates a PTY for the underlying process and listens on
+// UDSPath. When the terminal host opens an HMP v1 connection, DCP starts an
+// HMP v1 server on the connection and bridges:
 //
 //	- PTY output (from the process's tty)            ->  HMP v1 Output frames
 //	- HMP v1 Input frames                            ->  PTY input (process stdin)
 //	- HMP v1 Resize frames                           ->  PTY resize (TIOCSWINSZ / ResizePseudoConsole)
 //	- Process exit                                   ->  HMP v1 Exit frame, then close
 //
-// The HMP v1 wire format is defined by the Aspire dashboard's terminal host
-// (see Hex1b's Hmp1Protocol). DCP's responsibility is limited to PTY
-// allocation, the listener, and frame translation.
+// The HMP v1 wire format is defined by the Aspire dashboard's terminal host.
+// See the canonical spec at:
+//
+//	https://github.com/microsoft/aspire/blob/main/docs/specs/with-terminal.md
+//
+// DCP's responsibility is limited to PTY allocation, the listener, and frame
+// translation.
 type TerminalSpec struct {
-	// Enabled controls whether DCP allocates a PTY for the process and exposes
-	// an HMP v1 producer endpoint at UDSPath.
-	Enabled bool `json:"enabled,omitempty"`
-
 	// UDSPath is the Unix Domain Socket path that DCP listens on for the
-	// terminal host's HMP v1 client connection. Required when Enabled is true.
+	// terminal host's HMP v1 client connection. Required.
 	UDSPath string `json:"udsPath,omitempty"`
 
 	// Cols is the initial width of the pseudo-terminal in character columns.
@@ -54,8 +54,7 @@ func (ts *TerminalSpec) Equal(other *TerminalSpec) bool {
 	if ts == nil || other == nil {
 		return false
 	}
-	return ts.Enabled == other.Enabled &&
-		ts.UDSPath == other.UDSPath &&
+	return ts.UDSPath == other.UDSPath &&
 		ts.Cols == other.Cols &&
 		ts.Rows == other.Rows
 }
@@ -66,8 +65,8 @@ func (ts *TerminalSpec) Validate(specPath *field.Path) field.ErrorList {
 	if ts == nil {
 		return errorList
 	}
-	if ts.Enabled && ts.UDSPath == "" {
-		errorList = append(errorList, field.Invalid(specPath.Child("udsPath"), ts.UDSPath, "udsPath is required when Enabled is true."))
+	if ts.UDSPath == "" {
+		errorList = append(errorList, field.Invalid(specPath.Child("udsPath"), ts.UDSPath, "udsPath is required."))
 	}
 	if ts.Cols < 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("cols"), ts.Cols, "cols must be non-negative."))
@@ -75,6 +74,21 @@ func (ts *TerminalSpec) Validate(specPath *field.Path) field.ErrorList {
 	if ts.Rows < 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("rows"), ts.Rows, "rows must be non-negative."))
 	}
+	return errorList
+}
+
+// ValidateUpdate verifies that the new TerminalSpec is a permissible update
+// from the previous one. The terminal is wired up at process/container
+// startup and is bound to the listener owned by the terminal host; mutating
+// it after the fact would require tearing down and re-establishing the PTY
+// session, which the runtime does not support today. So we forbid all
+// post-creation changes (including adding or removing the terminal).
+func (ts *TerminalSpec) ValidateUpdate(old *TerminalSpec, specPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+	if old.Equal(ts) {
+		return errorList
+	}
+	errorList = append(errorList, field.Forbidden(specPath, "terminal cannot be changed after the resource is created."))
 	return errorList
 }
 

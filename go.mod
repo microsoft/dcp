@@ -97,6 +97,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/ckaznocha/intrange v0.3.1 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
+	github.com/creack/pty v1.1.24 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/curioswitch/go-reassign v0.3.0 // indirect
 	github.com/daixiang0/gci v0.13.7 // indirect

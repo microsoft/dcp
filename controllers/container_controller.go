@@ -546,10 +546,6 @@ func ensureContainerStartingState(
 			rcd.containerState = apiv1.ContainerStateRunning
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
 			change |= statusChanged
-
-			if termErr := r.ensureContainerTerminalSession(ctx, rcd, log); termErr != nil {
-				log.Error(termErr, "Failed to attach terminal session to running container; container is running but interactive terminal will be unavailable")
-			}
 		case inspected != nil && inspected.Status == containers.ContainerStatusExited:
 			rcd.containerState = apiv1.ContainerStateExited
 			rcd.startAttemptFinishedAt = metav1.NowMicro()
@@ -1622,7 +1618,7 @@ func (r *ContainerReconciler) ensureContainerTerminalSession(
 	}
 
 	terminal := rcd.runSpec.Terminal
-	if terminal == nil || !terminal.Enabled {
+	if terminal == nil {
 		return nil
 	}
 

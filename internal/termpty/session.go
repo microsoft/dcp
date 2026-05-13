@@ -13,9 +13,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/internal/hmp1"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 // Session owns the lifecycle of a single PTY-attached process plus a single
@@ -76,26 +78,19 @@ func dialUDSWithRetry(ctx context.Context, udsPath string) (net.Conn, error) {
 		attempts = 50
 		every    = 100 * time.Millisecond
 	)
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+	// ConstantBackOff with WithMaxRetries gives 'attempts' total tries spaced
+	// 'every' apart (~5s budget). resiliency.RetryGet observes ctx
+	// cancellation and joins the last attempt error onto context errors so
+	// the caller still sees the underlying dial failure on timeout.
+	policy := backoff.WithMaxRetries(backoff.NewConstantBackOff(every), attempts-1)
+	conn, err := resiliency.RetryGet(ctx, policy, func() (net.Conn, error) {
 		var d net.Dialer
-		dialCtx, cancel := context.WithTimeout(ctx, every)
-		conn, err := d.DialContext(dialCtx, "unix", udsPath)
-		cancel()
-		if err == nil {
-			return conn, nil
-		}
-		lastErr = err
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(every):
-		}
+		return d.DialContext(ctx, "unix", udsPath)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("dial %q: %w", udsPath, err)
 	}
-	return nil, fmt.Errorf("dial %q after %d attempts: %w", udsPath, attempts, lastErr)
+	return conn, nil
 }
 
 // StartSession dials cfg.UDSPath, then spawns an HMP v1 server on that

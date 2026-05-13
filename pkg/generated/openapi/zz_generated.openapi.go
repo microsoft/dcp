@@ -1862,6 +1862,12 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 							Ref:         ref(v1.ContainerPemCertificates{}.OpenAPIModelName()),
 						},
 					},
+					"terminal": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional terminal/PTY configuration. When set, the container's primary process is started under a host pseudo-terminal and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1, instead of the container being run detached with separate log capture.",
+							Ref:         ref("github.com/microsoft/dcp/api/v1.TerminalSpec"),
+						},
+					},
 				},
 			},
 		},
@@ -2936,6 +2942,12 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 						SchemaProps: spec.SchemaProps{
 							Description: "PEM formatted certificates to be written for the Executable",
 							Ref:         ref(v1.ExecutablePemCertificates{}.OpenAPIModelName()),
+						},
+					},
+					"terminal": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Terminal, when non-nil, allocates a pseudo-terminal for the Executable's process and exposes an HMP v1 producer endpoint that the Aspire terminal host connects to as a client. See TerminalSpec for details.",
+							Ref:         ref("github.com/microsoft/dcp/api/v1.TerminalSpec"),
 						},
 					},
 				},

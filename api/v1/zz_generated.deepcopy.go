@@ -741,8 +741,7 @@ func (in *ContainerSpec) DeepCopyInto(out *ContainerSpec) {
 	}
 	if in.Terminal != nil {
 		in, out := &in.Terminal, &out.Terminal
-		*out = new(TerminalSpec)
-		(*in).DeepCopyInto(*out)
+		*out = (*in).DeepCopy()
 	}
 }
 
@@ -1264,8 +1263,7 @@ func (in *ExecutableSpec) DeepCopyInto(out *ExecutableSpec) {
 	}
 	if in.Terminal != nil {
 		in, out := &in.Terminal, &out.Terminal
-		*out = new(TerminalSpec)
-		(*in).DeepCopyInto(*out)
+		*out = (*in).DeepCopy()
 	}
 }
 

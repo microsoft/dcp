@@ -143,18 +143,16 @@ func Serve(ctx context.Context, conn net.Conn, pty PTY, waitExit func() int32, o
 	// nudge the connection's blocked Read to return immediately. This is the
 	// only way to unstick the conn->pty pump that is blocked inside
 	// readFrame's io.ReadFull. We do not close conn (the caller owns its
-	// lifetime), we just expire its read deadline.
-	cancelWatcher := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			if d, ok := conn.(interface{ SetReadDeadline(time.Time) error }); ok {
-				_ = d.SetReadDeadline(time.Unix(1, 0))
-			}
-		case <-cancelWatcher:
+	// lifetime), we just expire its read deadline. context.AfterFunc runs
+	// the callback in its own goroutine the moment ctx is cancelled, and the
+	// returned stop func cancels the arrangement when Serve returns normally
+	// — saving us from spinning up a watcher goroutine of our own.
+	stopWatcher := context.AfterFunc(ctx, func() {
+		if d, ok := conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+			_ = d.SetReadDeadline(time.Unix(1, 0))
 		}
-	}()
-	defer close(cancelWatcher)
+	})
+	defer stopWatcher()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, 2)
@@ -184,11 +182,14 @@ func Serve(ctx context.Context, conn net.Conn, pty PTY, waitExit func() int32, o
 	}()
 
 	// Pump 2: conn -> PTY (Input/Resize). Exits when connection closes / errors
-	// or the context is cancelled.
+	// or the context is cancelled. The frameReader owns a growable scratch
+	// buffer that is reused for every payload to keep this hot path
+	// allocation-free for the typical frame sizes (keystrokes, 8-byte resize).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		defer cancel()
+		fr := newFrameReader(conn)
 		for {
 			select {
 			case <-ctx.Done():
@@ -196,7 +197,7 @@ func Serve(ctx context.Context, conn net.Conn, pty PTY, waitExit func() int32, o
 			default:
 			}
 
-			frameType, payload, readErr := readFrame(conn)
+			frameType, payload, readErr := fr.Read()
 			if readErr != nil {
 				// Shutdown signals (EOF, closed conn, our own deadline nudge)
 				// are silent. Other errors are real protocol failures and
@@ -275,8 +276,41 @@ func writeFrameLocked(w io.Writer, t FrameType, payload []byte) error {
 }
 
 func readFrame(r io.Reader) (FrameType, []byte, error) {
+	fr := newFrameReader(r)
+	t, payload, err := fr.Read()
+	if err != nil {
+		return 0, nil, err
+	}
+	if payload == nil {
+		return t, nil, nil
+	}
+	// Detach the payload from the (single-shot) frameReader's scratch buffer
+	// so callers of the package-level helper own the bytes outright.
+	out := make([]byte, len(payload))
+	copy(out, payload)
+	return t, out, nil
+}
+
+// frameReader reads HMP v1 frames from r, reusing a single payload scratch
+// buffer across calls so a long-lived conn->PTY pump does not allocate per
+// frame. The slice returned by Read is owned by the frameReader and is only
+// valid until the next call to Read; callers that need to retain the bytes
+// must copy them.
+type frameReader struct {
+	r       io.Reader
+	payload []byte
+}
+
+func newFrameReader(r io.Reader) *frameReader {
+	// Pre-size the scratch to comfortably hold typical input frames
+	// (keystrokes, 8-byte resize). It grows for larger paste payloads and
+	// stays at the high-water mark thereafter.
+	return &frameReader{r: r, payload: make([]byte, 0, 4096)}
+}
+
+func (fr *frameReader) Read() (FrameType, []byte, error) {
 	var header [5]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil {
+	if _, err := io.ReadFull(fr.r, header[:]); err != nil {
 		return 0, nil, err
 	}
 	t := FrameType(header[0])
@@ -287,9 +321,13 @@ func readFrame(r io.Reader) (FrameType, []byte, error) {
 	if length == 0 {
 		return t, nil, nil
 	}
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(r, payload); err != nil {
+	if cap(fr.payload) < int(length) {
+		fr.payload = make([]byte, length)
+	} else {
+		fr.payload = fr.payload[:length]
+	}
+	if _, err := io.ReadFull(fr.r, fr.payload); err != nil {
 		return 0, nil, err
 	}
-	return t, payload, nil
+	return t, fr.payload, nil
 }

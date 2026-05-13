@@ -91,7 +91,7 @@ type runningContainerData struct {
 
 	// terminalSession owns the host-side PTY + HMP v1 listener bridging the
 	// container's primary process to the Aspire terminal host. Non-nil only
-	// when the container was created with Spec.Terminal.Enabled and the
+	// when the container was created with a non-nil Spec.Terminal and the
 	// attach to the running container succeeded. Closing the session tears
 	// down both the listener and the underlying CLI attach process (which
 	// in turn closes the container's stdin and detaches).

@@ -262,7 +262,7 @@ type ExecutableSpec struct {
 	// +optional
 	PemCertificates *ExecutablePemCertificates `json:"pemCertificates,omitempty"`
 
-	// Terminal, when non-nil and Enabled, allocates a pseudo-terminal for the
+	// Terminal, when non-nil, allocates a pseudo-terminal for the
 	// Executable's process and exposes an HMP v1 producer endpoint that the
 	// Aspire terminal host connects to as a client. See TerminalSpec for
 	// details.
@@ -551,6 +551,8 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 	if !oldExe.Spec.PemCertificates.Equal(e.Spec.PemCertificates) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pemCertificates"), "pemCertificates cannot be changed once an Executable is created."))
 	}
+
+	errorList = append(errorList, e.Spec.Terminal.ValidateUpdate(oldExe.Spec.Terminal, field.NewPath("spec", "terminal"))...)
 
 	return errorList
 }
