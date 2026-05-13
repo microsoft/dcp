@@ -38,8 +38,10 @@ import (
 // automatically when ContainerSpec.Terminal != nil && Enabled by the docker
 // and podman orchestrators' applyCreateContainerOptions helper.
 //
-// On hosts where DCP does not yet implement PTY allocation (currently
-// non-Windows) this returns termpty.ErrTerminalNotSupported.
+// On hosts where DCP does not yet implement PTY allocation this returns
+// termpty.ErrTerminalNotSupported. With ConPTY (Windows) and creack/pty
+// (Linux/macOS) implementations both present, this is currently a tautology;
+// it remains as the seam if a future host platform lacks PTY support.
 func startContainerTerminalSession(
 	ctx context.Context,
 	runner containers.CLICommandRunner,
@@ -47,14 +49,14 @@ func startContainerTerminalSession(
 	spec *apiv1.TerminalSpec,
 	log logr.Logger,
 ) (*termpty.Session, error) {
-	if spec == nil || !spec.Enabled {
-		return nil, fmt.Errorf("startContainerTerminalSession: spec must be non-nil and Enabled")
+	if spec == nil {
+		return nil, fmt.Errorf("startContainerTerminalSession: spec must be non-nil")
 	}
 
 	// Use MakeCommand to extract the configured CLI path (e.g. "docker" or
 	// "podman", possibly resolved against PATH); we don't actually start the
 	// command via the orchestrator's process.Executor because we need direct
-	// ConPTY semantics.
+	// PTY semantics (ConPTY on Windows, /dev/ptmx on Unix).
 	//
 	// `--detach-keys=""` disables the default Ctrl-P,Ctrl-Q detach sequence
 	// so those keystrokes are forwarded into the container as plain bytes
@@ -70,8 +72,12 @@ func startContainerTerminalSession(
 	)
 	startLog.Info("Attaching container under PTY...")
 
+	// runner.MakeCommand returns an *exec.Cmd whose Path/Args were filled in
+	// by exec.Command (so the runtime CLI is already PATH-resolved). Convert
+	// to the argv-style termpty.CommandSpec; envs are inherited from DCP.
 	tp, err := termpty.StartProcess(ctx, termpty.CommandSpec{
-		Cmd:  *cmd,
+		Cmd:  cmd.Args,
+		Dir:  cmd.Dir,
 		Cols: int(spec.Cols),
 		Rows: int(spec.Rows),
 	})

@@ -8,9 +8,7 @@ package exerunners
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os/exec"
-	"sync/atomic"
+	"sync"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,13 +80,13 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	// We arm the run-completion watcher here, but it must not fire until the
 	// caller has invoked StartWaitForRunCompletion (see the contract on
-	// RunChangeHandler.OnStartupCompleted).
-	var armed atomic.Bool
+	// RunChangeHandler.OnStartupCompleted). sync.Once guarantees the arm
+	// channel is closed at most once even if the caller invokes the
+	// returned function more than once.
+	var armOnce sync.Once
 	armCh := make(chan struct{})
 	result.StartWaitForRunCompletion = func() {
-		if armed.CompareAndSwap(false, true) {
-			close(armCh)
-		}
+		armOnce.Do(func() { close(armCh) })
 	}
 
 	go func() {
@@ -98,9 +96,9 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		case <-armCh:
 		case <-ctx.Done():
 			// Even if the controller never armed us, drain the session so we
-			// don't leak goroutines.
+			// don't leak goroutines. Close blocks until watchExit's teardown
+			// finishes, so no further wait on session.Done() is needed.
 			session.Close()
-			<-session.Done()
 			return
 		}
 
@@ -127,24 +125,21 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 }
 
 // executableTerminalCommandSpec builds a termpty.CommandSpec from the
-// Executable's effective configuration. Currently this is Windows-shaped
-// (single command-line string for CreateProcessW); cross-platform support
-// is tracked by ErrTerminalNotSupported on non-Windows hosts.
+// Executable's effective configuration. The argv-style Cmd slice and map
+// Env let the platform-specific termpty backend choose how to spawn the
+// process (CreateProcessW on Windows, exec.Command on Unix).
 func executableTerminalCommandSpec(exe *apiv1.Executable) termpty.CommandSpec {
-	envBlock := make([]string, 0, len(exe.Status.EffectiveEnv))
+	env := make(map[string]string, len(exe.Status.EffectiveEnv))
 	for _, e := range exe.Status.EffectiveEnv {
-		envBlock = append(envBlock, fmt.Sprintf("%s=%s", e.Name, e.Value))
+		env[e.Name] = e.Value
 	}
 
-	args := append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
+	cmd := append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
 	return termpty.CommandSpec{
-		Cmd: exec.Cmd{
-			Path: exe.Spec.ExecutablePath,
-			Args: args,
-			Env:  envBlock,
-			Dir:  exe.Spec.WorkingDirectory,
-		},
+		Cmd:  cmd,
+		Env:  env,
+		Dir:  exe.Spec.WorkingDirectory,
 		Cols: int(exe.Spec.Terminal.Cols),
 		Rows: int(exe.Spec.Terminal.Rows),
 	}

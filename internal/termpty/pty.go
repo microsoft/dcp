@@ -12,12 +12,18 @@ package termpty
 
 import (
 	"context"
-	"os/exec"
+	"errors"
 	"time"
 
 	"github.com/microsoft/dcp/internal/hmp1"
 	"github.com/microsoft/dcp/pkg/process"
 )
+
+// ErrTerminalNotSupported is returned by StartProcess on platforms where the
+// PTY/terminal integration is not yet implemented (currently any non-Windows
+// host). Callers should treat this as a feature-not-available signal rather
+// than a hard error and fall back to non-terminal process execution.
+var ErrTerminalNotSupported = errors.New("terminal/PTY support is not available on this platform")
 
 // PseudoTerminalProcess represents a running process attached to a pseudo-terminal.
 // UNDONE: make PseudoTerminalProcess a process.WaitableProcess and delete WaitExit() method.
@@ -36,9 +42,24 @@ type PseudoTerminalProcess struct {
 }
 
 // CommandSpec captures everything needed to spawn a command attached to a
-// freshly allocated pseudo-terminal.
+// freshly allocated pseudo-terminal. The shape is deliberately
+// process-API-agnostic so the same struct works for ConPTY (Windows) and
+// /dev/ptmx (Unix) without leaking exec.Cmd's wider surface (Stdin/Stdout/etc
+// are not meaningful for a PTY-attached child).
 type CommandSpec struct {
-	exec.Cmd
+	// Cmd is the command line as an argv-style slice. The first element is
+	// the executable path or name; remaining elements are arguments. If the
+	// first element does not contain a path separator the implementation
+	// resolves it against PATH. Must be non-empty.
+	Cmd []string
+
+	// Env is the environment for the child process, keyed by variable name.
+	// If nil, the child inherits the parent's environment.
+	Env map[string]string
+
+	// Dir is the working directory for the child process. Empty inherits
+	// the parent's cwd.
+	Dir string
 
 	// Cols/Rows are the initial dimensions of the allocated PTY.
 	// If either is <= 0 the implementation falls back to a sensible default (currently 80x24).
@@ -57,4 +78,18 @@ type CommandSpec struct {
 // UNDONE: can we make it so this is not a requirement and happens automatically when the process exits?
 func StartProcess(ctx context.Context, spec CommandSpec) (*PseudoTerminalProcess, error) {
 	return startProcessImpl(ctx, spec)
+}
+
+// envMapToSlice flattens an env map into the "KEY=VALUE" slice form expected
+// by exec.Cmd.Env / conpty.ConPtyEnv. Returns nil for a nil input so callers
+// can distinguish "inherit parent env" from "empty env".
+func envMapToSlice(env map[string]string) []string {
+	if env == nil {
+		return nil
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
+	}
+	return out
 }

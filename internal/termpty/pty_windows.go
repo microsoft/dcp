@@ -10,7 +10,6 @@ package termpty
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/UserExistsError/conpty"
@@ -42,17 +41,17 @@ func startProcessImpl(_ context.Context, spec CommandSpec) (*PseudoTerminalProce
 	options := []conpty.ConPtyOption{
 		conpty.ConPtyDimensions(cols, rows),
 	}
-	if spec.Env != nil {
-		options = append(options, conpty.ConPtyEnv(spec.Env))
+	if env := envMapToSlice(spec.Env); env != nil {
+		options = append(options, conpty.ConPtyEnv(env))
 	}
 	if spec.Dir != "" {
 		options = append(options, conpty.ConPtyWorkDir(spec.Dir))
 	}
 
-	commandLine, commandLineErr := commandLineFromCmd(spec.Cmd)
-	if commandLineErr != nil {
-		return nil, commandLineErr
+	if len(spec.Cmd) == 0 {
+		return nil, fmt.Errorf("command is empty")
 	}
+	commandLine := BuildWindowsCommandLine(spec.Cmd[0], spec.Cmd[1:])
 
 	cp, err := conpty.Start(commandLine, options...)
 	if err != nil {
@@ -81,19 +80,6 @@ func startProcessImpl(_ context.Context, spec CommandSpec) (*PseudoTerminalProce
 			return int32(exitCode)
 		},
 	}, nil
-}
-
-func commandLineFromCmd(cmd exec.Cmd) (string, error) {
-	if cmd.Path == "" {
-		return "", fmt.Errorf("command path is empty")
-	}
-
-	args := cmd.Args
-	if len(args) == 0 {
-		args = []string{cmd.Path}
-	}
-
-	return BuildWindowsCommandLine(cmd.Path, args[1:]), nil
 }
 
 // BuildWindowsCommandLine constructs a single command-line string suitable
