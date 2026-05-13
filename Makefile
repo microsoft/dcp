@@ -184,6 +184,10 @@ $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 	--output-file pkg/generated/openapi/zz_generated.openapi.go \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
 	--output-dir "$(repo_dir)" \
+	--output-model-name-file zz_generated.model_name.go \
+	--readonly-pkg k8s.io/apimachinery/pkg/apis/meta/v1 \
+	--readonly-pkg k8s.io/apimachinery/pkg/runtime \
+	--readonly-pkg k8s.io/apimachinery/pkg/version \
 	--report-filename - \
 	$(OPENAPI_GEN_OPTS) \
 	github.com/microsoft/dcp/api/v1 \
@@ -191,13 +195,12 @@ $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 endef
 
 .PHONY: generate-openapi
-generate-openapi: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## Generates OpenAPI definitions for resources defined in this repo
+generate-openapi: ## Generates OpenAPI definitions for resources defined in this repo
+	$(run-openapi-gen)
 
 .PHONY: generate-openapi-debug
 generate-openapi-debug: OPENAPI_GEN_OPTS = -v 6
-generate-openapi-debug: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## Runs OpenAPI generator with additional options for debugging
-
-$(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES)
+generate-openapi-debug: ## Runs OpenAPI generator with additional options for debugging
 	$(run-openapi-gen)
 
 .PHONY: generate-goversioninfo
@@ -428,4 +431,3 @@ endif
 .PHONY: httpcontent-stream-repro
 httpcontent-stream-repro:
 	dotnet build test/HttpContentStreamRepro.Server/HttpContentStreamRepro.Server.csproj
-
