@@ -33,7 +33,7 @@ func EnsureRestrictedDirectory(dir string, perm os.FileMode) error {
 	if ownershipErr := validateRestrictedDirectoryOwner(dir, info); ownershipErr != nil {
 		return fmt.Errorf("directory '%s' has invalid ownership: %w", dir, ownershipErr)
 	}
-	if chmodErr := os.Chmod(dir, perm); chmodErr != nil {
+	if chmodErr := restrictRestrictedDirectory(dir, perm); chmodErr != nil {
 		return fmt.Errorf("could not restrict directory '%s': %w", dir, chmodErr)
 	}
 
@@ -56,7 +56,7 @@ func ValidateRestrictedDirectory(dir string, perm os.FileMode) error {
 	if ownershipErr := validateRestrictedDirectoryOwner(dir, info); ownershipErr != nil {
 		return fmt.Errorf("directory '%s' has invalid ownership: %w", dir, ownershipErr)
 	}
-	if modeErr := validateRestrictedDirectoryMode(info, perm); modeErr != nil {
+	if modeErr := validateRestrictedDirectoryMode(dir, info, perm); modeErr != nil {
 		return fmt.Errorf("directory '%s' has invalid permissions: %w", dir, modeErr)
 	}
 

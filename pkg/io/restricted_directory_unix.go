@@ -25,7 +25,11 @@ func validateRestrictedDirectoryOwner(_ string, info os.FileInfo) error {
 	return nil
 }
 
-func validateRestrictedDirectoryMode(info os.FileInfo, perm os.FileMode) error {
+func restrictRestrictedDirectory(dir string, perm os.FileMode) error {
+	return os.Chmod(dir, perm)
+}
+
+func validateRestrictedDirectoryMode(_ string, info os.FileInfo, perm os.FileMode) error {
 	if actualPerm := info.Mode().Perm(); actualPerm != perm {
 		return fmt.Errorf("permissions are %s, expected %s", actualPerm, perm)
 	}

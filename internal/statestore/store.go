@@ -264,13 +264,24 @@ func ensureStateStoreDir(path string, explicitPath bool) error {
 }
 
 func ensureExplicitStateStoreDir(parentDir string) error {
+	createdDir := false
 	_, statErr := os.Lstat(parentDir)
 	if errors.Is(statErr, os.ErrNotExist) {
-		if mkdirErr := os.Mkdir(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+		mkdirErr := os.Mkdir(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
+		if mkdirErr == nil {
+			createdDir = true
+		} else if !errors.Is(mkdirErr, os.ErrExist) {
 			return fmt.Errorf("could not create explicit state store directory: %w", mkdirErr)
 		}
 	} else if statErr != nil {
 		return fmt.Errorf("could not inspect explicit state store directory: %w", statErr)
+	}
+
+	if createdDir {
+		if restrictErr := usvc_io.EnsureRestrictedDirectory(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); restrictErr != nil {
+			return fmt.Errorf("could not restrict created explicit state store directory: %w", restrictErr)
+		}
+		return nil
 	}
 
 	if validateErr := usvc_io.ValidateRestrictedDirectory(parentDir, osutil.PermissionOnlyOwnerReadWriteTraverse); validateErr != nil {
