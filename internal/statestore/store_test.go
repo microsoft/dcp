@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -38,9 +39,7 @@ func openRawSQLiteDB(t *testing.T, ctx context.Context, path string) *sql.DB {
 func openTestStore(t *testing.T, ctx context.Context, path string) *Store {
 	t.Helper()
 
-	if runtime.GOOS != "windows" {
-		require.NoError(t, os.Chmod(filepath.Dir(path), osutil.PermissionOnlyOwnerReadWriteTraverse))
-	}
+	require.NoError(t, usvc_io.EnsureRestrictedDirectory(filepath.Dir(path), osutil.PermissionOnlyOwnerReadWriteTraverse))
 	store, openErr := Open(ctx, Options{
 		Path:        path,
 		BusyTimeout: 500 * time.Millisecond,
@@ -205,6 +204,7 @@ func TestOpenWithExplicitPathCreatesMissingParentDirectoryRestricted(t *testing.
 	info, statErr := os.Lstat(stateStoreDir)
 	require.NoError(t, statErr)
 	require.True(t, info.IsDir())
+	require.NoError(t, usvc_io.ValidateRestrictedDirectory(stateStoreDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
 	if runtime.GOOS != "windows" {
 		require.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
 	}
