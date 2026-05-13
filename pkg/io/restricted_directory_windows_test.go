@@ -9,6 +9,7 @@ package io_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,58 +31,98 @@ func TestValidateRestrictedDirectoryRejectsWorldAccess(t *testing.T) {
 	outputDir := t.TempDir()
 	worldSID, worldSIDErr := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(t, worldSIDErr)
-	acl, aclErr := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		{
-			AccessPermissions: windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL,
-			AccessMode:        windows.GRANT_ACCESS,
-			Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeType:  windows.TRUSTEE_IS_GROUP,
-				TrusteeValue: windows.TrusteeValueFromSID(worldSID),
-			},
-		},
-	}, nil)
-	require.NoError(t, aclErr)
-	require.NoError(t, windows.SetNamedSecurityInfo(
-		outputDir,
-		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-		nil,
-		nil,
-		acl,
-		nil,
-	))
-	t.Cleanup(func() {
-		_ = os.Chmod(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
+	setDirectoryDACL(t, outputDir, true, []windows.EXPLICIT_ACCESS{
+		directoryAccessEntry(t, currentUserSID(t), windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, 0),
+		directoryAccessEntry(t, worldSID, windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
 	})
 
 	validateErr := usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
 
-	require.ErrorContains(t, validateErr, "disallowed principal")
+	require.ErrorContains(t, validateErr, "write or control access to disallowed principal")
 }
 
-func TestValidateRestrictedDirectoryRejectsDenyAccessEntry(t *testing.T) {
+func TestValidateRestrictedDirectoryAllowsInheritedReadOnlyAccess(t *testing.T) {
+	worldSID, worldSIDErr := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(t, worldSIDErr)
+	outputDir := directoryWithInheritedAccess(t, worldSID, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_EXECUTE)
+
+	require.NoError(t, usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+}
+
+func TestValidateRestrictedDirectoryRejectsInheritedWorldWriteAccess(t *testing.T) {
+	worldSID, worldSIDErr := windows.CreateWellKnownSid(windows.WinWorldSid)
+	require.NoError(t, worldSIDErr)
+	outputDir := directoryWithInheritedAccess(t, worldSID, windows.FILE_GENERIC_WRITE)
+
+	validateErr := usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
+
+	require.ErrorContains(t, validateErr, "write or control access to disallowed principal")
+}
+
+func TestValidateRestrictedDirectoryAllowsDenyAccessEntry(t *testing.T) {
 	outputDir := t.TempDir()
 	worldSID, worldSIDErr := windows.CreateWellKnownSid(windows.WinWorldSid)
 	require.NoError(t, worldSIDErr)
-	acl, aclErr := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{
-		{
-			AccessPermissions: windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL,
-			AccessMode:        windows.DENY_ACCESS,
-			Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-			Trustee: windows.TRUSTEE{
-				TrusteeForm:  windows.TRUSTEE_IS_SID,
-				TrusteeType:  windows.TRUSTEE_IS_GROUP,
-				TrusteeValue: windows.TrusteeValueFromSID(worldSID),
-			},
+	setDirectoryDACL(t, outputDir, true, []windows.EXPLICIT_ACCESS{
+		directoryAccessEntry(t, currentUserSID(t), windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, 0),
+		directoryAccessEntry(t, worldSID, windows.FILE_WRITE_DATA, windows.DENY_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+	})
+
+	require.NoError(t, usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+}
+
+func TestValidateRestrictedDirectoryAllowsCreatorOwnerAccessEntry(t *testing.T) {
+	outputDir := t.TempDir()
+	creatorOwnerSID, creatorOwnerSIDErr := windows.CreateWellKnownSid(windows.WinCreatorOwnerSid)
+	require.NoError(t, creatorOwnerSIDErr)
+	setDirectoryDACL(t, outputDir, true, []windows.EXPLICIT_ACCESS{
+		directoryAccessEntry(t, currentUserSID(t), windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, 0),
+		directoryAccessEntry(t, creatorOwnerSID, windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+	})
+
+	require.NoError(t, usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+}
+
+func currentUserSID(t *testing.T) *windows.SID {
+	t.Helper()
+	var processToken windows.Token
+	tokenErr := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken)
+	require.NoError(t, tokenErr)
+	defer processToken.Close()
+
+	tokenUser, tokenUserErr := processToken.GetTokenUser()
+	require.NoError(t, tokenUserErr)
+	userSID, copyErr := tokenUser.User.Sid.Copy()
+	require.NoError(t, copyErr)
+	return userSID
+}
+
+func directoryAccessEntry(t *testing.T, sid *windows.SID, accessPermissions windows.ACCESS_MASK, accessMode windows.ACCESS_MODE, inheritance uint32) windows.EXPLICIT_ACCESS {
+	t.Helper()
+	return windows.EXPLICIT_ACCESS{
+		AccessPermissions: accessPermissions,
+		AccessMode:        accessMode,
+		Inheritance:       inheritance,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_UNKNOWN,
+			TrusteeValue: windows.TrusteeValueFromSID(sid),
 		},
-	}, nil)
+	}
+}
+
+func setDirectoryDACL(t *testing.T, outputDir string, protected bool, entries []windows.EXPLICIT_ACCESS) {
+	t.Helper()
+	acl, aclErr := windows.ACLFromEntries(entries, nil)
 	require.NoError(t, aclErr)
+	securityInfo := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION)
+	if protected {
+		securityInfo |= windows.PROTECTED_DACL_SECURITY_INFORMATION
+	}
 	require.NoError(t, windows.SetNamedSecurityInfo(
 		outputDir,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		securityInfo,
 		nil,
 		nil,
 		acl,
@@ -90,8 +131,17 @@ func TestValidateRestrictedDirectoryRejectsDenyAccessEntry(t *testing.T) {
 	t.Cleanup(func() {
 		_ = os.Chmod(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
 	})
+}
 
-	validateErr := usvc_io.ValidateRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse)
+func directoryWithInheritedAccess(t *testing.T, sid *windows.SID, accessPermissions windows.ACCESS_MASK) string {
+	t.Helper()
+	parentDir := t.TempDir()
+	setDirectoryDACL(t, parentDir, false, []windows.EXPLICIT_ACCESS{
+		directoryAccessEntry(t, currentUserSID(t), windows.STANDARD_RIGHTS_ALL|windows.GENERIC_ALL, windows.GRANT_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+		directoryAccessEntry(t, sid, accessPermissions, windows.GRANT_ACCESS, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT),
+	})
 
-	require.ErrorContains(t, validateErr, "deny access entry")
+	outputDir := filepath.Join(parentDir, "child")
+	require.NoError(t, os.Mkdir(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+	return outputDir
 }

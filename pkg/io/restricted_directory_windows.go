@@ -30,7 +30,24 @@ type restrictedDirectoryPrincipals struct {
 	admins     *windows.SID
 }
 
-const restrictedDirectoryAccessMask windows.ACCESS_MASK = windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL
+const (
+	restrictedDirectoryAccessMask windows.ACCESS_MASK = windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL
+
+	// FILE_DELETE_CHILD is directory-specific and is not exposed by x/sys/windows.
+	restrictedDirectoryDeleteChildAccess windows.ACCESS_MASK = 0x00000040
+
+	restrictedDirectoryDangerousAccessMask windows.ACCESS_MASK = windows.FILE_WRITE_DATA |
+		windows.FILE_APPEND_DATA |
+		windows.FILE_WRITE_EA |
+		windows.FILE_WRITE_ATTRIBUTES |
+		restrictedDirectoryDeleteChildAccess |
+		windows.DELETE |
+		windows.WRITE_DAC |
+		windows.WRITE_OWNER |
+		windows.MAXIMUM_ALLOWED |
+		windows.GENERIC_WRITE |
+		windows.GENERIC_ALL
+)
 
 func validateRestrictedDirectoryOwner(dir string, _ os.FileInfo) error {
 	var processToken windows.Token
@@ -105,21 +122,13 @@ func validateRestrictedDirectoryMode(dir string, _ os.FileInfo, perm os.FileMode
 	securityDescriptor, securityDescriptorErr := windows.GetNamedSecurityInfo(
 		dir,
 		windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		windows.DACL_SECURITY_INFORMATION,
 	)
 	if securityDescriptorErr != nil {
 		return fmt.Errorf("could not get directory security descriptor: %w", securityDescriptorErr)
 	}
 	if securityDescriptor == nil {
 		return fmt.Errorf("directory security descriptor is missing")
-	}
-
-	control, _, controlErr := securityDescriptor.Control()
-	if controlErr != nil {
-		return fmt.Errorf("could not get directory security descriptor control bits: %w", controlErr)
-	}
-	if control&windows.SE_DACL_PROTECTED == 0 {
-		return fmt.Errorf("directory dacl inherits permissions from the parent directory")
 	}
 
 	dacl, _, daclErr := securityDescriptor.DACL()
@@ -134,29 +143,33 @@ func validateRestrictedDirectoryMode(dir string, _ os.FileInfo, perm os.FileMode
 	if principalErr != nil {
 		return principalErr
 	}
-	allowedSIDs := uniqueRestrictedDirectoryPrincipals(principals)
+	allowedSIDs, allowedSIDErr := allowedRestrictedDirectoryValidationSIDs(principals)
+	if allowedSIDErr != nil {
+		return allowedSIDErr
+	}
 	for i := uint16(0); i < dacl.AceCount; i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if aceErr := windows.GetAce(dacl, uint32(i), &ace); aceErr != nil {
 			return fmt.Errorf("could not inspect directory dacl entry %d: %w", i, aceErr)
 		}
-		if ace.Header.AceFlags&windows.INHERITED_ACE != 0 {
-			return fmt.Errorf("directory dacl contains inherited access entry %d", i)
-		}
 		switch ace.Header.AceType {
 		case windows.ACCESS_ALLOWED_ACE_TYPE:
 			aceSid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-			if !sidMatchesAny(aceSid, allowedSIDs) {
-				return fmt.Errorf("directory dacl grants access to disallowed principal %s", aceSid.String())
+			if !sidMatchesAny(aceSid, allowedSIDs) && aceHasDangerousAccess(ace.Mask) {
+				return fmt.Errorf("directory dacl grants write or control access to disallowed principal %s", aceSid.String())
 			}
 		case windows.ACCESS_DENIED_ACE_TYPE:
-			return fmt.Errorf("directory dacl contains unsupported deny access entry %d", i)
+			continue
 		default:
 			return fmt.Errorf("directory dacl contains unsupported access entry type %d", ace.Header.AceType)
 		}
 	}
 
 	return nil
+}
+
+func aceHasDangerousAccess(accessMask windows.ACCESS_MASK) bool {
+	return accessMask&restrictedDirectoryDangerousAccessMask != 0
 }
 
 func restrictedDirectoryACL(principals restrictedDirectoryPrincipals) (*windows.ACL, error) {
@@ -225,6 +238,23 @@ func uniqueRestrictedDirectoryPrincipals(principals restrictedDirectoryPrincipal
 		}
 	}
 	return uniqueSIDs
+}
+
+func allowedRestrictedDirectoryValidationSIDs(principals restrictedDirectoryPrincipals) ([]*windows.SID, error) {
+	allowedSIDs := uniqueRestrictedDirectoryPrincipals(principals)
+	for _, sidType := range []windows.WELL_KNOWN_SID_TYPE{
+		windows.WinCreatorOwnerSid,
+		windows.WinCreatorOwnerRightsSid,
+	} {
+		sid, sidErr := windows.CreateWellKnownSid(sidType)
+		if sidErr != nil {
+			return nil, fmt.Errorf("could not get well-known sid %d: %w", sidType, sidErr)
+		}
+		if !sidMatchesAny(sid, allowedSIDs) {
+			allowedSIDs = append(allowedSIDs, sid)
+		}
+	}
+	return allowedSIDs, nil
 }
 
 func sidMatchesAny(sid *windows.SID, candidates []*windows.SID) bool {
