@@ -27,6 +27,7 @@ import (
 type TestProcessExecutableRunner struct {
 	inner          controllers.ExecutableRunner
 	autoExecutions []testutil.AutoExecution
+	afterStartRun  func(*apiv1.Executable, *controllers.ExecutableStartResult)
 	m              *sync.RWMutex
 }
 
@@ -60,6 +61,13 @@ func (e *TestProcessExecutableRunner) RemoveAutoExecution(sc testutil.ProcessSea
 	})
 }
 
+func (r *TestProcessExecutableRunner) SetAfterStartRunHook(hook func(*apiv1.Executable, *controllers.ExecutableStartResult)) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	r.afterStartRun = hook
+}
+
 func (r *TestProcessExecutableRunner) StartRun(
 	ctx context.Context,
 	exe *apiv1.Executable,
@@ -78,7 +86,9 @@ func (r *TestProcessExecutableRunner) StartRun(
 	r.m.RUnlock()
 
 	if ae == nil || ae.AsynchronousStartupDelay == 0 {
-		return r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		result := r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		r.runAfterStartRunHook(exe, result)
+		return result
 	}
 
 	// Start a goroutine to call the underlying runner after the delay.
@@ -95,12 +105,22 @@ func (r *TestProcessExecutableRunner) StartRun(
 		// Call the underlying runner. It will call OnStartupCompleted() on the runChangeHandler.
 		// We don't need to do anything with the result here--it will be reported by the underlying runner
 		// via OnStartupCompleted().
-		_ = r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		result := r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		r.runAfterStartRunHook(exe, result)
 	}()
 
 	result := controllers.NewExecutableStartResult()
 	result.ExeState = apiv1.ExecutableStateStarting
 	return result
+}
+
+func (r *TestProcessExecutableRunner) runAfterStartRunHook(exe *apiv1.Executable, result *controllers.ExecutableStartResult) {
+	r.m.RLock()
+	hook := r.afterStartRun
+	r.m.RUnlock()
+	if hook != nil {
+		hook(exe, result)
+	}
 }
 
 // StopRun implements ExecutableRunner by delegating to the underlying runner.

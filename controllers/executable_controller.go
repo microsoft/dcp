@@ -517,9 +517,19 @@ func (r *ExecutableReconciler) startExecutable(
 			persistErr := r.upsertPersistentProcessRecord(ctx, exe, res)
 			if persistErr != nil {
 				log.Error(persistErr, "Could not persist Executable process record")
-				ri.ExeState = apiv1.ExecutableStateUnknown
-				r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
-				return statusChanged
+				r.cleanUpPersistentStartAfterRecordFailure(ctx, exe, ri.startupStage, res, log)
+
+				now := metav1.NowMicro()
+				ri.ExeState = apiv1.ExecutableStateFailedToStart
+				ri.Pid = apiv1.UnknownPID
+				ri.RunID = UnknownRunID
+				ri.StartupTimestamp = now
+				ri.FinishTimestamp = now
+				change := ri.ApplyTo(exe, log)
+				exe.Status.ExecutionID = ""
+				exe.Status.PID = apiv1.UnknownPID
+				r.runs.DeleteByNamespacedName(exe.NamespacedName())
+				return change | r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 			}
 		}
 
@@ -602,6 +612,39 @@ func (r *ExecutableReconciler) startExecutable(
 		// Asynchronous start in progress, wait for OnStartupCompleted() to be called
 		return additionalReconciliationNeeded | environmentChanged
 	}
+}
+
+func (r *ExecutableReconciler) cleanUpPersistentStartAfterRecordFailure(
+	ctx context.Context,
+	exe *apiv1.Executable,
+	startupStage ExecutableStartuptStage,
+	res *ExecutableStartResult,
+	log logr.Logger,
+) {
+	if res == nil {
+		return
+	}
+
+	if res.RunID != UnknownRunID {
+		runner, runnerNotFoundErr := r.getExecutableRunner(exe, startupStage)
+		if runnerNotFoundErr != nil {
+			log.Error(runnerNotFoundErr, "The persistent Executable cannot be stopped after process record update failed")
+		} else if stopErr := runner.StopRun(ctx, res.RunID, log); stopErr != nil {
+			log.Error(stopErr, "Could not stop persistent Executable after process record update failed", "RunID", res.RunID)
+		}
+	}
+
+	removeOutputFile := func(path string, stream string) {
+		if path == "" || osutil.EnvVarSwitchEnabled(usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS) {
+			return
+		}
+		if removeErr := logs.RemoveWithRetry(ctx, path); removeErr != nil {
+			log.Error(removeErr, "Could not remove persistent Executable output file after process record update failed", "Path", path, "Stream", stream)
+		}
+	}
+
+	removeOutputFile(res.StdOutFile, "stdout")
+	removeOutputFile(res.StdErrFile, "stderr")
 }
 
 func (r *ExecutableReconciler) OnMainProcessChanged(runID RunID, pid process.Pid_t) {

@@ -11,7 +11,8 @@
 package openapi
 
 import (
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "github.com/microsoft/dcp/api/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	version "k8s.io/apimachinery/pkg/version"
 	common "k8s.io/kube-openapi/pkg/common"
@@ -20,123 +21,124 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		"github.com/microsoft/dcp/api/v1.AmbientEnvironment":                schema_microsoft_dcp_api_v1_AmbientEnvironment(ref),
-		"github.com/microsoft/dcp/api/v1.Container":                         schema_microsoft_dcp_api_v1_Container(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerBuildContext":             schema_microsoft_dcp_api_v1_ContainerBuildContext(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerBuildSecret":              schema_microsoft_dcp_api_v1_ContainerBuildSecret(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerExec":                     schema_microsoft_dcp_api_v1_ContainerExec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerExecList":                 schema_microsoft_dcp_api_v1_ContainerExecList(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerExecSpec":                 schema_microsoft_dcp_api_v1_ContainerExecSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerExecStatus":               schema_microsoft_dcp_api_v1_ContainerExecStatus(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerLabel":                    schema_microsoft_dcp_api_v1_ContainerLabel(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerList":                     schema_microsoft_dcp_api_v1_ContainerList(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetwork":                  schema_microsoft_dcp_api_v1_ContainerNetwork(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnection":        schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig":  schema_microsoft_dcp_api_v1_ContainerNetworkConnectionConfig(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionList":    schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionSpec":    schema_microsoft_dcp_api_v1_ContainerNetworkConnectionSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkList":              schema_microsoft_dcp_api_v1_ContainerNetworkList(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkSpec":              schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkStatus":            schema_microsoft_dcp_api_v1_ContainerNetworkStatus(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxy":       schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyList":   schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxySpec":   schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyStatus": schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerPemCertificates":          schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerPort":                     schema_microsoft_dcp_api_v1_ContainerPort(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerSpec":                     schema_microsoft_dcp_api_v1_ContainerSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerStatus":                   schema_microsoft_dcp_api_v1_ContainerStatus(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerVolume":                   schema_microsoft_dcp_api_v1_ContainerVolume(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerVolumeList":               schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerVolumeSpec":               schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ContainerVolumeStatus":             schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref),
-		"github.com/microsoft/dcp/api/v1.CreateFileSystem":                  schema_microsoft_dcp_api_v1_CreateFileSystem(ref),
-		"github.com/microsoft/dcp/api/v1.Endpoint":                          schema_microsoft_dcp_api_v1_Endpoint(ref),
-		"github.com/microsoft/dcp/api/v1.EndpointList":                      schema_microsoft_dcp_api_v1_EndpointList(ref),
-		"github.com/microsoft/dcp/api/v1.EndpointSpec":                      schema_microsoft_dcp_api_v1_EndpointSpec(ref),
-		"github.com/microsoft/dcp/api/v1.EndpointStatus":                    schema_microsoft_dcp_api_v1_EndpointStatus(ref),
-		"github.com/microsoft/dcp/api/v1.EnvVar":                            schema_microsoft_dcp_api_v1_EnvVar(ref),
-		"github.com/microsoft/dcp/api/v1.Executable":                        schema_microsoft_dcp_api_v1_Executable(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableList":                    schema_microsoft_dcp_api_v1_ExecutableList(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutablePemCertificates":         schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableProbe":                   schema_microsoft_dcp_api_v1_ExecutableProbe(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSet":              schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetList":          schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetSpec":          schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetStatus":        schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableSpec":                    schema_microsoft_dcp_api_v1_ExecutableSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableStatus":                  schema_microsoft_dcp_api_v1_ExecutableStatus(ref),
-		"github.com/microsoft/dcp/api/v1.ExecutableTemplate":                schema_microsoft_dcp_api_v1_ExecutableTemplate(ref),
-		"github.com/microsoft/dcp/api/v1.FileSystemEntry":                   schema_microsoft_dcp_api_v1_FileSystemEntry(ref),
-		"github.com/microsoft/dcp/api/v1.HealthProbe":                       schema_microsoft_dcp_api_v1_HealthProbe(ref),
-		"github.com/microsoft/dcp/api/v1.HealthProbeResult":                 schema_microsoft_dcp_api_v1_HealthProbeResult(ref),
-		"github.com/microsoft/dcp/api/v1.HealthProbeSchedule":               schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
-		"github.com/microsoft/dcp/api/v1.HttpHeader":                        schema_microsoft_dcp_api_v1_HttpHeader(ref),
-		"github.com/microsoft/dcp/api/v1.HttpProbe":                         schema_microsoft_dcp_api_v1_HttpProbe(ref),
-		"github.com/microsoft/dcp/api/v1.ImageLayer":                        schema_microsoft_dcp_api_v1_ImageLayer(ref),
-		"github.com/microsoft/dcp/api/v1.LogOptions":                        schema_microsoft_dcp_api_v1_LogOptions(ref),
-		"github.com/microsoft/dcp/api/v1.LogStreamer":                       schema_microsoft_dcp_api_v1_LogStreamer(ref),
-		"github.com/microsoft/dcp/api/v1.PemCertificate":                    schema_microsoft_dcp_api_v1_PemCertificate(ref),
-		"github.com/microsoft/dcp/api/v1.Service":                           schema_microsoft_dcp_api_v1_Service(ref),
-		"github.com/microsoft/dcp/api/v1.ServiceList":                       schema_microsoft_dcp_api_v1_ServiceList(ref),
-		"github.com/microsoft/dcp/api/v1.ServiceSpec":                       schema_microsoft_dcp_api_v1_ServiceSpec(ref),
-		"github.com/microsoft/dcp/api/v1.ServiceStatus":                     schema_microsoft_dcp_api_v1_ServiceStatus(ref),
-		"github.com/microsoft/dcp/api/v1.TunnelConfiguration":               schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
-		"github.com/microsoft/dcp/api/v1.TunnelStatus":                      schema_microsoft_dcp_api_v1_TunnelStatus(ref),
-		"github.com/microsoft/dcp/api/v1.VolumeMount":                       schema_microsoft_dcp_api_v1_VolumeMount(ref),
-		v1.APIGroup{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_APIGroup(ref),
-		v1.APIGroupList{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_APIGroupList(ref),
-		v1.APIResource{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_APIResource(ref),
-		v1.APIResourceList{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_APIResourceList(ref),
-		v1.APIVersions{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_APIVersions(ref),
-		v1.ApplyOptions{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		v1.Condition{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_Condition(ref),
-		v1.CreateOptions{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_CreateOptions(ref),
-		v1.DeleteOptions{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		v1.Duration{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_Duration(ref),
-		v1.FieldSelectorRequirement{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
-		v1.FieldsV1{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_FieldsV1(ref),
-		v1.GetOptions{}.OpenAPIModelName():                                  schema_pkg_apis_meta_v1_GetOptions(ref),
-		v1.GroupKind{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_GroupKind(ref),
-		v1.GroupResource{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_GroupResource(ref),
-		v1.GroupVersion{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_GroupVersion(ref),
-		v1.GroupVersionForDiscovery{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		v1.GroupVersionKind{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		v1.GroupVersionResource{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		v1.InternalEvent{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_InternalEvent(ref),
-		v1.LabelSelector{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_LabelSelector(ref),
-		v1.LabelSelectorRequirement{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		v1.List{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_List(ref),
-		v1.ListMeta{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_ListMeta(ref),
-		v1.ListOptions{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_ListOptions(ref),
-		v1.ManagedFieldsEntry{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		v1.MicroTime{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_MicroTime(ref),
-		v1.ObjectMeta{}.OpenAPIModelName():                                  schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		v1.OwnerReference{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_OwnerReference(ref),
-		v1.PartialObjectMetadata{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		v1.PartialObjectMetadataList{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		v1.Patch{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_Patch(ref),
-		v1.PatchOptions{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_PatchOptions(ref),
-		v1.Preconditions{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_Preconditions(ref),
-		v1.RootPaths{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_RootPaths(ref),
-		v1.ServerAddressByClientCIDR{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		v1.Status{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_Status(ref),
-		v1.StatusCause{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_StatusCause(ref),
-		v1.StatusDetails{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_StatusDetails(ref),
-		v1.Table{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_Table(ref),
-		v1.TableColumnDefinition{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		v1.TableOptions{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_TableOptions(ref),
-		v1.TableRow{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_TableRow(ref),
-		v1.TableRowCondition{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		v1.Time{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_Time(ref),
-		v1.Timestamp{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_Timestamp(ref),
-		v1.TypeMeta{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_TypeMeta(ref),
-		v1.UpdateOptions{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		v1.WatchEvent{}.OpenAPIModelName():                                  schema_pkg_apis_meta_v1_WatchEvent(ref),
-		runtime.RawExtension{}.OpenAPIModelName():                           schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		runtime.TypeMeta{}.OpenAPIModelName():                               schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
-		runtime.Unknown{}.OpenAPIModelName():                                schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
-		version.Info{}.OpenAPIModelName():                                   schema_k8sio_apimachinery_pkg_version_Info(ref),
+		v1.AmbientEnvironment{}.OpenAPIModelName():                schema_microsoft_dcp_api_v1_AmbientEnvironment(ref),
+		v1.Container{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_Container(ref),
+		v1.ContainerBuildContext{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ContainerBuildContext(ref),
+		v1.ContainerBuildSecret{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ContainerBuildSecret(ref),
+		v1.ContainerExec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerExec(ref),
+		v1.ContainerExecList{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v1_ContainerExecList(ref),
+		v1.ContainerExecSpec{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v1_ContainerExecSpec(ref),
+		v1.ContainerExecStatus{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerExecStatus(ref),
+		v1.ContainerLabel{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ContainerLabel(ref),
+		v1.ContainerList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerList(ref),
+		v1.ContainerNetwork{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_ContainerNetwork(ref),
+		v1.ContainerNetworkConnection{}.OpenAPIModelName():        schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref),
+		v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName():  schema_microsoft_dcp_api_v1_ContainerNetworkConnectionConfig(ref),
+		v1.ContainerNetworkConnectionList{}.OpenAPIModelName():    schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref),
+		v1.ContainerNetworkConnectionSpec{}.OpenAPIModelName():    schema_microsoft_dcp_api_v1_ContainerNetworkConnectionSpec(ref),
+		v1.ContainerNetworkList{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ContainerNetworkList(ref),
+		v1.ContainerNetworkSpec{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref),
+		v1.ContainerNetworkStatus{}.OpenAPIModelName():            schema_microsoft_dcp_api_v1_ContainerNetworkStatus(ref),
+		v1.ContainerNetworkTunnelProxy{}.OpenAPIModelName():       schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref),
+		v1.ContainerNetworkTunnelProxyList{}.OpenAPIModelName():   schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref),
+		v1.ContainerNetworkTunnelProxySpec{}.OpenAPIModelName():   schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref),
+		v1.ContainerNetworkTunnelProxyStatus{}.OpenAPIModelName(): schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref),
+		v1.ContainerPemCertificates{}.OpenAPIModelName():          schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref),
+		v1.ContainerPort{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerPort(ref),
+		v1.ContainerSpec{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ContainerSpec(ref),
+		v1.ContainerStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerStatus(ref),
+		v1.ContainerVolume{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ContainerVolume(ref),
+		v1.ContainerVolumeList{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerVolumeList(ref),
+		v1.ContainerVolumeSpec{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_ContainerVolumeSpec(ref),
+		v1.ContainerVolumeStatus{}.OpenAPIModelName():             schema_microsoft_dcp_api_v1_ContainerVolumeStatus(ref),
+		v1.CreateFileSystem{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_CreateFileSystem(ref),
+		v1.Endpoint{}.OpenAPIModelName():                          schema_microsoft_dcp_api_v1_Endpoint(ref),
+		v1.EndpointList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_EndpointList(ref),
+		v1.EndpointSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_EndpointSpec(ref),
+		v1.EndpointStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_EndpointStatus(ref),
+		v1.EnvVar{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_EnvVar(ref),
+		v1.Executable{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_Executable(ref),
+		v1.ExecutableList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ExecutableList(ref),
+		v1.ExecutablePemCertificates{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref),
+		v1.ExecutableProbe{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_ExecutableProbe(ref),
+		v1.ExecutableReplicaSet{}.OpenAPIModelName():              schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref),
+		v1.ExecutableReplicaSetList{}.OpenAPIModelName():          schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref),
+		v1.ExecutableReplicaSetSpec{}.OpenAPIModelName():          schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref),
+		v1.ExecutableReplicaSetStatus{}.OpenAPIModelName():        schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref),
+		v1.ExecutableSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ExecutableSpec(ref),
+		v1.ExecutableStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_ExecutableStatus(ref),
+		v1.ExecutableTemplate{}.OpenAPIModelName():                schema_microsoft_dcp_api_v1_ExecutableTemplate(ref),
+		v1.FileSystemEntry{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v1_FileSystemEntry(ref),
+		v1.HealthProbe{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_HealthProbe(ref),
+		v1.HealthProbeResult{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v1_HealthProbeResult(ref),
+		v1.HealthProbeSchedule{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
+		v1.HttpHeader{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_HttpHeader(ref),
+		v1.HttpProbe{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_HttpProbe(ref),
+		v1.ImageLayer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ImageLayer(ref),
+		v1.LogOptions{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_LogOptions(ref),
+		v1.LogStreamer{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_LogStreamer(ref),
+		v1.PemCertificate{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_PemCertificate(ref),
+		v1.Service{}.OpenAPIModelName():                           schema_microsoft_dcp_api_v1_Service(ref),
+		v1.ServiceList{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ServiceList(ref),
+		v1.ServiceSpec{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ServiceSpec(ref),
+		v1.ServiceStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ServiceStatus(ref),
+		v1.TunnelConfiguration{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
+		v1.TunnelStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_TunnelStatus(ref),
+		v1.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		metav1.APIGroup{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_APIGroup(ref),
+		metav1.APIGroupList{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_APIGroupList(ref),
+		metav1.APIResource{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_APIResource(ref),
+		metav1.APIResourceList{}.OpenAPIModelName():               schema_pkg_apis_meta_v1_APIResourceList(ref),
+		metav1.APIVersions{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_APIVersions(ref),
+		metav1.ApplyOptions{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		metav1.Condition{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_Condition(ref),
+		metav1.CreateOptions{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_CreateOptions(ref),
+		metav1.DeleteOptions{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		metav1.Duration{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_Duration(ref),
+		metav1.FieldSelectorRequirement{}.OpenAPIModelName():      schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
+		metav1.FieldsV1{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_FieldsV1(ref),
+		metav1.GetOptions{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_GetOptions(ref),
+		metav1.GroupKind{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_GroupKind(ref),
+		metav1.GroupResource{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_GroupResource(ref),
+		metav1.GroupVersion{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_GroupVersion(ref),
+		metav1.GroupVersionForDiscovery{}.OpenAPIModelName():      schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		metav1.GroupVersionKind{}.OpenAPIModelName():              schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		metav1.GroupVersionResource{}.OpenAPIModelName():          schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		metav1.InternalEvent{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_InternalEvent(ref),
+		metav1.LabelSelector{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_LabelSelector(ref),
+		metav1.LabelSelectorRequirement{}.OpenAPIModelName():      schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		metav1.List{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_List(ref),
+		metav1.ListMeta{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_ListMeta(ref),
+		metav1.ListOptions{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_ListOptions(ref),
+		metav1.ManagedFieldsEntry{}.OpenAPIModelName():            schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		metav1.MicroTime{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_MicroTime(ref),
+		metav1.ObjectMeta{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		metav1.OwnerReference{}.OpenAPIModelName():                schema_pkg_apis_meta_v1_OwnerReference(ref),
+		metav1.PartialObjectMetadata{}.OpenAPIModelName():         schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		metav1.PartialObjectMetadataList{}.OpenAPIModelName():     schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		metav1.Patch{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_Patch(ref),
+		metav1.PatchOptions{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_PatchOptions(ref),
+		metav1.Preconditions{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_Preconditions(ref),
+		metav1.RootPaths{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_RootPaths(ref),
+		metav1.ServerAddressByClientCIDR{}.OpenAPIModelName():     schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		metav1.ShardInfo{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_ShardInfo(ref),
+		metav1.Status{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_Status(ref),
+		metav1.StatusCause{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_StatusCause(ref),
+		metav1.StatusDetails{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_StatusDetails(ref),
+		metav1.Table{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_Table(ref),
+		metav1.TableColumnDefinition{}.OpenAPIModelName():         schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		metav1.TableOptions{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_TableOptions(ref),
+		metav1.TableRow{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_TableRow(ref),
+		metav1.TableRowCondition{}.OpenAPIModelName():             schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		metav1.Time{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_Time(ref),
+		metav1.Timestamp{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_Timestamp(ref),
+		metav1.TypeMeta{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_TypeMeta(ref),
+		metav1.UpdateOptions{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		metav1.WatchEvent{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_WatchEvent(ref),
+		runtime.RawExtension{}.OpenAPIModelName():                 schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		runtime.TypeMeta{}.OpenAPIModelName():                     schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
+		runtime.Unknown{}.OpenAPIModelName():                      schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
+		version.Info{}.OpenAPIModelName():                         schema_k8sio_apimachinery_pkg_version_Info(ref),
 	}
 }
 
@@ -183,26 +185,26 @@ func schema_microsoft_dcp_api_v1_Container(ref common.ReferenceCallback) common.
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerSpec"),
+							Ref:     ref(v1.ContainerSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerStatus"),
+							Ref:     ref(v1.ContainerStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerSpec", "github.com/microsoft/dcp/api/v1.ContainerStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ContainerSpec{}.OpenAPIModelName(), v1.ContainerStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -260,7 +262,7 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -279,7 +281,7 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerBuildSecret"),
+										Ref:     ref(v1.ContainerBuildSecret{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -308,7 +310,7 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerLabel"),
+										Ref:     ref(v1.ContainerLabel{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -326,7 +328,7 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerBuildSecret", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.EnvVar"},
+			v1.ContainerBuildSecret{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName()},
 	}
 }
 
@@ -396,26 +398,26 @@ func schema_microsoft_dcp_api_v1_ContainerExec(ref common.ReferenceCallback) com
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerExecSpec"),
+							Ref:     ref(v1.ContainerExecSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerExecStatus"),
+							Ref:     ref(v1.ContainerExecStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerExecSpec", "github.com/microsoft/dcp/api/v1.ContainerExecStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ContainerExecSpec{}.OpenAPIModelName(), v1.ContainerExecStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -443,7 +445,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecList(ref common.ReferenceCallback)
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -453,7 +455,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecList(ref common.ReferenceCallback)
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerExec"),
+										Ref:     ref(v1.ContainerExec{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -464,7 +466,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecList(ref common.ReferenceCallback)
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerExec", v1.ListMeta{}.OpenAPIModelName()},
+			v1.ContainerExec{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -499,7 +501,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecSpec(ref common.ReferenceCallback)
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -565,7 +567,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecSpec(ref common.ReferenceCallback)
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.EnvVar"},
+			v1.EnvVar{}.OpenAPIModelName()},
 	}
 }
 
@@ -586,13 +588,13 @@ func schema_microsoft_dcp_api_v1_ContainerExecStatus(ref common.ReferenceCallbac
 					"startupTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Time the command was started",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"finishTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Time the command finished running",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"exitCode": {
@@ -632,7 +634,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecStatus(ref common.ReferenceCallbac
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -662,7 +664,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecStatus(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.EnvVar", v1.MicroTime{}.OpenAPIModelName()},
+			v1.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -719,7 +721,7 @@ func schema_microsoft_dcp_api_v1_ContainerList(ref common.ReferenceCallback) com
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -729,7 +731,7 @@ func schema_microsoft_dcp_api_v1_ContainerList(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.Container"),
+										Ref:     ref(v1.Container{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -740,7 +742,7 @@ func schema_microsoft_dcp_api_v1_ContainerList(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.Container", v1.ListMeta{}.OpenAPIModelName()},
+			v1.Container{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -768,26 +770,26 @@ func schema_microsoft_dcp_api_v1_ContainerNetwork(ref common.ReferenceCallback) 
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkSpec"),
+							Ref:     ref(v1.ContainerNetworkSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkStatus"),
+							Ref:     ref(v1.ContainerNetworkStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerNetworkSpec", "github.com/microsoft/dcp/api/v1.ContainerNetworkStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ContainerNetworkSpec{}.OpenAPIModelName(), v1.ContainerNetworkStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -815,20 +817,20 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkConnection(ref common.Reference
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionSpec"),
+							Ref:     ref(v1.ContainerNetworkConnectionSpec{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionSpec", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ContainerNetworkConnectionSpec{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -897,7 +899,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref common.Refer
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -907,7 +909,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref common.Refer
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkConnection"),
+										Ref:     ref(v1.ContainerNetworkConnection{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -918,7 +920,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkConnectionList(ref common.Refer
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerNetworkConnection", v1.ListMeta{}.OpenAPIModelName()},
+			v1.ContainerNetworkConnection{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -996,7 +998,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkList(ref common.ReferenceCallba
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -1006,7 +1008,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkList(ref common.ReferenceCallba
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetwork"),
+										Ref:     ref(v1.ContainerNetwork{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1017,7 +1019,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkList(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerNetwork", v1.ListMeta{}.OpenAPIModelName()},
+			v1.ContainerNetwork{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -1194,26 +1196,26 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxy(ref common.Referenc
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxySpec"),
+							Ref:     ref(v1.ContainerNetworkTunnelProxySpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyStatus"),
+							Ref:     ref(v1.ContainerNetworkTunnelProxyStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxySpec", "github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxyStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ContainerNetworkTunnelProxySpec{}.OpenAPIModelName(), v1.ContainerNetworkTunnelProxyStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -1241,7 +1243,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref common.Refe
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -1251,7 +1253,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref common.Refe
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxy"),
+										Ref:     ref(v1.ContainerNetworkTunnelProxy{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1262,7 +1264,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyList(ref common.Refe
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerNetworkTunnelProxy", v1.ListMeta{}.OpenAPIModelName()},
+			v1.ContainerNetworkTunnelProxy{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -1314,7 +1316,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref common.Refe
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.TunnelConfiguration"),
+										Ref:     ref(v1.TunnelConfiguration{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1332,7 +1334,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxySpec(ref common.Refe
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.TunnelConfiguration"},
+			v1.TunnelConfiguration{}.OpenAPIModelName()},
 	}
 }
 
@@ -1363,7 +1365,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.TunnelStatus"),
+										Ref:     ref(v1.TunnelStatus{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1400,7 +1402,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 					"serverProxyStartupTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Server proxy process startup timestamp.",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"serverProxyStdOutFile": {
@@ -1449,7 +1451,7 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkTunnelProxyStatus(ref common.Re
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.TunnelStatus", v1.MicroTime{}.OpenAPIModelName()},
+			v1.TunnelStatus{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -1473,7 +1475,7 @@ func schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.PemCertificate"),
+										Ref:     ref(v1.PemCertificate{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1517,7 +1519,7 @@ func schema_microsoft_dcp_api_v1_ContainerPemCertificates(ref common.ReferenceCa
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.PemCertificate"},
+			v1.PemCertificate{}.OpenAPIModelName()},
 	}
 }
 
@@ -1580,7 +1582,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 					"build": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Optional build context to use to build the container image",
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ContainerBuildContext"),
+							Ref:         ref(v1.ContainerBuildContext{}.OpenAPIModelName()),
 						},
 					},
 					"containerName": {
@@ -1603,7 +1605,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.VolumeMount"),
+										Ref:     ref(v1.VolumeMount{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1622,7 +1624,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerPort"),
+										Ref:     ref(v1.ContainerPort{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1644,7 +1646,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1731,7 +1733,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig"),
+										Ref:     ref(v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1754,7 +1756,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 					"monitorTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"runArgs": {
@@ -1793,7 +1795,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerLabel"),
+										Ref:     ref(v1.ContainerLabel{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1812,7 +1814,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbe"),
+										Ref:     ref(v1.HealthProbe{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1845,7 +1847,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.CreateFileSystem"),
+										Ref:     ref(v1.CreateFileSystem{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1864,7 +1866,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ImageLayer"),
+										Ref:     ref(v1.ImageLayer{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1873,14 +1875,14 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 					"pemCertificates": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PEM formatted public certificates to be created in the container",
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ContainerPemCertificates"),
+							Ref:         ref(v1.ContainerPemCertificates{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerBuildContext", "github.com/microsoft/dcp/api/v1.ContainerLabel", "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig", "github.com/microsoft/dcp/api/v1.ContainerPemCertificates", "github.com/microsoft/dcp/api/v1.ContainerPort", "github.com/microsoft/dcp/api/v1.CreateFileSystem", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbe", "github.com/microsoft/dcp/api/v1.ImageLayer", "github.com/microsoft/dcp/api/v1.VolumeMount", v1.MicroTime{}.OpenAPIModelName()},
+			v1.ContainerBuildContext{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v1.ContainerPemCertificates{}.OpenAPIModelName(), v1.ContainerPort{}.OpenAPIModelName(), v1.CreateFileSystem{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.ImageLayer{}.OpenAPIModelName(), v1.VolumeMount{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -1915,13 +1917,13 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 					"startupTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timestamp of the Container start attempt",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"finishTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timestamp when the Container was terminated last",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"startupStdOutFile": {
@@ -1968,7 +1970,7 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2037,7 +2039,7 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbeResult"),
+										Ref:     ref(v1.HealthProbeResult{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2054,7 +2056,7 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbeResult", v1.MicroTime{}.OpenAPIModelName()},
+			v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbeResult{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -2082,26 +2084,26 @@ func schema_microsoft_dcp_api_v1_ContainerVolume(ref common.ReferenceCallback) c
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerVolumeSpec"),
+							Ref:     ref(v1.ContainerVolumeSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerVolumeStatus"),
+							Ref:     ref(v1.ContainerVolumeStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerVolumeSpec", "github.com/microsoft/dcp/api/v1.ContainerVolumeStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ContainerVolumeSpec{}.OpenAPIModelName(), v1.ContainerVolumeStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2129,7 +2131,7 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeList(ref common.ReferenceCallbac
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -2139,7 +2141,7 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeList(ref common.ReferenceCallbac
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ContainerVolume"),
+										Ref:     ref(v1.ContainerVolume{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2150,7 +2152,7 @@ func schema_microsoft_dcp_api_v1_ContainerVolumeList(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ContainerVolume", v1.ListMeta{}.OpenAPIModelName()},
+			v1.ContainerVolume{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2251,7 +2253,7 @@ func schema_microsoft_dcp_api_v1_CreateFileSystem(ref common.ReferenceCallback) 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.FileSystemEntry"),
+										Ref:     ref(v1.FileSystemEntry{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2261,7 +2263,7 @@ func schema_microsoft_dcp_api_v1_CreateFileSystem(ref common.ReferenceCallback) 
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.FileSystemEntry"},
+			v1.FileSystemEntry{}.OpenAPIModelName()},
 	}
 }
 
@@ -2289,26 +2291,26 @@ func schema_microsoft_dcp_api_v1_Endpoint(ref common.ReferenceCallback) common.O
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.EndpointSpec"),
+							Ref:     ref(v1.EndpointSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.EndpointStatus"),
+							Ref:     ref(v1.EndpointStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.EndpointSpec", "github.com/microsoft/dcp/api/v1.EndpointStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.EndpointSpec{}.OpenAPIModelName(), v1.EndpointStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2336,7 +2338,7 @@ func schema_microsoft_dcp_api_v1_EndpointList(ref common.ReferenceCallback) comm
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -2346,7 +2348,7 @@ func schema_microsoft_dcp_api_v1_EndpointList(ref common.ReferenceCallback) comm
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.Endpoint"),
+										Ref:     ref(v1.Endpoint{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2357,7 +2359,7 @@ func schema_microsoft_dcp_api_v1_EndpointList(ref common.ReferenceCallback) comm
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.Endpoint", v1.ListMeta{}.OpenAPIModelName()},
+			v1.Endpoint{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2471,26 +2473,26 @@ func schema_microsoft_dcp_api_v1_Executable(ref common.ReferenceCallback) common
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableSpec"),
+							Ref:     ref(v1.ExecutableSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableStatus"),
+							Ref:     ref(v1.ExecutableStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableSpec", "github.com/microsoft/dcp/api/v1.ExecutableStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ExecutableSpec{}.OpenAPIModelName(), v1.ExecutableStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2518,7 +2520,7 @@ func schema_microsoft_dcp_api_v1_ExecutableList(ref common.ReferenceCallback) co
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -2528,7 +2530,7 @@ func schema_microsoft_dcp_api_v1_ExecutableList(ref common.ReferenceCallback) co
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.Executable"),
+										Ref:     ref(v1.Executable{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2539,7 +2541,7 @@ func schema_microsoft_dcp_api_v1_ExecutableList(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.Executable", v1.ListMeta{}.OpenAPIModelName()},
+			v1.Executable{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2563,7 +2565,7 @@ func schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref common.ReferenceC
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.PemCertificate"),
+										Ref:     ref(v1.PemCertificate{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2580,7 +2582,7 @@ func schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref common.ReferenceC
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.PemCertificate"},
+			v1.PemCertificate{}.OpenAPIModelName()},
 	}
 }
 
@@ -2595,7 +2597,7 @@ func schema_microsoft_dcp_api_v1_ExecutableProbe(ref common.ReferenceCallback) c
 						SchemaProps: spec.SchemaProps{
 							Description: "Template for creating the Executable that performs the health check",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableTemplate"),
+							Ref:         ref(v1.ExecutableTemplate{}.OpenAPIModelName()),
 						},
 					},
 				},
@@ -2603,7 +2605,7 @@ func schema_microsoft_dcp_api_v1_ExecutableProbe(ref common.ReferenceCallback) c
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableTemplate"},
+			v1.ExecutableTemplate{}.OpenAPIModelName()},
 	}
 }
 
@@ -2631,26 +2633,26 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSet(ref common.ReferenceCallba
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableReplicaSetSpec"),
+							Ref:     ref(v1.ExecutableReplicaSetSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableReplicaSetStatus"),
+							Ref:     ref(v1.ExecutableReplicaSetStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableReplicaSetSpec", "github.com/microsoft/dcp/api/v1.ExecutableReplicaSetStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ExecutableReplicaSetSpec{}.OpenAPIModelName(), v1.ExecutableReplicaSetStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2678,7 +2680,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref common.ReferenceCa
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -2688,7 +2690,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref common.ReferenceCa
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.ExecutableReplicaSet"),
+										Ref:     ref(v1.ExecutableReplicaSet{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2699,7 +2701,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetList(ref common.ReferenceCa
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableReplicaSet", v1.ListMeta{}.OpenAPIModelName()},
+			v1.ExecutableReplicaSet{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -2729,7 +2731,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref common.ReferenceCa
 						SchemaProps: spec.SchemaProps{
 							Description: "Template describing the configuration of child Executable objects created by the ExecutableReplicaSet",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableTemplate"),
+							Ref:         ref(v1.ExecutableTemplate{}.OpenAPIModelName()),
 						},
 					},
 				},
@@ -2737,7 +2739,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetSpec(ref common.ReferenceCa
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableTemplate"},
+			v1.ExecutableTemplate{}.OpenAPIModelName()},
 	}
 }
 
@@ -2783,7 +2785,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref common.Reference
 					"lastScaleTime": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Last time the replica set was scaled up or down by the controller",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"healthStatus": {
@@ -2798,7 +2800,7 @@ func schema_microsoft_dcp_api_v1_ExecutableReplicaSetStatus(ref common.Reference
 			},
 		},
 		Dependencies: []string{
-			v1.MicroTime{}.OpenAPIModelName()},
+			metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -2860,7 +2862,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2917,7 +2919,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 						SchemaProps: spec.SchemaProps{
 							Description: "Controls behavior of environment variables inherited from the controller process.",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/dcp/api/v1.AmbientEnvironment"),
+							Ref:         ref(v1.AmbientEnvironment{}.OpenAPIModelName()),
 						},
 					},
 					"start": {
@@ -2958,7 +2960,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 					"monitorTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"healthProbes": {
@@ -2974,7 +2976,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbe"),
+										Ref:     ref(v1.HealthProbe{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2983,7 +2985,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 					"pemCertificates": {
 						SchemaProps: spec.SchemaProps{
 							Description: "PEM formatted certificates to be written for the Executable",
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutablePemCertificates"),
+							Ref:         ref(v1.ExecutablePemCertificates{}.OpenAPIModelName()),
 						},
 					},
 				},
@@ -2991,7 +2993,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.AmbientEnvironment", "github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.ExecutablePemCertificates", "github.com/microsoft/dcp/api/v1.HealthProbe", v1.MicroTime{}.OpenAPIModelName()},
+			v1.AmbientEnvironment{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.ExecutablePemCertificates{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -3028,13 +3030,13 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 					"startupTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Start (attempt) timestamp.",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"finishTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The time when the process/IDE session finished execution",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"exitCode": {
@@ -3074,7 +3076,7 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.EnvVar"),
+										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3123,7 +3125,7 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.HealthProbeResult"),
+										Ref:     ref(v1.HealthProbeResult{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3134,7 +3136,7 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.EnvVar", "github.com/microsoft/dcp/api/v1.HealthProbeResult", v1.MicroTime{}.OpenAPIModelName()},
+			v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbeResult{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -3180,7 +3182,7 @@ func schema_microsoft_dcp_api_v1_ExecutableTemplate(ref common.ReferenceCallback
 						SchemaProps: spec.SchemaProps{
 							Description: "Spec for child Executables",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableSpec"),
+							Ref:         ref(v1.ExecutableSpec{}.OpenAPIModelName()),
 						},
 					},
 				},
@@ -3188,7 +3190,7 @@ func schema_microsoft_dcp_api_v1_ExecutableTemplate(ref common.ReferenceCallback
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableSpec"},
+			v1.ExecutableSpec{}.OpenAPIModelName()},
 	}
 }
 
@@ -3283,7 +3285,7 @@ func schema_microsoft_dcp_api_v1_FileSystemEntry(ref common.ReferenceCallback) c
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.FileSystemEntry"),
+										Ref:     ref(v1.FileSystemEntry{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3294,7 +3296,7 @@ func schema_microsoft_dcp_api_v1_FileSystemEntry(ref common.ReferenceCallback) c
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.FileSystemEntry"},
+			v1.FileSystemEntry{}.OpenAPIModelName()},
 	}
 }
 
@@ -3324,20 +3326,20 @@ func schema_microsoft_dcp_api_v1_HealthProbe(ref common.ReferenceCallback) commo
 					"executableProbe": {
 						SchemaProps: spec.SchemaProps{
 							Description: "For Executable-type health probes, the configuration for the Executable health probe.",
-							Ref:         ref("github.com/microsoft/dcp/api/v1.ExecutableProbe"),
+							Ref:         ref(v1.ExecutableProbe{}.OpenAPIModelName()),
 						},
 					},
 					"httpProbe": {
 						SchemaProps: spec.SchemaProps{
 							Description: "For HTTP-type health probes, the configuration for the HTTP health probe.",
-							Ref:         ref("github.com/microsoft/dcp/api/v1.HttpProbe"),
+							Ref:         ref(v1.HttpProbe{}.OpenAPIModelName()),
 						},
 					},
 					"schedule": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Schedule for running the probe",
 							Default:     map[string]interface{}{},
-							Ref:         ref("github.com/microsoft/dcp/api/v1.HealthProbeSchedule"),
+							Ref:         ref(v1.HealthProbeSchedule{}.OpenAPIModelName()),
 						},
 					},
 					"annotations": {
@@ -3361,7 +3363,7 @@ func schema_microsoft_dcp_api_v1_HealthProbe(ref common.ReferenceCallback) commo
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ExecutableProbe", "github.com/microsoft/dcp/api/v1.HealthProbeSchedule", "github.com/microsoft/dcp/api/v1.HttpProbe"},
+			v1.ExecutableProbe{}.OpenAPIModelName(), v1.HealthProbeSchedule{}.OpenAPIModelName(), v1.HttpProbe{}.OpenAPIModelName()},
 	}
 }
 
@@ -3383,7 +3385,7 @@ func schema_microsoft_dcp_api_v1_HealthProbeResult(ref common.ReferenceCallback)
 					"timestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timestamp for the result",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 					"probeName": {
@@ -3406,7 +3408,7 @@ func schema_microsoft_dcp_api_v1_HealthProbeResult(ref common.ReferenceCallback)
 			},
 		},
 		Dependencies: []string{
-			v1.MicroTime{}.OpenAPIModelName()},
+			metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -3427,19 +3429,19 @@ func schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref common.ReferenceCallbac
 					"interval": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Interval at which the probe should run",
-							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
 						},
 					},
 					"timeout": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Timeout for the probe (if the probe does not complete within this time, it is considered failed)",
-							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
 						},
 					},
 					"initialDelay": {
 						SchemaProps: spec.SchemaProps{
 							Description: "How long to wait between parent object startup and the first probe run",
-							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
 						},
 					},
 				},
@@ -3447,7 +3449,7 @@ func schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			v1.Duration{}.OpenAPIModelName()},
+			metav1.Duration{}.OpenAPIModelName()},
 	}
 }
 
@@ -3511,7 +3513,7 @@ func schema_microsoft_dcp_api_v1_HttpProbe(ref common.ReferenceCallback) common.
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.HttpHeader"),
+										Ref:     ref(v1.HttpHeader{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3522,7 +3524,7 @@ func schema_microsoft_dcp_api_v1_HttpProbe(ref common.ReferenceCallback) common.
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.HttpHeader"},
+			v1.HttpHeader{}.OpenAPIModelName()},
 	}
 }
 
@@ -3592,7 +3594,7 @@ func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"follow": {
@@ -3648,7 +3650,7 @@ func schema_microsoft_dcp_api_v1_LogOptions(ref common.ReferenceCallback) common
 			},
 		},
 		Dependencies: []string{
-			v1.ObjectMeta{}.OpenAPIModelName()},
+			metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -3676,14 +3678,14 @@ func schema_microsoft_dcp_api_v1_LogStreamer(ref common.ReferenceCallback) commo
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v1.ObjectMeta{}.OpenAPIModelName()},
+			metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -3741,26 +3743,26 @@ func schema_microsoft_dcp_api_v1_Service(ref common.ReferenceCallback) common.Op
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ServiceSpec"),
+							Ref:     ref(v1.ServiceSpec{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("github.com/microsoft/dcp/api/v1.ServiceStatus"),
+							Ref:     ref(v1.ServiceStatus{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.ServiceSpec", "github.com/microsoft/dcp/api/v1.ServiceStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			v1.ServiceSpec{}.OpenAPIModelName(), v1.ServiceStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -3788,7 +3790,7 @@ func schema_microsoft_dcp_api_v1_ServiceList(ref common.ReferenceCallback) commo
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -3798,7 +3800,7 @@ func schema_microsoft_dcp_api_v1_ServiceList(ref common.ReferenceCallback) commo
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("github.com/microsoft/dcp/api/v1.Service"),
+										Ref:     ref(v1.Service{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3809,7 +3811,7 @@ func schema_microsoft_dcp_api_v1_ServiceList(ref common.ReferenceCallback) commo
 			},
 		},
 		Dependencies: []string{
-			"github.com/microsoft/dcp/api/v1.Service", v1.ListMeta{}.OpenAPIModelName()},
+			v1.Service{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -4035,7 +4037,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 					"timestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The timestamp for the status (last update).",
-							Ref:         ref(v1.MicroTime{}.OpenAPIModelName()),
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
 						},
 					},
 				},
@@ -4043,7 +4045,7 @@ func schema_microsoft_dcp_api_v1_TunnelStatus(ref common.ReferenceCallback) comm
 			},
 		},
 		Dependencies: []string{
-			v1.MicroTime{}.OpenAPIModelName()},
+			metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -4132,7 +4134,7 @@ func schema_pkg_apis_meta_v1_APIGroup(ref common.ReferenceCallback) common.OpenA
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.GroupVersionForDiscovery{}.OpenAPIModelName()),
+										Ref:     ref(metav1.GroupVersionForDiscovery{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -4142,7 +4144,7 @@ func schema_pkg_apis_meta_v1_APIGroup(ref common.ReferenceCallback) common.OpenA
 						SchemaProps: spec.SchemaProps{
 							Description: "preferredVersion is the version preferred by the API server, which probably is the storage version.",
 							Default:     map[string]interface{}{},
-							Ref:         ref(v1.GroupVersionForDiscovery{}.OpenAPIModelName()),
+							Ref:         ref(metav1.GroupVersionForDiscovery{}.OpenAPIModelName()),
 						},
 					},
 					"serverAddressByClientCIDRs": {
@@ -4158,7 +4160,7 @@ func schema_pkg_apis_meta_v1_APIGroup(ref common.ReferenceCallback) common.OpenA
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.ServerAddressByClientCIDR{}.OpenAPIModelName()),
+										Ref:     ref(metav1.ServerAddressByClientCIDR{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -4169,7 +4171,7 @@ func schema_pkg_apis_meta_v1_APIGroup(ref common.ReferenceCallback) common.OpenA
 			},
 		},
 		Dependencies: []string{
-			v1.GroupVersionForDiscovery{}.OpenAPIModelName(), v1.ServerAddressByClientCIDR{}.OpenAPIModelName()},
+			metav1.GroupVersionForDiscovery{}.OpenAPIModelName(), metav1.ServerAddressByClientCIDR{}.OpenAPIModelName()},
 	}
 }
 
@@ -4207,7 +4209,7 @@ func schema_pkg_apis_meta_v1_APIGroupList(ref common.ReferenceCallback) common.O
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.APIGroup{}.OpenAPIModelName()),
+										Ref:     ref(metav1.APIGroup{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -4218,7 +4220,7 @@ func schema_pkg_apis_meta_v1_APIGroupList(ref common.ReferenceCallback) common.O
 			},
 		},
 		Dependencies: []string{
-			v1.APIGroup{}.OpenAPIModelName()},
+			metav1.APIGroup{}.OpenAPIModelName()},
 	}
 }
 
@@ -4386,7 +4388,7 @@ func schema_pkg_apis_meta_v1_APIResourceList(ref common.ReferenceCallback) commo
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.APIResource{}.OpenAPIModelName()),
+										Ref:     ref(metav1.APIResource{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -4397,7 +4399,7 @@ func schema_pkg_apis_meta_v1_APIResourceList(ref common.ReferenceCallback) commo
 			},
 		},
 		Dependencies: []string{
-			v1.APIResource{}.OpenAPIModelName()},
+			metav1.APIResource{}.OpenAPIModelName()},
 	}
 }
 
@@ -4455,7 +4457,7 @@ func schema_pkg_apis_meta_v1_APIVersions(ref common.ReferenceCallback) common.Op
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.ServerAddressByClientCIDR{}.OpenAPIModelName()),
+										Ref:     ref(metav1.ServerAddressByClientCIDR{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -4466,7 +4468,7 @@ func schema_pkg_apis_meta_v1_APIVersions(ref common.ReferenceCallback) common.Op
 			},
 		},
 		Dependencies: []string{
-			v1.ServerAddressByClientCIDR{}.OpenAPIModelName()},
+			metav1.ServerAddressByClientCIDR{}.OpenAPIModelName()},
 	}
 }
 
@@ -4567,7 +4569,7 @@ func schema_pkg_apis_meta_v1_Condition(ref common.ReferenceCallback) common.Open
 					"lastTransitionTime": {
 						SchemaProps: spec.SchemaProps{
 							Description: "lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.",
-							Ref:         ref(v1.Time{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
 						},
 					},
 					"reason": {
@@ -4591,7 +4593,7 @@ func schema_pkg_apis_meta_v1_Condition(ref common.ReferenceCallback) common.Open
 			},
 		},
 		Dependencies: []string{
-			v1.Time{}.OpenAPIModelName()},
+			metav1.Time{}.OpenAPIModelName()},
 	}
 }
 
@@ -4687,7 +4689,7 @@ func schema_pkg_apis_meta_v1_DeleteOptions(ref common.ReferenceCallback) common.
 					"preconditions": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Must be fulfilled before a deletion is carried out. If not possible, a 409 Conflict status will be returned.",
-							Ref:         ref(v1.Preconditions{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Preconditions{}.OpenAPIModelName()),
 						},
 					},
 					"orphanDependents": {
@@ -4735,7 +4737,7 @@ func schema_pkg_apis_meta_v1_DeleteOptions(ref common.ReferenceCallback) common.
 			},
 		},
 		Dependencies: []string{
-			v1.Preconditions{}.OpenAPIModelName()},
+			metav1.Preconditions{}.OpenAPIModelName()},
 	}
 }
 
@@ -4744,8 +4746,8 @@ func schema_pkg_apis_meta_v1_Duration(ref common.ReferenceCallback) common.OpenA
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Description: "Duration is a wrapper around time.Duration which supports correct marshaling to YAML and JSON. In particular, it marshals into strings, which can be used as map keys in json.",
-				Type:        v1.Duration{}.OpenAPISchemaType(),
-				Format:      v1.Duration{}.OpenAPISchemaFormat(),
+				Type:        metav1.Duration{}.OpenAPISchemaType(),
+				Format:      metav1.Duration{}.OpenAPISchemaFormat(),
 			},
 		},
 	}
@@ -5092,7 +5094,7 @@ func schema_pkg_apis_meta_v1_LabelSelector(ref common.ReferenceCallback) common.
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.LabelSelectorRequirement{}.OpenAPIModelName()),
+										Ref:     ref(metav1.LabelSelectorRequirement{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -5107,7 +5109,7 @@ func schema_pkg_apis_meta_v1_LabelSelector(ref common.ReferenceCallback) common.
 			},
 		},
 		Dependencies: []string{
-			v1.LabelSelectorRequirement{}.OpenAPIModelName()},
+			metav1.LabelSelectorRequirement{}.OpenAPIModelName()},
 	}
 }
 
@@ -5186,7 +5188,7 @@ func schema_pkg_apis_meta_v1_List(ref common.ReferenceCallback) common.OpenAPIDe
 						SchemaProps: spec.SchemaProps{
 							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
 							Default:     map[string]interface{}{},
-							Ref:         ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -5207,7 +5209,7 @@ func schema_pkg_apis_meta_v1_List(ref common.ReferenceCallback) common.OpenAPIDe
 			},
 		},
 		Dependencies: []string{
-			v1.ListMeta{}.OpenAPIModelName(), runtime.RawExtension{}.OpenAPIModelName()},
+			metav1.ListMeta{}.OpenAPIModelName(), runtime.RawExtension{}.OpenAPIModelName()},
 	}
 }
 
@@ -5246,9 +5248,17 @@ func schema_pkg_apis_meta_v1_ListMeta(ref common.ReferenceCallback) common.OpenA
 							Format:      "int64",
 						},
 					},
+					"shardInfo": {
+						SchemaProps: spec.SchemaProps{
+							Description: "shardInfo is set when the list is a filtered subset of the full collection, as selected by a shard selector on the request. It echoes back the selector so clients can verify which shard they received and merge sharded responses. Clients should not cache sharded list responses as a full representation of the collection.\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+							Ref:         ref(metav1.ShardInfo{}.OpenAPIModelName()),
+						},
+					},
 				},
 			},
 		},
+		Dependencies: []string{
+			metav1.ShardInfo{}.OpenAPIModelName()},
 	}
 }
 
@@ -5343,6 +5353,13 @@ func schema_pkg_apis_meta_v1_ListOptions(ref common.ReferenceCallback) common.Op
 							Format:      "",
 						},
 					},
+					"shardSelector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "shardSelector restricts the list of returned objects using a CEL-based shard selector expression. The format uses the shardRange() function combined with || (logical OR) to specify one or more hash ranges:\n\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000')\n  shardRange(object.metadata.uid, '0x0', '0x8000000000000000') || shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n\nField paths use CEL-style object-rooted syntax (e.g. \"object.metadata.uid\"), NOT the fieldSelector format (\"metadata.uid\"). Currently supported paths:\n  - object.metadata.uid\n  - object.metadata.namespace\n\nhexStart and hexEnd are single-quoted CEL string literals with a '0x' prefix, defining the inclusive lower and exclusive upper bounds over the 64-bit FNV-1a hash space. The full range is [0x0, 0x10000000000000000), where the exclusive upper bound equals 2^64.\n\nExamples:\n  2-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x8000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x8000000000000000', '0x10000000000000000')\n  4-shard split:\n    shard 0: shardRange(object.metadata.uid, '0x0000000000000000', '0x4000000000000000')\n    shard 1: shardRange(object.metadata.uid, '0x4000000000000000', '0x8000000000000000')\n    shard 2: shardRange(object.metadata.uid, '0x8000000000000000', '0xc000000000000000')\n    shard 3: shardRange(object.metadata.uid, '0xc000000000000000', '0x10000000000000000')\n\nThis is an alpha field and requires enabling the ShardedListAndWatch feature gate.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 			},
 		},
@@ -5380,7 +5397,7 @@ func schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref common.ReferenceCallback) co
 					"time": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Time is the timestamp of when the ManagedFields entry was added. The timestamp will also be updated if a field is added, the manager changes any of the owned fields value or removes a field. The timestamp does not update when a field is removed from the entry because another manager took it over.",
-							Ref:         ref(v1.Time{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
 						},
 					},
 					"fieldsType": {
@@ -5393,7 +5410,7 @@ func schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref common.ReferenceCallback) co
 					"fieldsV1": {
 						SchemaProps: spec.SchemaProps{
 							Description: "FieldsV1 holds the first JSON version format as described in the \"FieldsV1\" type.",
-							Ref:         ref(v1.FieldsV1{}.OpenAPIModelName()),
+							Ref:         ref(metav1.FieldsV1{}.OpenAPIModelName()),
 						},
 					},
 					"subresource": {
@@ -5407,7 +5424,7 @@ func schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			v1.FieldsV1{}.OpenAPIModelName(), v1.Time{}.OpenAPIModelName()},
+			metav1.FieldsV1{}.OpenAPIModelName(), metav1.Time{}.OpenAPIModelName()},
 	}
 }
 
@@ -5416,8 +5433,8 @@ func schema_pkg_apis_meta_v1_MicroTime(ref common.ReferenceCallback) common.Open
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Description: "MicroTime is version of Time with microsecond level precision.",
-				Type:        v1.MicroTime{}.OpenAPISchemaType(),
-				Format:      v1.MicroTime{}.OpenAPISchemaFormat(),
+				Type:        metav1.MicroTime{}.OpenAPISchemaType(),
+				Format:      metav1.MicroTime{}.OpenAPISchemaFormat(),
 			},
 		},
 	}
@@ -5482,13 +5499,13 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 					"creationTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC.\n\nPopulated by the system. Read-only. Null for lists. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
-							Ref:         ref(v1.Time{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
 						},
 					},
 					"deletionTimestamp": {
 						SchemaProps: spec.SchemaProps{
 							Description: "DeletionTimestamp is RFC 3339 date and time at which this resource will be deleted. This field is set by the server when a graceful deletion is requested by the user, and is not directly settable by a client. The resource is expected to be deleted (no longer visible from resource lists, and not reachable by name) after the time in this field, once the finalizers list is empty. As long as the finalizers list contains items, deletion is blocked. Once the deletionTimestamp is set, this value may not be unset or be set further into the future, although it may be shortened or the resource may be deleted prior to this time. For example, a user may request that a pod is deleted in 30 seconds. The Kubelet will react by sending a graceful termination signal to the containers in the pod. After that 30 seconds, the Kubelet will send a hard termination signal (SIGKILL) to the container and after cleanup, remove the pod from the API. In the presence of network partitions, this object may still exist after this timestamp, until an administrator or automated process can determine the resource is fully terminated. If not set, graceful deletion of the object has not been requested.\n\nPopulated by the system when a graceful deletion is requested. Read-only. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
-							Ref:         ref(v1.Time{}.OpenAPIModelName()),
+							Ref:         ref(metav1.Time{}.OpenAPIModelName()),
 						},
 					},
 					"deletionGracePeriodSeconds": {
@@ -5548,7 +5565,7 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.OwnerReference{}.OpenAPIModelName()),
+										Ref:     ref(metav1.OwnerReference{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -5588,7 +5605,7 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.ManagedFieldsEntry{}.OpenAPIModelName()),
+										Ref:     ref(metav1.ManagedFieldsEntry{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -5598,7 +5615,7 @@ func schema_pkg_apis_meta_v1_ObjectMeta(ref common.ReferenceCallback) common.Ope
 			},
 		},
 		Dependencies: []string{
-			v1.ManagedFieldsEntry{}.OpenAPIModelName(), v1.OwnerReference{}.OpenAPIModelName(), v1.Time{}.OpenAPIModelName()},
+			metav1.ManagedFieldsEntry{}.OpenAPIModelName(), metav1.OwnerReference{}.OpenAPIModelName(), metav1.Time{}.OpenAPIModelName()},
 	}
 }
 
@@ -5692,14 +5709,14 @@ func schema_pkg_apis_meta_v1_PartialObjectMetadata(ref common.ReferenceCallback)
 						SchemaProps: spec.SchemaProps{
 							Description: "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata",
 							Default:     map[string]interface{}{},
-							Ref:         ref(v1.ObjectMeta{}.OpenAPIModelName()),
+							Ref:         ref(metav1.ObjectMeta{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v1.ObjectMeta{}.OpenAPIModelName()},
+			metav1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
@@ -5728,7 +5745,7 @@ func schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref common.ReferenceCallb
 						SchemaProps: spec.SchemaProps{
 							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
 							Default:     map[string]interface{}{},
-							Ref:         ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"items": {
@@ -5739,7 +5756,7 @@ func schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref common.ReferenceCallb
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.PartialObjectMetadata{}.OpenAPIModelName()),
+										Ref:     ref(metav1.PartialObjectMetadata{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -5750,7 +5767,7 @@ func schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			v1.ListMeta{}.OpenAPIModelName(), v1.PartialObjectMetadata{}.OpenAPIModelName()},
+			metav1.ListMeta{}.OpenAPIModelName(), metav1.PartialObjectMetadata{}.OpenAPIModelName()},
 	}
 }
 
@@ -5924,6 +5941,28 @@ func schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref common.ReferenceCallb
 	}
 }
 
+func schema_pkg_apis_meta_v1_ShardInfo(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ShardInfo describes the shard selector that was applied to produce a list response. Its presence on a list response indicates the list is a filtered subset.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"selector": {
+						SchemaProps: spec.SchemaProps{
+							Description: "selector is the shard selector string from the request, echoed back so clients can verify which shard they received and merge responses from multiple shards.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"selector"},
+			},
+		},
+	}
+}
+
 func schema_pkg_apis_meta_v1_Status(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5949,7 +5988,7 @@ func schema_pkg_apis_meta_v1_Status(ref common.ReferenceCallback) common.OpenAPI
 						SchemaProps: spec.SchemaProps{
 							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
 							Default:     map[string]interface{}{},
-							Ref:         ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"status": {
@@ -5976,7 +6015,7 @@ func schema_pkg_apis_meta_v1_Status(ref common.ReferenceCallback) common.OpenAPI
 					"details": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Extended data associated with the reason.  Each reason may define its own extended details. This field is optional and the data returned is not guaranteed to conform to any schema except that defined by the reason type.",
-							Ref:         ref(v1.StatusDetails{}.OpenAPIModelName()),
+							Ref:         ref(metav1.StatusDetails{}.OpenAPIModelName()),
 						},
 					},
 					"code": {
@@ -5990,7 +6029,7 @@ func schema_pkg_apis_meta_v1_Status(ref common.ReferenceCallback) common.OpenAPI
 			},
 		},
 		Dependencies: []string{
-			v1.ListMeta{}.OpenAPIModelName(), v1.StatusDetails{}.OpenAPIModelName()},
+			metav1.ListMeta{}.OpenAPIModelName(), metav1.StatusDetails{}.OpenAPIModelName()},
 	}
 }
 
@@ -6076,7 +6115,7 @@ func schema_pkg_apis_meta_v1_StatusDetails(ref common.ReferenceCallback) common.
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.StatusCause{}.OpenAPIModelName()),
+										Ref:     ref(metav1.StatusCause{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -6093,7 +6132,7 @@ func schema_pkg_apis_meta_v1_StatusDetails(ref common.ReferenceCallback) common.
 			},
 		},
 		Dependencies: []string{
-			v1.StatusCause{}.OpenAPIModelName()},
+			metav1.StatusCause{}.OpenAPIModelName()},
 	}
 }
 
@@ -6122,7 +6161,7 @@ func schema_pkg_apis_meta_v1_Table(ref common.ReferenceCallback) common.OpenAPID
 						SchemaProps: spec.SchemaProps{
 							Description: "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
 							Default:     map[string]interface{}{},
-							Ref:         ref(v1.ListMeta{}.OpenAPIModelName()),
+							Ref:         ref(metav1.ListMeta{}.OpenAPIModelName()),
 						},
 					},
 					"columnDefinitions": {
@@ -6138,7 +6177,7 @@ func schema_pkg_apis_meta_v1_Table(ref common.ReferenceCallback) common.OpenAPID
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.TableColumnDefinition{}.OpenAPIModelName()),
+										Ref:     ref(metav1.TableColumnDefinition{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -6157,7 +6196,7 @@ func schema_pkg_apis_meta_v1_Table(ref common.ReferenceCallback) common.OpenAPID
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.TableRow{}.OpenAPIModelName()),
+										Ref:     ref(metav1.TableRow{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -6168,7 +6207,7 @@ func schema_pkg_apis_meta_v1_Table(ref common.ReferenceCallback) common.OpenAPID
 			},
 		},
 		Dependencies: []string{
-			v1.ListMeta{}.OpenAPIModelName(), v1.TableColumnDefinition{}.OpenAPIModelName(), v1.TableRow{}.OpenAPIModelName()},
+			metav1.ListMeta{}.OpenAPIModelName(), metav1.TableColumnDefinition{}.OpenAPIModelName(), metav1.TableRow{}.OpenAPIModelName()},
 	}
 }
 
@@ -6299,7 +6338,7 @@ func schema_pkg_apis_meta_v1_TableRow(ref common.ReferenceCallback) common.OpenA
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.TableRowCondition{}.OpenAPIModelName()),
+										Ref:     ref(metav1.TableRowCondition{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -6316,7 +6355,7 @@ func schema_pkg_apis_meta_v1_TableRow(ref common.ReferenceCallback) common.OpenA
 			},
 		},
 		Dependencies: []string{
-			v1.TableRowCondition{}.OpenAPIModelName(), runtime.RawExtension{}.OpenAPIModelName()},
+			metav1.TableRowCondition{}.OpenAPIModelName(), runtime.RawExtension{}.OpenAPIModelName()},
 	}
 }
 
@@ -6369,8 +6408,8 @@ func schema_pkg_apis_meta_v1_Time(ref common.ReferenceCallback) common.OpenAPIDe
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
 				Description: "Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON.  Wrappers are provided for many of the factory methods that the time package offers.",
-				Type:        v1.Time{}.OpenAPISchemaType(),
-				Format:      v1.Time{}.OpenAPISchemaFormat(),
+				Type:        metav1.Time{}.OpenAPISchemaType(),
+				Format:      metav1.Time{}.OpenAPISchemaFormat(),
 			},
 		},
 	}

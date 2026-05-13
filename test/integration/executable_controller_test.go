@@ -576,6 +576,65 @@ func TestExecutableStartupFailureProcess(t *testing.T) {
 	})
 }
 
+func TestPersistentExecutableStopsProcessWhenProcessRecordUpdateFails(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, ExecutableController, t.Name(), t.TempDir())
+	require.NoError(t, startupErr, "Test environment could not be started")
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "persistent-executable-record-update-fails",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/persistent-executable-record-update-fails",
+			Persistent:     true,
+		},
+	}
+
+	closeErrCh := make(chan error, 1)
+	var closeOnce sync.Once
+	teInfo.TestProcessExecutableRunner.SetAfterStartRunHook(func(startedExe *apiv1.Executable, result *controllers.ExecutableStartResult) {
+		if startedExe.Name != exe.Name || result == nil || !result.IsSuccessfullyCompleted() {
+			return
+		}
+		closeOnce.Do(func() {
+			closeErrCh <- teInfo.StateStore.Close()
+		})
+	})
+	defer teInfo.TestProcessExecutableRunner.SetAfterStartRunHook(nil)
+
+	require.NoError(t, serverInfo.Client.Create(ctx, exe), "Could not create persistent Executable")
+
+	updatedExe := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart &&
+			!currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	select {
+	case closeErr := <-closeErrCh:
+		require.NoError(t, closeErr, "State store could not be closed")
+	default:
+		require.Fail(t, "state store was not closed before the persistent process record update")
+	}
+
+	processes := teInfo.TestProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Len(t, processes, 1, "Expected one process to be started")
+	require.True(t, processes[0].Finished(), "Process should be stopped when process record update fails")
+	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), processes[0].ExitCode, "Process should be killed when process record update fails")
+	require.Empty(t, updatedExe.Status.ExecutionID, "Failed start should not report a running execution ID")
+	require.Equal(t, apiv1.UnknownPID, updatedExe.Status.PID, "Failed start should not report a running PID")
+}
+
 // Ensure that Executable ends up in "failed to start" state with FinishTimestamp set if the run fails
 // Uses IDE process runner
 func TestExecutableStartupFailureIDE(t *testing.T) {
