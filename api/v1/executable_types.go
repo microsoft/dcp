@@ -462,7 +462,10 @@ func effectiveLifecycleArgs(e *Executable) ([]string, error) {
 }
 
 func explicitEffectiveLifecycleEnv(e *Executable) ([]EnvVar, error) {
-	explicitNames := explicitLifecycleEnvNames(e)
+	explicitNames, explicitNamesErr := explicitLifecycleEnvNames(e)
+	if explicitNamesErr != nil {
+		return nil, explicitNamesErr
+	}
 	if explicitNames.Len() == 0 {
 		return nil, nil
 	}
@@ -489,7 +492,7 @@ func explicitEffectiveLifecycleEnv(e *Executable) ([]EnvVar, error) {
 	return explicitEffectiveEnv, nil
 }
 
-func explicitLifecycleEnvNames(e *Executable) usvc_maps.StringKeyMap[string] {
+func explicitLifecycleEnvNames(e *Executable) (usvc_maps.StringKeyMap[string], error) {
 	explicitNames := lifecycleEnvMap()
 	addExplicitName := func(name string) {
 		if name != "" {
@@ -498,16 +501,18 @@ func explicitLifecycleEnvNames(e *Executable) usvc_maps.StringKeyMap[string] {
 	}
 
 	if len(e.Spec.EnvFiles) > 0 {
-		if fileEnv, readErr := godotenv.Read(e.Spec.EnvFiles...); readErr == nil {
-			for name := range fileEnv {
-				addExplicitName(name)
-			}
+		fileEnv, readErr := godotenv.Read(e.Spec.EnvFiles...)
+		if readErr != nil {
+			return explicitNames, fmt.Errorf("could not read executable environment files for lifecycle key: %w", readErr)
+		}
+		for name := range fileEnv {
+			addExplicitName(name)
 		}
 	}
 	for _, envVar := range e.Spec.Env {
 		addExplicitName(envVar.Name)
 	}
-	return explicitNames
+	return explicitNames, nil
 }
 
 func lifecycleEnvMap() usvc_maps.StringKeyMap[string] {

@@ -7,6 +7,7 @@ package v1
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -291,6 +292,21 @@ func TestExecutableGetLifecycleKeyRequiresEffectiveEnv(t *testing.T) {
 	_, _, keyErr := exe.GetLifecycleKey()
 
 	require.ErrorContains(t, keyErr, "effective environment")
+}
+
+func TestExecutableGetLifecycleKeyReturnsEnvFileReadError(t *testing.T) {
+	t.Parallel()
+
+	missingEnvFile := filepath.Join(t.TempDir(), "missing.env")
+	exe := lifecycleKeyTestExecutable()
+	exe.Spec.EnvFiles = []string{missingEnvFile}
+	exe.Status.EffectiveArgs = []string{"--port", "5000"}
+	exe.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+
+	_, _, keyErr := exe.GetLifecycleKey()
+
+	require.ErrorContains(t, keyErr, "could not read executable environment files for lifecycle key")
+	require.ErrorContains(t, keyErr, missingEnvFile)
 }
 
 func lifecycleKeyTestExecutable() *Executable {
