@@ -133,6 +133,9 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		if cleanupErr := stateStore.DeleteInactiveResourceLeases(ctrlCtx); cleanupErr != nil {
 			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
 		}
+		if cleanupErr := cleanupInvalidPersistentExecutableRecords(ctrlCtx, stateStore, leaseOwner, log); cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to clean up invalid persistent Executable process records")
+		}
 
 		trySetupNotificationHandler(ctrlCtx, log)
 

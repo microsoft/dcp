@@ -15,6 +15,10 @@ func zero[T any]() T {
 
 type Map[Key comparable, Value any] sync.Map
 
+type ComparableMap[Key comparable, Value comparable] struct {
+	Map[Key, Value]
+}
+
 func (m *Map[Key, Value]) syncMap() *sync.Map {
 	return (*sync.Map)(m)
 }
@@ -81,11 +85,6 @@ func (m *Map[Key, Value]) LoadAndDelete(key Key) (Value, bool) {
 	}
 }
 
-// Deletes the value for the passed key if the current value is equal to old.
-func (m *Map[Key, Value]) CompareAndDelete(key Key, old Value) bool {
-	return m.syncMap().CompareAndDelete(key, old)
-}
-
 // Returns true if the map is empty.
 // Note that this is point-in-time check, and the map might be modified immediately after this method returns.
 func (m *Map[Key, Value]) Empty() bool {
@@ -103,4 +102,9 @@ func zeroIfNil[T any](v any) T {
 	} else {
 		return v.(T)
 	}
+}
+
+// Deletes the value for the passed key if the current value is equal to old.
+func (m *ComparableMap[Key, Value]) CompareAndDelete(key Key, old Value) bool {
+	return m.Map.syncMap().CompareAndDelete(key, old)
 }

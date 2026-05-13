@@ -113,6 +113,42 @@ func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*
 	return record, nil
 }
 
+func (s *Store) ListPersistentProcesses(ctx context.Context) ([]PersistentProcessRecord, error) {
+	db, dbErr := s.requireDB()
+	if dbErr != nil {
+		return nil, dbErr
+	}
+
+	rows, queryErr := db.QueryContext(
+		ctx,
+		`SELECT resource_key, lifecycle_key, pid,
+			identity_time, run_id,
+			stdout_file, stderr_file, lifecycle_metadata, updated_at_unix_nano
+		 FROM persistent_processes
+		 ORDER BY resource_key`,
+	)
+	if queryErr != nil {
+		return nil, fmt.Errorf("could not list persistent process records: %w", queryErr)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	records := []PersistentProcessRecord{}
+	for rows.Next() {
+		record, scanErr := scanPersistentProcess(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("could not read persistent process record: %w", scanErr)
+		}
+		records = append(records, *record)
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("could not list persistent process records: %w", rowsErr)
+	}
+
+	return records, nil
+}
+
 func (s *Store) DeletePersistentProcess(ctx context.Context, resourceKey string) error {
 	resourceKey = strings.TrimSpace(resourceKey)
 	if resourceKey == "" {
