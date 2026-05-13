@@ -248,8 +248,14 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 
 		case <-timer.C:
 			if _, findErr := process.FindProcess(pid, identityTime); findErr != nil {
-				runState, found := r.runningProcesses.LoadAndDelete(runID)
+				runState, found := r.runningProcesses.Load(runID)
 				if !found {
+					return
+				}
+				if runState.pid != pid || !runState.identityTime.Equal(identityTime) {
+					return
+				}
+				if !r.runningProcesses.CompareAndDelete(runID, runState) {
 					return
 				}
 

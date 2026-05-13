@@ -286,6 +286,34 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 	require.False(t, found)
 }
 
+func TestAdoptedProcessWatcherDoesNotDeleteReusedRunID(t *testing.T) {
+	t.Parallel()
+
+	runner := NewProcessExecutableRunner(&recordingProcessExecutor{})
+	runID := controllers.RunID("42")
+	watchedPID := process.Pid_t(42)
+	watchedIdentityTime := time.Unix(1, 0).UTC()
+	reusedIdentityTime := watchedIdentityTime.Add(time.Minute)
+	changeHandler := newRecordingRunChangeHandler()
+	reusedRunState := &processRunState{
+		pid:              watchedPID,
+		identityTime:     reusedIdentityTime,
+		runChangeHandler: changeHandler,
+	}
+	runner.runningProcesses.Store(runID, reusedRunState)
+
+	runner.watchAdoptedProcess(runID, watchedPID, watchedIdentityTime, make(chan struct{}), logr.Discard())
+
+	storedRunState, found := runner.runningProcesses.Load(runID)
+	require.True(t, found)
+	require.Same(t, reusedRunState, storedRunState)
+	select {
+	case completedRun := <-changeHandler.completedRuns:
+		require.Failf(t, "unexpected completion notification", "received completion for run %s", completedRun.runID)
+	default:
+	}
+}
+
 func TestReleaseRunClosesProcessRunFiles(t *testing.T) {
 	t.Parallel()
 

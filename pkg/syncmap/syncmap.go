@@ -81,6 +81,11 @@ func (m *Map[Key, Value]) LoadAndDelete(key Key) (Value, bool) {
 	}
 }
 
+// Deletes the value for the passed key if the current value is equal to old.
+func (m *Map[Key, Value]) CompareAndDelete(key Key, old Value) bool {
+	return m.syncMap().CompareAndDelete(key, old)
+}
+
 // Returns true if the map is empty.
 // Note that this is point-in-time check, and the map might be modified immediately after this method returns.
 func (m *Map[Key, Value]) Empty() bool {
