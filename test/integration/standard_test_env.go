@@ -26,6 +26,7 @@ import (
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -35,7 +36,9 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
-	Log logr.Logger
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessTreeItem
+	Log                logr.Logger
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -279,6 +282,8 @@ func StartTestEnvironment(
 		TestProcessExecutableRunner: exeRunner,
 		TestIdeRunner:               ir,
 		TestTunnelControlClient:     tcc,
+		StateStore:                  stateStore,
+		ResourceLeaseOwner:          leaseOwner,
 		Log:                         log,
 	}
 	return serverInfo, teInfo, nil

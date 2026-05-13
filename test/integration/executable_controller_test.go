@@ -112,6 +112,50 @@ func TestExecutableIsStarted(t *testing.T) {
 	}
 }
 
+func TestPersistentExecutableDelayStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "persistent-executable-delay-start"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+		},
+	}
+
+	t.Logf("Creating persistent Executable '%s' with Start=false", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to be observed without starting a process", exe.ObjectMeta.Name)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+	})
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "persistent Executable with Start=false should not start a process")
+
+	shouldStart = true
+	t.Logf("Patching persistent Executable '%s' to start", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		exePatch := currentExe.DeepCopy()
+		exePatch.Spec.Start = &shouldStart
+		return client.Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
+	}), "Executable object could not be patched")
+
+	t.Logf("Waiting for persistent Executable '%s' to start", exe.ObjectMeta.Name)
+	updatedExe = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning || currentExe.Status.State == apiv1.ExecutableStateFinished, nil
+	})
+	waitResourceLeaseReleased(t, ctx, updatedExe)
+}
+
 // Ensure exit code of processes/run sessions are captured correctly
 func TestExecutableExitCodeCaptured(t *testing.T) {
 	type testcase struct {
