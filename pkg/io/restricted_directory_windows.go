@@ -30,6 +30,8 @@ type restrictedDirectoryPrincipals struct {
 	admins     *windows.SID
 }
 
+const restrictedDirectoryAccessMask windows.ACCESS_MASK = windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL
+
 func validateRestrictedDirectoryOwner(dir string, _ os.FileInfo) error {
 	var processToken windows.Token
 	if tokenErr := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &processToken); tokenErr != nil {
@@ -148,6 +150,7 @@ func validateRestrictedDirectoryMode(dir string, _ os.FileInfo, perm os.FileMode
 				return fmt.Errorf("directory dacl grants access to disallowed principal %s", aceSid.String())
 			}
 		case windows.ACCESS_DENIED_ACE_TYPE:
+			return fmt.Errorf("directory dacl contains unsupported deny access entry %d", i)
 		default:
 			return fmt.Errorf("directory dacl contains unsupported access entry type %d", ace.Header.AceType)
 		}
@@ -160,7 +163,7 @@ func restrictedDirectoryACL(principals restrictedDirectoryPrincipals) (*windows.
 	explicitEntries := make([]windows.EXPLICIT_ACCESS, 0, 4)
 	for _, sid := range uniqueRestrictedDirectoryPrincipals(principals) {
 		explicitEntries = append(explicitEntries, windows.EXPLICIT_ACCESS{
-			AccessPermissions: windows.STANDARD_RIGHTS_ALL | windows.GENERIC_ALL,
+			AccessPermissions: restrictedDirectoryAccessMask,
 			AccessMode:        windows.GRANT_ACCESS,
 			Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 			Trustee: windows.TRUSTEE{
