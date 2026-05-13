@@ -29,8 +29,9 @@ const (
 
 	sqliteDriverName = "sqlite"
 
-	defaultStoreFileName         = "state.sqlite3"
-	defaultElevatedStoreFileName = "state.elevated.sqlite3"
+	defaultStoreDirName         = "state"
+	defaultElevatedStoreDirName = "state.elevated"
+	defaultStoreFileName        = "state.sqlite3"
 
 	DefaultBusyTimeout = 5 * time.Second
 
@@ -82,10 +83,14 @@ func resolveStateStorePath(path string) (string, bool, error) {
 		return "", false, isAdminErr
 	}
 
+	return defaultStateStorePath(dcpFolder, isAdmin), false, nil
+}
+
+func defaultStateStorePath(dcpFolder string, isAdmin bool) string {
 	if isAdmin {
-		return filepath.Join(dcpFolder, defaultElevatedStoreFileName), false, nil
+		return filepath.Join(dcpFolder, defaultElevatedStoreDirName, defaultStoreFileName)
 	}
-	return filepath.Join(dcpFolder, defaultStoreFileName), false, nil
+	return filepath.Join(dcpFolder, defaultStoreDirName, defaultStoreFileName)
 }
 
 func Open(ctx context.Context, options Options) (*Store, error) {

@@ -72,6 +72,27 @@ func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 	)
 }
 
+func TestDefaultStateStoreDirRestrictsLeafDirectoryOnly(t *testing.T) {
+	t.Parallel()
+
+	dcpFolder := filepath.Join(t.TempDir(), ".dcp")
+	require.NoError(t, os.Mkdir(dcpFolder, osutil.PermissionDirectoryOthersRead))
+
+	for _, isAdmin := range []bool{false, true} {
+		stateStorePath := defaultStateStorePath(dcpFolder, isAdmin)
+		require.NoError(t, ensureStateStoreDir(stateStorePath, false))
+
+		stateStoreDir := filepath.Dir(stateStorePath)
+		require.DirExists(t, stateStoreDir)
+		require.NoError(t, usvc_io.ValidateRestrictedDirectory(stateStoreDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+	}
+	if runtime.GOOS != "windows" {
+		rootInfo, rootStatErr := os.Lstat(dcpFolder)
+		require.NoError(t, rootStatErr)
+		require.Equal(t, osutil.PermissionDirectoryOthersRead, rootInfo.Mode().Perm())
+	}
+}
+
 func requireMigrationVersion(t *testing.T, ctx context.Context, store *Store, expectedVersion int) {
 	t.Helper()
 
