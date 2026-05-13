@@ -410,7 +410,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 
 		if persistentNetworkLeaseReleaseState(network.Status.State) {
 			// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
-			_ = r.releasePersistentNetworkResourceLease(context.Background(), network, log)
+			_ = r.releasePersistentNetworkResourceLease(context.Background(), network, log, true)
 		}
 
 		return change
@@ -714,7 +714,7 @@ func (r *NetworkReconciler) setNetworkState(network *apiv1.ContainerNetwork, sta
 
 	if network.Spec.Persistent && persistentNetworkLeaseReleaseState(state) {
 		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
-		_ = r.releasePersistentNetworkResourceLease(context.Background(), network, r.Log)
+		_ = r.releasePersistentNetworkResourceLease(context.Background(), network, r.Log, true)
 	}
 
 	return change
@@ -732,7 +732,12 @@ func persistentNetworkLeaseReleaseState(state apiv1.ContainerNetworkState) bool 
 	}
 }
 
-func (r *NetworkReconciler) releasePersistentNetworkResourceLease(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) error {
+func (r *NetworkReconciler) releasePersistentNetworkResourceLease(
+	ctx context.Context,
+	network *apiv1.ContainerNetwork,
+	log logr.Logger,
+	suppressNotHeldLog bool,
+) error {
 	if !network.Spec.Persistent || r.config.StateStore == nil ||
 		r.config.ResourceLeaseOwner.Pid <= 0 || r.config.ResourceLeaseOwner.IdentityTime.IsZero() {
 		return nil
@@ -741,7 +746,7 @@ func (r *NetworkReconciler) releasePersistentNetworkResourceLease(ctx context.Co
 	releaseErr := r.config.StateStore.ReleaseResourceLease(ctx, network, r.config.ResourceLeaseOwner)
 	if releaseErr != nil {
 		if errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
-			log.V(1).Info("Persistent network resource lease was not held", "ResourceKey", network.GetLeaseKey())
+			logResourceLeaseNotHeld(log, suppressNotHeldLog, network.GetLeaseKey(), "Persistent network resource lease was not held")
 			return releaseErr
 		}
 		log.Error(releaseErr, "Could not release persistent network resource lease")

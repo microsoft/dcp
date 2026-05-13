@@ -320,7 +320,7 @@ func handleNewExecutable(
 	if !exe.ShouldStart() && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
 		if exe.Spec.Persistent {
 			adopted, adoptionChange := r.tryAdoptExistingPersistentExecutable(ctx, exe, log)
-			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log)
+			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
 			if adopted || adoptionChange != noChange {
 				return adoptionChange
 			}
@@ -335,7 +335,7 @@ func handleNewExecutable(
 	if exe.Spec.Persistent {
 		_, updatedRunInfo := r.runs.BorrowByNamespacedName(exe.NamespacedName())
 		if !persistentExecutableStartupInProgress(updatedRunInfo) {
-			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log)
+			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
 		}
 	}
 	return change
@@ -1322,7 +1322,7 @@ func (r *ExecutableReconciler) setExecutableState(exe *apiv1.Executable, state a
 
 	if exe.Spec.Persistent && persistentExecutableLeaseReleaseState(state) {
 		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
-		_ = r.releasePersistentExecutableResourceLease(context.Background(), exe, r.Log)
+		_ = r.releasePersistentExecutableResourceLease(context.Background(), exe, r.Log, true)
 	}
 
 	change |= updateExecutableHealthStatus(exe, state, r.Log)

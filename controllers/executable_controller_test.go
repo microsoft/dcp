@@ -122,6 +122,31 @@ func TestHandleNewPersistentExecutableWithStartFalseAdoptsMatchingRecord(t *test
 	require.Zero(t, runner.startRunCount)
 }
 
+func TestHandleNewPersistentExecutableWithStartFalseReleasesResourceLease(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	exe := persistentLifecycleKeyTestExecutable()
+	exe.Name = "api"
+	exe.Spec.Start = pointersTo(false)
+	exe.Spec.Args = nil
+	exe.Spec.Env = nil
+
+	change := reconciler.manageExecutable(ctx, exe, logr.Discard())
+
+	require.Equal(t, noChange, change)
+	require.Equal(t, apiv1.ExecutableStateEmpty, exe.Status.State)
+	require.Empty(t, runner.adoptedRuns)
+	require.Empty(t, runner.stoppedRuns)
+	require.Zero(t, runner.startRunCount)
+
+	otherOwner := reconciler.config.ResourceLeaseOwner
+	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(-time.Hour)
+	_, acquireErr := store.AcquireResourceLease(ctx, exe, otherOwner, time.Minute)
+	require.NoError(t, acquireErr)
+}
+
 func TestHandleNewPersistentExecutableWithStartFalseStopsMismatchedRecordAndWaits(t *testing.T) {
 	t.Parallel()
 

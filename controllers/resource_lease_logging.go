@@ -23,3 +23,10 @@ func logResourceLeaseHeld(log logr.Logger, leaseErr error, resourceKey string, m
 
 	log.V(1).Info(message, logValues...)
 }
+
+func logResourceLeaseNotHeld(log logr.Logger, suppress bool, resourceKey string, message string) {
+	if suppress {
+		return
+	}
+	log.V(1).Info(message, "ResourceKey", resourceKey)
+}
