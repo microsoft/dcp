@@ -123,7 +123,7 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		closeErr := db.Close()
 		return nil, fmt.Errorf("could not initialize state store migration database '%s': %w", absPath, errors.Join(migrationOpenErr, closeErr))
 	}
-	if migrateErr := store.migrate(ctx, migrationDB); migrateErr != nil {
+	if migrateErr := store.migrate(ctx, migrationDB, busyTimeout); migrateErr != nil {
 		migrationCloseErr := migrationDB.Close()
 		closeErr := db.Close()
 		return nil, fmt.Errorf("could not migrate state store database '%s': %w", absPath, errors.Join(migrateErr, migrationCloseErr, closeErr))

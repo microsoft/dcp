@@ -11,6 +11,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"time"
 
 	gomigrate "github.com/golang-migrate/migrate/v4"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
@@ -32,7 +33,7 @@ const (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
-func (s *Store) migrate(ctx context.Context, migrationDB *sql.DB) (err error) {
+func (s *Store) migrate(ctx context.Context, migrationDB *sql.DB, busyTimeout time.Duration) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
@@ -59,10 +60,10 @@ func (s *Store) migrate(ctx context.Context, migrationDB *sql.DB) (err error) {
 		return migrationErr
 	}
 
-	return s.runMigrations(ctx, migrationDB)
+	return s.runMigrations(ctx, migrationDB, busyTimeout)
 }
 
-func (s *Store) runMigrations(ctx context.Context, migrationDB *sql.DB) (err error) {
+func (s *Store) runMigrations(ctx context.Context, migrationDB *sql.DB, busyTimeout time.Duration) (err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
@@ -95,7 +96,7 @@ func (s *Store) runMigrations(ctx context.Context, migrationDB *sql.DB) (err err
 		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
 		err = errors.Join(err, sourceCloseErr, databaseCloseErr)
 	}()
-	migrationRunner.LockTimeout = DefaultBusyTimeout
+	migrationRunner.LockTimeout = busyTimeout
 
 	if migrationErr := migrationRunner.Up(); migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
 		return fmt.Errorf("could not apply state store migrations: %w", migrationErr)
