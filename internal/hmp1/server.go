@@ -113,9 +113,9 @@ func Serve(ctx context.Context, conn net.Conn, pty PTY, waitExit func() int32, o
 		rows = 24
 	}
 
-	helloBytes, err := json.Marshal(HelloPayload{Version: 1, Width: cols, Height: rows})
-	if err != nil {
-		return fmt.Errorf("marshal Hello payload: %w", err)
+	helloBytes, marshalErr := json.Marshal(HelloPayload{Version: 1, Width: cols, Height: rows})
+	if marshalErr != nil {
+		return fmt.Errorf("marshal Hello payload: %w", marshalErr)
 	}
 
 	// Serialize frame writes; both Output and Exit are written from different
@@ -127,13 +127,15 @@ func Serve(ctx context.Context, conn net.Conn, pty PTY, waitExit func() int32, o
 		return writeFrameLocked(conn, t, payload)
 	}
 
-	if err := writeFrame(FrameHello, helloBytes); err != nil {
-		return fmt.Errorf("write Hello: %w", err)
+	writeHelloErr := writeFrame(FrameHello, helloBytes)
+	if writeHelloErr != nil {
+		return fmt.Errorf("write Hello: %w", writeHelloErr)
 	}
 	// Empty StateSync: the headless terminal in the Aspire terminal host
 	// rebuilds state from subsequent Output frames.
-	if err := writeFrame(FrameStateSync, nil); err != nil {
-		return fmt.Errorf("write StateSync: %w", err)
+	writeStateSyncErr := writeFrame(FrameStateSync, nil)
+	if writeStateSyncErr != nil {
+		return fmt.Errorf("write StateSync: %w", writeStateSyncErr)
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -250,8 +252,8 @@ func Serve(ctx context.Context, conn net.Conn, pty PTY, waitExit func() int32, o
 	_ = writeFrame(FrameExit, exitPayload)
 
 	select {
-	case err := <-errCh:
-		return err
+	case serveErr := <-errCh:
+		return serveErr
 	default:
 		return nil
 	}
@@ -273,22 +275,6 @@ func writeFrameLocked(w io.Writer, t FrameType, payload []byte) error {
 		}
 	}
 	return nil
-}
-
-func readFrame(r io.Reader) (FrameType, []byte, error) {
-	fr := newFrameReader(r)
-	t, payload, err := fr.Read()
-	if err != nil {
-		return 0, nil, err
-	}
-	if payload == nil {
-		return t, nil, nil
-	}
-	// Detach the payload from the (single-shot) frameReader's scratch buffer
-	// so callers of the package-level helper own the bytes outright.
-	out := make([]byte, len(payload))
-	copy(out, payload)
-	return t, out, nil
 }
 
 // frameReader reads HMP v1 frames from r, reusing a single payload scratch

@@ -12,70 +12,44 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/UserExistsError/conpty"
-
 	"github.com/microsoft/dcp/pkg/process"
 )
-
-// conPtyAdapter wraps a *conpty.ConPty so it satisfies hmp1.PTY (specifically
-// the Resize signature: cols, rows int).
-type conPtyAdapter struct {
-	cp *conpty.ConPty
-}
-
-func (a *conPtyAdapter) Read(p []byte) (int, error)  { return a.cp.Read(p) }
-func (a *conPtyAdapter) Write(p []byte) (int, error) { return a.cp.Write(p) }
-func (a *conPtyAdapter) Close() error                { return a.cp.Close() }
-func (a *conPtyAdapter) Resize(cols, rows int) error { return a.cp.Resize(cols, rows) }
 
 // startProcessImpl allocates a Windows ConPTY, spawns a process attached to
 // it, and returns a Process. The caller is responsible for calling
 // PTY.Close() on shutdown.
 func startProcessImpl(_ context.Context, spec CommandSpec) (*PseudoTerminalProcess, error) {
-	if !conpty.IsConPtyAvailable() {
-		return nil, fmt.Errorf("ConPTY is not available on this Windows version: %w", conpty.ErrConPtyUnsupported)
-	}
-
-	cols, rows := normalizeDimensions(spec.Cols, spec.Rows)
-
-	options := []conpty.ConPtyOption{
-		conpty.ConPtyDimensions(cols, rows),
-	}
-	if env := envMapToSlice(spec.Env); env != nil {
-		options = append(options, conpty.ConPtyEnv(env))
-	}
-	if spec.Dir != "" {
-		options = append(options, conpty.ConPtyWorkDir(spec.Dir))
-	}
-
 	if len(spec.Cmd) == 0 {
 		return nil, fmt.Errorf("command is empty")
 	}
+
+	cols, rows := normalizeDimensions(spec.Cols, spec.Rows)
 	commandLine := BuildWindowsCommandLine(spec.Cmd[0], spec.Cmd[1:])
 
-	cp, err := conpty.Start(commandLine, options...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start process under ConPTY: %w", err)
+	cp, startErr := startWindowsPseudoConsole(windowsPseudoConsoleConfig{
+		CommandLine: commandLine,
+		Env:         envMapToSlice(spec.Env),
+		Dir:         spec.Dir,
+		Cols:        cols,
+		Rows:        rows,
+	})
+	if startErr != nil {
+		return nil, fmt.Errorf("failed to start process under ConPTY: %w", startErr)
 	}
 
-	pid, pidErr := process.Int64_ToPidT(int64(cp.Pid()))
-	if pidErr != nil {
-		return nil, fmt.Errorf("the started process has invalid PID: %w", pidErr) // should never happen
-	}
-
+	pid := cp.processID()
 	return &PseudoTerminalProcess{
-		PTY: &conPtyAdapter{cp: cp},
-		PID: pid,
-
-		// UNDONE need to get the identity time of the process.
+		PTY:          cp,
+		PID:          pid,
+		IdentityTime: process.ProcessIdentityTime(pid),
 
 		WaitExit: func(ctx context.Context) int32 {
-			exitCode, waitErr := cp.Wait(ctx)
+			exitCode, waitErr := cp.wait(ctx)
 			if waitErr != nil {
 				// Wait failures are best-effort: the connection's about to
 				// close anyway. Surface UnknownExitCode to make the situation
 				// visible in the terminal host.
-				return -1
+				return process.UnknownExitCode
 			}
 			return int32(exitCode)
 		},

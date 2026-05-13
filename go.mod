@@ -3,8 +3,8 @@ module github.com/microsoft/dcp
 go 1.26.3
 
 require (
-	github.com/UserExistsError/conpty v0.1.4
 	github.com/cenkalti/backoff/v4 v4.3.0
+	github.com/creack/pty v1.1.24
 	github.com/davidwartell/go-onecontext v1.0.2
 	github.com/emirpasic/gods v1.18.1
 	github.com/felixge/fgprof v0.9.5
@@ -97,7 +97,6 @@ require (
 	github.com/charmbracelet/x/term v0.2.1 // indirect
 	github.com/ckaznocha/intrange v0.3.1 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
-	github.com/creack/pty v1.1.24 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/curioswitch/go-reassign v0.3.0 // indirect
 	github.com/daixiang0/gci v0.13.7 // indirect

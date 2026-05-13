@@ -1482,11 +1482,12 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 					log.V(1).Info("Container started")
 					rcd.containerState = apiv1.ContainerStateRunning
 
-					if err := r.ensureContainerTerminalSession(startupCtx, rcd, log); err != nil {
+					terminalSessionErr := r.ensureContainerTerminalSession(startupCtx, rcd, log)
+					if terminalSessionErr != nil {
 						// Terminal attach failure is non-fatal: the container is
 						// running and observable via the orchestrator, but no
 						// interactive PTY is available. We log and continue.
-						log.Error(err, "Failed to attach terminal session to running container; container is running but interactive terminal will be unavailable")
+						log.Error(terminalSessionErr, "Failed to attach terminal session to running container; container is running but interactive terminal will be unavailable")
 					}
 				} else {
 					log.V(1).Info("Container started and exited shortly after", "ContainerStatus", inspected.Status)

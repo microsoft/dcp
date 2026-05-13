@@ -319,7 +319,9 @@ func TestServeRejectsOversizedFrame(t *testing.T) {
 func readFrameHelper(t *testing.T, r net.Conn) (FrameType, []byte) {
 	t.Helper()
 	_ = r.SetReadDeadline(time.Now().Add(3 * time.Second))
-	defer r.SetReadDeadline(time.Time{})
+	defer func() {
+		_ = r.SetReadDeadline(time.Time{})
+	}()
 	var header [5]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {

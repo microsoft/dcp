@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,10 +53,7 @@ func TestTerminalSessionEndToEndWindows(t *testing.T) {
 	defer lis.Close()
 
 	tp, err := StartProcess(ctx, CommandSpec{
-		Cmd: exec.Cmd{
-			Path: `C:\Windows\System32\cmd.exe`,
-			Args: []string{`C:\Windows\System32\cmd.exe`, "/c", "echo hello-world-from-conpty && exit 0"},
-		},
+		Cmd:  []string{`C:\Windows\System32\cmd.exe`, "/c", "echo hello-world-from-conpty && exit 0"},
 		Cols: 100,
 		Rows: 30,
 	})
@@ -107,8 +103,9 @@ readLoop:
 		case hmp1.FrameHello:
 			sawHello = true
 			var p hmp1.HelloPayload
-			if err := json.Unmarshal(payload, &p); err != nil {
-				t.Fatalf("Hello payload was not valid JSON (%v): %q", err, string(payload))
+			unmarshalErr := json.Unmarshal(payload, &p)
+			if unmarshalErr != nil {
+				t.Fatalf("Hello payload was not valid JSON (%v): %q", unmarshalErr, string(payload))
 			}
 			if p.Version != 1 {
 				t.Errorf("Hello.Version = %d, want 1", p.Version)

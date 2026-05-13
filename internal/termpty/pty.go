@@ -81,7 +81,7 @@ func StartProcess(ctx context.Context, spec CommandSpec) (*PseudoTerminalProcess
 }
 
 // envMapToSlice flattens an env map into the "KEY=VALUE" slice form expected
-// by exec.Cmd.Env / conpty.ConPtyEnv. Returns nil for a nil input so callers
+// by exec.Cmd.Env / the Windows ConPTY backend. Returns nil for a nil input so callers
 // can distinguish "inherit parent env" from "empty env".
 func envMapToSlice(env map[string]string) []string {
 	if env == nil {
