@@ -107,7 +107,8 @@ func StartAdvancedTestEnvironment(
 			},
 			hpSet,
 			controllers.ExecutableReconcilerConfig{
-				StateStore: stateStore,
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
 			},
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
