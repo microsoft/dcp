@@ -24,12 +24,16 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+const controllerLeaseTestTimeout = 10 * time.Second
 
 func TestPersistentContainerLeaseHeldSkipsResourceUpdate(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 	store, storeErr := statestore.Open(ctx, statestore.Options{
 		Path:        filepath.Join(t.TempDir(), "state.sqlite3"),
 		BusyTimeout: 500 * time.Millisecond,
@@ -78,8 +82,8 @@ func TestPersistentContainerLeaseHeldSkipsResourceUpdate(t *testing.T) {
 func TestPersistentContainerReuseReleasesResourceLease(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 
 	store, leaseOwner, otherOwner := openContainerLeaseTestStore(t, ctx)
 	containerName := "api"
@@ -105,8 +109,8 @@ func TestPersistentContainerReuseReleasesResourceLease(t *testing.T) {
 func TestPersistentContainerStartFalseReleasesResourceLease(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 
 	store, leaseOwner, otherOwner := openContainerLeaseTestStore(t, ctx)
 	orchestrator := &containerLeaseTestOrchestrator{}
@@ -142,8 +146,8 @@ func TestSetPersistentContainerStableStateReleasesLease(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx, cancel := context.WithCancel(context.Background())
-			t.Cleanup(cancel)
+			ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+			defer cancel()
 
 			store, leaseOwner, _ := openContainerLeaseTestStore(t, ctx)
 			container := persistentContainerForLeaseTest(testCase.name)
@@ -163,8 +167,8 @@ func TestSetPersistentContainerStableStateReleasesLease(t *testing.T) {
 func TestSetPersistentContainerTransientStateKeepsLease(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 
 	store, leaseOwner, _ := openContainerLeaseTestStore(t, ctx)
 	container := persistentContainerForLeaseTest("api")
@@ -182,8 +186,8 @@ func TestPersistentContainerLifecycleMonitorUsesExplicitMonitor(t *testing.T) {
 	t.Parallel()
 
 	dcppaths.EnableTestPathProbing()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 
 	processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
 	monitorPID := int64(12345)

@@ -24,6 +24,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestExecutableStartResultStringDoesNotFormatZeroIdentityTimeAsTimestamp(t *testing.T) {
@@ -101,8 +102,9 @@ func TestChangedExecutableEnvNamesReturnsSortedNames(t *testing.T) {
 func TestHandleNewPersistentExecutableWithStartFalseAdoptsMatchingRecord(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Name = "api"
 	exe.Spec.Start = pointersTo(false)
@@ -125,8 +127,9 @@ func TestHandleNewPersistentExecutableWithStartFalseAdoptsMatchingRecord(t *test
 func TestHandleNewPersistentExecutableWithStartFalseReleasesResourceLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Name = "api"
 	exe.Spec.Start = pointersTo(false)
@@ -150,8 +153,9 @@ func TestHandleNewPersistentExecutableWithStartFalseReleasesResourceLease(t *tes
 func TestHandleNewPersistentExecutableWithStartFalseStopsMismatchedRecordAndWaits(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Name = "api"
 	exe.Spec.Start = pointersTo(false)
@@ -176,8 +180,9 @@ func TestHandleNewPersistentExecutableWithStartFalseStopsMismatchedRecordAndWait
 func TestHandleNewPersistentExecutableWaitsWhenLeaseHeld(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Name = "api"
 	exe.Spec.Start = pointersTo(false)
@@ -203,8 +208,9 @@ func TestHandleNewPersistentExecutableWaitsWhenLeaseHeld(t *testing.T) {
 func TestHandleNewPersistentExecutableHoldsLeaseDuringStartup(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Name = "api"
 	exe.Spec.Start = pointersTo(true)
@@ -221,8 +227,9 @@ func TestHandleNewPersistentExecutableHoldsLeaseDuringStartup(t *testing.T) {
 func TestPersistentExecutableStartupWorkRequiresHeldLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, _ := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, _ := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Name = "api"
 	exe.Spec.Start = pointersTo(true)
@@ -259,8 +266,9 @@ func TestSetPersistentExecutableStableStateReleasesLease(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
-			reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t)
+			ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+			defer cancel()
+			reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 			exe := persistentLifecycleKeyTestExecutable()
 			exe.Namespace = "default"
 			exe.Name = testCase.name
@@ -279,8 +287,9 @@ func TestSetPersistentExecutableStableStateReleasesLease(t *testing.T) {
 func TestSetPersistentExecutableTransientStateKeepsLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Namespace = "default"
 	exe.Name = "api"
@@ -296,8 +305,9 @@ func TestSetPersistentExecutableTransientStateKeepsLease(t *testing.T) {
 func TestPersistentExecutableDeletionPreservesReusableRecord(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, runner, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	scheme := apiruntime.NewScheme()
 	require.NoError(t, apiv1.AddToScheme(scheme))
 	reconciler.Client = fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -332,8 +342,9 @@ func TestPersistentExecutableDeletionPreservesReusableRecord(t *testing.T) {
 func TestRunCompletionSkipsPersistentRecordCleanupForNonPersistentExecutable(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t)
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+	reconciler, _, store := newPersistentExecutableAdoptionTestReconciler(t, ctx)
 	exe := persistentLifecycleKeyTestExecutable()
 	exe.Spec.Persistent = false
 	exe.ObjectMeta = metav1.ObjectMeta{
@@ -402,10 +413,10 @@ func (r *persistentExecutableTestRunner) AdoptRun(_ context.Context, run Executa
 	return nil
 }
 
-func newPersistentExecutableAdoptionTestReconciler(t *testing.T) (*ExecutableReconciler, *persistentExecutableTestRunner, *statestore.Store) {
+func newPersistentExecutableAdoptionTestReconciler(t *testing.T, ctx context.Context) (*ExecutableReconciler, *persistentExecutableTestRunner, *statestore.Store) {
 	t.Helper()
 
-	store, storeErr := statestore.Open(context.Background(), statestore.Options{
+	store, storeErr := statestore.Open(ctx, statestore.Options{
 		Path: filepath.Join(t.TempDir(), "state.sqlite3"),
 	})
 	require.NoError(t, storeErr)
@@ -417,7 +428,7 @@ func newPersistentExecutableAdoptionTestReconciler(t *testing.T) (*ExecutableRec
 	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, leaseOwnerErr)
 	reconciler := &ExecutableReconciler{
-		ReconcilerBase: NewReconcilerBase[apiv1.Executable](nil, nil, logr.Discard(), context.Background()),
+		ReconcilerBase: NewReconcilerBase[apiv1.Executable](nil, nil, logr.Discard(), ctx),
 		ExecutableRunners: map[apiv1.ExecutionType]ExecutableRunner{
 			apiv1.ExecutionTypeProcess: runner,
 		},

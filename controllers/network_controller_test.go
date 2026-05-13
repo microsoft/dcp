@@ -17,6 +17,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestPersistentNetworkFailsToStartWithoutStateStore(t *testing.T) {
@@ -25,7 +26,10 @@ func TestPersistentNetworkFailsToStartWithoutStateStore(t *testing.T) {
 	network := persistentTestNetwork()
 	reconciler := newTestNetworkReconciler(t, NetworkReconcilerConfig{})
 
-	change := reconciler.ensureNetwork(context.Background(), network, logr.Discard())
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
+
+	change := reconciler.ensureNetwork(ctx, network, logr.Discard())
 
 	require.Equal(t, statusChanged, change)
 	require.Equal(t, apiv1.ContainerNetworkStateFailedToStart, network.Status.State)
@@ -40,7 +44,8 @@ func TestPersistentNetworkFailsToStartWithoutStateStore(t *testing.T) {
 func TestPersistentNetworkFailsToStartWithInvalidLeaseOwner(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 	store := openNetworkTestStore(t, ctx)
 	network := persistentTestNetwork()
 	reconciler := newTestNetworkReconciler(t, NetworkReconcilerConfig{
@@ -57,7 +62,8 @@ func TestPersistentNetworkFailsToStartWithInvalidLeaseOwner(t *testing.T) {
 func TestPersistentNetworkLeaseHeldRequeues(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 	store := openNetworkTestStore(t, ctx)
 	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, leaseOwnerErr)
@@ -97,7 +103,8 @@ func TestSetPersistentNetworkStableStateReleasesLease(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := context.Background()
+			ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+			defer cancel()
 			store := openNetworkTestStore(t, ctx)
 			leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 			require.NoError(t, leaseOwnerErr)
@@ -122,7 +129,8 @@ func TestSetPersistentNetworkStableStateReleasesLease(t *testing.T) {
 func TestSetPersistentNetworkTransientStateKeepsLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
+	defer cancel()
 	store := openNetworkTestStore(t, ctx)
 	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, leaseOwnerErr)
@@ -156,9 +164,9 @@ func persistentTestNetwork() *apiv1.ContainerNetwork {
 func newTestNetworkReconciler(t *testing.T, config NetworkReconcilerConfig) *NetworkReconciler {
 	t.Helper()
 
-	lifetimeCtx, cancel := context.WithCancel(context.Background())
-	reconciler := NewNetworkReconcilerWithConfig(lifetimeCtx, nil, nil, logr.Discard(), nil, nil, config)
+	lifetimeCtx, cancel := testutil.GetTestContext(t, controllerLeaseTestTimeout)
 	cancel()
+	reconciler := NewNetworkReconcilerWithConfig(lifetimeCtx, nil, nil, logr.Discard(), nil, nil, config)
 	return reconciler
 }
 

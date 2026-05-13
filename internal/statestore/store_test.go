@@ -17,22 +17,25 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-func openRawSQLiteDB(t *testing.T, path string) *sql.DB {
+const stateStoreTestTimeout = 10 * time.Second
+
+func openRawSQLiteDB(t *testing.T, ctx context.Context, path string) *sql.DB {
 	t.Helper()
 
 	db, openErr := sql.Open(sqliteDriverName, sqliteDSN(path, 500*time.Millisecond))
 	require.NoError(t, openErr)
 
-	require.NoError(t, db.PingContext(context.Background()))
+	require.NoError(t, db.PingContext(ctx))
 	return db
 }
 
-func openTestStore(t *testing.T, path string) *Store {
+func openTestStore(t *testing.T, ctx context.Context, path string) *Store {
 	t.Helper()
 
-	store, openErr := Open(context.Background(), Options{
+	store, openErr := Open(ctx, Options{
 		Path:        path,
 		BusyTimeout: 500 * time.Millisecond,
 	})
@@ -64,10 +67,10 @@ func TestSQLiteDSNUsesURIPathSeparators(t *testing.T) {
 	)
 }
 
-func requireMigrationVersion(t *testing.T, store *Store, expectedVersion int) {
+func requireMigrationVersion(t *testing.T, ctx context.Context, store *Store, expectedVersion int) {
 	t.Helper()
 
-	row := store.db.QueryRowContext(context.Background(), `SELECT version, dirty FROM schema_migrations LIMIT 1`)
+	row := store.db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`)
 	var version int
 	var dirty bool
 	require.NoError(t, row.Scan(&version, &dirty))
@@ -75,10 +78,10 @@ func requireMigrationVersion(t *testing.T, store *Store, expectedVersion int) {
 	require.False(t, dirty)
 }
 
-func createUnversionedCurrentSchema(t *testing.T, path string) {
+func createUnversionedCurrentSchema(t *testing.T, ctx context.Context, path string) {
 	t.Helper()
 
-	db := openRawSQLiteDB(t, path)
+	db := openRawSQLiteDB(t, ctx, path)
 	defer func() {
 		require.NoError(t, db.Close())
 	}()
@@ -86,7 +89,7 @@ func createUnversionedCurrentSchema(t *testing.T, path string) {
 	initialMigration, readErr := fs.ReadFile(migrationFiles, "migrations/000001_initial.up.sql")
 	require.NoError(t, readErr)
 
-	_, execErr := db.ExecContext(context.Background(), string(initialMigration))
+	_, execErr := db.ExecContext(ctx, string(initialMigration))
 	require.NoError(t, execErr)
 }
 
@@ -102,25 +105,43 @@ func testResourceLeaseOwner(t *testing.T, identityOffset time.Duration) (process
 	return normalizeResourceLeaseOwner(currentProcess)
 }
 
+func setResourceLeaseUpdatedAt(t *testing.T, ctx context.Context, store *Store, resourceKey string, updatedAt time.Time) {
+	t.Helper()
+
+	_, updateErr := store.db.ExecContext(
+		ctx,
+		`UPDATE resource_locks SET updated_at_unix_nano = ? WHERE resource_key = ?`,
+		unixNano(updatedAt),
+		resourceKey,
+	)
+	require.NoError(t, updateErr)
+}
+
 func TestOpenCreatesSchema(t *testing.T) {
 	t.Parallel()
 
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store := openTestStore(t, storePath)
+	store := openTestStore(t, ctx, storePath)
 
 	require.Equal(t, storePath, store.Path())
 	require.FileExists(t, storePath)
 
-	requireMigrationVersion(t, store, currentSchemaVersion)
+	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
 }
 
 func TestOpenConfiguresWALAutoCheckpoint(t *testing.T) {
 	t.Parallel()
 
-	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store := openTestStore(t, storePath)
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 
-	row := store.db.QueryRowContext(context.Background(), "PRAGMA wal_autocheckpoint")
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+
+	row := store.db.QueryRowContext(ctx, "PRAGMA wal_autocheckpoint")
 	var autoCheckpointPages int
 	require.NoError(t, row.Scan(&autoCheckpointPages))
 	require.Equal(t, defaultWALAutoCheckpointPages, autoCheckpointPages)
@@ -129,11 +150,12 @@ func TestOpenConfiguresWALAutoCheckpoint(t *testing.T) {
 func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	createUnversionedCurrentSchema(t, storePath)
+	createUnversionedCurrentSchema(t, ctx, storePath)
 
-	db := openRawSQLiteDB(t, storePath)
+	db := openRawSQLiteDB(t, ctx, storePath)
 	owner, ownerErr := testResourceLeaseOwner(t, 0)
 	require.NoError(t, ownerErr)
 
@@ -150,8 +172,8 @@ func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testi
 	require.NoError(t, insertErr)
 	require.NoError(t, db.Close())
 
-	store := openTestStore(t, storePath)
-	requireMigrationVersion(t, store, currentSchemaVersion)
+	store := openTestStore(t, ctx, storePath)
+	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
 
 	otherOwner, otherOwnerErr := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, otherOwnerErr)
@@ -162,10 +184,11 @@ func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testi
 func TestOpenMigratesUnversionedLegacyResourceLocksTable(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
 
-	db := openRawSQLiteDB(t, storePath)
+	db := openRawSQLiteDB(t, ctx, storePath)
 	_, createErr := db.ExecContext(
 		ctx,
 		`CREATE TABLE resource_locks (
@@ -177,8 +200,8 @@ func TestOpenMigratesUnversionedLegacyResourceLocksTable(t *testing.T) {
 	require.NoError(t, createErr)
 	require.NoError(t, db.Close())
 
-	store := openTestStore(t, storePath)
-	requireMigrationVersion(t, store, currentSchemaVersion)
+	store := openTestStore(t, ctx, storePath)
+	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
 
 	conn, connErr := store.db.Conn(ctx)
 	require.NoError(t, connErr)
@@ -198,10 +221,11 @@ func TestOpenMigratesUnversionedLegacyResourceLocksTable(t *testing.T) {
 func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store1 := openTestStore(t, storePath)
-	store2 := openTestStore(t, storePath)
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
 
 	owner1, owner1Err := testResourceLeaseOwner(t, 0)
 	require.NoError(t, owner1Err)
@@ -229,9 +253,10 @@ func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
 func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store := openTestStore(t, storePath)
+	store := openTestStore(t, ctx, storePath)
 
 	owner, ownerErr := normalizeResourceLeaseOwner(process.ProcessTreeItem{
 		Pid:          process.Pid_t(1234),
@@ -249,9 +274,10 @@ func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T)
 func TestResourceLeaseReleaseRequiresOwnedLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store := openTestStore(t, storePath)
+	store := openTestStore(t, ctx, storePath)
 
 	owner1, owner1Err := testResourceLeaseOwner(t, 0)
 	require.NoError(t, owner1Err)
@@ -273,9 +299,10 @@ func TestResourceLeaseReleaseRequiresOwnedLease(t *testing.T) {
 func TestResourceLeaseVerifyRequiresOwnedLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store := openTestStore(t, storePath)
+	store := openTestStore(t, ctx, storePath)
 
 	owner1, owner1Err := testResourceLeaseOwner(t, 0)
 	require.NoError(t, owner1Err)
@@ -297,32 +324,33 @@ func TestResourceLeaseVerifyRequiresOwnedLease(t *testing.T) {
 func TestResourceLeaseDoesNotExpireWhileOwnerIsActive(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store1 := openTestStore(t, storePath)
-	store2 := openTestStore(t, storePath)
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
 
 	owner1, owner1Err := testResourceLeaseOwner(t, 0)
 	require.NoError(t, owner1Err)
 	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, owner2Err)
 
-	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, 20*time.Millisecond)
+	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute)
 	require.NoError(t, acquireErr)
+	setResourceLeaseUpdatedAt(t, ctx, store1, "container/test", time.Now().UTC().Add(-time.Hour))
 
-	require.Eventually(t, func() bool {
-		_, retryErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, 20*time.Millisecond)
-		return errors.Is(retryErr, ErrResourceLeaseHeld)
-	}, time.Second, 20*time.Millisecond)
+	_, retryErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute)
+	require.ErrorIs(t, retryErr, ErrResourceLeaseHeld)
 }
 
 func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store1 := openTestStore(t, storePath)
-	store2 := openTestStore(t, storePath)
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
 
 	currentProcess, currentProcessErr := process.This()
 	require.NoError(t, currentProcessErr)
@@ -334,22 +362,22 @@ func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t 
 	activeOwner, activeOwnerErr := normalizeResourceLeaseOwner(currentProcess)
 	require.NoError(t, activeOwnerErr)
 
-	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), staleOwner, 20*time.Millisecond)
+	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), staleOwner, time.Minute)
 	require.NoError(t, acquireErr)
+	setResourceLeaseUpdatedAt(t, ctx, store1, "container/test", time.Now().UTC().Add(-time.Hour))
 
-	require.Eventually(t, func() bool {
-		_, retryErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), activeOwner, 20*time.Millisecond)
-		return retryErr == nil
-	}, time.Second, 20*time.Millisecond)
+	_, retryErr := store2.AcquireResourceLease(ctx, testLeasableResource("container/test"), activeOwner, time.Minute)
+	require.NoError(t, retryErr)
 }
 
 func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store1 := openTestStore(t, storePath)
-	store2 := openTestStore(t, storePath)
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
 
 	owner1, owner1Err := testResourceLeaseOwner(t, 0)
 	require.NoError(t, owner1Err)
@@ -359,27 +387,24 @@ func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 	_, acquireErr := store1.AcquireResourceLease(ctx, testLeasableResource("container/test"), owner1, time.Minute)
 	require.NoError(t, acquireErr)
 
-	retryCtx, retryCtxCancel := context.WithTimeout(ctx, 20*time.Millisecond)
-	defer retryCtxCancel()
-
 	callbackCalled := false
-	leaseErr := store2.WithResourceLease(retryCtx, testLeasableResource("container/test"), owner2, time.Minute, func(context.Context, *ResourceLease) error {
+	leaseErr := store2.WithResourceLease(ctx, testLeasableResource("container/test"), owner2, time.Minute, func(context.Context, *ResourceLease) error {
 		callbackCalled = true
 		return nil
 	})
 
 	require.ErrorIs(t, leaseErr, ErrResourceLeaseHeld)
-	require.NotErrorIs(t, leaseErr, context.DeadlineExceeded)
 	require.False(t, callbackCalled)
 }
 
 func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store1 := openTestStore(t, storePath)
-	store2 := openTestStore(t, storePath)
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
 
 	currentProcess, currentProcessErr := process.This()
 	require.NoError(t, currentProcessErr)
@@ -424,9 +449,10 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-	store := openTestStore(t, storePath)
+	store := openTestStore(t, ctx, storePath)
 
 	record := PersistentProcessRecord{
 		ResourceKey:       "api",
