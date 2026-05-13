@@ -182,6 +182,15 @@ define run-openapi-gen
 $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 	--output-pkg pkg/generated/openapi \
 	--output-file pkg/generated/openapi/zz_generated.openapi.go \
+	--output-model-name-file zz_generated.model_name.go \
+	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
+	--output-dir "$(repo_dir)" \
+	--report-filename - \
+	$(OPENAPI_GEN_OPTS) \
+	github.com/microsoft/dcp/api/v1 && \
+$(CLEAR_GOARGS) $(OPENAPI_GEN) \
+	--output-pkg pkg/generated/openapi \
+	--output-file pkg/generated/openapi/zz_generated.openapi.go \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
 	--output-dir "$(repo_dir)" \
 	--report-filename - \
