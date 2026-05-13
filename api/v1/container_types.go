@@ -685,6 +685,12 @@ type ContainerSpec struct {
 	// PEM formatted public certificates to be created in the container
 	// +optional
 	PemCertificates *ContainerPemCertificates `json:"pemCertificates,omitempty"`
+
+	// Optional terminal/PTY configuration. When set, the container's primary
+	// process is started under a host pseudo-terminal and its
+	// stdin/stdout/stderr are bridged to the configured UDS via HMP v1,
+	// instead of the container being run detached with separate log capture.
+	Terminal *TerminalSpec `json:"terminal,omitempty"`
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -794,6 +800,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
+	if !cs.Terminal.Equal(other.Terminal) {
+		return false
+	}
+
 	return true
 }
 
@@ -812,6 +822,7 @@ func initializeHashEncoder() {
 	_ = initEncoder.Encode(CreateFileSystem{})
 	_ = initEncoder.Encode(ContainerPemCertificates{})
 	_ = initEncoder.Encode(ImageLayer{})
+	_ = initEncoder.Encode(TerminalSpec{})
 }
 
 func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
@@ -1012,6 +1023,15 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		for i := range cs.ImageLayers {
 			hashErr = errors.Join(hashErr, encoder.Encode(cs.ImageLayers[i].Digest))
 		}
+	}
+
+	if cs.Terminal != nil {
+		// The Terminal section selects how DCP attaches stdio to the
+		// container (PTY + HMP v1 listener). It is forbidden to mutate
+		// after creation (see ContainerSpec.ValidateUpdate), so include it
+		// in the lifecycle key for parity with Equal — two specs that
+		// differ on Terminal must produce different keys.
+		hashErr = errors.Join(hashErr, encoder.Encode(*cs.Terminal))
 	}
 
 	// Compute the hash for the lifecycle key
@@ -1315,6 +1335,10 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 	// Validate PEM certificates configuration
 	errorList = append(errorList, c.Spec.PemCertificates.Validate(field.NewPath("spec", "pemCertificates"))...)
 
+	// Validate terminal configuration (when set, drives PTY allocation +
+	// HMP v1 listener for container attach).
+	errorList = append(errorList, c.Spec.Terminal.Validate(field.NewPath("spec", "terminal"))...)
+
 	// Validate that annotations don't exceed the Kubernetes size limit.
 	// This provides a clearer error message than the generic Kubernetes API server error,
 	// especially when long arguments or environment variables are stored in annotations.
@@ -1407,6 +1431,8 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 			}
 		}
 	}
+
+	errorList = append(errorList, c.Spec.Terminal.ValidateUpdate(oldContainer.Spec.Terminal, field.NewPath("spec", "terminal"))...)
 
 	return errorList
 }

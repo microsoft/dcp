@@ -564,6 +564,13 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 	}
 
+	if options.Terminal != nil {
+		// Allocate a TTY in the container and keep stdin open. Required so a
+		// later "podman start --attach --interactive" can bridge a host PTY
+		// to the container's primary process.
+		args = append(args, "-t", "-i")
+	}
+
 	args = append(args, options.RunArgs...)
 
 	return args
