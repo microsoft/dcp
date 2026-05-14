@@ -29,6 +29,7 @@ import (
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
@@ -116,6 +117,24 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}
 
+		stateStore, stateStoreErr := statestore.Open(ctrlCtx, statestore.Options{})
+		if stateStoreErr != nil {
+			return fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
+		}
+		defer func() {
+			if stateStoreCloseErr := stateStore.Close(); stateStoreCloseErr != nil {
+				log.Error(stateStoreCloseErr, "Failed to close state store")
+			}
+		}()
+		leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+		if leaseOwnerErr != nil {
+			return fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
+		}
+		if cleanupErr := stateStore.DeleteInactiveResourceLeases(ctrlCtx); cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
+		}
+		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
+
 		trySetupNotificationHandler(ctrlCtx, log)
 
 		mgr, err := getManager(ctrlCtx, log.V(1))
@@ -175,13 +194,17 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
-		exCtrl := controllers.NewExecutableReconciler(
+		exCtrl := controllers.NewExecutableReconcilerWithConfig(
 			ctrlCtx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("ExecutableReconciler"),
 			exeRunners,
 			hpSet,
+			controllers.ExecutableReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up Executable controller")
@@ -208,6 +231,9 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			hpSet,
 			controllers.ContainerReconcilerConfig{
 				MaxParallelContainerStarts: controllers.DefaultMaxParallelContainerStarts,
+				StateStore:                 stateStore,
+				ResourceLeaseOwner:         leaseOwner,
+				ProcessExecutor:            processExecutor,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -239,13 +265,17 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
-		networkCtrl := controllers.NewNetworkReconciler(
+		networkCtrl := controllers.NewNetworkReconcilerWithConfig(
 			ctrlCtx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("NetworkReconciler"),
 			containerOrchestrator,
 			harvester,
+			controllers.NetworkReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to setup a ContainerNetwork controller")

@@ -6,7 +6,10 @@
 package v1
 
 import (
+	"encoding/gob"
 	"fmt"
+	"io"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,6 +26,30 @@ type EnvVar struct {
 	// +optional
 	Value string `json:"value,omitempty"`
 	// CONSIDER allowing expansion of existing variable references e.g. using ${VAR_NAME} syntax and $$ to escape the $ sign
+}
+
+// To get consistent output from gob encoders, we need to introduce types in
+// a deterministic order as the encoder generates (and globally caches) an incrementing ID
+// for each type it encounters. This is a bit of a hack, but it works.
+// Any types being encoded in lifecycle GetLifecycleKey methods need to be registered here.
+func initializeLifecycleHashEncoder() {
+	initEncoder := gob.NewEncoder(io.Discard)
+
+	_ = initEncoder.Encode(ContainerLabel{})
+	_ = initEncoder.Encode(ContainerBuildSecret{})
+	_ = initEncoder.Encode(VolumeMount{})
+	_ = initEncoder.Encode(ContainerPort{})
+	_ = initEncoder.Encode(EnvVar{})
+	_ = initEncoder.Encode(CreateFileSystem{})
+	_ = initEncoder.Encode(ContainerPemCertificates{})
+	_ = initEncoder.Encode(ImageLayer{})
+
+	_ = initEncoder.Encode(time.Time{})
+	_ = initEncoder.Encode(ExecutablePemCertificates{})
+}
+
+func init() {
+	initializeLifecycleHashEncoder()
 }
 
 const LogSubresourceName = "log"

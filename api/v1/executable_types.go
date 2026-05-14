@@ -7,10 +7,16 @@ package v1
 
 import (
 	"context"
+	"encoding/gob"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	stdmaps "maps"
+	"os"
 	stdslices "slices"
+	"strings"
 
+	"github.com/joho/godotenv"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -24,7 +30,11 @@ import (
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	usvc_maps "github.com/microsoft/dcp/pkg/maps"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
@@ -250,9 +260,29 @@ type ExecutableSpec struct {
 	// Controls behavior of environment variables inherited from the controller process.
 	AmbientEnvironment AmbientEnvironment `json:"ambientEnvironment,omitempty"`
 
+	// Should the controller attempt to start the Executable?
+	// +kubebuilder:default:=true
+	Start *bool `json:"start,omitempty"`
+
 	// Should the controller attempt to stop the Executable
 	// +kubebuilder:default:=false
 	Stop bool `json:"stop,omitempty"`
+
+	// Should this Executable be created and persisted between DCP runs?
+	Persistent bool `json:"persistent,omitempty"`
+
+	// Optional key used to identify if an existing persistent Executable process should be reused.
+	// If not set, the controller will calculate a key based on a hash of specific fields in the ExecutableSpec.
+	LifecycleKey string `json:"lifecycleKey,omitempty"`
+
+	// Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle.
+	// When set, MonitorTimestamp must also be set and Persistent must be true.
+	// +optional
+	MonitorPID *int64 `json:"monitorPid,omitempty"`
+
+	// Optional parent process identity timestamp used with MonitorPID to guard against PID reuse.
+	// +optional
+	MonitorTimestamp metav1.MicroTime `json:"monitorTimestamp,omitempty"`
 
 	// Health probe configuration for the Executable
 	// +listType=atomic
@@ -296,7 +326,27 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
+	if pointers.GetValueOrDefault(es.Start, true) != pointers.GetValueOrDefault(other.Start, true) {
+		return false
+	}
+
 	if es.Stop != other.Stop {
+		return false
+	}
+
+	if es.Persistent != other.Persistent {
+		return false
+	}
+
+	if es.LifecycleKey != other.LifecycleKey {
+		return false
+	}
+
+	if !pointers.EqualValue(es.MonitorPID, other.MonitorPID) {
+		return false
+	}
+
+	if !osutil.MicroEqual(es.MonitorTimestamp, other.MonitorTimestamp) {
 		return false
 	}
 
@@ -315,6 +365,168 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 	}
 
 	return true
+}
+
+func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
+	if es.LifecycleKey != "" {
+		return es.LifecycleKey, false, nil
+	}
+
+	fnvHash := fnv.New128()
+	encoder := gob.NewEncoder(fnvHash)
+
+	var hashErr error
+	hashErr = errors.Join(hashErr, encoder.Encode(es.ExecutablePath))
+	hashErr = errors.Join(hashErr, encoder.Encode(es.WorkingDirectory))
+	hashErr = errors.Join(hashErr, encoder.Encode(string(es.ExecutionType)))
+	hashErr = errors.Join(hashErr, encoder.Encode(string(es.AmbientEnvironment.Behavior)))
+	hashErr = errors.Join(hashErr, encoder.Encode(es.Args))
+	if es.MonitorPID != nil {
+		hashErr = errors.Join(hashErr, encoder.Encode(*es.MonitorPID))
+		hashErr = errors.Join(hashErr, encoder.Encode(es.MonitorTimestamp.Time))
+	}
+
+	if len(es.Env) > 0 {
+		sortedEnv := stdslices.Clone(es.Env)
+		stdslices.SortFunc(sortedEnv, func(e1, e2 EnvVar) int {
+			return strings.Compare(e1.Name, e2.Name)
+		})
+
+		for i := range sortedEnv {
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedEnv[i]))
+		}
+	}
+
+	if len(es.EnvFiles) > 0 {
+		sortedEnvFiles := stdslices.Clone(es.EnvFiles)
+		stdslices.Sort(sortedEnvFiles)
+
+		for i := range sortedEnvFiles {
+			envFileContents, envFileReadErr := os.ReadFile(sortedEnvFiles[i])
+			if envFileReadErr != nil {
+				hashErr = errors.Join(hashErr, envFileReadErr)
+			} else {
+				hashErr = errors.Join(hashErr, encoder.Encode(envFileContents))
+			}
+		}
+	}
+
+	if es.PemCertificates != nil {
+		sortedPemCertificates := stdslices.Clone(es.PemCertificates.Certificates)
+		stdslices.SortFunc(sortedPemCertificates, func(c1, c2 PemCertificate) int {
+			return strings.Compare(c1.Thumbprint, c2.Thumbprint)
+		})
+
+		for i := range sortedPemCertificates {
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedPemCertificates[i]))
+		}
+		hashErr = errors.Join(hashErr, encoder.Encode(es.PemCertificates.ContinueOnError))
+	}
+
+	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
+	return lifecycleKey, true, hashErr
+}
+
+func (e *Executable) GetLifecycleKey() (string, bool, error) {
+	lifecycleSpec, lifecycleSpecErr := e.EffectiveLifecycleSpec()
+	if lifecycleSpecErr != nil {
+		return "", false, lifecycleSpecErr
+	}
+	return lifecycleSpec.GetLifecycleKey()
+}
+
+func (e *Executable) EffectiveLifecycleSpec() (ExecutableSpec, error) {
+	lifecycleSpec := *e.Spec.DeepCopy()
+	effectiveArgs, effectiveArgsErr := effectiveLifecycleArgs(e)
+	if effectiveArgsErr != nil {
+		return ExecutableSpec{}, effectiveArgsErr
+	}
+	explicitEffectiveEnv, explicitEffectiveEnvErr := explicitEffectiveLifecycleEnv(e)
+	if explicitEffectiveEnvErr != nil {
+		return ExecutableSpec{}, explicitEffectiveEnvErr
+	}
+	lifecycleSpec.Args = effectiveArgs
+	lifecycleSpec.Env = explicitEffectiveEnv
+	lifecycleSpec.EnvFiles = nil
+	return lifecycleSpec, nil
+}
+
+func effectiveLifecycleArgs(e *Executable) ([]string, error) {
+	if len(e.Status.EffectiveArgs) == 0 {
+		if len(e.Spec.Args) > 0 {
+			return nil, fmt.Errorf("executable lifecycle key cannot be calculated before effective arguments are computed")
+		}
+		return nil, nil
+	}
+	return stdslices.Clone(e.Status.EffectiveArgs), nil
+}
+
+func explicitEffectiveLifecycleEnv(e *Executable) ([]EnvVar, error) {
+	explicitNames, explicitNamesErr := explicitLifecycleEnvNames(e)
+	if explicitNamesErr != nil {
+		return nil, explicitNamesErr
+	}
+	if explicitNames.Len() == 0 {
+		return nil, nil
+	}
+
+	effectiveEnvByName := lifecycleEnvMap()
+	for _, envVar := range e.Status.EffectiveEnv {
+		effectiveEnvByName.Set(envVar.Name, envVar.Value)
+	}
+	if effectiveEnvByName.Len() == 0 {
+		return nil, fmt.Errorf("executable lifecycle key cannot be calculated before effective environment is computed")
+	}
+
+	explicitEffectiveEnv := make([]EnvVar, 0, explicitNames.Len())
+	for nameKey, name := range explicitNames.Data() {
+		value, found := effectiveEnvByName.Get(nameKey)
+		if !found {
+			continue
+		}
+		explicitEffectiveEnv = append(explicitEffectiveEnv, EnvVar{Name: name, Value: value})
+	}
+	stdslices.SortFunc(explicitEffectiveEnv, func(e1, e2 EnvVar) int {
+		return strings.Compare(lifecycleEnvKey(e1.Name), lifecycleEnvKey(e2.Name))
+	})
+	return explicitEffectiveEnv, nil
+}
+
+func explicitLifecycleEnvNames(e *Executable) (usvc_maps.StringKeyMap[string], error) {
+	explicitNames := lifecycleEnvMap()
+	addExplicitName := func(name string) {
+		if name != "" {
+			explicitNames.Set(name, name)
+		}
+	}
+
+	if len(e.Spec.EnvFiles) > 0 {
+		fileEnv, readErr := godotenv.Read(e.Spec.EnvFiles...)
+		if readErr != nil {
+			return explicitNames, fmt.Errorf("could not read executable environment files for lifecycle key: %w", readErr)
+		}
+		for name := range fileEnv {
+			addExplicitName(name)
+		}
+	}
+	for _, envVar := range e.Spec.Env {
+		addExplicitName(envVar.Name)
+	}
+	return explicitNames, nil
+}
+
+func lifecycleEnvMap() usvc_maps.StringKeyMap[string] {
+	if osutil.IsWindows() {
+		return usvc_maps.NewStringKeyMap[string](usvc_maps.StringMapModeCaseInsensitive)
+	}
+	return usvc_maps.NewStringKeyMap[string](usvc_maps.StringMapModeCaseSensitive)
+}
+
+func lifecycleEnvKey(name string) string {
+	if osutil.IsWindows() {
+		return strings.ToUpper(name)
+	}
+	return name
 }
 
 func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
@@ -346,6 +558,34 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 		es.AmbientEnvironment.Behavior != EnvironmentBehaviorDoNotInherit
 	if invalidAmbientEnvironmentBehavior {
 		errorList = append(errorList, field.Invalid(specPath.Child("ambientEnvironment", "behavior"), es.AmbientEnvironment.Behavior, "Ambient environment behavior must be either Inherit or DoNotInherit."))
+	}
+
+	effectiveExecutionType := es.ExecutionType
+	if effectiveExecutionType == "" {
+		effectiveExecutionType = ExecutionTypeProcess
+	}
+	if es.Persistent && effectiveExecutionType != ExecutionTypeProcess {
+		errorList = append(errorList, field.Invalid(specPath.Child("persistent"), es.Persistent, "Persistent Executables only support Process execution type."))
+	}
+	if es.Persistent && len(es.FallbackExecutionTypes) > 0 {
+		errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "Persistent Executables cannot use fallback execution types."))
+	}
+
+	monitorTimestampSet := !es.MonitorTimestamp.IsZero()
+	if es.MonitorPID != nil && *es.MonitorPID <= 0 {
+		errorList = append(errorList, field.Invalid(specPath.Child("monitorPid"), *es.MonitorPID, "monitorPid must be positive"))
+	}
+	if !es.Persistent && es.MonitorPID != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorPid"), "monitorPid can only be set when persistent is true"))
+	}
+	if !es.Persistent && monitorTimestampSet {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorTimestamp"), "monitorTimestamp can only be set when persistent is true"))
+	}
+	if es.MonitorPID != nil && !monitorTimestampSet {
+		errorList = append(errorList, field.Required(specPath.Child("monitorTimestamp"), "monitorTimestamp must be set when monitorPid is set"))
+	}
+	if es.MonitorPID == nil && monitorTimestampSet {
+		errorList = append(errorList, field.Required(specPath.Child("monitorPid"), "monitorPid must be set when monitorTimestamp is set"))
 	}
 
 	healthProbesPath := specPath.Child("healthProbes")
@@ -453,6 +693,10 @@ func (e *Executable) GetResourceId() string {
 	return fmt.Sprintf("executable-%s", e.UID)
 }
 
+func (e *Executable) GetLeaseKey() string {
+	return e.NamespacedName().String()
+}
+
 func (e *Executable) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
@@ -517,8 +761,24 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 	errorList := field.ErrorList{}
 
 	oldExe := obj.(*Executable)
+	if (oldExe.Spec.Start == nil || *oldExe.Spec.Start) && (e.Spec.Start != nil && !*e.Spec.Start) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "start"), "Cannot set start to false after Executable creation."))
+	}
+
 	if oldExe.Spec.Stop && e.Spec.Stop != oldExe.Spec.Stop {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "stop"), "Cannot unset stop property once it is set."))
+	}
+
+	if oldExe.Spec.Persistent != e.Spec.Persistent {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
+	}
+
+	if !pointers.EqualValue(oldExe.Spec.MonitorPID, e.Spec.MonitorPID) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorPid"), "monitorPid cannot be changed"))
+	}
+
+	if !osutil.MicroEqual(oldExe.Spec.MonitorTimestamp, e.Spec.MonitorTimestamp) {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp cannot be changed"))
 	}
 
 	if oldExe.Spec.AmbientEnvironment.Behavior != e.Spec.AmbientEnvironment.Behavior {
@@ -545,6 +805,10 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 func (e *Executable) Done() bool {
 	// When the Executable has a FinishTimestamp set, it is considered done no matter what other data says.
 	return !e.Status.FinishTimestamp.IsZero()
+}
+
+func (e *Executable) ShouldStart() bool {
+	return e.Spec.Start == nil || *e.Spec.Start
 }
 
 func (*Executable) GenericSubResources() []apiserver_resource.GenericSubResource {
@@ -630,3 +894,4 @@ var _ apiserver_resourcestrategy.ValidateUpdater = (*Executable)(nil)
 var _ apiserver_resource.ObjectWithGenericSubResource = (*Executable)(nil)
 var _ apiserver_resource.GenericSubResource = (*ExecutableLogResource)(nil)
 var _ StdIoStreamableResource = (*Executable)(nil)
+var _ statestore.LeasableResource = (*Executable)(nil)

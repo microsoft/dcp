@@ -7,11 +7,144 @@ package v1
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
+
+func TestContainerGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	container := &Container{}
+	container.Spec.ContainerName = " api "
+
+	require.Equal(t, "containers/api", container.GetLeaseKey())
+}
+
+func TestContainerNetworkGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	network := &ContainerNetwork{}
+	network.Spec.NetworkName = " app-network "
+
+	require.Equal(t, "containernetworks/app-network", network.GetLeaseKey())
+}
+
+func TestContainerSpecGetLifecycleKeyIncludesMonitorFields(t *testing.T) {
+	t.Parallel()
+
+	monitorPID := int64(12345)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().UTC())
+	spec := &ContainerSpec{
+		Image:         "api:dev",
+		ContainerName: "api",
+		Persistent:    true,
+	}
+
+	key, _, keyErr := spec.GetLifecycleKey()
+	require.NoError(t, keyErr)
+
+	spec.MonitorPID = &monitorPID
+	spec.MonitorTimestamp = monitorTimestamp
+	keyWithMonitor, _, monitorKeyErr := spec.GetLifecycleKey()
+	require.NoError(t, monitorKeyErr)
+	require.NotEqual(t, key, keyWithMonitor)
+
+	differentMonitorPID := monitorPID + 1
+	spec.MonitorPID = &differentMonitorPID
+	keyWithDifferentMonitorPID, _, differentMonitorPIDErr := spec.GetLifecycleKey()
+	require.NoError(t, differentMonitorPIDErr)
+	require.NotEqual(t, keyWithMonitor, keyWithDifferentMonitorPID)
+
+	spec.MonitorPID = &monitorPID
+	spec.MonitorTimestamp = metav1.NewMicroTime(monitorTimestamp.Time.Add(time.Second))
+	keyWithDifferentMonitorTimestamp, _, differentMonitorTimestampErr := spec.GetLifecycleKey()
+	require.NoError(t, differentMonitorTimestampErr)
+	require.NotEqual(t, keyWithMonitor, keyWithDifferentMonitorTimestamp)
+}
+
+func TestContainerValidateMonitorFields(t *testing.T) {
+	t.Parallel()
+
+	monitorPID := int64(12345)
+	negativeMonitorPID := int64(-1)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().UTC())
+
+	testCases := []struct {
+		name        string
+		spec        ContainerSpec
+		expectError bool
+	}{
+		{
+			name: "valid persistent monitor",
+			spec: ContainerSpec{
+				Image:            "api:dev",
+				ContainerName:    "api",
+				Persistent:       true,
+				MonitorPID:       &monitorPID,
+				MonitorTimestamp: monitorTimestamp,
+			},
+		},
+		{
+			name: "monitor requires persistent",
+			spec: ContainerSpec{
+				Image:            "api:dev",
+				MonitorPID:       &monitorPID,
+				MonitorTimestamp: monitorTimestamp,
+			},
+			expectError: true,
+		},
+		{
+			name: "monitor pid requires timestamp",
+			spec: ContainerSpec{
+				Image:         "api:dev",
+				ContainerName: "api",
+				Persistent:    true,
+				MonitorPID:    &monitorPID,
+			},
+			expectError: true,
+		},
+		{
+			name: "monitor timestamp requires pid",
+			spec: ContainerSpec{
+				Image:            "api:dev",
+				ContainerName:    "api",
+				Persistent:       true,
+				MonitorTimestamp: monitorTimestamp,
+			},
+			expectError: true,
+		},
+		{
+			name: "monitor pid must be positive",
+			spec: ContainerSpec{
+				Image:            "api:dev",
+				ContainerName:    "api",
+				Persistent:       true,
+				MonitorPID:       &negativeMonitorPID,
+				MonitorTimestamp: monitorTimestamp,
+			},
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			container := &Container{Spec: testCase.spec}
+			errors := container.Validate(nil)
+
+			if testCase.expectError {
+				require.NotEmpty(t, errors)
+			} else {
+				require.Empty(t, errors)
+			}
+		})
+	}
+}
 
 func TestImageLayerValidate(t *testing.T) {
 	t.Parallel()
