@@ -110,7 +110,7 @@ func TestStartInvalidPersistentExecutableRecordCleanupRunsCleanupAsync(t *testin
 	require.NoFileExists(t, invalidStderr)
 }
 
-func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithValidHeldLease(t *testing.T) {
+func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithHeldLease(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
