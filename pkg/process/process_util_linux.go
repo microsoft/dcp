@@ -1,16 +1,15 @@
+//go:build linux
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-//go:build linux
-
-// Copyright (c) Microsoft Corporation. All rights reserved.
-
 package process
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,6 +58,10 @@ func processIdentityTime(proc *ps.Process) time.Time {
 	startTimeMs := (ticks * 1000) / uint64(clockTicks)
 
 	return time.Time{}.Add(time.Duration(startTimeMs) * time.Millisecond)
+}
+
+func formatIdentityTime(identityTime time.Time) string {
+	return fmt.Sprintf("%dms-since-boot", identityTime.Sub(time.Time{})/time.Millisecond)
 }
 
 func init() {

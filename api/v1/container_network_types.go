@@ -7,7 +7,10 @@ package v1
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
 	apiserver_resourcerest "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcerest"
@@ -105,6 +108,10 @@ func (cn *ContainerNetwork) GetGroupVersionResource() schema.GroupVersionResourc
 		Version:  GroupVersion.Version,
 		Resource: "containernetworks",
 	}
+}
+
+func (cn *ContainerNetwork) GetLeaseKey() string {
+	return fmt.Sprintf("%s/%s", cn.GetGroupVersionResource().Resource, strings.TrimSpace(cn.Spec.NetworkName))
 }
 
 func (cn *ContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
@@ -214,3 +221,4 @@ var _ apiserver_resource.StatusSubResource = (*ContainerNetworkStatus)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*ContainerNetwork)(nil)
 var _ apiserver_resourcestrategy.Validater = (*ContainerNetwork)(nil)
 var _ apiserver_resourcestrategy.ValidateUpdater = (*ContainerNetwork)(nil)
+var _ statestore.LeasableResource = (*ContainerNetwork)(nil)
