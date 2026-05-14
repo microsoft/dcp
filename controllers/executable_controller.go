@@ -423,7 +423,7 @@ func (r *ExecutableReconciler) startExecutable(
 		return statusChanged | environmentChanged
 	} else if startResult != nil {
 		runErr := startResult.StartupError
-		if runErr != nil {
+		if runErr == nil {
 			runErr = unknownStartupFailureErr
 		}
 		log.Error(runErr, "An attempt to start the Executable failed")
@@ -455,6 +455,16 @@ func (r *ExecutableReconciler) startExecutable(
 		if runnerNotFoundErr != nil {
 			log.Error(runnerNotFoundErr, "The Executable runner is not available", "StartupStage", ri.startupStage)
 			continue
+		}
+
+		if ri.startupStage > StartupStageDefaultRunner && (exe.Status.EffectiveEnv == nil || exe.Status.EffectiveArgs == nil) {
+			var computed bool
+			var startupDataChanged objectChange
+			computed, startupDataChanged = r.recomputeExecutableEnvironment(ctx, exe, log, ri)
+			environmentChanged |= startupDataChanged
+			if !computed {
+				return environmentChanged
+			}
 		}
 
 		startResult = runner.StartRun(ctx, exe, r, log)
@@ -990,8 +1000,19 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 // whether the Executable status was changed and whether another reconciliation iteration is needed.
 // This method is called from the reconciliation loop.
 func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) (bool, objectChange) {
+	return r.computeExecutableEnvironmentCore(ctx, exe, log, ri, true)
+}
+
+func (r *ExecutableReconciler) recomputeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) (bool, objectChange) {
+	return r.computeExecutableEnvironmentCore(ctx, exe, log, ri, false)
+}
+
+func (r *ExecutableReconciler) computeExecutableEnvironmentCore(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo, updateStartupStage bool) (bool, objectChange) {
 	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
-	reservedServicePorts := make(map[types.NamespacedName]int32)
+	reservedServicePorts := ri.ReservedPorts
+	if reservedServicePorts == nil {
+		reservedServicePorts = make(map[types.NamespacedName]int32)
+	}
 
 	markExecutableFailed := func() {
 		ri.ExeState = apiv1.ExecutableStateFailedToStart
@@ -1042,7 +1063,9 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 		)
 	}
 	ri.ReservedPorts = reservedServicePorts
-	ri.startupStage = StartupStageDataInitialized
+	if updateStartupStage {
+		ri.startupStage = StartupStageDataInitialized
+	}
 	r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	return true, statusChanged // Status.EffectiveEnv and Status.EffectiveArgs were changed
 }

@@ -670,6 +670,83 @@ func TestExecutableStartupFallbackSucceeds(t *testing.T) {
 	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable '%s' should expose the process execution ID after fallback", exeName)
 }
 
+func TestExecutableStartupFallbackPreservesStartupParameters(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "executable-startup-fallback-preserves-startup-parameters"
+	exePath := "/path/to/" + exeName
+	expectedArgs := []string{"--test-arg", "expected-value"}
+	expectedEnvName := "DCP_TEST_EXECUTABLE_FALLBACK_STARTUP_PARAMETER"
+	expectedEnvValue := "expected-env-value"
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath:         exePath,
+			ExecutionType:          apiv1.ExecutionTypeIDE,
+			FallbackExecutionTypes: []apiv1.ExecutionType{apiv1.ExecutionTypeProcess},
+			Args:                   expectedArgs,
+			Env: []apiv1.EnvVar{
+				{Name: expectedEnvName, Value: expectedEnvValue},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exeName)
+	require.NoError(t, client.Create(ctx, exe), "Could not create Executable '%s'", exeName)
+
+	t.Logf("Waiting for IDE startup attempt and effective startup data for Executable '%s'...", exeName)
+	_, ideRunErr := findIdeRun(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, ideRunErr, "IDE run session for Executable '%s' could not be found", exeName)
+
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveArgs) == len(expectedArgs) && len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+
+	t.Logf("Clearing persisted effective startup data for Executable '%s' to simulate a lost status save...", exeName)
+	err := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		exePatch := currentExe.DeepCopy()
+		exePatch.Status.EffectiveArgs = nil
+		exePatch.Status.EffectiveEnv = nil
+		return client.Status().Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Could not clear effective startup data for Executable '%s'", exeName)
+
+	t.Logf("Simulating IDE startup failure for Executable '%s' to trigger fallback...", exeName)
+	ideRunErr = ideRunner.SimulateFailedRunStart(exe.NamespacedName(), fmt.Errorf("simulated IDE startup failure for Executable '%s'", exeName))
+	require.NoError(t, ideRunErr, "Could not simulate IDE startup failure for Executable '%s'", exeName)
+
+	t.Logf("Waiting for process fallback to start for Executable '%s'...", exeName)
+	var processExecution *internal_testutil.ProcessExecution
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		attempts := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+		if len(attempts) == 0 {
+			return false, nil
+		}
+		processExecution = attempts[0]
+		return true, nil
+	})
+	require.NoError(t, err, "Process fallback could not be started for Executable '%s'", exeName)
+	require.NotNil(t, processExecution, "Process fallback for Executable '%s' was not captured", exeName)
+
+	require.Equal(t, append([]string{exePath}, expectedArgs...), processExecution.Cmd.Args, "Process fallback for Executable '%s' did not receive expected startup arguments", exeName)
+
+	processEnv := maps.SliceToMap(processExecution.Cmd.Env, func(envVar string) (string, string) {
+		parts := strings.SplitN(envVar, "=", 2)
+		if len(parts) == 1 {
+			return parts[0], ""
+		}
+		return parts[0], parts[1]
+	})
+	require.Equal(t, expectedEnvValue, processEnv[expectedEnvName], "Process fallback for Executable '%s' did not receive expected startup environment variable", exeName)
+}
+
 // Verify ports are injected into Executable environment variables via portForServing template function.
 // Service ports are specified via service-producer annotation.
 func TestExecutableServingPortInjected(t *testing.T) {
