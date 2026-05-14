@@ -473,21 +473,20 @@ func (r *ExecutableReconciler) startExecutable(
 				return statusChanged
 			}
 		}
-		ri.startupStage = StartupStageCertificateDataReady
+		ri.startupStage = StartupStageDataInitialized
 		r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	}
 
 	environmentChanged := noChange
-	if ri.startupStage == StartupStageCertificateDataReady {
-		var computed bool
-		computed, environmentChanged = r.computeExecutableEnvironment(ctx, exe, log, ri)
+
+	if exe.Spec.Persistent && len(ri.startResults) == 0 {
+		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		environmentChanged |= startupDataChanged
 		if !computed {
 			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
 			return environmentChanged
 		}
-	}
 
-	if exe.Spec.Persistent && len(ri.startResults) == 0 {
 		adopted, adoptionChange := r.tryAdoptPersistentExecutable(ctx, exe, ri, log)
 		if adopted || adoptionChange != noChange {
 			return adoptionChange | environmentChanged
@@ -554,7 +553,7 @@ func (r *ExecutableReconciler) startExecutable(
 		return handleSuccessfulStart(startResult) | environmentChanged
 	} else if startResult != nil {
 		runErr := startResult.StartupError
-		if runErr != nil {
+		if runErr == nil {
 			runErr = unknownStartupFailureErr
 		}
 		log.Error(runErr, "An attempt to start the Executable failed")
@@ -576,6 +575,13 @@ func (r *ExecutableReconciler) startExecutable(
 			exe.Status.FinishTimestamp = exe.Status.StartupTimestamp
 			r.runs.DeleteByNamespacedName(exe.NamespacedName())
 			return statusChanged | environmentChanged
+		}
+
+		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
+		environmentChanged |= startupDataChanged
+		if !computed {
+			// Environment is not ready, or an error occurred; report it and let the next reconciliation try again.
+			return environmentChanged
 		}
 
 		ri.startupStage++
@@ -1158,7 +1164,10 @@ func (r *ExecutableReconciler) computeEffectiveInvocationArgs(
 // This method is called from the reconciliation loop.
 func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context, exe *apiv1.Executable, log logr.Logger, ri *ExecutableRunInfo) (bool, objectChange) {
 	// Ports reserved for services that the Executable implements without specifying the desired port to use (via service-producer annotation).
-	reservedServicePorts := make(map[types.NamespacedName]int32)
+	reservedServicePorts := ri.ReservedPorts
+	if reservedServicePorts == nil {
+		reservedServicePorts = make(map[types.NamespacedName]int32)
+	}
 
 	markExecutableFailed := func() {
 		ri.ExeState = apiv1.ExecutableStateFailedToStart
@@ -1209,7 +1218,6 @@ func (r *ExecutableReconciler) computeExecutableEnvironment(ctx context.Context,
 		)
 	}
 	ri.ReservedPorts = reservedServicePorts
-	ri.startupStage = StartupStageDataInitialized
 	r.runs.Update(exe.NamespacedName(), ri.RunID, ri.Clone())
 	return true, statusChanged // Status.EffectiveEnv and Status.EffectiveArgs were changed
 }

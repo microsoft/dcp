@@ -29,18 +29,15 @@ import (
 type ExecutableStartuptStage int
 
 const (
-	StartupStageInitial              ExecutableStartuptStage = -3
-	StartupStageCertificateDataReady ExecutableStartuptStage = -2
-	StartupStageDataInitialized      ExecutableStartuptStage = -1
-	StartupStageDefaultRunner        ExecutableStartuptStage = 0
+	StartupStageInitial         ExecutableStartuptStage = -2
+	StartupStageDataInitialized ExecutableStartuptStage = -1
+	StartupStageDefaultRunner   ExecutableStartuptStage = 0
 )
 
 func (s ExecutableStartuptStage) String() string {
 	switch s {
 	case StartupStageInitial:
 		return "initial"
-	case StartupStageCertificateDataReady:
-		return "certificate data ready"
 	case StartupStageDataInitialized:
 		return "run data initialized"
 	case StartupStageDefaultRunner:
