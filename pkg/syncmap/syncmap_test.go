@@ -11,10 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestComparableMapCompareAndDelete(t *testing.T) {
+func TestComparableValueMapCompareAndDelete(t *testing.T) {
 	t.Parallel()
 
-	m := ComparableMap[string, *int]{}
+	m := ComparableValueMap[string, *int]{}
 	value := 42
 	other := 43
 

@@ -15,7 +15,7 @@ func zero[T any]() T {
 
 type Map[Key comparable, Value any] sync.Map
 
-type ComparableMap[Key comparable, Value comparable] struct {
+type ComparableValueMap[Key comparable, Value comparable] struct {
 	Map[Key, Value]
 }
 
@@ -105,6 +105,6 @@ func zeroIfNil[T any](v any) T {
 }
 
 // Deletes the value for the passed key if the current value is equal to old.
-func (m *ComparableMap[Key, Value]) CompareAndDelete(key Key, old Value) bool {
+func (m *ComparableValueMap[Key, Value]) CompareAndDelete(key Key, old Value) bool {
 	return m.Map.syncMap().CompareAndDelete(key, old)
 }

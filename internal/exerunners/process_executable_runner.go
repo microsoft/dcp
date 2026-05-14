@@ -70,13 +70,13 @@ type processRunState struct {
 
 type ProcessExecutableRunner struct {
 	pe               process.Executor
-	runningProcesses *syncmap.ComparableMap[controllers.RunID, *processRunState]
+	runningProcesses *syncmap.ComparableValueMap[controllers.RunID, *processRunState]
 }
 
 func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
 	return &ProcessExecutableRunner{
 		pe:               pe,
-		runningProcesses: &syncmap.ComparableMap[controllers.RunID, *processRunState]{},
+		runningProcesses: &syncmap.ComparableValueMap[controllers.RunID, *processRunState]{},
 	}
 }
 
