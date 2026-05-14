@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -22,6 +23,15 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
+
+func TestMonitorTargetFromFieldsRequiresTimestamp(t *testing.T) {
+	monitorPID := int64(12345)
+
+	_, found, monitorErr := MonitorTargetFromFields(&monitorPID, metav1.MicroTime{})
+
+	require.False(t, found)
+	require.ErrorContains(t, monitorErr, "monitor timestamp must be set when monitor PID is set")
+}
 
 func TestRunProcessWatcher(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
@@ -52,6 +62,36 @@ func TestRunProcessWatcher(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[7], strconv.FormatInt(int64(os.Getpid()), 10), "Should include current process PID as monitored PID")
 }
 
+func TestRunProcessWatcherForMonitor(t *testing.T) {
+	log := testutil.NewLogForTesting(t.Name())
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+
+	testPid := process.Pid_t(28869)
+	testStartTime := time.Now()
+	monitor := process.ProcessTreeItem{
+		Pid:          12345,
+		IdentityTime: testStartTime.Add(-time.Minute),
+	}
+
+	RunProcessWatcherForMonitor(pe, monitor, testPid, testStartTime, log)
+
+	dcpProc, dcpProcErr := findRunningDcp(pe)
+	require.NoError(t, dcpProcErr)
+
+	require.Equal(t, "monitor-process", dcpProc.Cmd.Args[1], "Should use 'monitor-process' subcommand")
+	require.Equal(t, "--child", dcpProc.Cmd.Args[2], "Should include --child flag")
+	require.Equal(t, strconv.FormatInt(int64(testPid), 10), dcpProc.Cmd.Args[3], "Should include child PID")
+	require.Equal(t, "--child-identity-time", dcpProc.Cmd.Args[4], "Should include --child-identity-time flag")
+	require.Equal(t, testStartTime.Format(osutil.RFC3339MiliTimestampFormat), dcpProc.Cmd.Args[5], "Should include formatted child start time")
+	require.Equal(t, "--monitor", dcpProc.Cmd.Args[6], "Should include --monitor flag")
+	require.Equal(t, strconv.FormatInt(int64(monitor.Pid), 10), dcpProc.Cmd.Args[7], "Should include explicit monitored PID")
+	require.Equal(t, "--monitor-identity-time", dcpProc.Cmd.Args[8], "Should include --monitor-identity-time flag")
+	require.Equal(t, monitor.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), dcpProc.Cmd.Args[9], "Should include explicit monitor identity time")
+}
+
 func TestRunContainerWatcher(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
@@ -76,6 +116,33 @@ func TestRunContainerWatcher(t *testing.T) {
 	require.Equal(t, dcpProc.Cmd.Args[3], testContainerID, "Should include container ID")
 	require.Equal(t, dcpProc.Cmd.Args[4], "--monitor", "Should include --monitor flag")
 	require.Equal(t, dcpProc.Cmd.Args[5], strconv.FormatInt(int64(os.Getpid()), 10), "Should include current process PID as monitored PID")
+}
+
+func TestRunContainerWatcherForMonitor(t *testing.T) {
+	log := testutil.NewLogForTesting(t.Name())
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+
+	testContainerID := "test-container-123"
+	monitor := process.ProcessTreeItem{
+		Pid:          12345,
+		IdentityTime: time.Now().Add(-time.Minute),
+	}
+
+	RunContainerWatcherForMonitor(pe, monitor, testContainerID, log)
+
+	dcpProc, dcpProcErr := findRunningDcp(pe)
+	require.NoError(t, dcpProcErr)
+
+	require.Equal(t, "monitor-container", dcpProc.Cmd.Args[1], "Should use 'monitor-container' subcommand")
+	require.Equal(t, "--containerID", dcpProc.Cmd.Args[2], "Should include --containerID flag")
+	require.Equal(t, testContainerID, dcpProc.Cmd.Args[3], "Should include container ID")
+	require.Equal(t, "--monitor", dcpProc.Cmd.Args[4], "Should include --monitor flag")
+	require.Equal(t, strconv.FormatInt(int64(monitor.Pid), 10), dcpProc.Cmd.Args[5], "Should include explicit monitored PID")
+	require.Equal(t, "--monitor-identity-time", dcpProc.Cmd.Args[6], "Should include --monitor-identity-time flag")
+	require.Equal(t, monitor.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), dcpProc.Cmd.Args[7], "Should include explicit monitor identity time")
 }
 
 func TestStopProcessTree(t *testing.T) {

@@ -134,6 +134,17 @@ func (r *TestIdeRunner) StopRun(_ context.Context, runID controllers.RunID, _ lo
 	return r.doStopRun(runID, internal_testutil.KilledProcessExitCode)
 }
 
+func (r *TestIdeRunner) ReleaseRun(_ context.Context, runID controllers.RunID, _ logr.Logger) error {
+	r.Runs.Range(func(name types.NamespacedName, run *TestIdeRun) bool {
+		if run.ID == runID {
+			r.Runs.Delete(name)
+			return false
+		}
+		return true
+	})
+	return nil
+}
+
 func (r *TestIdeRunner) SimulateSuccessfulRunStart(runID controllers.RunID, pid process.Pid_t) error {
 	return r.SimulateRunStart(
 		func(_ types.NamespacedName, run *TestIdeRun) bool { return run.ID == runID },

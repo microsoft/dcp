@@ -21,10 +21,12 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -34,7 +36,9 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
-	Log logr.Logger
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessTreeItem
+	Log                logr.Logger
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -61,6 +65,17 @@ func StartTestEnvironment(
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
+	stateStore, stateStoreCleanup, stateStoreErr := createTestStateStore(ctx, testTempDir)
+	if stateStoreErr != nil {
+		serverInfo.Dispose()
+		return nil, nil, fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
+	}
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		serverInfo.Dispose()
+		stateStoreCleanup()
+		return nil, nil, fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
+	}
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
 	// On Windows the process Executable runner uses the dcp stop-process-tree subcommand, so we need to simulate that.
 	pex.InstallAutoExecution(internal_testutil.AutoExecution{
@@ -87,6 +102,7 @@ func StartTestEnvironment(
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
 		}
 
+		stateStoreCleanup()
 		serverInfo.Dispose()
 	})
 
@@ -105,7 +121,7 @@ func StartTestEnvironment(
 	)
 
 	if inclCtrl&ExecutableController != 0 {
-		execR := controllers.NewExecutableReconciler(
+		execR := controllers.NewExecutableReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
@@ -115,6 +131,10 @@ func StartTestEnvironment(
 				apiv1.ExecutionTypeIDE:     ir,
 			},
 			hpSet,
+			controllers.ExecutableReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
@@ -138,13 +158,17 @@ func StartTestEnvironment(
 		harvester := controllers.NewResourceHarvester()
 		go harvester.MockHarvest(ctx, 2*time.Second, log.WithName("ResourceCleanup"))
 
-		networkR := controllers.NewNetworkReconciler(
+		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("NetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
 			harvester,
+			controllers.NetworkReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
@@ -162,6 +186,9 @@ func StartTestEnvironment(
 			controllers.ContainerReconcilerConfig{
 				MaxParallelContainerStarts:      math.MaxUint8,
 				ContainerStartupTimeoutOverride: 2 * time.Second,
+				StateStore:                      stateStore,
+				ResourceLeaseOwner:              leaseOwner,
+				ProcessExecutor:                 pex,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
@@ -256,6 +283,8 @@ func StartTestEnvironment(
 		TestProcessExecutableRunner: exeRunner,
 		TestIdeRunner:               ir,
 		TestTunnelControlClient:     tcc,
+		StateStore:                  stateStore,
+		ResourceLeaseOwner:          leaseOwner,
 		Log:                         log,
 	}
 	return serverInfo, teInfo, nil

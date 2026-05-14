@@ -708,6 +708,7 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 	t.Logf("Ensure Container '%s' state is 'running'...", ctr.ObjectMeta.Name)
 	updatedCtr, inspectedCtr := ensureContainerRunning(t, ctx, updatedCtr)
 	require.Equal(t, inspectedCtr.Status, containers.ContainerStatusRunning, "expected the container to be in 'running' state")
+	waitResourceLeaseReleased(t, ctx, updatedCtr)
 
 	initialLifecycleKey := updatedCtr.Status.LifecycleKey
 

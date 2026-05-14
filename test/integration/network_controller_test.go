@@ -47,7 +47,8 @@ func TestNetworkCreateInstance(t *testing.T) {
 	err := client.Create(ctx, &net)
 	require.NoError(t, err, "could not create a ContainerNetwork object")
 
-	_ = ensureNetworkCreated(t, ctx, &net)
+	updatedNet := ensureNetworkCreated(t, ctx, &net)
+	waitResourceLeaseReleased(t, ctx, updatedNet)
 }
 
 func TestNetworkRemoveInstance(t *testing.T) {

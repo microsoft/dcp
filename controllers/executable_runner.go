@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,7 +31,7 @@ type ExecutableRunner interface {
 	// The runChangeHandler is used to notify the caller about the run's progress and completion, see RunChangeHandler for more details.
 	//
 	// The following contract should be observed by the ExecutableRunner implementation:
-	// -- When the passed context is cancelled, the run should be automatically terminated.
+	// -- When the passed context is cancelled, the run should be automatically terminated unless the Executable is persistent.
 	// -- The runner should not try to change the passed Executable in any way.
 	// -- The method should always return a result (no nil return value).
 	StartRun(
@@ -42,6 +43,30 @@ type ExecutableRunner interface {
 
 	// Stops the run with a given ID.
 	StopRun(ctx context.Context, runID RunID, log logr.Logger) error
+
+	// Releases runner-side tracking for a run without stopping the underlying run.
+	ReleaseRun(ctx context.Context, runID RunID, log logr.Logger) error
+}
+
+type ExecutableRunAdoptionInfo struct {
+	RunID               RunID
+	Pid                 process.Pid_t
+	ProcessIdentityTime time.Time
+	StdOutFile          string
+	StdErrFile          string
+	CommandInfo         string
+}
+
+type PersistentExecutableRunner interface {
+	ExecutableRunner
+
+	// Adopts a persistent run that was started by a previous DCP controller instance.
+	AdoptRun(
+		ctx context.Context,
+		run ExecutableRunAdoptionInfo,
+		runChangeHandler RunChangeHandler,
+		log logr.Logger,
+	) error
 }
 
 type RunMessageLevel string
