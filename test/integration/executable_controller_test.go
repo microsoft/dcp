@@ -679,7 +679,7 @@ func TestExecutableStartupFallbackPreservesStartupParameters(t *testing.T) {
 	const exeName = "executable-startup-fallback-preserves-startup-parameters"
 	exePath := "/path/to/" + exeName
 	expectedArgs := []string{"--test-arg", "expected-value"}
-	expectedEnvName := "DCP_TEST_EXECUTABLE_FALLBACK_STARTUP_PARAMETER"
+	expectedEnvName := "TEST_EXECUTABLE_FALLBACK_STARTUP_PARAMETER"
 	expectedEnvValue := "expected-env-value"
 
 	exe := &apiv1.Executable{
