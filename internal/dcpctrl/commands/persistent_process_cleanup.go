@@ -16,6 +16,7 @@ import (
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 const persistentProcessCleanupLeaseRevalidationInterval = 30 * time.Second
@@ -24,6 +25,25 @@ type persistentProcessLeaseResource string
 
 func (r persistentProcessLeaseResource) GetLeaseKey() string {
 	return string(r)
+}
+
+func startInvalidPersistentExecutableRecordCleanup(
+	ctx context.Context,
+	stateStore *statestore.Store,
+	leaseOwner process.ProcessTreeItem,
+	log logr.Logger,
+) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = resiliency.MakePanicError(recover(), log) }()
+
+		cleanupErr := cleanupInvalidPersistentExecutableRecords(ctx, stateStore, leaseOwner, log)
+		if cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to clean up invalid persistent Executable process records")
+		}
+	}()
+	return done
 }
 
 func cleanupInvalidPersistentExecutableRecords(
@@ -85,7 +105,13 @@ func cleanupInvalidPersistentExecutableRecord(
 	})
 	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 		if lease, held := statestore.HeldResourceLease(leaseErr); held {
-			log.V(1).Info("Invalid persistent Executable process record is leased by another DCP instance, leaving it intact",
+			if persistentProcessLeaseIsValid(lease) {
+				log.V(1).Info("Invalid persistent Executable process record is leased by another active DCP instance, leaving it intact",
+					"ResourceKey", record.ResourceKey,
+					"LeaseOwnerPID", lease.OwnerProcess.Pid)
+				return nil
+			}
+			log.V(1).Info("Invalid persistent Executable process record lease could not be revalidated yet, leaving it for a later cleanup attempt",
 				"ResourceKey", record.ResourceKey,
 				"LeaseOwnerPID", lease.OwnerProcess.Pid)
 		}
@@ -96,6 +122,17 @@ func cleanupInvalidPersistentExecutableRecord(
 	}
 
 	return nil
+}
+
+func persistentProcessLeaseIsValid(lease *statestore.ResourceLease) bool {
+	if lease == nil {
+		return false
+	}
+	if time.Since(lease.UpdatedAt) < persistentProcessCleanupLeaseRevalidationInterval {
+		return true
+	}
+	_, findErr := process.FindProcess(lease.OwnerProcess.Pid, lease.OwnerProcess.IdentityTime)
+	return findErr == nil
 }
 
 func removePersistentExecutableRecordLogs(ctx context.Context, record statestore.PersistentProcessRecord, log logr.Logger) error {

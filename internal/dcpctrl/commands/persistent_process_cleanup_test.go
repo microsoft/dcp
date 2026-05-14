@@ -72,7 +72,45 @@ func TestCleanupInvalidPersistentExecutableRecordsDeletesInvalidRecordsAndLogs(t
 	require.FileExists(t, activeStderr)
 }
 
-func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithHeldLease(t *testing.T) {
+func TestStartInvalidPersistentExecutableRecordCleanupRunsCleanupAsync(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	stateStore := openPersistentProcessCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+
+	logDir := t.TempDir()
+	invalidStdout := createPersistentProcessCleanupLog(t, logDir, "async-invalid.out")
+	invalidStderr := createPersistentProcessCleanupLog(t, logDir, "async-invalid.err")
+
+	invalidRecord := statestore.PersistentProcessRecord{
+		ResourceKey:  "default/async-invalid",
+		LifecycleKey: "async-invalid-lifecycle",
+		PID:          leaseOwner.Pid,
+		IdentityTime: time.Unix(1, 0).UTC(),
+		RunID:        "async-invalid",
+		StdOutFile:   invalidStdout,
+		StdErrFile:   invalidStderr,
+	}
+	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, invalidRecord))
+
+	done := startInvalidPersistentExecutableRecordCleanup(ctx, stateStore, leaseOwner, logr.Discard())
+	select {
+	case <-done:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+
+	_, invalidGetErr := stateStore.GetPersistentProcess(ctx, invalidRecord.ResourceKey)
+	require.ErrorIs(t, invalidGetErr, statestore.ErrPersistentProcessNotFound)
+	require.NoFileExists(t, invalidStdout)
+	require.NoFileExists(t, invalidStderr)
+}
+
+func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithValidHeldLease(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
