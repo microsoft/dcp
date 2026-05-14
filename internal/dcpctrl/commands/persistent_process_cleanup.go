@@ -85,23 +85,33 @@ func cleanupInvalidPersistentExecutableRecord(
 ) error {
 	resource := persistentProcessLeaseResource(record.ResourceKey)
 	leaseErr := stateStore.WithResourceLease(ctx, resource, leaseOwner, persistentProcessCleanupLeaseRevalidationInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
-		_, findErr := process.FindProcess(record.PID, record.IdentityTime)
+		currentRecord, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
+		if errors.Is(getErr, statestore.ErrPersistentProcessNotFound) {
+			log.V(1).Info("Persistent Executable process record was removed before cleanup, leaving it intact",
+				"ResourceKey", record.ResourceKey)
+			return nil
+		}
+		if getErr != nil {
+			return fmt.Errorf("could not reload persistent Executable process record '%s': %w", record.ResourceKey, getErr)
+		}
+
+		_, findErr := process.FindProcess(currentRecord.PID, currentRecord.IdentityTime)
 		if findErr == nil {
 			log.V(1).Info("Persistent Executable process record became valid before cleanup, leaving it intact",
-				"ResourceKey", record.ResourceKey,
-				"PID", record.PID)
+				"ResourceKey", currentRecord.ResourceKey,
+				"PID", currentRecord.PID)
 			return nil
 		}
 
 		log.Info("Deleting invalid persistent Executable process record",
-			"ResourceKey", record.ResourceKey,
-			"PID", record.PID,
+			"ResourceKey", currentRecord.ResourceKey,
+			"PID", currentRecord.PID,
 			"Error", findErr.Error())
 
-		if deleteErr := stateStore.DeletePersistentProcess(ctx, record.ResourceKey); deleteErr != nil {
-			return fmt.Errorf("could not delete invalid persistent Executable process record '%s': %w", record.ResourceKey, deleteErr)
+		if deleteErr := stateStore.DeletePersistentProcess(ctx, currentRecord.ResourceKey); deleteErr != nil {
+			return fmt.Errorf("could not delete invalid persistent Executable process record '%s': %w", currentRecord.ResourceKey, deleteErr)
 		}
-		return removePersistentExecutableRecordLogs(ctx, record, log)
+		return removePersistentExecutableRecordLogs(ctx, *currentRecord, log)
 	})
 	if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 		if lease, held := statestore.HeldResourceLease(leaseErr); held {

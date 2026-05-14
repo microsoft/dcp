@@ -149,6 +149,53 @@ func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithHeldLease(t *t
 	require.FileExists(t, heldStderr)
 }
 
+func TestCleanupInvalidPersistentExecutableRecordReloadsRecordAfterAcquiringLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	stateStore := openPersistentProcessCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+
+	logDir := t.TempDir()
+	staleStdout := createPersistentProcessCleanupLog(t, logDir, "stale.out")
+	staleStderr := createPersistentProcessCleanupLog(t, logDir, "stale.err")
+	currentStdout := createPersistentProcessCleanupLog(t, logDir, "current.out")
+	currentStderr := createPersistentProcessCleanupLog(t, logDir, "current.err")
+
+	staleRecord := statestore.PersistentProcessRecord{
+		ResourceKey:  "default/reloaded",
+		LifecycleKey: "stale-lifecycle",
+		PID:          leaseOwner.Pid,
+		IdentityTime: time.Unix(1, 0).UTC(),
+		RunID:        "stale",
+		StdOutFile:   staleStdout,
+		StdErrFile:   staleStderr,
+	}
+	currentRecord := statestore.PersistentProcessRecord{
+		ResourceKey:  staleRecord.ResourceKey,
+		LifecycleKey: "current-lifecycle",
+		PID:          leaseOwner.Pid,
+		IdentityTime: leaseOwner.IdentityTime,
+		RunID:        "current",
+		StdOutFile:   currentStdout,
+		StdErrFile:   currentStderr,
+	}
+	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, currentRecord))
+
+	require.NoError(t, cleanupInvalidPersistentExecutableRecord(ctx, stateStore, leaseOwner, staleRecord, logr.Discard()))
+
+	actual, getErr := stateStore.GetPersistentProcess(ctx, currentRecord.ResourceKey)
+	require.NoError(t, getErr)
+	require.Equal(t, currentRecord.RunID, actual.RunID)
+	require.FileExists(t, currentStdout)
+	require.FileExists(t, currentStderr)
+	require.FileExists(t, staleStdout)
+	require.FileExists(t, staleStderr)
+}
+
 func TestListPersistentProcessesReturnsRecordsInResourceKeyOrder(t *testing.T) {
 	t.Parallel()
 
