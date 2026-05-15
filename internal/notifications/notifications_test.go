@@ -39,8 +39,11 @@ func TestNotificationSendReceive(t *testing.T) {
 	require.NotNil(t, nsi)
 	usns := nsi.(*unixSocketNotificationSource)
 
-	const numNotifications = 10
-	notes := make(chan Notification, numNotifications)
+	notificationsToSend := []Notification{
+		&CleanupStartedNotification{},
+		&ShutdownRequestedNotification{},
+	}
+	notes := make(chan Notification, len(notificationsToSend))
 	callback := func(n Notification) {
 		notes <- n
 	}
@@ -57,16 +60,16 @@ func TestNotificationSendReceive(t *testing.T) {
 		t.Fatal("Timed out waiting for notification source to receive a connection")
 	}
 
-	for range numNotifications {
-		err := usns.NotifySubscribers(&CleanupStartedNotification{})
+	for _, notificationToSend := range notificationsToSend {
+		err := usns.NotifySubscribers(notificationToSend)
 		require.NoError(t, err)
 	}
 
 	// Wait for and verify the notification was received
-	for range numNotifications {
+	for _, notificationToSend := range notificationsToSend {
 		select {
 		case note := <-notes:
-			require.Equal(t, NotificationKindCleanupStarted, note.Kind(), "Received notification kind does not match expected kind")
+			require.Equal(t, notificationToSend.Kind(), note.Kind(), "Received notification kind does not match expected kind")
 		case <-ctx.Done():
 			t.Fatal("Timed out waiting for notification")
 		}

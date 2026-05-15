@@ -135,7 +135,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		}
 		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
 
-		trySetupNotificationHandler(ctrlCtx, log)
+		trySetupNotificationHandler(ctrlCtx, ctrlCtxCancel, log)
 
 		mgr, err := getManager(ctrlCtx, log.V(1))
 		if err != nil {
@@ -338,7 +338,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 	}
 }
 
-func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
+func trySetupNotificationHandler(notifyCtx context.Context, cancelNotifyCtx context.CancelFunc, log logr.Logger) {
 	notifySocketPath := notifications.GetNotificationSocketPath()
 	if notifySocketPath == "" {
 		return
@@ -347,14 +347,14 @@ func trySetupNotificationHandler(notifyCtx context.Context, log logr.Logger) {
 	log.V(1).Info("Setting up notification receiver", "SocketPath", notifySocketPath)
 
 	_, nrErr := notifications.NewNotificationSubscription(notifyCtx, notifySocketPath, log.WithName("NotificationReceiver"), func(n notifications.Notification) {
-		handleNotification(notifyCtx, n, log)
+		handleNotification(notifyCtx, cancelNotifyCtx, n, log)
 	})
 	if nrErr != nil {
 		log.Error(nrErr, "Failed to create cleanup notification receiver")
 	}
 }
 
-func handleNotification(ctx context.Context, note notifications.Notification, log logr.Logger) {
+func handleNotification(ctx context.Context, cancelCtx context.CancelFunc, note notifications.Notification, log logr.Logger) {
 	switch note.Kind() {
 
 	case notifications.NotificationKindCleanupStarted:
@@ -367,6 +367,10 @@ func handleNotification(ctx context.Context, note notifications.Notification, lo
 				// Best effort--do not fail the request if we cannot start profiling.
 			}
 		}
+
+	case notifications.NotificationKindShutdownRequested:
+		log.Info("Received shutdown request notification, stopping controller manager...")
+		cancelCtx()
 
 	case notifications.NotificationKindPerftraceRequest:
 		perfTraceReq, ok := note.(*notifications.PerftraceRequestNotification)

@@ -37,6 +37,9 @@ enum NotificationType {
 
     // Represents a request to take a performance trace.
     NTYPE_PERFTRACE_REQUEST = 2;
+
+    // Requests graceful shutdown of the notification receiver.
+    NTYPE_SHUTDOWN_REQUESTED = 3;
 }
 
 // Describes data associated with performance trace collection request

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -138,17 +139,7 @@ func DcpRun(
 
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
 	shutdownHost := func() error {
-		cancelHostCtx()
-		var allErrors error
-
-		shutdownErr := <-shutdownErrors
-		if shutdownErr != nil {
-			log.Error(shutdownErr, "One or more hosted services failed to shut down gracefully")
-			allErrors = errors.Join(allErrors, shutdownErr)
-		}
-
-		allErrors = errors.Join(allErrors, apiServer.Dispose())
-		return allErrors
+		return shutdownHostServicesAndDisposeApiServer(notifySrc, shutdownErrors, cancelHostCtx, apiServer.Dispose, hosting.ShutdownTimeout, log)
 	}
 
 	var err error
@@ -167,7 +158,7 @@ func DcpRun(
 			// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
 			// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
 			if serverOnly || !resourceCleanup.IsFull() {
-				return nil // No cleanup needed, just return
+				return shutdownHost()
 			}
 
 			err = appmgmt.CleanupAllResources(log)
@@ -197,6 +188,57 @@ func DcpRun(
 			}
 		}
 	}
+}
+
+func shutdownHostServicesAndDisposeApiServer(
+	notificationSource notifications.NotificationSource,
+	shutdownErrors <-chan error,
+	cancelHostCtx context.CancelFunc,
+	disposeApiServer func() error,
+	controllerShutdownTimeout time.Duration,
+	log logr.Logger,
+) error {
+	var allErrors error
+
+	if notificationSource != nil {
+		notifyErr := notificationSource.NotifySubscribers(&notifications.ShutdownRequestedNotification{})
+		if notifyErr != nil {
+			log.Error(notifyErr, "Failed to request controller shutdown")
+			allErrors = errors.Join(allErrors, notifyErr)
+		} else {
+			log.V(1).Info("Requested controller shutdown")
+		}
+
+		shutdownTimer := time.NewTimer(controllerShutdownTimeout)
+		defer shutdownTimer.Stop()
+
+		select {
+		case shutdownErr := <-shutdownErrors:
+			if shutdownErr != nil {
+				log.Error(shutdownErr, "One or more hosted services failed to shut down gracefully")
+				allErrors = errors.Join(allErrors, shutdownErr)
+			}
+
+		case <-shutdownTimer.C:
+			shutdownErr := fmt.Errorf("controller host did not shut down within %s", controllerShutdownTimeout)
+			log.Error(shutdownErr, "Controller host shutdown timed out")
+			allErrors = errors.Join(allErrors, shutdownErr)
+			cancelHostCtx()
+			if hostShutdownErr := <-shutdownErrors; hostShutdownErr != nil {
+				log.Error(hostShutdownErr, "One or more hosted services failed to shut down after cancellation")
+				allErrors = errors.Join(allErrors, hostShutdownErr)
+			}
+		}
+	} else {
+		cancelHostCtx()
+		if shutdownErr := <-shutdownErrors; shutdownErr != nil {
+			log.Error(shutdownErr, "One or more hosted services failed to shut down gracefully")
+			allErrors = errors.Join(allErrors, shutdownErr)
+		}
+	}
+
+	allErrors = errors.Join(allErrors, disposeApiServer())
+	return allErrors
 }
 
 func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (notifications.UnixSocketNotificationSource, error) {
