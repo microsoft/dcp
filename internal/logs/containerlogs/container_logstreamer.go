@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-logr/logr"
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -31,7 +32,7 @@ import (
 )
 
 var (
-	lastLogStreamID logs.LogStreamID // Used to generate unique log stream IDs for each log stream
+	lastLogStreamID atomic.Uint64 // Used to generate unique log stream IDs for each log stream
 )
 
 type containerLogStreamer struct {
@@ -218,8 +219,7 @@ func (c *containerLogStreamer) StreamLogs(
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	streamID := lastLogStreamID + 1
-	lastLogStreamID = streamID
+	streamID := logs.LogStreamID(lastLogStreamID.Add(1))
 
 	var streams logs.LogStreamMop
 	switch opts.Source {
