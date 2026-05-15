@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	stdslices "slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -64,11 +65,24 @@ func ReleaseResourceLog(resourceId string) {
 	defer resourceLoggerLock.Unlock()
 
 	if sink, found := resourceSinks[resourceId]; found {
-		// Flush any buffered log entries to the file
-		sink.flush()
-		// We're making a best effort to close the file, but don't care if the operation failed
-		_ = sink.file.Close()
+		releaseResourceFileSink(sink)
 		delete(resourceSinks, resourceId)
+	}
+}
+
+func ReleaseResourceLogsInFolder(folder string) {
+	if folder == "" {
+		return
+	}
+
+	resourceLoggerLock.Lock()
+	defer resourceLoggerLock.Unlock()
+
+	for resourceId, sink := range resourceSinks {
+		if sameCleanPath(filepath.Dir(sink.file.Name()), folder) {
+			releaseResourceFileSink(sink)
+			delete(resourceSinks, resourceId)
+		}
 	}
 }
 
@@ -84,10 +98,7 @@ func ReleaseAllResourceLogs() {
 	for resourceId, sink := range resourceSinks {
 		go func(resourceId string, sink *resourceFileSink) {
 			defer wg.Done()
-			// Flush any buffered log entries to the file
-			sink.flush()
-			// We're making a best effort to close the file, but don't care if the operation failed
-			_ = sink.file.Close()
+			releaseResourceFileSink(sink)
 		}(resourceId, sink)
 	}
 
@@ -95,6 +106,28 @@ func ReleaseAllResourceLogs() {
 	resourceSinks = map[string]*resourceFileSink{}
 
 	wg.Wait()
+}
+
+func releaseResourceFileSink(sink *resourceFileSink) {
+	// Flush any buffered log entries to the file
+	sink.flush()
+	// We're making a best effort to close the file, but don't care if the operation failed
+	_ = sink.file.Close()
+}
+
+func sameCleanPath(left string, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if leftAbs, leftErr := filepath.Abs(left); leftErr == nil {
+		left = leftAbs
+	}
+	if rightAbs, rightErr := filepath.Abs(right); rightErr == nil {
+		right = rightAbs
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 type resourceSink struct {
