@@ -31,21 +31,29 @@ func WithNoDataStopRetries(n uint) FollowWriterOption {
 	}
 }
 
+// WithCloseSourceOnCancel makes Cancel synchronously close source if it implements io.Closer.
+// Once enabled, the FollowWriter owns source closure and closes it before Done on any exit.
+func WithCloseSourceOnCancel() FollowWriterOption {
+	return func(fw *FollowWriter) {
+		fw.closeSourceOnCancel = true
+	}
+}
+
 type FollowWriter struct {
-	err               atomic.Value
-	follow            atomic.Bool
-	cancel            context.CancelFunc
-	closeSource       func()
-	closeSourceOnce   sync.Once
-	doneChan          chan struct{}
-	noDataStopRetries uint
+	err                 atomic.Value
+	follow              atomic.Bool
+	cancel              context.CancelFunc
+	closeSource         func()
+	closeSourceOnCancel bool
+	closeSourceOnce     sync.Once
+	doneChan            chan struct{}
+	noDataStopRetries   uint
 }
 
 // Creates a FollowWriter that reads content from the reader source and writes it to the writer destination.
 // Keeps trying to read new content even after EOF until StopFollow() is called, after which the next EOF
 // received will cause the reader and writer to stop.
-// If the source is an io.Closer, it will be closed when the FollowWriter is cancelled.
-// Done is closed only after the source has been closed.
+// Source ownership stays with the caller unless WithCloseSourceOnCancel is used.
 //
 // Use WithNoDataStopRetries option to specify extra read attempts after StopFollow() is called
 // when no data has been seen yet. This is useful when the data source might not be ready immediately.
@@ -75,7 +83,9 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 		defer close(fw.doneChan)
 		defer cancel()
 		defer func() {
-			fw.closeSourceOnce.Do(fw.closeSource)
+			if fw.closeSourceOnCancel {
+				fw.closeSourceOnce.Do(fw.closeSource)
+			}
 		}()
 
 		buf := make([]byte, defaultBufferSize)
@@ -163,5 +173,7 @@ func (fw *FollowWriter) Done() <-chan struct{} {
 
 func (fw *FollowWriter) Cancel() {
 	fw.cancel()
-	fw.closeSourceOnce.Do(fw.closeSource)
+	if fw.closeSourceOnCancel {
+		fw.closeSourceOnce.Do(fw.closeSource)
+	}
 }

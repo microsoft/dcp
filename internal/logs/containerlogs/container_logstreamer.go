@@ -51,6 +51,12 @@ type containerLogStreamer struct {
 	lock *sync.Mutex
 }
 
+type containerStreamsToStop struct {
+	streamKind    string
+	streams       []*usvc_io.FollowWriter
+	cancelStreams func([]*usvc_io.FollowWriter)
+}
+
 func NewLogStreamer(log logr.Logger) *containerLogStreamer {
 	return &containerLogStreamer{
 		startupLogStreams: make(logs.LogStreamMop),
@@ -214,7 +220,7 @@ func (c *containerLogStreamer) StreamLogs(
 	// to account for the fact that ContainerLogSource.CaptureContainerLogs() is an asynchronous operation.
 	// A few no-data stop retries will allow us to get log lines from a container that we just started capturing logs for, regardless of follow/non-follow mode.
 	const noDataStopRetries = 3
-	followWriter := usvc_io.NewFollowWriter(ctx, src, dest, usvc_io.WithNoDataStopRetries(noDataStopRetries))
+	followWriter := usvc_io.NewFollowWriter(ctx, src, dest, usvc_io.WithNoDataStopRetries(noDataStopRetries), usvc_io.WithCloseSourceOnCancel())
 
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -273,67 +279,94 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 		return
 	}
 
+	var streamsToStop []containerStreamsToStop
+	var containerLogsToRelease *logs.LogDescriptorSet
+
 	c.lock.Lock()
-	defer c.lock.Unlock()
 
 	switch evt.Type {
 
 	case watch.Added, watch.Modified:
 		// "watch.Added" does not necessarily mean that the resource was just created.
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
-		if ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero() {
-			stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log, logs.CancelFollowStreams)
-			stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log, logs.CancelFollowStreams)
-			stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log, logs.CancelFollowStreams)
+		deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
+		if deletionRequested {
+			streamsToStop = append(streamsToStop,
+				takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.CancelFollowStreams),
+				takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.CancelFollowStreams),
+				takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.CancelFollowStreams),
+			)
 			if c.containerLogs != nil {
-				c.containerLogs.ReleaseForResource(ctr.UID)
+				containerLogsToRelease = c.containerLogs
 			}
-			return
-		}
-
-		if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
+		} else if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
 			// If done starting the container, ensure startup logs stop streaming once they reach EOF
-			stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log, logs.DelayStopFollowing)
+			streamsToStop = append(streamsToStop, takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.DelayStopFollowing))
 		}
 
-		if ctr.Done() {
+		if !deletionRequested && ctr.Done() {
 			// If the container is done, ensure standard and system logs stop streaming once they reach EOF
-			stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log, logs.DelayStopFollowing)
-			stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log, logs.DelayStopFollowing)
+			streamsToStop = append(streamsToStop,
+				takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.DelayStopFollowing),
+				takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.DelayStopFollowing),
+			)
 		}
 
 	case watch.Deleted:
 		// The resource was deleted, ensure any following log streams stop and cleanup their resources
-		stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log, logs.CancelFollowStreams)
-		stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log, logs.CancelFollowStreams)
-		stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log, logs.CancelFollowStreams)
+		streamsToStop = append(streamsToStop,
+			takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.CancelFollowStreams),
+			takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.CancelFollowStreams),
+			takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.CancelFollowStreams),
+		)
 
 		if c.containerLogs != nil {
 			// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
 			// It is OK to call ReleaseForResource() if the resource is not in the set, it is a no-op in that case.
-			c.containerLogs.ReleaseForResource(ctr.UID)
+			containerLogsToRelease = c.containerLogs
 		}
+	}
+
+	c.lock.Unlock()
+
+	stopLogStreamsForContainer(ctr, log, streamsToStop)
+	if containerLogsToRelease != nil {
+		containerLogsToRelease.ReleaseForResource(ctr.UID)
 	}
 }
 
-func stopLogStreamsForContainer(
+func takeLogStreamsForContainer(
 	streams logs.LogStreamMop,
 	ctr *apiv1.Container,
 	streamKind string,
-	log logr.Logger,
 	cancelStreams func([]*usvc_io.FollowWriter),
-) {
+) containerStreamsToStop {
 	if ctrStreams, found := streams[ctr.UID]; found {
 		delete(streams, ctr.UID)
+		return containerStreamsToStop{
+			streamKind:    streamKind,
+			streams:       maps.Values(ctrStreams),
+			cancelStreams: cancelStreams,
+		}
+	}
+
+	return containerStreamsToStop{}
+}
+
+func stopLogStreamsForContainer(ctr *apiv1.Container, log logr.Logger, streamsToStop []containerStreamsToStop) {
+	for _, streamGroup := range streamsToStop {
+		if len(streamGroup.streams) == 0 {
+			continue
+		}
 
 		if log.V(1).Enabled() {
-			log.V(1).Info(fmt.Sprintf("Stopping %s follow logs for container", streamKind),
+			log.V(1).Info(fmt.Sprintf("Stopping %s follow logs for container", streamGroup.streamKind),
 				"Container", ctr.Status.ContainerID,
-				"StreamCount", len(ctrStreams),
+				"StreamCount", len(streamGroup.streams),
 			)
 		}
 
-		cancelStreams(maps.Values(ctrStreams))
+		streamGroup.cancelStreams(streamGroup.streams)
 	}
 }
 
@@ -363,17 +396,11 @@ func appropriatelyCancel(fw *usvc_io.FollowWriter, ctr *apiv1.Container, opts *a
 func (c *containerLogStreamer) Dispose() error {
 	c.lock.Lock()
 
-	for _, w := range maps.FlattenValues(c.startupLogStreams) {
-		w.Cancel()
-	}
+	streamsToCancel := maps.FlattenValues(c.startupLogStreams)
 	c.startupLogStreams = make(logs.LogStreamMop)
-	for _, w := range maps.FlattenValues(c.stdioLogStreams) {
-		w.Cancel()
-	}
+	streamsToCancel = append(streamsToCancel, maps.FlattenValues(c.stdioLogStreams)...)
 	c.stdioLogStreams = make(logs.LogStreamMop)
-	for _, w := range maps.FlattenValues(c.systemLogStreams) {
-		w.Cancel()
-	}
+	streamsToCancel = append(streamsToCancel, maps.FlattenValues(c.systemLogStreams)...)
 	c.systemLogStreams = make(logs.LogStreamMop)
 
 	lds := c.containerLogs
@@ -381,6 +408,7 @@ func (c *containerLogStreamer) Dispose() error {
 
 	c.lock.Unlock()
 
+	logs.CancelFollowStreams(streamsToCancel)
 	if lds != nil {
 		return lds.Dispose()
 	} else {

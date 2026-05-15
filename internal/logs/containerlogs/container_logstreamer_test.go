@@ -115,7 +115,7 @@ func addBlockingContainerFollowWriters(ctx context.Context, streamer *containerL
 
 func newBlockingContainerFollowWriter(ctx context.Context) *usvc_io.FollowWriter {
 	reader, _ := usvc_io.NewBufferedPipe()
-	return usvc_io.NewFollowWriter(ctx, reader, testutil.NewBufferWriter())
+	return usvc_io.NewFollowWriter(ctx, reader, testutil.NewBufferWriter(), usvc_io.WithCloseSourceOnCancel())
 }
 
 func assertContainerStreamDoneBeforeFollowDelay(t *testing.T, ctx context.Context, done <-chan struct{}) {

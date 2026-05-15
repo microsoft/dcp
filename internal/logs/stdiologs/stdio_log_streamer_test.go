@@ -120,7 +120,7 @@ func TestDisposeCancelsStreamsImmediately(t *testing.T) {
 
 func newBlockingFollowWriter(ctx context.Context) *usvc_io.FollowWriter {
 	reader, _ := usvc_io.NewBufferedPipe()
-	return usvc_io.NewFollowWriter(ctx, reader, testutil.NewBufferWriter())
+	return usvc_io.NewFollowWriter(ctx, reader, testutil.NewBufferWriter(), usvc_io.WithCloseSourceOnCancel())
 }
 
 func assertDoneBeforeFollowDelay(t *testing.T, ctx context.Context, done <-chan struct{}) {

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,6 +53,19 @@ func (r *orderedBlockingReadCloser) Close() error {
 	return nil
 }
 
+type eofReadCloser struct {
+	closed atomic.Bool
+}
+
+func (r *eofReadCloser) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (r *eofReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
 func TestFollowWriterCancelClosesSourceBeforeDone(t *testing.T) {
 	t.Parallel()
 
@@ -60,7 +74,7 @@ func TestFollowWriterCancelClosesSourceBeforeDone(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
-	writer := usvc_io.NewFollowWriter(ctx, source, buf)
+	writer := usvc_io.NewFollowWriter(ctx, source, buf, usvc_io.WithCloseSourceOnCancel())
 	go func() {
 		<-writer.Done()
 		source.events <- "done"
@@ -82,6 +96,27 @@ func TestFollowWriterCancelClosesSourceBeforeDone(t *testing.T) {
 		t.Fatal("FollowWriter did not finish after source was closed")
 	}
 
+	require.NoError(t, writer.Err())
+}
+
+func TestFollowWriterDoesNotCloseSourceByDefault(t *testing.T) {
+	t.Parallel()
+
+	source := &eofReadCloser{}
+	buf := testutil.NewBufferWriter()
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+
+	writer := usvc_io.NewFollowWriter(ctx, source, buf)
+	writer.StopFollow()
+
+	select {
+	case <-writer.Done():
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not finish before test timeout")
+	}
+
+	require.False(t, source.closed.Load())
 	require.NoError(t, writer.Err())
 }
 
