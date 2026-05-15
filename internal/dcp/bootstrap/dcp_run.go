@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -138,8 +139,13 @@ func DcpRun(
 	log.V(1).Info("About to launch host services")
 
 	shutdownErrors, lifecycleMsgs := host.RunAsync(hostCtx)
+	var shutdownHostOnce sync.Once
+	var shutdownHostErr error
 	shutdownHost := func() error {
-		return shutdownHostServicesAndDisposeApiServer(notifySrc, shutdownErrors, cancelHostCtx, apiServer.Dispose, hosting.ShutdownTimeout, log)
+		shutdownHostOnce.Do(func() {
+			shutdownHostErr = shutdownHostServicesAndDisposeApiServer(notifySrc, shutdownErrors, cancelHostCtx, apiServer.Dispose, hosting.ShutdownTimeout, log)
+		})
+		return shutdownHostErr
 	}
 
 	var err error
