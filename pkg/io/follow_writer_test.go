@@ -26,6 +26,65 @@ const (
 	cleanupReadyPollInterval = 200 * time.Millisecond
 )
 
+type orderedBlockingReadCloser struct {
+	closeCh chan struct{}
+	events  chan string
+	closed  atomic.Bool
+}
+
+func newOrderedBlockingReadCloser() *orderedBlockingReadCloser {
+	return &orderedBlockingReadCloser{
+		closeCh: make(chan struct{}),
+		events:  make(chan string, 2),
+	}
+}
+
+func (r *orderedBlockingReadCloser) Read(_ []byte) (int, error) {
+	<-r.closeCh
+	return 0, usvc_io.ErrClosedReader
+}
+
+func (r *orderedBlockingReadCloser) Close() error {
+	if r.closed.CompareAndSwap(false, true) {
+		r.events <- "source-closed"
+		close(r.closeCh)
+	}
+	return nil
+}
+
+func TestFollowWriterCancelClosesSourceBeforeDone(t *testing.T) {
+	t.Parallel()
+
+	source := newOrderedBlockingReadCloser()
+	buf := testutil.NewBufferWriter()
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+
+	writer := usvc_io.NewFollowWriter(ctx, source, buf)
+	go func() {
+		<-writer.Done()
+		source.events <- "done"
+	}()
+
+	writer.Cancel()
+
+	select {
+	case event := <-source.events:
+		require.Equal(t, "source-closed", event)
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not close source before test timeout")
+	}
+
+	select {
+	case event := <-source.events:
+		require.Equal(t, "done", event)
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not finish after source was closed")
+	}
+
+	require.NoError(t, writer.Err())
+}
+
 // Ensure that follow writer in follow mode run on empty file does not return any data.
 func TestFollowWriterFollowEmptyFile(t *testing.T) {
 	t.Parallel()

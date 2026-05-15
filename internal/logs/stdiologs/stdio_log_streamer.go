@@ -178,7 +178,7 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 	sls.lock.Lock()
 	defer sls.lock.Unlock()
 
-	stopResourceStreams := func(logMessage string) {
+	stopResourceStreams := func(logMessage string, cancelStreams func([]*usvc_io.FollowWriter)) {
 		resourceID := resource.GetUID()
 
 		if fwStreams, found := sls.activeStreams[resourceID]; found {
@@ -191,7 +191,7 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 				)
 			}
 
-			logs.DelayCancelFollowStreams(maps.Values(fwStreams), (*usvc_io.FollowWriter).StopFollow)
+			cancelStreams(maps.Values(fwStreams))
 		}
 	}
 
@@ -202,14 +202,14 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
 
 		if !resource.GetDeletionTimestamp().IsZero() {
-			stopResourceStreams("Stopping log streams for resource that is being deleted")
+			stopResourceStreams("Stopping log streams for resource that is being deleted", logs.CancelFollowStreams)
 		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
-			stopResourceStreams("Stopping log following for resource that reached its final state")
+			stopResourceStreams("Stopping log following for resource that reached its final state", logs.DelayStopFollowing)
 		}
 
 	case watch.Deleted:
-		stopResourceStreams("Stopping log streams for resource that was deleted")
+		stopResourceStreams("Stopping log streams for resource that was deleted", logs.CancelFollowStreams)
 	}
 }
 
@@ -218,7 +218,7 @@ func (sls *stdIoLogStreamer) Dispose() error {
 	defer sls.lock.Unlock()
 
 	for _, w := range maps.FlattenValues(sls.activeStreams) {
-		w.StopFollow()
+		w.Cancel()
 	}
 	sls.activeStreams = make(logs.LogStreamMop)
 

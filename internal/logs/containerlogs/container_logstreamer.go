@@ -240,7 +240,6 @@ func (c *containerLogStreamer) StreamLogs(
 
 	go func() {
 		defer cleanup()
-		defer src.Close()
 
 		streamLog.V(1).Info("Starting streaming logs to destination ...")
 		<-followWriter.Done()
@@ -277,33 +276,37 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	if c.containerLogSource == nil {
-		// We haven't completed initialization for any resources yet
-		return
-	}
-
 	switch evt.Type {
 
 	case watch.Added, watch.Modified:
 		// "watch.Added" does not necessarily mean that the resource was just created.
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
+		if ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero() {
+			stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log, logs.CancelFollowStreams)
+			stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log, logs.CancelFollowStreams)
+			stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log, logs.CancelFollowStreams)
+			if c.containerLogs != nil {
+				c.containerLogs.ReleaseForResource(ctr.UID)
+			}
+			return
+		}
 
 		if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
 			// If done starting the container, ensure startup logs stop streaming once they reach EOF
-			stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log)
+			stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log, logs.DelayStopFollowing)
 		}
 
 		if ctr.Done() {
 			// If the container is done, ensure standard and system logs stop streaming once they reach EOF
-			stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log)
-			stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log)
+			stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log, logs.DelayStopFollowing)
+			stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log, logs.DelayStopFollowing)
 		}
 
 	case watch.Deleted:
 		// The resource was deleted, ensure any following log streams stop and cleanup their resources
-		stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log)
-		stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log)
-		stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log)
+		stopLogStreamsForContainer(c.startupLogStreams, ctr, "startup", log, logs.CancelFollowStreams)
+		stopLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", log, logs.CancelFollowStreams)
+		stopLogStreamsForContainer(c.systemLogStreams, ctr, "system", log, logs.CancelFollowStreams)
 
 		if c.containerLogs != nil {
 			// Need to stop the log streamer and any log watchers for this container (if any) as it is being deleted.
@@ -318,6 +321,7 @@ func stopLogStreamsForContainer(
 	ctr *apiv1.Container,
 	streamKind string,
 	log logr.Logger,
+	cancelStreams func([]*usvc_io.FollowWriter),
 ) {
 	if ctrStreams, found := streams[ctr.UID]; found {
 		delete(streams, ctr.UID)
@@ -329,7 +333,7 @@ func stopLogStreamsForContainer(
 			)
 		}
 
-		logs.DelayCancelFollowStreams(maps.Values(ctrStreams), (*usvc_io.FollowWriter).StopFollow)
+		cancelStreams(maps.Values(ctrStreams))
 	}
 }
 
@@ -352,7 +356,7 @@ func appropriatelyCancel(fw *usvc_io.FollowWriter, ctr *apiv1.Container, opts *a
 	if !follow {
 		fw.StopFollow() // Will stop writing after first EOF is reached
 	} else if ctr.Done() {
-		logs.DelayCancelFollowStreams([]*usvc_io.FollowWriter{fw}, (*usvc_io.FollowWriter).StopFollow)
+		logs.DelayStopFollowing([]*usvc_io.FollowWriter{fw})
 	}
 }
 
@@ -360,15 +364,15 @@ func (c *containerLogStreamer) Dispose() error {
 	c.lock.Lock()
 
 	for _, w := range maps.FlattenValues(c.startupLogStreams) {
-		w.StopFollow()
+		w.Cancel()
 	}
 	c.startupLogStreams = make(logs.LogStreamMop)
 	for _, w := range maps.FlattenValues(c.stdioLogStreams) {
-		w.StopFollow()
+		w.Cancel()
 	}
 	c.stdioLogStreams = make(logs.LogStreamMop)
 	for _, w := range maps.FlattenValues(c.systemLogStreams) {
-		w.StopFollow()
+		w.Cancel()
 	}
 	c.systemLogStreams = make(logs.LogStreamMop)
 
