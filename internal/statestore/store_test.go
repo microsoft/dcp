@@ -545,6 +545,405 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, invalidOwnerReacquireErr)
 }
 
+func TestReservePortBlocksOtherStore(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26001,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+
+	_, blockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26001,
+		OwnerProcess: owner2,
+	})
+
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestReserveSpecificPortReusesSameOwner(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+
+	first, firstErr := store.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26002,
+		OwnerProcess: owner,
+	})
+	require.NoError(t, firstErr)
+	second, secondErr := store.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26002,
+		OwnerProcess: owner,
+	})
+
+	require.NoError(t, secondErr)
+	require.Equal(t, first.Protocol, second.Protocol)
+	require.Equal(t, first.Address, second.Address)
+	require.Equal(t, first.Port, second.Port)
+}
+
+func TestReleasePortAllowsOtherOwnerToReserve(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26005,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+	_, blockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26005,
+		OwnerProcess: owner2,
+	})
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+
+	releaseErr := store1.ReleasePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26005,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, releaseErr)
+
+	_, reserveAfterReleaseErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26005,
+		OwnerProcess: owner2,
+	})
+	require.NoError(t, reserveAfterReleaseErr)
+}
+
+func TestReleasePortDoesNotReleaseOtherOwnerReservation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26006,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+	releaseErr := store2.ReleasePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26006,
+		OwnerProcess: owner2,
+	})
+	require.NoError(t, releaseErr)
+
+	_, blockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26006,
+		OwnerProcess: owner2,
+	})
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestPortReservationAllIPv4InterfacesBlocksSpecificAddress(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "0.0.0.0",
+		Port:         26008,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+
+	_, blockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26008,
+		OwnerProcess: owner2,
+	})
+
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestPortReservationSpecificAddressBlocksAllIPv4Interfaces(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26009,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+
+	_, blockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "0.0.0.0",
+		Port:         26009,
+		OwnerProcess: owner2,
+	})
+
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestReserveSpecificPortSameOwnerSpecificAddressBlocksAllIPv4Interfaces(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+
+	_, reserveErr := store.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26012,
+		OwnerProcess: owner,
+	})
+	require.NoError(t, reserveErr)
+
+	_, blockedErr := store.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "0.0.0.0",
+		Port:         26012,
+		OwnerProcess: owner,
+	})
+
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestReserveSpecificPortSameOwnerAllIPv4InterfacesBlocksSpecificAddress(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+
+	_, reserveErr := store.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "0.0.0.0",
+		Port:         26013,
+		OwnerProcess: owner,
+	})
+	require.NoError(t, reserveErr)
+
+	_, blockedErr := store.ReserveSpecificPort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26013,
+		OwnerProcess: owner,
+	})
+
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestPortReservationAllIPv6InterfacesBlocksSpecificAddress(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "::",
+		Port:         26010,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+
+	_, blockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "::1",
+		Port:         26010,
+		OwnerProcess: owner2,
+	})
+
+	require.ErrorIs(t, blockedErr, ErrPortReservationHeld)
+}
+
+func TestPortReservationIPv4WildcardDoesNotBlockIPv6(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, owner2Err)
+
+	_, reserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "0.0.0.0",
+		Port:         26011,
+		OwnerProcess: owner1,
+	})
+	require.NoError(t, reserveErr)
+
+	reservation, reserveIPv6Err := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "::1",
+		Port:         26011,
+		OwnerProcess: owner2,
+	})
+
+	require.NoError(t, reserveIPv6Err)
+	require.Equal(t, "::1", reservation.Address)
+}
+
+func TestPortReservationStoresAddressAsBlob(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	owner, ownerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, ownerErr)
+
+	reservation, reserveErr := store.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "[::1]",
+		Port:         26007,
+		OwnerProcess: owner,
+	})
+	require.NoError(t, reserveErr)
+
+	require.Equal(t, "::1", reservation.Address)
+	row := store.db.QueryRowContext(ctx, `SELECT typeof(address), length(address) FROM port_allocations WHERE protocol = ? AND port = ?`, "TCP", 26007)
+	var addressType string
+	var addressLength int
+	require.NoError(t, row.Scan(&addressType, &addressLength))
+	require.Equal(t, "blob", addressType)
+	require.Equal(t, 16, addressLength)
+}
+
+func TestDeleteInactivePortReservationsUsesOwnerProcessIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+	activeOwner, activeOwnerErr := testResourceLeaseOwner(t, 0)
+	require.NoError(t, activeOwnerErr)
+	staleOwner, staleOwnerErr := testResourceLeaseOwner(t, time.Second)
+	require.NoError(t, staleOwnerErr)
+	otherOwner, otherOwnerErr := testResourceLeaseOwner(t, 2*time.Second)
+	require.NoError(t, otherOwnerErr)
+
+	_, activeReserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26003,
+		OwnerProcess: activeOwner,
+	})
+	require.NoError(t, activeReserveErr)
+	_, staleReserveErr := store1.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26004,
+		OwnerProcess: staleOwner,
+	})
+	require.NoError(t, staleReserveErr)
+
+	require.NoError(t, store1.DeleteInactivePortReservations(ctx))
+
+	_, activeBlockedErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26003,
+		OwnerProcess: otherOwner,
+	})
+	require.ErrorIs(t, activeBlockedErr, ErrPortReservationHeld)
+	_, staleReacquireErr := store2.ReservePort(ctx, PortReservationRequest{
+		Protocol:     "tcp",
+		Address:      "127.0.0.1",
+		Port:         26004,
+		OwnerProcess: otherOwner,
+	})
+	require.NoError(t, staleReacquireErr)
+}
+
 func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	t.Parallel()
 

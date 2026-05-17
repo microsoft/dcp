@@ -233,7 +233,7 @@ func portForServingFromExecutable(
 			return 0, errServiceDoesNotExist{Service: serviceName, ContextObject: exe.NamespacedName()}
 		}
 
-		port, err := networking.GetFreePort(svc.Spec.Protocol, sp.Address, log)
+		port, err := networking.GetFreePort(ctx, svc.Spec.Protocol, sp.Address, log)
 		if err != nil {
 			return 0, fmt.Errorf(
 				"could not allocate a port for service '%s' with desired address '%s': %w",
