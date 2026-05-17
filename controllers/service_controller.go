@@ -51,9 +51,10 @@ type proxyInstanceData struct {
 }
 
 type serviceData struct {
-	proxies       []proxyInstanceData
-	startAttempts uint32
-	warnedUser    bool
+	proxies        []proxyInstanceData
+	proxiesStopped bool
+	startAttempts  uint32
+	warnedUser     bool
 }
 
 // Stores ServiceReconciler dependencies and configuration that often varies
@@ -264,6 +265,7 @@ func (r *ServiceReconciler) stopService(ctx context.Context, svcName types.Names
 	}
 	releaseErr := stopProxiesAndReleasePortReservations(ctx, serviceData.proxies, log)
 	if releaseErr != nil {
+		serviceData.proxiesStopped = true
 		log.Error(releaseErr, "Could not release service proxy port reservation(s)")
 		return additionalReconciliationNeeded
 	}
@@ -472,7 +474,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc)
 
-	if found && requestedAddressErr == nil && len(psd.proxies) > 0 {
+	if found && requestedAddressErr == nil && len(psd.proxies) > 0 && !psd.proxiesStopped {
 		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(psd.proxies, requestedServiceAddress)
 		return psd, nil
 	}
@@ -484,10 +486,12 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	defer r.serviceInfo.Store(svc.NamespacedName(), psd)
 
 	releaseExistingErr := stopProxiesAndReleasePortReservations(ctx, psd.proxies, log)
+	psd.proxiesStopped = len(psd.proxies) > 0
 	if releaseExistingErr != nil {
 		return psd, fmt.Errorf("could not release existing service proxy port reservation(s): %w", releaseExistingErr)
 	}
 	psd.proxies = nil
+	psd.proxiesStopped = false
 	psd.startAttempts += 1
 
 	if requestedAddressErr != nil {
@@ -526,6 +530,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	)
 
 	psd.proxies = proxies
+	psd.proxiesStopped = false
 	return psd, nil
 }
 
