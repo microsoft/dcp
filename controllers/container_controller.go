@@ -1928,7 +1928,13 @@ func (r *ContainerReconciler) runPersistentContainerLifecycleMonitor(rcd *runnin
 		return
 	}
 
-	dcpproc.RunContainerWatcherForMonitor(r.config.ProcessExecutor, monitor, string(rcd.containerID), log)
+	dcpproc.RunContainerWatcherForMonitorWithOptions(
+		r.config.ProcessExecutor,
+		monitor,
+		string(rcd.containerID),
+		dcpproc.ContainerWatcherOptions{StopOnly: true},
+		log,
+	)
 }
 
 // Connects the Container to networks as necessary, updating status.
