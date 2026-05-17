@@ -226,6 +226,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 		for _, endpoint := range newEndpoints {
 			if err = ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
 				svcLog.Error(err, "Failed to set owner for Endpoint")
+				_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
 				continue // Try to persist other endpoints
 			}
 
@@ -234,6 +235,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 				if !apiv1.ResourceCreationProhibited.Load() {
 					svcLog.Error(err, "Could not persist Endpoint object")
 				}
+				_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
 				continue
 			}
 
