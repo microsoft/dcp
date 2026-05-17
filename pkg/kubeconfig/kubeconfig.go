@@ -6,6 +6,7 @@
 package kubeconfig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	iofs "io/fs"
@@ -152,7 +153,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 
 // For an existing kubeconfig file, read the data and return it. If no kubeconfig file exists, generate the
 // data and return that (to be persisted after API server starts).
-func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*Kubeconfig, error) {
+func getKubeconfig(ctx context.Context, kubeconfigPath string, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*Kubeconfig, error) {
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
@@ -163,7 +164,7 @@ func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, ge
 		}
 
 		// Create a new config
-		config, certificateData, err = createKubeconfig(port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
+		config, certificateData, err = createKubeconfig(ctx, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 		if err != nil {
 			return nil, err
 		}
@@ -184,9 +185,9 @@ func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, ge
 	}, nil
 }
 
-func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
+func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
-		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, serverAddress, log); newPortErr != nil {
+		if newPort, newPortErr := networking.GetFreePort(ctx, apiv1.TCP, serverAddress, log); newPortErr != nil {
 			return nil, nil, newPortErr
 		} else {
 			port = newPort
