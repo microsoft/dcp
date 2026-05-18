@@ -63,3 +63,13 @@ func DelayCancelFollowStreams(streams []*usvc_io.FollowWriter, cancelStream func
 		}
 	}()
 }
+
+func DelayStopFollowing(streams []*usvc_io.FollowWriter) {
+	DelayCancelFollowStreams(streams, (*usvc_io.FollowWriter).StopFollow)
+}
+
+func CancelFollowStreams(streams []*usvc_io.FollowWriter) {
+	for _, stream := range streams {
+		stream.Cancel()
+	}
+}
