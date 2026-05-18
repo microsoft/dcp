@@ -6,6 +6,7 @@
 package kubeconfig
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	iofs "io/fs"
@@ -152,7 +153,7 @@ func getKubeConfigPath(fs *pflag.FlagSet) (string, error) {
 
 // For an existing kubeconfig file, read the data and return it. If no kubeconfig file exists, generate the
 // data and return that (to be persisted after API server starts).
-func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*Kubeconfig, error) {
+func getKubeconfig(ctx context.Context, kubeconfigPath string, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*Kubeconfig, error) {
 	info, err := os.Stat(kubeconfigPath)
 
 	var config *clientcmd_api.Config
@@ -163,7 +164,7 @@ func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, ge
 		}
 
 		// Create a new config
-		config, certificateData, err = createKubeconfig(port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
+		config, certificateData, err = createKubeconfig(ctx, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 		if err != nil {
 			return nil, err
 		}
@@ -184,13 +185,15 @@ func getKubeconfig(kubeconfigPath string, port int32, generateEphemeral bool, ge
 	}, nil
 }
 
-func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
+func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
-		if newPort, newPortErr := networking.GetFreePort(apiv1.TCP, serverAddress, log); newPortErr != nil {
+		newPort, newPortErr := traced(ctx, spanGetFreePort, func() (int32, error) {
+			return networking.GetFreePort(apiv1.TCP, serverAddress, log)
+		})
+		if newPortErr != nil {
 			return nil, nil, newPortErr
-		} else {
-			port = newPort
 		}
+		port = newPort
 	}
 
 	cluster := clientcmd_api.Cluster{
@@ -204,9 +207,13 @@ func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, st
 		cluster.CertificateAuthorityData = storeCertData.CACertPEM
 		certificateData = storeCertData
 	} else if generateEphemeral {
-		// Generate certificates to secure the connection
+		// Generate certificates to secure the connection. This is the dominant cost of
+		// kubeconfig generation in the default no-cert-store path: two RSA keys are
+		// generated plus a self-signed CA and server cert.
 		ip := net.ParseIP(networking.ToStandaloneAddress(serverAddress))
-		generatedCert, certificateErr := security.GenerateServerCertificate(ip)
+		generatedCert, certificateErr := traced(ctx, spanGenerateCertificate, func() (security.ServerCertificateData, error) {
+			return security.GenerateServerCertificate(ip)
+		})
 		if certificateErr != nil {
 			return nil, nil, fmt.Errorf("kubeconfig file creation failed: could not generate certificates: %w", certificateErr)
 		}
@@ -221,7 +228,9 @@ func createKubeconfig(port int32, generateEphemeral bool, generateToken bool, st
 
 	user := clientcmd_api.AuthInfo{}
 	if generateToken {
-		token, tokenErr := security.MakeBearerToken()
+		token, tokenErr := traced(ctx, spanGenerateToken, func() ([]byte, error) {
+			return security.MakeBearerToken()
+		})
 		if tokenErr != nil {
 			return nil, nil, fmt.Errorf("could not generate authentication token for the DCP API server: %w", tokenErr)
 		}

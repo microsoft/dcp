@@ -14,6 +14,8 @@ import (
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcp/commands"
+	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/internal/telemetry/startupspans"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -46,7 +48,17 @@ func main() {
 
 	ctx := kubeapiserver.SetupSignalContext()
 
+	// Ingest any W3C traceparent propagated by an outer orchestrator (e.g. Aspire's
+	// hosting layer) so DCP startup spans become children of that activity. This is
+	// always cheap — it returns ctx unchanged when no traceparent env var is set.
+	ctx = telemetry.ExtractStartupTraceContext(ctx)
+
+	// Wrap root command construction in a short startup span so profiling captures
+	// the time spent in cobra / klog / controller-runtime wiring before the leaf
+	// command's RunE runs. When startup profiling is disabled the tracer is a no-op.
+	_, span := startupspans.BeginCmdInit(ctx, logName)
 	root, err := commands.NewRootCmd(log)
+	span.End()
 	if err != nil {
 		cmdutil.ErrorExit(log, err, errSetup)
 	}
