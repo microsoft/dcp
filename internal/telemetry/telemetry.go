@@ -89,7 +89,7 @@ func GetTelemetrySystem() *TelemetrySystem {
 			otlpCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			exp, otlpErr := newStartupOtlpExporter(otlpCtx)
+			exp, otlpErr := newStartupOTLPExporter(otlpCtx)
 			if otlpErr == nil {
 				otlpExp = exp
 				tpOptions = append(tpOptions,

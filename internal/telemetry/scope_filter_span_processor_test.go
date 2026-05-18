@@ -46,6 +46,7 @@ func TestScopeAllowlistSpanProcessor_OnlyAllowedScopesAreForwarded(t *testing.T)
 
 	// Emit one span from each of: an allowed scope, the kubeconfig scope, and a
 	// disallowed runtime scope. Only the first two should reach the inner processor.
+	// The span name itself doesn't matter for the filter — only the tracer scope.
 	_, s1 := tp.Tracer(StartupTracerName).Start(context.Background(), "dcp.startup")
 	s1.End()
 	_, s2 := tp.Tracer(kubeconfig.TracerName).Start(context.Background(), "dcp.kubeconfig.generate_certificate")

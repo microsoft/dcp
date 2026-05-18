@@ -14,14 +14,13 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcp/bootstrap"
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/internal/telemetry/startupspans"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -70,18 +69,13 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			return runDetachedFork(apiServerCtx, log)
 		}
 
-		// At this point we are the actual API-server-hosting process. Open a bounded
-		// "dcp.startup" span that ends when the API server itself is up; that's the
-		// moment Aspire's `ensure_kubernetes_client` finishes waiting on the kubeconfig
-		// and the listener. We deliberately end the span before host services finish
-		// starting because Aspire only needs the API server reachable to proceed.
-		startupCtx, span := telemetry.StartupTracer().Start(apiServerCtx, "dcp.startup",
-			trace.WithAttributes(
-				attribute.Int("process.pid", os.Getpid()),
-				attribute.Int("process.ppid", os.Getppid()),
-				attribute.Bool("dcp.server_only", serverOnly),
-			),
-		)
+		// At this point we are the actual API-server-hosting process. Open the
+		// bounded "dcp.startup" span that ends when the API server listener is up
+		// — that is the moment Aspire's `ensure_kubernetes_client` finishes
+		// waiting on the kubeconfig and the listener. We deliberately end the span
+		// before host services finish starting because Aspire only needs the API
+		// server reachable to proceed.
+		startupCtx, span := startupspans.BeginStartup(apiServerCtx, serverOnly)
 		var endStartupOnce sync.Once
 		endStartup := func() {
 			endStartupOnce.Do(func() {
@@ -105,7 +99,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		kconfig, err := telemetry.CallWithTelemetry(telemetry.StartupTracer(), "dcp.startup.ensure_kubeconfig_data", startupCtx,
+		kconfig, err := telemetry.CallWithTelemetry(startupspans.Tracer(), startupspans.SpanEnsureKubeconfig, startupCtx,
 			func(ctx context.Context) (*kubeconfig.Kubeconfig, error) {
 				return kubeconfig.EnsureKubeconfigData(ctx, cmd.Flags(), log)
 			},
@@ -116,11 +110,11 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		var allExtensions []bootstrap.DcpExtension
 		if !serverOnly {
-			allExtensions, err = telemetry.CallWithTelemetry(telemetry.StartupTracer(), "dcp.startup.get_extensions", startupCtx,
+			allExtensions, err = telemetry.CallWithTelemetry(startupspans.Tracer(), startupspans.SpanGetExtensions, startupCtx,
 				func(ctx context.Context) ([]bootstrap.DcpExtension, error) {
 					exts, extErr := bootstrap.GetExtensions(ctx, log)
 					if extErr == nil {
-						telemetry.SetAttribute(ctx, "dcp.extension_count", len(exts))
+						startupspans.SetExtensionCount(ctx, len(exts))
 					}
 					return exts, extErr
 				},
@@ -156,12 +150,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 // span captures the small but real cost of the spawn step; parent and child end up as
 // siblings under the same outer trace because they read the same ASPIRE_STARTUP_TRACEPARENT.
 func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
-	_, span := telemetry.StartupTracer().Start(apiServerCtx, "dcp.startup.parent_fork",
-		trace.WithAttributes(
-			attribute.Int("process.pid", os.Getpid()),
-			attribute.Bool("dcp.detach_parent", true),
-		),
-	)
+	_, span := startupspans.BeginParentFork(apiServerCtx)
 	defer func() {
 		span.End()
 		telemetry.ForceFlushStartup(log)
@@ -199,7 +188,7 @@ func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
 	}
 	log.V(1).Info("Forked process started", "PID", forked.Process.Pid)
 
-	span.SetAttributes(attribute.Int("dcp.child.pid", forked.Process.Pid))
+	startupspans.SetChildPid(span, forked.Process.Pid)
 
 	if err := forked.Process.Release(); err != nil {
 		log.Error(err, "Release failed for process", "PID", forked.Process.Pid)

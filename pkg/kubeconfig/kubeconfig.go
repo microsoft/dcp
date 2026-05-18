@@ -187,7 +187,7 @@ func getKubeconfig(ctx context.Context, kubeconfigPath string, port int32, gener
 
 func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
-		newPort, newPortErr := tracedCall(ctx, "dcp.kubeconfig.get_free_port", func() (int32, error) {
+		newPort, newPortErr := traced(ctx, spanGetFreePort, func() (int32, error) {
 			return networking.GetFreePort(apiv1.TCP, serverAddress, log)
 		})
 		if newPortErr != nil {
@@ -211,7 +211,7 @@ func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, g
 		// kubeconfig generation in the default no-cert-store path: two RSA keys are
 		// generated plus a self-signed CA and server cert.
 		ip := net.ParseIP(networking.ToStandaloneAddress(serverAddress))
-		generatedCert, certificateErr := tracedCall(ctx, "dcp.kubeconfig.generate_certificate", func() (security.ServerCertificateData, error) {
+		generatedCert, certificateErr := traced(ctx, spanGenerateCertificate, func() (security.ServerCertificateData, error) {
 			return security.GenerateServerCertificate(ip)
 		})
 		if certificateErr != nil {
@@ -228,7 +228,7 @@ func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, g
 
 	user := clientcmd_api.AuthInfo{}
 	if generateToken {
-		token, tokenErr := tracedCall(ctx, "dcp.kubeconfig.generate_token", func() ([]byte, error) {
+		token, tokenErr := traced(ctx, spanGenerateToken, func() ([]byte, error) {
 			return security.MakeBearerToken()
 		})
 		if tokenErr != nil {
