@@ -6,6 +6,7 @@
 package kubeconfig
 
 import (
+	"context"
 	"errors"
 	goflag "flag"
 	"fmt"
@@ -21,10 +22,10 @@ import (
 )
 
 const (
-	PortFlagName               = "port"
-	TLSCertThumbprintFlagName  = "tls-cert-thumbprint"
-	TLSCAFileFlagName          = "tls-ca-file"
-	DCP_SECURE_TOKEN           = "DCP_SECURE_TOKEN"
+	PortFlagName              = "port"
+	TLSCertThumbprintFlagName = "tls-cert-thumbprint"
+	TLSCAFileFlagName         = "tls-ca-file"
+	DCP_SECURE_TOKEN          = "DCP_SECURE_TOKEN"
 )
 
 var (
@@ -128,7 +129,7 @@ func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 // Creates API server addressing and authentication data that will go into the kubeconfig file.
 // The kubeconfig flag value, if empty upon invocation, will be set to preferred path of the kubeconfig file.
 // Does NOT create the kubeconfig file itself (see Kubeconfig.Save() for that).
-func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
+func EnsureKubeconfigData(ctx context.Context, flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
 		return nil, fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
@@ -183,7 +184,7 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 
 	generateEphemeral := storeCertData == nil
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
+	k, kErr := getKubeconfig(ctx, kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}
