@@ -10,10 +10,8 @@ package security
 import (
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/hex"
 	"fmt"
 	"math"
-	"strings"
 	"unsafe"
 
 	"golang.org/x/crypto/pkcs12"
@@ -35,14 +33,9 @@ var (
 )
 
 func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error) {
-	thumbprint = normalizeThumbprint(thumbprint)
-
-	hashBytes, decodeErr := hex.DecodeString(thumbprint)
-	if decodeErr != nil {
-		return nil, "", fmt.Errorf("invalid certificate thumbprint %q: %w", thumbprint, decodeErr)
-	}
-	if len(hashBytes) != 20 {
-		return nil, "", fmt.Errorf("invalid certificate thumbprint %q: expected 40 hex characters (SHA-1), got %d", thumbprint, len(thumbprint))
+	normalizedThumbprint, hashBytes, thumbprintErr := normalizeAndDecodeThumbprint(thumbprint)
+	if thumbprintErr != nil {
+		return nil, "", thumbprintErr
 	}
 
 	storeName, storeNameErr := windows.UTF16PtrFromString("MY")
@@ -70,31 +63,11 @@ func lookupCertificate(thumbprint string) (*ServerCertificateData, string, error
 		nil,
 	)
 	if findErr != nil {
-		return nil, "", fmt.Errorf("certificate with thumbprint %q not found in CurrentUser\\My store: %w", thumbprint, findErr)
+		return nil, "", fmt.Errorf("certificate with thumbprint %q not found in CurrentUser\\My store: %w", normalizedThumbprint, findErr)
 	}
 	defer func() { _ = windows.CertFreeCertificateContext(certCtx) }()
 
-	return exportViaPFX(certCtx, thumbprint)
-}
-
-// normalizeThumbprint strips common formatting and copy/paste artifacts from
-// certificate thumbprints and returns a lowercase hex string. Handles formats
-// from various sources:
-//   - Windows certmgr/PowerShell Get-ChildItem Cert:\: "AA BB CC DD ..." (space-separated uppercase hex)
-//   - OpenSSL x509 -fingerprint: "AA:BB:CC:DD:..." (colon-separated uppercase hex)
-//   - .NET X509Certificate2.Thumbprint: "AABBCCDD..." (contiguous uppercase hex)
-//   - Programmatic hex with prefix: "0xaabbccdd..." or "0XAABBCCDD..."
-//
-// Also strips leading/trailing whitespace (\t, \r, \n) and the invisible
-// left-to-right mark (U+200E) that Windows certificate UI sometimes embeds.
-func normalizeThumbprint(thumbprint string) string {
-	thumbprint = strings.TrimSpace(thumbprint)
-	thumbprint = strings.ReplaceAll(thumbprint, "\u200e", "") // left-to-right mark
-	thumbprint = strings.ReplaceAll(thumbprint, " ", "")
-	thumbprint = strings.ReplaceAll(thumbprint, ":", "")
-	thumbprint = strings.TrimPrefix(thumbprint, "0x")
-	thumbprint = strings.TrimPrefix(thumbprint, "0X")
-	return strings.ToLower(thumbprint)
+	return exportViaPFX(certCtx, normalizedThumbprint)
 }
 
 // exportViaPFX exports the certificate and its private key by performing a
