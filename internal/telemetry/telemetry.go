@@ -19,10 +19,13 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -32,6 +35,7 @@ type TelemetrySystem struct {
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
 	spanExporter   sdktrace.SpanExporter
+	otlpExporter   sdktrace.SpanExporter
 	metricExporter sdkmetric.Exporter
 }
 
@@ -50,10 +54,50 @@ func GetTelemetrySystem() *TelemetrySystem {
 			spanExp = discardExporter{}
 		}
 
-		tp := sdktrace.NewTracerProvider(
-			sdktrace.WithSpanProcessor(NewSuppressIfSuccessfulSpanProcessor(sdktrace.NewBatchSpanProcessor(spanExp))),
-			sdktrace.WithResource(resource.Default()),
+		// Resource: identify spans as belonging to the DCP service. When startup profiling
+		// is on, attach the profiling session id so consumers can correlate cross-process
+		// startup traces emitted from DCP with the surrounding orchestrator's ones.
+		resAttrs := []attribute.KeyValue{
+			semconv.ServiceName("dcp"),
+		}
+		if sid := ProfilingSessionId(); sid != "" {
+			resAttrs = append(resAttrs, attribute.String("dcp.profiling.session_id", sid))
+		}
+		res, mergeErr := resource.Merge(
+			resource.Default(),
+			resource.NewWithAttributes(semconv.SchemaURL, resAttrs...),
 		)
+		if mergeErr != nil {
+			// Fall back to schema-less attributes so we never lose service.name.
+			res = resource.NewSchemaless(resAttrs...)
+		}
+
+		tpOptions := []sdktrace.TracerProviderOption{
+			sdktrace.WithSpanProcessor(NewSuppressIfSuccessfulSpanProcessor(sdktrace.NewBatchSpanProcessor(spanExp))),
+			sdktrace.WithResource(res),
+		}
+
+		var otlpExp sdktrace.SpanExporter
+		if IsStartupProfilingEnabled() {
+			otlpCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			exp, otlpErr := otlptracegrpc.New(otlpCtx)
+			if otlpErr == nil {
+				otlpExp = exp
+				tpOptions = append(tpOptions,
+					sdktrace.WithSpanProcessor(newScopeAllowlistSpanProcessor(
+						sdktrace.NewBatchSpanProcessor(
+							exp,
+							sdktrace.WithBatchTimeout(250*time.Millisecond),
+						),
+						startupExportedScopes...,
+					)),
+				)
+			}
+		}
+
+		tp := sdktrace.NewTracerProvider(tpOptions...)
 
 		metricExp, err := newMetricExporter()
 		if err != nil {
@@ -70,10 +114,18 @@ func GetTelemetrySystem() *TelemetrySystem {
 		otel.SetTracerProvider(tp)
 		// otel.SetMeterProvider(mp) // TODO: Not supported in otel 1.10.0
 
+		// Install the W3C TraceContext propagator so injected spans/baggage work as expected
+		// across DCP subprocesses and the surrounding Aspire orchestration.
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		))
+
 		instance = &TelemetrySystem{
 			TracerProvider: tp,
 			MeterProvider:  mp,
 			spanExporter:   spanExp,
+			otlpExporter:   otlpExp,
 			metricExporter: metricExp,
 		}
 	})
@@ -92,12 +144,16 @@ func GetMeter(meterName string) metric.Meter {
 }
 
 func (ts TelemetrySystem) Shutdown(ctx context.Context) error {
-	return errors.Join(
+	errs := []error{
 		ts.TracerProvider.Shutdown(ctx),
 		ts.MeterProvider.Shutdown(ctx),
 		ts.spanExporter.Shutdown(ctx),
 		ts.metricExporter.Shutdown(ctx),
-	)
+	}
+	if ts.otlpExporter != nil {
+		errs = append(errs, ts.otlpExporter.Shutdown(ctx))
+	}
+	return errors.Join(errs...)
 }
 
 func CallWithTelemetryOnErrorOnly[TResult any](tracer trace.Tracer, spanName string, parentCtx context.Context, fn func(ctx context.Context) (TResult, error)) (TResult, error) {
