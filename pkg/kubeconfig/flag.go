@@ -6,6 +6,7 @@
 package kubeconfig
 
 import (
+	"context"
 	"errors"
 	goflag "flag"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	"github.com/microsoft/dcp/internal/networking"
@@ -125,10 +128,30 @@ func RequireKubeconfigFlagValue(flags *pflag.FlagSet) (string, error) {
 	return kubeconfigPath, nil
 }
 
+// kubeconfigTracer returns the OpenTelemetry tracer used for sub-instrumentation of
+// kubeconfig generation. When no tracer provider is registered (the common case for
+// any code that imports this package without DCP's telemetry wiring), the tracer is
+// a no-op and the Start/End calls are essentially free.
+func kubeconfigTracer() trace.Tracer {
+	return otel.Tracer(TracerName)
+}
+
+// tracedCall runs fn inside a span named name, returns its result, and ends the span.
+// It's a small helper used by EnsureKubeconfigData / createKubeconfig to keep each
+// sub-phase a single line at the call site.
+func tracedCall[T any](ctx context.Context, name string, fn func() (T, error)) (T, error) {
+	_, span := kubeconfigTracer().Start(ctx, name)
+	defer span.End()
+	return fn()
+}
+
 // Creates API server addressing and authentication data that will go into the kubeconfig file.
 // The kubeconfig flag value, if empty upon invocation, will be set to preferred path of the kubeconfig file.
 // Does NOT create the kubeconfig file itself (see Kubeconfig.Save() for that).
-func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
+//
+// ctx is used to propagate trace context for sub-instrumentation; cancellation is not
+// observed by this function (the work is short and synchronous).
+func EnsureKubeconfigData(ctx context.Context, flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, error) {
 	f := flags.Lookup(ctrl_config.KubeconfigFlagName)
 	if f == nil {
 		return nil, fmt.Errorf("unable to find kubeconfig flag. Make sure you call EnsureKubeconfigFlag() before calling this function.")
@@ -142,11 +165,14 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	var serverAddress string
 	var storeCertData *security.ServerCertificateData
 	if tlsCertThumbprint != "" {
-		var lookupErr error
-		storeCertData, serverAddress, lookupErr = security.LookupCertificate(tlsCertThumbprint)
+		lookup, lookupErr := tracedCall(ctx, "dcp.kubeconfig.tls_cert_lookup", func() (certLookup, error) {
+			cd, addr, err := security.LookupCertificate(tlsCertThumbprint)
+			return certLookup{data: cd, address: addr}, err
+		})
 		if lookupErr != nil {
 			return nil, fmt.Errorf("TLS certificate store lookup failed: %w", lookupErr)
 		}
+		storeCertData, serverAddress = lookup.data, lookup.address
 
 		// If a CA file is provided, use it as the trust anchor instead of the cert itself.
 		if tlsCAFile != "" {
@@ -160,11 +186,17 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 		if tlsCAFile != "" {
 			return nil, fmt.Errorf("--%s requires --%s to also be specified", TLSCAFileFlagName, TLSCertThumbprintFlagName)
 		}
-		preferredIps, preferredErr := networking.GetPreferredHostIps(networking.Localhost)
+		preferredAddress, preferredErr := tracedCall(ctx, "dcp.kubeconfig.preferred_host_ips", func() (string, error) {
+			ips, err := networking.GetPreferredHostIps(networking.Localhost)
+			if err != nil {
+				return "", err
+			}
+			return networking.IpToString(ips[0]), nil
+		})
 		if preferredErr != nil {
 			return nil, fmt.Errorf("could not determine server address: %w", preferredErr)
 		}
-		serverAddress = networking.IpToString(preferredIps[0])
+		serverAddress = preferredAddress
 	}
 
 	kubeconfigPath, pathErr := getKubeConfigPath(flags)
@@ -183,7 +215,7 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 
 	generateEphemeral := storeCertData == nil
 
-	k, kErr := getKubeconfig(kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
+	k, kErr := getKubeconfig(ctx, kubeconfigPath, port, generateEphemeral, generateToken, storeCertData, serverAddress, log)
 	if kErr != nil {
 		return nil, fmt.Errorf("unable to obtain Kubeconfig data: %w", kErr)
 	}
@@ -194,4 +226,11 @@ func EnsureKubeconfigData(flags *pflag.FlagSet, log logr.Logger) (*Kubeconfig, e
 	}
 
 	return k, nil
+}
+
+// certLookup bundles the two return values of security.LookupCertificate so the
+// surrounding tracedCall can carry a single generic result type.
+type certLookup struct {
+	data    *security.ServerCertificateData
+	address string
 }

@@ -6,17 +6,22 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
 	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/dcp/bootstrap"
 	"github.com/microsoft/dcp/internal/perftrace"
+	"github.com/microsoft/dcp/internal/telemetry"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
@@ -62,46 +67,29 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 		defer apiServerCtxCancel()
 
 		if detach {
-			args := make([]string, 0, len(os.Args)-2)
-
-			hasContainerRuntimeFlag := false
-			for _, arg := range os.Args[1:] {
-				if arg != "--detach" {
-					args = append(args, arg)
-				}
-
-				if arg == container_flags.GetRuntimeFlag() {
-					hasContainerRuntimeFlag = true
-				}
-			}
-
-			if !hasContainerRuntimeFlag && container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
-				args = append(args, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
-			}
-
-			log.V(1).Info("Forking command", "Cmd", os.Args[0], "Args", args)
-
-			usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
-
-			forked := exec.Command(os.Args[0], args...)
-			forked.Env = os.Environ()    // Inherit the environment from the parent process
-			logger.WithSessionId(forked) // Ensure the session ID is passed to the forked process
-			process.ForkFromParent(forked)
-
-			if err := forked.Start(); err != nil {
-				log.Error(err, "Forked process failed to run")
-				return err
-			} else {
-				log.V(1).Info("Forked process started", "PID", forked.Process.Pid)
-			}
-
-			if err := forked.Process.Release(); err != nil {
-				log.Error(err, "Release failed for process", "PID", forked.Process.Pid)
-				return err
-			}
-
-			return nil
+			return runDetachedFork(apiServerCtx, log)
 		}
+
+		// At this point we are the actual API-server-hosting process. Open a bounded
+		// "dcp.startup" span that ends when the API server itself is up; that's the
+		// moment Aspire's `ensure_kubernetes_client` finishes waiting on the kubeconfig
+		// and the listener. We deliberately end the span before host services finish
+		// starting because Aspire only needs the API server reachable to proceed.
+		startupCtx, span := telemetry.StartupTracer().Start(apiServerCtx, "dcp.startup",
+			trace.WithAttributes(
+				attribute.Int("process.pid", os.Getpid()),
+				attribute.Int("process.ppid", os.Getppid()),
+				attribute.Bool("dcp.server_only", serverOnly),
+			),
+		)
+		var endStartupOnce sync.Once
+		endStartup := func() {
+			endStartupOnce.Do(func() {
+				span.End()
+				telemetry.ForceFlushStartup(log)
+			})
+		}
+		defer endStartup()
 
 		err := perftrace.CaptureStartupProfileIfRequested(apiServerCtx, log)
 		if err != nil {
@@ -117,14 +105,26 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		kconfig, err := kubeconfig.EnsureKubeconfigData(cmd.Flags(), log)
+		kconfig, err := telemetry.CallWithTelemetry(telemetry.StartupTracer(), "dcp.startup.ensure_kubeconfig_data", startupCtx,
+			func(ctx context.Context) (*kubeconfig.Kubeconfig, error) {
+				return kubeconfig.EnsureKubeconfigData(ctx, cmd.Flags(), log)
+			},
+		)
 		if err != nil {
 			return err
 		}
 
 		var allExtensions []bootstrap.DcpExtension
 		if !serverOnly {
-			allExtensions, err = bootstrap.GetExtensions(apiServerCtx, log)
+			allExtensions, err = telemetry.CallWithTelemetry(telemetry.StartupTracer(), "dcp.startup.get_extensions", startupCtx,
+				func(ctx context.Context) ([]bootstrap.DcpExtension, error) {
+					exts, extErr := bootstrap.GetExtensions(ctx, log)
+					if extErr == nil {
+						telemetry.SetAttribute(ctx, "dcp.extension_count", len(exts))
+					}
+					return exts, extErr
+				},
+			)
 			if err != nil {
 				return err
 			}
@@ -138,16 +138,73 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			invocationFlags = append(invocationFlags, verbosityArg)
 		}
 
-		err = bootstrap.DcpRun(
-			apiServerCtx,
+		return bootstrap.DcpRun(
+			startupCtx,
 			rootDir,
 			kconfig,
 			serverOnly,
 			allExtensions,
 			invocationFlags,
+			endStartup,
 			log,
 		)
+	}
+}
 
+// runDetachedFork handles the `--detach` path: re-exec the dcp binary in the background
+// without the --detach flag. The parent process exits immediately. The "dcp.startup.parent_fork"
+// span captures the small but real cost of the spawn step; parent and child end up as
+// siblings under the same outer trace because they read the same ASPIRE_STARTUP_TRACEPARENT.
+func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
+	_, span := telemetry.StartupTracer().Start(apiServerCtx, "dcp.startup.parent_fork",
+		trace.WithAttributes(
+			attribute.Int("process.pid", os.Getpid()),
+			attribute.Bool("dcp.detach_parent", true),
+		),
+	)
+	defer func() {
+		span.End()
+		telemetry.ForceFlushStartup(log)
+	}()
+
+	args := make([]string, 0, len(os.Args)-2)
+
+	hasContainerRuntimeFlag := false
+	for _, arg := range os.Args[1:] {
+		if arg != "--detach" {
+			args = append(args, arg)
+		}
+
+		if arg == container_flags.GetRuntimeFlag() {
+			hasContainerRuntimeFlag = true
+		}
+	}
+
+	if !hasContainerRuntimeFlag && container_flags.GetRuntimeFlagValue() != container_flags.UnknownRuntime {
+		args = append(args, container_flags.GetRuntimeFlag(), string(container_flags.GetRuntimeFlagValue()))
+	}
+
+	log.V(1).Info("Forking command", "Cmd", os.Args[0], "Args", args)
+
+	usvc_io.PreserveSessionFolder() // The forked process will take care of cleaning up the session folder
+
+	forked := exec.Command(os.Args[0], args...)
+	forked.Env = os.Environ()    // Inherit the environment from the parent process
+	logger.WithSessionId(forked) // Ensure the session ID is passed to the forked process
+	process.ForkFromParent(forked)
+
+	if err := forked.Start(); err != nil {
+		log.Error(err, "Forked process failed to run")
 		return err
 	}
+	log.V(1).Info("Forked process started", "PID", forked.Process.Pid)
+
+	span.SetAttributes(attribute.Int("dcp.child.pid", forked.Process.Pid))
+
+	if err := forked.Process.Release(); err != nil {
+		log.Error(err, "Release failed for process", "PID", forked.Process.Pid)
+		return err
+	}
+
+	return nil
 }
