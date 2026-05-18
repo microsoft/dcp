@@ -9,14 +9,17 @@ import (
 	"bytes"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/microsoft/dcp/internal/networking"
@@ -30,9 +33,9 @@ const (
 )
 
 type ServerCertificateData struct {
-	CACertPEM      []byte // Root CA certificate, PEM-encoded (for client trust / kubeconfig)
-	CertChainPEM   []byte // Server certificate chain (leaf + intermediates), PEM-encoded
-	ServerKeyPEM   []byte // Server private key, PEM-encoded
+	CACertPEM    []byte // Root CA certificate, PEM-encoded (for client trust / kubeconfig)
+	CertChainPEM []byte // Server certificate chain (leaf + intermediates), PEM-encoded
+	ServerKeyPEM []byte // Server private key, PEM-encoded
 }
 
 // Generates a self-signed certificate authority, server certificate, and a server private key
@@ -143,6 +146,56 @@ func PEMEncodeCertificates(certs ...[]byte) []byte {
 // PEMEncodePrivateKey PEM-encodes PKCS#1 RSA private key bytes.
 func PEMEncodePrivateKey(pkcs1Bytes []byte) []byte {
 	return PEMEncodeBlock("RSA PRIVATE KEY", pkcs1Bytes)
+}
+
+// VerifyCertificateThumbprint verifies that cert's SHA-1 thumbprint matches
+// expectedThumbprint. Thumbprints are accepted in the common formats normalized
+// by normalizeThumbprint.
+func VerifyCertificateThumbprint(cert *x509.Certificate, expectedThumbprint string) error {
+	normalizedThumbprint, expectedThumbprintBytes, thumbprintErr := normalizeAndDecodeThumbprint(expectedThumbprint)
+	if thumbprintErr != nil {
+		return thumbprintErr
+	}
+
+	actualThumbprint := sha1.Sum(cert.Raw)
+	if !bytes.Equal(actualThumbprint[:], expectedThumbprintBytes) {
+		return fmt.Errorf("certificate thumbprint mismatch: expected %q, got %q", normalizedThumbprint, hex.EncodeToString(actualThumbprint[:]))
+	}
+
+	return nil
+}
+
+func normalizeAndDecodeThumbprint(thumbprint string) (string, []byte, error) {
+	normalizedThumbprint := normalizeThumbprint(thumbprint)
+	hashBytes, decodeErr := hex.DecodeString(normalizedThumbprint)
+	if decodeErr != nil {
+		return normalizedThumbprint, nil, fmt.Errorf("invalid certificate thumbprint %q: %w", normalizedThumbprint, decodeErr)
+	}
+	if len(hashBytes) != sha1.Size {
+		return normalizedThumbprint, nil, fmt.Errorf("invalid certificate thumbprint %q: expected 40 hex characters (SHA-1), got %d", normalizedThumbprint, len(normalizedThumbprint))
+	}
+
+	return normalizedThumbprint, hashBytes, nil
+}
+
+// normalizeThumbprint strips common formatting and copy/paste artifacts from
+// certificate thumbprints and returns a lowercase hex string. Handles formats
+// from various sources:
+//   - Windows certmgr/PowerShell Get-ChildItem Cert:\: "AA BB CC DD ..." (space-separated uppercase hex)
+//   - OpenSSL x509 -fingerprint: "AA:BB:CC:DD:..." (colon-separated uppercase hex)
+//   - .NET X509Certificate2.Thumbprint: "AABBCCDD..." (contiguous uppercase hex)
+//   - Programmatic hex with prefix: "0xaabbccdd..." or "0XAABBCCDD..."
+//
+// Also strips leading/trailing whitespace (\t, \r, \n) and the invisible
+// left-to-right mark (U+200E) that Windows certificate UI sometimes embeds.
+func normalizeThumbprint(thumbprint string) string {
+	thumbprint = strings.TrimSpace(thumbprint)
+	thumbprint = strings.ReplaceAll(thumbprint, "\u200e", "") // left-to-right mark
+	thumbprint = strings.ReplaceAll(thumbprint, " ", "")
+	thumbprint = strings.ReplaceAll(thumbprint, ":", "")
+	thumbprint = strings.TrimPrefix(thumbprint, "0x")
+	thumbprint = strings.TrimPrefix(thumbprint, "0X")
+	return strings.ToLower(thumbprint)
 }
 
 // ValidateCertificate validates that the given certificate is currently valid,
