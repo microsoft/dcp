@@ -321,6 +321,15 @@ func TestGenerateServerCertificate_UsesECDSAP256(t *testing.T) {
 	// Server cert must cover the requested IP.
 	assert.NoError(t, serverCert.VerifyHostname(ip.String()))
 
+	// Per RFC 5480 §3, certificates with EC public keys MUST NOT assert the
+	// keyEncipherment or dataEncipherment KeyUsage bits.
+	assert.Equal(t, x509.KeyUsageDigitalSignature, serverCert.KeyUsage,
+		"server cert with ECDSA key must only assert digitalSignature (RFC 5480 §3)")
+	assert.Zero(t, serverCert.KeyUsage&x509.KeyUsageKeyEncipherment,
+		"keyEncipherment is forbidden on EC certs (RFC 5480 §3)")
+	assert.Zero(t, serverCert.KeyUsage&x509.KeyUsageDataEncipherment,
+		"dataEncipherment is forbidden on EC certs (RFC 5480 §3)")
+
 	// Private key block must be PKCS#8 "PRIVATE KEY" and pair with the server cert.
 	keyBlock, _ := pem.Decode(data.ServerKeyPEM)
 	require.NotNil(t, keyBlock, "server key PEM block must decode")

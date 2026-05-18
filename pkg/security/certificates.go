@@ -115,7 +115,12 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		SubjectKeyId:   serverSubjectKeyId,
 		AuthorityKeyId: caSubjectKeyId,
 		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		KeyUsage:       x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		// Per RFC 5480 §3, certificates with EC public keys MUST NOT assert the
+		// keyEncipherment (or dataEncipherment) bits: ECDSA cannot be used for key
+		// transport, and TLS with ECDSA always negotiates an ECDHE suite where the
+		// server certificate is used purely for signing. Only digitalSignature is
+		// appropriate.
+		KeyUsage: x509.KeyUsageDigitalSignature,
 	}
 
 	serverBytes, serverErr := x509.CreateCertificate(cryptorand.Reader, server, ca, serverKey.Public(), caKey)
