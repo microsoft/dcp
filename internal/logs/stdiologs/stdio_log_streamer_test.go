@@ -7,9 +7,6 @@ package stdiologs
 
 import (
 	"context"
-	"os"
-	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -22,17 +19,13 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/logs"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const stdioLogStreamerTestTimeout = 20 * time.Second
 
-func TestOnResourceUpdatedReleasesDeletingResourceStreamsBeforeLogRemoval(t *testing.T) {
+func TestOnResourceUpdatedDelaysDeletingResourceStreamStop(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS != "windows" {
-		t.Skip("open read handles do not prevent log file removal on this platform")
-	}
 
 	testCases := []struct {
 		name           string
@@ -62,27 +55,17 @@ func TestOnResourceUpdatedReleasesDeletingResourceStreamsBeforeLogRemoval(t *tes
 				activeStreams: make(logs.LogStreamMop),
 			}
 			log := testutil.NewLogForTesting("stdio-log-streamer-delete")
-			stdOutPath := filepath.Join(t.TempDir(), "stdout.log")
-			stdOutFile, stdOutErr := usvc_io.OpenFile(stdOutPath, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-			require.NoError(t, stdOutErr)
-			_, writeErr := stdOutFile.Write([]byte("before delete\n"))
-			require.NoError(t, writeErr)
-			require.NoError(t, stdOutFile.Close())
-
+			followWriter := newEOFFollowWriter(ctx)
+			resourceUID := types.UID("delete-stream-test")
+			streamer.activeStreams[resourceUID] = map[logs.LogStreamID]*usvc_io.FollowWriter{
+				1: followWriter,
+			}
 			exe := &apiv1.Executable{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "delete-stream-test",
-					UID:  types.UID("delete-stream-test"),
-				},
-				Status: apiv1.ExecutableStatus{
-					StdOutFile: stdOutPath,
+					UID:  resourceUID,
 				},
 			}
-			dest := testutil.NewBufferWriter()
-
-			status, doneStreaming, streamErr := streamer.StreamLogs(ctx, dest, exe, &apiv1.LogOptions{Follow: true}, log)
-			require.NoError(t, streamErr)
-			require.Equal(t, apiv1.ResourceStreamStatusStreaming, status)
 
 			if testCase.markAsDeleting {
 				now := metav1.Now()
@@ -93,8 +76,8 @@ func TestOnResourceUpdatedReleasesDeletingResourceStreamsBeforeLogRemoval(t *tes
 				Object: exe,
 			}, log)
 
-			require.NoError(t, logs.RemoveWithRetry(ctx, stdOutPath))
-			assertDoneBeforeFollowDelay(t, ctx, doneStreaming)
+			assertStreamNotDoneImmediately(t, ctx, followWriter.Done())
+			assertStreamDone(t, ctx, followWriter.Done())
 		})
 	}
 }
@@ -123,6 +106,10 @@ func newBlockingFollowWriter(ctx context.Context) *usvc_io.FollowWriter {
 	return usvc_io.NewFollowWriter(ctx, reader, testutil.NewBufferWriter(), usvc_io.WithCloseSourceOnCancel())
 }
 
+func newEOFFollowWriter(ctx context.Context) *usvc_io.FollowWriter {
+	return usvc_io.NewFollowWriter(ctx, testutil.NewThreadSafeBuffer(), testutil.NewBufferWriter())
+}
+
 func assertDoneBeforeFollowDelay(t *testing.T, ctx context.Context, done <-chan struct{}) {
 	t.Helper()
 
@@ -133,6 +120,31 @@ func assertDoneBeforeFollowDelay(t *testing.T, ctx context.Context, done <-chan 
 	case <-done:
 	case <-timer.C:
 		t.Fatal("log stream was not canceled before follow cancellation delay")
+	case <-ctx.Done():
+		t.Fatal("test timed out before log stream was canceled")
+	}
+}
+
+func assertStreamNotDoneImmediately(t *testing.T, ctx context.Context, done <-chan struct{}) {
+	t.Helper()
+
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case <-done:
+		t.Fatal("log stream was canceled immediately")
+	case <-timer.C:
+	case <-ctx.Done():
+		t.Fatal("test timed out while checking that log stream was not canceled immediately")
+	}
+}
+
+func assertStreamDone(t *testing.T, ctx context.Context, done <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-done:
 	case <-ctx.Done():
 		t.Fatal("test timed out before log stream was canceled")
 	}

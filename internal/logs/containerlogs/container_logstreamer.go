@@ -292,9 +292,9 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 		deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
 		if deletionRequested {
 			streamsToStop = append(streamsToStop,
-				takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.CancelFollowStreams),
-				takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.CancelFollowStreams),
-				takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.CancelFollowStreams),
+				takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.DelayStopFollowing),
+				takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.DelayStopFollowing),
+				takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.DelayStopFollowing),
 			)
 			if c.containerLogs != nil {
 				containerLogsToRelease = c.containerLogs
@@ -315,9 +315,9 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 	case watch.Deleted:
 		// The resource was deleted, ensure any following log streams stop and cleanup their resources
 		streamsToStop = append(streamsToStop,
-			takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.CancelFollowStreams),
-			takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.CancelFollowStreams),
-			takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.CancelFollowStreams),
+			takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.DelayStopFollowing),
+			takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.DelayStopFollowing),
+			takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.DelayStopFollowing),
 		)
 
 		if c.containerLogs != nil {

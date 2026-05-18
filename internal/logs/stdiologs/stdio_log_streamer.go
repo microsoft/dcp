@@ -187,7 +187,7 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 
 		if !resource.GetDeletionTimestamp().IsZero() {
 			logMessage = "Stopping log streams for resource that is being deleted"
-			stopStreams = logs.CancelFollowStreams
+			stopStreams = logs.DelayStopFollowing
 		} else if resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
 			logMessage = "Stopping log following for resource that reached its final state"
@@ -196,7 +196,7 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 
 	case watch.Deleted:
 		logMessage = "Stopping log streams for resource that was deleted"
-		stopStreams = logs.CancelFollowStreams
+		stopStreams = logs.DelayStopFollowing
 	}
 
 	if stopStreams == nil {
