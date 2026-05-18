@@ -145,6 +145,30 @@ func TestRunContainerWatcherForMonitor(t *testing.T) {
 	require.Equal(t, monitor.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat), dcpProc.Cmd.Args[7], "Should include explicit monitor identity time")
 }
 
+func TestRunContainerWatcherForMonitorWithStopOnly(t *testing.T) {
+	log := testutil.NewLogForTesting(t.Name())
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	pe := internal_testutil.NewTestProcessExecutor(ctx)
+	dcppaths.EnableTestPathProbing()
+
+	testContainerID := "test-container-123"
+	monitor := process.ProcessTreeItem{
+		Pid:          12345,
+		IdentityTime: time.Now().Add(-time.Minute),
+	}
+
+	RunContainerWatcherForMonitorWithOptions(pe, monitor, testContainerID, ContainerWatcherOptions{StopOnly: true}, log)
+
+	dcpProc, dcpProcErr := findRunningDcp(pe)
+	require.NoError(t, dcpProcErr)
+
+	require.Equal(t, "monitor-container", dcpProc.Cmd.Args[1], "Should use 'monitor-container' subcommand")
+	require.Equal(t, "--containerID", dcpProc.Cmd.Args[2], "Should include --containerID flag")
+	require.Equal(t, testContainerID, dcpProc.Cmd.Args[3], "Should include container ID")
+	require.Contains(t, dcpProc.Cmd.Args, "--stop-only", "Should include --stop-only flag")
+}
+
 func TestStopProcessTree(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)

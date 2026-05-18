@@ -28,6 +28,11 @@ const (
 	DCP_DISABLE_MONITOR_PROCESS = "DCP_DISABLE_MONITOR_PROCESS"
 )
 
+type ContainerWatcherOptions struct {
+	// StopOnly stops the container when the monitored process exits, but leaves the container resource in place.
+	StopOnly bool
+}
+
 func MonitorTargetFromFields(monitorPID *int64, monitorTimestamp metav1.MicroTime) (process.ProcessTreeItem, bool, error) {
 	if monitorPID == nil {
 		return process.ProcessTreeItem{}, false, nil
@@ -112,6 +117,16 @@ func RunContainerWatcherForMonitor(
 	containerID string,
 	log logr.Logger,
 ) {
+	RunContainerWatcherForMonitorWithOptions(pe, monitor, containerID, ContainerWatcherOptions{}, log)
+}
+
+func RunContainerWatcherForMonitorWithOptions(
+	pe process.Executor,
+	monitor process.ProcessTreeItem,
+	containerID string,
+	options ContainerWatcherOptions,
+	log logr.Logger,
+) {
 	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
 		return
 	}
@@ -121,6 +136,9 @@ func RunContainerWatcherForMonitor(
 	cmdArgs := []string{
 		"monitor-container",
 		"--containerID", containerID,
+	}
+	if options.StopOnly {
+		cmdArgs = append(cmdArgs, "--stop-only")
 	}
 	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
 
