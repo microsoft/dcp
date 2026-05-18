@@ -346,17 +346,17 @@ func TestGenerateServerCertificate_UsesECDSAP256(t *testing.T) {
 	require.NotEmpty(t, pair.Certificate)
 }
 
-func TestGenerateServerCertificate_IsFast(t *testing.T) {
-	// Sanity check that ephemeral cert generation is well under the previous RSA cost.
-	// RSA 4096 + 2048 took ~850ms on developer hardware; ECDSA P-256 takes ~1ms.
-	// Use a generous bound to avoid flakes on shared CI: 250ms is still ~3x faster than
-	// the old RSA path and ~250x slower than expected steady-state ECDSA, so it can
-	// only fail if we regress to an RSA-class algorithm.
-	start := time.Now()
-	_, err := GenerateServerCertificate(net.IPv4(127, 0, 0, 1))
-	elapsed := time.Since(start)
-	require.NoError(t, err)
-	assert.Less(t, elapsed, 250*time.Millisecond, "ephemeral cert generation should be fast; took %s", elapsed)
+func BenchmarkGenerateServerCertificate(b *testing.B) {
+	// Tracks ephemeral cert generation latency without failing builds on noisy CI.
+	// Algorithmic regressions (e.g. accidentally going back to RSA) are caught by
+	// TestGenerateServerCertificate_UsesECDSAP256, which pins the key type and curve.
+	ip := net.IPv4(127, 0, 0, 1)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := GenerateServerCertificate(ip); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 
