@@ -15,6 +15,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -44,6 +45,14 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 	} else {
 		return discardExporter{}, nil
 	}
+}
+
+// newStartupOtlpExporter creates an OTLP/gRPC span exporter using standard OTEL env
+// configuration (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS, etc.).
+// It is intended only for Aspire-driven startup profiling; callers should gate it on
+// IsStartupProfilingEnabled() so we don't open a gRPC channel for normal DCP runs.
+func newStartupOtlpExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
+	return otlptracegrpc.New(ctx)
 }
 
 func newMetricExporter() (sdkmetric.Exporter, error) {

@@ -8,12 +8,17 @@ package main
 //go:generate goversioninfo
 
 import (
+	"context"
 	"os"
 
+	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	kubeapiserver "k8s.io/apiserver/pkg/server"
 
 	cmdutil "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/dcp/commands"
+	"github.com/microsoft/dcp/internal/telemetry"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
@@ -46,7 +51,12 @@ func main() {
 
 	ctx := kubeapiserver.SetupSignalContext()
 
-	root, err := commands.NewRootCmd(log)
+	// Ingest any W3C traceparent propagated by an outer orchestrator (e.g. Aspire's
+	// hosting layer) so DCP startup spans become children of that activity. This is
+	// always cheap — it returns ctx unchanged when no traceparent env var is set.
+	ctx = telemetry.ExtractStartupTraceContext(ctx)
+
+	root, err := buildRootCmd(ctx, log, logName)
 	if err != nil {
 		cmdutil.ErrorExit(log, err, errSetup)
 	}
@@ -57,4 +67,19 @@ func main() {
 	} else {
 		log.Flush()
 	}
+}
+
+// buildRootCmd constructs the root cobra command, wrapped in a short startup span so
+// that profiling captures the time spent in cobra / klog / controller-runtime wiring
+// before the leaf command's RunE runs. When startup profiling is disabled the
+// returned tracer is a no-op, so this is a couple of nanoseconds either way.
+func buildRootCmd(ctx context.Context, log *logger.Logger, logName string) (*cobra.Command, error) {
+	_, span := telemetry.StartupTracer().Start(ctx, "dcp.startup.cmd_init",
+		trace.WithAttributes(
+			attribute.String("dcp.command", logName),
+			attribute.Int("process.pid", os.Getpid()),
+		),
+	)
+	defer span.End()
+	return commands.NewRootCmd(log)
 }
