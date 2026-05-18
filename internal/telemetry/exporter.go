@@ -47,11 +47,11 @@ func newTraceExporter(logName string) (sdktrace.SpanExporter, error) {
 	}
 }
 
-// newStartupOtlpExporter creates an OTLP/gRPC span exporter using standard OTEL env
+// newStartupOTLPExporter creates an OTLP/gRPC span exporter using standard OTEL env
 // configuration (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS, etc.).
 // It is intended only for Aspire-driven startup profiling; callers should gate it on
 // IsStartupProfilingEnabled() so we don't open a gRPC channel for normal DCP runs.
-func newStartupOtlpExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
+func newStartupOTLPExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 	return otlptracegrpc.New(ctx)
 }
 

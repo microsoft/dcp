@@ -16,8 +16,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/pflag"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,7 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
-	"github.com/microsoft/dcp/internal/telemetry"
+	"github.com/microsoft/dcp/internal/telemetry/startupspans"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/generated/openapi"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
@@ -126,21 +124,22 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 		s.runCompleted = true
 	}()
 
-	// Aspire-driven startup profiling: instrument the API server bring-up phases so
-	// downstream profiling can attribute the gap between process spawn and "kubeconfig
-	// readable" to specific costs (server options, OpenAPI/scheme prep, kubeconfig save,
-	// listener start). StartupTracer returns a no-op tracer when profiling is disabled,
-	// so the inline span pattern below has zero observable overhead in that case.
-	tracer := telemetry.StartupTracer()
+	// Aspire-driven startup profiling: instrument the API server bring-up phases
+	// so downstream profiling can attribute the gap between process spawn and
+	// "kubeconfig readable" to specific costs (server options, OpenAPI/scheme
+	// prep, kubeconfig save, listener start). All span names and attributes are
+	// constants on the startupspans package; the helpers return no-op spans
+	// when profiling is disabled, so this path has zero observable overhead in
+	// the default case.
 
-	_, optsSpan := tracer.Start(runCtx, "dcp.startup.api_server.compute_options")
+	_, optsSpan := startupspans.Begin(runCtx, startupspans.SpanApiServerComputeOptions)
 	options, err := s.computeServerOptions(log)
 	optsSpan.End()
 	if err != nil {
 		return nil, err
 	}
 
-	_, cfgSpan := tracer.Start(runCtx, "dcp.startup.api_server.build_config")
+	_, cfgSpan := startupspans.Begin(runCtx, startupspans.SpanApiServerBuildConfig)
 	config, err := options.Config()
 	cfgSpan.End()
 	if err != nil {
@@ -162,11 +161,10 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 		return nil, err
 	}
 
-	// Save the kubeconfig file so that clients can use it to connect to the API server.
-	// This is the moment Aspire's `aspire.dcp.kubeconfig.file_wait_ms` ends, so it is the
-	// single most useful span for diagnosing startup latency.
-	_, saveSpan := tracer.Start(runCtx, "dcp.startup.api_server.kubeconfig_save",
-		trace.WithAttributes(attribute.String("dcp.kubeconfig.path", s.config.Path())))
+	// Save the kubeconfig file so that clients can use it to connect to the API
+	// server. This is the moment Aspire's `aspire.dcp.kubeconfig.file_wait_ms`
+	// ends, so it is the single most useful span for diagnosing startup latency.
+	_, saveSpan := startupspans.BeginApiServerKubeconfigSave(runCtx, s.config.Path())
 	err = s.config.Save()
 	saveSpan.End()
 	if err != nil {
@@ -177,17 +175,15 @@ func (s *ApiServer) Run(runCtx context.Context, runConfig ApiServerRunConfig) (<
 
 	completedConfig := config.Complete()
 
-	runServerCtx, runServerSpan := tracer.Start(runCtx, "dcp.startup.api_server.run_server")
+	runServerCtx, runServerSpan := startupspans.Begin(runCtx, startupspans.SpanApiServerRunServer)
 	stoppedCh, err := runServerFromCompletedConfig(completedConfig, runCtx, runConfig, log)
 	if err == nil {
 		// Emit the readiness event from inside the span context so it is attached to
-		// run_server in the exported trace. Aspire consumers key off this event to know
-		// the listener is up before they try to connect.
-		telemetry.AddEvent(runServerCtx, "dcp.startup.api_server.ready",
-			trace.WithAttributes(
-				attribute.String("dcp.server.bind_address", options.ServingOptions.BindAddress.String()),
-				attribute.Int("dcp.server.bind_port", options.ServingOptions.BindPort),
-			),
+		// run_server in the exported trace. Aspire consumers key off this event to
+		// know the listener is up before they try to connect.
+		startupspans.RecordApiServerReady(runServerCtx,
+			options.ServingOptions.BindAddress.String(),
+			options.ServingOptions.BindPort,
 		)
 	}
 	runServerSpan.End()
