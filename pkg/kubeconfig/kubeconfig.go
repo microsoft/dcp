@@ -203,13 +203,13 @@ func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, g
 	var certificateData *security.ServerCertificateData
 
 	if storeCertData != nil {
-		// Certificate was loaded from the system certificate store.
+		// Certificate was provided by certificate files or the system certificate store.
 		cluster.CertificateAuthorityData = storeCertData.CACertPEM
 		certificateData = storeCertData
 	} else if generateEphemeral {
 		// Generate certificates to secure the connection. This is the dominant cost of
-		// kubeconfig generation in the default no-cert-store path: two RSA keys are
-		// generated plus a self-signed CA and server cert.
+		// kubeconfig generation in the default path: key material is generated plus a
+		// self-signed CA and server cert.
 		ip := net.ParseIP(networking.ToStandaloneAddress(serverAddress))
 		generatedCert, certificateErr := traced(ctx, spanGenerateCertificate, func() (security.ServerCertificateData, error) {
 			return security.GenerateServerCertificate(ip)
