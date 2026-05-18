@@ -44,6 +44,8 @@ func NewStartApiSrvCommand(log logr.Logger) (*cobra.Command, error) {
 
 	kubeconfig.EnsureKubeconfigFlag(startApiSrvCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(startApiSrvCmd.Flags())
+	kubeconfig.EnsureTLSCertFileFlag(startApiSrvCmd.Flags())
+	kubeconfig.EnsureTLSKeyFileFlag(startApiSrvCmd.Flags())
 	kubeconfig.EnsureTLSCertThumbprintFlag(startApiSrvCmd.Flags())
 	kubeconfig.EnsureTLSCAFileFlag(startApiSrvCmd.Flags())
 

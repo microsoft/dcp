@@ -24,6 +24,75 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 )
 
+func TestNormalizeThumbprint(t *testing.T) {
+	tests := []struct {
+		name       string
+		thumbprint string
+		expected   string
+	}{
+		{
+			name:       "dotnet format",
+			thumbprint: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "windows certmgr format",
+			thumbprint: "A1 B2 C3 D4 E5 F6 A1 B2 C3 D4 E5 F6 A1 B2 C3 D4 E5 F6 A1 B2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "openssl format",
+			thumbprint: "A1:B2:C3:D4:E5:F6:A1:B2:C3:D4:E5:F6:A1:B2:C3:D4:E5:F6:A1:B2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "hex prefix lowercase",
+			thumbprint: "0xa1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "hex prefix uppercase",
+			thumbprint: "0XA1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "already normalized",
+			thumbprint: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "mixed formatting",
+			thumbprint: "A1:b2 C3:d4 E5:f6 A1:b2 C3:d4 E5:f6 A1:b2 C3:d4 E5:f6 A1:b2",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "leading trailing whitespace",
+			thumbprint: "\t A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2 \r\n",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+		{
+			name:       "windows left-to-right mark",
+			thumbprint: "\u200eA1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2\u200e",
+			expected:   "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := normalizeThumbprint(test.thumbprint)
+
+			assert.Equal(t, test.expected, result)
+		})
+	}
+}
+
+func TestNormalizeAndDecodeThumbprint_RejectsWrongLength(t *testing.T) {
+	_, _, err := normalizeAndDecodeThumbprint("aabbccdd")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "expected 40 hex characters")
+}
+
 func TestExtractRootCertificate_SingleSelfSignedCert(t *testing.T) {
 	certPEM := generateSelfSignedCertPEM(t)
 
@@ -282,7 +351,6 @@ func TestValidateCertificate_PrefersIPv6OverLocalhost(t *testing.T) {
 }
 
 // --- Test helpers ---
-
 
 func generateTwoLevelChainPEM(t *testing.T) (leafPEM, rootPEM []byte) {
 	t.Helper()
