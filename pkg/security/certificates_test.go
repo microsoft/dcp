@@ -10,6 +10,7 @@ import (
 	"crypto/elliptic"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -281,8 +282,76 @@ func TestValidateCertificate_PrefersIPv6OverLocalhost(t *testing.T) {
 	assert.Equal(t, networking.IPv6LocalhostDefaultAddress, addr)
 }
 
-// --- Test helpers ---
+func TestGenerateServerCertificate_UsesECDSAP256(t *testing.T) {
+	ip := net.IPv4(127, 0, 0, 1)
+	data, err := GenerateServerCertificate(ip)
+	require.NoError(t, err)
 
+	// CA cert should be self-signed ECDSA on P-256.
+	caBlock, _ := pem.Decode(data.CACertPEM)
+	require.NotNil(t, caBlock, "CA cert PEM block must decode")
+	require.Equal(t, "CERTIFICATE", caBlock.Type)
+	caCert, parseCaErr := x509.ParseCertificate(caBlock.Bytes)
+	require.NoError(t, parseCaErr)
+	require.True(t, caCert.IsCA, "CA certificate must have IsCA=true")
+	caPub, ok := caCert.PublicKey.(*ecdsa.PublicKey)
+	require.True(t, ok, "CA public key must be ECDSA, got %T", caCert.PublicKey)
+	assert.Equal(t, elliptic.P256(), caPub.Curve, "CA key must use P-256")
+	assert.Equal(t, x509.ECDSAWithSHA256, caCert.SignatureAlgorithm)
+
+	// Server cert should also use ECDSA P-256 and be signed by the CA.
+	serverBlock, _ := pem.Decode(data.CertChainPEM)
+	require.NotNil(t, serverBlock, "server cert PEM block must decode")
+	serverCert, parseSrvErr := x509.ParseCertificate(serverBlock.Bytes)
+	require.NoError(t, parseSrvErr)
+	serverPub, ok := serverCert.PublicKey.(*ecdsa.PublicKey)
+	require.True(t, ok, "server public key must be ECDSA, got %T", serverCert.PublicKey)
+	assert.Equal(t, elliptic.P256(), serverPub.Curve, "server key must use P-256")
+
+	// Server cert must verify against the CA.
+	roots := x509.NewCertPool()
+	roots.AddCert(caCert)
+	_, verifyErr := serverCert.Verify(x509.VerifyOptions{
+		Roots:       roots,
+		KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		CurrentTime: serverCert.NotBefore.Add(time.Second),
+	})
+	assert.NoError(t, verifyErr, "server cert must verify against generated CA")
+
+	// Server cert must cover the requested IP.
+	assert.NoError(t, serverCert.VerifyHostname(ip.String()))
+
+	// Private key block must be PKCS#8 "PRIVATE KEY" and pair with the server cert.
+	keyBlock, _ := pem.Decode(data.ServerKeyPEM)
+	require.NotNil(t, keyBlock, "server key PEM block must decode")
+	assert.Equal(t, "PRIVATE KEY", keyBlock.Type)
+	parsedKey, parseKeyErr := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	require.NoError(t, parseKeyErr)
+	ecKey, ok := parsedKey.(*ecdsa.PrivateKey)
+	require.True(t, ok, "server key must be ECDSA, got %T", parsedKey)
+	assert.Equal(t, elliptic.P256(), ecKey.Curve)
+
+	// tls.X509KeyPair (used by k8s apiserver and net/tls) must accept the pair.
+	pair, pairErr := tls.X509KeyPair(data.CertChainPEM, data.ServerKeyPEM)
+	require.NoError(t, pairErr, "tls.X509KeyPair must accept generated cert/key")
+	require.NotEmpty(t, pair.Certificate)
+}
+
+func TestGenerateServerCertificate_IsFast(t *testing.T) {
+	// Sanity check that ephemeral cert generation is well under the previous RSA cost.
+	// RSA 4096 + 2048 took ~850ms on developer hardware; ECDSA P-256 takes ~1ms.
+	// Use a generous bound to avoid flakes on shared CI: 250ms is still ~3x faster than
+	// the old RSA path and ~250x slower than expected steady-state ECDSA, so it can
+	// only fail if we regress to an RSA-class algorithm.
+	start := time.Now()
+	_, err := GenerateServerCertificate(net.IPv4(127, 0, 0, 1))
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	assert.Less(t, elapsed, 250*time.Millisecond, "ephemeral cert generation should be fast; took %s", elapsed)
+}
+
+
+// --- Test helpers ---
 
 func generateTwoLevelChainPEM(t *testing.T) (leafPEM, rootPEM []byte) {
 	t.Helper()

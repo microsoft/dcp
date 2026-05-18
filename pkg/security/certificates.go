@@ -7,12 +7,12 @@ package security
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	cryptorand "crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -23,8 +23,6 @@ import (
 )
 
 const (
-	caKeyLength           = 4096
-	keyLength             = 2048
 	defaultExpirationDays = 7
 	serialNumberBits      = 128
 )
@@ -36,7 +34,14 @@ type ServerCertificateData struct {
 }
 
 // Generates a self-signed certificate authority, server certificate, and a server private key
-// for securing network connections. Returned certificates are raw (not PEM-encoded).
+// for securing network connections. Returned certificates are PEM-encoded.
+//
+// Uses ECDSA on the P-256 curve for both the CA and server keys. ECDSA P-256 keygen is orders
+// of magnitude faster than RSA (a 4096-bit RSA CA + 2048-bit RSA server key together cost
+// hundreds of milliseconds on typical developer machines, while two P-256 keys cost well
+// under a millisecond) and is more than sufficient for short-lived local/ephemeral dev certs.
+// The resulting certificates are accepted by Go's crypto/tls and the Kubernetes API server's
+// dynamic certificate loader.
 func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), serialNumberBits)
 
@@ -53,24 +58,24 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 	}
 	serverSerialNumber.Add(serverSerialNumber, big.NewInt(1))
 
-	// Generate keys for the CA certificate
-	caKey, caKeyErr := rsa.GenerateKey(cryptorand.Reader, caKeyLength)
+	// Generate the CA key (ECDSA P-256).
+	caKey, caKeyErr := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	if caKeyErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to generate CA key: %w", caKeyErr)
 	}
 
-	// Generate keys for the server certificate
-	serverKey, serverKeyErr := rsa.GenerateKey(cryptorand.Reader, keyLength)
+	// Generate the server key (ECDSA P-256).
+	serverKey, serverKeyErr := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	if serverKeyErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to generate server key: %w", serverKeyErr)
 	}
 
-	// Generate the subject key ID for the CA certificate as a SHA-256 hash of the CA public key
-	caPublicKeyBytes, caPublicKeyBytesErr := asn1.Marshal(*caKey.Public().(*rsa.PublicKey))
-	if caPublicKeyBytesErr != nil {
-		return ServerCertificateData{}, fmt.Errorf("failed to marshal CA public key: %w", caPublicKeyBytesErr)
+	// Generate the subject key ID for the CA certificate as a SHA-256 hash of the
+	// SubjectPublicKeyInfo (PKIX) representation of the CA public key.
+	caSubjectKeyId, caSubjectKeyIdErr := computeSubjectKeyID(caKey.Public())
+	if caSubjectKeyIdErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to compute CA subject key ID: %w", caSubjectKeyIdErr)
 	}
-	caSubjectKeyId := sha256.Sum256(caPublicKeyBytes)
 
 	now := time.Now()
 
@@ -82,24 +87,23 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		},
 		NotBefore:             now,
 		NotAfter:              now.AddDate(0, 0, defaultExpirationDays),
-		SubjectKeyId:          caSubjectKeyId[:],
+		SubjectKeyId:          caSubjectKeyId,
 		IsCA:                  true,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		BasicConstraintsValid: true,
 	}
 
-	caBytes, caErr := x509.CreateCertificate(cryptorand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	caBytes, caErr := x509.CreateCertificate(cryptorand.Reader, ca, ca, caKey.Public(), caKey)
 	if caErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to create CA certificate: %w", caErr)
 	}
 
-	// Generate the subject key ID for the server certificate as a SHA-256 hash of the server public key
-	serverPublicKeyBytes, serverPublicKeyBytesErr := asn1.Marshal(*serverKey.Public().(*rsa.PublicKey))
-	if serverPublicKeyBytesErr != nil {
-		return ServerCertificateData{}, fmt.Errorf("failed to marshal server public key: %w", serverPublicKeyBytesErr)
+	// Generate the subject key ID for the server certificate.
+	serverSubjectKeyId, serverSubjectKeyIdErr := computeSubjectKeyID(serverKey.Public())
+	if serverSubjectKeyIdErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to compute server subject key ID: %w", serverSubjectKeyIdErr)
 	}
-	serverSubjectKeyId := sha256.Sum256(serverPublicKeyBytes)
 
 	// Template for the server certificate
 	server := &x509.Certificate{
@@ -108,22 +112,50 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		IPAddresses:    []net.IP{ip},
 		NotBefore:      now,
 		NotAfter:       now.AddDate(0, 0, defaultExpirationDays),
-		SubjectKeyId:   serverSubjectKeyId[:],
-		AuthorityKeyId: caSubjectKeyId[:],
+		SubjectKeyId:   serverSubjectKeyId,
+		AuthorityKeyId: caSubjectKeyId,
 		ExtKeyUsage:    []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		KeyUsage:       x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 	}
 
-	serverBytes, serverErr := x509.CreateCertificate(cryptorand.Reader, server, ca, &serverKey.PublicKey, caKey)
+	serverBytes, serverErr := x509.CreateCertificate(cryptorand.Reader, server, ca, serverKey.Public(), caKey)
 	if serverErr != nil {
 		return ServerCertificateData{}, fmt.Errorf("failed to create server certificate: %w", serverErr)
+	}
+
+	serverKeyPEM, serverKeyPEMErr := MarshalPrivateKeyPEM(serverKey)
+	if serverKeyPEMErr != nil {
+		return ServerCertificateData{}, fmt.Errorf("failed to marshal server private key: %w", serverKeyPEMErr)
 	}
 
 	return ServerCertificateData{
 		CACertPEM:    PEMEncodeCertificates(caBytes),
 		CertChainPEM: PEMEncodeCertificates(serverBytes),
-		ServerKeyPEM: PEMEncodePrivateKey(x509.MarshalPKCS1PrivateKey(serverKey)),
+		ServerKeyPEM: serverKeyPEM,
 	}, nil
+}
+
+// computeSubjectKeyID computes a Subject Key Identifier for a public key by hashing the
+// DER-encoded SubjectPublicKeyInfo with SHA-256. This works uniformly for RSA, ECDSA, and
+// other key types supported by crypto/x509.
+func computeSubjectKeyID(pub any) ([]byte, error) {
+	spki, marshalErr := x509.MarshalPKIXPublicKey(pub)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("failed to marshal public key: %w", marshalErr)
+	}
+	sum := sha256.Sum256(spki)
+	return sum[:], nil
+}
+
+// MarshalPrivateKeyPEM marshals a private key (e.g. *ecdsa.PrivateKey or *rsa.PrivateKey)
+// as a PKCS#8-encoded PEM block of type "PRIVATE KEY". This encoding is the modern,
+// algorithm-agnostic format and is accepted by Go's crypto/tls.X509KeyPair.
+func MarshalPrivateKeyPEM(key any) ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal private key as PKCS#8: %w", err)
+	}
+	return PEMEncodeBlock("PRIVATE KEY", der), nil
 }
 
 // PEMEncodeBlock PEM-encodes a single block with the given type and DER bytes.
