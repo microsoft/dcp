@@ -316,6 +316,99 @@ func TestMonitorContainerTerminatesWatchedContainer(t *testing.T) {
 	require.NoError(t, waitErr, "Container cleanup did not complete in time")
 }
 
+func TestMonitorContainerStopsWatchedContainerWithoutRemoving(t *testing.T) {
+	t.Parallel()
+
+	dcpProc, dcpProcErr := getDcpProcExecutablePath()
+	require.NoError(t, dcpProcErr, "DCPPROC path should not be found")
+
+	delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
+	require.NoError(t, toolLaunchErr, "'delay' tool directory could not be found")
+
+	const testTimeout = time.Second * 30
+	testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
+	defer testCancel()
+
+	log := testutil.NewLogForTesting(t.Name())
+	tco, tcoErr := ctrlutil.NewTestContainerOrchestrator(testCtx, log, ctrlutil.TcoOptionEnableSocketListener)
+	require.NoError(t, tcoErr)
+	defer func() {
+		closeErr := tco.Close()
+		require.NoError(t, closeErr)
+	}()
+
+	const containerName = "test-monitor-stops-watched-container-without-removing"
+	containerID, createErr := tco.CreateContainer(testCtx, containers.CreateContainerOptions{
+		Name: containerName,
+		ContainerSpec: apiv1.ContainerSpec{
+			Image: containerName + "-image",
+		},
+	})
+	require.NoError(t, createErr, "Test container could not be created")
+
+	_, startErr := tco.StartContainers(testCtx, containers.StartContainersOptions{
+		Containers: []string{containerID},
+	})
+	require.NoError(t, startErr, "Test container could not be started")
+
+	delayTimeout := testTimeout / 6
+	parentCmd := exec.CommandContext(testCtx, "./delay", fmt.Sprintf("--delay=%s", delayTimeout.String()))
+	parentCmd.Dir = delayToolDir
+	process.DecoupleFromParent(parentCmd)
+	parentCmdErr := parentCmd.Start()
+	require.NoError(t, parentCmdErr, "Monitored process should start without error")
+
+	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
+	parentIdentityTime := process.ProcessIdentityTime(parentPid)
+	require.False(t, parentIdentityTime.IsZero(), "Monitored process start time should not be zero")
+
+	dcpProcCmd := exec.CommandContext(testCtx, dcpProc,
+		"monitor-container",
+		"--monitor", strconv.Itoa(parentCmd.Process.Pid),
+		"--containerID", containerID,
+		"--monitor-identity-time", parentIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		"--test-container-orchestrator-socket", tco.GetSocketFilePath(),
+		"--stop-only",
+	)
+	process.DecoupleFromParent(dcpProcCmd)
+	dcpProcCmdErr := dcpProcCmd.Start()
+	require.NoError(t, dcpProcCmdErr, "dcpproc command should start without error")
+
+	parentProcResultCh := make(chan error, 1)
+	go func() { parentProcResultCh <- parentCmd.Wait() }()
+
+	select {
+	case parentProcErr := <-parentProcResultCh:
+		require.NoError(t, parentProcErr, "Monitored process should exit without error")
+	case <-testCtx.Done():
+		require.Fail(t, "Monitored process did not exit in time")
+	}
+
+	waitErr := wait.PollUntilContextCancel(testCtx, 100*time.Millisecond, true, func(ctx context.Context) (bool, error) {
+		inspected, inspectErr := tco.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{containerID},
+		})
+		if inspectErr != nil {
+			return false, inspectErr
+		}
+		if len(inspected) != 1 {
+			return false, fmt.Errorf("expected one inspected container, got %d", len(inspected))
+		}
+		return inspected[0].Status == containers.ContainerStatusExited, nil
+	})
+	require.NoError(t, waitErr, "Container stop did not complete in time")
+
+	dcpProcResultCh := make(chan error, 1)
+	go func() { dcpProcResultCh <- dcpProcCmd.Wait() }()
+
+	select {
+	case dcpProcResult := <-dcpProcResultCh:
+		require.NoError(t, dcpProcResult, "dcpproc should exit cleanly after stopping the container")
+	case <-testCtx.Done():
+		require.Fail(t, "dcpproc did not exit after stopping container")
+	}
+}
+
 // Ensures that dcpproc exits when the monitored container is removed externally.
 func TestMonitorContainerExitWhenContainerRemoved(t *testing.T) {
 	t.Parallel()
