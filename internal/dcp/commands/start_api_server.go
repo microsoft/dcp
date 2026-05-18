@@ -99,7 +99,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		kconfig, err := telemetry.CallWithTelemetry(startupspans.Tracer(), startupspans.SpanEnsureKubeconfig, startupCtx,
+		kconfig, err := telemetry.CallWithTelemetry(telemetry.StartupTracer(), startupspans.SpanEnsureKubeconfig, startupCtx,
 			func(ctx context.Context) (*kubeconfig.Kubeconfig, error) {
 				return kubeconfig.EnsureKubeconfigData(ctx, cmd.Flags(), log)
 			},
@@ -110,7 +110,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 
 		var allExtensions []bootstrap.DcpExtension
 		if !serverOnly {
-			allExtensions, err = telemetry.CallWithTelemetry(startupspans.Tracer(), startupspans.SpanGetExtensions, startupCtx,
+			allExtensions, err = telemetry.CallWithTelemetry(telemetry.StartupTracer(), startupspans.SpanGetExtensions, startupCtx,
 				func(ctx context.Context) ([]bootstrap.DcpExtension, error) {
 					exts, extErr := bootstrap.GetExtensions(ctx, log)
 					if extErr == nil {
@@ -148,7 +148,7 @@ func startApiSrv(log logr.Logger) func(cmd *cobra.Command, _ []string) error {
 // runDetachedFork handles the `--detach` path: re-exec the dcp binary in the background
 // without the --detach flag. The parent process exits immediately. The "dcp.startup.parent_fork"
 // span captures the small but real cost of the spawn step; parent and child end up as
-// siblings under the same outer trace because they read the same ASPIRE_STARTUP_TRACEPARENT.
+// siblings under the same outer trace because they read the same DCP_OTEL_STARTUP_TRACEPARENT.
 func runDetachedFork(apiServerCtx context.Context, log logr.Logger) error {
 	_, span := startupspans.BeginParentFork(apiServerCtx)
 	defer func() {
