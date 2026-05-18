@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -54,13 +55,13 @@ func GetTelemetrySystem() *TelemetrySystem {
 		}
 
 		// Resource: identify spans as belonging to the DCP service. When startup profiling
-		// is on, attach the Aspire profiling session id so Aspire can correlate cross-process
-		// startup traces emitted from DCP with the surrounding aspire-cli / aspire-apphost ones.
+		// is on, attach the profiling session id so consumers can correlate cross-process
+		// startup traces emitted from DCP with the surrounding orchestrator's ones.
 		resAttrs := []attribute.KeyValue{
 			semconv.ServiceName("dcp"),
 		}
 		if sid := ProfilingSessionId(); sid != "" {
-			resAttrs = append(resAttrs, attribute.String("aspire.profiling.session_id", sid))
+			resAttrs = append(resAttrs, attribute.String("dcp.profiling.session_id", sid))
 		}
 		res, mergeErr := resource.Merge(
 			resource.Default(),
@@ -76,20 +77,12 @@ func GetTelemetrySystem() *TelemetrySystem {
 			sdktrace.WithResource(res),
 		}
 
-		// When Aspire-driven startup profiling is enabled, attach a second batch processor
-		// pointed at the configured OTLP endpoint. The processor is wrapped in a
-		// scope allowlist so that ONLY startup-related spans are sent: controller /
-		// runtime spans on the same TracerProvider must not be exported, because
-		// enabling Aspire startup profiling is supposed to capture startup costs — not
-		// silently exfiltrate application-runtime telemetry for the lifetime of the
-		// DCP process. BatchTimeout is intentionally short (250ms) so spans appear
-		// promptly even though we keep running past startup.
 		var otlpExp sdktrace.SpanExporter
 		if IsStartupProfilingEnabled() {
 			otlpCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			exp, otlpErr := newStartupOTLPExporter(otlpCtx)
+			exp, otlpErr := otlptracegrpc.New(otlpCtx)
 			if otlpErr == nil {
 				otlpExp = exp
 				tpOptions = append(tpOptions,

@@ -12,8 +12,8 @@ import (
 )
 
 // scopeAllowlistSpanProcessor forwards spans to its inner processor only when the
-// span's instrumentation-scope name is in the configured allowlist. The Aspire-driven
-// OTLP exporter uses this to restrict export to the bounded set of startup-scoped
+// span's instrumentation-scope name is in the configured allowlist.
+// The OTLP-style startup profiler uses this to restrict export to the bounded set of startup-scoped
 // spans; ordinary controller / runtime spans (which may carry application-defined
 // resource names, container metadata, etc.) are dropped before they leave DCP, so
 // enabling startup profiling never silently turns on a continuous export of

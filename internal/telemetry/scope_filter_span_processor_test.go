@@ -31,12 +31,7 @@ func (p *captureProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 func (p *captureProcessor) Shutdown(context.Context) error  { return nil }
 func (p *captureProcessor) ForceFlush(context.Context) error { return nil }
 
-// TestScopeAllowlistSpanProcessor_OnlyAllowedScopesAreForwarded is a security/privacy
-// regression test: when Aspire startup profiling is enabled DCP attaches an OTLP
-// exporter to its global TracerProvider. Without scope filtering this would silently
-// turn on a continuous export of all DCP spans — including controller and runtime
-// spans that may carry application-defined resource names. This test pins the
-// allowlist behavior so any change that broadens the export surface fails loudly.
+// Ensures that only allowed spans are included in the output of the ScopeAllowlistSpanProcessor
 func TestScopeAllowlistSpanProcessor_OnlyAllowedScopesAreForwarded(t *testing.T) {
 	capture := &captureProcessor{}
 	filter := newScopeAllowlistSpanProcessor(capture, StartupTracerName, kubeconfig.TracerName)
