@@ -24,23 +24,6 @@
         },
 
         {
-            "name": "dcpctrl run-controllers",
-            "type": "go",
-            "request": "launch",
-            "mode": "exec",
-            "program": "${workspaceFolder}/bin/ext/dcpctrl",
-            "args": [
-                "run-controllers",
-                "-v=1",
-                "--kubeconfig=${workspaceFolder}/kubeconfig.dev"
-            ],
-            "windows": {
-                "program": "${workspaceFolder}/bin/ext/dcpctrl.exe"
-            },
-            "preLaunchTask": "compile-debug"
-        },
-
-        {
             "name": "dcp start-apiserver",
             "type": "go",
             "request": "launch",
@@ -58,61 +41,11 @@
         },
 
         {
-            "name": "dcpproc process (lauch)",
-            "type": "go",
-            "request": "launch",
-            "mode": "exec",
-            "program": "${workspaceFolder}/bin/ext/bin/dcpproc",
-            "args": [
-                "process",
-                "--monitor", "${input:monitored-process-pid}",
-                "--child", "${input:child-process-pid}",
-                "--monitor-identity-time", "${input:monitored-process-start-time}",
-                "--child-identity-time", "${input:child-process-start-time}",
-            ],
-            "windows": {
-                "program": "${workspaceFolder}/bin/ext/bin/dcpproc",
-            },
-            "preLaunchTask": "compile-debug"
-        },
-
-        {
-            "name": "attach to dcp process",
-            "type": "go",
-            "request": "attach",
-            "mode": "local",
-            "processId": "dcp"
-        },
-
-        {
             "name": "attach to process...",
             "type": "go",
             "request": "attach",
             "mode": "local",
             "processId": "${command:pickProcess}"
-        }
-    ],
-
-    "inputs": [
-        {
-            "id": "monitored-process-pid",
-            "description": "Enter the PID of the monitored process",
-            "type": "promptString",
-        },
-        {
-            "id": "child-process-pid",
-            "description": "Enter the PID of the child process",
-            "type": "promptString",
-        },
-        {
-            "id": "monitored-process-start-time",
-            "description": "Enter the start time of the monitored process (RFC 3339 format)",
-            "type": "promptString",
-        },
-        {
-            "id": "child-process-start-time",
-            "description": "Enter the start time of the child process (RFC 3339 format)",
-            "type": "promptString",
         }
     ]
 }
