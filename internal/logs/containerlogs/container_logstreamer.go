@@ -291,20 +291,17 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
 		deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
 		if deletionRequested {
-			streamsToStop = append(streamsToStop,
-				takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.DelayStopFollowing),
-				takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.DelayStopFollowing),
-				takeLogStreamsForContainer(c.systemLogStreams, ctr, "system", logs.DelayStopFollowing),
-			)
 			if c.containerLogs != nil {
 				containerLogsToRelease = c.containerLogs
 			}
-		} else if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
+		}
+
+		if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
 			// If done starting the container, ensure startup logs stop streaming once they reach EOF
 			streamsToStop = append(streamsToStop, takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.DelayStopFollowing))
 		}
 
-		if !deletionRequested && ctr.Done() {
+		if ctr.Done() {
 			// If the container is done, ensure standard and system logs stop streaming once they reach EOF
 			streamsToStop = append(streamsToStop,
 				takeLogStreamsForContainer(c.stdioLogStreams, ctr, "stdio", logs.DelayStopFollowing),

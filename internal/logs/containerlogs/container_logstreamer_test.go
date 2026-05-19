@@ -23,62 +23,68 @@ import (
 
 const containerLogStreamerTestTimeout = 20 * time.Second
 
-func TestOnResourceUpdatedDelaysDeletingContainerStreamStop(t *testing.T) {
+func TestOnResourceUpdatedDoesNotStopDeletingContainerStreams(t *testing.T) {
 	t.Parallel()
 
-	testCases := []struct {
-		name           string
-		eventType      watch.EventType
-		markAsDeleting bool
-	}{
-		{
-			name:           "modified with deletion timestamp",
-			eventType:      watch.Modified,
-			markAsDeleting: true,
+	ctx, cancel := testutil.GetTestContext(t, containerLogStreamerTestTimeout)
+	defer cancel()
+
+	log := testutil.NewLogForTesting("container-log-streamer-deleting")
+	streamer := NewLogStreamer(log)
+	containerUID := types.UID("deleting-container-stream-test")
+	followWriters := addBlockingContainerFollowWriters(ctx, streamer, containerUID)
+	now := metav1.Now()
+	ctr := &apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "deleting-container-stream-test",
+			UID:               containerUID,
+			DeletionTimestamp: &now,
 		},
-		{
-			name:      "deleted",
-			eventType: watch.Deleted,
+		Status: apiv1.ContainerStatus{
+			State: apiv1.ContainerStateStarting,
 		},
 	}
 
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
+	streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
+		Type:   watch.Modified,
+		Object: ctr,
+	}, log)
 
-			ctx, cancel := testutil.GetTestContext(t, containerLogStreamerTestTimeout)
-			defer cancel()
+	for _, followWriter := range followWriters {
+		assertContainerStreamNotDoneImmediately(t, ctx, followWriter.Done())
+	}
+}
 
-			log := testutil.NewLogForTesting("container-log-streamer-delete")
-			streamer := NewLogStreamer(log)
-			containerUID := types.UID("delete-container-stream-test")
-			followWriters := addEOFContainerFollowWriters(ctx, streamer, containerUID)
-			ctr := &apiv1.Container{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "delete-container-stream-test",
-					UID:  containerUID,
-				},
-				Status: apiv1.ContainerStatus{
-					State: apiv1.ContainerStateRunning,
-				},
-			}
-			if testCase.markAsDeleting {
-				now := metav1.Now()
-				ctr.DeletionTimestamp = &now
-			}
+func TestOnResourceUpdatedDelaysDeletedContainerStreamStop(t *testing.T) {
+	t.Parallel()
 
-			streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
-				Type:   testCase.eventType,
-				Object: ctr,
-			}, log)
+	ctx, cancel := testutil.GetTestContext(t, containerLogStreamerTestTimeout)
+	defer cancel()
 
-			for _, followWriter := range followWriters {
-				assertContainerStreamNotDoneImmediately(t, ctx, followWriter.Done())
-			}
-			for _, followWriter := range followWriters {
-				assertContainerStreamDone(t, ctx, followWriter.Done())
-			}
-		})
+	log := testutil.NewLogForTesting("container-log-streamer-delete")
+	streamer := NewLogStreamer(log)
+	containerUID := types.UID("delete-container-stream-test")
+	followWriters := addEOFContainerFollowWriters(ctx, streamer, containerUID)
+	ctr := &apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "delete-container-stream-test",
+			UID:  containerUID,
+		},
+		Status: apiv1.ContainerStatus{
+			State: apiv1.ContainerStateRunning,
+		},
+	}
+
+	streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
+		Type:   watch.Deleted,
+		Object: ctr,
+	}, log)
+
+	for _, followWriter := range followWriters {
+		assertContainerStreamNotDoneImmediately(t, ctx, followWriter.Done())
+	}
+	for _, followWriter := range followWriters {
+		assertContainerStreamDone(t, ctx, followWriter.Done())
 	}
 }
 
