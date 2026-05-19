@@ -71,6 +71,10 @@ type processRunState struct {
 type ProcessExecutableRunner struct {
 	pe               process.Executor
 	runningProcesses *syncmap.ComparableValueMap[controllers.RunID, *processRunState]
+
+	// Do not use dcpproc.StopProcessTree, always go directly to process runner for stoppin the process.
+	// Used for testing only.
+	disableConsoleStop bool
 }
 
 func NewProcessExecutableRunner(pe process.Executor) *ProcessExecutableRunner {
@@ -294,14 +298,14 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 	errCh := make(chan error, 1)
 
 	go func() {
-		if osutil.IsWindows() {
+		if osutil.IsWindows() && !r.disableConsoleStop {
 			// See StartRun() for why we need to use separate console for the app process on Windows.
 			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
 			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
 			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runIdToPID(runID), runState.identityTime, stopLog)
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.pid, runState.identityTime, stopLog)
 		} else {
-			errCh <- r.pe.StopProcess(runIdToPID(runID), runState.identityTime)
+			errCh <- r.pe.StopProcess(runState.pid, runState.identityTime)
 		}
 	}()
 
@@ -394,18 +398,6 @@ func makeCommand(exe *apiv1.Executable) *exec.Cmd {
 
 func pidToRunID(pid process.Pid_t) controllers.RunID {
 	return controllers.RunID(strconv.FormatInt(int64(pid), 10))
-}
-
-func runIdToPID(runID controllers.RunID) process.Pid_t {
-	pid64, err := strconv.ParseInt(string(runID), 10, 64)
-	if err != nil {
-		return process.UnknownPID
-	}
-	pid, err := process.Int64_ToPidT(pid64)
-	if err != nil {
-		return process.UnknownPID
-	}
-	return pid
 }
 
 var _ controllers.ExecutableRunner = (*ProcessExecutableRunner)(nil)
