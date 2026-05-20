@@ -152,6 +152,12 @@ func (ce *Service) HasStdErr() bool {
 	return false
 }
 
+// HasTerminal implements StdIoStreamableResource. Service does not support
+// pseudo-terminal allocation, so this always returns false.
+func (ce *Service) HasTerminal() bool {
+	return false
+}
+
 // GetStdErrFile implements StdIoStreamableResource.
 func (svc *Service) GetStdErrFile() string {
 	return ""

@@ -44,6 +44,23 @@ func StartAdvancedTestEnvironment(
 	*AdvancedTestEnvironmentInfo,
 	error,
 ) {
+	return StartAdvancedTestEnvironmentWithFlags(ctx, inclCtrl, instanceTag, testTempDir, ctrl_testutil.ApiServerUseTrueContainerOrchestrator)
+}
+
+// StartAdvancedTestEnvironmentWithFlags is the same as StartAdvancedTestEnvironment but allows callers to customize the
+// ApiServerFlag used to start the API server. Tests that do not require a real container orchestrator can pass
+// ctrl_testutil.ApiServerFlagsNone to avoid the dependency.
+func StartAdvancedTestEnvironmentWithFlags(
+	ctx context.Context,
+	inclCtrl IncludedController,
+	instanceTag string,
+	testTempDir string,
+	apiServerFlags ctrl_testutil.ApiServerFlag,
+) (
+	*ctrl_testutil.ApiServerInfo,
+	*AdvancedTestEnvironmentInfo,
+	error,
+) {
 	sessionFolder, sessionFolderErr := testutil.CreateTestSessionDir()
 	if sessionFolderErr != nil {
 		return nil, nil, fmt.Errorf("failed to create session folder for API server instance: %w", sessionFolderErr)
@@ -52,7 +69,7 @@ func StartAdvancedTestEnvironment(
 	log := testutil.NewLogWithResourceSinkForTesting(instanceTag, sessionFolder)
 	ctrl.SetLogger(log)
 
-	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, ctrl_testutil.ApiServerUseTrueContainerOrchestrator, log, sessionFolder)
+	serverInfo, serverErr := ctrl_testutil.StartApiServer(ctx, apiServerFlags, log, sessionFolder)
 	if serverErr != nil {
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}

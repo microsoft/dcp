@@ -34,6 +34,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/pubsub"
+	"github.com/microsoft/dcp/internal/termpty"
 )
 
 var (
@@ -579,6 +580,11 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 	}
 
+	if options.Terminal != nil {
+		// Attach a TTY (-t) and keep STDIN open (-i) if a terminal is requested
+		args = append(args, "-it")
+	}
+
 	args = append(args, options.RunArgs...)
 
 	return args
@@ -683,7 +689,7 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	_, _, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", "ExecContainer"))
@@ -691,6 +697,26 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	startWaitForProcessExit()
 
 	return exitCh, nil
+}
+
+func (dco *DockerCliOrchestrator) AttachContainer(ctx context.Context, options containers.AttachContainerOptions) (*termpty.PseudoTerminalProcess, error) {
+	// Run `docker attach <container>` on a freshly allocated pseudo-terminal.
+	// We intentionally do NOT pass --sig-proxy=false: when the attach process's
+	// stdin is a TTY (our PTY slave), docker puts it into raw mode and forwards
+	// bytes (including Ctrl-C as 0x03) into the container's PTY, where the
+	// container's line discipline turns Ctrl-C into SIGINT for the container's
+	// foreground process. That mirrors the behavior of running `docker attach`
+	// directly. --sig-proxy only governs signals received by the attach process
+	// via non-TTY means (e.g. SIGHUP when we close the PTY master); we accept
+	// the default forwarding behavior for those because we only close the PTY
+	// when the container is itself exiting or being deleted.
+	cmd := makeDockerCommand("attach", options.Container)
+	return termpty.StartProcessWithTerminal(ctx, dco.executor, &termpty.CommandSpec{
+		Cmd:           cmd,
+		CreationFlags: process.CreationFlagEnsureKillOnDispose,
+		Cols:          options.Cols,
+		Rows:          options.Rows,
+	})
 }
 
 func (dco *DockerCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
@@ -1112,7 +1138,7 @@ func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		dco.log.Error(err, "Could not execute 'docker events' command; container events unavailable")
 		return
@@ -1171,7 +1197,7 @@ func (dco *DockerCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "docker events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		dco.log.Error(err, "Could not execute 'docker events' command; network events unavailable")
 		return
@@ -1224,7 +1250,7 @@ func (dco *DockerCliOrchestrator) streamDockerCommand(
 	}
 
 	dco.log.V(1).Info("Running Docker command", "Command", cmd.String())
-	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	pid, startTime, startWaitForProcessExit, err := dco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Docker command '%s'", commandName))
@@ -1282,6 +1308,13 @@ func (dco *DockerCliOrchestrator) runBufferedDockerCommand(
 
 func makeDockerCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("docker", args...)
+	// exec.Command resolves cmd.Path via LookPath but leaves cmd.Args[0] as
+	// the original "docker" string. Align Args[0] with the resolved Path so
+	// downstream consumers and child-process
+	// argv[0] observers see a consistent, fully-qualified command name.
+	if cmd.Path != "" {
+		cmd.Args[0] = cmd.Path
+	}
 	return cmd
 }
 

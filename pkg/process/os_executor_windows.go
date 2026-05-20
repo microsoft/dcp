@@ -76,7 +76,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		}
 	}
 
-	waitable := makeWaitable(pid, proc)
+	waitable := makeProcessWaitable(pid, proc)
 	ws, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
@@ -191,7 +191,7 @@ func (e *OSExecutor) prepareProcessStart(cmd *exec.Cmd, flags ProcessCreationFla
 	}
 }
 
-func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, pid Pid_t, _ time.Time, flags ProcessCreationFlag) error {
+func (e *OSExecutor) completeProcessStart(pid Pid_t, _ time.Time, flags ProcessCreationFlag) error {
 	if cleanupJobDisabled() || (flags&CreationFlagEnsureKillOnDispose) == 0 {
 		return nil
 	}

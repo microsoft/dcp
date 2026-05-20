@@ -90,11 +90,19 @@ func (cr *ContextReader) Read(p []byte) (int, error) {
 		return 0, cr.ctx.Err()
 	}
 
+	var res contextReaderResult
 	select {
-	case res := <-cr.outgoing:
+	case res = <-cr.outgoing:
 		return res.n, res.err
+
 	case <-cr.ctx.Done():
-		return 0, cr.ctx.Err()
+		// If we also get the result, return it instead of the context error
+		select {
+		case res = <-cr.outgoing:
+			return res.n, res.err
+		default:
+			return 0, cr.ctx.Err()
+		}
 	}
 }
 
