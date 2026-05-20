@@ -63,16 +63,44 @@ func newProcessStopOptions(options []ProcessStopOption) processStopOptions {
 // The domain is all unsigned 32-bit integers, but we use a signed type to align with Kubernetes API conventions.
 type Pid_t int64
 
+// If the standard library's exec package does not provide necessary functionality,
+// the sysCreateProcessFunc function can be used to replace exec.Cmd.Start() call
+// and create the process using a different approach.
+// In most circumstance the standard library's implementation should be sufficient.
+// Upon success, the function returns the started process ID and a Waitable object
+// that can be used to wait for the process to exit.
+type SysCreateProcessFunc func(cmd *exec.Cmd) (Pid_t, Waitable, error)
+
+// Waitable represents a process-like object that can be waited on for completion.
+type Waitable interface {
+	Wait() error
+	Info() string
+	Flags() ProcessCreationFlag
+}
+
+// ExitCodeSource is an interface that provides access to a process's exit code.
+// Some types implementing Waitable may also implement ExitCodeSource.
+// The exit code is only available after the process has finished executing (i.e., after Wait() returns).
+type ExitCodeSource interface {
+	ExitCode() int32
+}
+
 type Executor interface {
 	// Starts the process described by given command instance.
 	// When the passed context is cancelled, the process is automatically terminated.
-	// Returns the process PID, process start time, and a function that enables process exit notifications
-	// delivered to the exit handler.
+	//
+	// If the standard library's exec package does not provide necessary functionality,
+	// the sysCreateProcess function can be used to create the process using a different approach.
+	// In most circumstance the standard library's exec package is sufficient.
+	//
+	// StartProcess returns the process PID, process start time,
+	// and a function that enables process exit notifications delivered to the exit handler.
 	StartProcess(
 		ctx context.Context,
 		cmd *exec.Cmd,
 		exitHandler ProcessExitHandler,
 		creationFlags ProcessCreationFlag,
+		sysCreateProcess SysCreateProcessFunc,
 	) (pid Pid_t, startTime time.Time, startWaitForProcessExit func(), err error)
 
 	// Stops the process with a given PID.

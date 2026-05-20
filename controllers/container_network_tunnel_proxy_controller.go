@@ -1271,7 +1271,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		r.onServerProcessExit(tunnelProxy.NamespacedName(), pid, exitCode, err, stdoutFile, stderrFile)
 	})
 
-	pid, startTime, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone)
+	pid, startTime, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone, nil)
 	if startErr != nil {
 		log.Error(startErr, "Failed to start server proxy process")
 		startFailed = true

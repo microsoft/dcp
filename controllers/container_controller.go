@@ -35,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/templating"
+	"github.com/microsoft/dcp/internal/termpty"
 	"github.com/microsoft/dcp/internal/version"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
@@ -733,6 +734,7 @@ func ensureContainerExitedState(ctx context.Context,
 	}
 
 	rcd.closeStartupLogFiles(log)
+	rcd.closeTerminalResources(r.config.ProcessExecutor, log)
 	r.disableEndpointsAndHealthProbes(ctx, container, rcd, log)
 
 	log.V(1).Info("Inspecting container resource...")
@@ -785,6 +787,7 @@ func ensureContainerUnknownState(
 	if rcd != nil {
 		rcd.containerState = apiv1.ContainerStateUnknown
 		rcd.closeStartupLogFiles(log)
+		rcd.closeTerminalResources(r.config.ProcessExecutor, log)
 	}
 
 	return change
@@ -1264,7 +1267,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 
 			// Finish the container startup process, including any finalization steps
-			finishErr := r.finishCreatedContainerStartup(startupCtx, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
+			finishErr := r.finishCreatedContainerStartup(startupCtx, container, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
 			if finishErr != nil {
 				return finishErr
 			}
@@ -1732,6 +1735,7 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 // finishCreatedContainerStartup either starts the container immediately or prepares it for custom network attachment.
 func (r *ContainerReconciler) finishCreatedContainerStartup(
 	ctx context.Context,
+	container *apiv1.Container,
 	containerName string,
 	rcd *runningContainerData,
 	inspected *containers.InspectedContainer,
@@ -1751,6 +1755,9 @@ func (r *ContainerReconciler) finishCreatedContainerStartup(
 
 		if startedContainer.Status == containers.ContainerStatusRunning {
 			log.V(1).Info("Container started")
+			if attachErr := r.attachTerminalIfNeeded(container, rcd, log); attachErr != nil {
+				return attachErr
+			}
 			rcd.containerState = apiv1.ContainerStateRunning
 		} else {
 			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", startedContainer.Status)
@@ -1812,6 +1819,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	// or if the container has already finished starting/stopping and we know the outcome of either.
 
 	defer rcd.deleteStartupLogFiles(log)
+	defer rcd.closeTerminalResources(r.config.ProcessExecutor, log)
 
 	if container.Spec.Persistent {
 		log.V(1).Info("Container is not using Managed mode, leaving underlying resources")
@@ -1857,6 +1865,77 @@ func (r *ContainerReconciler) startContainerWithTimeout(
 	}
 	inspected, err := startContainer(startContainerCallCtx, r.orchestrator, containerName, string(containerID), streamOptions)
 	return inspected, err
+}
+
+// attachTerminalIfNeeded sets up a terminal attach to the just-started container
+// and stands up an HMP v1 ConnManager on the configured UDS path so external
+// terminal clients can attach. The attach process and ConnManager are recorded
+// on rcd and cleaned up by the container lifecycle (stop / exit / unknown /
+// delete / shutdown).
+//
+// This method is a no-op when the container spec does not request a terminal.
+// On any failure it stops the just-started container (best-effort) and closes
+// the partially-allocated resources, then returns the error so the caller can
+// transition the Container to FailedToStart.
+//
+// The attach process is started against r.LifetimeCtx (not the per-startup
+// context) so it survives the startup goroutine returning; CreationFlagEnsureKillOnDispose
+// ensures it is killed when DCP itself shuts down.
+func (r *ContainerReconciler) attachTerminalIfNeeded(
+	container *apiv1.Container,
+	rcd *runningContainerData,
+	log logr.Logger,
+) error {
+	terminalSpec := container.Spec.Terminal
+	if terminalSpec == nil {
+		return nil
+	}
+
+	if rcd.ptp != nil || rcd.connMgr != nil {
+		log.V(1).Info("Container terminal attach already wired, skipping")
+		return nil
+	}
+
+	ptp, attachErr := r.orchestrator.AttachContainer(r.LifetimeCtx, containers.AttachContainerOptions{
+		Container: string(rcd.containerID),
+		Cols:      uint16(terminalSpec.Cols),
+		Rows:      uint16(terminalSpec.Rows),
+	})
+	if attachErr != nil {
+		log.Error(attachErr, "Failed to attach terminal to container")
+		// Best-effort: stop the running container so it does not linger without a terminal.
+		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
+			log.Error(stopErr, "Failed to stop container after terminal attach failure")
+		}
+		return fmt.Errorf("failed to attach terminal to container: %w", attachErr)
+	}
+
+	// Begin waiting for the attach process to exit so the ExitHandler fires
+	// when it terminates. Without this, ConnManager.watchProcessExit would
+	// only ever observe lifetime context cancellation, not the natural
+	// process exit, and the terminal connection would not be torn down
+	// when the container stops.
+	if ptp.StartWaitForExit != nil {
+		ptp.StartWaitForExit()
+	}
+
+	connMgr, connMgrErr := termpty.NewConnManager(r.LifetimeCtx, ptp, terminalSpec.UDSPath, log)
+	if connMgrErr != nil {
+		log.Error(connMgrErr, "Failed to create terminal connection manager; tearing down attach")
+		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			log.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
+		}
+		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
+			log.Error(stopErr, "Failed to stop container after terminal connection manager creation failure")
+		}
+		return fmt.Errorf("failed to create terminal connection manager: %w", connMgrErr)
+	}
+
+	rcd.ptp = ptp
+	rcd.connMgr = connMgr
+
+	log.V(1).Info("Container terminal attached", "UDSPath", terminalSpec.UDSPath)
+	return nil
 }
 
 func (r *ContainerReconciler) disableEndpointsAndHealthProbes(
@@ -1929,6 +2008,11 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 	if startupErr != nil {
 		log.Error(startupErr, "Failed to start Container")
 		return nil, startupErr
+	}
+	if inspected != nil && inspected.Status == containers.ContainerStatusRunning {
+		if attachErr := r.attachTerminalIfNeeded(container, rcd, log); attachErr != nil {
+			return nil, attachErr
+		}
 	}
 	r.runPersistentContainerLifecycleMonitor(rcd, log)
 
@@ -2503,6 +2587,7 @@ func (r *ContainerReconciler) onShutdown() {
 
 	r.runningContainers.Range(func(containerName types.NamespacedName, id containerID, rcd *runningContainerData) bool {
 		rcd.deleteStartupLogFiles(r.Log)
+		rcd.closeTerminalResources(r.config.ProcessExecutor, r.Log)
 		_ = r.runningContainers.Update(containerName, id, rcd)
 		return true
 	})

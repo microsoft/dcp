@@ -114,6 +114,7 @@ DELAY_TOOL ?= $(TOOL_BIN)/delay$(exe_suffix)
 LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
+TERMCHILD_TOOL ?= $(TOOL_BIN)/termchild$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
@@ -339,9 +340,9 @@ endif
 # mirrored there.
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 endif
 
 .PHONY: test-prereqs
@@ -406,6 +407,12 @@ endif
 delay-tool: $(DELAY_TOOL)
 $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/dcp/test/delay
+
+# termchild-tool is used for internal/termpty pseudo-terminal tests
+.PHONY: termchild-tool
+termchild-tool: $(TERMCHILD_TOOL)
+$(TERMCHILD_TOOL): $(wildcard ./test/termchild/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(TERMCHILD_TOOL) github.com/microsoft/dcp/test/termchild
 
 # lfwriter tool is used for testing lockfile package
 .PHONY: lfwriter-tool

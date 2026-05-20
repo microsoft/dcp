@@ -202,6 +202,63 @@ func TestExecutableValidateMonitorFields(t *testing.T) {
 	}
 }
 
+func TestExecutableValidateTerminalPersistentCombination(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		spec        ExecutableSpec
+		expectError bool
+	}{
+		{
+			name: "non-persistent with terminal is allowed",
+			spec: ExecutableSpec{
+				ExecutablePath: "/path/to/app",
+				Terminal: &TerminalSpec{
+					UDSPath: "/tmp/app.sock",
+					Cols:    80,
+					Rows:    24,
+				},
+			},
+		},
+		{
+			name: "persistent without terminal is allowed",
+			spec: ExecutableSpec{
+				ExecutablePath: "/path/to/app",
+				Persistent:     true,
+			},
+		},
+		{
+			name: "persistent with terminal is rejected",
+			spec: ExecutableSpec{
+				ExecutablePath: "/path/to/app",
+				Persistent:     true,
+				Terminal: &TerminalSpec{
+					UDSPath: "/tmp/app.sock",
+					Cols:    80,
+					Rows:    24,
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			exe := &Executable{Spec: testCase.spec}
+			errors := exe.Validate(context.Background())
+
+			if testCase.expectError {
+				require.NotEmpty(t, errors)
+			} else {
+				require.Empty(t, errors)
+			}
+		})
+	}
+}
+
 func TestExecutableGetLifecycleKeyIgnoresImplicitEffectiveEnv(t *testing.T) {
 	t.Parallel()
 

@@ -291,6 +291,15 @@ type ExecutableSpec struct {
 	// PEM formatted certificates to be written for the Executable
 	// +optional
 	PemCertificates *ExecutablePemCertificates `json:"pemCertificates,omitempty"`
+
+	// Optional terminal/PTY configuration. When set, the Executable process
+	// is started with connection to a pseudo-terminal
+	// and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1.
+	// When terminal configuration is present, there will be no "logs",
+	// i.e. ExecutableStatus.StdOutFile and ExecutableStatus.StdErrFile will be empty,
+	// and API requests to fetch logs will fail.
+	// +optional
+	Terminal *TerminalSpec `json:"terminal,omitempty"`
 }
 
 func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
@@ -364,6 +373,10 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 		return false
 	}
 
+	if !es.Terminal.Equal(other.Terminal) {
+		return false
+	}
+
 	return true
 }
 
@@ -421,6 +434,12 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 			hashErr = errors.Join(hashErr, encoder.Encode(sortedPemCertificates[i]))
 		}
 		hashErr = errors.Join(hashErr, encoder.Encode(es.PemCertificates.ContinueOnError))
+	}
+
+	if es.Terminal != nil {
+		// Columns and rows do not matter that much (the client can always resize the terminal as necessary),
+		// but once an Executable is started with terminal support, the UDS path does not change.
+		hashErr = errors.Join(hashErr, encoder.Encode(es.Terminal.UDSPath))
 	}
 
 	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
@@ -570,6 +589,9 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	if es.Persistent && len(es.FallbackExecutionTypes) > 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "Persistent Executables cannot use fallback execution types."))
 	}
+	if es.Persistent && es.Terminal != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("terminal"), "Persistent Executables cannot use a terminal."))
+	}
 
 	monitorTimestampSet := !es.MonitorTimestamp.IsZero()
 	if es.MonitorPID != nil && *es.MonitorPID <= 0 {
@@ -594,6 +616,8 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 	}
 
 	errorList = append(errorList, es.PemCertificates.Validate(specPath.Child("pemCertificates"))...)
+
+	errorList = append(errorList, es.Terminal.Validate(specPath.Child("terminal"))...)
 
 	return errorList
 }
@@ -676,6 +700,13 @@ func (ce *Executable) HasStdOut() bool {
 // HasStdErr implements StdOutStreamableResource.
 func (ce *Executable) HasStdErr() bool {
 	return true
+}
+
+// HasTerminal implements StdIoStreamableResource. It reports whether the
+// Executable is configured to bridge stdin/stdout/stderr to a pseudo-terminal,
+// in which case no stdout/stderr log files are captured.
+func (e *Executable) HasTerminal() bool {
+	return e.Spec.Terminal != nil
 }
 
 // StdOutFile implements StdOutStreamableResource.
@@ -798,6 +829,8 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 	if !oldExe.Spec.PemCertificates.Equal(e.Spec.PemCertificates) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "pemCertificates"), "pemCertificates cannot be changed once an Executable is created."))
 	}
+
+	errorList = append(errorList, e.Spec.Terminal.ValidateUpdate(oldExe.Spec.Terminal, field.NewPath("spec", "terminal"))...)
 
 	return errorList
 }
