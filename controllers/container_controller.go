@@ -359,6 +359,33 @@ func handleNewContainer(
 		}
 
 		if inspected != nil {
+			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
+
+			if container.Spec.Stop {
+				stopRcd := newRunningContainerData(container)
+				stopRcd.updateFromInspectedContainer(inspected)
+				stopRcd.ensureStartupLogFiles(container, log)
+				if !inspected.StartedAt.IsZero() {
+					stopRcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)
+				}
+
+				r.runningContainers.Store(container.NamespacedName(), stopRcd.containerID, stopRcd)
+				r.EnsureContainerWatchForResource(container.UID, log)
+				_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
+
+				if inspected.Status == containers.ContainerStatusRunning ||
+					inspected.Status == containers.ContainerStatusPaused ||
+					inspected.Status == containers.ContainerStatusRestarting {
+					stopRcd.containerState = apiv1.ContainerStateStopping
+					return change | ensureContainerStoppingState(ctx, r, container, apiv1.ContainerStateStopping, stopRcd, log)
+				}
+
+				stopRcd.containerState = apiv1.ContainerStateExited
+				change |= stopRcd.applyTo(container, log)
+				r.disableEndpointsAndHealthProbes(ctx, container, stopRcd, log)
+				return change
+			}
+
 			// Produce a candidate RCD; this will only be persisted if we find an existing valid container.
 			rcd := newRunningContainerData(container)
 
@@ -399,8 +426,6 @@ func handleNewContainer(
 				change |= statusChanged
 			}
 
-			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
-
 			_, dcpManaged := inspected.Labels[dcpBuildLabel]
 			oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
 			if dcpManaged && ((found && oldLifecycleKey != lifecycleKey) || (!found && lifecycleKey != "")) {
@@ -429,31 +454,6 @@ func handleNewContainer(
 
 				_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
 				return change | r.setContainerState(container, apiv1.ContainerStateRunning)
-			}
-
-			if container.Spec.Stop {
-				stopRcd := newRunningContainerData(container)
-				stopRcd.updateFromInspectedContainer(inspected)
-				stopRcd.ensureStartupLogFiles(container, log)
-				if !inspected.StartedAt.IsZero() {
-					stopRcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)
-				}
-
-				r.runningContainers.Store(container.NamespacedName(), stopRcd.containerID, stopRcd)
-				r.EnsureContainerWatchForResource(container.UID, log)
-				_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
-
-				if inspected.Status == containers.ContainerStatusRunning ||
-					inspected.Status == containers.ContainerStatusPaused ||
-					inspected.Status == containers.ContainerStatusRestarting {
-					stopRcd.containerState = apiv1.ContainerStateStopping
-					return change | ensureContainerStoppingState(ctx, r, container, apiv1.ContainerStateStopping, stopRcd, log)
-				}
-
-				stopRcd.containerState = apiv1.ContainerStateExited
-				change |= stopRcd.applyTo(container, log)
-				r.disableEndpointsAndHealthProbes(ctx, container, stopRcd, log)
-				return change
 			}
 
 			if container.ShouldStart() {

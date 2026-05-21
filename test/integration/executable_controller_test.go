@@ -279,6 +279,56 @@ func TestStalePersistentExecutableStopWithStartAllowed(t *testing.T) {
 	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
 }
 
+func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-with-unresolved-template"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "MISSING_SERVICE_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
+				},
+			},
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999997),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run-with-unresolved-template",
+		StdOutFile:        "stale-with-unresolved-template.out",
+		StdErrFile:        "stale-with-unresolved-template.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Start=false, Stop=true, and unresolved template inputs", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished without resolving template inputs", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
 // Ensure exit code of processes/run sessions are captured correctly
 func TestExecutableExitCodeCaptured(t *testing.T) {
 	type testcase struct {

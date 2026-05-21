@@ -924,6 +924,78 @@ func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
 }
 
+func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-stop-with-unresolved-template"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "MISSING_SERVICE_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
+				},
+			},
+		},
+	}
+
+	createSpec := ctr.Spec
+	createSpec.Start = nil
+	createSpec.Stop = false
+	createSpec.Env = nil
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: "unresolved-template-lifecycle-key",
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
 func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
