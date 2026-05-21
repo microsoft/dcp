@@ -33,6 +33,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -154,6 +155,178 @@ func TestPersistentExecutableDelayStart(t *testing.T) {
 		return currentExe.Status.State == apiv1.ExecutableStateRunning || currentExe.Status.State == apiv1.ExecutableStateFinished, nil
 	})
 	waitResourceLeaseReleased(t, ctx, updatedExe)
+}
+
+func TestNoExistingPersistentExecutableStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "no-existing-persistent-executable-stop-without-start"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+		},
+	}
+
+	t.Logf("Creating persistent Executable '%s' with Start=false and Stop=true", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to be observed without failing to start", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		require.NotEqual(t, apiv1.ExecutableStateFailedToStart, currentExe.Status.State, "Stop-only Executable should not fail startup when no persistent process exists")
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "persistent Executable with Start=false and Stop=true should not start a process")
+}
+
+func TestStalePersistentExecutableStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-without-start"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999999),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run",
+		StdOutFile:        "stale.out",
+		StdErrFile:        "stale.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Start=false and Stop=true", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished for the stale persistent process record", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestStalePersistentExecutableStopWithStartAllowed(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-with-start-allowed"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Stop:           true,
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999998),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run-with-start",
+		StdOutFile:        "stale-with-start.out",
+		StdErrFile:        "stale-with-start.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Stop=true", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished for the stale persistent process record", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "Stop=true should not start a replacement process when a persistent process record already existed")
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-with-unresolved-template"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "MISSING_SERVICE_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
+				},
+			},
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999997),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run-with-unresolved-template",
+		StdOutFile:        "stale-with-unresolved-template.out",
+		StdErrFile:        "stale-with-unresolved-template.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Start=false, Stop=true, and unresolved template inputs", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished without resolving template inputs", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
 }
 
 // Ensure exit code of processes/run sessions are captured correctly

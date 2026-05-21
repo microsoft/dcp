@@ -334,11 +334,6 @@ func handleNewContainer(
 ) objectChange {
 	change := noChange
 
-	if container.Spec.Stop {
-		// The container was started with a desired state of stopped, don't attempt to start it.
-		return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
-	}
-
 	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
 	if !status.IsHealthy() {
 		// If the runtime isn't healthy, we will attempt to start the container later (in case the runtime recovers).
@@ -364,6 +359,33 @@ func handleNewContainer(
 		}
 
 		if inspected != nil {
+			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
+
+			if container.Spec.Stop {
+				stopRcd := newRunningContainerData(container)
+				stopRcd.updateFromInspectedContainer(inspected)
+				stopRcd.ensureStartupLogFiles(container, log)
+				if !inspected.StartedAt.IsZero() {
+					stopRcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)
+				}
+
+				r.runningContainers.Store(container.NamespacedName(), stopRcd.containerID, stopRcd)
+				r.EnsureContainerWatchForResource(container.UID, log)
+				_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
+
+				if inspected.Status == containers.ContainerStatusRunning ||
+					inspected.Status == containers.ContainerStatusPaused ||
+					inspected.Status == containers.ContainerStatusRestarting {
+					stopRcd.containerState = apiv1.ContainerStateStopping
+					return change | ensureContainerStoppingState(ctx, r, container, apiv1.ContainerStateStopping, stopRcd, log)
+				}
+
+				stopRcd.containerState = apiv1.ContainerStateExited
+				change |= stopRcd.applyTo(container, log)
+				r.disableEndpointsAndHealthProbes(ctx, container, stopRcd, log)
+				return change
+			}
+
 			// Produce a candidate RCD; this will only be persisted if we find an existing valid container.
 			rcd := newRunningContainerData(container)
 
@@ -403,8 +425,6 @@ func handleNewContainer(
 				container.Status.LifecycleKey = lifecycleKey
 				change |= statusChanged
 			}
-
-			log = log.WithValues("ContainerID", GetShortId(inspected.Id))
 
 			_, dcpManaged := inspected.Labels[dcpBuildLabel]
 			oldLifecycleKey, found := inspected.Labels[lifecycleKeyLabel]
@@ -451,6 +471,11 @@ func handleNewContainer(
 		log.V(1).Info("Waiting for the container to be started")
 		_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
 		return change
+	}
+
+	if container.Spec.Stop {
+		// The container was created with an inconsistent desired state: start it and stop it at the same time.
+		return r.setContainerState(container, apiv1.ContainerStateFailedToStart)
 	}
 
 	if container.Spec.Build != nil {
