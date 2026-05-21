@@ -232,6 +232,9 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
 			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 		}
+		if exe.Spec.Stop {
+			return true, r.finishPersistentExecutableStopWithoutStart(exe, record)
+		}
 		return false, noChange
 	}
 
@@ -247,6 +250,9 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 		if deleteErr := stateStore.DeletePersistentProcess(ctx, resourceKey); deleteErr != nil {
 			log.Error(deleteErr, "Could not delete stale persistent Executable process record", "ResourceKey", resourceKey)
 			return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		}
+		if exe.Spec.Stop {
+			return true, r.finishPersistentExecutableStopWithoutStart(exe, record)
 		}
 		return false, noChange
 	}
@@ -298,6 +304,21 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 
 	log.Info("Adopted persistent Executable process", "PID", record.PID, "RunID", runID)
 	return true, ri.ApplyTo(exe, log) | r.setExecutableState(exe, apiv1.ExecutableStateRunning)
+}
+
+func (r *ExecutableReconciler) finishPersistentExecutableStopWithoutStart(exe *apiv1.Executable, record *statestore.PersistentProcessRecord) objectChange {
+	change := noChange
+	if exe.Status.StdOutFile != record.StdOutFile {
+		exe.Status.StdOutFile = record.StdOutFile
+		change |= statusChanged
+	}
+	if exe.Status.StdErrFile != record.StdErrFile {
+		exe.Status.StdErrFile = record.StdErrFile
+		change |= statusChanged
+	}
+	exe.Status.ExecutionID = ""
+	exe.Status.PID = apiv1.UnknownPID
+	return change | r.setExecutableState(exe, apiv1.ExecutableStateFinished)
 }
 
 func (r *ExecutableReconciler) stopPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {

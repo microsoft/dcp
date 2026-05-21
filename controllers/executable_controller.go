@@ -300,12 +300,6 @@ func handleNewExecutable(
 	runInfo *ExecutableRunInfo,
 	log logr.Logger,
 ) objectChange {
-	if exe.Spec.Stop && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
-		log.Info("Executable.Stop property was set to true before Executable was started, marking Executable as 'failed to start'...")
-		r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
-		return statusChanged
-	}
-
 	if exe.Spec.Persistent {
 		leaseErr := r.acquirePersistentExecutableResourceLease(ctx, exe, log)
 		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
@@ -317,8 +311,8 @@ func handleNewExecutable(
 		}
 	}
 
-	if !exe.ShouldStart() && exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
-		if exe.Spec.Persistent {
+	if exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
+		if exe.Spec.Persistent && (exe.Spec.Stop || !exe.ShouldStart()) {
 			adopted, adoptionChange := r.tryAdoptExistingPersistentExecutable(ctx, exe, log)
 			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
 			if adopted || adoptionChange != noChange {
@@ -326,9 +320,17 @@ func handleNewExecutable(
 			}
 		}
 
-		// We should wait to create an executable until the user clears Start = false
-		log.V(1).Info("Waiting for the executable to be started")
-		return noChange
+		if !exe.ShouldStart() {
+			// We should wait to create an executable until the user clears Start = false
+			log.V(1).Info("Waiting for the executable to be started")
+			return noChange
+		}
+
+		if exe.Spec.Stop {
+			log.Info("Executable.Stop property was set to true before Executable was started, marking Executable as 'failed to start'...")
+			r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+			return statusChanged
+		}
 	}
 
 	change := r.startExecutable(ctx, exe, runInfo, log)

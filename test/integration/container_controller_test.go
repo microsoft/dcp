@@ -753,6 +753,248 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
 }
 
+func TestNoExistingPersistentContainerStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "no-existing-persistent-container-stop-without-start"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Logf("Ensure Container '%s' is observed without failing to start...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		require.NotEqual(t, apiv1.ContainerStateFailedToStart, c.Status.State, "Stop-only Container should not fail startup when no persistent container exists")
+		return len(c.Finalizers) > 0 && (c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStatePending), nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{testName},
+	})
+	require.Error(t, err, "expected no container resource to be created")
+	require.Len(t, inspected, 0, "expected no container resource to be created")
+}
+
+func TestExistingPersistentContainerStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-stop-without-start"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+		},
+	}
+
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-stop-with-start-allowed"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Stop:          true,
+		},
+	}
+
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
+
+	createSpec := ctr.Spec
+	createSpec.Stop = false
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "exited-persistent-container-stop-without-start"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+		},
+	}
+
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	_, err = containerOrchestrator.StopContainers(ctx, containers.StopContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not stop container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
 func TestExistingPersistentContainerDelayStart(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
