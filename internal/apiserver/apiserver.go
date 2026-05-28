@@ -312,6 +312,10 @@ func configureForLogServing(config *tiltapiserver.Config, log logr.Logger) error
 		(&apiv1.ContainerExec{}).GetGroupVersionResource(),
 		stdiologs.LogStreamer(),
 	)
+	apiv1.ResourceLogStreamers.Store(
+		(&apiv1.IdeSession{}).GetGroupVersionResource(),
+		stdiologs.LogStreamer(),
+	)
 
 	return nil
 }

@@ -47,6 +47,7 @@ var (
 	testProcessExecutor         *internal_testutil.TestProcessExecutor
 	testProcessExecutableRunner *ctrl_testutil.TestProcessExecutableRunner
 	ideRunner                   *ctrl_testutil.TestIdeRunner
+	testIdeSessionClient        *ctrl_testutil.TestIdeSessionClient
 	client                      ctrl_client.Client
 	restClient                  *clientgorest.RESTClient
 	containerOrchestrator       *ctrl_testutil.TestContainerOrchestrator
@@ -71,6 +72,7 @@ func TestMain(m *testing.M) {
 	testProcessExecutor = teInfo.TestProcessExecutor
 	testProcessExecutableRunner = teInfo.TestProcessExecutableRunner
 	ideRunner = teInfo.TestIdeRunner
+	testIdeSessionClient = teInfo.TestIdeSessionClient
 	testStateStore = teInfo.StateStore
 	testResourceLeaseOwner = teInfo.ResourceLeaseOwner
 

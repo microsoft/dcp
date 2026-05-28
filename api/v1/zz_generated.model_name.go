@@ -296,6 +296,31 @@ func (in HttpProbe) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IdeSession) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.IdeSession"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IdeSessionList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.IdeSessionList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IdeSessionLogResource) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.IdeSessionLogResource"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IdeSessionSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.IdeSessionSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IdeSessionStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.IdeSessionStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ImageLayer) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.ImageLayer"
 }

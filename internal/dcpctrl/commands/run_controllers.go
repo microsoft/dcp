@@ -26,6 +26,7 @@ import (
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/ide"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
@@ -154,12 +155,12 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		exeRunners := make(map[apiv1.ExecutionType]controllers.ExecutableRunner, 2)
 		processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
 		exeRunners[apiv1.ExecutionTypeProcess] = processRunner
-		ideRunner, err := exerunners.NewIdeExecutableRunner(ctrlCtx, log.WithName("IdeExecutableRunner"))
-		if err == nil {
-			exeRunners[apiv1.ExecutionTypeIDE] = ideRunner
+		ideClient, ideClientErr := ide.NewClient(ctrlCtx, log.WithName("IdeClient"))
+		if ideClientErr == nil {
+			exeRunners[apiv1.ExecutionTypeIDE] = exerunners.NewIdeExecutableRunner(ctrlCtx, ideClient, log.WithName("IdeExecutableRunner"))
 		}
-		// If the IDE runner cannot be created, the details have been logged by the IDE Runner factory function.
-		// Executables can still be run, just not via IDE.
+		// If the IDE client cannot be created, the details have been logged by the IDE client factory function.
+		// Executables and IDE sessions can still be created, just not actually run via IDE.
 
 		hpSet := health.NewHealthProbeSet(
 			ctrlCtx,
@@ -263,6 +264,20 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		if err = volumeCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up ContainerVolume controller")
 			return err
+		}
+
+		if ideClient != nil {
+			ideSessionCtrl := controllers.NewIdeSessionReconciler(
+				ctrlCtx,
+				mgr.GetClient(),
+				mgr.GetAPIReader(),
+				log.WithName("IdeSessionReconciler"),
+				ideClient,
+			)
+			if err = ideSessionCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+				log.Error(err, "Unable to set up IdeSession controller")
+				return err
+			}
 		}
 
 		networkCtrl := controllers.NewNetworkReconcilerWithConfig(

@@ -78,6 +78,9 @@ var (
 		{
 			GVR: (&ContainerNetworkTunnelProxy{}).GetGroupVersionResource(),
 		},
+		{
+			GVR: (&IdeSession{}).GetGroupVersionResource(),
+		},
 	}
 
 	// A registry of resource log streaming implementations
@@ -99,6 +102,7 @@ var (
 		&ContainerExec{},
 		&Service{},
 		&ContainerNetworkTunnelProxy{},
+		&IdeSession{},
 	}
 
 	// Types that must be recognizable by the API server, but are not persisted

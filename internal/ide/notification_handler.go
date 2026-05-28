@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package exerunners
+package ide
 
 import (
 	"context"
@@ -25,14 +25,14 @@ import (
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
-type ideNotificationHandlerState uint32
+type notificationHandlerState uint32
 
 const (
-	handlerStateInitial    ideNotificationHandlerState = 0x1
-	handlerStateConnecting ideNotificationHandlerState = 0x2
-	handlerStateConnected  ideNotificationHandlerState = 0x4
-	handlerStateDisposed   ideNotificationHandlerState = 0x8
-	handlerStateAny        ideNotificationHandlerState = 0xFFFFFFFF
+	handlerStateInitial    notificationHandlerState = 0x1
+	handlerStateConnecting notificationHandlerState = 0x2
+	handlerStateConnected  notificationHandlerState = 0x4
+	handlerStateDisposed   notificationHandlerState = 0x8
+	handlerStateAny        notificationHandlerState = 0xFFFFFFFF
 )
 
 var (
@@ -50,7 +50,7 @@ var (
 	reconnectDelay = 1 * time.Second
 )
 
-func (s ideNotificationHandlerState) String() string {
+func (s notificationHandlerState) String() string {
 	switch s {
 	case handlerStateInitial:
 		return "Initial"
@@ -67,33 +67,36 @@ func (s ideNotificationHandlerState) String() string {
 	}
 }
 
-type ideNotificationRecevier interface {
-	HandleSessionChange(pcn ideRunSessionProcessChangedNotification)
-	HandleSessionTermination(stn ideRunSessionTerminatedNotification)
-	HandleServiceLogs(log ideSessionLogNotification)
-	HandleSessionMessage(smn ideSessionMessageNotification)
+// notificationReceiver is the internal sink for notifications parsed off the WS
+// connection. The Client implements it and dispatches each notification to the
+// session-specific SessionHandler registered for the notification's SessionID.
+type notificationReceiver interface {
+	handleSessionChange(pcn ideRunSessionProcessChangedNotification)
+	handleSessionTermination(stn ideRunSessionTerminatedNotification)
+	handleServiceLogs(log ideSessionLogNotification)
+	handleSessionMessage(smn ideSessionMessageNotification)
 }
 
-// The IDE notification handler takes care of handling IDE run session notifications arriving via a WebSocket connection.
-// It handles details of managing the connection and receiving notifications, allowing the IDE executable runner
-// to focus on starting Executables and handling their lifetime events.
-type ideNotificationHandler struct {
+// notificationHandler manages the WebSocket connection to the IDE notification
+// endpoint, including reconnect-with-backoff and ping/pong keepalive. Parsed
+// notifications are forwarded to the configured notificationReceiver.
+type notificationHandler struct {
 	lock                 *sync.Mutex
 	lifetimeCtx          context.Context
-	notificationReceiver ideNotificationRecevier // The receiver of IDE run session notifications (the IDE runner)
-	state                ideNotificationHandlerState
+	notificationReceiver notificationReceiver
+	state                notificationHandlerState
 	log                  logr.Logger
-	connInfo             *ideConnectionInfo
+	connInfo             *connectionInfo
 	reportTimeoutErrors  bool
 }
 
-func NewIdeNotificationHandler(
+func newNotificationHandler(
 	lifetimeCtx context.Context,
-	notificationReceiver ideNotificationRecevier,
-	connInfo *ideConnectionInfo,
+	notificationReceiver notificationReceiver,
+	connInfo *connectionInfo,
 	log logr.Logger,
-) *ideNotificationHandler {
-	retval := &ideNotificationHandler{
+) *notificationHandler {
+	retval := &notificationHandler{
 		lock:                 &sync.Mutex{},
 		lifetimeCtx:          lifetimeCtx,
 		notificationReceiver: notificationReceiver,
@@ -102,13 +105,16 @@ func NewIdeNotificationHandler(
 		connInfo:             connInfo,
 	}
 
-	// Before version20240423 the endpoint was not sending pong responses to ping messages, to timeouts are somewhat expected.
+	// Before version20240423 the endpoint was not sending pong responses to ping messages, so timeouts are somewhat expected.
 	retval.reportTimeoutErrors = equalOrNewer(connInfo.apiVersion, version20240423)
 
 	return retval
 }
 
-func (nh *ideNotificationHandler) WaitConnected(ctx context.Context) error {
+// WaitConnected blocks until the notification handler has an open connection
+// to the IDE notification endpoint, the passed context is cancelled, or the
+// handler enters the Disposed state.
+func (nh *notificationHandler) WaitConnected(ctx context.Context) error {
 	const errDisposed = "the IDE session endpoint is not available"
 
 	nhState := nh.getState()
@@ -134,18 +140,17 @@ func (nh *ideNotificationHandler) WaitConnected(ctx context.Context) error {
 	return waitErr
 }
 
-// Returns the state of the IDE notification handler.
-func (nh *ideNotificationHandler) getState() ideNotificationHandlerState {
+// getState returns the current state of the notification handler.
+func (nh *notificationHandler) getState() notificationHandlerState {
 	nh.lock.Lock()
 	defer nh.lock.Unlock()
 	return nh.state
 }
 
-// Transition the IDE notification handler to a new state, if the current state matches the expected state.
-// Returns true if the handler transitioned to the the new state ONLY.
-// If the transition was not successful (expected state does not match current state),
-// or if the new state is the same as the current state, it returns false.
-func (nh *ideNotificationHandler) setState(expectedState, newState ideNotificationHandlerState) bool {
+// setState transitions the notification handler to a new state, if the current
+// state matches one of the bits in expectedState. Returns true only if the
+// handler actually transitioned to a different state.
+func (nh *notificationHandler) setState(expectedState, newState notificationHandlerState) bool {
 	nh.lock.Lock()
 	defer nh.lock.Unlock()
 	if nh.state == newState {
@@ -164,8 +169,10 @@ func (nh *ideNotificationHandler) setState(expectedState, newState ideNotificati
 	return false
 }
 
-// Retry connecting to the IDE notification socket until we succeed or the lifetime context is cancelled.
-func (nh *ideNotificationHandler) tryConnecting() {
+// tryConnecting attempts to (re)connect to the IDE notification socket with
+// exponential backoff. Returns when either the connection succeeds or the
+// lifetime context is cancelled.
+func (nh *notificationHandler) tryConnecting() {
 	connecting := nh.setState(handlerStateInitial, handlerStateConnecting)
 	if !connecting {
 		// This is expected: we might be already connecting, or already connected, or disposed.
@@ -188,7 +195,7 @@ func (nh *ideNotificationHandler) tryConnecting() {
 			url = fmt.Sprintf("%s://localhost:%s%s", nh.connInfo.webSocketScheme, nh.connInfo.portStr, ideRunSessionNotificationResourcePath)
 		}
 
-		conn, _, err := nh.connInfo.GetDialer().Dial(url, headers)
+		conn, _, err := nh.connInfo.wsDialer.Dial(url, headers)
 		if err == nil {
 			return conn, nil
 		} else {
@@ -209,7 +216,7 @@ func (nh *ideNotificationHandler) tryConnecting() {
 	}
 }
 
-func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
+func (nh *notificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 	connCtx, cancelConnCtx := context.WithCancel(nh.lifetimeCtx)
 	defer cancelConnCtx()
 
@@ -305,8 +312,8 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 		}
 
 		switch msgType {
-		// No need to handle Ping and Pong messages, as the Gorilla WebSocket library handles them for us
-		// The close message is reported as CloseError from ReadMessage() call, handled above
+		// No need to handle Ping and Pong messages, as the Gorilla WebSocket library handles them for us.
+		// The close message is reported as CloseError from ReadMessage() call, handled above.
 
 		case websocket.TextMessage:
 			var basicNotification ideSessionNotificationBase
@@ -329,7 +336,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session process change notification received, recycling connection...")
 					return
 				} else {
-					nh.notificationReceiver.HandleSessionChange(pcn)
+					nh.notificationReceiver.handleSessionChange(pcn)
 				}
 
 			case notificationTypeSessionTerminated:
@@ -339,7 +346,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session termination notification received, recycling connection...")
 					return
 				} else {
-					nh.notificationReceiver.HandleSessionTermination(stn)
+					nh.notificationReceiver.handleSessionTermination(stn)
 				}
 
 			case notificationTypeServiceLogs:
@@ -349,7 +356,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session logs notification received, recycling connection...")
 					return
 				} else {
-					nh.notificationReceiver.HandleServiceLogs(nsl)
+					nh.notificationReceiver.handleServiceLogs(nsl)
 				}
 
 			case notificationTypeSessionMessage:
@@ -359,7 +366,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 					reportErrorAndReconnect(unmarshalErr, "Invalid IDE run session message notification received, recycling connection...")
 					return
 				} else {
-					nh.notificationReceiver.HandleSessionMessage(smn)
+					nh.notificationReceiver.handleSessionMessage(smn)
 				}
 			}
 
@@ -369,7 +376,7 @@ func (nh *ideNotificationHandler) receiveNotifications(wsConn *websocket.Conn) {
 	}
 }
 
-func (nh *ideNotificationHandler) doPinging(connCtx context.Context, wsConn *websocket.Conn) {
+func (nh *notificationHandler) doPinging(connCtx context.Context, wsConn *websocket.Conn) {
 	if pingPeriod == 0 {
 		nh.log.V(1).Info("IDE notification keepalive is disabled")
 		return

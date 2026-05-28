@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package exerunners
+package ide
 
 import (
 	"context"
@@ -25,8 +25,10 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
-// A set of data related to how IDE requests are formed.
-type ideConnectionInfo struct {
+// connectionInfo holds the data required to talk to the IDE endpoint over HTTP
+// and WebSocket: connection target, security material, negotiated protocol
+// version, and the set of launch-configuration types the IDE supports.
+type connectionInfo struct {
 	portStr         string // The local port on which the IDE is listening for run session requests
 	tokenStr        string // The security token to use when connecting to the IDE
 	httpScheme      string // The scheme to use when connecting to the IDE (HTTP or HTTPS)
@@ -43,13 +45,16 @@ type ideConnectionInfo struct {
 	wsDialer   *websocket.Dialer // The dialer to use when connecting to the IDE via WebSocket protocol
 }
 
-func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideConnectionInfo, error) {
-	const runnerNotAvailable = "Executables cannot be started via IDE: "
+// newConnectionInfo constructs a connectionInfo by reading the standard
+// DEBUG_SESSION_* environment variables and performing a /info handshake with
+// the IDE. It fails if no compatible protocol version can be negotiated.
+func newConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*connectionInfo, error) {
+	const ideNotAvailable = "IDE-backed sessions cannot be started: "
 	const missingRequiredEnvVar = "missing required environment variable '%s'"
 
 	createAndLogError := func(format string, a ...any) error {
 		err := fmt.Errorf(format, a...)
-		log.Info(runnerNotAvailable + err.Error())
+		log.Info(ideNotAvailable + err.Error())
 		return err
 	}
 
@@ -78,12 +83,12 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	if certFound {
 		certBytes, decodeErr := base64.StdEncoding.AppendDecode(nil, []byte(serverCertEncodedBytes))
 		if decodeErr != nil {
-			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", decodeErr)
+			return nil, createAndLogError("failed to decode the server certificate: %w secure communication with the IDE is not possible", decodeErr)
 		}
 
 		cert, certParseErr := x509.ParseCertificate(certBytes)
 		if certParseErr != nil {
-			return nil, createAndLogError("failed to decode the server certificate: %w Secure communication with the IDE is not possible", certParseErr)
+			return nil, createAndLogError("failed to decode the server certificate: %w secure communication with the IDE is not possible", certParseErr)
 		}
 
 		caCertPool := x509.NewCertPool()
@@ -99,7 +104,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 		webSocketScheme = "wss"
 	}
 
-	connInfo := ideConnectionInfo{
+	connInfo := connectionInfo{
 		portStr:         portStr,
 		tokenStr:        tokenStr,
 		httpScheme:      httpScheme,
@@ -110,7 +115,7 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	}
 
 	// Query for supported protocol version
-	req, reqCancel, reqCreationErr := connInfo.MakeIdeRequest(
+	req, reqCancel, reqCreationErr := connInfo.makeRequest(
 		lifetimeCtx,
 		ideRunSessionInfoPath,
 		http.MethodGet,
@@ -171,7 +176,10 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 	return &connInfo, nil
 }
 
-func (connInfo *ideConnectionInfo) MakeIdeRequest(
+// makeRequest constructs an authenticated HTTP request to the IDE endpoint with
+// a per-request timeout. The returned cancel function MUST be called by the
+// caller (typically with defer) regardless of whether the request succeeds.
+func (connInfo *connectionInfo) makeRequest(
 	parentCtx context.Context,
 	requestPath string,
 	httpMethod string,
@@ -188,7 +196,7 @@ func (connInfo *ideConnectionInfo) MakeIdeRequest(
 	req, reqCreationErr := http.NewRequestWithContext(reqCtx, httpMethod, url, body)
 	if reqCreationErr != nil {
 		reqCtxCancel()
-		return nil, nil, fmt.Errorf("failed to create IDE endpoint info request: %w", reqCreationErr)
+		return nil, nil, fmt.Errorf("failed to create IDE endpoint request: %w", reqCreationErr)
 	}
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", connInfo.tokenStr))
@@ -200,12 +208,4 @@ func (connInfo *ideConnectionInfo) MakeIdeRequest(
 	}
 
 	return req, reqCtxCancel, nil
-}
-
-func (connInfo *ideConnectionInfo) GetClient() *http.Client {
-	return connInfo.httpClient
-}
-
-func (connInfo *ideConnectionInfo) GetDialer() *websocket.Dialer {
-	return connInfo.wsDialer
 }

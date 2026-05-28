@@ -3,7 +3,12 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package exerunners
+// Package ide implements a client for the Aspire IDE execution protocol
+// (https://github.com/microsoft/aspire/blob/main/docs/specs/IDE-execution.md).
+// It is consumed by both the IdeExecutableRunner (for Executable objects with
+// ExecutionType=IDE) and the IdeSession controller (for stand-alone IDE debug
+// sessions).
+package ide
 
 import (
 	"encoding/json"
@@ -15,6 +20,95 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 )
+
+// SessionID is the run-session identifier assigned by the IDE.
+type SessionID string
+
+// MessageLevel matches the severity levels defined by the IDE execution
+// protocol for sessionMessage notifications.
+type MessageLevel string
+
+const (
+	MessageLevelInfo  MessageLevel = "info"
+	MessageLevelDebug MessageLevel = "debug"
+	MessageLevelError MessageLevel = "error"
+)
+
+// StartSessionRequest is the data sent to the IDE to create a new run session.
+type StartSessionRequest struct {
+	// LaunchConfigurations is the raw JSON array of launch configurations to
+	// hand to the IDE. At least one element must be present, and at least one
+	// element's "type" must be in Client.SupportedLaunchConfigurations().
+	LaunchConfigurations json.RawMessage
+
+	// Optional environment variables passed to the launched process.
+	Env []apiv1.EnvVar
+
+	// Optional process arguments.
+	Args []string
+}
+
+// EarlyTermination describes a session that terminated synchronously during
+// StartSession (the IDE delivered a sessionTerminated notification before the
+// HTTP "create session" response arrived).
+type EarlyTermination struct {
+	// ExitCode is the exit code reported by the IDE, or apiv1.UnknownExitCode if
+	// the IDE did not provide one (or it was outside the int32 range).
+	ExitCode *int32
+
+	// Failed indicates whether the IDE reported the session as having failed to
+	// start (the termination notification arrived without a processRestarted
+	// notification first). When false, the session ran briefly and exited.
+	Failed bool
+}
+
+// StartSessionResult is returned from a successful StartSession call.
+type StartSessionResult struct {
+	// SessionID is the IDE-assigned identifier for the session.
+	SessionID SessionID
+
+	// EarlyTermination is set when the session was reported as terminated by the
+	// IDE before StartSession returned. When non-nil, no OnTerminated callback
+	// will be delivered for this session (the caller already has the data) and
+	// ConfirmHandlerReady is a no-op.
+	EarlyTermination *EarlyTermination
+
+	// ConfirmHandlerReady must be invoked by the caller once it has finished
+	// any initial bookkeeping for the session and is ready to receive
+	// notifications via the handler that was passed to StartSession.
+	// Notifications received between StartSession returning and
+	// ConfirmHandlerReady being called are buffered and delivered in order on
+	// the session's dispatch goroutine. The function is safe to call multiple
+	// times; only the first call has effect.
+	ConfirmHandlerReady func()
+}
+
+// SessionHandler receives notifications about a single IDE run session.
+// All methods for a given SessionID are invoked sequentially on the session's
+// dispatch goroutine; implementations must therefore avoid blocking for long
+// periods inside these callbacks.
+type SessionHandler interface {
+	// OnProcessChanged is invoked when the IDE reports a new (or restarted)
+	// main process for the session. The IDE may report process changes
+	// multiple times.
+	OnProcessChanged(sessionID SessionID, pid process.Pid_t)
+
+	// OnTerminated is invoked when the IDE reports the session as terminated.
+	// exitCode is apiv1.UnknownExitCode if the IDE did not provide one (or it
+	// did not fit into int32).
+	OnTerminated(sessionID SessionID, exitCode *int32)
+
+	// OnLog delivers a stdout/stderr line emitted by the session's process.
+	OnLog(sessionID SessionID, isStdErr bool, message string)
+
+	// OnMessage delivers a user-facing diagnostic message about the session.
+	// For MessageLevelError the message contains a formatted representation of
+	// the error code, message, and any nested error details supplied by the IDE.
+	OnMessage(sessionID SessionID, level MessageLevel, message string)
+}
+
+// Wire-level protocol types follow. These are unexported because they are pure
+// transport detail; consumers use Client and SessionHandler.
 
 type notificationType string
 
@@ -40,8 +134,7 @@ func (pcn *ideRunSessionProcessChangedNotification) ToString() string {
 	if pcn.PID != 0 {
 		maybePID = fmt.Sprintf(" (PID: %d)", pcn.PID)
 	}
-	retval := fmt.Sprintf("Session %s: %s%s", pcn.SessionID, pcn.NotificationType, maybePID)
-	return retval
+	return fmt.Sprintf("Session %s: %s%s", pcn.SessionID, pcn.NotificationType, maybePID)
 }
 
 type ideRunSessionTerminatedNotification struct {
@@ -77,8 +170,8 @@ type ideSessionMessageNotification struct {
 
 type ideRunSessionRequestV1 struct {
 	// This is typically an array of ideLaunchConfiguration-derived objects,
-	// but in this implementation we will take whatever the model annotation contains
-	// and just pass it through to the IDE (that is why the type is json.RawMessage).
+	// but in this implementation we will take whatever the caller supplies and
+	// just pass it through to the IDE (which is why the type is json.RawMessage).
 	// Must have at least one element.
 	LaunchConfigurations json.RawMessage `json:"launch_configurations"`
 
@@ -143,8 +236,6 @@ const (
 	ideEndpointTokenVar = "DEBUG_SESSION_TOKEN"
 	ideEndpointCertVar  = "DEBUG_SESSION_SERVER_CERTIFICATE"
 
-	launchConfigurationsAnnotation = "executable.usvc-dev.developer.microsoft.com/launch-configurations"
-
 	version20240303      apiVersion = "2024-03-03"
 	version20240423      apiVersion = "2024-04-23"
 	version20251001      apiVersion = "2025-10-01"
@@ -154,6 +245,7 @@ const (
 	// Well-known launch configurations
 	vsProjectLaunchConfiguration = "project"
 
+	// Environment variables used to override IDE-related timeouts at runtime.
 	DCP_IDE_REQUEST_TIMEOUT_SECONDS        = "DCP_IDE_REQUEST_TIMEOUT_SECONDS"
 	DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS   = "DCP_IDE_NOTIFICATION_TIMEOUT_SECONDS"
 	DCP_IDE_NOTIFICATION_KEEPALIVE_SECONDS = "DCP_IDE_NOTIFICATION_KEEPALIVE_SECONDS"
@@ -164,12 +256,12 @@ var (
 )
 
 func equalOrNewer(currentVersion, baselineVersion apiVersion) bool {
-	currentVersionTime, paraseErr := time.Parse(time.DateOnly, string(currentVersion))
-	if paraseErr != nil {
+	currentVersionTime, parseErr := time.Parse(time.DateOnly, string(currentVersion))
+	if parseErr != nil {
 		return false
 	}
-	baselineVersionTime, paraseErr := time.Parse(time.DateOnly, string(baselineVersion))
-	if paraseErr != nil {
+	baselineVersionTime, parseErr := time.Parse(time.DateOnly, string(baselineVersion))
+	if parseErr != nil {
 		return false
 	}
 	return currentVersionTime.After(baselineVersionTime) || currentVersionTime.Equal(baselineVersionTime)

@@ -6,79 +6,56 @@
 package exerunners
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"math"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
+	"github.com/microsoft/dcp/internal/ide"
 	"github.com/microsoft/dcp/internal/logs"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
-	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 const (
-	runSessionCouldNotBeStarted = "run session could not be started: "
+	runSessionCouldNotBeStarted    = "run session could not be started: "
+	launchConfigurationsAnnotation = "executable.usvc-dev.developer.microsoft.com/launch-configurations"
 )
 
-type startingState struct {
-	status  apiv1.ExecutableStatus
-	updated bool
-}
-
-func NewStartingState(status apiv1.ExecutableStatus) *startingState {
-	return &startingState{
-		status:  status,
-		updated: false,
-	}
-}
-
+// IdeExecutableRunner runs Executables of ExecutionType=IDE by delegating to a
+// shared ide.Client. It owns the Executable-specific concerns: looking up the
+// launch-configurations annotation, creating per-run stdout/stderr temp files,
+// bounding concurrent startup work, and bridging ide.SessionHandler callbacks
+// to controllers.RunChangeHandler.
 type IdeExecutableRunner struct {
-	lock                *sync.Mutex
-	startupQueue        *resiliency.WorkQueue // Queue for starting IDE run sessions
-	activeRuns          *syncmap.Map[controllers.RunID, *runData]
-	log                 logr.Logger
-	lifetimeCtx         context.Context // Lifetime context of the controller hosting this runner
-	connectionInfo      *ideConnectionInfo
-	notificationHandler *ideNotificationHandler
+	log          logr.Logger
+	lifetimeCtx  context.Context
+	ideClient    *ide.Client
+	startupQueue *resiliency.WorkQueue // Bounds concurrent IDE run-session startups
+	activeRuns   *syncmap.Map[controllers.RunID, *ideRunBridge]
 }
 
-func NewIdeExecutableRunner(lifetimeCtx context.Context, log logr.Logger) (*IdeExecutableRunner, error) {
-	connInfo, err := NewIdeConnectionInfo(lifetimeCtx, log)
-	if err != nil {
-		return nil, err
+// NewIdeExecutableRunner constructs an IdeExecutableRunner backed by the
+// supplied shared ide.Client.
+func NewIdeExecutableRunner(lifetimeCtx context.Context, ideClient *ide.Client, log logr.Logger) *IdeExecutableRunner {
+	return &IdeExecutableRunner{
+		log:          log,
+		lifetimeCtx:  lifetimeCtx,
+		ideClient:    ideClient,
+		startupQueue: resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
+		activeRuns:   &syncmap.Map[controllers.RunID, *ideRunBridge]{},
 	}
-
-	r := &IdeExecutableRunner{
-		lock:           &sync.Mutex{},
-		startupQueue:   resiliency.NewWorkQueue(lifetimeCtx, resiliency.DefaultConcurrency),
-		activeRuns:     &syncmap.Map[controllers.RunID, *runData]{},
-		log:            log,
-		lifetimeCtx:    lifetimeCtx,
-		connectionInfo: connInfo,
-	}
-
-	nh := NewIdeNotificationHandler(lifetimeCtx, r, connInfo, log)
-	r.notificationHandler = nh
-	return r, nil
 }
 
 func (r *IdeExecutableRunner) StartRun(
@@ -95,16 +72,6 @@ func (r *IdeExecutableRunner) StartRun(
 		return result
 	}
 
-	ideConnErr := r.notificationHandler.WaitConnected(ctx)
-	if ideConnErr != nil {
-		result.ExeState = apiv1.ExecutableStateFailedToStart
-		result.StartupError = fmt.Errorf(runSessionCouldNotBeStarted+"%w", ideConnErr)
-		return result
-	}
-
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
 	workEnqueueErr := r.startupQueue.Enqueue(func(_ context.Context) {
 		r.doStartRun(ctx, exe, runChangeHandler, log)
 	})
@@ -114,11 +81,11 @@ func (r *IdeExecutableRunner) StartRun(
 		result.ExeState = apiv1.ExecutableStateFailedToStart
 		result.StartupError = fmt.Errorf(runSessionCouldNotBeStarted+"%w", workEnqueueErr)
 		return result
-	} else {
-		log.V(1).Info("Executable is starting...")
-		result.ExeState = apiv1.ExecutableStateStarting
-		return result
 	}
+
+	log.V(1).Info("Executable is starting...")
+	result.ExeState = apiv1.ExecutableStateStarting
+	return result
 }
 
 func (r *IdeExecutableRunner) doStartRun(
@@ -127,14 +94,11 @@ func (r *IdeExecutableRunner) doStartRun(
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) {
-	var stdOutFile, stdErrFile *os.File
 	namespacedName := exe.NamespacedName()
 	result := controllers.NewExecutableStartResult()
+	var stdOutFile, stdErrFile *os.File
 
 	reportRunCompletion := func(exeState apiv1.ExecutableState, startupError error) {
-		r.lock.Lock()
-		defer r.lock.Unlock()
-
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = exeState
 		result.StartupError = startupError
@@ -153,415 +117,233 @@ func (r *IdeExecutableRunner) doStartRun(
 		runChangeHandler.OnStartupCompleted(namespacedName, result)
 	}
 
-	req, reqCancel, err := r.prepareRunRequest(exe)
-	if err != nil {
-		log.Error(err, runSessionCouldNotBeStarted+"failed to prepare run session request")
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart, err)
+	launchConfigs, lcErr := extractLaunchConfigurations(exe)
+	if lcErr != nil {
+		log.Error(lcErr, runSessionCouldNotBeStarted+"failed to extract launch configurations")
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, lcErr)
 		return
 	}
-	defer reqCancel()
 
 	// Set up temp files for capturing stdout and stderr. These files (if successfully created)
 	// will be cleaned up by the Executable controller when the Executable is deleted.
 
-	stdOutFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		log.Error(err, "Failed to create temporary file for capturing standard output data")
+	var fileErr error
+	stdOutFile, fileErr = usvc_io.OpenTempFile(fmt.Sprintf("%s_out_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if fileErr != nil {
+		log.Error(fileErr, "Failed to create temporary file for capturing standard output data")
 		stdOutFile = nil
 	} else {
 		result.StdOutFile = stdOutFile.Name()
 	}
 
-	stdErrFile, err = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
-	if err != nil {
-		log.Error(err, "Failed to create temporary file for capturing standard error data")
+	stdErrFile, fileErr = usvc_io.OpenTempFile(fmt.Sprintf("%s_err_%s", exe.Name, exe.UID), os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
+	if fileErr != nil {
+		log.Error(fileErr, "Failed to create temporary file for capturing standard error data")
 		stdErrFile = nil
 	} else {
 		result.StdErrFile = stdErrFile.Name()
 	}
 
-	if rawRequest, dumpRequestErr := httputil.DumpRequest(req, true); dumpRequestErr == nil {
-		log.V(1).Info("Sending IDE run session request", "Request", string(rawRequest))
-	} else {
-		log.V(1).Info("Sending IDE run session request", "URL", req.URL)
-	}
+	bridge := newIdeRunBridge(r, namespacedName, runChangeHandler, stdOutFile, stdErrFile)
 
-	var resp *http.Response
-	resp, err = r.connectionInfo.GetClient().Do(req)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			log.Error(err, fmt.Sprintf("Timeout of %.0f seconds exceeded waiting for the IDE to start a run session; you can set the DCP_IDE_REQUEST_TIMEOUT_SECONDS environment variable to override this timeout (in seconds)", ideEndpointRequestTimeout.Seconds()))
-		} else {
-			log.Error(err, runSessionCouldNotBeStarted+"request round-trip failed")
-		}
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if rawResponse, dumpResponseErr := httputil.DumpResponse(resp, true); dumpResponseErr == nil {
-		log.V(1).Info("Completed IDE run session request", "Response", string(rawResponse))
-	} else {
-		log.V(1).Info("Completed IDE run session request", "URL", req.URL)
-	}
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-		respErr := fmt.Errorf(runSessionCouldNotBeStarted+"IDE returned unexpected status code for Executable run request: %s", resp.Status)
-		log.Error(respErr, runSessionCouldNotBeStarted+"IDE returned a response indicating failure",
-			"Status", resp.Status,
-			"Body", parseResponseBody(respBody),
-		)
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart, respErr)
+	startRes, startErr := r.ideClient.StartSession(ctx, ide.StartSessionRequest{
+		LaunchConfigurations: launchConfigs,
+		Env:                  exe.Status.EffectiveEnv,
+		Args:                 exe.Status.EffectiveArgs,
+	}, bridge, log)
+	if startErr != nil {
+		log.Error(startErr, runSessionCouldNotBeStarted)
+		reportRunCompletion(apiv1.ExecutableStateFailedToStart, startErr)
 		return
 	}
 
-	sessionURL := resp.Header.Get("Location")
-	if sessionURL == "" {
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart, errors.New("IDE run session response is missing required 'Location' header"))
-		return
-	}
+	runID := controllers.RunID(startRes.SessionID)
+	bridge.runID = runID
 
-	var rid string
-	rid, err = getLastUrlPathSegment(sessionURL)
-	if err != nil {
-		reportRunCompletion(apiv1.ExecutableStateFailedToStart, err)
-		return
-	}
-
-	r.lock.Lock()
-
-	runID := controllers.RunID(rid)
-	rd := r.ensureRunData(runID)
-	rd.runID = runID
-	if rd.state == runStateFailedToStart || rd.state == runStateCompleted {
-		// We are not going to use the change handler for this run, but we might need to process some notifications about it,
-		// so we do not want to block on the change handler wait group.
-		rd.DisableChangeHandlerReadiness()
-
-		r.activeRuns.Delete(runID)
-		r.lock.Unlock()
-
-		result.ExitCode = pointers.Duplicate(rd.exitCode)
-		if rd.state == runStateFailedToStart {
+	if startRes.EarlyTermination != nil {
+		// The IDE has reported the session as terminated before our StartSession returned.
+		// The bridge was never invoked (and never will be), so we report completion ourselves.
+		result.ExitCode = pointers.Duplicate(startRes.EarlyTermination.ExitCode)
+		if startRes.EarlyTermination.Failed {
 			result.ExeState = apiv1.ExecutableStateFailedToStart
 		} else {
 			result.ExeState = apiv1.ExecutableStateFinished
 		}
-
 		// In case of a failure we do not have an error to report here, but the IDE might have sent
-		// some error messages via notifications, which would be already sent to the run change handler.
+		// some error messages via notifications, which would be already sent to the run change handler
+		// (it wasn't, because the handler is the bridge that was never invoked — but logs are part of
+		// the early-termination cleanup and there is no useful content to preserve).
 		reportRunCompletion(result.ExeState, nil)
-
 		return
 	}
 
-	rd.name = namespacedName
-	rd.sessionURL = sessionURL
-	defer rd.IncreaseChangeHandlerReadiness()
-	err = rd.SetOutputWriters(stdOutFile, stdErrFile)
-	if err != nil {
-		log.Error(err, "Failed to set output writers to capture stdout/stderr") // Should never happen
-	}
-	rd.changeHandler = runChangeHandler
-	rd.startRunMethodCompleted = true
-
-	r.lock.Unlock()
+	r.activeRuns.Store(runID, bridge)
 
 	log.V(1).Info("IDE run session started", "RunID", runID)
 	result.RunID = runID
 	result.CompletionTimestamp = metav1.NowMicro()
 	result.ExeState = apiv1.ExecutableStateRunning
-	result.StartWaitForRunCompletion = func() {
-		rd.IncreaseChangeHandlerReadiness()
-	}
+	result.StartWaitForRunCompletion = startRes.ConfirmHandlerReady
+
+	// Hand off ownership of the files to the bridge; reportRunCompletion no longer cleans them up.
+	stdOutFile = nil
+	stdErrFile = nil
+
 	runChangeHandler.OnStartupCompleted(namespacedName, result)
 }
 
 func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
-	const runSessionCouldNotBeStopped = "run session could not be stopped: "
-
-	rd, found := r.activeRuns.Load(runID)
+	bridge, found := r.activeRuns.Load(runID)
 	if !found {
 		r.log.Info("Attempted to stop IDE run session which was not found", "RunID", runID)
 		return nil
 	}
-
-	req, reqCancel, err := r.makeRequest(ideRunSessionResourcePath+"/"+string(runID), http.MethodDelete, nil)
-	if err != nil {
-		return fmt.Errorf(runSessionCouldNotBeStopped+"failed to create request: %w", err)
-	}
-	defer reqCancel()
-
-	resp, err := r.connectionInfo.GetClient().Do(req)
-	if err != nil {
-		return fmt.Errorf(runSessionCouldNotBeStopped+"%w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		r.log.V(1).Info("IDE run session stopped", "RunID", runID)
-
-		// Wait up to 10 seconds for the IDE to send confirmation that the run session has been terminated
-		// (and that we completed our run cleanup as a result).
-
-		ideExitCtx, ideExitCancel := context.WithTimeout(ctx, 10*time.Second)
-		defer ideExitCancel()
-
-		select {
-		case <-ideExitCtx.Done():
-			// The IDE has not sent a confirmation despite reporting the run as stopped successfully.
-			// Exit code will not be available, but otherwise we can assume everything else is OK and do the cleanup.
-			r.log.V(1).Info("timeout waiting for IDE to confirm run session termination", "RunID", runID)
-			r.lock.Lock()
-			defer r.lock.Unlock()
-			r.activeRuns.Delete(runID)
-			rd.CloseOutputWriters()
-			close(rd.exitCh)
-			rd.NotifyRunCompletedAsync(r.lock)
-		case <-rd.exitCh:
-			// Run termination notification received from the IDE, everything is cleaned up by the notification handler.
-		}
-
-		return nil
-	}
-
-	if resp.StatusCode == http.StatusNoContent {
-		r.log.Info("Attempted to stop IDE run session which was not found", "RunID", runID)
-		return nil
-	}
-
-	respBody, _ := io.ReadAll(resp.Body) // Best effort to get as much data about the error as possible
-	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, parseResponseBody(respBody))
+	return r.ideClient.StopSession(ctx, bridge.sessionID(), log)
 }
 
-func (r *IdeExecutableRunner) ReleaseRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
-	rd, found := r.activeRuns.LoadAndDelete(runID)
+func (r *IdeExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
+	bridge, found := r.activeRuns.LoadAndDelete(runID)
 	if !found {
 		log.V(1).Info("Release of an IDE run session requested, but the run was already released", "RunID", runID)
 		return nil
 	}
-	rd.CloseOutputWriters()
-	return nil
+	bridge.closeOutputFiles()
+	return r.ideClient.ReleaseSession(ctx, bridge.sessionID(), log)
 }
 
-func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, context.CancelFunc, error) {
-	var isrBody []byte
-	var bodyErr error
-
-	if equalOrNewer(r.connectionInfo.apiVersion, version20240303) {
-		isrBody, bodyErr = r.prepareRunRequestV1(exe)
-		if bodyErr != nil {
-			return nil, nil, fmt.Errorf("failed to prepare IDE run request: %w", bodyErr)
-		}
-	} else {
-		return nil, nil, fmt.Errorf("Aspire IDE extension is older than the minimum supported version; DCP requires an extension that supports protocol version %s or newer", version20240303)
-	}
-
-	req, reqCancel, reqErr := r.makeRequest(ideRunSessionResourcePath, http.MethodPut, bytes.NewBuffer(isrBody))
-	if reqErr != nil {
-		return nil, nil, fmt.Errorf("failed to create IDE run session request: %w", reqErr)
-	}
-	return req, reqCancel, nil
-}
-
-func (r *IdeExecutableRunner) prepareRunRequestV1(exe *apiv1.Executable) ([]byte, error) {
-	if exe.Annotations[launchConfigurationsAnnotation] != "" {
-		launchConfigsRaw := exe.Annotations[launchConfigurationsAnnotation]
-		var launchConfigs json.RawMessage
-		unmarshalErr := json.Unmarshal([]byte(launchConfigsRaw), &launchConfigs)
-		if unmarshalErr != nil {
-			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
-		}
-
-		// Check if at least one launch configuration is of a supported type
-		var lcs []launchConfigurationBase
-		unmarshalErr = json.Unmarshal(launchConfigs, &lcs)
-		if unmarshalErr != nil {
-			return nil, fmt.Errorf("Executable cannot be run because its launch configuration is invalid: %w", unmarshalErr)
-		}
-		requestedConfigurations := slices.Map[string](lcs, func(lc launchConfigurationBase) string { return lc.Type })
-		if len(slices.Intersect(r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)) == 0 {
-			return nil, fmt.Errorf("Executable cannot be run because its launch configuration type is not supported by the connected IDE; supported types: %v, requested types: %v",
-				r.connectionInfo.supportedLaunchConfigurations, requestedConfigurations)
-		}
-
-		isr := ideRunSessionRequestV1{
-			LaunchConfigurations: json.RawMessage(launchConfigs),
-			Env:                  exe.Status.EffectiveEnv,
-			Args:                 exe.Status.EffectiveArgs,
-		}
-
-		isrBody, marshalErr := json.Marshal(isr)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("failed to create Executable run request body: %w", marshalErr)
-		}
-		return isrBody, nil
-	} else {
+// extractLaunchConfigurations returns the launch-configurations payload for an
+// Executable (read from the well-known annotation) as raw JSON, ready to be
+// passed to ide.Client.StartSession. The IDE-side validation (well-formed JSON,
+// at least one supported type) is performed by ide.Client itself.
+func extractLaunchConfigurations(exe *apiv1.Executable) (json.RawMessage, error) {
+	raw := exe.Annotations[launchConfigurationsAnnotation]
+	if raw == "" {
 		return nil, fmt.Errorf("IDE execution was requested for the Executable but the required '%s' annotation is missing",
 			launchConfigurationsAnnotation)
 	}
+
+	var lcs json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &lcs); err != nil {
+		return nil, fmt.Errorf("Executable cannot be run because its launch configuration annotation is not valid JSON: %w", err)
+	}
+	return lcs, nil
 }
 
-func (r *IdeExecutableRunner) HandleSessionChange(pcn ideRunSessionProcessChangedNotification) {
-	runID := controllers.RunID(pcn.SessionID)
-	r.log.V(1).Info("IDE run session changed", "RunID", runID, "PID", pcn.PID)
+// ideRunBridge bridges ide.SessionHandler callbacks for a single IDE run
+// session to the controllers.RunChangeHandler that the Executable controller
+// provided when StartRun was invoked. It also owns the stdout/stderr temp
+// files associated with the run (wrapped in TimestampWriter so log lines are
+// prefixed with line numbers and timestamps for parity with the process
+// runner output).
+type ideRunBridge struct {
+	runner        *IdeExecutableRunner
+	name          types.NamespacedName
+	changeHandler controllers.RunChangeHandler
 
-	r.lock.Lock()
-	defer r.lock.Unlock()
+	// runID is set by IdeExecutableRunner.doStartRun once the session ID is
+	// known and is read only on goroutines that observe it after StartSession
+	// has returned successfully.
+	runID controllers.RunID
 
-	rd := r.ensureRunData(runID)
-	rd.runID = runID
-	rd.pid = pcn.PID
-	if rd.state == runStateNotStarted {
-		rd.state = runStateRunning
-	}
-
-	rd.NotifyRunChangedAsync(r.lock)
+	lock      *sync.Mutex
+	stdOutW   usvc_io.WriteSyncerCloser
+	stdErrW   usvc_io.WriteSyncerCloser
+	outClosed bool
 }
 
-func (r *IdeExecutableRunner) HandleSessionTermination(stn ideRunSessionTerminatedNotification) {
-	runID := controllers.RunID(stn.SessionID)
-	exitCode := apiv1.UnknownExitCode
-	if stn.ExitCode != nil {
-		if math.MinInt32 <= *stn.ExitCode && *stn.ExitCode <= math.MaxUint32 {
-			// If the exit code can be represented as int32 without data loss, use it.
-			// A reinterpretation of uint32 value will occur if the code > math.MaxInt32, but that is acceptable.
-			exitCode = new(int32)
-			*exitCode = int32(*stn.ExitCode)
-		} else {
-			r.log.Info("Received IDE run session termination notification with exit code outside uint32 range; will treat exit code as 'unknown'.",
-				"RunID", runID,
-				"ReceivedExitCode", *stn.ExitCode,
-			)
-		}
+func newIdeRunBridge(
+	runner *IdeExecutableRunner,
+	name types.NamespacedName,
+	changeHandler controllers.RunChangeHandler,
+	stdOutFile, stdErrFile *os.File,
+) *ideRunBridge {
+	b := &ideRunBridge{
+		runner:        runner,
+		name:          name,
+		changeHandler: changeHandler,
+		lock:          &sync.Mutex{},
 	}
-	r.log.V(1).Info("IDE run session terminated", "RunID", runID, "PID", stn.PID, "ExitCode", exitCode)
-
-	r.lock.Lock()
-	defer r.lock.Unlock()
-
-	rd := r.ensureRunData(runID)
-	if rd.startRunMethodCompleted {
-		// This is the last time we will hear about this run session, so we can delete it from the active runs map.
-		// If startRunCompleted is false, this notification indicates "failed at startup" run and we need to keep its data
-		// in the active runs till the StartRun() method has a chance to process (and delete) it.
-		r.activeRuns.Delete(runID)
+	if stdOutFile != nil {
+		b.stdOutW = usvc_io.NewTimestampWriter(stdOutFile)
 	}
-	rd.runID = runID
-	rd.pid = stn.PID
-	rd.exitCode = exitCode
-	rd.CloseOutputWriters()
-	switch rd.state {
-	case runStateNotStarted:
-		rd.state = runStateFailedToStart
-		close(rd.exitCh)
-	case runStateRunning:
-		rd.state = runStateCompleted
-		close(rd.exitCh)
+	if stdErrFile != nil {
+		b.stdErrW = usvc_io.NewTimestampWriter(stdErrFile)
 	}
-	rd.NotifyRunCompletedAsync(r.lock)
+	return b
 }
 
-func (r *IdeExecutableRunner) HandleServiceLogs(nsl ideSessionLogNotification) {
-	runID := controllers.RunID(nsl.SessionID)
-
-	rd := r.ensureRunData(runID)
-	var err error
-	msg := osutil.WithNewline([]byte(nsl.LogMessage))
-	if nsl.IsStdErr {
-		_, err = rd.stdErr.Write(msg)
-	} else {
-		_, err = rd.stdOut.Write(msg)
-	}
-
-	if err != nil {
-		r.log.Error(err, "Failed to persist a log message")
-	}
+func (b *ideRunBridge) sessionID() ide.SessionID {
+	return ide.SessionID(b.runID)
 }
 
-func (r *IdeExecutableRunner) HandleSessionMessage(smn ideSessionMessageNotification) {
-	runID := controllers.RunID(smn.SessionID)
-	log := r.log.WithValues("RunID", runID)
+func (b *ideRunBridge) OnProcessChanged(_ ide.SessionID, pid process.Pid_t) {
+	b.changeHandler.OnMainProcessChanged(b.runID, pid)
+}
 
-	msg := strings.TrimSpace(smn.Message)
-	if msg == "" {
-		log.V(1).Info("Received empty IDE session message, ignoring")
+func (b *ideRunBridge) OnTerminated(_ ide.SessionID, exitCode *int32) {
+	b.closeOutputFiles()
+	b.changeHandler.OnRunCompleted(b.runID, exitCode, nil)
+}
+
+func (b *ideRunBridge) OnLog(_ ide.SessionID, isStdErr bool, message string) {
+	// ide.Client serializes per-session notifications, so this method runs
+	// without races against other On* callbacks for the same session.
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	if b.outClosed {
 		return
 	}
 
-	rd := r.ensureRunData(runID)
-
-	switch smn.Level {
-
-	case sessionMessageLevelInfo:
-		rd.SendRunMessageAsync(r.lock, msg, controllers.RunMessageLevelInfo)
-
-	case sessionMessageLevelDebug:
-		rd.SendRunMessageAsync(r.lock, msg, controllers.RunMessageLevelDebug)
-
-	case sessionMessageLevelError:
-		er := errorResponse{
-			Error: errorDetail{
-				Code:    smn.Code,
-				Message: smn.Message,
-				Details: smn.Details,
-			},
-		}
-		rd.SendRunMessageAsync(r.lock, er.String(), controllers.RunMessageLevelError)
-
-	default:
-		log.V(1).Info("Received IDE session message with unexpected severity level", "Level", smn.Level, "Message", smn.Message)
+	target := b.stdOutW
+	if isStdErr {
+		target = b.stdErrW
 	}
-}
+	if target == nil {
+		return
+	}
 
-func (r *IdeExecutableRunner) ensureRunData(runID controllers.RunID) *runData {
-	// Notifications for a particular run may arrive before the call to create a run session returns.
-	// That is why we use LoadOrStoreNew in places where we want to ensure that we have a runState for a given run ID.
-	rd, _ := r.activeRuns.LoadOrStoreNew(runID, func() *runData {
-		return NewRunData(r.lifetimeCtx)
-	})
-	return rd
-}
-
-func (r *IdeExecutableRunner) makeRequest(
-	requestPath string,
-	httpMethod string,
-	body io.Reader,
-) (*http.Request, context.CancelFunc, error) {
-	return r.connectionInfo.MakeIdeRequest(
-		r.lifetimeCtx,
-		requestPath,
-		httpMethod,
-		body,
-	)
-}
-
-func getLastUrlPathSegment(rawURL string) (string, error) {
-	url, err := url.Parse(rawURL)
+	_, err := target.Write(osutil.WithNewline([]byte(message)))
 	if err != nil {
-		return "", err
-	}
-
-	pathSegments := strings.Split(url.Path, "/")
-	if len(pathSegments) == 0 {
-		return "", fmt.Errorf("URL '%s' has no path segments", rawURL)
-	}
-	return pathSegments[len(pathSegments)-1], nil
-}
-
-func parseResponseBody(rawBody []byte) string {
-	if len(rawBody) == 0 {
-		return ""
-	}
-
-	var errResp errorResponse
-	err := json.Unmarshal(rawBody, &errResp)
-	if err == nil {
-		return errResp.String()
-	} else {
-		return string(rawBody)
+		b.runner.log.Error(err, "Failed to persist an IDE-emitted log message", "RunID", b.runID)
 	}
 }
 
-var _ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
+func (b *ideRunBridge) OnMessage(_ ide.SessionID, level ide.MessageLevel, message string) {
+	var rml controllers.RunMessageLevel
+	switch level {
+	case ide.MessageLevelInfo:
+		rml = controllers.RunMessageLevelInfo
+	case ide.MessageLevelDebug:
+		rml = controllers.RunMessageLevelDebug
+	case ide.MessageLevelError:
+		rml = controllers.RunMessageLevelError
+	default:
+		rml = controllers.RunMessageLevelInfo
+	}
+	b.changeHandler.OnRunMessage(b.runID, rml, message)
+}
+
+func (b *ideRunBridge) closeOutputFiles() {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
+	if b.outClosed {
+		return
+	}
+	b.outClosed = true
+
+	if b.stdOutW != nil {
+		_ = b.stdOutW.Close()
+		b.stdOutW = nil
+	}
+	if b.stdErrW != nil {
+		_ = b.stdErrW.Close()
+		b.stdErrW = nil
+	}
+}
+
+var (
+	_ controllers.ExecutableRunner = (*IdeExecutableRunner)(nil)
+	_ ide.SessionHandler           = (*ideRunBridge)(nil)
+)

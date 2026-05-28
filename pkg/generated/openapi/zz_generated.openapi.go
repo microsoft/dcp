@@ -74,6 +74,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.HealthProbeSchedule{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_HealthProbeSchedule(ref),
 		v1.HttpHeader{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_HttpHeader(ref),
 		v1.HttpProbe{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v1_HttpProbe(ref),
+		v1.IdeSession{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_IdeSession(ref),
+		v1.IdeSessionList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_IdeSessionList(ref),
+		v1.IdeSessionSpec{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_IdeSessionSpec(ref),
+		v1.IdeSessionStatus{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v1_IdeSessionStatus(ref),
 		v1.ImageLayer{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_ImageLayer(ref),
 		v1.LogOptions{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_LogOptions(ref),
 		v1.LogStreamer{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_LogStreamer(ref),
@@ -3525,6 +3529,209 @@ func schema_microsoft_dcp_api_v1_HttpProbe(ref common.ReferenceCallback) common.
 		},
 		Dependencies: []string{
 			v1.HttpHeader{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_IdeSession(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IdeSession represents a debug session running inside a connected IDE. Unlike Executable, an IdeSession is not associated with a child process owned by DCP; it is purely a request for the IDE to spin up (and later tear down) a debug session described by Spec.LaunchConfigurations.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.IdeSessionSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.IdeSessionStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v1.IdeSessionSpec{}.OpenAPIModelName(), v1.IdeSessionStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_IdeSessionList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IdeSessionList contains a list of IdeSession instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1.IdeSession{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v1.IdeSession{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_IdeSessionSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IdeSessionSpec describes the desired state of an IdeSession.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"launchConfigurations": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LaunchConfigurations is a JSON document (typically an array of one or more launch configuration objects) that is passed to the connected IDE when the session is started. The exact schema is defined by the Aspire IDE-execution protocol; the controller does not interpret the payload beyond verifying that it parses as JSON.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"desiredState": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DesiredState requests a particular target state for the IdeSession. Allowed values are \"\" (Initial), \"Running\", and \"Stopped\". The session does not begin execution until DesiredState is set to \"Running\". Once DesiredState is set to \"Stopped\" it cannot be changed back to \"Running\".",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"launchConfigurations"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_IdeSessionStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IdeSessionStatus describes the actual state of an IdeSession.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"state": {
+						SchemaProps: spec.SchemaProps{
+							Description: "State is the current lifecycle state of the IdeSession as observed by the controller.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"message": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Message is a human-readable explanation of the current State, typically populated when the session enters Failed or as additional context for state transitions.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"sessionID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SessionID is the identifier assigned by the IDE to the underlying run session. It is populated once the session has been successfully started.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PID is the process identifier of the main process the IDE attached to. The IDE may report a new PID over time (e.g. when an application is restarted), in which case this value is updated.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"startupTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartupTimestamp records when the session start attempt was made.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"finishTimestamp": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishTimestamp records when the session was observed to have terminated.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the exit code reported by the IDE for the session, if any.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"stdOutFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdOutFile is the path to the temporary file capturing standard-output messages emitted by the session.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"stdErrFile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StdErrFile is the path to the temporary file capturing standard-error messages emitted by the session.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"state"},
+			},
+		},
+		Dependencies: []string{
+			metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

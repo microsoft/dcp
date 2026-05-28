@@ -36,9 +36,10 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
-	StateStore         *statestore.Store
-	ResourceLeaseOwner process.ProcessTreeItem
-	Log                logr.Logger
+	TestIdeSessionClient *ctrl_testutil.TestIdeSessionClient
+	StateStore           *statestore.Store
+	ResourceLeaseOwner   process.ProcessTreeItem
+	Log                  logr.Logger
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -87,6 +88,7 @@ func StartTestEnvironment(
 
 	exeRunner := ctrlutil.NewTestProcessExecutableRunner(pex)
 	ir := ctrl_testutil.NewTestIdeRunner(ctx)
+	ideSessionClient := ctrl_testutil.NewTestIdeSessionClient(ctx)
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
@@ -222,6 +224,19 @@ func StartTestEnvironment(
 		}
 	}
 
+	if inclCtrl&IdeSessionController != 0 {
+		ideSessionR := controllers.NewIdeSessionReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("IdeSessionReconciler"),
+			ideSessionClient,
+		)
+		if err = ideSessionR.SetupWithManager(mgr, instanceTag+"-IdeSessionReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize IdeSession reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ServiceController != 0 {
 		serviceR := controllers.NewServiceReconciler(
 			ctx,
@@ -283,6 +298,7 @@ func StartTestEnvironment(
 		TestProcessExecutableRunner: exeRunner,
 		TestIdeRunner:               ir,
 		TestTunnelControlClient:     tcc,
+		TestIdeSessionClient:        ideSessionClient,
 		StateStore:                  stateStore,
 		ResourceLeaseOwner:          leaseOwner,
 		Log:                         log,
