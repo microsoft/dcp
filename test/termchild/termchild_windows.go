@@ -148,6 +148,16 @@ func classifySignal(sig os.Signal) signalKind {
 	return signalUnknown
 }
 
+// isStdinTerminalGoneError reports whether a read error from stdin indicates
+// that the controlling pseudo-console has been torn down. On Windows the
+// child's stdin is a pipe written by conhost.exe; when the host closes its
+// end the read returns io.EOF, which the cross-platform echo loop already
+// treats as a clean shutdown. No additional Windows-specific error codes
+// need to be intercepted here.
+func isStdinTerminalGoneError(_ error) bool {
+	return false
+}
+
 // installResizeHandler spawns a goroutine that watches CONIN$ for
 // WINDOW_BUFFER_SIZE_EVENT records. On the first such record, it reads the
 // new terminal size, prints it, sets the configured exit code, and cancels

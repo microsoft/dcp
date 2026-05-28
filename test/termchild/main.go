@@ -195,7 +195,9 @@ func runMain(log logr.Logger) error {
 }
 
 // runEchoLoop reads stdin line by line and writes "got:LINE" to stdout.
-// Returns nil on EOF or context cancellation, and an error on a read failure that is not EOF.
+// Returns nil on EOF, controlling-terminal teardown (see
+// isStdinTerminalGoneError), or context cancellation, and an error on any
+// other read failure.
 func runEchoLoop(ctx context.Context) error {
 	reader := bufio.NewReader(os.Stdin)
 
@@ -226,7 +228,7 @@ func runEchoLoop(ctx context.Context) error {
 			}
 
 			if res.err != nil {
-				if errors.Is(res.err, io.EOF) {
+				if errors.Is(res.err, io.EOF) || isStdinTerminalGoneError(res.err) {
 					return nil
 				}
 				return res.err

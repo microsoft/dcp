@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -74,6 +75,16 @@ func classifySignal(sig os.Signal) signalKind {
 		return signalShutdown
 	}
 	return signalUnknown
+}
+
+// isStdinTerminalGoneError reports whether a read error from stdin indicates
+// that the controlling pseudo-terminal has been torn down (typically because
+// the parent closed the master). On Linux a PTY slave returns EIO once the
+// master fd is closed; macOS returns a clean EOF, so this predicate covers
+// the Linux-specific case. Treating it as a clean shutdown signal lets the
+// echo loop exit without reporting an error.
+func isStdinTerminalGoneError(err error) bool {
+	return errors.Is(err, syscall.EIO)
 }
 
 // installResizeHandler installs a SIGWINCH handler that, on the first
