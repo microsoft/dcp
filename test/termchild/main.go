@@ -41,19 +41,21 @@ func main() {
 }
 
 type termchildFlagData struct {
-	printStdout     string
-	printStderr     string
-	disableEcho     bool
-	echo            bool
-	ignoreSigterm   bool
-	hupExitCode     int
-	hupExitCodeSet  bool
-	resizeExitCode  int
-	resizeExitSet   bool
-	reportSize      bool
-	wait            bool
-	exitCode        int
-	waitMaxDuration time.Duration
+	printStdout        string
+	printStderr        string
+	disableEcho        bool
+	echo               bool
+	ignoreSigterm      bool
+	hupExitCode        int
+	hupExitCodeSet     bool
+	sigtermExitCode    int
+	sigtermExitCodeSet bool
+	resizeExitCode     int
+	resizeExitSet      bool
+	reportSize         bool
+	wait               bool
+	exitCode           int
+	waitMaxDuration    time.Duration
 }
 
 var (
@@ -73,6 +75,7 @@ const (
 	echoFlag            = "echo"
 	ignoreSigtermFlag   = "ignore-sigterm"
 	hupExitCodeFlag     = "hup-exit-code"
+	sigtermExitCodeFlag = "sigterm-exit-code"
 	resizeExitCodeFlag  = "resize-exit-code"
 	reportSizeFlag      = "report-size"
 	waitFlag            = "wait"
@@ -90,13 +93,14 @@ the test. Execution order:
 
   1. Apply --disable-echo (where supported).
   2. If --report-size, print "init-size:COLSxROWS".
-  3. Install signal handlers: --ignore-sigterm, --hup-exit-code, --resize-exit-code (these run for the rest of the process lifetime).
+  3. Install signal handlers: --ignore-sigterm, --hup-exit-code, --sigterm-exit-code, --resize-exit-code (these run for the rest of the process lifetime).
   4. Print --print to stdout and --print-stderr to stderr.
   5. If --echo, read lines from stdin and write "got:LINE" until EOF.
   6. If --wait, block until cancelled or a non-ignored signal arrives.
   7. Exit with --exit-code (default 0). Signal/hup/resize handlers can override the exit code before the process exits.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			flags.hupExitCodeSet = c.Flags().Changed(hupExitCodeFlag)
+			flags.sigtermExitCodeSet = c.Flags().Changed(sigtermExitCodeFlag)
 			flags.resizeExitSet = c.Flags().Changed(resizeExitCodeFlag)
 			return runMain(log)
 		},
@@ -117,6 +121,8 @@ the test. Execution order:
 		"Install a handler that ignores SIGTERM (Unix) or CTRL_BREAK/CTRL_C (Windows).")
 	cmd.Flags().IntVar(&flags.hupExitCode, hupExitCodeFlag, 0,
 		"Exit code to use when SIGHUP (Unix) or CTRL_CLOSE (Windows) is received.")
+	cmd.Flags().IntVar(&flags.sigtermExitCode, sigtermExitCodeFlag, 0,
+		"Exit code to use when SIGTERM/SIGINT/SIGQUIT (Unix) or CTRL_C (Windows) is received. Has no effect if --ignore-sigterm is set.")
 	cmd.Flags().IntVar(&flags.resizeExitCode, resizeExitCodeFlag, 0,
 		`Exit code to use after the first terminal-size change. Also prints "size:COLSxROWS" first.`)
 	cmd.Flags().BoolVar(&flags.reportSize, reportSizeFlag, false,
@@ -284,6 +290,10 @@ func installSignalDispatcher(log logr.Logger, cancel context.CancelFunc) {
 				}
 
 				log.V(1).Info("Shutdown signal received, exiting...", "signal", sig.String())
+
+				if flags.sigtermExitCodeSet {
+					finalExitCode.Store(int32(flags.sigtermExitCode))
+				}
 
 			default:
 				log.V(1).Info("Unknown signal kind; treating as shutdown", "signal", sig.String())
