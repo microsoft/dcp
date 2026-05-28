@@ -2997,7 +2997,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 					},
 					"terminal": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Optional terminal/PTY configuration. When set, the Executable process is started with connection to a pseudo-terminal and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1.",
+							Description: "Optional terminal/PTY configuration. When set, the Executable process is started with connection to a pseudo-terminal and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1. When terminal configuration is present, there will be no \"logs\", i.e. ExecutableStatus.StdOutFile and ExecutableStatus.StdErrFile will be empty, and API requests to fetch logs will fail.",
 							Ref:         ref(v1.TerminalSpec{}.OpenAPIModelName()),
 						},
 					},
