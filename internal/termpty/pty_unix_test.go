@@ -116,7 +116,11 @@ func TestStartProcessWithTerminal_AbnormalExitCode(t *testing.T) {
 // TestStartProcessWithTerminal_ContextCancellationStopsProcess verifies that
 // cancelling the lifetime context terminates a running child and produces an
 // exit notification. The child blocks in --wait so the only path to exit is
-// signal delivery from the executor.
+// signal delivery from the executor. The OS executor's graceful-stop path
+// sends SIGTERM first; termchild's --sigterm-exit-code handler captures it
+// and exits with the chosen code. Asserting on that specific code
+// proves both that the wait was actually entered (so no early exit hid the
+// problem) and that the executor's SIGTERM was the trigger.
 func TestStartProcessWithTerminal_ContextCancellationStopsProcess(t *testing.T) {
 	t.Parallel()
 	testCtx, testCancel := testutil.GetTestContext(t, defaultTestTimeout)
@@ -125,7 +129,11 @@ func TestStartProcessWithTerminal_ContextCancellationStopsProcess(t *testing.T) 
 	procCtx, procCancel := context.WithCancel(testCtx)
 	defer procCancel()
 
-	sp := startTermchildWithPTY(t, procCtx, "--print", "READY", "--wait")
+	sp := startTermchildWithPTY(t, procCtx,
+		"--sigterm-exit-code", "13",
+		"--print", "READY",
+		"--wait",
+	)
 
 	out, err := readUntil(testCtx, sp.PTY, "READY")
 	require.NoError(t, err, "expected READY marker; got: %q", out)
@@ -133,11 +141,9 @@ func TestStartProcessWithTerminal_ContextCancellationStopsProcess(t *testing.T) 
 	procCancel()
 
 	ei := awaitExit(t, testCtx, sp.ExitHandler)
-	// SIGTERM (or SIGKILL escalation) leaves the process without a normal
-	// exit code; Go's os/exec reports ExitCode() == -1 for signaled
-	// processes.
-	require.Equal(t, process.UnknownExitCode, ei.ExitCode,
-		"expected UnknownExitCode for signal-terminated process, got %d", ei.ExitCode)
+	require.ErrorIs(t, ei.Err, context.Canceled)
+	require.Equal(t, int32(13), ei.ExitCode,
+		"expected exit code 13 from SIGTERM handler, got %d", ei.ExitCode)
 }
 
 // TestStartProcessWithTerminal_SigtermIgnoredEscalatesToKill verifies that

@@ -34,7 +34,7 @@ func disableTerminalEcho() error {
 	// waiting for a full line of input from a now-uncanonicalized stream.
 	termios.Cc[unix.VMIN] = 1
 	termios.Cc[unix.VTIME] = 0
-	if err := unix.IoctlSetTermios(fd, ioctlSetTermios, termios); err != nil {
+	if err = unix.IoctlSetTermios(fd, ioctlSetTermios, termios); err != nil {
 		return fmt.Errorf("ioctl set termios: %w", err)
 	}
 	return nil
