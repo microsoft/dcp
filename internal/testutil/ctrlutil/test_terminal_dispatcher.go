@@ -134,6 +134,7 @@ func NewTestPtyTerminalFactory() termpty.TerminalProcessFactory {
 			IdentityTime:     startTime,
 			StartWaitForExit: startWait,
 			ExitHandler:      exitHandler,
+			Executor:         pe,
 		}, nil
 	}
 }

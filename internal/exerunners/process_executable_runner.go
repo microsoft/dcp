@@ -299,7 +299,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	if connMgrErr != nil {
 		startLog.Error(connMgrErr, "Failed to create terminal connection manager; stopping process")
 		// Best-effort: stop the just-started process and close its PTY before reporting failure.
-		if stopErr := r.pe.StopProcess(ptp.PID, ptp.IdentityTime); stopErr != nil {
+		if stopErr := ptp.Stop(); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
 		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {

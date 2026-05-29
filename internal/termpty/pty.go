@@ -56,6 +56,16 @@ type PseudoTerminalProcess struct {
 	// ExitHandler captures the exit status of the process and can be used to wait for it.
 	// It is allocated by StartProcessWithTerminal and is always non-nil on a successfully started process.
 	ExitHandler *process.ConcurrentProcessExitHandler
+
+	// The process executor used to create the process--used to stop the process if needed.
+	Executor process.Executor
+}
+
+func (ptp *PseudoTerminalProcess) Stop(options ...process.ProcessStopOption) error {
+	if ptp.Executor == nil {
+		return errors.New("process executor is not available, cannot stop process") // Should never happen
+	}
+	return ptp.Executor.StopProcess(ptp.PID, ptp.IdentityTime, options...)
 }
 
 // CommandSpec captures data needed to spawn a command attached to a freshly allocated pseudo-terminal.

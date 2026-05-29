@@ -1921,7 +1921,10 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 
 	connMgr, connMgrErr := termpty.NewConnManager(r.LifetimeCtx, ptp, terminalSpec.UDSPath, log)
 	if connMgrErr != nil {
-		log.Error(connMgrErr, "Failed to create terminal connection manager; tearing down attach")
+		log.Error(connMgrErr, "Failed to create terminal connection manager; container cannot be started with terminal")
+		if stopErr := ptp.Stop(); stopErr != nil {
+			log.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
+		}
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
 		}
