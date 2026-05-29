@@ -699,17 +699,8 @@ func (dco *DockerCliOrchestrator) ExecContainer(ctx context.Context, options con
 	return exitCh, nil
 }
 
+// Run `docker attach <container>` on a freshly allocated pseudo-terminal.
 func (dco *DockerCliOrchestrator) AttachContainer(ctx context.Context, options containers.AttachContainerOptions) (*termpty.PseudoTerminalProcess, error) {
-	// Run `docker attach <container>` on a freshly allocated pseudo-terminal.
-	// We intentionally do NOT pass --sig-proxy=false: when the attach process's
-	// stdin is a TTY (our PTY slave), docker puts it into raw mode and forwards
-	// bytes (including Ctrl-C as 0x03) into the container's PTY, where the
-	// container's line discipline turns Ctrl-C into SIGINT for the container's
-	// foreground process. That mirrors the behavior of running `docker attach`
-	// directly. --sig-proxy only governs signals received by the attach process
-	// via non-TTY means (e.g. SIGHUP when we close the PTY master); we accept
-	// the default forwarding behavior for those because we only close the PTY
-	// when the container is itself exiting or being deleted.
 	cmd := makeDockerCommand("attach", options.Container)
 	return termpty.StartProcessWithTerminal(ctx, dco.executor, &termpty.CommandSpec{
 		Cmd:           cmd,
