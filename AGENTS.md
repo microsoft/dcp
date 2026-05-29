@@ -65,6 +65,11 @@ Place new code in the correct location according to the project's structure:
 ## Test authoring
 - Unless a tight, specific timeout is ESSENTIAL for testing a specific funtion, avoid using hard-coded timeouts (e.g. obtained via `time.After()`). Instead, use test context (created via `testutil.GetTestContext()`) and test context `Done()` channel for timeouts in tests.
 
+## Commenting code
+- Try to keep comments terse and focused. 1-2 sentences for structs and public method descriptions, and 1 sentence for struct members is ideal, but do not use this guideline to omit information that is important for proper use of the type or member. If necessary, make a longer comment.
+- Comments on structs, struct members, and public methods should describe ONLY the purpose and how to use it. Do not describe how a struct or method is used in other parts of the codebase, and do not tell stories about how design or implementation evolved over time.
+- Comments inside code blocks should be reserved for describing the INTENT for the code IF AND ONLY IF the intent is not  obvious from the code itself (for example: why certain API is called when it is seemingly not necessary, or why operations are done in certain order if it seems a different order might work even better). Do not add comments describing merely describing what the code does, or where the name of used members or methods indicates the intent (for example: do not attach "we are closing the socket" call to a `closeSocket()` method call).
+
 
 # Working inside the repository
 
