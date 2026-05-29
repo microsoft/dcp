@@ -514,7 +514,7 @@ func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log
 			}
 		}
 		if !alreadyExited {
-			var notFound process.ErrProcessNotFound
+			var notFound *process.ErrProcessNotFound
 			if stopErr := pe.StopProcess(ptp.PID, ptp.IdentityTime); stopErr != nil && !errors.As(stopErr, &notFound) {
 				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.PID, "Error", stopErr.Error())
 			}
