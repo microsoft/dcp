@@ -128,6 +128,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 		IdentityTime:     startTime,
 		StartWaitForExit: startWait,
 		ExitHandler:      exitHandler,
+		Executor:         pe,
 	}
 
 	return ptp, nil

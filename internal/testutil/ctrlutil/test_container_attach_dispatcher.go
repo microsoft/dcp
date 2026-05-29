@@ -176,6 +176,7 @@ func NewTestPtyContainerAttachFactory(pe process.Executor) ContainerAttachFactor
 			IdentityTime:     startTime,
 			StartWaitForExit: startWait,
 			ExitHandler:      exitHandler,
+			Executor:         pe,
 		}, nil
 	}
 }
