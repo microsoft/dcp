@@ -93,13 +93,11 @@ type runningContainerData struct {
 	healthProbesEnabled *bool
 
 	// Pseudo-terminal process bridging the container's stdio (e.g. `docker attach`/`podman attach`
-	// running on a freshly allocated PTY). Non-nil iff Spec.Terminal != nil and the container is running.
-	// Owned by the controller; closed by closeTerminalResources.
+	// running on a freshly allocated PTY). Only used by containers that have a terminal.
 	ptp *termpty.PseudoTerminalProcess
 
 	// HMP v1 connection manager that exposes the terminal on the configured UDS path.
-	// Non-nil iff ptp is non-nil. Self-terminates when ptp.ExitHandler fires; closeTerminalResources
-	// observes its Done channel so deletion-time socket cleanup is observable to callers.
+	// Only used by containers that have a terminal.
 	connMgr *termpty.ConnManager
 }
 
