@@ -137,7 +137,7 @@ type ErrProcessNotFound struct {
 	Inner error
 }
 
-func (e ErrProcessNotFound) Error() string {
+func (e *ErrProcessNotFound) Error() string {
 	if e.Inner == nil {
 		return fmt.Sprintf("process %d not found", e.Pid)
 	} else {
@@ -145,4 +145,8 @@ func (e ErrProcessNotFound) Error() string {
 	}
 }
 
-var _ error = ErrProcessNotFound{}
+func (e *ErrProcessNotFound) Unwrap() error {
+	return e.Inner
+}
+
+var _ error = (*ErrProcessNotFound)(nil)

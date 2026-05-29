@@ -55,7 +55,7 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		e.releaseLock()
 
 		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
-			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
+			return nil, &ErrProcessNotFound{Pid: pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
