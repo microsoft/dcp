@@ -169,56 +169,51 @@ func (s *Hmp1Server) Serve(ctx context.Context, conn net.Conn, exitCodeCh <-chan
 	ioCtx, ioCtxCancel := context.WithCancel(ctx)
 	defer ioCtxCancel()
 
+	var outputPumpErr, clientPumpErr error
+	var clientSideEnded bool
 	var wg sync.WaitGroup
 	wg.Add(2)
-	errCh := make(chan error, 2)
 
 	// Pump 1: PTY -> conn (Output frames).
 	go func() {
 		defer wg.Done()
 		defer ioCtxCancel()
-		errCh <- s.pumpOutputFrames(ioCtx, conn)
+		outputPumpErr = s.pumpOutputFrames(ioCtx, conn)
 	}()
 
-	// Pump 2: conn -> PTY (Input/Resize).
+	// Pump 2: conn -> PTY (Input/Resize). Reports whether it terminated because
+	// of a client-side event so we can skip the exit-code dance on disconnect.
 	go func() {
 		defer wg.Done()
 		defer ioCtxCancel()
-		errCh <- s.pumpClientFrames(ioCtx, conn, opts)
+		clientSideEnded, clientPumpErr = s.pumpClientFrames(ioCtx, conn, opts)
 	}()
 
 	wg.Wait()
-	close(errCh)
 
-	// Send a best-effort Exit frame. If the remote side has already gone away
-	// (protocol error, dropped TCP, etc.) the write will block until the
-	// deadline fires; either way we move on.
-	exitCode := int32(0)
-	if exitCodeCh != nil {
-		select {
-		case code, ok := <-exitCodeCh:
-			if ok {
-				exitCode = code
+	if !clientSideEnded {
+		// Exiting because the process exited or PTY connection failed.
+		exitCode := int32(0)
+		if exitCodeCh != nil {
+			select {
+			case code, ok := <-exitCodeCh:
+				if ok {
+					exitCode = code
+				}
+			case <-time.After(Hmp1ExitCodeWaitTimeout):
+				opts.Log.V(1).Info("timeout waiting for exit code")
 			}
-		case <-time.After(Hmp1ExitCodeWaitTimeout):
-			opts.Log.V(1).Info("timeout waiting for exit code")
 		}
+
+		exitPayload := make([]byte, 4)
+		binary.LittleEndian.PutUint32(exitPayload, uint32(exitCode))
+		if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
+			_ = d.SetWriteDeadline(time.Now().Add(hmp1ExitCodeSendTimeout))
+		}
+		_ = s.writeFrame(conn, Hmp1FrameExit, exitPayload)
 	}
 
-	exitPayload := make([]byte, 4)
-	binary.LittleEndian.PutUint32(exitPayload, uint32(exitCode))
-	if d, ok := conn.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		_ = d.SetWriteDeadline(time.Now().Add(hmp1ExitCodeSendTimeout))
-	}
-	_ = s.writeFrame(conn, Hmp1FrameExit, exitPayload)
-
-	var serveErr error
-	for err := range errCh {
-		if err != nil {
-			serveErr = errors.Join(serveErr, err)
-		}
-	}
-	return serveErr
+	return errors.Join(outputPumpErr, clientPumpErr)
 }
 
 // Sends output frames from the program attached to the PTY to the terminal client.
@@ -242,23 +237,32 @@ func (s *Hmp1Server) pumpOutputFrames(ioCtx context.Context, conn net.Conn) erro
 }
 
 // Processes client frames (input and resize, sending client input to the PTY).
-func (s *Hmp1Server) pumpClientFrames(ioCtx context.Context, conn net.Conn, opts Hmp1ServerOptions) error {
+// Returns clientSideEnded=true when termination is caused by the client side
+// (conn EOF/closed or a fatal client-side frame error), otherwise false
+// (pumping context was cancelled or the PTY write failed).
+func (s *Hmp1Server) pumpClientFrames(ioCtx context.Context, conn net.Conn, opts Hmp1ServerOptions) (clientSideEnded bool, err error) {
 	connReader := usvc_io.NewContextReader(ioCtx, conn, false /* do not close conn, parent will do it */)
 	fr := newHmp1FrameReader(connReader)
 
 	for {
 		frameType, payload, readErr := fr.readFrame()
-		if errors.Is(readErr, io.EOF) || errors.Is(readErr, net.ErrClosed) || errors.Is(readErr, context.Canceled) {
-			// All expected (client closed connection or the serving context was cancelled).
-			return nil
-		} else if readErr != nil {
-			return fmt.Errorf("reading client frame: %w", readErr)
+		if readErr != nil {
+			if errors.Is(readErr, context.Canceled) {
+				// Serving context cancelled (outer ctx or the other pump's
+				// defer): not a client-side termination.
+				return false, nil
+			}
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, net.ErrClosed) {
+				return true, nil
+			}
+			return true, fmt.Errorf("reading client frame: %w", readErr)
 		}
 
 		switch frameType {
 		case Hmp1FrameInput:
 			if _, writeErr := s.pty.Write(payload); writeErr != nil {
-				return fmt.Errorf("write PTY: %w", writeErr)
+				// PTY-side failure, not a client-side termination.
+				return false, fmt.Errorf("write PTY: %w", writeErr)
 			}
 		case Hmp1FrameResize:
 			if len(payload) != 8 {

@@ -19,6 +19,7 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/testutil"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -245,10 +246,12 @@ func TestServeRejectsOversizedFrame(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
 	defer cancel()
 
+	exitCodeCh := make(chan int32)
+
 	done := make(chan error, 1)
 	server := NewHmp1Server(ctx, pty)
 	go func() {
-		done <- server.Serve(ctx, b, nil, Hmp1ServerOptions{})
+		done <- server.Serve(ctx, b, exitCodeCh, Hmp1ServerOptions{})
 	}()
 
 	readFrameHelper(t, ctx, a) // Hello
@@ -269,9 +272,7 @@ func TestServeRejectsOversizedFrame(t *testing.T) {
 	// observe that by Serve completing.
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Errorf("expected Serve to return an error on oversize frame")
-		}
+		require.Error(t, err, "expected Serve to return an error on oversize frame")
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for Serve to exit on oversize frame")
 	}
@@ -285,14 +286,15 @@ func TestServeRejectsOversizedFrame(t *testing.T) {
 // The returned cleanup function closes both ends of the pipe and waits for
 // the Serve goroutine to terminate. It is safe to call multiple times.
 type sessionFixture struct {
-	t      *testing.T
-	ctx    context.Context
-	cancel context.CancelFunc
-	a      net.Conn
-	b      net.Conn
-	pty    *internal_testutil.TestPty
-	server *Hmp1Server
-	done   chan error
+	t         *testing.T
+	ctx       context.Context
+	cancel    context.CancelFunc
+	a         net.Conn
+	b         net.Conn
+	pty       *internal_testutil.TestPty
+	server    *Hmp1Server
+	serveErr  error
+	serveDone chan struct{}
 }
 
 func startSession(t *testing.T, opts Hmp1ServerOptions, exitCodeCh <-chan int32) *sessionFixture {
@@ -302,21 +304,22 @@ func startSession(t *testing.T, opts Hmp1ServerOptions, exitCodeCh <-chan int32)
 	pty := internal_testutil.NewTestPty()
 	server := NewHmp1Server(ctx, pty)
 
-	done := make(chan error, 1)
+	f := &sessionFixture{
+		t:         t,
+		ctx:       ctx,
+		cancel:    cancel,
+		a:         a,
+		b:         b,
+		pty:       pty,
+		server:    server,
+		serveDone: make(chan struct{}),
+	}
 	go func() {
-		done <- server.Serve(ctx, b, exitCodeCh, opts)
+		defer close(f.serveDone)
+		f.serveErr = server.Serve(ctx, b, exitCodeCh, opts)
 	}()
 
-	return &sessionFixture{
-		t:      t,
-		ctx:    ctx,
-		cancel: cancel,
-		a:      a,
-		b:      b,
-		pty:    pty,
-		server: server,
-		done:   done,
-	}
+	return f
 }
 
 func (f *sessionFixture) drainHelloAndStateSync() {
@@ -349,7 +352,7 @@ func (f *sessionFixture) cleanup() {
 		_ = f.pty.Close()
 	}
 	select {
-	case <-f.done:
+	case <-f.serveDone:
 	case <-f.ctx.Done():
 		f.t.Errorf("Serve did not exit during cleanup")
 	}
@@ -757,9 +760,11 @@ func TestServeReturnsWhenClientClosesConnection(t *testing.T) {
 	a, b := net.Pipe()
 	defer b.Close()
 
+	exitCodeCh := make(chan int32)
+
 	done := make(chan error, 1)
 	go func() {
-		done <- server.Serve(ctx, b, nil, Hmp1ServerOptions{})
+		done <- server.Serve(ctx, b, exitCodeCh, Hmp1ServerOptions{})
 	}()
 
 	if ft, _ := readFrameHelper(t, ctx, a); ft != Hmp1FrameHello {
@@ -782,6 +787,30 @@ func TestServeReturnsWhenClientClosesConnection(t *testing.T) {
 
 	if pty.IsClosed() {
 		t.Errorf("PTY must not be closed by Serve on client disconnect")
+	}
+}
+
+// Verifies that Serve does not wait for an exit code when the client disconnects.
+func TestServeDoesNotWaitForExitCodeWhenClientDisconnects(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+
+	exitCodeCh := make(chan int32)
+	f := startSession(t, Hmp1ServerOptions{}, exitCodeCh)
+	defer f.cleanup()
+	f.drainHelloAndStateSync()
+
+	_ = f.a.Close()
+
+	// (not sending an exit code into the channel)
+
+	select {
+	case <-f.serveDone:
+		require.NoError(t, f.serveErr, "Serve returned error on client disconnect")
+	case <-ctx.Done():
+		t.Fatal("Serve did not return promptly after client disconnect; the exit-code wait was not skipped")
 	}
 }
 
