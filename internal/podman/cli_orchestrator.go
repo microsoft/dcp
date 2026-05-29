@@ -685,10 +685,8 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	return exitCh, nil
 }
 
+// Run `docker attach <container>` on a freshly allocated pseudo-terminal.
 func (pco *PodmanCliOrchestrator) AttachContainer(ctx context.Context, options containers.AttachContainerOptions) (*termpty.PseudoTerminalProcess, error) {
-	// Run `podman attach <container>` on a freshly allocated pseudo-terminal.
-	// See the corresponding DockerCliOrchestrator.AttachContainer comment for
-	// the rationale on leaving --sig-proxy at its default.
 	cmd := makePodmanCommand("attach", options.Container)
 	return termpty.StartProcessWithTerminal(ctx, pco.executor, &termpty.CommandSpec{
 		Cmd:           cmd,
