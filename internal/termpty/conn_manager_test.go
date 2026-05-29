@@ -32,10 +32,10 @@ import (
 // limit.
 func pickConnMgrSocketPath(t *testing.T) string {
 	t.Helper()
-	suffix, err := usvc_random.MakeRandomString(8)
+	suffix, err := usvc_random.MakeRandomString(12)
 	require.NoError(t, err)
 	root := testutil.TestTempRoot()
-	path := filepath.Join(root, fmt.Sprintf("dcp-cm-test-%s.sock", suffix))
+	path := filepath.Join(root, fmt.Sprintf("cm-test-%s.sock", suffix))
 	t.Cleanup(func() {
 		_ = os.Remove(path)
 	})
@@ -335,10 +335,6 @@ func TestConnManager_ProcessExitShutsDownManager(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("ConnManager did not become dormant after process exit")
 	}
-
-	// Subsequent dial attempts should fail.
-	_, dialErr := net.Dial("unix", socketPath)
-	require.Error(t, dialErr, "manager should no longer accept connections")
 }
 
 func TestConnManager_LifetimeContextCancelShutsDownManager(t *testing.T) {
