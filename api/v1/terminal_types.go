@@ -10,13 +10,15 @@ import (
 )
 
 // TerminalSpec configures pseudo-terminal allocation for an Executable or Container
-// and the Unix domain socket that HMP v1 clients will connect to for terminal I/O.
+// and the Unix domain socket that DCP DIALS to deliver HMP v1 terminal I/O.
 //
 // HMP spec is here: https://github.com/mitchdenny/hex1b/blob/main/docs/muxer-protocol.md
 //
 // Presence of this field on an Executable or Container spec activates the terminal path:
-// DCP allocates a PTY for the underlying process and listens on UDSPath.
-// When a client opens an HMP v1 connection, DCP starts an HMP v1 server on the connection and bridges:
+// DCP allocates a PTY for the underlying process and dials the HMP v1 listener at UDSPath.
+// The peer (the Aspire terminal host) owns the listener and the socket file.
+// Once the HMP v1 connection is established DCP starts an HMP v1 server on the connection
+// and bridges:
 //
 //   - PTY output (from the process's tty)            ->  HMP v1 Output frames
 //   - HMP v1 Input frames                            ->  PTY input (process stdin)
@@ -25,7 +27,9 @@ import (
 //
 // +k8s:openapi-gen=true
 type TerminalSpec struct {
-	// UDSPath is the Unix Domain Socket path that DCP listens on for the HMP v1 client connection.
+	// UDSPath is the Unix Domain Socket path that DCP DIALS to deliver HMP v1
+	// terminal I/O. The peer (the Aspire terminal host) is the listener and
+	// owns the socket file lifecycle.
 	// Required.
 	UDSPath string `json:"udsPath,omitempty"`
 

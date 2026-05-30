@@ -3935,12 +3935,12 @@ func schema_microsoft_dcp_api_v1_TerminalSpec(ref common.ReferenceCallback) comm
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "TerminalSpec configures pseudo-terminal allocation for an Executable or Container and the Unix domain socket that HMP v1 clients will connect to for terminal I/O.\n\nHMP spec is here: https://github.com/mitchdenny/hex1b/blob/main/docs/muxer-protocol.md\n\nPresence of this field on an Executable or Container spec activates the terminal path: DCP allocates a PTY for the underlying process and listens on UDSPath. When a client opens an HMP v1 connection, DCP starts an HMP v1 server on the connection and bridges:\n\n  - PTY output (from the process's tty)            ->  HMP v1 Output frames\n  - HMP v1 Input frames                            ->  PTY input (process stdin)\n  - HMP v1 Resize frames                           ->  PTY resize (TIOCSWINSZ / ResizePseudoConsole)\n  - Process exit                                   ->  HMP v1 Exit frame, then close",
+				Description: "TerminalSpec configures pseudo-terminal allocation for an Executable or Container and the Unix domain socket that DCP DIALS to deliver HMP v1 terminal I/O.\n\nHMP spec is here: https://github.com/mitchdenny/hex1b/blob/main/docs/muxer-protocol.md\n\nPresence of this field on an Executable or Container spec activates the terminal path: DCP allocates a PTY for the underlying process and dials the HMP v1 listener at UDSPath. The peer (the Aspire terminal host) owns the listener and the socket file. Once the HMP v1 connection is established DCP starts an HMP v1 server on the connection and bridges:\n\n  - PTY output (from the process's tty)            ->  HMP v1 Output frames\n  - HMP v1 Input frames                            ->  PTY input (process stdin)\n  - HMP v1 Resize frames                           ->  PTY resize (TIOCSWINSZ / ResizePseudoConsole)\n  - Process exit                                   ->  HMP v1 Exit frame, then close",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"udsPath": {
 						SchemaProps: spec.SchemaProps{
-							Description: "UDSPath is the Unix Domain Socket path that DCP listens on for the HMP v1 client connection. Required.",
+							Description: "UDSPath is the Unix Domain Socket path that DCP DIALS to deliver HMP v1 terminal I/O. The peer (the Aspire terminal host) is the listener and owns the socket file lifecycle. Required.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

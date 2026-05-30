@@ -8,7 +8,6 @@ package termpty
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -21,28 +20,30 @@ import (
 )
 
 const (
-	// acceptInitialBackoff and acceptMaxBackoff bound the exponential
-	// retry schedule applied to transient Accept failures. The backoff
-	// state is reset after each successful Accept, so unrelated bursts of
-	// errors do not accumulate.
-	acceptInitialBackoff = 100 * time.Millisecond
-	acceptMaxBackoff     = 5 * time.Second
+	// dialInitialBackoff and dialMaxBackoff bound the exponential retry
+	// schedule applied to transient dial failures (e.g. the terminal host
+	// has not yet bound its listener). The backoff state is reset after a
+	// successful dial.
+	dialInitialBackoff = 100 * time.Millisecond
+	dialMaxBackoff     = 5 * time.Second
 )
 
-// ConnManager bridges a running PseudoTerminalProcess to external HMP v1 clients
-// over a Unix domain socket. It listens on the socket and, for each accepted
-// connection, runs a Hmp1Server.Serve loop that ferries terminal I/O between
-// the PTY and the client.
+// ConnManager bridges a running PseudoTerminalProcess to an external HMP v1
+// server over a Unix domain socket. DCP DIALS the socket at socketPath; the
+// peer (the Aspire terminal host) owns the listener and the socket file
+// lifecycle. Once dialed, the manager runs a Hmp1Server.Serve loop that
+// ferries terminal I/O between the PTY and the peer for the lifetime of that
+// one connection.
 //
-// At most one client connection is served at a time; while a connection is
-// active subsequent client connect() calls are queued by the OS and picked up
-// once the active session ends.
+// Only one connection is established per ConnManager. If the connection is
+// lost the manager shuts down rather than re-dialing; reconnection (and any
+// multi-peer behavior) is the responsibility of the terminal host.
 //
 // The manager's lifetime is bound to the lifetime context passed to
 // NewConnManager and to the lifetime of the underlying process. When either
-// the lifetime context is cancelled or the process exits, the manager closes
-// the listener, terminates any active Serve loop, and transitions to a final,
-// dormant state observable via Done().
+// the lifetime context is cancelled or the process exits, the manager
+// terminates the in-progress Serve loop and transitions to a final, dormant
+// state observable via Done().
 //
 // ConnManager does NOT own the PTY or the process: it neither closes the PTY
 // nor reaps the process. The caller that produced the PseudoTerminalProcess
@@ -54,8 +55,6 @@ type ConnManager struct {
 	ptp    *PseudoTerminalProcess
 	server *Hmp1Server
 
-	listener *net.UnixListener
-
 	// ctx is an internal context cancelled when the manager begins to shut
 	// down (because the lifetime context was cancelled, because the process
 	// exited, or because shutdown was triggered for some other reason).
@@ -66,14 +65,17 @@ type ConnManager struct {
 	// dispose ensures shutdown runs at most once.
 	dispose *concurrency.OneTimeJob[struct{}]
 
-	// done is closed when the accept loop has fully terminated, which
-	// happens after any in-progress Serve has returned and the listener has
-	// been closed.
+	// done is closed when the dial+serve sequence has fully terminated,
+	// which happens after any in-progress Serve has returned.
 	done chan struct{}
 }
 
-// NewConnManager creates a connection manager that listens for HMP v1 client
-// connections on socketPath and bridges them to ptp's pseudo-terminal.
+// NewConnManager creates a connection manager that DIALS the HMP v1 listener
+// at socketPath and bridges the resulting connection to ptp's pseudo-terminal.
+// The peer (the Aspire terminal host) is expected to have bound a Unix domain
+// socket listener at socketPath; the dial is retried with bounded exponential
+// backoff to absorb the race between the peer's listener becoming ready and
+// the process starting up.
 //
 // lifetimeCtx supervises the manager. When it is cancelled the manager shuts
 // down gracefully. The manager also shuts down on its own when the process
@@ -82,11 +84,9 @@ type ConnManager struct {
 // The supplied logger is used for all diagnostic output (both by the manager
 // and by the Hmp1Server it owns). A zero-value logr.Logger is acceptable.
 //
-// ConnManager does not own the lifecycle of the socket file at socketPath: it
-// will fail if the path is already bound at startup, and it will leave the
-// file in place on shutdown. The caller is responsible for ensuring the path
-// is free before NewConnManager is called and for removing the file once the
-// manager has shut down.
+// ConnManager does not own the lifecycle of the socket file at socketPath:
+// the peer (the listener side) created it and is responsible for removing it
+// once the session ends.
 func NewConnManager(
 	lifetimeCtx context.Context,
 	ptp *PseudoTerminalProcess,
@@ -109,22 +109,12 @@ func NewConnManager(
 		return nil, errors.New("socket path must not be empty")
 	}
 
-	listener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
-	if listenErr != nil {
-		return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
-	}
-	// Socket file lifecycle is owned by the caller, not by ConnManager. Without
-	// this opt-out, net.UnixListener.Close() would unlink the path because Go
-	// created it via ListenUnix.
-	listener.SetUnlinkOnClose(false)
-
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
 	cm := &ConnManager{
 		log:        log,
 		socketPath: socketPath,
 		ptp:        ptp,
-		listener:   listener,
 		ctx:        ctx,
 		cancelCtx:  cancelCtx,
 		dispose:    concurrency.NewOneTimeJob[struct{}](),
@@ -134,20 +124,20 @@ func NewConnManager(
 
 	context.AfterFunc(lifetimeCtx, cm.shutdown)
 	go cm.watchProcessExit()
-	go cm.acceptLoop()
+	go cm.dialAndServe()
 
 	return cm, nil
 }
 
 // SocketPath returns the filesystem path of the Unix domain socket the
-// manager is (or was) listening on.
+// manager is dialing (or has dialed).
 func (cm *ConnManager) SocketPath() string {
 	return cm.socketPath
 }
 
 // Done returns a channel that is closed once the manager has fully
-// transitioned to its final dormant state: the listener is closed, no Serve
-// loop is in flight, and no new connections will be accepted.
+// transitioned to its final dormant state: no Serve loop is in flight and no
+// further dial attempts will be made.
 func (cm *ConnManager) Done() <-chan struct{} {
 	return cm.done
 }
@@ -166,60 +156,64 @@ func (cm *ConnManager) watchProcessExit() {
 	}
 }
 
-// acceptLoop accepts client connections one at a time. Each accepted
-// connection is serviced inline by serveConnection before returning to
-// Accept, which gives us the single-connection-at-a-time guarantee without
-// any additional synchronization.
-func (cm *ConnManager) acceptLoop() {
+// dialAndServe dials the peer's HMP v1 listener (retrying transient failures
+// with bounded exponential backoff) and runs a single Serve loop on the
+// resulting connection. When the Serve loop ends — because the process
+// exited, the peer disconnected, or the manager was shut down — done is
+// closed and the manager terminates. There is no automatic re-dial.
+func (cm *ConnManager) dialAndServe() {
 	defer close(cm.done)
 
-	for {
-		conn, err := cm.acceptOne()
-		if err != nil {
-			// Either the listener has been closed (shutdown is in
-			// progress) or the internal context was cancelled. In both
-			// cases the loop is done; the underlying error was logged at
-			// Error level by the retry operation when it first occurred.
-			return
-		}
-
-		cm.serveConnection(conn)
+	conn, err := cm.dialOne()
+	if err != nil {
+		// The lifetime context was cancelled (or shutdown triggered)
+		// before a successful dial. Underlying errors were logged at
+		// Error level inside dialOne.
+		return
 	}
+
+	cm.serveConnection(conn)
 }
 
-// acceptOne accepts a single client connection, retrying transient errors
-// with bounded exponential backoff. It returns the accepted connection on
-// success, or an error (and a nil connection) when the manager is shutting
-// down — either because the listener was closed or because the internal
-// context was cancelled.
-func (cm *ConnManager) acceptOne() (*net.UnixConn, error) {
+// dialOne dials cm.socketPath, retrying transient errors with bounded
+// exponential backoff. It returns the connected socket on success, or an
+// error (and a nil connection) when the manager is shutting down before a
+// successful dial.
+func (cm *ConnManager) dialOne() (net.Conn, error) {
 	b := backoff.NewExponentialBackOff(
-		backoff.WithInitialInterval(acceptInitialBackoff),
-		backoff.WithMaxInterval(acceptMaxBackoff),
+		backoff.WithInitialInterval(dialInitialBackoff),
+		backoff.WithMaxInterval(dialMaxBackoff),
 		// No max elapsed time: retry until the lifetime context is
-		// cancelled or the listener is closed (signalled as a permanent
-		// error below).
+		// cancelled. The peer may legitimately take a while to bind its
+		// listener (it is racing the process startup), so we don't want
+		// to give up prematurely.
 		backoff.WithMaxElapsedTime(0),
 	)
 
-	var conn *net.UnixConn
+	var conn net.Conn
 	retryErr := resiliency.Retry(cm.ctx, b, func() error {
-		var acceptErr error
-		conn, acceptErr = cm.listener.AcceptUnix()
-		if acceptErr == nil {
+		var d net.Dialer
+		c, dialErr := d.DialContext(cm.ctx, "unix", cm.socketPath)
+		if dialErr == nil {
+			conn = c
 			return nil
 		}
 
-		// net.ErrClosed is the expected outcome once shutdown has closed
-		// the listener: stop retrying immediately. We do not log this at
-		// Error level because it is a normal shutdown signal, not a
-		// failure.
-		if errors.Is(acceptErr, net.ErrClosed) {
-			return resiliency.Permanent(acceptErr)
+		// Context cancellation is a clean shutdown signal — stop retrying.
+		if errors.Is(dialErr, context.Canceled) {
+			return resiliency.Permanent(dialErr)
 		}
 
-		cm.log.Error(acceptErr, "Accept on terminal socket failed", "SocketPath", cm.socketPath)
-		return acceptErr
+		// The peer's listener may not exist yet (ECONNREFUSED, ENOENT,
+		// EAGAIN) — that's the expected race during startup, retry quietly.
+		// Log at V(1) so operators can investigate slow setups without
+		// flooding default-level logs.
+		cm.log.V(1).Info(
+			"Dial on terminal socket failed; will retry",
+			"SocketPath", cm.socketPath,
+			"error", dialErr.Error(),
+		)
+		return dialErr
 	})
 
 	if retryErr != nil {
@@ -273,10 +267,10 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 }
 
 // shutdown is the manager's idempotent shutdown sequence. It cancels the
-// internal context (which terminates any in-progress Serve loop and the
-// underlying Hmp1Server's PTY reader worker) and closes the listener (which
-// unblocks Accept). The socket file at socketPath is intentionally left in
-// place — the caller owns its lifecycle.
+// internal context, which terminates any in-progress Serve loop, unblocks an
+// in-flight dial retry, and cancels the Hmp1Server's PTY reader worker. The
+// peer owns the listener and the socket file lifecycle; we never touched
+// either, so there is nothing to clean up here.
 func (cm *ConnManager) shutdown() {
 	if !cm.dispose.TryTake() {
 		return
@@ -286,8 +280,4 @@ func (cm *ConnManager) shutdown() {
 	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
 
 	cm.cancelCtx()
-
-	if closeErr := cm.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-		cm.log.V(1).Info("Closing terminal socket listener failed", "error", closeErr.Error())
-	}
 }
