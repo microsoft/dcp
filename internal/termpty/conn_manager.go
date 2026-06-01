@@ -16,7 +16,6 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -63,8 +62,8 @@ type ConnManager struct {
 	ctx       context.Context
 	cancelCtx context.CancelFunc
 
-	// dispose ensures shutdown runs at most once.
-	dispose *concurrency.OneTimeJob[struct{}]
+	// Runs shutdown code at most once.
+	shutdownOnce func()
 
 	// done is closed when the accept loop has fully terminated, which
 	// happens after any in-progress Serve has returned and the listener has
@@ -127,12 +126,13 @@ func NewConnManager(
 		listener:   listener,
 		ctx:        ctx,
 		cancelCtx:  cancelCtx,
-		dispose:    concurrency.NewOneTimeJob[struct{}](),
-		done:       make(chan struct{}),
+
+		done: make(chan struct{}),
 	}
 	cm.server = NewHmp1Server(ctx, ptp.PTY)
+	cm.shutdownOnce = sync.OnceFunc(cm.shutdown)
 
-	context.AfterFunc(lifetimeCtx, cm.shutdown)
+	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
 	go cm.watchProcessExit()
 	go cm.acceptLoop()
 
@@ -160,7 +160,7 @@ func (cm *ConnManager) watchProcessExit() {
 	select {
 	case <-cm.ptp.ExitHandler.Exited():
 		cm.log.V(1).Info("Terminal process exited; shutting down connection manager", "SocketPath", cm.socketPath)
-		cm.shutdown()
+		cm.shutdownOnce()
 	case <-cm.ctx.Done():
 		// Shutdown already in progress.
 	}
@@ -212,8 +212,7 @@ func (cm *ConnManager) acceptOne() (*net.UnixConn, error) {
 
 		// net.ErrClosed is the expected outcome once shutdown has closed
 		// the listener: stop retrying immediately. We do not log this at
-		// Error level because it is a normal shutdown signal, not a
-		// failure.
+		// Error level because it is a normal shutdown signal, not a failure.
 		if errors.Is(acceptErr, net.ErrClosed) {
 			return resiliency.Permanent(acceptErr)
 		}
@@ -272,17 +271,13 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 	wg.Wait()
 }
 
-// shutdown is the manager's idempotent shutdown sequence. It cancels the
+// shutdown() is the manager's idempotent shutdown sequence. It cancels the
 // internal context (which terminates any in-progress Serve loop and the
 // underlying Hmp1Server's PTY reader worker) and closes the listener (which
 // unblocks Accept). The socket file at socketPath is intentionally left in
 // place — the caller owns its lifecycle.
+// Note: cm.done is closed when acceptLoop() exits.
 func (cm *ConnManager) shutdown() {
-	if !cm.dispose.TryTake() {
-		return
-	}
-	defer cm.dispose.Complete(struct{}{})
-
 	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
 
 	cm.cancelCtx()
