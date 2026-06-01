@@ -1305,7 +1305,7 @@ func (pco *PodmanCliOrchestrator) runBufferedPodmanCommand(
 func makePodmanCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("podman", args...)
 	// exec.Command resolves cmd.Path via LookPath but leaves cmd.Args[0] as
-	// the original "docker" string. Align Args[0] with the resolved Path so
+	// the original "podman" string. Align Args[0] with the resolved Path so
 	// downstream consumers and child-process
 	// argv[0] observers see a consistent, fully-qualified command name.
 	if cmd.Path != "" {
