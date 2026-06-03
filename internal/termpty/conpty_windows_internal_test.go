@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +53,7 @@ func newOpenedWindowsPTY(t *testing.T) *windowsPTY {
 		outputRead:   outputRead,
 		inputWrite:   inputWrite,
 		otherHandles: []windows.Handle{inputRead, outputWrite},
+		lock:         &sync.Mutex{},
 	}
 	t.Cleanup(func() { _ = p.Close() })
 	return p
@@ -73,7 +75,9 @@ func TestWindowsPTY_CloseIsIdempotent(t *testing.T) {
 
 func TestWindowsPTY_CloseOnZeroValueIsNoop(t *testing.T) {
 	t.Parallel()
-	pty := &windowsPTY{}
+	pty := &windowsPTY{
+		lock: &sync.Mutex{},
+	}
 
 	require.NoError(t, pty.Close())
 	// Run it again to confirm idempotency on the zero value.

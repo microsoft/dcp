@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,7 +33,11 @@ func newOpenedUnixPTY(t *testing.T) *unixPTY {
 	t.Helper()
 	master, slave, err := pty_open()
 	require.NoError(t, err, "pty_open failed")
-	p := &unixPTY{master: master, slave: slave}
+	p := &unixPTY{
+		master: master,
+		slave:  slave,
+		lock:   &sync.Mutex{},
+	}
 	t.Cleanup(func() { _ = p.Close() })
 	return p
 }

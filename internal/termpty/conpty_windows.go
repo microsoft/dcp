@@ -26,29 +26,42 @@ import (
 )
 
 // windowsPTY is a PTY implementation for Windows OS that leverages the Windows Console API.
-// Method are not goroutine-safe.
+// Read(), Write(), and Resize() are goroutine-safe.
+// The Close() method is also goroutine-safe, but invoking Close() while other methods are in progress
+// may lead to an I/O error.
 type windowsPTY struct {
 	hConsole     windows.Handle
 	outputRead   windows.Handle
 	inputWrite   windows.Handle
 	otherHandles []windows.Handle
+	lock         *sync.Mutex
 }
 
 func (wp *windowsPTY) Read(p []byte) (int, error) {
+	wp.lock.Lock()
 	if wp.outputRead == 0 || wp.outputRead == windows.InvalidHandle {
+		wp.lock.Unlock()
 		return 0, os.ErrClosed
 	}
+	rh := wp.outputRead
+	wp.lock.Unlock()
+
 	var bytesRead uint32
-	readErr := windows.ReadFile(wp.outputRead, p, &bytesRead, nil)
+	readErr := windows.ReadFile(rh, p, &bytesRead, nil)
 	return int(bytesRead), readErr
 }
 
 func (wp *windowsPTY) Write(p []byte) (int, error) {
+	wp.lock.Lock()
 	if wp.inputWrite == 0 || wp.inputWrite == windows.InvalidHandle {
+		wp.lock.Unlock()
 		return 0, os.ErrClosed
 	}
+	wh := wp.inputWrite
+	wp.lock.Unlock()
+
 	var bytesWritten uint32
-	writeErr := windows.WriteFile(wp.inputWrite, p, &bytesWritten, nil)
+	writeErr := windows.WriteFile(wh, p, &bytesWritten, nil)
 	return int(bytesWritten), writeErr
 }
 
@@ -56,16 +69,26 @@ func (wp *windowsPTY) Resize(cols, rows uint16) error {
 	if cols == 0 || rows == 0 {
 		return fmt.Errorf("invalid PTY dimensions cols=%d rows=%d", cols, rows)
 	}
+
+	wp.lock.Lock()
 	if wp.hConsole == 0 || wp.hConsole == windows.InvalidHandle {
+		wp.lock.Unlock()
 		return os.ErrClosed
 	}
+
+	hConsole := wp.hConsole
+	wp.lock.Unlock()
+
 	// windowsConsoleSize/normalizeTerminalDimensions substitutes defaults for
 	// zero dimensions; we reject zeros above so only the upper-bound clamp matters here.
 	consoleSize := windowsConsoleSize(cols, rows)
-	return windows.ResizePseudoConsole(wp.hConsole, consoleSize)
+	return windows.ResizePseudoConsole(hConsole, consoleSize)
 }
 
 func (wp *windowsPTY) Close() error {
+	wp.lock.Lock()
+	defer wp.lock.Unlock()
+
 	if wp.hConsole != 0 && wp.hConsole != windows.InvalidHandle {
 		windows.ClosePseudoConsole(wp.hConsole)
 		wp.hConsole = windows.InvalidHandle
@@ -123,6 +146,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 			outputRead:   outputRead,
 			inputWrite:   inputWrite,
 			otherHandles: []windows.Handle{inputRead, outputWrite},
+			lock:         &sync.Mutex{},
 		},
 		PID:              pid,
 		IdentityTime:     startTime,
