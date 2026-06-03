@@ -7,6 +7,7 @@ package testutil
 
 import (
 	"io"
+	"os"
 	"sync"
 )
 
@@ -44,9 +45,13 @@ func NewTestPty() *TestPty {
 func (f *TestPty) Read(p []byte) (int, error) {
 	f.mu.Lock()
 	err := f.readErr
+	closed := f.closed
 	f.mu.Unlock()
 	if err != nil {
 		return 0, err
+	}
+	if closed {
+		return 0, os.ErrClosed
 	}
 	chunk, ok := <-f.Inbound
 	if !ok {
@@ -59,9 +64,13 @@ func (f *TestPty) Read(p []byte) (int, error) {
 func (f *TestPty) Write(p []byte) (int, error) {
 	f.mu.Lock()
 	err := f.writeErr
+	closed := f.closed
 	f.mu.Unlock()
 	if err != nil {
 		return 0, err
+	}
+	if closed {
+		return 0, os.ErrClosed
 	}
 	out := make([]byte, len(p))
 	copy(out, p)
@@ -102,6 +111,9 @@ func (f *TestPty) ResizesSnapshot() []TestPtyResize {
 func (f *TestPty) Resize(cols, rows uint16) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closed {
+		return os.ErrClosed
+	}
 	f.Resizes = append(f.Resizes, TestPtyResize{Cols: cols, Rows: rows})
 	return nil
 }
