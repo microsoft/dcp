@@ -237,6 +237,31 @@ func TestConnManager_AcceptsAndServesClient(t *testing.T) {
 	}
 }
 
+func TestConnManager_HelloAdvertisesConfiguredInitialSize(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	ptp.InitialCols = 132
+	ptp.InitialRows = 50
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	require.NoError(t, err)
+
+	conn := dialConnMgr(t, ctx, socketPath)
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+	require.Equal(t, uint16(132), hello.Width)
+	require.Equal(t, uint16(50), hello.Height)
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not transition to dormant state after process exit")
+	}
+}
+
 func TestConnManager_ReusableAcrossSequentialConnections(t *testing.T) {
 	t.Parallel()
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)

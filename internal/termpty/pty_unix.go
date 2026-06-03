@@ -185,6 +185,8 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 
 	ptp := PseudoTerminalProcess{
 		PTY:              pty,
+		InitialCols:      cols,
+		InitialRows:      rows,
 		PID:              pid,
 		IdentityTime:     startTime,
 		StartWaitForExit: startWait,

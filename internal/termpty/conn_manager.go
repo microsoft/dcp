@@ -329,7 +329,11 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 		}
 	}()
 
-	serveErr := cm.server.Serve(serveCtx, conn, exitCodeCh, Hmp1ServerOptions{Log: cm.log})
+	serveErr := cm.server.Serve(serveCtx, conn, exitCodeCh, Hmp1ServerOptions{
+		InitialCols: cm.ptp.InitialCols,
+		InitialRows: cm.ptp.InitialRows,
+		Log:         cm.log,
+	})
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
 		cm.log.Error(serveErr, "HMP1 Serve returned an error")
 	}

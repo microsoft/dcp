@@ -44,6 +44,10 @@ type PseudoTerminalProcess struct {
 	// The pseudo-terminal for the process.
 	PTY PTY
 
+	// Initial dimensions requested at PTY allocation time.
+	InitialCols uint16
+	InitialRows uint16
+
 	// The PID of the process.
 	PID process.Pid_t
 
