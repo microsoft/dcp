@@ -336,9 +336,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	})
 
 	// Watch for process exit so we can deregister the run, tear down the PTY/ConnManager
-	// resources, and notify the run-change handler. ConnManager observes process exit on
-	// its own (via watchProcessExit) and starts its shutdown sequence; we wait for its
-	// Done() channel here so the test/runtime can observe socket-file cleanup.
+	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, connMgr, runChangeHandler, startLog)
 
 	displayStartTime := process.StartTimeForProcess(ptp.PID)
