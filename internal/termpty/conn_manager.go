@@ -213,7 +213,7 @@ func (cm *ConnManager) connLoop() {
 	}
 }
 
-// waitBeforeRedial blocks until connectReconnectMinInterval has elapsed since
+// waitBeforeRedial blocks until reconnectMinInterval has elapsed since
 // lastAttempt, returning true once it is safe to re-dial. It returns false if
 // the manager is shutting down (internal context cancelled) before then.
 func (cm *ConnManager) waitBeforeRedial(lastAttempt time.Time) bool {
