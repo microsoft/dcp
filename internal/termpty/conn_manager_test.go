@@ -647,7 +647,7 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 	}()
 
 	// Observe for a window spanning several redial intervals.
-	const window = 4 * connectReconnectMinInterval
+	const window = 4 * reconnectMinInterval
 	select {
 	case <-time.After(window):
 	case <-ctx.Done():
@@ -661,7 +661,7 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 	// window must be bounded well below a hot-loop. Allow generous headroom for
 	// scheduling jitter while still proving redials are throttled.
 	got := accepts.Load()
-	maxExpected := int64(window/connectReconnectMinInterval) + 3
+	maxExpected := int64(window/reconnectMinInterval) + 3
 	require.LessOrEqualf(t, got, maxExpected,
 		"connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
 
@@ -673,4 +673,3 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 		t.Fatal("ConnManager did not become dormant after process exit")
 	}
 }
-
