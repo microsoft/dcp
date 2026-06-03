@@ -38,7 +38,6 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
-	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -667,10 +666,8 @@ type testContainer struct {
 	stdoutLog      *testutil.BufferWriter
 	stderrLog      *testutil.BufferWriter
 
-	// Set by AttachContainer when the test wires up a terminal attach handler.
-	// Fired with the container's exit code (or -1 for forced stop/removal) from
-	// transitions that mirror production "container exit drives attach exit".
-	attachExitHandlers []process.ProcessExitHandler
+	// Tracks attached terminal processes.
+	terminalProcesses []*termpty.PseudoTerminalProcess
 }
 
 type testImage struct {
@@ -1705,12 +1702,11 @@ func (to *TestContainerOrchestrator) AttachContainer(
 	}
 
 	if ptp != nil && ptp.ExitHandler != nil {
-		// Record the attach exit handler so test transitions that simulate
-		// container exit / stop / removal can drive the bridge shutdown the
-		// same way the real container runtime does.
+		// Record the attached terminal process so test transitions that simulate
+		// container exit / stop / removal can deliver the exit signal/code.
 		to.mutex.Lock()
 		if liveContainer, stillThere := to.containers[foundContainer.ID]; stillThere {
-			liveContainer.attachExitHandlers = append(liveContainer.attachExitHandlers, ptp.ExitHandler)
+			liveContainer.terminalProcesses = append(liveContainer.terminalProcesses, ptp)
 		}
 		to.mutex.Unlock()
 	}
@@ -1718,28 +1714,20 @@ func (to *TestContainerOrchestrator) AttachContainer(
 	return ptp, nil
 }
 
-// fireAttachExitHandlers signals every recorded attach exit handler with the
-// supplied exit code and then clears the list. The caller must hold to.mutex.
-// Handlers that have already fired (e.g., because the controller separately
-// called pe.StopProcess on the attach process, which then drives the
-// TestProcessExecutor's own exit notification) are skipped so we never invoke
-// OnProcessExited twice on the same handler.
 func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testContainer, exitCode int32) {
-	if len(container.attachExitHandlers) == 0 {
+	if len(container.terminalProcesses) == 0 {
 		return
 	}
-	handlers := container.attachExitHandlers
-	container.attachExitHandlers = nil
-	for _, handler := range handlers {
-		if cpeh, ok := handler.(*process.ConcurrentProcessExitHandler); ok {
-			select {
-			case <-cpeh.Exited():
-				// Already fired by another path (e.g. TestProcessExecutor.StopProcess).
-				continue
-			default:
-			}
+	terminalProcesses := container.terminalProcesses
+	container.terminalProcesses = nil
+	for _, tproc := range terminalProcesses {
+		select {
+		case <-tproc.ExitHandler.Exited():
+			// Already fired by another path (e.g. TestProcessExecutor.StopProcess).
+			continue
+		default:
+			tproc.ExitHandler.OnProcessExited(tproc.PID, exitCode, nil)
 		}
-		handler.OnProcessExited(0, exitCode, nil)
 	}
 }
 
