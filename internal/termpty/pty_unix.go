@@ -128,7 +128,7 @@ var _ = PTY((*unixPTY)(nil))
 // The caller is responsible for invoking PTY.Close() once the session ends;
 // that closes the master fd and the automatically sends SIGHUP to the spawned process.
 func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *CommandSpec) (*PseudoTerminalProcess, error) {
-	cols, rows := normalizeTerminalDimensions(spec.Cols, spec.Rows)
+	cols, rows := NormalizeTerminalDimensions(spec.Cols, spec.Rows)
 
 	master, slave, err := pty_open()
 	if err != nil {
@@ -185,8 +185,6 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 
 	ptp := PseudoTerminalProcess{
 		PTY:              pty,
-		InitialCols:      cols,
-		InitialRows:      rows,
 		PID:              pid,
 		IdentityTime:     startTime,
 		StartWaitForExit: startWait,

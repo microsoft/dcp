@@ -44,10 +44,6 @@ type PseudoTerminalProcess struct {
 	// The pseudo-terminal for the process.
 	PTY PTY
 
-	// Initial dimensions requested at PTY allocation time.
-	InitialCols uint16
-	InitialRows uint16
-
 	// The PID of the process.
 	PID process.Pid_t
 
@@ -86,20 +82,25 @@ type CommandSpec struct {
 	Rows uint16
 }
 
-func normalizeTerminalDimensions(cols, rows uint16) (uint16, uint16) {
+func NormalizeTerminalDimensions[T int32 | uint16](cols, rows T) (uint16, uint16) {
+	var normalizedCols, normalizedRows uint16
 	if cols == 0 {
-		cols = defaultInitialCols
+		normalizedCols = defaultInitialCols
 	} else if cols > maxTerminalDimension {
-		cols = maxTerminalDimension
+		normalizedCols = maxTerminalDimension
+	} else {
+		normalizedCols = uint16(cols)
 	}
 
 	if rows == 0 {
-		rows = defaultInitialRows
+		normalizedRows = defaultInitialRows
 	} else if rows > maxTerminalDimension {
-		rows = maxTerminalDimension
+		normalizedRows = maxTerminalDimension
+	} else {
+		normalizedRows = uint16(rows)
 	}
 
-	return cols, rows
+	return normalizedCols, normalizedRows
 }
 
 // TerminalProcessFactory spawns a process attached to a freshly allocated pseudo-terminal.

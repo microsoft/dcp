@@ -155,26 +155,26 @@ func TestNewConnManager_RejectsInvalidArgs(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 
 	t.Run("nil ptp", func(t *testing.T) {
-		_, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, log)
+		_, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 0, 0, log)
 		require.Error(t, err)
 	})
 
 	t.Run("empty socket path", func(t *testing.T) {
-		_, err := NewConnManager(ctx, ptp, "", SocketModeListen, log)
+		_, err := NewConnManager(ctx, ptp, "", SocketModeListen, 0, 0, log)
 		require.Error(t, err)
 	})
 
 	t.Run("nil PTY", func(t *testing.T) {
 		bad := *ptp
 		bad.PTY = nil
-		_, err := NewConnManager(ctx, &bad, socketPath, SocketModeListen, log)
+		_, err := NewConnManager(ctx, &bad, socketPath, SocketModeListen, 0, 0, log)
 		require.Error(t, err)
 	})
 
 	t.Run("nil exit handler", func(t *testing.T) {
 		bad := *ptp
 		bad.ExitHandler = nil
-		_, err := NewConnManager(ctx, &bad, socketPath, SocketModeListen, log)
+		_, err := NewConnManager(ctx, &bad, socketPath, SocketModeListen, 0, 0, log)
 		require.Error(t, err)
 	})
 }
@@ -184,11 +184,11 @@ func TestNewConnManager_FailsWhenSocketPathInUse(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	first, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	first, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 	t.Cleanup(func() { <-first.Done() })
 
-	second, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	second, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.Error(t, err, "expected error creating second manager on same socket")
 	require.Nil(t, second)
 }
@@ -200,7 +200,7 @@ func TestConnManager_AcceptsAndServesClient(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 	require.Equal(t, socketPath, cm.SocketPath())
 
@@ -242,10 +242,7 @@ func TestConnManager_HelloAdvertisesConfiguredInitialSize(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	ptp.InitialCols = 132
-	ptp.InitialRows = 50
-
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 132, 50, log)
 	require.NoError(t, err)
 
 	conn := dialConnMgr(t, ctx, socketPath)
@@ -267,7 +264,7 @@ func TestConnManager_ReusableAcrossSequentialConnections(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 
 	runSession := func(name string) {
@@ -304,7 +301,7 @@ func TestConnManager_OnlyOneClientServedAtATime(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 	_ = cm
 
@@ -351,7 +348,7 @@ func TestConnManager_ProcessExitShutsDownManager(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 
 	// Process exits BEFORE any client connects.
@@ -372,7 +369,7 @@ func TestConnManager_LifetimeContextCancelShutsDownManager(t *testing.T) {
 	lifetimeCtx, lifetimeCancel := context.WithCancel(parentCtx)
 	defer lifetimeCancel()
 
-	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 
 	// Connect a client so the manager has a Serve in flight.
@@ -402,7 +399,7 @@ func TestConnManager_ExitCodePropagatedToClient(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.NoError(t, err)
 
 	conn := dialConnMgr(t, ctx, socketPath)
@@ -490,7 +487,7 @@ func TestConnManager_ConnectModeDialsPeerAndServes(t *testing.T) {
 
 	peer := startPeerListener(t, socketPath)
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 	require.Equal(t, socketPath, cm.SocketPath())
 
@@ -534,7 +531,7 @@ func TestConnManager_ConnectModeStartsWithoutPeerThenDials(t *testing.T) {
 
 	// No peer is listening yet: construction must still succeed, and the
 	// manager must keep retrying the dial until a peer appears.
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
 	// Connect mode must not create the socket file; the peer owns it.
@@ -561,7 +558,7 @@ func TestConnManager_ConnectModeReconnectsAfterSessionEnds(t *testing.T) {
 
 	peer := startPeerListener(t, socketPath)
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
 	runSession := func(name string) {
@@ -601,7 +598,7 @@ func TestConnManager_ConnectModeLifetimeCancelWhileDialingShutsDown(t *testing.T
 	defer lifetimeCancel()
 
 	// No peer ever appears: the manager is stuck retrying the dial.
-	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeConnect, log)
+	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
 	lifetimeCancel()
@@ -619,7 +616,7 @@ func TestConnManager_ConnectModeProcessExitWhileDialingShutsDown(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 
 	// No peer is listening; the manager is retrying the dial.
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
 	ptp.ExitHandler.OnProcessExited(ptp.PID, 7, nil)
@@ -638,7 +635,7 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 
 	peer := startPeerListener(t, socketPath)
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
 	// Peer accepts each dial and immediately closes it. This drives the

@@ -299,8 +299,16 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	if terminalSpec.SocketMode.Normalized() == apiv1.TerminalSocketModeConnect {
 		socketMode = termpty.SocketModeConnect
 	}
-
-	connMgr, connMgrErr := termpty.NewConnManager(processCtx, ptp, terminalSpec.UDSPath, socketMode, startLog)
+	initialRows, initialCols := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
+	connMgr, connMgrErr := termpty.NewConnManager(
+		processCtx,
+		ptp,
+		terminalSpec.UDSPath,
+		socketMode,
+		initialCols,
+		initialRows,
+		startLog,
+	)
 	if connMgrErr != nil {
 		startLog.Error(connMgrErr, "Failed to create terminal connection manager; stopping process")
 		// Best-effort: stop the just-started process and close its PTY before reporting failure.

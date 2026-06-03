@@ -117,7 +117,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 		return nil, fmt.Errorf("failed to create Windows console output pipe: %w", outputPipeErr)
 	}
 
-	initialCols, initialRows := normalizeTerminalDimensions(spec.Cols, spec.Rows)
+	initialCols, initialRows := NormalizeTerminalDimensions(spec.Cols, spec.Rows)
 	var hConsole windows.Handle
 	consoleSize := windowsConsoleSize(initialCols, initialRows)
 	createConsoleErr := windows.CreatePseudoConsole(consoleSize, inputRead, outputWrite, 0, &hConsole)
@@ -149,8 +149,6 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 			otherHandles: []windows.Handle{inputRead, outputWrite},
 			lock:         &sync.Mutex{},
 		},
-		InitialCols:      initialCols,
-		InitialRows:      initialRows,
 		PID:              pid,
 		IdentityTime:     startTime,
 		StartWaitForExit: startWait,
@@ -293,7 +291,7 @@ func closeHandles(handles ...windows.Handle) error {
 }
 
 func windowsConsoleSize(cols, rows uint16) windows.Coord {
-	cols, rows = normalizeTerminalDimensions(cols, rows)
+	cols, rows = NormalizeTerminalDimensions(cols, rows)
 	return windows.Coord{X: int16(cols), Y: int16(rows)}
 }
 
