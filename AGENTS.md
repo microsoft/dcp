@@ -63,7 +63,7 @@ Place new code in the correct location according to the project's structure:
 - Run `make generate-grpc` after making changes to protobuf definitions (files with `.proto` extension).
 
 ## Test authoring
-- Unless a tight, specific timeout is ESSENTIAL for testing a specific funtion, avoid using hard-coded timeouts (e.g. obtained via `time.After()`). Instead, use test context (created via `testutil.GetTestContext()`) and test context `Done()` channel for timeouts in tests.
+- Unless a tight, specific timeout is ESSENTIAL for testing a specific function, avoid using hard-coded timeouts (e.g. obtained via `time.After()`). Instead, use test context (created via `testutil.GetTestContext()`) and test context `Done()` channel for timeouts in tests.
 
 ## Commenting code
 - Try to keep comments terse and focused. 1-2 sentences for structs and public method descriptions, and 1 sentence for struct members is ideal, but do not use this guideline to omit information that is important for proper use of the type or member. If necessary, make a longer comment.
