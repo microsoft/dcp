@@ -14,6 +14,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -227,8 +228,10 @@ func (s *Hmp1Server) pumpOutputFrames(ioCtx context.Context, conn net.Conn) erro
 		}
 
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) || errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
-				// All expected errors indicating we are done reading from the PTY.
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, os.ErrClosed) ||
+				errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded) {
+				// All expected errors indicating we are done reading from the PTY
+				// (the process exited, the PTY was closed, or serving was cancelled).
 				return nil
 			}
 			return fmt.Errorf("reading from PTY failed: %w", readErr)
