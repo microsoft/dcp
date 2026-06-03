@@ -62,6 +62,10 @@ type ConnManager struct {
 	socketPath string
 	socketMode SocketMode
 
+	// Initial dimensions for the terminal.
+	initialCols uint16
+	initialRows uint16
+
 	ptp    *PseudoTerminalProcess
 	server *Hmp1Server
 
@@ -91,6 +95,8 @@ func NewConnManager(
 	ptp *PseudoTerminalProcess,
 	socketPath string,
 	mode SocketMode,
+	initialCols uint16,
+	initialRows uint16,
 	log logr.Logger,
 ) (*ConnManager, error) {
 	if lifetimeCtx == nil {
@@ -124,15 +130,18 @@ func NewConnManager(
 	}
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
+	initialCols, initialRows = NormalizeTerminalDimensions(initialCols, initialRows)
 
 	cm := &ConnManager{
-		log:        log,
-		socketPath: socketPath,
-		socketMode: mode,
-		ptp:        ptp,
-		listener:   listener,
-		ctx:        ctx,
-		cancelCtx:  cancelCtx,
+		log:         log,
+		socketPath:  socketPath,
+		socketMode:  mode,
+		ptp:         ptp,
+		listener:    listener,
+		initialCols: initialCols,
+		initialRows: initialRows,
+		ctx:         ctx,
+		cancelCtx:   cancelCtx,
 
 		done: make(chan struct{}),
 	}
@@ -330,8 +339,8 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 	}()
 
 	serveErr := cm.server.Serve(serveCtx, conn, exitCodeCh, Hmp1ServerOptions{
-		InitialCols: cm.ptp.InitialCols,
-		InitialRows: cm.ptp.InitialRows,
+		InitialCols: cm.initialCols,
+		InitialRows: cm.initialRows,
 		Log:         cm.log,
 	})
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {

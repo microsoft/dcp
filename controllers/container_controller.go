@@ -1924,7 +1924,16 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 		socketMode = termpty.SocketModeConnect
 	}
 
-	connMgr, connMgrErr := termpty.NewConnManager(r.LifetimeCtx, ptp, terminalSpec.UDSPath, socketMode, log)
+	initialRows, initialCols := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
+	connMgr, connMgrErr := termpty.NewConnManager(
+		r.LifetimeCtx,
+		ptp,
+		terminalSpec.UDSPath,
+		socketMode,
+		initialCols,
+		initialRows,
+		log,
+	)
 	if connMgrErr != nil {
 		log.Error(connMgrErr, "Failed to create terminal connection manager; container cannot be started with terminal")
 		if stopErr := ptp.Stop(); stopErr != nil {
