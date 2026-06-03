@@ -188,16 +188,14 @@ func installResizeHandler(log logr.Logger, exitCode int, cancel context.CancelFu
 
 	go func() {
 		defer func() { _ = windows.CloseHandle(hConIn) }()
-		// inputRecord mirrors the Win32 INPUT_RECORD struct. The only field
-		// we touch is EventType; the rest is a union large enough to hold the
-		// biggest event variant (KEY_EVENT_RECORD). On a 64-bit platform the
-		// union is 16 bytes, plus the leading 2-byte EventType and 2 bytes
-		// of padding to align the union — total 20 bytes. Sizing it
-		// generously (24 bytes) is safe even if Windows changes the layout
-		// in the future.
+		// inputRecord mirrors the Win32 INPUT_RECORD struct. The buffer passed to
+		// ReadConsoleInputW is treated as an array of INPUT_RECORD values, so the
+		// Go struct's size/stride must match INPUT_RECORD exactly (20 bytes on
+		// 64-bit Windows: 2-byte EventType + 2-byte padding + 16-byte union).
 		type inputRecord struct {
 			EventType uint16
-			_         [22]byte
+			_         uint16
+			_         [16]byte
 		}
 
 		buf := make([]inputRecord, 16)
