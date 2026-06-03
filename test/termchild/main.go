@@ -114,7 +114,7 @@ the test. Execution order:
 	cmd.Flags().StringVar(&flags.printStderr, printStderrFlag, "",
 		"Text to print to stderr (newline-terminated). Empty means do not print.")
 	cmd.Flags().BoolVar(&flags.disableEcho, disableEchoFlag, false,
-		"Disable terminal input echo (and on Windows, also line-input mode) before any I/O.")
+		"Disable terminal input echo (and on Unix, also disable canonical/line-input mode) before any I/O.")
 	cmd.Flags().BoolVar(&flags.echo, echoFlag, false,
 		`Read lines from stdin and write "got:LINE" to stdout until EOF.`)
 	cmd.Flags().BoolVar(&flags.ignoreSigterm, ignoreSigtermFlag, false,
