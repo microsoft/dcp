@@ -1924,7 +1924,7 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 		socketMode = termpty.SocketModeConnect
 	}
 
-	initialRows, initialCols := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
+	initialCols, initialRows := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
 	connMgr, connMgrErr := termpty.NewConnManager(
 		r.LifetimeCtx,
 		ptp,
