@@ -21,27 +21,59 @@ import (
 
 const (
 	// acceptInitialBackoff and acceptMaxBackoff bound the exponential
-	// retry schedule applied to transient Accept failures. The backoff
-	// state is reset after each successful Accept, so unrelated bursts of
-	// errors do not accumulate.
+	// retry schedule applied to transient Accept (listen mode) and Dial
+	// (connect mode) failures. The backoff state is reset after each
+	// successful Accept/Dial, so unrelated bursts of errors do not accumulate.
 	acceptInitialBackoff = 100 * time.Millisecond
 	acceptMaxBackoff     = 5 * time.Second
+
+	// connectReconnectMinInterval bounds how frequently the manager will
+	// re-dial the peer in connect mode. It prevents a peer that accepts and
+	// immediately closes (or that is not a valid HMP peer) from driving a tight
+	// reconnect loop. Normal-length sessions are unaffected because the
+	// interval has already elapsed by the time they end.
+	connectReconnectMinInterval = 500 * time.Millisecond
+)
+
+// SocketMode selects how a ConnManager establishes the HMP v1 connection over
+// its Unix domain socket.
+type SocketMode int
+
+const (
+	// SocketModeListen makes the manager listen on the socket and accept a
+	// client connection.
+	SocketModeListen SocketMode = iota
+	// SocketModeConnect makes the manager assume the client is already
+	// listening on the socket and connect (dial) to it.
+	SocketModeConnect
 )
 
 // ConnManager bridges a running PseudoTerminalProcess to external HMP v1 clients
-// over a Unix domain socket. It listens on the socket and, for each accepted
-// connection, runs a Hmp1Server.Serve loop that ferries terminal I/O between
-// the PTY and the client.
+// over a Unix domain socket. For each connection it establishes, it runs a
+// Hmp1Server.Serve loop that ferries terminal I/O between the PTY and the client.
 //
-// At most one client connection is served at a time; while a connection is
-// active subsequent client connect() calls are queued by the OS and picked up
-// once the active session ends.
+// The manager operates in one of two modes (see SocketMode):
+//
+//   - SocketModeListen: the manager listens on the socket and accepts client
+//     connections. It owns the listener but not the socket file (see below).
+//   - SocketModeConnect: the manager assumes the client is already listening on
+//     the socket and connects (dials) to it. DCP never creates or owns the
+//     socket file in this mode; the peer does.
+//
+// The terminal data flow is identical in both modes; only how a connection is
+// obtained differs.
+//
+// At most one client connection is served at a time. In listen mode, while a
+// connection is active subsequent client connect() calls are queued by the OS
+// and picked up once the active session ends. In connect mode, after a session
+// ends the manager re-dials the peer (with bounded backoff) for as long as the
+// process is running and the lifetime context is active.
 //
 // The manager's lifetime is bound to the lifetime context passed to
 // NewConnManager and to the lifetime of the underlying process. When either
 // the lifetime context is cancelled or the process exits, the manager closes
-// the listener, terminates any active Serve loop, and transitions to a final,
-// dormant state observable via Done().
+// the listener (listen mode), terminates any active Serve loop, and transitions
+// to a final, dormant state observable via Done().
 //
 // ConnManager does NOT own the PTY or the process: it neither closes the PTY
 // nor reaps the process. The caller that produced the PseudoTerminalProcess
@@ -49,10 +81,12 @@ const (
 type ConnManager struct {
 	log        logr.Logger
 	socketPath string
+	mode       SocketMode
 
 	ptp    *PseudoTerminalProcess
 	server *Hmp1Server
 
+	// listener is non-nil only in listen mode.
 	listener *net.UnixListener
 
 	// ctx is an internal context cancelled when the manager begins to shut
@@ -71,8 +105,12 @@ type ConnManager struct {
 	done chan struct{}
 }
 
-// NewConnManager creates a connection manager that listens for HMP v1 client
-// connections on socketPath and bridges them to ptp's pseudo-terminal.
+// NewConnManager creates a connection manager that bridges HMP v1 client
+// traffic on socketPath to ptp's pseudo-terminal.
+//
+// mode selects how the connection is established. In SocketModeListen the
+// manager listens on socketPath and accepts connections; in SocketModeConnect
+// it assumes the client is listening on socketPath and dials it.
 //
 // lifetimeCtx supervises the manager. When it is cancelled the manager shuts
 // down gracefully. The manager also shuts down on its own when the process
@@ -81,15 +119,20 @@ type ConnManager struct {
 // The supplied logger is used for all diagnostic output (both by the manager
 // and by the Hmp1Server it owns). A zero-value logr.Logger is acceptable.
 //
-// ConnManager does not own the lifecycle of the socket file at socketPath: it
-// will fail if the path is already bound at startup, and it will leave the
-// file in place on shutdown. The caller is responsible for ensuring the path
-// is free before NewConnManager is called and for removing the file once the
-// manager has shut down.
+// Socket file ownership depends on the mode. In listen mode, ConnManager does
+// not own the lifecycle of the socket file at socketPath: it will fail if the
+// path is already bound at startup, and it will leave the file in place on
+// shutdown. The caller is responsible for ensuring the path is free before
+// NewConnManager is called and for removing the file once the manager has shut
+// down. In connect mode, the peer owns the socket file; ConnManager never
+// creates or removes it, and construction does not fail if no peer is yet
+// listening (the manager retries the dial until the lifetime context is
+// cancelled or the process exits).
 func NewConnManager(
 	lifetimeCtx context.Context,
 	ptp *PseudoTerminalProcess,
 	socketPath string,
+	mode SocketMode,
 	log logr.Logger,
 ) (*ConnManager, error) {
 	if lifetimeCtx == nil {
@@ -108,20 +151,28 @@ func NewConnManager(
 		return nil, errors.New("socket path must not be empty")
 	}
 
-	listener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
-	if listenErr != nil {
-		return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
+	// In listen mode we bind the socket synchronously so that a path-in-use
+	// condition surfaces immediately. In connect mode there is no listener; the
+	// peer owns the socket and we dial it from the connection loop.
+	var listener *net.UnixListener
+	if mode == SocketModeListen {
+		boundListener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+		if listenErr != nil {
+			return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
+		}
+		// Socket file lifecycle is owned by the caller, not by ConnManager. Without
+		// this opt-out, net.UnixListener.Close() would unlink the path because Go
+		// created it via ListenUnix.
+		boundListener.SetUnlinkOnClose(false)
+		listener = boundListener
 	}
-	// Socket file lifecycle is owned by the caller, not by ConnManager. Without
-	// this opt-out, net.UnixListener.Close() would unlink the path because Go
-	// created it via ListenUnix.
-	listener.SetUnlinkOnClose(false)
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 
 	cm := &ConnManager{
 		log:        log,
 		socketPath: socketPath,
+		mode:       mode,
 		ptp:        ptp,
 		listener:   listener,
 		ctx:        ctx,
@@ -132,9 +183,15 @@ func NewConnManager(
 	cm.server = NewHmp1Server(ctx, ptp.PTY)
 	cm.shutdownOnce = sync.OnceFunc(cm.shutdown)
 
+	if mode == SocketModeConnect {
+		cm.log.V(1).Info("Terminal connection manager will dial peer", "SocketPath", socketPath)
+	} else {
+		cm.log.V(1).Info("Terminal connection manager is listening", "SocketPath", socketPath)
+	}
+
 	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
 	go cm.watchProcessExit()
-	go cm.acceptLoop()
+	go cm.connLoop()
 
 	return cm, nil
 }
@@ -166,25 +223,62 @@ func (cm *ConnManager) watchProcessExit() {
 	}
 }
 
-// acceptLoop accepts client connections one at a time. Each accepted
-// connection is serviced inline by serveConnection before returning to
-// Accept, which gives us the single-connection-at-a-time guarantee without
-// any additional synchronization.
-func (cm *ConnManager) acceptLoop() {
+// connLoop establishes client connections one at a time and serves each one
+// inline before obtaining the next, which gives us the single-connection-at-a-time
+// guarantee without any additional synchronization. In listen mode it accepts
+// connections; in connect mode it dials the peer, re-dialing (with a bounded
+// minimum interval) after each session ends.
+func (cm *ConnManager) connLoop() {
 	defer close(cm.done)
 
+	var lastConnectAttempt time.Time
 	for {
-		conn, err := cm.acceptOne()
+		// In connect mode, bound how frequently we re-dial the peer so a peer
+		// that accepts and immediately closes cannot drive a tight loop.
+		if cm.mode == SocketModeConnect && !lastConnectAttempt.IsZero() {
+			if !cm.waitBeforeRedial(lastConnectAttempt) {
+				return
+			}
+		}
+		lastConnectAttempt = time.Now()
+
+		conn, err := cm.nextConn()
 		if err != nil {
-			// Either the listener has been closed (shutdown is in
-			// progress) or the internal context was cancelled. In both
-			// cases the loop is done; the underlying error was logged at
-			// Error level by the retry operation when it first occurred.
+			// Either the listener has been closed / the dial was abandoned
+			// (shutdown is in progress) or the internal context was cancelled.
+			// In all cases the loop is done.
 			return
 		}
 
 		cm.serveConnection(conn)
 	}
+}
+
+// waitBeforeRedial blocks until connectReconnectMinInterval has elapsed since
+// lastAttempt, returning true once it is safe to re-dial. It returns false if
+// the manager is shutting down (internal context cancelled) before then.
+func (cm *ConnManager) waitBeforeRedial(lastAttempt time.Time) bool {
+	wait := connectReconnectMinInterval - time.Since(lastAttempt)
+	if wait <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-cm.ctx.Done():
+		return false
+	}
+}
+
+// nextConn obtains the next client connection according to the manager's mode.
+func (cm *ConnManager) nextConn() (net.Conn, error) {
+	if cm.mode == SocketModeConnect {
+		return cm.dialOne()
+	}
+	return cm.acceptOne()
 }
 
 // acceptOne accepts a single client connection, retrying transient errors
@@ -219,6 +313,47 @@ func (cm *ConnManager) acceptOne() (*net.UnixConn, error) {
 
 		cm.log.Error(acceptErr, "Accept on terminal socket failed", "SocketPath", cm.socketPath)
 		return acceptErr
+	})
+
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	return conn, nil
+}
+
+// dialOne dials the peer's socket, retrying transient failures with bounded
+// exponential backoff. A failed dial usually just means the peer is not
+// listening yet, which is expected at startup and between sessions, so such
+// failures are logged at low verbosity. It returns the connection on success,
+// or an error (and a nil connection) when the manager is shutting down (the
+// internal context was cancelled).
+func (cm *ConnManager) dialOne() (net.Conn, error) {
+	b := backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(acceptInitialBackoff),
+		backoff.WithMaxInterval(acceptMaxBackoff),
+		// No max elapsed time: retry until the lifetime context is cancelled
+		// (signalled by resiliency.Retry returning a context error).
+		backoff.WithMaxElapsedTime(0),
+	)
+
+	var conn net.Conn
+	dialer := net.Dialer{}
+	retryErr := resiliency.Retry(cm.ctx, b, func() error {
+		var dialErr error
+		conn, dialErr = dialer.DialContext(cm.ctx, "unix", cm.socketPath)
+		if dialErr == nil {
+			return nil
+		}
+
+		// Context cancellation means shutdown is in progress: stop retrying.
+		// This is a normal shutdown signal, not a failure, so we do not log it.
+		if cm.ctx.Err() != nil || errors.Is(dialErr, context.Canceled) {
+			return resiliency.Permanent(dialErr)
+		}
+
+		cm.log.V(1).Info("Dial of terminal socket failed; will retry",
+			"SocketPath", cm.socketPath, "error", dialErr.Error())
+		return dialErr
 	})
 
 	if retryErr != nil {
@@ -272,17 +407,20 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 }
 
 // shutdown() is the manager's idempotent shutdown sequence. It cancels the
-// internal context (which terminates any in-progress Serve loop and the
-// underlying Hmp1Server's PTY reader worker) and closes the listener (which
-// unblocks Accept). The socket file at socketPath is intentionally left in
-// place — the caller owns its lifecycle.
-// Note: cm.done is closed when acceptLoop() exits.
+// internal context (which terminates any in-progress Serve loop or pending
+// dial, and the underlying Hmp1Server's PTY reader worker) and, in listen mode,
+// closes the listener (which unblocks Accept). The socket file at socketPath is
+// intentionally left in place — in listen mode the caller owns its lifecycle,
+// and in connect mode the peer owns it.
+// Note: cm.done is closed when connLoop() exits.
 func (cm *ConnManager) shutdown() {
 	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
 
 	cm.cancelCtx()
 
-	if closeErr := cm.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
-		cm.log.V(1).Info("Closing terminal socket listener failed", "error", closeErr.Error())
+	if cm.listener != nil {
+		if closeErr := cm.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			cm.log.V(1).Info("Closing terminal socket listener failed", "error", closeErr.Error())
+		}
 	}
 }

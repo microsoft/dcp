@@ -1033,8 +1033,9 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 
 	if cs.Terminal != nil {
 		// Columns and rows do not matter that much (the client can always resize the terminal as necessary),
-		// but once a Container is started with terminal support, the UDS path does not change.
+		// but once a Container is started with terminal support, the UDS path and socket mode do not change.
 		hashErr = errors.Join(hashErr, encoder.Encode(cs.Terminal.UDSPath))
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.Terminal.SocketMode.Normalized()))
 	}
 
 	// Compute the hash for the lifecycle key

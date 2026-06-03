@@ -15,6 +15,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,26 +155,26 @@ func TestNewConnManager_RejectsInvalidArgs(t *testing.T) {
 	log := testutil.NewLogForTesting(t.Name())
 
 	t.Run("nil ptp", func(t *testing.T) {
-		_, err := NewConnManager(ctx, nil, socketPath, log)
+		_, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, log)
 		require.Error(t, err)
 	})
 
 	t.Run("empty socket path", func(t *testing.T) {
-		_, err := NewConnManager(ctx, ptp, "", log)
+		_, err := NewConnManager(ctx, ptp, "", SocketModeListen, log)
 		require.Error(t, err)
 	})
 
 	t.Run("nil PTY", func(t *testing.T) {
 		bad := *ptp
 		bad.PTY = nil
-		_, err := NewConnManager(ctx, &bad, socketPath, log)
+		_, err := NewConnManager(ctx, &bad, socketPath, SocketModeListen, log)
 		require.Error(t, err)
 	})
 
 	t.Run("nil exit handler", func(t *testing.T) {
 		bad := *ptp
 		bad.ExitHandler = nil
-		_, err := NewConnManager(ctx, &bad, socketPath, log)
+		_, err := NewConnManager(ctx, &bad, socketPath, SocketModeListen, log)
 		require.Error(t, err)
 	})
 }
@@ -182,11 +184,11 @@ func TestNewConnManager_FailsWhenSocketPathInUse(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	first, err := NewConnManager(ctx, ptp, socketPath, log)
+	first, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 	t.Cleanup(func() { <-first.Done() })
 
-	second, err := NewConnManager(ctx, ptp, socketPath, log)
+	second, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.Error(t, err, "expected error creating second manager on same socket")
 	require.Nil(t, second)
 }
@@ -198,7 +200,7 @@ func TestConnManager_AcceptsAndServesClient(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 	require.Equal(t, socketPath, cm.SocketPath())
 
@@ -240,7 +242,7 @@ func TestConnManager_ReusableAcrossSequentialConnections(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 
 	runSession := func(name string) {
@@ -277,7 +279,7 @@ func TestConnManager_OnlyOneClientServedAtATime(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 	_ = cm
 
@@ -324,7 +326,7 @@ func TestConnManager_ProcessExitShutsDownManager(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 
 	// Process exits BEFORE any client connects.
@@ -345,7 +347,7 @@ func TestConnManager_LifetimeContextCancelShutsDownManager(t *testing.T) {
 	lifetimeCtx, lifetimeCancel := context.WithCancel(parentCtx)
 	defer lifetimeCancel()
 
-	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, log)
+	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 
 	// Connect a client so the manager has a Serve in flight.
@@ -375,7 +377,7 @@ func TestConnManager_ExitCodePropagatedToClient(t *testing.T) {
 	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	cm, err := NewConnManager(ctx, ptp, socketPath, log)
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, log)
 	require.NoError(t, err)
 
 	conn := dialConnMgr(t, ctx, socketPath)
@@ -428,3 +430,247 @@ func readHmp1FrameAllowEOF(t *testing.T, conn net.Conn) (Hmp1FrameType, []byte) 
 	}
 	return Hmp1FrameType(header[0]), payload
 }
+
+// --- Connect mode ---
+
+// startPeerListener binds a Unix listener at socketPath that a connect-mode
+// ConnManager will dial into. In connect mode the peer owns the socket file, so
+// the listener (and the file) are created and cleaned up by the test, not by
+// ConnManager.
+func startPeerListener(t *testing.T, socketPath string) *net.UnixListener {
+	t.Helper()
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	require.NoErrorf(t, err, "listen unix socket at %s", socketPath)
+	t.Cleanup(func() { _ = l.Close() })
+	return l
+}
+
+// acceptPeer accepts a single connection on the peer listener, honoring ctx for
+// the accept deadline, and fails the test on error.
+func acceptPeer(t *testing.T, ctx context.Context, l *net.UnixListener) net.Conn {
+	t.Helper()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = l.SetDeadline(deadline)
+	}
+	conn, err := l.AcceptUnix()
+	require.NoError(t, err, "accept peer connection")
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+func TestConnManager_ConnectModeDialsPeerAndServes(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	peer := startPeerListener(t, socketPath)
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	require.NoError(t, err)
+	require.Equal(t, socketPath, cm.SocketPath())
+
+	conn := acceptPeer(t, ctx, peer)
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+
+	// Client sends input; verify it reaches the PTY.
+	writeHmp1Frame(t, conn, Hmp1FrameInput, []byte("hello-pty"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "hello-pty", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for client input to reach PTY")
+	}
+
+	// PTY produces output; verify it reaches the client as a FrameOutput.
+	select {
+	case pty.Inbound <- []byte("hello-client"):
+	case <-ctx.Done():
+		t.Fatal("timed out pushing PTY output")
+	}
+
+	ft, payload := readHmp1Frame(t, ctx, conn)
+	require.Equal(t, Hmp1FrameOutput, ft)
+	require.Equal(t, "hello-client", string(payload))
+
+	// Tear down by simulating process exit; manager should shut down.
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not transition to dormant state after process exit")
+	}
+}
+
+func TestConnManager_ConnectModeStartsWithoutPeerThenDials(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	// No peer is listening yet: construction must still succeed, and the
+	// manager must keep retrying the dial until a peer appears.
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	require.NoError(t, err)
+
+	// Connect mode must not create the socket file; the peer owns it.
+	_, statErr := os.Stat(socketPath)
+	require.True(t, errors.Is(statErr, os.ErrNotExist), "connect mode must not create the socket file")
+
+	// Now bring up the peer; the manager should dial in and complete the handshake.
+	peer := startPeerListener(t, socketPath)
+	conn := acceptPeer(t, ctx, peer)
+	drainHelloAndStateSync(t, ctx, conn)
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+func TestConnManager_ConnectModeReconnectsAfterSessionEnds(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	peer := startPeerListener(t, socketPath)
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	require.NoError(t, err)
+
+	runSession := func(name string) {
+		conn := acceptPeer(t, ctx, peer)
+		drainHelloAndStateSync(t, ctx, conn)
+
+		writeHmp1Frame(t, conn, Hmp1FrameInput, []byte(name))
+		select {
+		case got := <-pty.Outbound:
+			require.Equalf(t, name, string(got), "session %s", name)
+		case <-ctx.Done():
+			t.Fatalf("session %s: timed out waiting for PTY input", name)
+		}
+
+		// Close from the peer side; the manager should re-dial for the next session.
+		require.NoError(t, conn.Close())
+	}
+
+	runSession("first")
+	runSession("second")
+	runSession("third")
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+func TestConnManager_ConnectModeLifetimeCancelWhileDialingShutsDown(t *testing.T) {
+	t.Parallel()
+	parentCtx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	lifetimeCtx, lifetimeCancel := context.WithCancel(parentCtx)
+	defer lifetimeCancel()
+
+	// No peer ever appears: the manager is stuck retrying the dial.
+	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeConnect, log)
+	require.NoError(t, err)
+
+	lifetimeCancel()
+
+	select {
+	case <-cm.Done():
+	case <-parentCtx.Done():
+		t.Fatal("ConnManager did not become dormant after lifetime ctx cancel while dialing")
+	}
+}
+
+func TestConnManager_ConnectModeProcessExitWhileDialingShutsDown(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	// No peer is listening; the manager is retrying the dial.
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	require.NoError(t, err)
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 7, nil)
+
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit while dialing")
+	}
+}
+
+func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	peer := startPeerListener(t, socketPath)
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, log)
+	require.NoError(t, err)
+
+	// Peer accepts each dial and immediately closes it. This drives the
+	// manager's tightest reconnect path; the per-redial minimum interval must
+	// keep the accept rate bounded.
+	var accepts atomic.Int64
+	stop := make(chan struct{})
+	var peerWg sync.WaitGroup
+	peerWg.Add(1)
+	go func() {
+		defer peerWg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = peer.SetDeadline(time.Now().Add(200 * time.Millisecond))
+			conn, acceptErr := peer.AcceptUnix()
+			if acceptErr != nil {
+				select {
+				case <-stop:
+					return
+				default:
+					continue
+				}
+			}
+			accepts.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	// Observe for a window spanning several redial intervals.
+	const window = 4 * connectReconnectMinInterval
+	select {
+	case <-time.After(window):
+	case <-ctx.Done():
+		t.Fatal("test context expired before observation window elapsed")
+	}
+
+	close(stop)
+	peerWg.Wait()
+
+	// With a minimum interval between redials, the number of accepts over the
+	// window must be bounded well below a hot-loop. Allow generous headroom for
+	// scheduling jitter while still proving redials are throttled.
+	got := accepts.Load()
+	maxExpected := int64(window/connectReconnectMinInterval) + 3
+	require.LessOrEqualf(t, got, maxExpected,
+		"connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
+
+	// Shut down cleanly.
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+

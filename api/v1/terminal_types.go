@@ -9,6 +9,28 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+// TerminalSocketMode selects how DCP establishes the HMP v1 connection over the
+// terminal Unix domain socket.
+//
+// +kubebuilder:validation:Enum=listen;connect
+type TerminalSocketMode string
+
+const (
+	// TerminalSocketModeListen means DCP listens on the socket and the client connects to it.
+	TerminalSocketModeListen TerminalSocketMode = "listen"
+	// TerminalSocketModeConnect means the client listens on the socket and DCP connects to it.
+	TerminalSocketModeConnect TerminalSocketMode = "connect"
+)
+
+// Normalized returns the effective socket mode, treating the empty value as the
+// default ("listen").
+func (m TerminalSocketMode) Normalized() TerminalSocketMode {
+	if m == "" {
+		return TerminalSocketModeListen
+	}
+	return m
+}
+
 // TerminalSpec configures pseudo-terminal allocation for an Executable or Container
 // and the Unix domain socket that HMP v1 clients will connect to for terminal I/O.
 //
@@ -25,9 +47,18 @@ import (
 //
 // +k8s:openapi-gen=true
 type TerminalSpec struct {
-	// UDSPath is the Unix Domain Socket path that DCP listens on for the HMP v1 client connection.
+	// UDSPath is the Unix Domain Socket path used for the HMP v1 client connection.
+	// In "listen" mode (the default) DCP listens on this path and the client connects to it.
+	// In "connect" mode DCP assumes the client is already listening on this path and connects to it.
 	// Required.
 	UDSPath string `json:"udsPath,omitempty"`
+
+	// SocketMode selects how DCP establishes the HMP v1 connection over UDSPath.
+	// "listen" (the default) means DCP listens on the socket and the client connects to it.
+	// "connect" means the client listens on the socket and DCP connects to it.
+	// The terminal data flow is identical in both modes; only connection establishment differs.
+	// +kubebuilder:default:=listen
+	SocketMode TerminalSocketMode `json:"socketMode,omitempty"`
 
 	// Cols is the initial width of the pseudo-terminal in character columns.
 	// If zero, a sensible default (80) is used.
@@ -49,6 +80,7 @@ func (ts *TerminalSpec) Equal(other *TerminalSpec) bool {
 		return false
 	}
 	return ts.UDSPath == other.UDSPath &&
+		ts.SocketMode.Normalized() == other.SocketMode.Normalized() &&
 		ts.Cols == other.Cols &&
 		ts.Rows == other.Rows
 }
@@ -61,6 +93,12 @@ func (ts *TerminalSpec) Validate(specPath *field.Path) field.ErrorList {
 	}
 	if ts.UDSPath == "" {
 		errorList = append(errorList, field.Invalid(specPath.Child("udsPath"), ts.UDSPath, "udsPath is required."))
+	}
+	switch ts.SocketMode {
+	case "", TerminalSocketModeListen, TerminalSocketModeConnect:
+	default:
+		errorList = append(errorList, field.Invalid(specPath.Child("socketMode"), ts.SocketMode,
+			"socketMode must be either \"listen\" or \"connect\"."))
 	}
 	if ts.Cols < 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("cols"), ts.Cols, "cols must be non-negative."))

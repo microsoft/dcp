@@ -438,8 +438,9 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 
 	if es.Terminal != nil {
 		// Columns and rows do not matter that much (the client can always resize the terminal as necessary),
-		// but once an Executable is started with terminal support, the UDS path does not change.
+		// but once an Executable is started with terminal support, the UDS path and socket mode do not change.
 		hashErr = errors.Join(hashErr, encoder.Encode(es.Terminal.UDSPath))
+		hashErr = errors.Join(hashErr, encoder.Encode(es.Terminal.SocketMode.Normalized()))
 	}
 
 	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
