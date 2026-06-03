@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -32,14 +33,19 @@ type ptySlave struct {
 
 // unixPTY is a PTY implementation for Unix-like systems.
 // We currently support Linux and macOS.
-// Methods are not goroutine-safe.
+// Read(), Write(), and Resize() are goroutine-safe.
+// The Close() method is also goroutine-safe, but invoking Close() while other methods are in progress
+// may lead to an I/O error.
 type unixPTY struct {
 	master *ptyMaster
 	slave  *ptySlave
+	lock   *sync.Mutex
 }
 
 func (up *unixPTY) Close() error {
 	var err error = nil
+	up.lock.Lock()
+	defer up.lock.Unlock()
 
 	if up.master != nil {
 		tmpMaster := up.master
@@ -63,19 +69,29 @@ func (up *unixPTY) Close() error {
 }
 
 func (up *unixPTY) Read(p []byte) (n int, err error) {
+	up.lock.Lock()
 	if up.master == nil {
+		up.lock.Unlock()
 		return 0, os.ErrClosed
 	}
 
-	return up.master.Read(p)
+	f := up.master
+	up.lock.Unlock()
+
+	return f.Read(p)
 }
 
 func (up *unixPTY) Write(p []byte) (n int, err error) {
+	up.lock.Lock()
 	if up.master == nil {
+		up.lock.Unlock()
 		return 0, os.ErrClosed
 	}
 
-	return up.master.Write(p)
+	f := up.master
+	up.lock.Unlock()
+
+	return f.Write(p)
 }
 
 func (up *unixPTY) Resize(cols, rows uint16) error {
@@ -83,12 +99,17 @@ func (up *unixPTY) Resize(cols, rows uint16) error {
 		return fmt.Errorf("invalid PTY dimensions cols=%d rows=%d", cols, rows)
 	}
 
+	up.lock.Lock()
 	if up.master == nil {
+		up.lock.Unlock()
 		return os.ErrClosed
 	}
 
+	f := up.master
+	up.lock.Unlock()
+
 	ws := &winsize{rows: rows, cols: cols}
-	return pty_set_size(up.master, ws)
+	return pty_set_size(f, ws)
 }
 
 func (up *unixPTY) closeSlave() error {
@@ -113,7 +134,11 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 	if err != nil {
 		return nil, fmt.Errorf("failed to allocate PTY: %w", err)
 	}
-	pty := &unixPTY{master: master, slave: slave}
+	pty := &unixPTY{
+		master: master,
+		slave:  slave,
+		lock:   &sync.Mutex{},
+	}
 
 	resizeErr := pty.Resize(cols, rows)
 	if resizeErr != nil {
