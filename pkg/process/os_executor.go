@@ -181,6 +181,9 @@ func (e *OSExecutor) startProcess(
 		if sysCreateErr != nil {
 			return UnknownPID, time.Time{}, nil, sysCreateErr
 		}
+		if waitable == nil {
+			return UnknownPID, time.Time{}, nil, fmt.Errorf("sysCreateProcess returned nil waitable")
+		}
 	} else {
 		if err := cmd.Start(); err != nil {
 			return UnknownPID, time.Time{}, nil, err
