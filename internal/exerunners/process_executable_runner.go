@@ -299,7 +299,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	if terminalSpec.SocketMode.Normalized() == apiv1.TerminalSocketModeConnect {
 		socketMode = termpty.SocketModeConnect
 	}
-	initialRows, initialCols := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
+	initialCols, initialRows := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
 	connMgr, connMgrErr := termpty.NewConnManager(
 		processCtx,
 		ptp,
