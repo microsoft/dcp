@@ -6,6 +6,8 @@
 package v1
 
 import (
+	"math"
+
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
@@ -100,9 +102,14 @@ func (ts *TerminalSpec) Validate(specPath *field.Path) field.ErrorList {
 	}
 	if ts.Cols < 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("cols"), ts.Cols, "cols must be non-negative."))
+	} else if ts.Cols > math.MaxInt16 { // Compare with internal/termpty, maxTerminalDimension
+		errorList = append(errorList, field.Invalid(specPath.Child("cols"), ts.Cols, "cols must be less than or equal to 32767."))
 	}
 	if ts.Rows < 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("rows"), ts.Rows, "rows must be non-negative."))
+	}
+	if ts.Rows > math.MaxInt16 { // Compare with internal/termpty, maxTerminalDimension
+		errorList = append(errorList, field.Invalid(specPath.Child("rows"), ts.Rows, "rows must be less than or equal to 32767."))
 	}
 	return errorList
 }
