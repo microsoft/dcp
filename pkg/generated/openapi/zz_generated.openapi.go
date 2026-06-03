@@ -3940,7 +3940,14 @@ func schema_microsoft_dcp_api_v1_TerminalSpec(ref common.ReferenceCallback) comm
 				Properties: map[string]spec.Schema{
 					"udsPath": {
 						SchemaProps: spec.SchemaProps{
-							Description: "UDSPath is the Unix Domain Socket path that DCP listens on for the HMP v1 client connection. Required.",
+							Description: "UDSPath is the Unix Domain Socket path used for the HMP v1 client connection. In \"listen\" mode (the default) DCP listens on this path and the client connects to it. In \"connect\" mode DCP assumes the client is already listening on this path and connects to it. Required.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"socketMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SocketMode selects how DCP establishes the HMP v1 connection over UDSPath. \"listen\" (the default) means DCP listens on the socket and the client connects to it. \"connect\" means the client listens on the socket and DCP connects to it. The terminal data flow is identical in both modes; only connection establishment differs.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
