@@ -49,12 +49,12 @@ In this step, identify the most critical parts of the PR that a human reviewer s
 2. Related to data persistence (changes internal/statestore package code, especially database schema and how concurrent access to state store is handled). Label: "Data Persistence".
 3. Change public APIs (any changes to packages under the `api` directory). Label: "Public API".
 4. Introduce new external dependency (look for changes to `go.mod` file). Label: "External Dependencies".
-6. Change how `dcp` or `dcptun` programs are invoked (introduces new commands or flags, substantially changes the way existing commands are implemented). Label: "Program Invocation".
-7. Involve non-trivial changes related to concurrency (involving locks/mutexes, channels, WaitGroups, goroutine synchronization, goroutines accessing shared data) and resiliency (changing/introducing retries, timeouts, work queues). Label: "Concurrency and Resiliency".
-8. Modify controller code (package `controllers`). Label: "Controller Code".
-9. Modify or involve code that does network communications, handles network requests including data serialization and deserialization. Label: "Network Communications".
-10. Involve process manipulation (e.g., starting/stopping processes, managing process lifecycle, handling process signals, any code changing `pkg/process` package). Label: "Process Manipulation".
-11. Any change to `internal/logs` package. Label: "Object Logs".
+5. Change how `dcp` or `dcptun` programs are invoked (introduces new commands or flags, substantially changes the way existing commands are implemented). Label: "Program Invocation".
+6. Involve non-trivial changes related to concurrency (involving locks/mutexes, channels, WaitGroups, goroutine synchronization, goroutines accessing shared data) and resiliency (changing/introducing retries, timeouts, work queues). Label: "Concurrency and Resiliency".
+7. Modify controller code (package `controllers`). Label: "Controller Code".
+8. Modify or involve code that does network communications, handles network requests including data serialization and deserialization. Label: "Network Communications".
+9. Involve process manipulation (e.g., starting/stopping processes, managing process lifecycle, handling process signals, any code changing `pkg/process` package). Label: "Process Manipulation".
+10. Any change to `internal/logs` package. Label: "Object Logs".
 
 The output of this step is a list of files that contain high-risk changes, each file labeled with the appropriate risk category (multiple labels may apply for each file).
 
