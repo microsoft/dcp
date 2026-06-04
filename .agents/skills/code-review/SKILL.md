@@ -107,6 +107,7 @@ A table with links to files containing high-risk changes, along with the corresp
 | <Link to file1.go> | Security, Data Persistence |
 | <Link to file2.go> | Public API, External Dependencies |
 
+ Prefer links to the PR “Files changed” UI for each file so reviewers can leave comments. If you can’t generate PR-scoped links, use a link to the file in the PR branch of the repository.
 >
 
 ### Detailed Findings
