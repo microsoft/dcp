@@ -100,7 +100,7 @@ If the PR has "Reject" rating, explicitly state why you came to this conclusion 
 ### Critical Parts
 
 <
-A table with links to files containing high-risk changes, along with the corresponding risk categories identified during [Identify Critical Parts of the PR](#step-4-identify-critical-parts-of-the-pr) step. For exampe:
+A table with links to files containing high-risk changes, along with the corresponding risk categories identified during [Identify Critical Parts of the PR](#step-4-identify-critical-parts-of-the-pr) step. For example:
 
 | File | Risk Categories |
 |------|-----------------|
