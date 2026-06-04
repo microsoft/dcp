@@ -52,7 +52,7 @@ In this step, identify the most critical parts of the PR that a human reviewer s
 6. Change how `dcp` or `dcptun` programs are invoked (introduces new commands or flags, substantially changes the way existing commands are implemented). Label: "Program Invocation".
 7. Involve non-trivial changes related to concurrency (involving locks/mutexes, channels, WaitGroups, goroutine synchronization, goroutines accessing shared data) and resiliency (changing/introducing retries, timeouts, work queues). Label: "Concurrency and Resiliency".
 8. Modify controller code (package `controllers`). Label: "Controller Code".
-9. Modify or involve code that does network communications, handles nework requests including data serialization and deserialization. Label: "Network Communications".
+9. Modify or involve code that does network communications, handles network requests including data serialization and deserialization. Label: "Network Communications".
 10. Involve process manipulation (e.g., starting/stopping processes, managing process lifecycle, handling process signals, any code changing `pkg/process` package). Label: "Process Manipulation".
 11. Any change to `internal/logs` package. Label: "Object Logs".
 
