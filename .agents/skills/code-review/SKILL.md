@@ -111,7 +111,7 @@ A table with links to files containing high-risk changes, along with the corresp
 
 ### Detailed Findings
 
-<Use a numbered list to present the findings from [Detailed Analysis](#step-5-detailed-analysis) stepp for the user to triage. Order them by severity and potential impact, starting with most critical issues first.>
+<Use a numbered list to present the findings from [Detailed Analysis](#step-5-detailed-analysis) step for the user to triage. Order them by severity and potential impact, starting with most critical issues first.>
 ```
 
 ### Step 7: Ask the User What Findings to Post to GitHub
