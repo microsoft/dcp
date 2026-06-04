@@ -47,7 +47,7 @@ In this step, identify the most critical parts of the PR that a human reviewer s
 
 1. Related to security (change code that handles authentication, authorization, manipulates certificates, changes permissions applied to files). Label: "Security".
 2. Related to data persistence (changes internal/statestore package code, especially database schema and how concurrent access to state store is handled). Label: "Data Persistence".
-3. Change public APIs (any changes to to packages under the `api` directory). Label: "Public API".
+3. Change public APIs (any changes to packages under the `api` directory). Label: "Public API".
 4. Introduce new external dependency (look for changes to `go.mod` file). Label: "External Dependencies".
 6. Change how `dcp` or `dcptun` programs are invoked (introduces new commands or flags, substantially changes the way existing commands are implemented). Label: "Program Invocation".
 7. Involve non-trivial changes related to concurrency (involving locks/mutexes, channels, WaitGroups, goroutine synchronization, goroutines accessing shared data) and resiliency (changing/introducing retries, timeouts, work queues). Label: "Concurrency and Resiliency".
