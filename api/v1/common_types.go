@@ -24,7 +24,7 @@ type EnvVar struct {
 
 	// Value of the environment variable. Defaults to "" (empty string).
 	// +optional
-	Value string `json:"value,omitempty"`
+	Value string `json:"value"`
 	// CONSIDER allowing expansion of existing variable references e.g. using ${VAR_NAME} syntax and $$ to escape the $ sign
 }
 
