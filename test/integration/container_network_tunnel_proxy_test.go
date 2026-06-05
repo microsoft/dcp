@@ -424,6 +424,76 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
 }
 
+func TestTunnelProxyTunnelCreateFallsBackToRandomPort(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+	dcppaths.EnableTestPathProbing()
+	const testName = "test-tunnel-proxy-tunnel-port-fallback"
+
+	includedControllers := NetworkController | ContainerNetworkTunnelProxyController | ServiceController
+	serverInfo, teInfo, startupErr := StartTestEnvironment(ctx, includedControllers, t.Name(), t.TempDir())
+	require.NoError(t, startupErr, "Failed to start the API server")
+	defer shutdownTestEnvironment(serverInfo, cancel)
+
+	network := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &network)
+	require.NoError(t, err, "Could not create a ContainerNetwork object")
+
+	const serverControlPort int32 = 32966
+	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
+
+	const tunnelCount = 1
+	const serverServicePort int32 = 28271
+	ts := prepareTunnelServices(t, ctx, serverInfo.Client, teInfo.TestTunnelControlClient, tunnelCount, testName, serverServicePort)
+	tunnelData := ts[0]
+
+	disabled := teInfo.TestTunnelControlClient.DisableTunnel(tunnelData.fingerprint)
+	require.True(t, disabled, "Expected preferred-port tunnel to be disabled successfully")
+
+	fallbackTunnelSpec := &dcptunproto.TunnelSpec{
+		ServerAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
+		ServerPort:    stdproto.Int32(serverServicePort),
+	}
+	fallbackFingerprint := ctrl_testutil.TestFingerprint(fallbackTunnelSpec)
+	teInfo.TestTunnelControlClient.EnableTunnel(fallbackTunnelSpec)
+	tunnelData.fingerprint = fallbackFingerprint
+
+	t.Logf("Creating ContainerNetworkTunnelProxy object '%s'...", testName)
+	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkTunnelProxySpec{
+			ContainerNetworkName: network.ObjectMeta.Name,
+			Tunnels: []apiv1.TunnelConfiguration{
+				{
+					Name:              tunnelData.tunnelName,
+					ServerServiceName: tunnelData.serverServiceName,
+					ClientServiceName: tunnelData.clientServiceName,
+				},
+			},
+		},
+	}
+	err = serverInfo.Client.Create(ctx, &tunnelProxy)
+	require.NoError(t, err, "Could not create a ContainerNetworkTunnelProxy object")
+
+	t.Logf("Waiting for ContainerNetworkTunnelProxy '%s' to transition to Running state and complete tunnel preparation...", tunnelProxy.ObjectMeta.Name)
+	updatedProxy := waitAllTunnelsInState(t, ctx, serverInfo.Client, tunnelProxy.NamespacedName(), tunnelCount, apiv1.TunnelStateReady)
+	require.Equal(t, apiv1.ContainerNetworkTunnelProxyStateRunning, updatedProxy.Status.State, "Tunnel proxy should be in Running state")
+	require.NotEqual(t, serverServicePort, updatedProxy.Status.TunnelStatuses[0].ClientProxyPort, "Tunnel should fall back to a random port")
+
+	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
+}
+
 // Verifies that when tunnel preparation fails after maximum attempts, the tunnel status indicates failure.
 func TestTunnelProxyTunnelFailure(t *testing.T) {
 	t.Parallel()
@@ -1392,8 +1462,9 @@ func prepareTunnelServices(
 
 		// Enable tunnel in test control client so controller can prepare it
 		tunnelSpec := &dcptunproto.TunnelSpec{
-			ServerAddress: stdproto.String(networking.IPv4LocalhostDefaultAddress),
-			ServerPort:    stdproto.Int32(serverServicePort),
+			ServerAddress:   stdproto.String(networking.IPv4LocalhostDefaultAddress),
+			ServerPort:      stdproto.Int32(serverServicePort),
+			ClientProxyPort: stdproto.Int32(serverServicePort),
 		}
 		fingerprint := ctrl_testutil.TestFingerprint(tunnelSpec)
 		tunnelControlClient.EnableTunnel(tunnelSpec)
