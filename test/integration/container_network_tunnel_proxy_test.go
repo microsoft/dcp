@@ -424,6 +424,7 @@ func TestTunnelProxyTunnelCreate(t *testing.T) {
 	validateTunnel(t, ctx, updatedProxy.Status.TunnelStatuses[0], tunnelData, serverInfo.Client, teInfo.TestTunnelControlClient)
 }
 
+// Verifies that when the preferred client proxy port is unavailable, the tunnel falls back to an OS-assigned random port.
 func TestTunnelProxyTunnelCreateFallsBackToRandomPort(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
