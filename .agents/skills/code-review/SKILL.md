@@ -45,7 +45,7 @@ Now read the PR description, labels, linked issues (in full), author information
 
 In this step, identify the most critical parts of the PR that a human reviewer should focus on. Consider as high-risk and prioritize human attention for changes that are characterized below.
 
-1. Related to security (change code that handles authentication, authorization, manipulates certificates, changes permissions applied to files). Label: "Security".
+1. Related to security (change code that handles authentication, authorization, manipulates certificates, calls cryptographic functions, changes permissions applied to files). Label: "Security".
 2. Related to data persistence (changes internal/statestore package code, especially database schema and how concurrent access to state store is handled). Label: "Data Persistence".
 3. Change public APIs (any changes to packages under the `api` directory). Label: "Public API".
 4. Introduce new external dependency (look for changes to `go.mod` file). Label: "External Dependencies".
