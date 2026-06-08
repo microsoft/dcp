@@ -233,6 +233,8 @@ func releaseSpecificPortWithStateStore(ctx context.Context, protocol apiv1.PortP
 
 func configuredPortAllocationRanges(allowEphemeralOverlap bool, log logr.Logger) ([]portRange, error) {
 	configuredRange := strings.TrimSpace(os.Getenv(DCP_PORT_ALLOCATION_RANGE))
+	// Default to the upper half of the registered port range: it has a low chance of colliding with
+	// well-known service ports and stays below the default ephemeral range on almost all supported OSes.
 	ranges := []portRange{{Start: 20000, End: 32767}}
 	if configuredRange != "" {
 		parsedRanges, parseErr := parsePortAllocationRanges(configuredRange)
