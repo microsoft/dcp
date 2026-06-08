@@ -41,7 +41,25 @@ Now read the PR description, labels, linked issues (in full), author information
 4. **Reconcile your assessment with the author's claims.** Where your independent reading of the code disagrees with the PR description or issue, investigate further — but do not simply defer to the author's framing. If the PR claims a bug fix, a performance improvement, or a behavioral correction, verify those claims against the code and any provided evidence. If your independent assessment found problems the PR narrative doesn't acknowledge, those problems are more likely to be real, not less.
 5. **Update your holistic assessment** if the additional context reveals information that genuinely changes your evaluation (e.g., a linked issue proves the bug is real, or an existing review comment already identified the same concern). But do not soften findings just because the PR description sounds reasonable.
 
-### Step 4: Detailed Analysis
+### Step 4: Identify Critical Parts of the PR
+
+In this step, identify the most critical parts of the PR that a human reviewer should focus on. Consider as high-risk and prioritize human attention for changes that are characterized below.
+
+1. Related to security (change code that handles authentication, authorization, manipulates certificates, calls cryptographic functions, changes permissions applied to files). Label: "Security".
+2. Related to data persistence (changes internal/statestore package code, especially database schema and how concurrent access to state store is handled). Label: "Data Persistence".
+3. Change public APIs (any changes to packages under the `api` directory). Label: "Public API".
+4. Introduce new external dependency (look for changes to `go.mod` file). Label: "External Dependencies".
+5. Change how `dcp` or `dcptun` programs are invoked (introduces new commands or flags, substantially changes the way existing commands are implemented). Label: "Program Invocation".
+6. Involve non-trivial changes related to concurrency (involving locks/mutexes, channels, WaitGroups, goroutine synchronization, goroutines accessing shared data) and resiliency (changing/introducing retries, timeouts, work queues). Label: "Concurrency and Resiliency".
+7. Modify controller code (package `controllers`). Label: "Controller Code".
+8. Modify or involve code that does network communications, handles network requests including data serialization and deserialization. Label: "Network Communications".
+9. Involve process manipulation (e.g., starting/stopping processes, managing process lifecycle, handling process signals, any code changing `pkg/process` package). Label: "Process Manipulation".
+10. Any change to `internal/logs` package. Label: "Object Logs".
+
+The output of this step is a list of files that contain high-risk changes, each file labeled with the appropriate risk category (multiple labels may apply for each file).
+
+
+### Step 5: Detailed Analysis
 
 1. **Focus on what matters.** Prioritize bugs, performance regressions, safety issues, race conditions, resource management problems, incorrect assumptions about data or state, and API design problems. Do not comment on trivial style issues unless they violate an explicit rule below.
 2. **Consider collateral damage.** For every changed code path, actively brainstorm: what other scenarios, callers, or inputs flow through this code? Could any of them break or behave differently after this change? If you identify any plausible risk--surface it so the author can evaluate. 
@@ -61,7 +79,9 @@ Now read the PR description, labels, linked issues (in full), author information
 8. **Ensure code suggestions are valid.** Any code you suggest must be syntactically correct and complete. Ensure any suggestion would result in working code.
 9. **Label in-scope vs. follow-up.** Distinguish between issues the PR should fix and out-of-scope improvements. Be explicit when a suggestion is a follow-up rather than a blocker.
 
-### Step 5: Present Findings to the User
+
+
+### Step 6: Present Findings to the User
 
 **Do not post a review automatically to GitHub.** Instead, present all the findings to the user and ask what to do next. Use the following structure:
 
@@ -77,12 +97,25 @@ If the PR has "Needs Changes" rating, explicitly state which findings you are un
 If the PR has "Reject" rating, explicitly state why you came to this conclusion and if there are any alternative ways to better deal with the problems that the PR is supposed to address.
 >
 
+### Critical Parts
+
+<
+A table with links to files containing high-risk changes, along with the corresponding risk categories identified during [Identify Critical Parts of the PR](#step-4-identify-critical-parts-of-the-pr) step. For example:
+
+| File | Risk Categories |
+|------|-----------------|
+| <Link to file1.go> | Security, Data Persistence |
+| <Link to file2.go> | Public API, External Dependencies |
+
+ Prefer links to the PR “Files changed” UI for each file so reviewers can leave comments. If you can’t generate PR-scoped links, use a link to the file in the PR branch of the repository.
+>
+
 ### Detailed Findings
 
-<Use a numbered list to present the findings for the user to triage. Order them by severity and potential impact, starting with most critical issues first.>
+<Use a numbered list to present the findings from [Detailed Analysis](#step-5-detailed-analysis) step for the user to triage. Order them by severity and potential impact, starting with most critical issues first.>
 ```
 
-### Step 6: Ask the User What Findings to Post to GitHub
+### Step 7: Ask the User What Findings to Post to GitHub
 
 Ask the user what to do next with the findings. The user may respond with:
 
