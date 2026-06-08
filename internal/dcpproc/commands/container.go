@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -115,9 +114,11 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), monitorPid, monitorProcessStartTime, monitorInterval, log)
 		defer monitorCtxCancel()
 		if monitorCtxErr != nil {
-			if errors.Is(monitorCtxErr, os.ErrProcessDone) {
-				// If the monitor process is already terminated, cleanup the container immediately
-				log.Info("Monitored process already exited, cleaning up container")
+			if isMonitorProcessGoneErr(monitorCtxErr) {
+				// If the monitor process is already gone (either exited cleanly, no longer exists, or its PID has been
+				// reused by an unrelated process), cleanup the container immediately. The container is identified by
+				// an opaque ID so this is safe even when we cannot positively identify the original monitor process.
+				log.Info("Monitored process already exited, cleaning up container", "Reason", monitorCtxErr)
 				return doCleanupContainer(cmd.Context(), containerID, containerStopOnly, log, co)
 			} else {
 				log.Error(monitorCtxErr, "Process could not be monitored")

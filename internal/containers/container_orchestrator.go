@@ -15,6 +15,7 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/pubsub"
+	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
@@ -388,6 +389,33 @@ type ExecContainers interface {
 	ExecContainer(ctx context.Context, options ExecContainerOptions) (<-chan int32, error)
 }
 
+// AttachContainer command types
+
+// AttachContainerOptions parameterizes a call to AttachContainer.
+type AttachContainerOptions struct {
+	// The container (name/id) to attach to.
+	Container string
+
+	// Initial PTY dimensions for the attach session. A zero value lets the
+	// orchestrator (or the underlying terminal layer) pick a sensible default.
+	Cols uint16
+	Rows uint16
+}
+
+// AttachContainer attaches a pseudo-terminal to a running container's
+// stdin/stdout/stderr. The container must have been created with TTY support
+// (apiv1.ContainerSpec.Terminal set, which causes the orchestrator to pass -it
+// at creation time).
+//
+// Implementations typically spawn the runtime's "attach" subcommand
+// (docker attach / podman attach) on a freshly allocated PTY. The returned
+// PseudoTerminalProcess's PTY master end is bridged to the container's stdio.
+// The caller owns the lifetime of the returned PTY (must Close it) and is
+// responsible for tearing down any ConnManager built on top.
+type AttachContainer interface {
+	AttachContainer(ctx context.Context, options AttachContainerOptions) (*termpty.PseudoTerminalProcess, error)
+}
+
 // CreateFiles command types
 
 type CreateFilesOptions struct {
@@ -487,6 +515,7 @@ type ContainerOrchestrator interface {
 	StopContainers
 	RemoveContainers
 	ExecContainers
+	AttachContainer
 	CreateFiles
 	ApplyImageLayers
 

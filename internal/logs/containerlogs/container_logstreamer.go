@@ -60,6 +60,29 @@ func NewLogStreamer(log logr.Logger) *containerLogStreamer {
 	}
 }
 
+// Preflight implements v1.ResourceLogStreamer. It performs cheap,
+// state-independent validation that must surface to the client as a proper
+// K8s API status error. Errors returned from StreamLogs are produced inside
+// the streaming goroutine after the HTTP response status has already been
+// committed, so Preflight is the only place where these errors actually
+// reach the client.
+func (c *containerLogStreamer) Preflight(obj apiserver_resource.Object, _ *apiv1.LogOptions) error {
+	ctr, isContainer := obj.(*apiv1.Container)
+	if !isContainer {
+		return apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
+	}
+
+	if ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero() {
+		return apierrors.NewBadRequest("Container is being deleted")
+	}
+
+	if ctr.Status.State == apiv1.ContainerStateUnknown {
+		return apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
+	}
+
+	return nil
+}
+
 // StreamLogs implements v1.ResourceLogStreamer.
 func (c *containerLogStreamer) StreamLogs(
 	ctx context.Context,
@@ -76,15 +99,14 @@ func (c *containerLogStreamer) StreamLogs(
 		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type (not Container): %s", obj.GetObjectKind().GroupVersionKind().String()))
 	}
 
-	deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
-	if deletionRequested {
-		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewBadRequest("Container is being deleted")
+	// Defense in depth: the same checks run in Preflight (where their errors
+	// actually reach the client), but we also short-circuit here so that any
+	// direct caller of StreamLogs gets the same fail-fast behavior.
+	if preflightErr := c.Preflight(obj, opts); preflightErr != nil {
+		return apiv1.ResourceStreamStatusNotReady, nil, preflightErr
 	}
 
 	switch ctr.Status.State {
-	case apiv1.ContainerStateUnknown:
-		return apiv1.ResourceStreamStatusNotReady, nil, apierrors.NewBadRequest(fmt.Sprintf("logs are not available for Container in state %s", ctr.Status.State))
-
 	case "", apiv1.ContainerStatePending, apiv1.ContainerStateRuntimeUnhealthy:
 		// We're not ready to start streaming logs for this container yet
 		streamLog.V(1).Info("Container hasn't started running yet, not ready to stream logs")

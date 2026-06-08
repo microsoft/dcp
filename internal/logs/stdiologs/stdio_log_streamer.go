@@ -43,6 +43,35 @@ func LogStreamer() *stdIoLogStreamer {
 	return stdIoStreamer
 }
 
+func (sls stdIoLogStreamer) Preflight(obj apiserver_resource.Object, opts *apiv1.LogOptions) error {
+	resource, isResource := obj.(apiv1.StdIoStreamableResource)
+	if !isResource {
+		return apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type: %s", obj.GetObjectKind().GroupVersionKind().String()))
+	}
+
+	if !resource.GetDeletionTimestamp().IsZero() {
+		return apierrors.NewBadRequest("resource is being deleted")
+	}
+
+	if !resource.HasTerminal() {
+		return nil
+	}
+
+	switch opts.Source {
+	case "", string(apiv1.LogStreamSourceStdout):
+		return apierrors.NewBadRequest(fmt.Sprintf(
+			"stdout logs are not available for %s '%s' because it is configured to use a terminal",
+			obj.GetObjectKind().GroupVersionKind().Kind,
+			resource.NamespacedName().String()))
+	case string(apiv1.LogStreamSourceStderr):
+		return apierrors.NewBadRequest(fmt.Sprintf(
+			"stderr logs are not available for %s '%s' because it is configured to use a terminal",
+			obj.GetObjectKind().GroupVersionKind().Kind,
+			resource.NamespacedName().String()))
+	}
+	return nil
+}
+
 // StreamLogs implements v1.ResourceLogStreamer.
 func (sls stdIoLogStreamer) StreamLogs(
 	requestCtx context.Context,
@@ -61,9 +90,11 @@ func (sls stdIoLogStreamer) StreamLogs(
 		return status, nil, apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type: %s", obj.GetObjectKind().GroupVersionKind().String()))
 	}
 
-	deletionRequested := !resource.GetDeletionTimestamp().IsZero()
-	if deletionRequested {
-		return status, nil, apierrors.NewBadRequest("resource is being deleted")
+	// Defense in depth: the same checks run in Preflight (where their errors
+	// actually reach the client), but we also short-circuit here so that any
+	// direct caller of StreamLogs gets the same fail-fast behavior.
+	if preflightErr := sls.Preflight(obj, opts); preflightErr != nil {
+		return status, nil, preflightErr
 	}
 
 	var logFilePath string

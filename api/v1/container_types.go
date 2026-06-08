@@ -695,6 +695,13 @@ type ContainerSpec struct {
 	// PEM formatted public certificates to be created in the container
 	// +optional
 	PemCertificates *ContainerPemCertificates `json:"pemCertificates,omitempty"`
+
+	// Optional terminal/PTY configuration. When set, the container's primary process
+	// is started with connection to a pseudo-terminal
+	// and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1,
+	// instead of the container being run detached with separate log capture.
+	// +optional
+	Terminal *TerminalSpec `json:"terminal,omitempty"`
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -809,6 +816,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	if !slices.EqualFunc(cs.ImageLayers, other.ImageLayers, func(l1, l2 ImageLayer) bool {
 		return l1.Equal(&l2)
 	}) {
+		return false
+	}
+
+	if !cs.Terminal.Equal(other.Terminal) {
 		return false
 	}
 
@@ -1018,6 +1029,13 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		for i := range cs.ImageLayers {
 			hashErr = errors.Join(hashErr, encoder.Encode(cs.ImageLayers[i].Digest))
 		}
+	}
+
+	if cs.Terminal != nil {
+		// Columns and rows do not matter that much (the client can always resize the terminal as necessary),
+		// but once a Container is started with terminal support, the UDS path and socket mode do not change.
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.Terminal.UDSPath))
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.Terminal.SocketMode.Normalized()))
 	}
 
 	// Compute the hash for the lifecycle key
@@ -1286,6 +1304,10 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
 	}
 
+	if c.Spec.Persistent && c.Spec.Terminal != nil {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "terminal"), "Persistent Containers cannot use a terminal."))
+	}
+
 	monitorTimestampSet := !c.Spec.MonitorTimestamp.IsZero()
 	if c.Spec.MonitorPID != nil && *c.Spec.MonitorPID <= 0 {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "monitorPid"), *c.Spec.MonitorPID, "monitorPid must be positive"))
@@ -1341,6 +1363,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 
 	// Validate PEM certificates configuration
 	errorList = append(errorList, c.Spec.PemCertificates.Validate(field.NewPath("spec", "pemCertificates"))...)
+
+	// Validate terminal configuration
+	errorList = append(errorList, c.Spec.Terminal.Validate(field.NewPath("spec", "terminal"))...)
 
 	// Validate that annotations don't exceed the Kubernetes size limit.
 	// This provides a clearer error message than the generic Kubernetes API server error,
@@ -1442,6 +1467,8 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 			}
 		}
 	}
+
+	errorList = append(errorList, c.Spec.Terminal.ValidateUpdate(oldContainer.Spec.Terminal, field.NewPath("spec", "terminal"))...)
 
 	return errorList
 }
