@@ -6,8 +6,6 @@
 package process
 
 import (
-	"sync"
-
 	"github.com/microsoft/dcp/pkg/concurrency"
 )
 
@@ -15,37 +13,23 @@ import (
 // and makes it available to any consumers in a goroutine-safe way.
 // Exited() channel can be used to wait for the process exit info to become available.
 type ConcurrentProcessExitHandler struct {
-	exited          *concurrency.AutoResetEvent
-	peiChan         chan ProcessExitInfo
-	getExitInfoOnce func() ProcessExitInfo
+	p *concurrency.ValuePromise[ProcessExitInfo]
 }
 
 func NewConcurrentProcessExitHandler() *ConcurrentProcessExitHandler {
-	result := ConcurrentProcessExitHandler{
-		exited:  concurrency.NewAutoResetEvent(false),
-		peiChan: make(chan ProcessExitInfo, 1),
+	return &ConcurrentProcessExitHandler{
+		p: concurrency.NewValuePromise[ProcessExitInfo](),
 	}
-
-	result.getExitInfoOnce = sync.OnceValue(func() ProcessExitInfo {
-		return <-result.peiChan
-	})
-
-	return &result
 }
 
 func (e *ConcurrentProcessExitHandler) Exited() <-chan struct{} {
-	return e.exited.Wait()
+	return e.p.Wait()
 }
 
 func (e *ConcurrentProcessExitHandler) ExitInfo() ProcessExitInfo {
-	return e.getExitInfoOnce()
+	return e.p.Get()
 }
 
 func (e *ConcurrentProcessExitHandler) OnProcessExited(pid Pid_t, exitCode int32, err error) {
-	select {
-	case e.peiChan <- ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: err}:
-	default: // Defense in depth: ignore multiple "process exited" calls
-	}
-
-	e.exited.SetAndFreeze()
+	e.p.Set(ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: err})
 }

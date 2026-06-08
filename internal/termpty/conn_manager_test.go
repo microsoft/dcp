@@ -154,11 +154,6 @@ func TestNewConnManager_RejectsInvalidArgs(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	t.Run("nil ptp", func(t *testing.T) {
-		_, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 0, 0, log)
-		require.Error(t, err)
-	})
-
 	t.Run("empty socket path", func(t *testing.T) {
 		_, err := NewConnManager(ctx, ptp, "", SocketModeListen, 0, 0, log)
 		require.Error(t, err)
@@ -688,6 +683,402 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 		"connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
 
 	// Shut down cleanly.
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+// --- Attach-process (pre-connect) mode ---
+
+// requireNoFrameYet asserts that no HMP v1 frame is currently readable from conn
+// within a short window. Used to prove that a connection warmed before the
+// process is attached has not yet started the handshake (no Hmp1Server exists).
+func requireNoFrameYet(t *testing.T, conn net.Conn) {
+	t.Helper()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(500*time.Millisecond)))
+	var header [5]byte
+	_, readErr := io.ReadFull(conn, header[:])
+	require.Error(t, readErr, "expected no frame before the process is attached")
+	var netErr net.Error
+	require.Truef(t, errors.As(readErr, &netErr) && netErr.Timeout(),
+		"expected a timeout error, got %v", readErr)
+	require.NoError(t, conn.SetReadDeadline(time.Time{}))
+}
+
+func TestConnManager_AttachProcessListenMode_WarmsThenServesAfterAttach(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	// Attach-process mode: nil ptp. The manager binds the listener and warms a
+	// connection in the background before any process exists.
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+	require.Equal(t, socketPath, cm.SocketPath())
+
+	// The socket file must exist immediately so a client can connect before the
+	// process is attached.
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr, "listen-mode socket file should exist before attach")
+
+	// Client connects (warms the connection). The manager must NOT send Hello yet
+	// because there is no process/server.
+	conn := dialConnMgr(t, ctx, socketPath)
+	requireNoFrameYet(t, conn)
+
+	// Supply the process; the manager now serves the warmed connection.
+	require.NoError(t, cm.AttachProcess(ptp))
+
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+
+	// Client input reaches the PTY.
+	writeHmp1Frame(t, conn, Hmp1FrameInput, []byte("hello-pty"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "hello-pty", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for client input to reach PTY")
+	}
+
+	// PTY output reaches the client.
+	select {
+	case pty.Inbound <- []byte("hello-client"):
+	case <-ctx.Done():
+		t.Fatal("timed out pushing PTY output")
+	}
+	ft, payload := readHmp1Frame(t, ctx, conn)
+	require.Equal(t, Hmp1FrameOutput, ft)
+	require.Equal(t, "hello-client", string(payload))
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not transition to dormant state after process exit")
+	}
+}
+
+func TestConnManager_AttachProcessConnectMode_WarmsThenServesAfterAttach(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	peer := startPeerListener(t, socketPath)
+
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeConnect, 0, 0, log)
+	require.NoError(t, err)
+
+	// The manager pre-dials the peer; accepting proves the warmed connection.
+	conn := acceptPeer(t, ctx, peer)
+	requireNoFrameYet(t, conn)
+
+	require.NoError(t, cm.AttachProcess(ptp))
+
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+
+	writeHmp1Frame(t, conn, Hmp1FrameInput, []byte("hello-pty"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "hello-pty", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for client input to reach PTY")
+	}
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not transition to dormant state after process exit")
+	}
+}
+
+func TestConnManager_AttachProcessMode_AttachBeforeClientConnects(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+
+	// Attach the process before any client has connected: it parks in the
+	// hand-off channel and is served as soon as a client appears.
+	require.NoError(t, cm.AttachProcess(ptp))
+
+	conn := dialConnMgr(t, ctx, socketPath)
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+
+	writeHmp1Frame(t, conn, Hmp1FrameInput, []byte("after-attach"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "after-attach", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for client input to reach PTY")
+	}
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+func TestConnManager_AttachProcessMode_ReconnectsAfterFirstSession(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+
+	// Warm the first connection, then attach the process.
+	first := dialConnMgr(t, ctx, socketPath)
+	require.NoError(t, cm.AttachProcess(ptp))
+	drainHelloAndStateSync(t, ctx, first)
+
+	writeHmp1Frame(t, first, Hmp1FrameInput, []byte("first"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "first", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for first session input")
+	}
+	require.NoError(t, first.Close())
+
+	// After the warmed session ends, the manager must serve a fresh client.
+	second := dialConnMgr(t, ctx, socketPath)
+	drainHelloAndStateSync(t, ctx, second)
+	writeHmp1Frame(t, second, Hmp1FrameInput, []byte("second"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "second", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for second session input")
+	}
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+func TestConnManager_AttachProcessMode_HelloAdvertisesConfiguredSize(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 132, 50, log)
+	require.NoError(t, err)
+
+	conn := dialConnMgr(t, ctx, socketPath)
+	require.NoError(t, cm.AttachProcess(ptp))
+
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, uint16(132), hello.Width)
+	require.Equal(t, uint16(50), hello.Height)
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+func TestConnManager_AttachProcessMode_LifetimeCancelBeforeConnect(t *testing.T) {
+	t.Parallel()
+	parentCtx, _, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	lifetimeCtx, lifetimeCancel := context.WithCancel(parentCtx)
+	defer lifetimeCancel()
+
+	cm, err := NewConnManager(lifetimeCtx, nil, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+
+	// No client ever connects; cancelling the lifetime must shut the manager down.
+	lifetimeCancel()
+
+	select {
+	case <-cm.Done():
+	case <-parentCtx.Done():
+		t.Fatal("ConnManager did not become dormant after lifetime cancel before connect")
+	}
+}
+
+func TestConnManager_AttachProcessMode_LifetimeCancelAfterConnectBeforeAttach(t *testing.T) {
+	t.Parallel()
+	parentCtx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	lifetimeCtx, lifetimeCancel := context.WithCancel(parentCtx)
+	defer lifetimeCancel()
+
+	cm, err := NewConnManager(lifetimeCtx, nil, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+
+	// Warm a connection but do not attach a process.
+	conn := dialConnMgr(t, parentCtx, socketPath)
+	requireNoFrameYet(t, conn)
+
+	lifetimeCancel()
+
+	select {
+	case <-cm.Done():
+	case <-parentCtx.Done():
+		t.Fatal("ConnManager did not become dormant after lifetime cancel before attach")
+	}
+
+	// Attaching after shutdown must fail.
+	require.Error(t, cm.AttachProcess(ptp))
+}
+
+func TestConnManager_AttachProcessMode_ClientDisconnectsBeforeAttachThenRecovers(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+
+	// Warm a connection, then drop it before attaching the process.
+	warm := dialConnMgr(t, ctx, socketPath)
+	requireNoFrameYet(t, warm)
+	require.NoError(t, warm.Close())
+
+	// Attach the process. The warmed connection is dead, so the manager fails
+	// fast serving it and falls back to accepting a fresh client.
+	require.NoError(t, cm.AttachProcess(ptp))
+
+	fresh := dialConnMgr(t, ctx, socketPath)
+	drainHelloAndStateSync(t, ctx, fresh)
+	writeHmp1Frame(t, fresh, Hmp1FrameInput, []byte("recovered"))
+	select {
+	case got := <-pty.Outbound:
+		require.Equal(t, "recovered", string(got))
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for fresh client input after recovery")
+	}
+
+	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+}
+
+func TestConnManager_AttachProcessValidations(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, _ := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	t.Run("eager manager rejects attach", func(t *testing.T) {
+		cm, err := NewConnManager(ctx, ptp, pickConnMgrSocketPath(t), SocketModeListen, 0, 0, log)
+		require.NoError(t, err)
+		require.Error(t, cm.AttachProcess(ptp))
+	})
+
+	t.Run("nil ptp", func(t *testing.T) {
+		cm, err := NewConnManager(ctx, nil, pickConnMgrSocketPath(t), SocketModeListen, 0, 0, log)
+		require.NoError(t, err)
+		require.Error(t, cm.AttachProcess(nil))
+	})
+
+	t.Run("nil PTY", func(t *testing.T) {
+		cm, err := NewConnManager(ctx, nil, pickConnMgrSocketPath(t), SocketModeListen, 0, 0, log)
+		require.NoError(t, err)
+		bad := *ptp
+		bad.PTY = nil
+		require.Error(t, cm.AttachProcess(&bad))
+	})
+
+	t.Run("nil exit handler", func(t *testing.T) {
+		cm, err := NewConnManager(ctx, nil, pickConnMgrSocketPath(t), SocketModeListen, 0, 0, log)
+		require.NoError(t, err)
+		bad := *ptp
+		bad.ExitHandler = nil
+		require.Error(t, cm.AttachProcess(&bad))
+	})
+
+	t.Run("double attach", func(t *testing.T) {
+		cm, err := NewConnManager(ctx, nil, pickConnMgrSocketPath(t), SocketModeListen, 0, 0, log)
+		require.NoError(t, err)
+		require.NoError(t, cm.AttachProcess(ptp))
+		require.Error(t, cm.AttachProcess(ptp))
+	})
+}
+
+func TestConnManager_AttachProcessConnectMode_RedialThrottledAfterImmediateClose(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	peer := startPeerListener(t, socketPath)
+
+	cm, err := NewConnManager(ctx, nil, socketPath, SocketModeConnect, 0, 0, log)
+	require.NoError(t, err)
+
+	var accepts atomic.Int64
+
+	// Accept the warmed dial, attach the process, then close it. Every
+	// subsequent dial is likewise accepted and closed immediately. The first
+	// reconnect follows the warmed connection, so this exercises that the
+	// per-redial minimum interval is carried over into the normal loop.
+	warm := acceptPeer(t, ctx, peer)
+	accepts.Add(1)
+	require.NoError(t, cm.AttachProcess(ptp))
+	require.NoError(t, warm.Close())
+
+	stop := make(chan struct{})
+	var peerWg sync.WaitGroup
+	peerWg.Add(1)
+	go func() {
+		defer peerWg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = peer.SetDeadline(time.Now().Add(200 * time.Millisecond))
+			conn, acceptErr := peer.AcceptUnix()
+			if acceptErr != nil {
+				select {
+				case <-stop:
+					return
+				default:
+					continue
+				}
+			}
+			accepts.Add(1)
+			_ = conn.Close()
+		}
+	}()
+
+	const window = 4 * reconnectMinInterval
+	select {
+	case <-time.After(window):
+	case <-ctx.Done():
+		t.Fatal("test context expired before observation window elapsed")
+	}
+
+	close(stop)
+	peerWg.Wait()
+
+	got := accepts.Load()
+	maxExpected := int64(window/reconnectMinInterval) + 4
+	require.LessOrEqualf(t, got, maxExpected,
+		"attach-process connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
+
 	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
 	select {
 	case <-cm.Done():

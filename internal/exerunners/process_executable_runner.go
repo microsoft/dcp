@@ -285,6 +285,29 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		Rows:          uint16(terminalSpec.Rows),
 	}
 
+	socketMode := termpty.SocketModeListen
+	if terminalSpec.SocketMode.Normalized() == apiv1.TerminalSocketModeConnect {
+		socketMode = termpty.SocketModeConnect
+	}
+	initialCols, initialRows := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
+	connMgr, connMgrErr := termpty.NewConnManager(
+		processCtx,
+		nil,
+		terminalSpec.UDSPath,
+		socketMode,
+		initialCols,
+		initialRows,
+		startLog,
+	)
+	if connMgrErr != nil {
+		startLog.Error(connMgrErr, "Failed to create terminal connection manager for the process")
+		result.CompletionTimestamp = metav1.NowMicro()
+		result.ExeState = apiv1.ExecutableStateFailedToStart
+		result.StartupError = connMgrErr
+		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
+		return result
+	}
+
 	ptp, startErr := r.terminalProcessFactory(processCtx, r.pe, commandSpec)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process attached to a pseudo-terminal")
@@ -295,22 +318,9 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		return result
 	}
 
-	socketMode := termpty.SocketModeListen
-	if terminalSpec.SocketMode.Normalized() == apiv1.TerminalSocketModeConnect {
-		socketMode = termpty.SocketModeConnect
-	}
-	initialCols, initialRows := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
-	connMgr, connMgrErr := termpty.NewConnManager(
-		processCtx,
-		ptp,
-		terminalSpec.UDSPath,
-		socketMode,
-		initialCols,
-		initialRows,
-		startLog,
-	)
-	if connMgrErr != nil {
-		startLog.Error(connMgrErr, "Failed to create terminal connection manager; stopping process")
+	attachErr := connMgr.AttachProcess(ptp)
+	if attachErr != nil {
+		startLog.Error(attachErr, "Failed to attach the process to the terminal connection manager; stopping process")
 		// Best-effort: stop the just-started process and close its PTY before reporting failure.
 		if stopErr := ptp.Stop(); stopErr != nil {
 			startLog.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
@@ -320,7 +330,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		}
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
-		result.StartupError = connMgrErr
+		result.StartupError = attachErr
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}

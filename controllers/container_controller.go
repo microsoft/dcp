@@ -1896,6 +1896,30 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 		return nil
 	}
 
+	socketMode := termpty.SocketModeListen
+	if terminalSpec.SocketMode.Normalized() == apiv1.TerminalSocketModeConnect {
+		socketMode = termpty.SocketModeConnect
+	}
+
+	initialCols, initialRows := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
+	connMgr, connMgrErr := termpty.NewConnManager(
+		r.LifetimeCtx,
+		nil,
+		terminalSpec.UDSPath,
+		socketMode,
+		initialCols,
+		initialRows,
+		log,
+	)
+	if connMgrErr != nil {
+		log.Error(connMgrErr, "Failed to create terminal connection manager; container cannot be started with terminal")
+		// Best-effort: stop the running container so it does not linger without a terminal.
+		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
+			log.Error(stopErr, "Failed to stop container after terminal connection manager creation failure")
+		}
+		return fmt.Errorf("failed to create terminal connection manager: %w", connMgrErr)
+	}
+
 	ptp, attachErr := r.orchestrator.AttachContainer(r.LifetimeCtx, containers.AttachContainerOptions{
 		Container: string(rcd.containerID),
 		Cols:      uint16(terminalSpec.Cols),
@@ -1903,11 +1927,25 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	})
 	if attachErr != nil {
 		log.Error(attachErr, "Failed to attach terminal to container")
-		// Best-effort: stop the running container so it does not linger without a terminal.
 		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
 			log.Error(stopErr, "Failed to stop container after terminal attach failure")
 		}
 		return fmt.Errorf("failed to attach terminal to container: %w", attachErr)
+	}
+
+	attachMgrErr := connMgr.AttachProcess(ptp)
+	if attachMgrErr != nil {
+		log.Error(attachMgrErr, "Failed to attach process to terminal connection manager")
+		if stopErr := ptp.Stop(); stopErr != nil {
+			log.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
+		}
+		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			log.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
+		}
+		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
+			log.Error(stopErr, "Failed to stop container after terminal connection manager creation failure")
+		}
+		return fmt.Errorf("failed to attach process to terminal connection manager: %w", attachMgrErr)
 	}
 
 	// Begin waiting for the attach process to exit so the ExitHandler fires
@@ -1918,36 +1956,6 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	if ptp.StartWaitForExit != nil {
 		ptp.StartWaitForExit()
 	}
-
-	socketMode := termpty.SocketModeListen
-	if terminalSpec.SocketMode.Normalized() == apiv1.TerminalSocketModeConnect {
-		socketMode = termpty.SocketModeConnect
-	}
-
-	initialCols, initialRows := termpty.NormalizeTerminalDimensions(terminalSpec.Cols, terminalSpec.Rows)
-	connMgr, connMgrErr := termpty.NewConnManager(
-		r.LifetimeCtx,
-		ptp,
-		terminalSpec.UDSPath,
-		socketMode,
-		initialCols,
-		initialRows,
-		log,
-	)
-	if connMgrErr != nil {
-		log.Error(connMgrErr, "Failed to create terminal connection manager; container cannot be started with terminal")
-		if stopErr := ptp.Stop(); stopErr != nil {
-			log.Error(stopErr, "Failed to stop process after terminal connection manager creation failure")
-		}
-		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			log.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
-		}
-		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
-			log.Error(stopErr, "Failed to stop container after terminal connection manager creation failure")
-		}
-		return fmt.Errorf("failed to create terminal connection manager: %w", connMgrErr)
-	}
-
 	rcd.ptp = ptp
 	rcd.connMgr = connMgr
 
