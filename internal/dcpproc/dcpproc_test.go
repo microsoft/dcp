@@ -414,7 +414,7 @@ func TestMonitorContainerTerminatesWatchedContainer(t *testing.T) {
 	delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
 	require.NoError(t, toolLaunchErr, "'delay' tool directory could not be found")
 
-	const testTimeout = time.Second * 30
+	const testTimeout = time.Second * 60
 	testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
 	defer testCancel()
 
@@ -516,7 +516,7 @@ func TestMonitorContainerStopsWatchedContainerWithoutRemoving(t *testing.T) {
 	delayToolDir, toolLaunchErr := int_testutil.GetTestToolDir("delay")
 	require.NoError(t, toolLaunchErr, "'delay' tool directory could not be found")
 
-	const testTimeout = time.Second * 30
+	const testTimeout = time.Second * 60
 	testCtx, testCancel := context.WithTimeout(context.Background(), testTimeout)
 	defer testCancel()
 

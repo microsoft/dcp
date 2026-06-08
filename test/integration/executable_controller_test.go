@@ -3152,6 +3152,7 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 	const exeName = "test-executable-logs-rejected-terminal"
 
 	errMsg := fmt.Sprintf("simulated startup failure for Executable '%s'", exeName)
+	socketPath := pickTerminalSocketPath(t)
 	exe := &apiv1.Executable{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      exeName,
@@ -3164,7 +3165,7 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 			// need to refer to a real socket — this test only exercises the
 			// apiserver log streaming path.
 			Terminal: &apiv1.TerminalSpec{
-				UDSPath: "/tmp/" + exeName + ".sock",
+				UDSPath: socketPath,
 				Cols:    80,
 				Rows:    24,
 			},

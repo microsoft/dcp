@@ -29,8 +29,8 @@ import (
 	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
-	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/process"
+	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -388,10 +388,9 @@ func TestExecutableTerminalDeletionTearsDownPty(t *testing.T) {
 	require.NoError(t, pollErr, "expected TestPty to be closed after Executable deletion")
 }
 
-// TestExecutableTerminalStartupFailureCleansUpPty verifies that when the terminal
-// process factory returns an error, the Executable reaches FailedToStart and no
-// socket file is left behind.
-func TestExecutableTerminalStartupFailureCleansUpPty(t *testing.T) {
+// Verifies that when the terminal process factory returns an error, the Executable
+// reaches FailedToStart state.
+func TestExecutableTerminalStartupFailure(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -416,10 +415,6 @@ func TestExecutableTerminalStartupFailureCleansUpPty(t *testing.T) {
 	_ = waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart, nil
 	})
-
-	// No socket file should have been created.
-	_, statErr := os.Stat(socketPath)
-	require.Truef(t, errors.Is(statErr, os.ErrNotExist), "expected no terminal socket file at %q after startup failure, got stat err: %v", socketPath, statErr)
 }
 
 // TestExecutableTerminalEndToEndWithRealPty exercises the full controller path

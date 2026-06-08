@@ -16,6 +16,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 
+	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -66,9 +67,10 @@ type ConnManager struct {
 	initialCols uint16
 	initialRows uint16
 
-	ptp    *PseudoTerminalProcess
-	server *Hmp1Server
+	// ptpP stores PseudoTerminalProcess instance that ConnManager works with.
+	ptpP *concurrency.ValuePromise[*PseudoTerminalProcess]
 
+	// Listener for the incoming HMP v1 connections.
 	// Only used when socketMode == SocketModeListen
 	listener *net.UnixListener
 
@@ -89,7 +91,13 @@ type ConnManager struct {
 }
 
 // NewConnManager creates a connection manager that bridges HMP v1 client
-// traffic on socketPath to ptp's pseudo-terminal.
+// traffic on socketPath to a pseudo-terminal and a proccess behind it.
+// The process may (ptp != nil) or may not (ptp == nil) not be started
+// when ConnManager is created. In the latter case the ConnManager can be made aware
+// of the process later via AttachProcess().
+// In either case the manager will connect to- (SocketModeConnect)
+// or listen on- (SocketModeListen) the client socket immediately,
+// but the terminal data will flow only after the process is available.
 func NewConnManager(
 	lifetimeCtx context.Context,
 	ptp *PseudoTerminalProcess,
@@ -102,19 +110,45 @@ func NewConnManager(
 	if lifetimeCtx == nil {
 		return nil, errors.New("lifetime context must not be nil")
 	}
-	if ptp == nil {
-		return nil, errors.New("PseudoTerminalProcess must not be nil")
-	}
-	if ptp.PTY == nil {
-		return nil, errors.New("PseudoTerminalProcess.PTY must not be nil")
-	}
-	if ptp.ExitHandler == nil {
-		return nil, errors.New("PseudoTerminalProcess.ExitHandler must not be nil")
-	}
 	if socketPath == "" {
 		return nil, errors.New("socket path must not be empty")
 	}
+	// In eager mode the process must be valid up front; in attach-process mode
+	// it is validated later by AttachProcess. Validate before binding the
+	// listener so a rejected eager process does not leave a socket file behind.
+	if ptp != nil {
+		if err := validatePtp(ptp); err != nil {
+			return nil, err
+		}
+	}
 
+	cm, err := createConnManager(lifetimeCtx, socketPath, mode, initialCols, initialRows, log)
+	if err != nil {
+		return nil, err
+	}
+
+	if ptp == nil {
+		go cm.prepareAndServe()
+		return cm, nil
+	} else {
+		cm.ptpP.Set(ptp)
+		go cm.watchProcessExit()
+		go func() {
+			defer close(cm.done)
+			cm.serveLoop(time.Time{})
+		}()
+		return cm, nil
+	}
+}
+
+func createConnManager(
+	lifetimeCtx context.Context,
+	socketPath string,
+	mode SocketMode,
+	initialCols uint16,
+	initialRows uint16,
+	log logr.Logger,
+) (*ConnManager, error) {
 	var listener *net.UnixListener
 	if mode == SocketModeListen {
 		boundListener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
@@ -136,16 +170,14 @@ func NewConnManager(
 		log:         log,
 		socketPath:  socketPath,
 		socketMode:  mode,
-		ptp:         ptp,
 		listener:    listener,
 		initialCols: initialCols,
 		initialRows: initialRows,
 		ctx:         ctx,
 		cancelCtx:   cancelCtx,
-
-		done: make(chan struct{}),
+		ptpP:        concurrency.NewValuePromise[*PseudoTerminalProcess](),
+		done:        make(chan struct{}),
 	}
-	cm.server = NewHmp1Server(ctx, ptp.PTY)
 	cm.shutdownOnce = sync.OnceFunc(cm.shutdown)
 
 	if mode == SocketModeConnect {
@@ -155,10 +187,38 @@ func NewConnManager(
 	}
 
 	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
-	go cm.watchProcessExit()
-	go cm.connLoop()
-
 	return cm, nil
+}
+
+// validatePtp checks that a PseudoTerminalProcess is usable by a ConnManager.
+func validatePtp(ptp *PseudoTerminalProcess) error {
+	if ptp == nil {
+		return errors.New("PseudoTerminalProcess must not be nil")
+	}
+	if ptp.PTY == nil {
+		return errors.New("PseudoTerminalProcess.PTY must not be nil")
+	}
+	if ptp.ExitHandler == nil {
+		return errors.New("PseudoTerminalProcess.ExitHandler must not be nil")
+	}
+	return nil
+}
+
+// AttachProcess supplies the pseudo-terminal process to a manager created in
+// attach-process mode (i.e. with a nil ptp). The manager creates its Hmp1Server
+// and serves the warmed client connection, then continues serving subsequent
+// clients via the normal reconnect loop.
+func (cm *ConnManager) AttachProcess(ptp *PseudoTerminalProcess) error {
+	if err := validatePtp(ptp); err != nil {
+		return err
+	}
+	if !cm.ptpP.Set(ptp) {
+		return errors.New("a process has already been attached to this connection manager")
+	}
+	if cm.ctx.Err() != nil {
+		return errors.New("connection manager is shutting down")
+	}
+	return nil
 }
 
 // SocketPath returns the filesystem path of the Unix domain socket the
@@ -179,8 +239,9 @@ func (cm *ConnManager) Done() <-chan struct{} {
 // (lifetime context cancellation, explicit shutdown) so it does not leak even
 // if the process outlives the manager.
 func (cm *ConnManager) watchProcessExit() {
+	ptp := cm.ptpP.Get()
 	select {
-	case <-cm.ptp.ExitHandler.Exited():
+	case <-ptp.ExitHandler.Exited():
 		cm.log.V(1).Info("Terminal process exited; shutting down connection manager", "SocketPath", cm.socketPath)
 		cm.shutdownOnce()
 	case <-cm.ctx.Done():
@@ -188,11 +249,44 @@ func (cm *ConnManager) watchProcessExit() {
 	}
 }
 
-// connLoop establishes client connections and serves them one at a time.
-func (cm *ConnManager) connLoop() {
+// prepareAndServe runs the attach-process (pre-connect) startup sequence: it
+// warms a client connection before any process is attached, waits for the
+// process to be supplied via AttachProcess, then serves the warmed connection and
+// continues into the normal connection-serving loop.
+func (cm *ConnManager) prepareAndServe() {
 	defer close(cm.done)
 
-	var lastConnectAttempt time.Time
+	conn, err := cm.nextConn()
+	if err != nil {
+		// Shutting down before any client connection could be established.
+		return
+	}
+	connectedAt := time.Now()
+
+	select {
+	case <-cm.ptpP.Wait():
+		// A process has been attached, continue.
+	case <-cm.ctx.Done():
+		if closeErr := conn.Close(); closeErr != nil {
+			cm.log.V(1).Info("Closing warmed terminal connection failed", "error", closeErr.Error())
+		}
+		return
+	}
+
+	go cm.watchProcessExit()
+
+	// Serve the connection warmed before the process existed, then carry the
+	// connection timestamp into the loop so the first reconnect is still
+	// throttled in connect mode.
+	cm.serveConnection(conn)
+	cm.serveLoop(connectedAt)
+}
+
+// serveLoop establishes client connections and serves them one at a time until
+// the manager shuts down. lastConnectAttempt seeds the connect-mode redial
+// throttle: pass the zero time when there is no prior connection to throttle
+// against.
+func (cm *ConnManager) serveLoop(lastConnectAttempt time.Time) {
 	for {
 		if cm.socketMode == SocketModeConnect && !lastConnectAttempt.IsZero() {
 			if !cm.waitBeforeRedial(lastConnectAttempt) {
@@ -315,6 +409,10 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 	serveCtx, serveCancel := context.WithCancel(cm.ctx)
 	defer serveCancel()
 
+	// serveConnection will not be called before the PseudoTerminalProcess is available.
+	ptp := cm.ptpP.Get()
+	server := NewHmp1Server(cm.ctx, ptp.PTY)
+
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 
@@ -324,8 +422,8 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 
 		// Wait for either the process to exit or the Serve loop to end.
 		select {
-		case <-cm.ptp.ExitHandler.Exited():
-			ec := cm.ptp.ExitHandler.ExitInfo().ExitCode
+		case <-ptp.ExitHandler.Exited():
+			ec := ptp.ExitHandler.ExitInfo().ExitCode
 			select {
 			case exitCodeCh <- ec:
 			case <-time.After(Hmp1ExitCodeWaitTimeout):
@@ -338,7 +436,7 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 		}
 	}()
 
-	serveErr := cm.server.Serve(serveCtx, conn, exitCodeCh, Hmp1ServerOptions{
+	serveErr := server.Serve(serveCtx, conn, exitCodeCh, Hmp1ServerOptions{
 		InitialCols: cm.initialCols,
 		InitialRows: cm.initialRows,
 		Log:         cm.log,
