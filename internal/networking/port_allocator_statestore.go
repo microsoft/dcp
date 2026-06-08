@@ -255,7 +255,7 @@ func configuredPortAllocationRanges(allowEphemeralOverlap bool, log logr.Logger)
 
 	ephemeralStart, ephemeralEnd, matched := GetEphemeralPortRange()
 	if !matched {
-		ephemeralStart = min(DefaultEphemeralPortRangeStart, 32768)
+		ephemeralStart = DefaultEphemeralPortRangeStart
 		ephemeralEnd = DefaultEphemeralPortRangeEnd
 	}
 	filteredRanges, overlapped := subtractPortRange(ranges, portRange{Start: ephemeralStart, End: ephemeralEnd})
