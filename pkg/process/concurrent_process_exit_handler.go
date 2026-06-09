@@ -31,5 +31,5 @@ func (e *ConcurrentProcessExitHandler) ExitInfo() ProcessExitInfo {
 }
 
 func (e *ConcurrentProcessExitHandler) OnProcessExited(pid Pid_t, exitCode int32, err error) {
-	e.p.Set(ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: err})
+	_ = e.p.Set(ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: err})
 }
