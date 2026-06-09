@@ -194,7 +194,7 @@ func TestNewConnManager_FailsWhenSocketPathInUse(t *testing.T) {
 // --- Listen-mode socket file ownership ---
 
 // makeStaleSocketFile binds and immediately closes a Unix listener at path
-// (opting out of unlink-on-close), leaving a stale socket file behind with no
+// (opting out of unlink-on-close), leaving a leftover socket file behind with no
 // live listener, as a crashed process would.
 func makeStaleSocketFile(t *testing.T, path string) {
 	t.Helper()
@@ -213,42 +213,23 @@ func requireFileRemoved(t *testing.T, path string) {
 	require.Truef(t, errors.Is(statErr, os.ErrNotExist), "expected %s to be removed, stat error was %v", path, statErr)
 }
 
-// TestConnManager_ListenMode_ReclaimsStaleSocketFile verifies that listen mode
-// reclaims a stale leftover socket file before binding and then serves normally.
-func TestConnManager_ListenMode_ReclaimsStaleSocketFile(t *testing.T) {
+// TestConnManager_ListenMode_RefusesExistingSocketFile verifies that listen mode
+// refuses to bind when a leftover socket file is already present at the path and
+// leaves the existing file intact.
+func TestConnManager_ListenMode_RefusesExistingSocketFile(t *testing.T) {
 	t.Parallel()
-	ctx, ptp, pty, socketPath := newConnMgrFixture(t)
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
 	makeStaleSocketFile(t, socketPath)
 
 	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
-	require.NoError(t, err, "listen mode should reclaim a stale socket file and bind")
-	require.Equal(t, socketPath, cm.SocketPath())
+	require.Error(t, err, "listen mode must refuse an existing socket file")
+	require.Nil(t, cm)
 
-	// The reclaimed socket must serve a fresh client.
-	conn := dialConnMgr(t, ctx, socketPath)
-	hello := drainHelloAndStateSync(t, ctx, conn)
-	require.Equal(t, 1, hello.Version)
-
-	writeHmp1Frame(t, conn, Hmp1FrameInput, []byte("ping"))
-	select {
-	case got := <-pty.Outbound:
-		require.Equal(t, "ping", string(got))
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for client input to reach PTY")
-	}
-
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
-	select {
-	case <-cm.Done():
-	case <-ctx.Done():
-		t.Fatal("ConnManager did not become dormant after process exit")
-	}
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr, "existing socket file must not be removed")
 }
-
-// TestConnManager_ListenMode_DoesNotClobberActiveListener verifies that listen
-// mode refuses to bind over an actively-listening socket and leaves it intact.
 func TestConnManager_ListenMode_DoesNotClobberActiveListener(t *testing.T) {
 	t.Parallel()
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)

@@ -34,14 +34,9 @@ const (
 	// reconnectMinInterval bounds how frequently the manager will re-dial the peer in connect mode.
 	reconnectMinInterval = 500 * time.Millisecond
 
-	// staleSocketProbeTimeout bounds the dial used to detect whether a file already present at a
-	// listen-mode socket path belongs to a live listener (which must not be disturbed) or is a
-	// stale leftover that can be reclaimed.
-	staleSocketProbeTimeout = 250 * time.Millisecond
-
 	// terminalSocketNamePrefix is prepended to the random suffix when DCP generates a listen-mode
 	// terminal socket path because the spec left UDSPath empty.
-	terminalSocketNamePrefix = "dcp-term-sock-"
+	terminalSocketNamePrefix = "term-sock-"
 )
 
 // SocketMode selects how a ConnManager establishes the HMP v1 connection over its Unix domain socket.
@@ -120,7 +115,8 @@ type ConnManager struct {
 //
 // In listen mode socketPath may be empty, in which case the manager generates a
 // unique path in the DCP session/temp folder and owns the socket file (creating
-// it, reclaiming a stale leftover, and removing it on shutdown). The resolved
+// it and removing it on shutdown). When socketPath is provided, it must not already
+// exist; a file already present at the path is treated as an error. The resolved
 // path is available via SocketPath(). In connect mode socketPath is required.
 func NewConnManager(
 	lifetimeCtx context.Context,
@@ -183,8 +179,8 @@ func createConnManager(
 			socketPath = generatedPath
 		}
 
-		// DCP owns the socket file in listen mode: reclaim a stale leftover from a previous run
-		// (without disturbing a live listener) before binding.
+		// DCP owns the socket file in listen mode: the path must be free before binding. A file
+		// already present at the path is treated as an error and left untouched.
 		if prepErr := prepareListenSocketPath(socketPath); prepErr != nil {
 			return nil, prepErr
 		}
@@ -241,12 +237,12 @@ func generateListenSocketPath() (string, error) {
 	return socketPath, nil
 }
 
-// prepareListenSocketPath makes the path ready for binding a listen-mode socket
-// that DCP owns. If a file already exists at the path it reclaims it, but only
-// when it is safe to do so: an active listener is never disturbed, and a
-// directory (or, on Unix, a non-socket file) is never removed.
+// prepareListenSocketPath verifies that the path is free for binding a listen-mode
+// socket that DCP owns. DCP never reuses an existing file: any entry already present
+// at the path (socket, regular file, or directory) is treated as an error and left
+// intact. It returns nil only when nothing exists at the path.
 func prepareListenSocketPath(socketPath string) error {
-	info, lstatErr := os.Lstat(socketPath)
+	_, lstatErr := os.Lstat(socketPath)
 	if errors.Is(lstatErr, os.ErrNotExist) {
 		return nil
 	}
@@ -254,35 +250,7 @@ func prepareListenSocketPath(socketPath string) error {
 		return fmt.Errorf("could not inspect existing terminal socket path %s: %w", socketPath, lstatErr)
 	}
 
-	if info.IsDir() {
-		return fmt.Errorf("terminal socket path %s is a directory", socketPath)
-	}
-
-	// Probe for a live listener. A successful dial means another peer owns an active socket here,
-	// which must never be disturbed. A dial that times out is ambiguous (it could be a live but
-	// slow/backlogged listener), so we also refuse to reclaim in that case. Only a fast failure
-	// (e.g. connection refused, which is what a stale socket with no listener returns on all
-	// platforms) is treated as a reclaimable leftover.
-	conn, dialErr := net.DialTimeout("unix", socketPath, staleSocketProbeTimeout)
-	if dialErr == nil {
-		_ = conn.Close()
-		return fmt.Errorf("terminal socket path %s is already in use by an active listener", socketPath)
-	}
-	var netErr net.Error
-	if errors.As(dialErr, &netErr) && netErr.Timeout() {
-		return fmt.Errorf("terminal socket path %s exists and could not be confirmed stale (probe timed out): %w", socketPath, dialErr)
-	}
-
-	// On Unix a stale entry must be a socket before we remove it; on Windows AF_UNIX files do not
-	// report ModeSocket, so the dial probe above is the only reclaim guard.
-	if !osutil.IsWindows() && info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("terminal socket path %s exists and is not a socket", socketPath)
-	}
-
-	if removeErr := os.Remove(socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		return fmt.Errorf("could not remove stale terminal socket at %s: %w", socketPath, removeErr)
-	}
-	return nil
+	return fmt.Errorf("terminal socket path %s already exists", socketPath)
 }
 
 // ownsSocketFile reports whether the manager is responsible for the lifecycle of
