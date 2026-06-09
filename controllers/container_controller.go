@@ -1927,6 +1927,8 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	})
 	if attachErr != nil {
 		log.Error(attachErr, "Failed to attach terminal to container")
+		// Tear down the connection manager so the owned listen-mode socket file is removed promptly.
+		connMgr.Shutdown()
 		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
 			log.Error(stopErr, "Failed to stop container after terminal attach failure")
 		}
@@ -1942,6 +1944,8 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
 		}
+		// Tear down the connection manager so the owned listen-mode socket file is removed promptly.
+		connMgr.Shutdown()
 		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
 			log.Error(stopErr, "Failed to stop container after terminal connection manager creation failure")
 		}
@@ -1958,8 +1962,9 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	}
 	rcd.ptp = ptp
 	rcd.connMgr = connMgr
+	rcd.terminalSocketPath = connMgr.SocketPath()
 
-	log.V(1).Info("Container terminal attached", "UDSPath", terminalSpec.UDSPath)
+	log.V(1).Info("Container terminal attached", "UDSPath", connMgr.SocketPath())
 	return nil
 }
 
