@@ -7,6 +7,7 @@ package concurrency
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 // ValuePromise represents a value that will (might be) be set at some point in the future.
@@ -15,7 +16,7 @@ import (
 // All methods are safe for concurrent use.
 type ValuePromise[T any] struct {
 	haveValue    *AutoResetEvent
-	valueChan    chan T
+	valueChan    atomic.Pointer[chan T]
 	getValueOnce func() T
 }
 
@@ -23,8 +24,9 @@ func NewValuePromise[T any]() *ValuePromise[T] {
 	valueChan := make(chan T, 1)
 	result := ValuePromise[T]{
 		haveValue: NewAutoResetEvent(false),
-		valueChan: valueChan,
+		valueChan: atomic.Pointer[chan T]{},
 	}
+	result.valueChan.Store(&valueChan)
 	result.getValueOnce = sync.OnceValue(func() T {
 		return <-valueChan
 	})
@@ -34,14 +36,14 @@ func NewValuePromise[T any]() *ValuePromise[T] {
 // Sets the value of the promise.
 // Returns true if the value was set, false if it was already set.
 func (p *ValuePromise[T]) Set(value T) bool {
-	select {
-	case p.valueChan <- value:
-		p.valueChan = nil
-		p.haveValue.SetAndFreeze()
-		return true
-	default:
+	valueChan := p.valueChan.Swap(nil) // Make sure only one goroutine can set the value
+	if valueChan == nil {
 		return false
 	}
+
+	*valueChan <- value // Non-blocking--channel is buffered (size 1)
+	p.haveValue.SetAndFreeze()
+	return true
 }
 
 // Gets the value of the promise.
