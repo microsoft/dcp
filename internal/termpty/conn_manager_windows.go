@@ -14,11 +14,8 @@ import (
 	"syscall"
 )
 
-// isExpectedClientDisconnect reports whether err reflects the HMP client closing
-// or dropping the connection (peer hang-up, connection reset, EOF, or a closed
-// connection). These are normal lifecycle events — including a viewer that
-// disconnects mid-handshake, before the server finishes writing the
-// Hello/StateSync frames — and are not server failures worth logging at Error level.
+// Returns true when err reflects the HMP client closing or dropping the connection (expected),
+// false otherwise (indicating unexpected communication error).
 func isExpectedClientDisconnect(err error) bool {
 	return errors.Is(err, io.EOF) ||
 		errors.Is(err, net.ErrClosed) ||
