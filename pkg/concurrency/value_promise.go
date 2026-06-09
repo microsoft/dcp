@@ -20,12 +20,13 @@ type ValuePromise[T any] struct {
 }
 
 func NewValuePromise[T any]() *ValuePromise[T] {
+	valueChan := make(chan T, 1)
 	result := ValuePromise[T]{
 		haveValue: NewAutoResetEvent(false),
-		valueChan: make(chan T, 1),
+		valueChan: valueChan,
 	}
 	result.getValueOnce = sync.OnceValue(func() T {
-		return <-result.valueChan
+		return <-valueChan
 	})
 	return &result
 }
@@ -35,6 +36,7 @@ func NewValuePromise[T any]() *ValuePromise[T] {
 func (p *ValuePromise[T]) Set(value T) bool {
 	select {
 	case p.valueChan <- value:
+		p.valueChan = nil
 		p.haveValue.SetAndFreeze()
 		return true
 	default:
