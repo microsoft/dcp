@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +21,9 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -27,7 +31,7 @@ type stateStorePortAllocationConfig struct {
 	store                 *statestore.Store
 	owner                 process.ProcessTreeItem
 	mode                  string
-	portRanges            []portRange
+	portRanges            indexedPortRanges
 	allowEphemeralOverlap bool
 	allocationTimeout     time.Duration
 }
@@ -36,6 +40,10 @@ const (
 	defaultStateStorePortAllocationRangeStart = 20000
 	defaultStateStorePortAllocationRangeEnd   = 32767
 )
+
+// stateStorePortReservationLock serializes slower bind probes with state-store reservation writes.
+// Do not hold portAllocatorLock while acquiring stateStorePortReservationLock, or vice versa.
+var stateStorePortReservationLock = concurrency.NewContextAwareLock()
 
 func getStateStorePortAllocationConfig(log logr.Logger) (*stateStorePortAllocationConfig, bool, error) {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(DCP_PORT_ALLOCATOR)))
@@ -94,8 +102,8 @@ func allocatePortFromStateStoreRange(ctx context.Context, protocol apiv1.PortPro
 		if !hasCandidate {
 			break
 		}
-		reserveAttempted, reserveErr := reserveStateStoreCandidateIfBindable(allocationCtx, config, protocol, address, candidate)
-		if !reserveAttempted {
+		portAvailable, reserveErr := reserveStateStoreCandidateIfBindable(allocationCtx, config, protocol, address, candidate)
+		if !portAvailable {
 			continue
 		}
 		if reserveErr == nil {
@@ -126,22 +134,42 @@ func reserveStateStoreCandidateIfBindable(
 		return false, nil
 	}
 
-	_, reserveErr := config.store.ReservePort(ctx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
-		OwnerProcess: config.owner,
-	})
+	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
+	if addressErr != nil {
+		return true, addressErr
+	}
+	ip, ipErr := netip.ParseAddr(ToStandaloneAddress(normalizedAddress))
+	if ipErr != nil {
+		return true, fmt.Errorf("could not parse port reservation IP '%s': %w", normalizedAddress, ipErr)
+	}
+	request := stateStorePortReservationRequest(ports.Binding{Protocol: string(protocol), IP: ip, Port: port}, config.owner)
+	_, reserveErr := config.store.CreatePortReservation(ctx, request)
 	return true, reserveErr
 }
 
 func checkPortAvailableWithStateStore(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) (error, bool) {
+	normalizedAddress, addressErr := NormalizePortAllocationAddress(address)
+	if addressErr != nil {
+		return addressErr, false
+	}
+	ip, ipErr := netip.ParseAddr(ToStandaloneAddress(normalizedAddress))
+	if ipErr != nil {
+		return fmt.Errorf("could not parse port reservation IP '%s': %w", normalizedAddress, ipErr), false
+	}
+	return reserveSpecificStateStorePort(ctx, ports.Binding{Protocol: string(protocol), IP: ip, Port: port}, address, true, log)
+}
+
+func reserveSpecificPortWithStateStore(ctx context.Context, binding ports.Binding, log logr.Logger) (error, bool) {
+	return reserveSpecificStateStorePort(ctx, binding, "", false, log)
+}
+
+func reserveSpecificStateStorePort(ctx context.Context, binding ports.Binding, bindAddress string, requireBindable bool, log logr.Logger) (error, bool) {
 	config, shouldFallback, configErr := getStateStorePortAllocationConfig(log)
 	if configErr != nil {
 		return configErr, shouldFallback
 	}
 
-	if IsEphemeralPort(port) && !config.allowEphemeralOverlap {
+	if IsEphemeralPort(binding.Port) && !config.allowEphemeralOverlap {
 		return nil, false
 	}
 
@@ -153,66 +181,31 @@ func checkPortAvailableWithStateStore(ctx context.Context, protocol apiv1.PortPr
 	}
 	defer stateStorePortReservationLock.Unlock()
 
-	checkErr := checkPortCurrentlyBindable(protocol, address, port)
-	if checkErr != nil {
-		return checkErr, false
+	if requireBindable {
+		checkErr := checkPortCurrentlyBindable(apiv1.PortProtocol(binding.Protocol), bindAddress, binding.Port)
+		if checkErr != nil {
+			return checkErr, false
+		}
 	}
 
-	_, reserveErr := config.store.ReserveSpecificPort(reservationCtx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
-		OwnerProcess: config.owner,
-	})
+	request := stateStorePortReservationRequest(binding, config.owner)
+	_, reserveErr := config.store.CreateOrUpdatePortReservation(reservationCtx, request)
 	if reserveErr != nil {
 		if errors.Is(reserveErr, statestore.ErrPortReservationHeld) {
-			return fmt.Errorf("port %d is already reserved by another DCP process", port), false
+			return fmt.Errorf("port %d is already reserved by another DCP process", binding.Port), false
 		}
 		return reserveErr, config.mode == portAllocatorModeStateStoreWithFallback
 	}
 	return nil, false
 }
 
-func reserveSpecificPortWithStateStore(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) (error, bool) {
+func releaseSpecificPortWithStateStore(ctx context.Context, binding ports.Binding, log logr.Logger) (error, bool) {
 	config, shouldFallback, configErr := getStateStorePortAllocationConfig(log)
 	if configErr != nil {
 		return configErr, shouldFallback
 	}
 
-	if IsEphemeralPort(port) && !config.allowEphemeralOverlap {
-		return nil, false
-	}
-
-	reservationCtx, cancel := context.WithTimeout(ctx, config.allocationTimeout)
-	defer cancel()
-
-	if lockErr := stateStorePortReservationLock.Lock(reservationCtx); lockErr != nil {
-		return lockErr, config.mode == portAllocatorModeStateStoreWithFallback
-	}
-	defer stateStorePortReservationLock.Unlock()
-
-	_, reserveErr := config.store.ReserveSpecificPort(reservationCtx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
-		OwnerProcess: config.owner,
-	})
-	if reserveErr != nil {
-		if errors.Is(reserveErr, statestore.ErrPortReservationHeld) {
-			return fmt.Errorf("port %d is already reserved by another DCP process", port), false
-		}
-		return reserveErr, config.mode == portAllocatorModeStateStoreWithFallback
-	}
-	return nil, false
-}
-
-func releaseSpecificPortWithStateStore(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) (error, bool) {
-	config, shouldFallback, configErr := getStateStorePortAllocationConfig(log)
-	if configErr != nil {
-		return configErr, shouldFallback
-	}
-
-	if IsEphemeralPort(port) && !config.allowEphemeralOverlap {
+	if IsEphemeralPort(binding.Port) && !config.allowEphemeralOverlap {
 		return nil, false
 	}
 
@@ -224,19 +217,22 @@ func releaseSpecificPortWithStateStore(ctx context.Context, protocol apiv1.PortP
 	}
 	defer stateStorePortReservationLock.Unlock()
 
-	releaseErr := config.store.ReleasePort(releaseCtx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
-		OwnerProcess: config.owner,
-	})
+	request := stateStorePortReservationRequest(binding, config.owner)
+	releaseErr := config.store.ReleasePort(releaseCtx, request)
 	if releaseErr != nil {
 		return releaseErr, config.mode == portAllocatorModeStateStoreWithFallback
 	}
 	return nil, false
 }
 
-func configuredPortAllocationRanges(allowEphemeralOverlap bool, log logr.Logger) ([]portRange, error) {
+func stateStorePortReservationRequest(binding ports.Binding, owner process.ProcessTreeItem) statestore.PortReservationRequest {
+	return statestore.PortReservationRequest{
+		Binding:      binding,
+		OwnerProcess: owner,
+	}
+}
+
+func configuredPortAllocationRanges(allowEphemeralOverlap bool, log logr.Logger) (indexedPortRanges, error) {
 	configuredRange := strings.TrimSpace(os.Getenv(DCP_PORT_ALLOCATION_RANGE))
 	// Default to the upper half of the registered port range: it has a low chance of colliding with
 	// well-known service ports and stays below the default ephemeral range on almost all supported OSes.
@@ -244,13 +240,13 @@ func configuredPortAllocationRanges(allowEphemeralOverlap bool, log logr.Logger)
 	if configuredRange != "" {
 		parsedRanges, parseErr := parsePortAllocationRanges(configuredRange)
 		if parseErr != nil {
-			return nil, parseErr
+			return indexedPortRanges{}, parseErr
 		}
 		ranges = parsedRanges
 	}
 
 	if allowEphemeralOverlap {
-		return ranges, nil
+		return newIndexedPortRanges(ranges), nil
 	}
 
 	ephemeralStart, ephemeralEnd, matched := GetEphemeralPortRange()
@@ -263,9 +259,9 @@ func configuredPortAllocationRanges(allowEphemeralOverlap bool, log logr.Logger)
 		reportPortRangeOverlapWarning(log, ephemeralStart, ephemeralEnd)
 	}
 	if len(filteredRanges) == 0 {
-		return nil, fmt.Errorf("configured DCP port allocation range overlaps the system ephemeral port range %d-%d; set %s=true to allow overlap", ephemeralStart, ephemeralEnd, DCP_PORT_ALLOCATION_ALLOW_EPHEMERAL_OVERLAP)
+		return indexedPortRanges{}, fmt.Errorf("configured DCP port allocation range overlaps the system ephemeral port range %d-%d; set %s=true to allow overlap", ephemeralStart, ephemeralEnd, DCP_PORT_ALLOCATION_ALLOW_EPHEMERAL_OVERLAP)
 	}
-	return filteredRanges, nil
+	return newIndexedPortRanges(filteredRanges), nil
 }
 
 func parsePortAllocationRanges(value string) ([]portRange, error) {
@@ -331,8 +327,75 @@ func reportPortRangeOverlapWarning(log logr.Logger, ephemeralStart int, ephemera
 		"AllowOverlapEnvVar", DCP_PORT_ALLOCATION_ALLOW_EPHEMERAL_OVERLAP)
 }
 
-type stateStorePortAllocationCandidateIterator struct {
+type indexedPortRanges struct {
 	ranges []portRange
+	total  int
+}
+
+func newIndexedPortRanges(ranges []portRange) indexedPortRanges {
+	if len(ranges) == 0 {
+		return indexedPortRanges{}
+	}
+
+	normalizedRanges := append([]portRange{}, ranges...)
+	sort.Slice(normalizedRanges, func(i int, j int) bool {
+		if normalizedRanges[i].Start == normalizedRanges[j].Start {
+			return normalizedRanges[i].End < normalizedRanges[j].End
+		}
+		return normalizedRanges[i].Start < normalizedRanges[j].Start
+	})
+
+	mergedRanges := make([]portRange, 0, len(normalizedRanges))
+	for _, candidateRange := range normalizedRanges {
+		if len(mergedRanges) == 0 {
+			mergedRanges = append(mergedRanges, candidateRange)
+			continue
+		}
+
+		lastRangeIndex := len(mergedRanges) - 1
+		if candidateRange.Start <= mergedRanges[lastRangeIndex].End+1 {
+			if candidateRange.End > mergedRanges[lastRangeIndex].End {
+				mergedRanges[lastRangeIndex].End = candidateRange.End
+			}
+			continue
+		}
+		mergedRanges = append(mergedRanges, candidateRange)
+	}
+
+	total := 0
+	for _, candidateRange := range mergedRanges {
+		total += candidateRange.End - candidateRange.Start + 1
+	}
+
+	return indexedPortRanges{
+		ranges: mergedRanges,
+		total:  total,
+	}
+}
+
+func (ranges indexedPortRanges) Len() int {
+	return ranges.total
+}
+
+func (ranges indexedPortRanges) PortAt(index int) (int32, bool) {
+	if index < 0 || index >= ranges.total {
+		return 0, false
+	}
+
+	candidateIndex := index
+	for _, candidateRange := range ranges.ranges {
+		rangeLength := candidateRange.End - candidateRange.Start + 1
+		if candidateIndex < rangeLength {
+			return int32(candidateRange.Start + candidateIndex), true
+		}
+		candidateIndex -= rangeLength
+	}
+
+	return 0, false
+}
+
+type stateStorePortAllocationCandidateIterator struct {
+	ranges indexedPortRanges
 	total  int
 	offset int
 	step   int
@@ -342,11 +405,8 @@ type stateStorePortAllocationCandidateIterator struct {
 // newStateStorePortAllocationCandidateIterator creates a deterministic random walk over the
 // configured ranges. The walk is lazy so large ranges do not need to be materialized before the
 // allocator finds an available port.
-func newStateStorePortAllocationCandidateIterator(ranges []portRange, protocol string, address string) *stateStorePortAllocationCandidateIterator {
-	total := 0
-	for _, candidateRange := range ranges {
-		total += candidateRange.End - candidateRange.Start + 1
-	}
+func newStateStorePortAllocationCandidateIterator(ranges indexedPortRanges, protocol string, address string) *stateStorePortAllocationCandidateIterator {
+	total := ranges.Len()
 	if total <= 0 {
 		return &stateStorePortAllocationCandidateIterator{}
 	}
@@ -375,15 +435,7 @@ func (iterator *stateStorePortAllocationCandidateIterator) Next() (int32, bool) 
 
 	candidateIndex := (iterator.offset + iterator.next*iterator.step) % iterator.total
 	iterator.next++
-	for _, candidateRange := range iterator.ranges {
-		rangeLength := candidateRange.End - candidateRange.Start + 1
-		if candidateIndex < rangeLength {
-			return int32(candidateRange.Start + candidateIndex), true
-		}
-		candidateIndex -= rangeLength
-	}
-
-	return 0, false
+	return iterator.ranges.PortAt(candidateIndex)
 }
 
 // stateStorePortAllocationCandidateStep returns a pseudo-random step that is coprime with the

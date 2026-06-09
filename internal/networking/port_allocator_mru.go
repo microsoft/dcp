@@ -144,6 +144,64 @@ func checkPortAvailableWithMruFile(ctx context.Context, protocol apiv1.PortProto
 	}
 }
 
+func releaseSpecificPortWithMruFile(ctx context.Context, address string, port int32, log logr.Logger) error {
+	portFileLock.Lock()
+	defer portFileLock.Unlock()
+
+	portFileErr := ensurePackageMruPortFile(log)
+	params := defaultMruPortFileUsageParameters()
+	if packageMruPortFile != nil {
+		params = packageMruPortFile.params
+	}
+	bestEffortRelease := func(err error) error {
+		if params.failOnPortFileError {
+			return err
+		}
+		return nil
+	}
+
+	if portFileErr != nil {
+		// Error will be logged by ensurePackageMruPortFile()
+		return bestEffortRelease(portFileErr)
+	}
+
+	mruPortsReleaseCtx, cancel := context.WithTimeout(ctx, packageMruPortFile.params.portAvailableCheckTimeout)
+	defer cancel()
+
+	usedPorts, usedPortsErr := packageMruPortFile.tryLockAndRead(mruPortsReleaseCtx)
+	if usedPortsErr != nil {
+		log.V(1).Info("Warning: port release: could not check the most recently used ports file for conflicts", "Error", usedPortsErr.Error())
+		return bestEffortRelease(usedPortsErr)
+	}
+
+	desired := AddressAndPort(address, port)
+	filteredPorts := usedPorts[:0]
+	released := false
+	for _, usedPort := range usedPorts {
+		if usedPort.AddressAndPort == desired && usedPort.Instance == programInstanceID {
+			released = true
+			continue
+		}
+		filteredPorts = append(filteredPorts, usedPort)
+	}
+
+	if !released {
+		unlockErr := packageMruPortFile.Unlock()
+		if unlockErr != nil {
+			log.Error(unlockErr, "Could not unlock the most recently used ports file")
+			return bestEffortRelease(unlockErr)
+		}
+		return nil
+	}
+
+	writeErr := packageMruPortFile.WriteAndUnlock(mruPortsReleaseCtx, filteredPorts)
+	if writeErr != nil {
+		log.Error(writeErr, "Could not write to the most recently used ports file")
+		return bestEffortRelease(writeErr)
+	}
+	return nil
+}
+
 func checkPortCurrentlyBindable(protocol apiv1.PortProtocol, address string, port int32) error {
 	if protocol == apiv1.UDP {
 		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, port))

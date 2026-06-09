@@ -18,7 +18,7 @@ import (
 	"golang.org/x/net/nettest"
 
 	"github.com/microsoft/dcp/internal/statestore"
-	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -57,22 +57,19 @@ const (
 )
 
 var (
-	portFileLock      *sync.Mutex
-	portAllocatorLock *sync.Mutex
+	portFileLock *sync.Mutex
 	// portAllocatorLock protects quick package-level allocator configuration reads/writes.
-	// stateStorePortReservationLock serializes slower bind probes with state-store reservation writes.
-	// Do not hold portAllocatorLock while acquiring stateStorePortReservationLock, or vice versa.
-	stateStorePortReservationLock *concurrency.ContextAwareLock
-	portFileErrorReported         bool
-	portRangeOverlapReported      bool
-	packageMruPortFile            *mruPortFile
-	packageStateStore             *statestore.Store
-	packageStateStoreOwner        process.ProcessTreeItem
-	programInstanceID             string
-	ipVersionPreference           IpVersionPreference
-	getAllLocalIpsOnce            func() ([]net.IP, error)
-	getHostnameOnce               func() (string, error)
-	getEphemeralPortRangeOnce     func() (portRange, bool)
+	portAllocatorLock         *sync.Mutex
+	portFileErrorReported     bool
+	portRangeOverlapReported  bool
+	packageMruPortFile        *mruPortFile
+	packageStateStore         *statestore.Store
+	packageStateStoreOwner    process.ProcessTreeItem
+	programInstanceID         string
+	ipVersionPreference       IpVersionPreference
+	getAllLocalIpsOnce        func() ([]net.IP, error)
+	getHostnameOnce           func() (string, error)
+	getEphemeralPortRangeOnce func() (portRange, bool)
 )
 
 type portRange struct {
@@ -83,7 +80,6 @@ type portRange struct {
 func init() {
 	portFileLock = &sync.Mutex{}
 	portAllocatorLock = &sync.Mutex{}
-	stateStorePortReservationLock = concurrency.NewContextAwareLock()
 	getAllLocalIpsOnce = sync.OnceValues(getAllLocalIps)
 	getHostnameOnce = sync.OnceValues(os.Hostname)
 	getEphemeralPortRangeOnce = sync.OnceValues(getEphemeralPortRange)
@@ -243,7 +239,9 @@ func GetEphemeralPortRange() (int, int, bool) {
 	return ephemeralRange.Start, ephemeralRange.End, matched
 }
 
-func normalizePortAllocationAddress(address string) (string, error) {
+// NormalizePortAllocationAddress converts a caller-provided bind address into the concrete address
+// used by the port allocator.
+func NormalizePortAllocationAddress(address string) (string, error) {
 	if address == "" || address == Localhost {
 		preferredIps, preferredErr := GetPreferredHostIps(Localhost)
 		if preferredErr != nil {
@@ -329,11 +327,11 @@ func ToStandaloneAddress(address string) string {
 }
 
 func IsValidPort(port int) bool {
-	return port >= 1 && port <= 65535
+	return ports.IsValidPort(port)
 }
 
 func IsBindablePort(port int) bool {
-	return port == 0 || IsValidPort(port)
+	return ports.IsBindablePort(port)
 }
 
 func IsEphemeralPort(port int32) bool {

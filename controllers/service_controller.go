@@ -37,24 +37,22 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
 
 type proxyInstanceData struct {
-	proxy                   proxy.Proxy
-	stopProxy               context.CancelFunc
-	portReservationProtocol apiv1.PortProtocol
-	portReservationAddress  string
-	portReservationPort     int32
+	proxy           proxy.Proxy
+	stopProxy       context.CancelFunc
+	portReservation ports.Binding
 }
 
 type serviceData struct {
-	proxies        []proxyInstanceData
-	proxiesStopped bool
-	startAttempts  uint32
-	warnedUser     bool
+	proxies       []proxyInstanceData
+	startAttempts uint32
+	warnedUser    bool
 }
 
 // Stores ServiceReconciler dependencies and configuration that often varies
@@ -223,7 +221,13 @@ func reserveDeclaredServicePort(ctx context.Context, svc *apiv1.Service, log log
 		return additionalReconciliationNeeded
 	}
 
-	reserveErr := networking.ReserveSpecificPort(ctx, svc.Spec.Protocol, requestedServiceAddress, svc.Spec.Port, log)
+	requestedServiceIP, requestedServiceIPErr := portReservationIP(requestedServiceAddress)
+	if requestedServiceIPErr != nil {
+		log.Error(requestedServiceIPErr, "Could not determine requested service IP for port reservation")
+		return additionalReconciliationNeeded
+	}
+
+	reserveErr := networking.ReserveSpecificPort(ctx, ports.Binding{Protocol: string(svc.Spec.Protocol), IP: requestedServiceIP, Port: svc.Spec.Port}, log)
 	if reserveErr != nil {
 		log.Error(reserveErr, "Could not reserve declared service port",
 			"Address", requestedServiceAddress,
@@ -246,7 +250,13 @@ func releaseDeclaredServicePort(ctx context.Context, svc *apiv1.Service, log log
 		return additionalReconciliationNeeded
 	}
 
-	releaseErr := networking.ReleaseSpecificPort(ctx, svc.Spec.Protocol, requestedServiceAddress, svc.Spec.Port, log)
+	requestedServiceIP, requestedServiceIPErr := portReservationIP(requestedServiceAddress)
+	if requestedServiceIPErr != nil {
+		log.Error(requestedServiceIPErr, "Could not determine requested service IP for port release")
+		return additionalReconciliationNeeded
+	}
+
+	releaseErr := networking.ReleaseSpecificPort(ctx, ports.Binding{Protocol: string(svc.Spec.Protocol), IP: requestedServiceIP, Port: svc.Spec.Port}, log)
 	if releaseErr != nil {
 		log.Error(releaseErr, "Could not release declared service port",
 			"Address", requestedServiceAddress,
@@ -265,7 +275,6 @@ func (r *ServiceReconciler) stopService(ctx context.Context, svcName types.Names
 	}
 	releaseErr := stopProxiesAndReleasePortReservations(ctx, serviceData.proxies, log)
 	if releaseErr != nil {
-		serviceData.proxiesStopped = true
 		log.Error(releaseErr, "Could not release service proxy port reservation(s)")
 		return additionalReconciliationNeeded
 	}
@@ -474,7 +483,7 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 
 	requestedServiceAddress, requestedAddressErr := getRequestedServiceAddress(svc)
 
-	if found && requestedAddressErr == nil && len(psd.proxies) > 0 && !psd.proxiesStopped {
+	if found && requestedAddressErr == nil && len(psd.proxies) > 0 {
 		svc.Status.EffectiveAddress, svc.Status.EffectivePort = r.getEffectiveAddressAndPort(psd.proxies, requestedServiceAddress)
 		return psd, nil
 	}
@@ -486,12 +495,10 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	defer r.serviceInfo.Store(svc.NamespacedName(), psd)
 
 	releaseExistingErr := stopProxiesAndReleasePortReservations(ctx, psd.proxies, log)
-	psd.proxiesStopped = len(psd.proxies) > 0
 	if releaseExistingErr != nil {
 		return psd, fmt.Errorf("could not release existing service proxy port reservation(s): %w", releaseExistingErr)
 	}
 	psd.proxies = nil
-	psd.proxiesStopped = false
 	psd.startAttempts += 1
 
 	if requestedAddressErr != nil {
@@ -530,7 +537,6 @@ func (r *ServiceReconciler) startProxyIfNeeded(ctx context.Context, svc *apiv1.S
 	)
 
 	psd.proxies = proxies
-	psd.proxiesStopped = false
 	return psd, nil
 }
 
@@ -601,13 +607,21 @@ func (r *ServiceReconciler) getProxyData(ctx context.Context, svc *apiv1.Service
 			}
 		}
 
+		proxyReservationIP, proxyReservationIPErr := netip.ParseAddr(networking.ToStandaloneAddress(proxyInstanceAddress))
+		if proxyReservationIPErr != nil {
+			portAllocationErr = errors.Join(portAllocationErr, fmt.Errorf("could not parse proxy reservation IP '%s': %w", proxyInstanceAddress, proxyReservationIPErr))
+			continue
+		}
+
 		proxyCtx, cancelFunc := context.WithCancel(r.LifetimeCtx)
 		proxies = append(proxies, proxyInstanceData{
-			proxy:                   r.config.CreateProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
-			stopProxy:               cancelFunc,
-			portReservationProtocol: svc.Spec.Protocol,
-			portReservationAddress:  proxyInstanceAddress,
-			portReservationPort:     proxyPort,
+			proxy:     r.config.CreateProxy(svc.Spec.Protocol, proxyInstanceAddress, proxyPort, proxyCtx, proxyLog),
+			stopProxy: cancelFunc,
+			portReservation: ports.Binding{
+				Protocol: string(svc.Spec.Protocol),
+				IP:       proxyReservationIP,
+				Port:     proxyPort,
+			},
 		})
 	}
 
@@ -722,24 +736,25 @@ func stopProxies(proxies []proxyInstanceData, log logr.Logger) {
 }
 
 func stopProxiesAndReleasePortReservations(ctx context.Context, proxies []proxyInstanceData, log logr.Logger) error {
-	stopProxies(proxies, log)
-
 	var releaseErr error
 	for _, proxyInstanceData := range proxies {
 		proxyReleaseErr := networking.ReleaseSpecificPort(
 			ctx,
-			proxyInstanceData.portReservationProtocol,
-			proxyInstanceData.portReservationAddress,
-			proxyInstanceData.portReservationPort,
+			proxyInstanceData.portReservation,
 			log,
 		)
 		if proxyReleaseErr != nil {
 			log.Error(proxyReleaseErr, "Could not release service proxy port reservation",
-				"Address", proxyInstanceData.portReservationAddress,
-				"Port", proxyInstanceData.portReservationPort,
+				"IP", proxyInstanceData.portReservation.IP,
+				"Port", proxyInstanceData.portReservation.Port,
 			)
 			releaseErr = errors.Join(releaseErr, proxyReleaseErr)
 		}
 	}
-	return releaseErr
+	if releaseErr != nil {
+		return releaseErr
+	}
+
+	stopProxies(proxies, log)
+	return nil
 }

@@ -7,6 +7,8 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +21,7 @@ import (
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
@@ -86,7 +89,23 @@ func reserveServiceProducerEndpointPort(
 		return getErr
 	}
 
-	return networking.ReserveSpecificPort(ctx, svc.Spec.Protocol, address, port, log)
+	ip, ipErr := portReservationIP(address)
+	if ipErr != nil {
+		return ipErr
+	}
+	return networking.ReserveSpecificPort(ctx, ports.Binding{Protocol: string(svc.Spec.Protocol), IP: ip, Port: port}, log)
+}
+
+func portReservationIP(address string) (netip.Addr, error) {
+	normalizedAddress, addressErr := networking.NormalizePortAllocationAddress(address)
+	if addressErr != nil {
+		return netip.Addr{}, addressErr
+	}
+	ip, ipErr := netip.ParseAddr(networking.ToStandaloneAddress(normalizedAddress))
+	if ipErr != nil {
+		return netip.Addr{}, fmt.Errorf("could not parse port reservation IP '%s': %w", normalizedAddress, ipErr)
+	}
+	return ip, nil
 }
 
 func releaseEndpointPortReservation(ctx context.Context, client ctrl_client.Client, endpoint *apiv1.Endpoint, log logr.Logger) error {
@@ -107,7 +126,12 @@ func releaseEndpointPortReservation(ctx context.Context, client ctrl_client.Clie
 }
 
 func releaseEndpointPortReservationForProtocol(ctx context.Context, protocol apiv1.PortProtocol, endpoint *apiv1.Endpoint, log logr.Logger) error {
-	releaseErr := networking.ReleaseSpecificPort(ctx, protocol, endpoint.Spec.Address, endpoint.Spec.Port, log)
+	ip, ipErr := portReservationIP(endpoint.Spec.Address)
+	if ipErr != nil {
+		return ipErr
+	}
+
+	releaseErr := networking.ReleaseSpecificPort(ctx, ports.Binding{Protocol: string(protocol), IP: ip, Port: endpoint.Spec.Port}, log)
 	if releaseErr != nil {
 		log.Error(releaseErr, "Could not release Endpoint port reservation",
 			"Endpoint", endpoint.NamespacedName().String(),

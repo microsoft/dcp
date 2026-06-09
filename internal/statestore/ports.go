@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -25,35 +26,35 @@ const (
 
 var ErrPortReservationHeld = errors.New("port reservation is held by another owner")
 
+// PortReservation describes a state-store claim on a protocol/IP/port tuple by a DCP owner process.
 type PortReservation struct {
-	Protocol     string
-	Address      string
-	addressBytes []byte
-	Port         int32
+	ports.Binding
 	OwnerProcess process.ProcessTreeItem
 	UpdatedAt    time.Time
 }
 
+// PortReservationRequest identifies the protocol/IP/port tuple to reserve or release and the DCP
+// owner process responsible for that claim.
 type PortReservationRequest struct {
-	Protocol     string
-	Address      string
-	addressBytes []byte
-	Port         int32
+	ports.Binding
 	OwnerProcess process.ProcessTreeItem
 }
 
+// PortReservationHeldError reports the conflicting active reservation when a requested
+// protocol/IP/port tuple is already held by another DCP owner.
 type PortReservationHeldError struct {
 	Reservation PortReservation
 }
 
 func (e *PortReservationHeldError) Error() string {
-	return fmt.Sprintf("%s: %s/%s/%d", ErrPortReservationHeld, e.Reservation.Protocol, e.Reservation.Address, e.Reservation.Port)
+	return fmt.Sprintf("%s: %s/%s/%d", ErrPortReservationHeld, e.Reservation.Protocol, e.Reservation.IP, e.Reservation.Port)
 }
 
 func (e *PortReservationHeldError) Unwrap() error {
 	return ErrPortReservationHeld
 }
 
+// HeldPortReservation extracts the active reservation that blocked a reserve attempt.
 func HeldPortReservation(err error) (*PortReservation, bool) {
 	var heldErr *PortReservationHeldError
 	if !errors.As(err, &heldErr) {
@@ -64,16 +65,24 @@ func HeldPortReservation(err error) (*PortReservation, bool) {
 	return &reservation, true
 }
 
-func (s *Store) ReservePort(ctx context.Context, request PortReservationRequest) (*PortReservation, error) {
+// CreatePortReservation creates a reservation for the requested protocol/IP/port tuple.
+// It fails with ErrPortReservationHeld when any active owner already reserves the same tuple or a
+// same-family wildcard tuple for that port.
+func (s *Store) CreatePortReservation(ctx context.Context, request PortReservationRequest) (*PortReservation, error) {
 	return s.reservePort(ctx, request, false)
 }
 
-func (s *Store) ReserveSpecificPort(ctx context.Context, request PortReservationRequest) (*PortReservation, error) {
+// CreateOrUpdatePortReservation creates a reservation for the requested protocol/IP/port tuple.
+// If the same owner already holds the exact tuple, it refreshes that reservation instead. It still
+// rejects wildcard/specific conflicts so one owner cannot hold overlapping claims for the same port.
+func (s *Store) CreateOrUpdatePortReservation(ctx context.Context, request PortReservationRequest) (*PortReservation, error) {
 	return s.reservePort(ctx, request, true)
 }
 
-func (s *Store) IsPortReservedByOtherOwner(ctx context.Context, protocol string, address string, port int32, ownerProcess process.ProcessTreeItem) (bool, error) {
-	key, portErr := normalizePortReservationKey(protocol, address, port)
+// IsPortReservedByOtherOwner reports whether an active owner other than ownerProcess holds the
+// requested protocol/IP/port tuple or a conflicting same-family wildcard tuple.
+func (s *Store) IsPortReservedByOtherOwner(ctx context.Context, binding ports.Binding, ownerProcess process.ProcessTreeItem) (bool, error) {
+	key, portErr := normalizePortReservationKey(binding)
 	if portErr != nil {
 		return false, portErr
 	}
@@ -104,6 +113,8 @@ func (s *Store) IsPortReservedByOtherOwner(ctx context.Context, protocol string,
 	return false, nil
 }
 
+// ReleasePort removes this owner process' exact protocol/IP/port reservation.
+// Reservations held by other owners, or overlapping wildcard/specific reservations, are left intact.
 func (s *Store) ReleasePort(ctx context.Context, request PortReservationRequest) error {
 	normalizedRequest, requestErr := normalizePortReservationRequest(request)
 	if requestErr != nil {
@@ -115,6 +126,8 @@ func (s *Store) ReleasePort(ctx context.Context, request PortReservationRequest)
 	})
 }
 
+// DeleteInactivePortReservations deletes reservations whose owner process identity is no longer
+// active, allowing ports abandoned by exited DCP instances to be reused.
 func (s *Store) DeleteInactivePortReservations(ctx context.Context) error {
 	candidates, candidatesErr := s.inactivePortReservationCandidates(ctx)
 	if candidatesErr != nil {
@@ -129,25 +142,25 @@ func (s *Store) DeleteInactivePortReservations(ctx context.Context) error {
 			_, execErr := conn.ExecContext(
 				ctx,
 				`DELETE FROM port_allocations
-				 WHERE protocol = ? AND address = ? AND port = ?
+				 WHERE protocol = ? AND ip = ? AND port = ?
 					AND owner_pid = ? AND owner_identity_time = ?
 					AND updated_at_unix_nano = ?`,
 				candidate.Protocol,
-				candidate.addressBytes,
+				portReservationIPBytes(candidate.IP),
 				candidate.Port,
 				candidate.OwnerProcess.Pid,
 				timeString(candidate.OwnerProcess.IdentityTime),
 				unixNano(candidate.UpdatedAt),
 			)
 			if execErr != nil {
-				return fmt.Errorf("could not delete inactive port reservation '%s/%s/%d': %w", candidate.Protocol, candidate.Address, candidate.Port, execErr)
+				return fmt.Errorf("could not delete inactive port reservation '%s/%s/%d': %w", candidate.Protocol, candidate.IP, candidate.Port, execErr)
 			}
 		}
 		return nil
 	})
 }
 
-func (s *Store) reservePort(ctx context.Context, request PortReservationRequest, reuseSameOwner bool) (*PortReservation, error) {
+func (s *Store) reservePort(ctx context.Context, request PortReservationRequest, updateIfExisting bool) (*PortReservation, error) {
 	normalizedRequest, requestErr := normalizePortReservationRequest(request)
 	if requestErr != nil {
 		return nil, requestErr
@@ -157,10 +170,10 @@ func (s *Store) reservePort(ctx context.Context, request PortReservationRequest,
 	var reservation *PortReservation
 	txErr := s.withImmediateTx(ctx, func(conn *sql.Conn) error {
 		requestKey := normalizedPortReservationKey{
-			protocol:     normalizedRequest.Protocol,
-			address:      normalizedRequest.Address,
-			addressBytes: normalizedRequest.addressBytes,
-			port:         normalizedRequest.Port,
+			protocol: normalizedRequest.Protocol,
+			ip:       normalizedRequest.IP,
+			ipBytes:  portReservationIPBytes(normalizedRequest.IP),
+			port:     normalizedRequest.Port,
 		}
 
 		conflictingReservations, conflictsErr := getConflictingPortReservations(ctx, conn, requestKey)
@@ -173,25 +186,25 @@ func (s *Store) reservePort(ctx context.Context, request PortReservationRequest,
 				return insertErr
 			}
 			var readErr error
-			reservation, _, readErr = getExactPortReservation(ctx, conn, normalizedRequest.Protocol, normalizedRequest.Address, normalizedRequest.Port)
+			reservation, _, readErr = getExactPortReservation(ctx, conn, normalizedRequest.Protocol, normalizedRequest.IP, normalizedRequest.Port)
 			return readErr
 		}
 
 		inactiveReservations := make([]*PortReservation, 0, len(conflictingReservations))
 		shouldUpdateExactReservation := false
 		for _, conflictingReservation := range conflictingReservations {
-			exactAddress := bytes.Equal(conflictingReservation.addressBytes, normalizedRequest.addressBytes)
+			exactIP := conflictingReservation.IP == normalizedRequest.IP
 			sameOwner := conflictingReservation.OwnerProcess.Pid == normalizedRequest.OwnerProcess.Pid &&
 				conflictingReservation.OwnerProcess.IdentityTime.Equal(normalizedRequest.OwnerProcess.IdentityTime)
-			if reuseSameOwner && sameOwner {
-				if exactAddress {
+			if updateIfExisting && sameOwner {
+				if exactIP {
 					shouldUpdateExactReservation = true
 					continue
 				}
 			}
 			active := resourceLeaseOwnerIsActive(conflictingReservation.OwnerProcess)
 			if !active {
-				if exactAddress {
+				if exactIP {
 					shouldUpdateExactReservation = true
 				} else {
 					inactiveReservations = append(inactiveReservations, conflictingReservation)
@@ -219,7 +232,7 @@ func (s *Store) reservePort(ctx context.Context, request PortReservationRequest,
 			}
 		}
 		var readErr error
-		reservation, _, readErr = getExactPortReservation(ctx, conn, normalizedRequest.Protocol, normalizedRequest.Address, normalizedRequest.Port)
+		reservation, _, readErr = getExactPortReservation(ctx, conn, normalizedRequest.Protocol, normalizedRequest.IP, normalizedRequest.Port)
 		return readErr
 	})
 	if txErr != nil {
@@ -230,7 +243,7 @@ func (s *Store) reservePort(ctx context.Context, request PortReservationRequest,
 }
 
 func normalizePortReservationRequest(request PortReservationRequest) (PortReservationRequest, error) {
-	key, keyErr := normalizePortReservationKey(request.Protocol, request.Address, request.Port)
+	key, keyErr := normalizePortReservationKey(request.Binding)
 	if keyErr != nil {
 		return PortReservationRequest{}, keyErr
 	}
@@ -240,58 +253,43 @@ func normalizePortReservationRequest(request PortReservationRequest) (PortReserv
 	}
 
 	return PortReservationRequest{
-		Protocol:     key.protocol,
-		Address:      key.address,
-		addressBytes: key.addressBytes,
-		Port:         key.port,
+		Binding: ports.Binding{
+			Protocol: key.protocol,
+			IP:       key.ip,
+			Port:     key.port,
+		},
 		OwnerProcess: normalizedOwner,
 	}, nil
 }
 
 type normalizedPortReservationKey struct {
-	protocol     string
-	address      string
-	addressBytes []byte
-	port         int32
+	protocol string
+	ip       netip.Addr
+	ipBytes  []byte
+	port     int32
 }
 
-func normalizePortReservationKey(protocol string, address string, port int32) (normalizedPortReservationKey, error) {
-	protocol = strings.ToUpper(strings.TrimSpace(protocol))
+func normalizePortReservationKey(binding ports.Binding) (normalizedPortReservationKey, error) {
+	protocol := strings.ToUpper(strings.TrimSpace(binding.Protocol))
 	if protocol == "" {
 		return normalizedPortReservationKey{}, fmt.Errorf("%w: port reservation protocol cannot be empty", ErrInvalidArgument)
 	}
-	addr, addressErr := parsePortReservationAddress(address)
-	if addressErr != nil {
-		return normalizedPortReservationKey{}, addressErr
+	if !binding.IP.IsValid() {
+		return normalizedPortReservationKey{}, fmt.Errorf("%w: port reservation ip cannot be empty", ErrInvalidArgument)
 	}
-	if port < 1 || port > 65535 {
+	if !ports.IsValidPort(int(binding.Port)) {
 		return normalizedPortReservationKey{}, fmt.Errorf("%w: port reservation port must be between 1 and 65535", ErrInvalidArgument)
 	}
-	addr = addr.Unmap()
+	addr := binding.IP.Unmap()
 	return normalizedPortReservationKey{
-		protocol:     protocol,
-		address:      addr.String(),
-		addressBytes: portReservationAddressBytes(addr),
-		port:         port,
+		protocol: protocol,
+		ip:       addr,
+		ipBytes:  portReservationIPBytes(addr),
+		port:     binding.Port,
 	}, nil
 }
 
-func parsePortReservationAddress(address string) (netip.Addr, error) {
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return netip.Addr{}, fmt.Errorf("%w: port reservation address cannot be empty", ErrInvalidArgument)
-	}
-	if strings.HasPrefix(address, "[") && strings.HasSuffix(address, "]") {
-		address = strings.TrimPrefix(strings.TrimSuffix(address, "]"), "[")
-	}
-	addr, parseErr := netip.ParseAddr(address)
-	if parseErr != nil {
-		return netip.Addr{}, fmt.Errorf("%w: port reservation address must be an IP address: %w", ErrInvalidArgument, parseErr)
-	}
-	return addr, nil
-}
-
-func portReservationAddressBytes(addr netip.Addr) []byte {
+func portReservationIPBytes(addr netip.Addr) []byte {
 	if addr.Is4() {
 		bytes := addr.As4()
 		return append([]byte(nil), bytes[:]...)
@@ -300,26 +298,18 @@ func portReservationAddressBytes(addr netip.Addr) []byte {
 	return append([]byte(nil), bytes[:]...)
 }
 
-func portReservationAddressFromBytes(addressBytes []byte) (string, error) {
-	addr, addrErr := portReservationAddrFromBytes(addressBytes)
-	if addrErr != nil {
-		return "", addrErr
-	}
-	return addr.String(), nil
-}
-
-func portReservationAddrFromBytes(addressBytes []byte) (netip.Addr, error) {
-	switch len(addressBytes) {
+func portReservationAddrFromBytes(ipBytes []byte) (netip.Addr, error) {
+	switch len(ipBytes) {
 	case ipv4AddressBytes:
 		var bytes [ipv4AddressBytes]byte
-		copy(bytes[:], addressBytes)
+		copy(bytes[:], ipBytes)
 		return netip.AddrFrom4(bytes), nil
 	case ipv6AddressBytes:
 		var bytes [ipv6AddressBytes]byte
-		copy(bytes[:], addressBytes)
+		copy(bytes[:], ipBytes)
 		return netip.AddrFrom16(bytes), nil
 	default:
-		return netip.Addr{}, fmt.Errorf("port reservation address has invalid byte length %d", len(addressBytes))
+		return netip.Addr{}, fmt.Errorf("port reservation ip has invalid byte length %d", len(ipBytes))
 	}
 }
 
@@ -332,19 +322,19 @@ type portReservationQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func getExactPortReservation(ctx context.Context, querier portReservationQuerier, protocol string, address string, port int32) (*PortReservation, bool, error) {
-	key, keyErr := normalizePortReservationKey(protocol, address, port)
+func getExactPortReservation(ctx context.Context, querier portReservationQuerier, protocol string, ip netip.Addr, port int32) (*PortReservation, bool, error) {
+	key, keyErr := normalizePortReservationKey(ports.Binding{Protocol: protocol, IP: ip, Port: port})
 	if keyErr != nil {
 		return nil, false, keyErr
 	}
 	row := querier.QueryRowContext(
 		ctx,
-		`SELECT protocol, address, port,
+		`SELECT protocol, ip, port,
 			owner_pid, owner_identity_time, updated_at_unix_nano
 		 FROM port_allocations
-		 WHERE protocol = ? AND address = ? AND port = ?`,
+		 WHERE protocol = ? AND ip = ? AND port = ?`,
 		key.protocol,
-		key.addressBytes,
+		key.ipBytes,
 		key.port,
 	)
 
@@ -353,7 +343,7 @@ func getExactPortReservation(ctx context.Context, querier portReservationQuerier
 		return nil, false, nil
 	}
 	if scanErr != nil {
-		return nil, false, fmt.Errorf("could not read port reservation '%s/%s/%d': %w", key.protocol, key.address, key.port, scanErr)
+		return nil, false, fmt.Errorf("could not read port reservation '%s/%s/%d': %w", key.protocol, key.ip, key.port, scanErr)
 	}
 	return reservation, true, nil
 }
@@ -361,7 +351,7 @@ func getExactPortReservation(ctx context.Context, querier portReservationQuerier
 func getConflictingPortReservations(ctx context.Context, querier portReservationQuerier, key normalizedPortReservationKey) ([]*PortReservation, error) {
 	rows, queryErr := querier.QueryContext(
 		ctx,
-		`SELECT protocol, address, port,
+		`SELECT protocol, ip, port,
 			owner_pid, owner_identity_time, updated_at_unix_nano
 		 FROM port_allocations
 		 WHERE protocol = ? AND port = ?`,
@@ -369,7 +359,7 @@ func getConflictingPortReservations(ctx context.Context, querier portReservation
 		key.port,
 	)
 	if queryErr != nil {
-		return nil, fmt.Errorf("could not list port reservations for '%s/%s/%d': %w", key.protocol, key.address, key.port, queryErr)
+		return nil, fmt.Errorf("could not list port reservations for '%s/%s/%d': %w", key.protocol, key.ip, key.port, queryErr)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -379,32 +369,32 @@ func getConflictingPortReservations(ctx context.Context, querier portReservation
 	for rows.Next() {
 		reservation, scanErr := scanPortReservation(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("could not read port reservation for '%s/%s/%d': %w", key.protocol, key.address, key.port, scanErr)
+			return nil, fmt.Errorf("could not read port reservation for '%s/%s/%d': %w", key.protocol, key.ip, key.port, scanErr)
 		}
-		if portReservationAddressesConflict(key.addressBytes, reservation.addressBytes) {
+		if portReservationIPsConflict(key.ipBytes, portReservationIPBytes(reservation.IP)) {
 			reservations = append(reservations, reservation)
 		}
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
-		return nil, fmt.Errorf("could not list port reservations for '%s/%s/%d': %w", key.protocol, key.address, key.port, rowsErr)
+		return nil, fmt.Errorf("could not list port reservations for '%s/%s/%d': %w", key.protocol, key.ip, key.port, rowsErr)
 	}
 
 	return reservations, nil
 }
 
-func portReservationAddressesConflict(requestedAddress []byte, reservedAddress []byte) bool {
-	if bytes.Equal(requestedAddress, reservedAddress) {
+func portReservationIPsConflict(requestedIP []byte, reservedIP []byte) bool {
+	if bytes.Equal(requestedIP, reservedIP) {
 		return true
 	}
-	if len(requestedAddress) != len(reservedAddress) {
+	if len(requestedIP) != len(reservedIP) {
 		return false
 	}
 
-	requestedAddr, requestedErr := portReservationAddrFromBytes(requestedAddress)
+	requestedAddr, requestedErr := portReservationAddrFromBytes(requestedIP)
 	if requestedErr != nil {
 		return false
 	}
-	reservedAddr, reservedErr := portReservationAddrFromBytes(reservedAddress)
+	reservedAddr, reservedErr := portReservationAddrFromBytes(reservedIP)
 	if reservedErr != nil {
 		return false
 	}
@@ -414,7 +404,7 @@ func portReservationAddressesConflict(requestedAddress []byte, reservedAddress [
 
 func scanPortReservation(row portReservationScanner) (*PortReservation, error) {
 	var reservation PortReservation
-	var addressBytes []byte
+	var ipBytes []byte
 	var port int64
 	var ownerPID int64
 	var ownerIdentityTime string
@@ -422,7 +412,7 @@ func scanPortReservation(row portReservationScanner) (*PortReservation, error) {
 
 	scanErr := row.Scan(
 		&reservation.Protocol,
-		&addressBytes,
+		&ipBytes,
 		&port,
 		&ownerPID,
 		&ownerIdentityTime,
@@ -431,15 +421,14 @@ func scanPortReservation(row portReservationScanner) (*PortReservation, error) {
 	if scanErr != nil {
 		return nil, scanErr
 	}
-	if port < 1 || port > 65535 {
+	if !ports.IsValidPort(int(port)) {
 		return nil, fmt.Errorf("port reservation port is out of range: %d", port)
 	}
-	address, addressErr := portReservationAddressFromBytes(addressBytes)
-	if addressErr != nil {
-		return nil, addressErr
+	ip, ipErr := portReservationAddrFromBytes(ipBytes)
+	if ipErr != nil {
+		return nil, ipErr
 	}
-	reservation.Address = address
-	reservation.addressBytes = append([]byte(nil), addressBytes...)
+	reservation.IP = ip
 	reservation.Port = int32(port)
 
 	ownerProcess, ownerErr := resourceLeaseOwnerFromDB(ownerPID, ownerIdentityTime)
@@ -455,19 +444,19 @@ func insertPortReservation(ctx context.Context, conn *sql.Conn, request PortRese
 	_, insertErr := conn.ExecContext(
 		ctx,
 		`INSERT INTO port_allocations(
-			protocol, address, port,
+			protocol, ip, port,
 			owner_pid, owner_identity_time, updated_at_unix_nano
 		 )
 		 VALUES(?, ?, ?, ?, ?, ?)`,
 		request.Protocol,
-		request.addressBytes,
+		portReservationIPBytes(request.IP),
 		request.Port,
 		request.OwnerProcess.Pid,
 		timeString(request.OwnerProcess.IdentityTime),
 		unixNano(now),
 	)
 	if insertErr != nil {
-		return fmt.Errorf("could not insert port reservation '%s/%s/%d': %w", request.Protocol, request.Address, request.Port, insertErr)
+		return fmt.Errorf("could not insert port reservation '%s/%s/%d': %w", request.Protocol, request.IP, request.Port, insertErr)
 	}
 	return nil
 }
@@ -477,16 +466,16 @@ func updatePortReservation(ctx context.Context, conn *sql.Conn, request PortRese
 		ctx,
 		`UPDATE port_allocations
 		 SET owner_pid = ?, owner_identity_time = ?, updated_at_unix_nano = ?
-		 WHERE protocol = ? AND address = ? AND port = ?`,
+		 WHERE protocol = ? AND ip = ? AND port = ?`,
 		request.OwnerProcess.Pid,
 		timeString(request.OwnerProcess.IdentityTime),
 		unixNano(now),
 		request.Protocol,
-		request.addressBytes,
+		portReservationIPBytes(request.IP),
 		request.Port,
 	)
 	if updateErr != nil {
-		return fmt.Errorf("could not update port reservation '%s/%s/%d': %w", request.Protocol, request.Address, request.Port, updateErr)
+		return fmt.Errorf("could not update port reservation '%s/%s/%d': %w", request.Protocol, request.IP, request.Port, updateErr)
 	}
 	return nil
 }
@@ -495,16 +484,16 @@ func deletePortReservation(ctx context.Context, conn *sql.Conn, reservation *Por
 	_, deleteErr := conn.ExecContext(
 		ctx,
 		`DELETE FROM port_allocations
-		 WHERE protocol = ? AND address = ? AND port = ?
+		 WHERE protocol = ? AND ip = ? AND port = ?
 			AND owner_pid = ? AND owner_identity_time = ?`,
 		reservation.Protocol,
-		reservation.addressBytes,
+		portReservationIPBytes(reservation.IP),
 		reservation.Port,
 		reservation.OwnerProcess.Pid,
 		timeString(reservation.OwnerProcess.IdentityTime),
 	)
 	if deleteErr != nil {
-		return fmt.Errorf("could not delete port reservation '%s/%s/%d': %w", reservation.Protocol, reservation.Address, reservation.Port, deleteErr)
+		return fmt.Errorf("could not delete port reservation '%s/%s/%d': %w", reservation.Protocol, reservation.IP, reservation.Port, deleteErr)
 	}
 	return nil
 }
@@ -513,16 +502,16 @@ func deleteExactPortReservation(ctx context.Context, conn *sql.Conn, request Por
 	_, deleteErr := conn.ExecContext(
 		ctx,
 		`DELETE FROM port_allocations
-		 WHERE protocol = ? AND address = ? AND port = ?
+		 WHERE protocol = ? AND ip = ? AND port = ?
 			AND owner_pid = ? AND owner_identity_time = ?`,
 		request.Protocol,
-		request.addressBytes,
+		portReservationIPBytes(request.IP),
 		request.Port,
 		request.OwnerProcess.Pid,
 		timeString(request.OwnerProcess.IdentityTime),
 	)
 	if deleteErr != nil {
-		return fmt.Errorf("could not delete port reservation '%s/%s/%d': %w", request.Protocol, request.Address, request.Port, deleteErr)
+		return fmt.Errorf("could not delete port reservation '%s/%s/%d': %w", request.Protocol, request.IP, request.Port, deleteErr)
 	}
 	return nil
 }
@@ -535,7 +524,7 @@ func (s *Store) inactivePortReservationCandidates(ctx context.Context) ([]PortRe
 
 	rows, queryErr := db.QueryContext(
 		ctx,
-		`SELECT protocol, address, port,
+		`SELECT protocol, ip, port,
 			owner_pid, owner_identity_time, updated_at_unix_nano
 		 FROM port_allocations`,
 	)

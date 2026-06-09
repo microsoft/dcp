@@ -8,6 +8,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"path/filepath"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/syncmap"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -51,10 +53,12 @@ func TestStopServiceReleasesProxyPortReservations(t *testing.T) {
 	r.serviceInfo.Store(serviceName, &serviceData{
 		proxies: []proxyInstanceData{
 			{
-				stopProxy:               func() { stopped = true },
-				portReservationProtocol: apiv1.TCP,
-				portReservationAddress:  address,
-				portReservationPort:     port,
+				stopProxy: func() { stopped = true },
+				portReservation: ports.Binding{
+					Protocol: string(apiv1.TCP),
+					IP:       netip.MustParseAddr(address),
+					Port:     port,
+				},
 			},
 		},
 	})
@@ -68,7 +72,7 @@ func TestStopServiceReleasesProxyPortReservations(t *testing.T) {
 	requirePortReleased(t, ctx, store, apiv1.TCP, address, port, owner)
 }
 
-func TestStopServiceMarksProxyDataStoppedWhenReservationReleaseFails(t *testing.T) {
+func TestStopServiceDoesNotStopProxyWhenReservationReleaseFails(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 10*time.Second)
 	defer cancel()
 	log := logr.Discard()
@@ -82,10 +86,12 @@ func TestStopServiceMarksProxyDataStoppedWhenReservationReleaseFails(t *testing.
 	r.serviceInfo.Store(serviceName, &serviceData{
 		proxies: []proxyInstanceData{
 			{
-				stopProxy:               func() { stopped = true },
-				portReservationProtocol: apiv1.TCP,
-				portReservationAddress:  networking.IPv4LocalhostDefaultAddress,
-				portReservationPort:     networking.InvalidPort,
+				stopProxy: func() { stopped = true },
+				portReservation: ports.Binding{
+					Protocol: string(apiv1.TCP),
+					IP:       netip.MustParseAddr(networking.IPv4LocalhostDefaultAddress),
+					Port:     networking.InvalidPort,
+				},
 			},
 		},
 	})
@@ -93,10 +99,10 @@ func TestStopServiceMarksProxyDataStoppedWhenReservationReleaseFails(t *testing.
 	change := r.stopService(ctx, serviceName, nil, log)
 
 	require.Equal(t, additionalReconciliationNeeded, change)
-	require.True(t, stopped)
+	require.False(t, stopped)
 	updatedServiceData, found := r.serviceInfo.Load(serviceName)
 	require.True(t, found)
-	require.True(t, updatedServiceData.proxiesStopped)
+	require.Len(t, updatedServiceData.proxies, 1)
 }
 
 func TestServiceDeletionReleasesEndpointPortReservations(t *testing.T) {
@@ -290,10 +296,8 @@ func reserveTestPort(
 ) {
 	t.Helper()
 
-	_, reserveErr := store.ReserveSpecificPort(ctx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
+	_, reserveErr := store.CreateOrUpdatePortReservation(ctx, statestore.PortReservationRequest{
+		Binding:      ports.Binding{Protocol: string(protocol), IP: netip.MustParseAddr(networking.ToStandaloneAddress(address)), Port: port},
 		OwnerProcess: owner,
 	})
 	require.NoError(t, reserveErr)
@@ -312,10 +316,8 @@ func requirePortReserved(
 
 	otherOwner := owner
 	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(time.Second)
-	_, reserveErr := store.ReservePort(ctx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
+	_, reserveErr := store.CreatePortReservation(ctx, statestore.PortReservationRequest{
+		Binding:      ports.Binding{Protocol: string(protocol), IP: netip.MustParseAddr(networking.ToStandaloneAddress(address)), Port: port},
 		OwnerProcess: otherOwner,
 	})
 	require.ErrorIs(t, reserveErr, statestore.ErrPortReservationHeld)
@@ -334,10 +336,8 @@ func requirePortReleased(
 
 	otherOwner := owner
 	otherOwner.IdentityTime = otherOwner.IdentityTime.Add(time.Second)
-	_, reserveErr := store.ReservePort(ctx, statestore.PortReservationRequest{
-		Protocol:     string(protocol),
-		Address:      address,
-		Port:         port,
+	_, reserveErr := store.CreatePortReservation(ctx, statestore.PortReservationRequest{
+		Binding:      ports.Binding{Protocol: string(protocol), IP: netip.MustParseAddr(networking.ToStandaloneAddress(address)), Port: port},
 		OwnerProcess: otherOwner,
 	})
 	require.NoError(t, reserveErr)

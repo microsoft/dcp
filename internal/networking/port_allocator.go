@@ -11,12 +11,13 @@ import (
 	"github.com/go-logr/logr"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/ports"
 )
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
 // Even if this method is called twice in a row, it should not return the same port.
 func GetFreePort(ctx context.Context, protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error) {
-	address, addressErr := normalizePortAllocationAddress(address)
+	address, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return 0, addressErr
 	}
@@ -28,14 +29,12 @@ func GetFreePort(ctx context.Context, protocol apiv1.PortProtocol, address strin
 	if !shouldFallback {
 		return 0, stateStoreErr
 	}
-	if stateStoreErr != nil {
-		log.V(1).Info("Warning: state store port allocation failed, falling back to MRU port allocation", "Error", stateStoreErr.Error())
-	}
+	log.V(1).Info("Warning: state store port allocation failed, falling back to MRU port allocation", "Error", stateStoreErr.Error())
 	return allocateRandomEphemeralPortWithMruFile(ctx, protocol, address, log)
 }
 
 func CheckPortAvailable(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
-	address, addressErr := normalizePortAllocationAddress(address)
+	address, addressErr := NormalizePortAllocationAddress(address)
 	if addressErr != nil {
 		return addressErr
 	}
@@ -53,13 +52,8 @@ func CheckPortAvailable(ctx context.Context, protocol apiv1.PortProtocol, addres
 	return checkPortAvailableWithMruFile(ctx, protocol, address, port, log)
 }
 
-func ReserveSpecificPort(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
-	address, addressErr := normalizePortAllocationAddress(address)
-	if addressErr != nil {
-		return addressErr
-	}
-
-	stateStoreErr, shouldFallback := reserveSpecificPortWithStateStore(ctx, protocol, address, port, log)
+func ReserveSpecificPort(ctx context.Context, binding ports.Binding, log logr.Logger) error {
+	stateStoreErr, shouldFallback := reserveSpecificPortWithStateStore(ctx, binding, log)
 	if stateStoreErr == nil {
 		return nil
 	}
@@ -72,21 +66,14 @@ func ReserveSpecificPort(ctx context.Context, protocol apiv1.PortProtocol, addre
 	return nil
 }
 
-func ReleaseSpecificPort(ctx context.Context, protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
-	address, addressErr := normalizePortAllocationAddress(address)
-	if addressErr != nil {
-		return addressErr
-	}
-
-	stateStoreErr, shouldFallback := releaseSpecificPortWithStateStore(ctx, protocol, address, port, log)
+func ReleaseSpecificPort(ctx context.Context, binding ports.Binding, log logr.Logger) error {
+	stateStoreErr, shouldFallback := releaseSpecificPortWithStateStore(ctx, binding, log)
 	if stateStoreErr == nil {
 		return nil
 	}
 	if !shouldFallback {
 		return stateStoreErr
 	}
-	if stateStoreErr != nil {
-		log.V(1).Info("Warning: state store port release failed, continuing without MRU release", "Error", stateStoreErr.Error())
-	}
-	return nil
+	log.V(1).Info("Warning: state store port release failed, falling back to MRU port release", "Error", stateStoreErr.Error())
+	return releaseSpecificPortWithMruFile(ctx, addrToAddressString(binding.IP), binding.Port, log)
 }

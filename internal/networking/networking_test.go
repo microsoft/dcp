@@ -164,18 +164,53 @@ func TestConfiguredPortAllocationRangesSubtractsEphemeralOverlap(t *testing.T) {
 	ranges, err := configuredPortAllocationRanges(false, log)
 
 	require.NoError(t, err)
-	for _, candidateRange := range ranges {
+	for _, candidateRange := range ranges.ranges {
 		require.True(t, candidateRange.End < ephemeralStart || candidateRange.Start > ephemeralEnd)
 	}
+}
+
+func TestIndexedPortRangesNormalizeOverlappingRanges(t *testing.T) {
+	t.Parallel()
+
+	ranges := newIndexedPortRanges([]portRange{
+		{Start: 26020, End: 26022},
+		{Start: 26010, End: 26015},
+		{Start: 26014, End: 26018},
+		{Start: 26030, End: 26030},
+		{Start: 26019, End: 26025},
+	})
+
+	require.Equal(t, 17, ranges.Len())
+	require.Equal(t, []portRange{
+		{Start: 26010, End: 26025},
+		{Start: 26030, End: 26030},
+	}, ranges.ranges)
+
+	candidates := []int32{}
+	for index := 0; index < ranges.Len(); index++ {
+		candidate, ok := ranges.PortAt(index)
+		require.True(t, ok)
+		candidates = append(candidates, candidate)
+	}
+
+	require.Equal(t, []int32{
+		26010, 26011, 26012, 26013, 26014, 26015, 26016, 26017, 26018,
+		26019, 26020, 26021, 26022, 26023, 26024, 26025, 26030,
+	}, candidates)
+
+	_, beforeRangeOk := ranges.PortAt(-1)
+	_, afterRangeOk := ranges.PortAt(ranges.Len())
+	require.False(t, beforeRangeOk)
+	require.False(t, afterRangeOk)
 }
 
 func TestPortAllocationCandidatesCoverRange(t *testing.T) {
 	t.Parallel()
 
-	ranges := []portRange{
+	ranges := newIndexedPortRanges([]portRange{
 		{Start: 26010, End: 26011},
 		{Start: 26020, End: 26022},
-	}
+	})
 
 	candidateIterator := newStateStorePortAllocationCandidateIterator(ranges, string(apiv1.TCP), IPv4LocalhostDefaultAddress)
 	candidates := []int32{}
@@ -189,6 +224,29 @@ func TestPortAllocationCandidatesCoverRange(t *testing.T) {
 
 	require.Len(t, candidates, 5)
 	require.ElementsMatch(t, []int32{26010, 26011, 26020, 26021, 26022}, candidates)
+}
+
+func TestPortAllocationCandidatesCoverOverlappingRangesOnce(t *testing.T) {
+	t.Parallel()
+
+	ranges := newIndexedPortRanges([]portRange{
+		{Start: 26010, End: 26015},
+		{Start: 26013, End: 26017},
+		{Start: 26020, End: 26021},
+	})
+
+	candidateIterator := newStateStorePortAllocationCandidateIterator(ranges, string(apiv1.TCP), IPv4LocalhostDefaultAddress)
+	candidates := []int32{}
+	for {
+		candidate, ok := candidateIterator.Next()
+		if !ok {
+			break
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	require.Len(t, candidates, 10)
+	require.ElementsMatch(t, []int32{26010, 26011, 26012, 26013, 26014, 26015, 26016, 26017, 26020, 26021}, candidates)
 }
 
 func TestPortAllocationCandidateStepCoversEveryIndex(t *testing.T) {
@@ -208,7 +266,7 @@ func TestPortAllocationCandidateStepCoversEveryIndex(t *testing.T) {
 func TestNormalizePortAllocationAddressUsesIPForLocalhost(t *testing.T) {
 	t.Parallel()
 
-	address, err := normalizePortAllocationAddress(Localhost)
+	address, err := NormalizePortAllocationAddress(Localhost)
 
 	require.NoError(t, err)
 	require.NotEqual(t, Localhost, address)
@@ -219,11 +277,11 @@ func TestNormalizePortAllocationAddressUsesIPForLocalhost(t *testing.T) {
 func TestNormalizePortAllocationAddressCanonicalizesIPs(t *testing.T) {
 	t.Parallel()
 
-	ipv4MappedAddress, ipv4MappedErr := normalizePortAllocationAddress("[::ffff:127.0.0.1]")
+	ipv4MappedAddress, ipv4MappedErr := NormalizePortAllocationAddress("[::ffff:127.0.0.1]")
 	require.NoError(t, ipv4MappedErr)
 	require.Equal(t, IPv4LocalhostDefaultAddress, ipv4MappedAddress)
 
-	ipv6Address, ipv6Err := normalizePortAllocationAddress("[0:0:0:0:0:0:0:1]")
+	ipv6Address, ipv6Err := NormalizePortAllocationAddress("[0:0:0:0:0:0:0:1]")
 	require.NoError(t, ipv6Err)
 	require.Equal(t, IPv6LocalhostDefaultAddress, ipv6Address)
 }
