@@ -311,6 +311,8 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	ptp, startErr := r.terminalProcessFactory(processCtx, r.pe, commandSpec)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process attached to a pseudo-terminal")
+		// Tear down the connection manager so the owned listen-mode socket file is removed promptly.
+		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
 		result.StartupError = startErr
@@ -328,6 +330,8 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			startLog.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
 		}
+		// Tear down the connection manager so the owned listen-mode socket file is removed promptly.
+		connMgr.Shutdown()
 		result.CompletionTimestamp = metav1.NowMicro()
 		result.ExeState = apiv1.ExecutableStateFailedToStart
 		result.StartupError = attachErr
@@ -347,7 +351,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	// Watch for process exit so we can deregister the run, tear down the PTY/ConnManager
 	// resources, and notify the run-change handler.
-	go r.watchTerminalRunExit(processCtx, runID, ptp, connMgr, runChangeHandler, startLog)
+	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
 	displayStartTime := process.StartTimeForProcess(ptp.PID)
 	result.RunID = runID
@@ -356,6 +360,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
 	result.ProcessIdentityTime = ptp.IdentityTime
 	result.StartWaitForRunCompletion = ptp.StartWaitForExit
+	result.TerminalSocketPath = connMgr.SocketPath()
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 
@@ -378,7 +383,6 @@ func (r *ProcessExecutableRunner) watchTerminalRunExit(
 	processCtx context.Context,
 	runID controllers.RunID,
 	ptp *termpty.PseudoTerminalProcess,
-	connMgr *termpty.ConnManager,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) {
@@ -399,19 +403,17 @@ func (r *ProcessExecutableRunner) watchTerminalRunExit(
 	if runState, found := r.runningProcesses.LoadAndDelete(runID); found {
 		// We are the first to observe the exit (no concurrent StopRun/ReleaseRun);
 		// own the resource cleanup. If StopRun/ReleaseRun already deleted the state,
-		// they also took care of closing the PTY and waiting on ConnManager — skip both.
+		// they also took care of closing the PTY and tearing down the ConnManager — skip both.
 		closeErr = closeProcessRunResources(runState)
 		if closeErr != nil {
 			log.Error(closeErr, "Failed to close terminal run resources after process exit", "RunID", runID)
 		}
 
-		// Wait for the ConnManager to fully shut down so socket-file cleanup is observable
-		// to callers (notably tests). ConnManager triggers its own shutdown when it observes
-		// the process exit, so this should resolve promptly.
-		select {
-		case <-connMgr.Done():
-		case <-processCtx.Done():
-		}
+		// Deterministically tear down the ConnManager and wait for it to finish so the
+		// owned listen-mode socket file is removed and the cleanup is observable to
+		// callers (notably tests). The ConnManager only observes process exit on its own
+		// after a client has connected, so an explicit shutdown is required here.
+		shutdownConnManagerAndWait(processCtx, runState, log)
 	}
 
 	combinedErr := errors.Join(exitInfo.Err, closeErr)
@@ -545,7 +547,7 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 
 	if found {
 		stopErr = errors.Join(stopErr, closeProcessRunResources(runState))
-		waitForConnManagerShutdown(ctx, runState, stopLog)
+		shutdownConnManagerAndWait(ctx, runState, stopLog)
 	}
 
 	if stopErr != nil {
@@ -570,22 +572,30 @@ func (r *ProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controll
 	if closeErr != nil {
 		log.Error(closeErr, "Could not close process run resources while releasing run", "RunID", runID)
 	}
-	waitForConnManagerShutdown(ctx, runState, log)
+	shutdownConnManagerAndWait(ctx, runState, log)
 	return closeErr
 }
 
-// waitForConnManagerShutdown waits for a terminal run's ConnManager to finish
-// shutting down (i.e. close its listener and any in-flight Serve loop, after
-// which its background goroutines have terminated). It is a no-op for
-// non-terminal runs. The wait is bounded by the supplied context so callers do
-// not block indefinitely on a misbehaving manager.
+// shutdownConnManagerAndWait deterministically tears down a terminal run's
+// ConnManager and waits for it to finish shutting down (i.e. close its listener
+// and any in-flight Serve loop, after which its background goroutines have
+// terminated). It is a no-op for non-terminal runs. The wait is bounded by the
+// supplied context so callers do not block indefinitely on a misbehaving manager.
 //
-// Note: ConnManager does not own the UDS socket file lifecycle, so the file
-// at SocketPath() is not removed as part of shutdown.
-func waitForConnManagerShutdown(ctx context.Context, runState *processRunState, log logr.Logger) {
+// Triggering the shutdown explicitly (rather than relying on process-exit
+// observation or lifetime-context cancellation) is required because the
+// ConnManager only observes process exit after a client has connected; on a
+// teardown where no client ever attached, the owned listen-mode socket file
+// would otherwise linger until the lifetime context is cancelled.
+//
+// Note: in listen mode ConnManager owns the UDS socket file and removes it
+// synchronously as part of its shutdown sequence; in connect mode the peer owns
+// the file.
+func shutdownConnManagerAndWait(ctx context.Context, runState *processRunState, log logr.Logger) {
 	if runState.connMgr == nil {
 		return
 	}
+	runState.connMgr.Shutdown()
 	select {
 	case <-runState.connMgr.Done():
 	case <-ctx.Done():
@@ -596,9 +606,8 @@ func waitForConnManagerShutdown(ctx context.Context, runState *processRunState, 
 // closeProcessRunResources releases the OS resources owned by a process run:
 // the stdout/stderr capture files (for non-terminal runs) and the PTY (for
 // terminal runs). It is safe to call multiple times. The ConnManager owned by
-// a terminal run is NOT closed here — its lifetime is governed by its parent
-// context and by process-exit observation; callers that need to observe its
-// shutdown should wait on connMgr.Done().
+// a terminal run is NOT closed here; teardown callers tear it down explicitly
+// via shutdownConnManagerAndWait.
 func closeProcessRunResources(runState *processRunState) error {
 	var closeErr error
 	for _, file := range []*os.File{runState.stdOutFile, runState.stdErrFile} {

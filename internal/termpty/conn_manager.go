@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/pkg/concurrency"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -30,6 +33,15 @@ const (
 
 	// reconnectMinInterval bounds how frequently the manager will re-dial the peer in connect mode.
 	reconnectMinInterval = 500 * time.Millisecond
+
+	// staleSocketProbeTimeout bounds the dial used to detect whether a file already present at a
+	// listen-mode socket path belongs to a live listener (which must not be disturbed) or is a
+	// stale leftover that can be reclaimed.
+	staleSocketProbeTimeout = 250 * time.Millisecond
+
+	// terminalSocketNamePrefix is prepended to the random suffix when DCP generates a listen-mode
+	// terminal socket path because the spec left UDSPath empty.
+	terminalSocketNamePrefix = "dcp-term-sock-"
 )
 
 // SocketMode selects how a ConnManager establishes the HMP v1 connection over its Unix domain socket.
@@ -88,6 +100,13 @@ type ConnManager struct {
 	// happens after any in-progress Serve has returned and the listener has
 	// been closed.
 	done chan struct{}
+
+	// lifetimeStopFuncCh carries the stop function returned by context.AfterFunc so that shutdown
+	// can unregister the lifetime-context callback, releasing the context's reference to this
+	// manager (otherwise managers that are shut down explicitly while the lifetime context is still
+	// live would accumulate until that context is cancelled). Buffered with capacity 1 and read with
+	// a non-blocking receive to stay race-free regardless of when the callback fires.
+	lifetimeStopFuncCh chan func() bool
 }
 
 // NewConnManager creates a connection manager that bridges HMP v1 client
@@ -98,6 +117,11 @@ type ConnManager struct {
 // In either case the manager will connect to- (SocketModeConnect)
 // or listen on- (SocketModeListen) the client socket immediately,
 // but the terminal data will flow only after the process is available.
+//
+// In listen mode socketPath may be empty, in which case the manager generates a
+// unique path in the DCP session/temp folder and owns the socket file (creating
+// it, reclaiming a stale leftover, and removing it on shutdown). The resolved
+// path is available via SocketPath(). In connect mode socketPath is required.
 func NewConnManager(
 	lifetimeCtx context.Context,
 	ptp *PseudoTerminalProcess,
@@ -110,7 +134,7 @@ func NewConnManager(
 	if lifetimeCtx == nil {
 		return nil, errors.New("lifetime context must not be nil")
 	}
-	if socketPath == "" {
+	if socketPath == "" && mode != SocketModeListen {
 		return nil, errors.New("socket path must not be empty")
 	}
 	// In eager mode the process must be valid up front; in attach-process mode
@@ -151,13 +175,27 @@ func createConnManager(
 ) (*ConnManager, error) {
 	var listener *net.UnixListener
 	if mode == SocketModeListen {
+		if socketPath == "" {
+			generatedPath, genErr := generateListenSocketPath()
+			if genErr != nil {
+				return nil, genErr
+			}
+			socketPath = generatedPath
+		}
+
+		// DCP owns the socket file in listen mode: reclaim a stale leftover from a previous run
+		// (without disturbing a live listener) before binding.
+		if prepErr := prepareListenSocketPath(socketPath); prepErr != nil {
+			return nil, prepErr
+		}
+
 		boundListener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
 		if listenErr != nil {
 			return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
 		}
 
-		// Socket file lifecycle is owned by the caller, not by ConnManager.
-		// Without this opt-out, net.UnixListener.Close() would unlink the path.
+		// The socket file is removed explicitly during shutdown (see shutdown()), so opt out of
+		// the listener's own unlink-on-close to keep removal ordering under our control.
 		boundListener.SetUnlinkOnClose(false)
 
 		listener = boundListener
@@ -177,6 +215,8 @@ func createConnManager(
 		cancelCtx:   cancelCtx,
 		ptpP:        concurrency.NewValuePromise[*PseudoTerminalProcess](),
 		done:        make(chan struct{}),
+
+		lifetimeStopFuncCh: make(chan func() bool, 1),
 	}
 	cm.shutdownOnce = sync.OnceFunc(cm.shutdown)
 
@@ -186,8 +226,69 @@ func createConnManager(
 		cm.log.V(1).Info("Terminal connection manager is listening", "SocketPath", socketPath)
 	}
 
-	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
+	cm.lifetimeStopFuncCh <- context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
 	return cm, nil
+}
+
+// generateListenSocketPath returns a unique terminal socket path in the DCP
+// session/temp folder, used when a listen-mode manager is created without an
+// explicit socket path.
+func generateListenSocketPath() (string, error) {
+	socketPath, err := osutil.CreateRandomSocketPath(usvc_io.DcpTempDir(), terminalSocketNamePrefix)
+	if err != nil {
+		return "", fmt.Errorf("could not generate a terminal socket path: %w", err)
+	}
+	return socketPath, nil
+}
+
+// prepareListenSocketPath makes the path ready for binding a listen-mode socket
+// that DCP owns. If a file already exists at the path it reclaims it, but only
+// when it is safe to do so: an active listener is never disturbed, and a
+// directory (or, on Unix, a non-socket file) is never removed.
+func prepareListenSocketPath(socketPath string) error {
+	info, lstatErr := os.Lstat(socketPath)
+	if errors.Is(lstatErr, os.ErrNotExist) {
+		return nil
+	}
+	if lstatErr != nil {
+		return fmt.Errorf("could not inspect existing terminal socket path %s: %w", socketPath, lstatErr)
+	}
+
+	if info.IsDir() {
+		return fmt.Errorf("terminal socket path %s is a directory", socketPath)
+	}
+
+	// Probe for a live listener. A successful dial means another peer owns an active socket here,
+	// which must never be disturbed. A dial that times out is ambiguous (it could be a live but
+	// slow/backlogged listener), so we also refuse to reclaim in that case. Only a fast failure
+	// (e.g. connection refused, which is what a stale socket with no listener returns on all
+	// platforms) is treated as a reclaimable leftover.
+	conn, dialErr := net.DialTimeout("unix", socketPath, staleSocketProbeTimeout)
+	if dialErr == nil {
+		_ = conn.Close()
+		return fmt.Errorf("terminal socket path %s is already in use by an active listener", socketPath)
+	}
+	var netErr net.Error
+	if errors.As(dialErr, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("terminal socket path %s exists and could not be confirmed stale (probe timed out): %w", socketPath, dialErr)
+	}
+
+	// On Unix a stale entry must be a socket before we remove it; on Windows AF_UNIX files do not
+	// report ModeSocket, so the dial probe above is the only reclaim guard.
+	if !osutil.IsWindows() && info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("terminal socket path %s exists and is not a socket", socketPath)
+	}
+
+	if removeErr := os.Remove(socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		return fmt.Errorf("could not remove stale terminal socket at %s: %w", socketPath, removeErr)
+	}
+	return nil
+}
+
+// ownsSocketFile reports whether the manager is responsible for the lifecycle of
+// the socket file (true in listen mode, where DCP creates and removes it).
+func (cm *ConnManager) ownsSocketFile() bool {
+	return cm.socketMode == SocketModeListen
 }
 
 // validatePtp checks that a PseudoTerminalProcess is usable by a ConnManager.
@@ -221,10 +322,18 @@ func (cm *ConnManager) AttachProcess(ptp *PseudoTerminalProcess) error {
 	return nil
 }
 
-// SocketPath returns the filesystem path of the Unix domain socket the
-// manager is (or was) listening on.
+// SocketPath returns the filesystem path of the Unix domain socket the manager
+// is (or was) listening on (or, in connect mode, dialing). When listen mode was
+// given an empty path at construction, this returns the path DCP generated.
 func (cm *ConnManager) SocketPath() string {
 	return cm.socketPath
+}
+
+// Shutdown deterministically tears down the manager: it terminates any active
+// Serve loop or pending dial and, in listen mode, removes the socket file and
+// closes the listener. It is idempotent and safe to call from any goroutine.
+func (cm *ConnManager) Shutdown() {
+	cm.shutdownOnce()
 }
 
 // Done returns a channel that is closed once the manager has fully
@@ -459,16 +568,33 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 // shutdown() is the manager's idempotent shutdown sequence. It cancels the
 // internal context (which terminates any in-progress Serve loop or pending
 // dial, and the underlying Hmp1Server's PTY reader worker) and, in listen mode,
-// closes the listener (which unblocks Accept). The socket file at socketPath is
-// intentionally left in place — in listen mode the caller owns its lifecycle,
-// and in connect mode the peer owns it.
+// removes the socket file (which DCP owns) and closes the listener (which
+// unblocks Accept). The socket file is removed before the listener is closed so
+// we only ever delete the file we bound, never one another owner may recreate
+// in the close→remove window. In connect mode the peer owns the socket file and
+// we leave it in place.
 // Note: cm.done is closed when connLoop() exits.
 func (cm *ConnManager) shutdown() {
 	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
 
 	cm.cancelCtx()
 
+	// Release the lifetime-context callback registration so the context no longer references this
+	// manager. The non-blocking receive copes with shutdown being driven by the callback itself
+	// (in which case the stop func may not be enqueued yet and would be a no-op anyway).
+	select {
+	case stop := <-cm.lifetimeStopFuncCh:
+		stop()
+	default:
+	}
+
 	if cm.listener != nil {
+		if cm.ownsSocketFile() {
+			if removeErr := os.Remove(cm.socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				cm.log.V(1).Info("Removing terminal socket file failed", "error", removeErr.Error())
+			}
+		}
+
 		if closeErr := cm.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
 			cm.log.V(1).Info("Closing terminal socket listener failed", "error", closeErr.Error())
 		}

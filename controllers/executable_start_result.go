@@ -37,6 +37,9 @@ type ExecutableStartResult struct {
 	StdOutFile string
 	StdErrFile string
 
+	// Filesystem path of the terminal HMP v1 Unix domain socket, when the Executable has a terminal.
+	TerminalSocketPath string
+
 	// Timestamp for when the startup attempt was completed
 	CompletionTimestamp metav1.MicroTime
 
@@ -95,6 +98,10 @@ func (res *ExecutableStartResult) Equal(other *ExecutableStartResult) bool {
 		return false
 	}
 
+	if res.TerminalSocketPath != other.TerminalSocketPath {
+		return false
+	}
+
 	if !osutil.MicroEqual(res.CompletionTimestamp, other.CompletionTimestamp) {
 		return false
 	}
@@ -126,6 +133,7 @@ func (res *ExecutableStartResult) applyTo(ri *ExecutableRunInfo) {
 	ri.RunID = res.RunID
 	ri.StdOutFile = res.StdOutFile
 	ri.StdErrFile = res.StdErrFile
+	ri.TerminalSocketPath = res.TerminalSocketPath
 	ri.StartupTimestamp = res.CompletionTimestamp
 	ri.ProcessIdentityTime = res.ProcessIdentityTime
 	if res.ExeState == apiv1.ExecutableStateFinished {
@@ -154,6 +162,7 @@ func (res *ExecutableStartResult) Clone() *ExecutableStartResult {
 		ExitCode:                  pointers.Duplicate(res.ExitCode),
 		StdOutFile:                res.StdOutFile,
 		StdErrFile:                res.StdErrFile,
+		TerminalSocketPath:        res.TerminalSocketPath,
 		CompletionTimestamp:       res.CompletionTimestamp,
 		ProcessIdentityTime:       res.ProcessIdentityTime,
 		StartupError:              res.StartupError,
@@ -202,6 +211,11 @@ func (res *ExecutableStartResult) UpdateFrom(other *ExecutableStartResult) bool 
 		updated = true
 	}
 
+	if other.TerminalSocketPath != "" && res.TerminalSocketPath != other.TerminalSocketPath {
+		res.TerminalSocketPath = other.TerminalSocketPath
+		updated = true
+	}
+
 	updated = setTimestampIfAfterOrUnknown(other.CompletionTimestamp, &res.CompletionTimestamp) || updated
 
 	if !other.ProcessIdentityTime.IsZero() && !res.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
@@ -227,13 +241,14 @@ func (res *ExecutableStartResult) String() string {
 		return "{}"
 	}
 
-	return fmt.Sprintf("{exeState: %s, pid: %v, runID: %s, exitCode: %s, stdOutFile: %s, stdErrFile: %s, startupCompletedTimestamp: %s, processIdentityTime: %s, startupError: %s}",
+	return fmt.Sprintf("{exeState: %s, pid: %v, runID: %s, exitCode: %s, stdOutFile: %s, stdErrFile: %s, terminalSocketPath: %s, startupCompletedTimestamp: %s, processIdentityTime: %s, startupError: %s}",
 		res.ExeState,
 		logger.IntPtrValToString(res.Pid),
 		logger.FriendlyString(string(res.RunID)),
 		logger.IntPtrValToString(res.ExitCode),
 		logger.FriendlyString(res.StdOutFile),
 		logger.FriendlyString(res.StdErrFile),
+		logger.FriendlyString(res.TerminalSocketPath),
 		logger.FriendlyMetav1Timestamp(res.CompletionTimestamp),
 		logger.FriendlyString(process.FormatIdentityTime(res.ProcessIdentityTime)),
 		logger.FriendlyErrorString(res.StartupError),
