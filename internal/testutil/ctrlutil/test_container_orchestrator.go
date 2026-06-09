@@ -34,6 +34,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/pubsub"
+	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -76,12 +77,23 @@ type TestContainerOrchestrator struct {
 	createFiles             map[string][]*containerCreateFile
 	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
+	attachHandler           ContainerAttachHandler
 	socketServer            *http.Server
 	socketFilePath          string
 	mutex                   *sync.Mutex
 	lifetimeCtx             context.Context
 	log                     logr.Logger
 }
+
+// ContainerAttachHandler is the signature used by dispatchers/tests to provide
+// terminal attach behavior for the TestContainerOrchestrator. It is invoked
+// with the test container's resolved name (not its ID) to make per-test
+// routing convenient.
+type ContainerAttachHandler func(
+	ctx context.Context,
+	containerName string,
+	opts containers.AttachContainerOptions,
+) (*termpty.PseudoTerminalProcess, error)
 
 type containerExit struct {
 	exitCode int32
@@ -653,6 +665,9 @@ type testContainer struct {
 	healthcheck    containers.ContainerHealthcheck
 	stdoutLog      *testutil.BufferWriter
 	stderrLog      *testutil.BufferWriter
+
+	// Tracks attached terminal processes.
+	terminalProcesses []*termpty.PseudoTerminalProcess
 }
 
 type testImage struct {
@@ -1629,6 +1644,93 @@ func (to *TestContainerOrchestrator) ExecContainer(ctx context.Context, options 
 	return exitCodeChan, nil
 }
 
+// SetContainerAttachHandler installs the handler invoked from AttachContainer.
+// Tests usually wire this via the ContainerAttachFactoryDispatcher; the
+// underlying setter exists separately so non-dispatcher tests can install a
+// handler directly. It is safe to call concurrently with AttachContainer.
+func (to *TestContainerOrchestrator) SetContainerAttachHandler(handler ContainerAttachHandler) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	to.attachHandler = handler
+}
+
+func (to *TestContainerOrchestrator) AttachContainer(
+	ctx context.Context,
+	options containers.AttachContainerOptions,
+) (*termpty.PseudoTerminalProcess, error) {
+	to.mutex.Lock()
+
+	if ctx.Err() != nil {
+		to.mutex.Unlock()
+		return nil, ctx.Err()
+	}
+
+	if !to.runtimeHealthy {
+		to.mutex.Unlock()
+		return nil, errRuntimeUnhealthy
+	}
+
+	var foundContainer *testContainer
+	for _, container := range to.containers {
+		if container.matches(options.Container) {
+			foundContainer = container
+			break
+		}
+	}
+
+	if foundContainer == nil {
+		to.mutex.Unlock()
+		return nil, containers.ErrNotFound
+	}
+
+	if foundContainer.Status != containers.ContainerStatusRunning {
+		to.mutex.Unlock()
+		return nil, fmt.Errorf("container '%s' is not running and cannot be attached to", foundContainer.Name)
+	}
+
+	handler := to.attachHandler
+	containerName := foundContainer.Name
+	to.mutex.Unlock()
+
+	if handler == nil {
+		return nil, fmt.Errorf("no attach handler is registered on the TestContainerOrchestrator")
+	}
+
+	ptp, err := handler(ctx, containerName, options)
+	if err != nil {
+		return nil, err
+	}
+
+	if ptp != nil && ptp.ExitHandler != nil {
+		// Record the attached terminal process so test transitions that simulate
+		// container exit / stop / removal can deliver the exit signal/code.
+		to.mutex.Lock()
+		if liveContainer, stillThere := to.containers[foundContainer.ID]; stillThere {
+			liveContainer.terminalProcesses = append(liveContainer.terminalProcesses, ptp)
+		}
+		to.mutex.Unlock()
+	}
+
+	return ptp, nil
+}
+
+func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testContainer, exitCode int32) {
+	if len(container.terminalProcesses) == 0 {
+		return
+	}
+	terminalProcesses := container.terminalProcesses
+	container.terminalProcesses = nil
+	for _, tproc := range terminalProcesses {
+		select {
+		case <-tproc.ExitHandler.Exited():
+			// Already fired by another path (e.g. TestProcessExecutor.StopProcess).
+			continue
+		default:
+			tproc.ExitHandler.OnProcessExited(tproc.PID, exitCode, nil)
+		}
+	}
+}
+
 func (to *TestContainerOrchestrator) StopContainers(ctx context.Context, options containers.StopContainersOptions) ([]string, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -1708,6 +1810,10 @@ func (to *TestContainerOrchestrator) doStopContainer(ctx context.Context, contai
 	container.FinishedAt = time.Now().UTC()
 	container.stdoutLog.Close()
 	container.stderrLog.Close()
+
+	// Mirror production: container stopping causes any attach process to exit,
+	// which in turn drives the terminal bridge shutdown.
+	to.fireAttachExitHandlers(container, container.ExitCode)
 
 	// Notify listeners that we've stopped the container
 	to.containerEventsWatcher.Notify(containers.EventMessage{
@@ -1801,6 +1907,11 @@ func (to *TestContainerOrchestrator) doRemoveContainer(ctx context.Context, cont
 	if container.Status != containers.ContainerStatusExited && container.Status != containers.ContainerStatusCreated && container.Status != containers.ContainerStatusDead {
 		return "", fmt.Errorf("container is not in a state to be removed")
 	}
+
+	// Best-effort: if a test removes a container without first stopping it (or
+	// while attach handlers are still recorded), still drive the bridge
+	// shutdown so the terminal teardown path runs.
+	to.fireAttachExitHandlers(container, -1)
 
 	delete(to.containers, container.ID)
 
@@ -2129,6 +2240,10 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 			container.FinishedAt = time.Now().UTC()
 			container.stdoutLog.Close()
 			container.stderrLog.Close()
+
+			// Mirror production: simulating container exit also drives
+			// terminate of any attached terminal session.
+			to.fireAttachExitHandlers(container, exitCode)
 
 			to.containers[container.ID] = container
 

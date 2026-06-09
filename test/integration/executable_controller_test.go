@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"golang.org/x/net/nettest"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	wait "k8s.io/apimachinery/pkg/util/wait"
@@ -34,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -3136,6 +3138,99 @@ func TestExecutableSystemLogsOnStartupFailure(t *testing.T) {
 	}
 	logsErr := waitForObjectLogs(ctx, updatedExe, opts, expectedLines, nil)
 	require.NoError(t, logsErr, "System logs should be available for Executable '%s' that failed to start", exeName)
+}
+
+// Verify that stdout and stderr log requests for an Executable that is
+// configured to use a pseudo-terminal fail with a BadRequest error, while
+// system logs remain accessible.
+func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "test-executable-logs-rejected-terminal"
+
+	errMsg := fmt.Sprintf("simulated startup failure for Executable '%s'", exeName)
+	socketPath := pickTerminalSocketPath(t)
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + exeName,
+			// The Executable controller routes Spec.Terminal-backed Executables
+			// through a separate terminal-process factory. The UDSPath does not
+			// need to refer to a real socket — this test only exercises the
+			// apiserver log streaming path.
+			Terminal: &apiv1.TerminalSpec{
+				UDSPath: socketPath,
+				Cols:    80,
+				Rows:    24,
+			},
+		},
+	}
+
+	// Route the terminal-backed Executable through the shared test process
+	// executor so the AutoExecution below can simulate the startup failure.
+	_ = terminalProcessFactoryDispatcher.InstallHandler(t, exe.Spec.ExecutablePath, func(
+		ctx context.Context,
+		pe process.Executor,
+		spec *termpty.CommandSpec,
+	) (*termpty.PseudoTerminalProcess, error) {
+		_, _, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
+		return nil, startErr
+	})
+
+	// Force the Executable into FailedToStart so the system log file exists
+	// and we can verify it is still readable for a terminal-backed Executable.
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		StartupError: func(_ *internal_testutil.ProcessExecution) error {
+			return errors.New(errMsg)
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s' with Spec.Terminal set...", exeName)
+	createErr := client.Create(ctx, exe)
+	require.NoError(t, createErr, "Could not create Executable '%s'", exeName)
+
+	t.Logf("Waiting for Executable '%s' to reach 'failed to start' state...", exeName)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart, nil
+	})
+
+	// Verify stdout/stderr (and the default empty source, which maps to stdout)
+	// log requests fail with BadRequest because the Executable uses a terminal.
+	rejectedSources := []string{
+		"",
+		string(apiv1.LogStreamSourceStdout),
+		string(apiv1.LogStreamSourceStderr),
+	}
+	for _, src := range rejectedSources {
+		t.Logf("Verifying log stream request for source %q is rejected for terminal-backed Executable '%s'...", src, exeName)
+		opts := apiv1.LogOptions{Source: src}
+		stream, streamErr := openLogStream(ctx, updatedExe, opts, nil)
+		if stream != nil {
+			_ = stream.Close()
+		}
+		require.Errorf(t, streamErr, "Expected log stream request for source %q to fail for terminal-backed Executable '%s'", src, exeName)
+		require.Truef(t, apierrors.IsBadRequest(streamErr), "Expected BadRequest error for source %q on terminal-backed Executable '%s', got: %v", src, exeName, streamErr)
+	}
+
+	t.Logf("Verifying system logs are still available for terminal-backed Executable '%s'...", exeName)
+	sysOpts := apiv1.LogOptions{
+		Follow: false,
+		Source: string(apiv1.LogStreamSourceSystem),
+	}
+	logsErr := waitForObjectLogs(ctx, updatedExe, sysOpts, [][]byte{[]byte(errMsg)}, nil)
+	require.NoError(t, logsErr, "System logs should remain available for terminal-backed Executable '%s'", exeName)
 }
 
 // Verify that logs in follow mode end when Executable is deleted

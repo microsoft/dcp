@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/termpty"
 	"github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -66,6 +67,15 @@ func (r *TestProcessExecutableRunner) SetAfterStartRunHook(hook func(*apiv1.Exec
 	defer r.m.Unlock()
 
 	r.afterStartRun = hook
+}
+
+// SetTerminalProcessFactory overrides the function used by the wrapped
+// ProcessExecutableRunner to spawn a process attached to a pseudo-terminal.
+// Tests use this to substitute a TestPty-backed implementation.
+func (r *TestProcessExecutableRunner) SetTerminalProcessFactory(factory termpty.TerminalProcessFactory) {
+	if inner, ok := r.inner.(*exerunners.ProcessExecutableRunner); ok {
+		inner.SetTerminalProcessFactory(factory)
+	}
 }
 
 func (r *TestProcessExecutableRunner) StartRun(

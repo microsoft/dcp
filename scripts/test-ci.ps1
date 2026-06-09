@@ -12,7 +12,7 @@
 #
 # The sequence implemented here mirrors, for the non-make-4.4 TEST_PREREQS:
 #   generate-grpc build-dcp build-dcptun-containerexe
-#   delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe
+#   delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe termchild-tool
 # followed by `go test ./... -coverprofile cover.out -count 1`.
 #
 # The Windows CI job runs with CGO_ENABLED=0, so no C toolchain (mingw/gcc) is
@@ -165,10 +165,11 @@ function Build-TestPrereqs {
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcp.exe') -Package './cmd/dcp'
     # build-dcptun-containerexe (Linux binary, used inside containers)
     Invoke-GoBuild -Output (Join-Path $OutputBin 'dcptun_c') -Package './cmd/dcptun' -TargetGoos 'linux'
-    # delay-tool / lfwriter-tool / parrot-tool
+    # delay-tool / lfwriter-tool / parrot-tool / termchild-tool
     Invoke-GoBuild -Output (Join-Path $ToolBin 'delay.exe') -Package 'github.com/microsoft/dcp/test/delay'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'lfwriter.exe') -Package 'github.com/microsoft/dcp/test/lfwriter'
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot.exe') -Package 'github.com/microsoft/dcp/test/parrot'
+    Invoke-GoBuild -Output (Join-Path $ToolBin 'termchild.exe') -Package 'github.com/microsoft/dcp/test/termchild'
     # parrot-tool-containerexe (Linux binary)
     Invoke-GoBuild -Output (Join-Path $ToolBin 'parrot_c') -Package 'github.com/microsoft/dcp/test/parrot' -TargetGoos 'linux'
 }

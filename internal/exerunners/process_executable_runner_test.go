@@ -225,7 +225,7 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	processExecutor := testutil.NewTestProcessExecutor(ctx)
 	runner := NewProcessExecutableRunner(processExecutor)
 	runner.disableConsoleStop = true // We are just simulating the run, so stopping via dcpproc/console would fail.
-	pid, identityTime, _, startErr := processExecutor.StartProcess(ctx, exec.Command("./delay", "--delay=1s"), nil, process.CreationFlagsNone)
+	pid, identityTime, _, startErr := processExecutor.StartProcess(ctx, exec.Command("./delay", "--delay=1s"), nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startErr)
 	adoptedRunID := controllers.RunID(pidToRunID(pid + 1))
 	changeHandler := newRecordingRunChangeHandler()

@@ -6,12 +6,15 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
 	cmds "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 var (
@@ -62,4 +65,13 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 	}
 
 	return rootCmd, nil
+}
+
+// isMonitorProcessGoneErr reports whether the error returned by cmds.MonitorPid
+// indicates that the monitored process is no longer running (either it has already
+// exited, no longer exists, or its PID has been reused by an unrelated process).
+func isMonitorProcessGoneErr(err error) bool {
+	return errors.Is(err, os.ErrProcessDone) ||
+		errors.Is(err, process.ErrorProcessNotFound) ||
+		errors.Is(err, process.ErrProcessIdentityMismatch)
 }

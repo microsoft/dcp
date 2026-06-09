@@ -44,14 +44,16 @@ import (
 )
 
 var (
-	testProcessExecutor         *internal_testutil.TestProcessExecutor
-	testProcessExecutableRunner *ctrl_testutil.TestProcessExecutableRunner
-	ideRunner                   *ctrl_testutil.TestIdeRunner
-	client                      ctrl_client.Client
-	restClient                  *clientgorest.RESTClient
-	containerOrchestrator       *ctrl_testutil.TestContainerOrchestrator
-	testStateStore              *statestore.Store
-	testResourceLeaseOwner      process.ProcessTreeItem
+	testProcessExecutor              *internal_testutil.TestProcessExecutor
+	testProcessExecutableRunner      *ctrl_testutil.TestProcessExecutableRunner
+	terminalProcessFactoryDispatcher *ctrl_testutil.TerminalProcessFactoryDispatcher
+	containerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
+	ideRunner                        *ctrl_testutil.TestIdeRunner
+	client                           ctrl_client.Client
+	restClient                       *clientgorest.RESTClient
+	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
+	testStateStore                   *statestore.Store
+	testResourceLeaseOwner           process.ProcessTreeItem
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
@@ -70,6 +72,8 @@ func TestMain(m *testing.M) {
 	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
 	testProcessExecutableRunner = teInfo.TestProcessExecutableRunner
+	terminalProcessFactoryDispatcher = teInfo.TerminalProcessFactoryDispatcher
+	containerAttachFactoryDispatcher = teInfo.ContainerAttachFactoryDispatcher
 	ideRunner = teInfo.TestIdeRunner
 	testStateStore = teInfo.StateStore
 	testResourceLeaseOwner = teInfo.ResourceLeaseOwner

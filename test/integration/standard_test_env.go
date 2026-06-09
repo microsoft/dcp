@@ -36,9 +36,11 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
-	StateStore         *statestore.Store
-	ResourceLeaseOwner process.ProcessTreeItem
-	Log                logr.Logger
+	TerminalProcessFactoryDispatcher *ctrl_testutil.TerminalProcessFactoryDispatcher
+	ContainerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
+	StateStore                       *statestore.Store
+	ResourceLeaseOwner               process.ProcessTreeItem
+	Log                              logr.Logger
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -86,7 +88,17 @@ func StartTestEnvironment(
 	})
 
 	exeRunner := ctrlutil.NewTestProcessExecutableRunner(pex)
+	terminalDispatcher := ctrl_testutil.NewTerminalProcessFactoryDispatcher(exeRunner)
 	ir := ctrl_testutil.NewTestIdeRunner(ctx)
+
+	// Wire a container attach dispatcher onto the TestContainerOrchestrator if
+	// the API server created one. With a real container orchestrator (e.g. in
+	// advanced_test_env.go) this stays nil; per-test container terminal tests
+	// must request the standard environment to use this hook.
+	var containerAttachDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
+	if tco, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator); ok {
+		containerAttachDispatcher = ctrl_testutil.NewContainerAttachFactoryDispatcher(tco)
+	}
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
@@ -279,13 +291,15 @@ func StartTestEnvironment(
 	}()
 
 	teInfo := &TestEnvironmentInfo{
-		TestProcessExecutor:         pex,
-		TestProcessExecutableRunner: exeRunner,
-		TestIdeRunner:               ir,
-		TestTunnelControlClient:     tcc,
-		StateStore:                  stateStore,
-		ResourceLeaseOwner:          leaseOwner,
-		Log:                         log,
+		TestProcessExecutor:              pex,
+		TestProcessExecutableRunner:      exeRunner,
+		TestIdeRunner:                    ir,
+		TestTunnelControlClient:          tcc,
+		TerminalProcessFactoryDispatcher: terminalDispatcher,
+		ContainerAttachFactoryDispatcher: containerAttachDispatcher,
+		StateStore:                       stateStore,
+		ResourceLeaseOwner:               leaseOwner,
+		Log:                              log,
 	}
 	return serverInfo, teInfo, nil
 }

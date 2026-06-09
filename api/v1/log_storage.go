@@ -43,6 +43,15 @@ const (
 // ResourceLogStreamFactory is an entity that knows how to stream logs for a given resource.
 // +kubebuilder:object:generate=false
 type ResourceLogStreamer interface {
+	// Preflight is called synchronously by the LogStorage before any streaming goroutine is launched.
+	// It offers an opportunity for a streamer to surface a proper Kubernetes API error to the client,
+	// because once StreamLogs starts running its results are delivered through an io.Pipe
+	// whose (successful) HTTP response status has already been committed.
+	// Implementations should only perform cheap, side-effect-free checks here
+	// (e.g. validating that the requested log source is compatible with the resource's configuration).
+	// Returning nil allows streaming to proceed; returning an error short-circuits the request.
+	Preflight(obj apiserver_resource.Object, opts *LogOptions) error
+
 	// StreamLogs returns a boolean indicating if the logs are ready to be streamed, a channel that will be closed when the logs are done streaming, and an error if one occurred.
 	StreamLogs(ctx context.Context, dest io.Writer, obj apiserver_resource.Object, opts *LogOptions, log logr.Logger) (ResourceStreamStatus, <-chan struct{}, error)
 
@@ -445,6 +454,10 @@ func (ls *LogStorage) resourceStreamerFactory(resourceName string, options *LogO
 		apiObj, isAPIObj := obj.(apiserver_resource.Object)
 		if !isAPIObj {
 			return nil, false, "", apierrors.NewInternalError(fmt.Errorf("parent storage returned object of wrong type: %s", obj.GetObjectKind().GroupVersionKind().String()))
+		}
+
+		if preflightErr := ls.logStreamer.Preflight(apiObj, options); preflightErr != nil {
+			return nil, false, "", preflightErr
 		}
 
 		log := contextdata.GetContextLogger(ctx)

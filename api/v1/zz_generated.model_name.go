@@ -356,6 +356,11 @@ func (in ServiceStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in TerminalSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.TerminalSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in TunnelConfiguration) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.TunnelConfiguration"
 }
