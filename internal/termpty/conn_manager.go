@@ -442,7 +442,12 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 		Log:         cm.log,
 	})
 	if serveErr != nil && !errors.Is(serveErr, context.Canceled) {
-		cm.log.Error(serveErr, "HMP1 Serve returned an error")
+		if isExpectedClientDisconnect(serveErr) {
+			// The client closed or dropped the connection.
+			// This is a normal terminal-viewer lifecycle event, not a server failure.
+		} else {
+			cm.log.Error(serveErr, "HMP1 Serve returned an error")
+		}
 	}
 
 	serveCancel()
