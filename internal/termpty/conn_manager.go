@@ -91,9 +91,7 @@ type ConnManager struct {
 	// Runs shutdown code at most once.
 	shutdownOnce func()
 
-	// done is closed when the accept loop has fully terminated, which
-	// happens after any in-progress Serve has returned and the listener has
-	// been closed.
+	// done is closed when the ConnManager is fully shut down.
 	done chan struct{}
 }
 
@@ -146,10 +144,7 @@ func NewConnManager(
 	} else {
 		cm.ptpP.Set(ptp)
 		go cm.watchProcessExit()
-		go func() {
-			defer close(cm.done)
-			cm.serveLoop(time.Time{})
-		}()
+		go cm.serveLoop(time.Time{})
 		return cm, nil
 	}
 }
@@ -322,8 +317,6 @@ func (cm *ConnManager) watchProcessExit() {
 // process to be supplied via AttachProcess, then serves the warmed connection and
 // continues into the normal connection-serving loop.
 func (cm *ConnManager) prepareAndServe() {
-	defer close(cm.done)
-
 	conn, err := cm.nextConn()
 	if err != nil {
 		// Shutting down before any client connection could be established.
@@ -526,9 +519,9 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 
 // shutdown() is the manager's shutdown sequence.
 // Idempotecy is guaranteed via wrapping the method in a sync.Once.
-// Note: cm.done is closed when connLoop() exits.
 func (cm *ConnManager) shutdown() {
-	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
+	cm.log.V(1).Info("Shutting down terminal connection manager...", "SocketPath", cm.socketPath)
+	defer close(cm.done)
 
 	// Cancels HMP1 server and any data exchange with the client.
 	cm.cancelCtx()
