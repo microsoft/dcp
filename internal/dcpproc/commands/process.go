@@ -6,8 +6,6 @@
 package commands
 
 import (
-	"errors"
-	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -68,9 +66,13 @@ func monitorProcess(log logr.Logger) func(cmd *cobra.Command, args []string) err
 		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, log)
 		defer monitorCtxCancel()
 		if monitorCtxErr != nil {
-			if errors.Is(monitorCtxErr, os.ErrProcessDone) {
-				// If the monitor process is already terminated, stop the service immediately
-				log.Info("Monitored process already exited, shutting down child process...")
+			if isMonitorProcessGoneErr(monitorCtxErr) {
+				// If the monitor process is already gone (either exited cleanly, no longer exists, or its PID
+				// has been reused by an unrelated process), shut down the child process immediately. Even though
+				// we cannot positively identify the original monitor process, the child PID itself is protected
+				// by an identity-time check inside StopViaConsole/StopProcess, so we will not accidentally kill
+				// an unrelated process even if the child PID has been reused as well.
+				log.Info("Monitored process already exited, shutting down child process", "Reason", monitorCtxErr)
 				executor := process.NewOSExecutor(log)
 				stopErr := process.StopViaConsole(log, executor, process.NewHandle(childPid, childProcessStartTime))
 				if stopErr != nil {

@@ -32,6 +32,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -132,6 +133,13 @@ type NetworkReconciler struct {
 
 	// The resource harvester used to clean up abandoned resources on startup
 	harvester *resourceHarvester
+
+	config NetworkReconcilerConfig
+}
+
+type NetworkReconcilerConfig struct {
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessTreeItem
 }
 
 var (
@@ -146,6 +154,26 @@ func NewNetworkReconciler(
 	orchestrator containers.ContainerOrchestrator,
 	harvester *resourceHarvester,
 ) *NetworkReconciler {
+	return NewNetworkReconcilerWithConfig(
+		lifetimeCtx,
+		client,
+		noCacheClient,
+		log,
+		orchestrator,
+		harvester,
+		NetworkReconcilerConfig{},
+	)
+}
+
+func NewNetworkReconcilerWithConfig(
+	lifetimeCtx context.Context,
+	client ctrl_client.Client,
+	noCacheClient ctrl_client.Reader,
+	log logr.Logger,
+	orchestrator containers.ContainerOrchestrator,
+	harvester *resourceHarvester,
+	config NetworkReconcilerConfig,
+) *NetworkReconciler {
 	base := NewReconcilerBase[apiv1.ContainerNetwork](client, noCacheClient, log, lifetimeCtx)
 
 	r := NetworkReconciler{
@@ -159,6 +187,7 @@ func NewNetworkReconciler(
 		lock:                 &sync.Mutex{},
 		orchestratorHealthy:  &atomic.Bool{},
 		harvester:            harvester,
+		config:               config,
 	}
 
 	go r.onShutdown()
@@ -335,9 +364,7 @@ func (r *NetworkReconciler) manageNetwork(ctx context.Context, network *apiv1.Co
 	}
 
 	if network.Status.State != networkState.state {
-		network.Status.State = networkState.state
-		network.Status.Message = networkState.message
-		change |= statusChanged
+		change |= r.setNetworkState(network, networkState.state, networkState.message)
 	}
 
 	if network.Status.State == apiv1.ContainerNetworkStateRunning {
@@ -353,7 +380,56 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	r.ensureNetworkWatch(network, log)
 
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
+	if network.Spec.Persistent {
+		var change objectChange
+		if r.config.StateStore == nil {
+			stateStoreErr := fmt.Errorf("state store is not configured")
+			log.Error(stateStoreErr, "Could not acquire persistent network lease")
+			return r.failNetworkToStart(network, networkName, stateStoreErr)
+		}
 
+		leaseErr := r.config.StateStore.WithResourceLease(
+			ctx,
+			network,
+			r.config.ResourceLeaseOwner,
+			resourceLeaseRevalidationInterval,
+			func(_ context.Context, lease *statestore.ResourceLease) error {
+				log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
+				change = r.ensureNetworkWithName(ctx, network, networkName, log)
+				return nil
+			},
+		)
+		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+			logResourceLeaseHeld(log, leaseErr, network.GetLeaseKey(), "Persistent network is being updated by another DCP instance, retrying")
+			return additionalReconciliationNeeded
+		}
+		if leaseErr != nil {
+			log.Error(leaseErr, "Could not acquire persistent network lease")
+			return r.failNetworkToStart(network, networkName, leaseErr)
+		}
+
+		if persistentNetworkLeaseReleaseState(network.Status.State) {
+			// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
+			_ = r.releasePersistentNetworkResourceLease(context.Background(), network, log, true)
+		}
+
+		return change
+	}
+
+	return r.ensureNetworkWithName(ctx, network, networkName, log)
+}
+
+func (r *NetworkReconciler) failNetworkToStart(network *apiv1.ContainerNetwork, networkName string, err error) objectChange {
+	if r.existingNetworks != nil {
+		r.existingNetworks.Store(network.NamespacedName(), networkName, &runningNetworkState{
+			state:   apiv1.ContainerNetworkStateFailedToStart,
+			message: err.Error(),
+		})
+	}
+	return r.setNetworkState(network, apiv1.ContainerNetworkStateFailedToStart, err.Error())
+}
+
+func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *apiv1.ContainerNetwork, networkName string, log logr.Logger) objectChange {
 	if network.Spec.Persistent {
 		isNetworkSafeToReuse := r.harvester.IsDone() || r.harvester.TryProtectNetwork(ctx, networkName)
 		existing, err := inspectNetworkIfExists(ctx, r.orchestrator, networkName)
@@ -582,9 +658,8 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *apiv1.ContainerNetwork, rns *runningNetworkState, log logr.Logger) objectChange {
 	cnet, err := inspectNetwork(ctx, r.orchestrator, network.Status.ID)
 	if errors.Is(err, containers.ErrNotFound) {
-		network.Status.State = apiv1.ContainerNetworkStateRemoved
 		rns.state = apiv1.ContainerNetworkStateRemoved
-		return statusChanged
+		return r.setNetworkState(network, apiv1.ContainerNetworkStateRemoved, network.Status.Message)
 	} else if err != nil {
 		log.Error(err, "Could not inspect a network")
 		return additionalReconciliationNeeded
@@ -623,6 +698,62 @@ func (r *NetworkReconciler) updateNetworkStatus(ctx context.Context, network *ap
 	}
 
 	return change
+}
+
+func (r *NetworkReconciler) setNetworkState(network *apiv1.ContainerNetwork, state apiv1.ContainerNetworkState, message string) objectChange {
+	change := noChange
+
+	if network.Status.State != state {
+		network.Status.State = state
+		change = statusChanged
+	}
+	if network.Status.Message != message {
+		network.Status.Message = message
+		change = statusChanged
+	}
+
+	if network.Spec.Persistent && persistentNetworkLeaseReleaseState(state) {
+		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
+		_ = r.releasePersistentNetworkResourceLease(context.Background(), network, r.Log, true)
+	}
+
+	return change
+}
+
+func persistentNetworkLeaseReleaseState(state apiv1.ContainerNetworkState) bool {
+	switch state {
+	case apiv1.ContainerNetworkStateRunning,
+		apiv1.ContainerNetworkStateFailedToStart,
+		apiv1.ContainerNetworkStateRemoved,
+		apiv1.ContainerNetworkStateNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *NetworkReconciler) releasePersistentNetworkResourceLease(
+	ctx context.Context,
+	network *apiv1.ContainerNetwork,
+	log logr.Logger,
+	suppressNotHeldLog bool,
+) error {
+	if !network.Spec.Persistent || r.config.StateStore == nil ||
+		r.config.ResourceLeaseOwner.Pid <= 0 || r.config.ResourceLeaseOwner.IdentityTime.IsZero() {
+		return nil
+	}
+
+	releaseErr := r.config.StateStore.ReleaseResourceLease(ctx, network, r.config.ResourceLeaseOwner)
+	if releaseErr != nil {
+		if errors.Is(releaseErr, statestore.ErrResourceLeaseNotHeld) {
+			logResourceLeaseNotHeld(log, suppressNotHeldLog, network.GetLeaseKey(), "Persistent network resource lease was not held")
+			return releaseErr
+		}
+		log.Error(releaseErr, "Could not release persistent network resource lease")
+		return releaseErr
+	}
+
+	return nil
 }
 
 func (r *NetworkReconciler) ensureNetworkWatch(network *apiv1.ContainerNetwork, log logr.Logger) {

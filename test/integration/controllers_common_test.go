@@ -26,26 +26,34 @@ import (
 	clientgorest "k8s.io/client-go/rest"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/stretchr/testify/require"
+
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
 var (
-	testProcessExecutor         *internal_testutil.TestProcessExecutor
-	testProcessExecutableRunner *ctrl_testutil.TestProcessExecutableRunner
-	ideRunner                   *ctrl_testutil.TestIdeRunner
-	client                      ctrl_client.Client
-	restClient                  *clientgorest.RESTClient
-	containerOrchestrator       *ctrl_testutil.TestContainerOrchestrator
+	testProcessExecutor              *internal_testutil.TestProcessExecutor
+	testProcessExecutableRunner      *ctrl_testutil.TestProcessExecutableRunner
+	terminalProcessFactoryDispatcher *ctrl_testutil.TerminalProcessFactoryDispatcher
+	containerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
+	ideRunner                        *ctrl_testutil.TestIdeRunner
+	client                           ctrl_client.Client
+	restClient                       *clientgorest.RESTClient
+	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
+	testStateStore                   *statestore.Store
+	testResourceLeaseOwner           process.ProcessTreeItem
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
@@ -64,7 +72,11 @@ func TestMain(m *testing.M) {
 	containerOrchestrator = serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
 	testProcessExecutor = teInfo.TestProcessExecutor
 	testProcessExecutableRunner = teInfo.TestProcessExecutableRunner
+	terminalProcessFactoryDispatcher = teInfo.TerminalProcessFactoryDispatcher
+	containerAttachFactoryDispatcher = teInfo.ContainerAttachFactoryDispatcher
 	ideRunner = teInfo.TestIdeRunner
+	testStateStore = teInfo.StateStore
+	testResourceLeaseOwner = teInfo.ResourceLeaseOwner
 
 	networking.EnableStrictMruPortHandling(log)
 
@@ -117,6 +129,19 @@ func waitServiceReadyEx(t *testing.T, ctx context.Context, apiClient ctrl_client
 		return svc.Status.State == apiv1.ServiceStateReady, nil
 	})
 	return updatedSvc
+}
+
+func waitResourceLeaseReleased(t *testing.T, ctx context.Context, resource statestore.LeasableResource) {
+	t.Helper()
+
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		verifyErr := testStateStore.VerifyResourceLeaseHeld(ctx, resource, testResourceLeaseOwner)
+		if errors.Is(verifyErr, statestore.ErrResourceLeaseNotHeld) {
+			return true, nil
+		}
+		return false, verifyErr
+	})
+	require.NoError(t, err)
 }
 
 func retryOnConflict[T commonapi.ObjectStruct, PT commonapi.PObjectStruct[T]](

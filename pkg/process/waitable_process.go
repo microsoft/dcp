@@ -44,6 +44,14 @@ func FindWaitableProcess(handle ProcessHandle) (*WaitableProcess, error) {
 	return dcpProcess, nil
 }
 
+func (p *WaitableProcess) Pid() Pid_t {
+	return Uint32_ToPidT(uint32(p.process.Pid))
+}
+
+func (p *WaitableProcess) IdentityTime() time.Time {
+	return p.processStartTime
+}
+
 func (p *WaitableProcess) pollingWait(ctx context.Context) {
 	// Only setup a single wait loop per-process instance
 	p.waitLock.Lock()

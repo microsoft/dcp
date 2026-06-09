@@ -21,10 +21,12 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/statestore"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/concurrency"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -34,7 +36,11 @@ type TestEnvironmentInfo struct {
 	*ctrl_testutil.TestProcessExecutableRunner
 	*ctrl_testutil.TestIdeRunner
 	*ctrl_testutil.TestTunnelControlClient
-	Log logr.Logger
+	TerminalProcessFactoryDispatcher *ctrl_testutil.TerminalProcessFactoryDispatcher
+	ContainerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
+	StateStore                       *statestore.Store
+	ResourceLeaseOwner               process.ProcessTreeItem
+	Log                              logr.Logger
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
@@ -61,6 +67,17 @@ func StartTestEnvironment(
 		return nil, nil, fmt.Errorf("failed to start the API server: %w", serverErr)
 	}
 
+	stateStore, stateStoreCleanup, stateStoreErr := createTestStateStore(ctx, testTempDir)
+	if stateStoreErr != nil {
+		serverInfo.Dispose()
+		return nil, nil, fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
+	}
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	if leaseOwnerErr != nil {
+		serverInfo.Dispose()
+		stateStoreCleanup()
+		return nil, nil, fmt.Errorf("failed to initialize state store lease owner identity: %w", leaseOwnerErr)
+	}
 	pex := internal_testutil.NewTestProcessExecutor(ctx)
 	// On Windows the process Executable runner uses the dcp stop-process-tree subcommand, so we need to simulate that.
 	pex.InstallAutoExecution(internal_testutil.AutoExecution{
@@ -71,7 +88,17 @@ func StartTestEnvironment(
 	})
 
 	exeRunner := ctrlutil.NewTestProcessExecutableRunner(pex)
+	terminalDispatcher := ctrl_testutil.NewTerminalProcessFactoryDispatcher(exeRunner)
 	ir := ctrl_testutil.NewTestIdeRunner(ctx)
+
+	// Wire a container attach dispatcher onto the TestContainerOrchestrator if
+	// the API server created one. With a real container orchestrator (e.g. in
+	// advanced_test_env.go) this stays nil; per-test container terminal tests
+	// must request the standard environment to use this hook.
+	var containerAttachDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
+	if tco, ok := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator); ok {
+		containerAttachDispatcher = ctrl_testutil.NewContainerAttachFactoryDispatcher(tco)
+	}
 
 	// This is initially set to allow quick and clean shutdown if some of the initialization code below fails,
 	// but we will reset when the manager starts.
@@ -87,6 +114,7 @@ func StartTestEnvironment(
 			log.Error(tpeCloseErr, "Failed to close the test process executor")
 		}
 
+		stateStoreCleanup()
 		serverInfo.Dispose()
 	})
 
@@ -105,7 +133,7 @@ func StartTestEnvironment(
 	)
 
 	if inclCtrl&ExecutableController != 0 {
-		execR := controllers.NewExecutableReconciler(
+		execR := controllers.NewExecutableReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
@@ -115,6 +143,10 @@ func StartTestEnvironment(
 				apiv1.ExecutionTypeIDE:     ir,
 			},
 			hpSet,
+			controllers.ExecutableReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Executable reconciler: %w", err)
@@ -138,13 +170,17 @@ func StartTestEnvironment(
 		harvester := controllers.NewResourceHarvester()
 		go harvester.MockHarvest(ctx, 2*time.Second, log.WithName("ResourceCleanup"))
 
-		networkR := controllers.NewNetworkReconciler(
+		networkR := controllers.NewNetworkReconcilerWithConfig(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
 			log.WithName("NetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
 			harvester,
+			controllers.NetworkReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+			},
 		)
 		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Network reconciler: %w", err)
@@ -162,6 +198,9 @@ func StartTestEnvironment(
 			controllers.ContainerReconcilerConfig{
 				MaxParallelContainerStarts:      math.MaxUint8,
 				ContainerStartupTimeoutOverride: 2 * time.Second,
+				StateStore:                      stateStore,
+				ResourceLeaseOwner:              leaseOwner,
+				ProcessExecutor:                 pex,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
@@ -252,11 +291,15 @@ func StartTestEnvironment(
 	}()
 
 	teInfo := &TestEnvironmentInfo{
-		TestProcessExecutor:         pex,
-		TestProcessExecutableRunner: exeRunner,
-		TestIdeRunner:               ir,
-		TestTunnelControlClient:     tcc,
-		Log:                         log,
+		TestProcessExecutor:              pex,
+		TestProcessExecutableRunner:      exeRunner,
+		TestIdeRunner:                    ir,
+		TestTunnelControlClient:          tcc,
+		TerminalProcessFactoryDispatcher: terminalDispatcher,
+		ContainerAttachFactoryDispatcher: containerAttachDispatcher,
+		StateStore:                       stateStore,
+		ResourceLeaseOwner:               leaseOwner,
+		Log:                              log,
 	}
 	return serverInfo, teInfo, nil
 }

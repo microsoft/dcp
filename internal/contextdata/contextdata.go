@@ -57,7 +57,7 @@ func GetProcessExecutor(ctx context.Context) process.Executor {
 
 type dummyProcessExecutor struct{}
 
-func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag) (process.ProcessHandle, func(), error) {
+func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag, _ process.SysCreateProcessFunc) (process.ProcessHandle, func(), error) {
 	return process.ProcessHandle{Pid: process.UnknownPID}, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
 }
 

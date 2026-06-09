@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -42,6 +41,7 @@ var (
 	// Container-specific flags
 	containerID           string
 	containerPollInterval time.Duration
+	containerStopOnly     bool
 )
 
 func NewContainerCommand(log logr.Logger) (*cobra.Command, error) {
@@ -51,7 +51,8 @@ func NewContainerCommand(log logr.Logger) (*cobra.Command, error) {
 		Long: `Ensures that a container is stopped and removed when the monitored process exits.
 
 This command is used to ensure that containers are properly cleaned up when
-DCP terminates unexpectedly. It performs a graceful stop followed by removal of the container.`,
+DCP terminates unexpectedly. It performs a graceful stop followed by removal of the container
+unless --stop-only is specified.`,
 		RunE:         monitorContainer(log),
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
@@ -67,6 +68,8 @@ DCP terminates unexpectedly. It performs a graceful stop followed by removal of 
 	if flagErr != nil {
 		return nil, flagErr
 	}
+
+	containerCmd.Flags().BoolVar(&containerStopOnly, "stop-only", false, "Stop the container when the monitored process exits, but do not remove it")
 
 	// Mostly for testing purposes.
 	containerCmd.Flags().DurationVar(&containerPollInterval, "containerPollInterval", defaultContainerPollInterval,
@@ -111,10 +114,12 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 		monitorCtx, monitorCtxCancel, monitorCtxErr := cmds.MonitorPid(cmd.Context(), process.NewHandle(monitorPid, monitorProcessStartTime), monitorInterval, log)
 		defer monitorCtxCancel()
 		if monitorCtxErr != nil {
-			if errors.Is(monitorCtxErr, os.ErrProcessDone) {
-				// If the monitor process is already terminated, cleanup the container immediately
-				log.Info("Monitored process already exited, cleaning up container")
-				return doCleanupContainer(cmd.Context(), containerID, log, co)
+			if isMonitorProcessGoneErr(monitorCtxErr) {
+				// If the monitor process is already gone (either exited cleanly, no longer exists, or its PID has been
+				// reused by an unrelated process), cleanup the container immediately. The container is identified by
+				// an opaque ID so this is safe even when we cannot positively identify the original monitor process.
+				log.Info("Monitored process already exited, cleaning up container", "Reason", monitorCtxErr)
+				return doCleanupContainer(cmd.Context(), containerID, containerStopOnly, log, co)
 			} else {
 				log.Error(monitorCtxErr, "Process could not be monitored")
 				return monitorCtxErr
@@ -129,7 +134,7 @@ func monitorContainer(log logr.Logger) func(cmd *cobra.Command, args []string) e
 			return nil
 		case <-monitorCtx.Done():
 			log.Info("Monitored process exited, cleaning up container")
-			return doCleanupContainer(cmd.Context(), containerID, log, co)
+			return doCleanupContainer(cmd.Context(), containerID, containerStopOnly, log, co)
 		}
 	}
 }
@@ -157,6 +162,7 @@ func getContainerOrchestrator(ctx context.Context, log logr.Logger) (inspectStop
 func doCleanupContainer(
 	ctx context.Context,
 	containerID string,
+	stopOnly bool,
 	log logr.Logger,
 	co inspectStopRemoveContainers,
 ) error {
@@ -197,9 +203,16 @@ func doCleanupContainer(
 		})
 
 		if stopErr != nil && !errors.Is(stopErr, containers.ErrNotFound) {
-			log.Error(stopErr, "Failed to stop container gracefully")
-			// Continue with removal even if stop failed
+			log.Error(stopErr, "Failed to stop container")
+			if stopOnly {
+				return stopErr
+			}
+			// Continue with removal even if stop failed.
 		}
+	}
+
+	if stopOnly {
+		return nil
 	}
 
 	// Remove the container

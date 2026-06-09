@@ -354,6 +354,16 @@ func (r *IdeExecutableRunner) StopRun(ctx context.Context, runID controllers.Run
 	return fmt.Errorf(runSessionCouldNotBeStopped+"%s %s", resp.Status, parseResponseBody(respBody))
 }
 
+func (r *IdeExecutableRunner) ReleaseRun(_ context.Context, runID controllers.RunID, log logr.Logger) error {
+	rd, found := r.activeRuns.LoadAndDelete(runID)
+	if !found {
+		log.V(1).Info("Release of an IDE run session requested, but the run was already released", "RunID", runID)
+		return nil
+	}
+	rd.CloseOutputWriters()
+	return nil
+}
+
 func (r *IdeExecutableRunner) prepareRunRequest(exe *apiv1.Executable) (*http.Request, context.CancelFunc, error) {
 	var isrBody []byte
 	var bodyErr error

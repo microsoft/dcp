@@ -6,8 +6,10 @@
 package controllers
 
 import (
+	"errors"
 	"fmt"
 	stdmaps "maps"
+	"os"
 	stdslices "slices"
 	"strings"
 
@@ -18,10 +20,12 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 const (
@@ -87,6 +91,14 @@ type runningContainerData struct {
 
 	// Whether health probes are enabled for the Container
 	healthProbesEnabled *bool
+
+	// Pseudo-terminal process bridging the container's stdio (e.g. `docker attach`/`podman attach`
+	// running on a freshly allocated PTY). Only used by containers that have a terminal.
+	ptp *termpty.PseudoTerminalProcess
+
+	// HMP v1 connection manager that exposes the terminal on the configured UDS path.
+	// Only used by containers that have a terminal.
+	connMgr *termpty.ConnManager
 }
 
 const placeholderContainerIdPrefix = "__placeholder-"
@@ -134,6 +146,8 @@ func (rcd *runningContainerData) Clone() *runningContainerData {
 		networkConnections:     stdmaps.Clone(rcd.networkConnections),
 		runSpec:                rcd.runSpec.DeepCopy(),
 		healthProbeResults:     stdmaps.Clone(rcd.healthProbeResults),
+		ptp:                    rcd.ptp,
+		connMgr:                rcd.connMgr,
 	}
 
 	pointers.SetValueFrom(&clone.exitCode, rcd.exitCode)
@@ -225,6 +239,16 @@ func (rcd *runningContainerData) UpdateFrom(other *runningContainerData) bool {
 
 	if other.healthProbesEnabled != nil && !pointers.EqualValue(rcd.healthProbesEnabled, other.healthProbesEnabled) {
 		pointers.SetValueFrom(&rcd.healthProbesEnabled, other.healthProbesEnabled)
+		updated = true
+	}
+
+	if rcd.ptp != other.ptp {
+		rcd.ptp = other.ptp
+		updated = true
+	}
+
+	if rcd.connMgr != other.connMgr {
+		rcd.connMgr = other.connMgr
 		updated = true
 	}
 
@@ -455,6 +479,53 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 	change |= updateContainerHealthStatus(ctr, rcd.containerState, log)
 
 	return change
+}
+
+// closeTerminalResources tears down the terminal PTY associated with this
+// container, if any. It is safe to call multiple times: subsequent invocations
+// are no-ops once the PTY has been closed.
+//
+// The attach process (docker/podman attach) is explicitly stopped first via
+// the supplied process.Executor before the PTY is closed. Simply closing the
+// PTY master is not enough to make the attach process exit reliably across
+// platforms (notably ConPTY on Windows does not propagate the close as a
+// signal that docker attach observes). Stopping the process triggers its
+// ExitHandler, which in turn drives the ConnManager shutdown.
+func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log logr.Logger) {
+	ptp := rcd.ptp
+	rcd.ptp = nil
+	rcd.connMgr = nil
+	if ptp == nil {
+		return
+	}
+
+	if ptp.PID != 0 && ptp.PID != process.UnknownPID {
+		// Only attempt to stop the attach process if it has not already
+		// exited. The exit handler may already have fired (e.g., the
+		// container itself exited and the OS noticed the attach process
+		// exit first), and a second invocation of pe.StopProcess could
+		// race with the underlying handler and double-signal it.
+		alreadyExited := false
+		if ptp.ExitHandler != nil {
+			select {
+			case <-ptp.ExitHandler.Exited():
+				alreadyExited = true
+			default:
+			}
+		}
+		if !alreadyExited {
+			var notFound *process.ErrProcessNotFound
+			if stopErr := pe.StopProcess(process.NewHandle(ptp.PID, ptp.IdentityTime)); stopErr != nil && !errors.As(stopErr, &notFound) {
+				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.PID, "Error", stopErr.Error())
+			}
+		}
+	}
+
+	if ptp.PTY != nil {
+		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			log.Error(closeErr, "Failed to close container terminal PTY")
+		}
+	}
 }
 
 var _ Cloner[*runningContainerData] = (*runningContainerData)(nil)

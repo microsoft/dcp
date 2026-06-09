@@ -168,7 +168,7 @@ func launchStdioAdapter(ctx context.Context, executor process.Executor, config *
 		}
 	})
 
-	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose, nil)
 	if startErr != nil {
 		stdin.Close()
 		stdout.Close()
@@ -246,7 +246,7 @@ func launchTCPCallbackAdapter(ctx context.Context, executor process.Executor, co
 		}
 	})
 
-	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose, nil)
 	if startErr != nil {
 		listener.Close()
 		stderr.Close()
@@ -351,7 +351,7 @@ func launchTCPConnectAdapter(ctx context.Context, executor process.Executor, con
 		}
 	})
 
-	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose)
+	handle, startWaitForExit, startErr := executor.StartProcess(ctx, cmd, exitHandler, process.CreationFlagEnsureKillOnDispose, nil)
 	if startErr != nil {
 		stderr.Close()
 		return nil, fmt.Errorf("failed to start debug adapter: %w", startErr)

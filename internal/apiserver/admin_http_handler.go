@@ -212,20 +212,23 @@ func (h *adminHttpHandler) changeExecution(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	if changedStatus {
 		w.WriteHeader(http.StatusAccepted) // Accepted means operation has been started
 	} else {
 		w.WriteHeader(http.StatusOK) // OK means operation is in progress or has already been completed
 	}
-	w.Header().Set("Content-Type", "application/json")
 	_, writeErr := w.Write(resp)
 	if writeErr != nil {
 		h.log.Error(writeErr, "Could not write API server execution data")
 	}
 
-	// Only request shutdown AFTER writing the response, so that we do not "cancel ourselves" in the middle of writing.
+	// Only request shutdown AFTER flushing the response, so that we do not "cancel ourselves" in the middle of writing.
 
 	if changedStatus && newStatus == ApiServerStopping {
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 		h.runConfig.RequestShutdown(h.executionData.ShutdownResourceCleanup)
 	}
 }

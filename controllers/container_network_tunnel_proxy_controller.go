@@ -671,15 +671,24 @@ func (r *ContainerNetworkTunnelProxyReconciler) manageSingleTunnel(
 	tunnelReq := &dcptunproto.TunnelReq{
 		ServerAddress: stdproto.String(serverSvc.Status.EffectiveAddress),
 		ServerPort:    stdproto.Int32(serverSvc.Status.EffectivePort),
-		// ClientProxyAddress and ClientProxyPort are omitted; we rely on dcptun defaults,
-		// which are 0.0.0.0 (all IPv4 interfaces) and 0 (random port assigned by OS).
+		// Try to expose the tunnel on the same port as the host service first.
+		// If binding fails, we retry below with the OS assigning a random port.
+		ClientProxyPort: stdproto.Int32(serverSvc.Status.EffectivePort),
 	}
 	prepareCtx, prepareCtxCancel := context.WithTimeout(ctx, tunnelOperationTimeout)
 	defer prepareCtxCancel()
 	tSpec, prepareErr := serverProxyClient.PrepareTunnel(prepareCtx, tunnelReq, grpc.WaitForReady(true))
 	if prepareErr != nil {
-		tlog.Error(prepareErr, "Failed to prepare tunnel, will retry...")
-		return additionalReconciliationNeeded
+		tlog.V(1).Info("Failed to prepare tunnel on preferred port, falling back to random port", "Error", prepareErr)
+		fallbackTunnelReq := &dcptunproto.TunnelReq{
+			ServerAddress: stdproto.String(serverSvc.Status.EffectiveAddress),
+			ServerPort:    stdproto.Int32(serverSvc.Status.EffectivePort),
+		}
+		tSpec, prepareErr = serverProxyClient.PrepareTunnel(prepareCtx, fallbackTunnelReq, grpc.WaitForReady(true))
+		if prepareErr != nil {
+			tlog.Error(prepareErr, "Failed to prepare tunnel, will retry...")
+			return additionalReconciliationNeeded
+		}
 	}
 
 	tlog.V(1).Info("Tunnel prepared successfully")
@@ -1271,7 +1280,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startServerProxy(
 		r.onServerProcessExit(tunnelProxy.NamespacedName(), pid, exitCode, err, stdoutFile, stderrFile)
 	})
 
-	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone)
+	handle, startWaitForExit, startErr := r.config.ProcessExecutor.StartProcess(context.Background(), cmd, exitHandler, process.CreationFlagsNone, nil)
 	if startErr != nil {
 		log.Error(startErr, "Failed to start server proxy process")
 		startFailed = true

@@ -10,6 +10,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -197,7 +199,7 @@ func TestRunCancelled(t *testing.T) {
 	ctx, cancelFn := context.WithCancel(context.Background())
 
 	go func() {
-		_, startWaitForExit, processStartErr := executor.StartProcess(ctx, cmd, onProcessExited, process.CreationFlagsNone)
+		_, startWaitForExit, processStartErr := executor.StartProcess(ctx, cmd, onProcessExited, process.CreationFlagsNone, nil)
 		startupNotification := process.NewProcessExitInfo()
 		if processStartErr != nil {
 			startupNotification.Err = processStartErr
@@ -245,13 +247,13 @@ func TestChildrenTerminated(t *testing.T) {
 			return process.ProcessTreeItem{pid, identityTime}
 		}},
 		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
-			handle, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
+			handle, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone, nil)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			require.False(t, handle.IdentityTime.IsZero(), "process identity time should not be zero")
 			return process.ProcessTreeItem{handle.Pid, handle.IdentityTime}
 		}},
 		{"executor start with wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessTreeItem {
-			handle, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone)
+			handle, startWaitForProcessExit, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone, nil)
 			require.NoError(t, err, "could not start the 'delay' test program")
 			startWaitForProcessExit()
 			require.False(t, handle.IdentityTime.IsZero(), "process identity time should not be zero")
@@ -319,6 +321,7 @@ func TestChildrenTerminatedOnDispose(t *testing.T) {
 			close(processExited)
 		}),
 		process.CreationFlagEnsureKillOnDispose,
+		nil,
 	)
 	require.NoError(t, startErr)
 	startWaitForProcessExit()
@@ -394,6 +397,104 @@ func TestContextCancelsWatch(t *testing.T) {
 	}
 }
 
+// Ensures that the SysCreateProcessFunc is used to start a process and that the returned Waitable is used for waiting.
+func TestSysCreateProcess(t *testing.T) {
+	t.Parallel()
+
+	delayToolDir, err := getDelayToolDir()
+	require.NoError(t, err)
+
+	executor := process.NewOSExecutor(log)
+	defer executor.Dispose()
+
+	testCtx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+
+	const overrideExitCode int32 = 77
+
+	// Build a cmd that we'll never Start()
+	// (SysCreateProcessFunc launches the process directly via os.StartProcess).
+	delayBin := filepath.Join(delayToolDir, "delay")
+	if runtime.GOOS == "windows" {
+		delayBin += ".exe"
+	}
+	cmd := exec.Command(delayBin, "-d", "500ms", "-e", "0")
+	cmd.Dir = delayToolDir
+
+	var capturedWaitable *testProcessWaitable
+	sysCreate := process.SysCreateProcessFunc(func(c *exec.Cmd) (process.Pid_t, process.Waitable, error) {
+		proc, startErr := os.StartProcess(c.Path, c.Args, &os.ProcAttr{
+			Dir:   c.Dir,
+			Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
+		})
+		if startErr != nil {
+			return process.UnknownPID, nil, startErr
+		}
+		w := &testProcessWaitable{
+			proc:          proc,
+			overrideCode:  overrideExitCode,
+			flags:         process.CreationFlagsNone,
+			captureDoneCh: make(chan struct{}),
+		}
+		capturedWaitable = w
+		return process.Uint32_ToPidT(uint32(proc.Pid)), w, nil
+	})
+
+	exitInfoChan := make(chan process.ProcessExitInfo, 1)
+	handler := process.ProcessExitHandlerFunc(func(pid process.Pid_t, exitCode int32, exitErr error) {
+		exitInfoChan <- process.ProcessExitInfo{PID: pid, ExitCode: exitCode, Err: exitErr}
+	})
+
+	_, startWaitForExit, startErr := executor.StartProcess(
+		testCtx, cmd, handler, process.CreationFlagsNone, sysCreate,
+	)
+	require.NoError(t, startErr, "StartProcess should succeed")
+	require.NotNil(t, capturedWaitable, "SysCreateProcessFunc must have populated the waitable")
+
+	startWaitForExit()
+
+	select {
+	case <-testCtx.Done():
+		t.Fatal("timed out waiting for exit notification")
+	case ei := <-exitInfoChan:
+		require.NoError(t, ei.Err, "exit error should be nil (no synthetic 'exec: not started')")
+		require.Equal(t, overrideExitCode, ei.ExitCode,
+			"exit code must come from Waitable, not from the process")
+	}
+}
+
 func getDelayToolDir() (string, error) {
 	return int_testutil.GetTestToolDir("delay")
 }
+
+// testProcessWaitable wraps a directly-spawned process and allows waiting for its exit.
+// The reported exit code is set by the overrideCode field--it is used to simulate specific exit code,
+// and is not the actual exit code of the process.
+type testProcessWaitable struct {
+	proc          *os.Process
+	overrideCode  int32
+	flags         process.ProcessCreationFlag
+	captured      int32
+	captureDoneCh chan struct{}
+}
+
+func (w *testProcessWaitable) Wait() error {
+	defer close(w.captureDoneCh)
+	_, err := w.proc.Wait()
+	if err != nil {
+		w.captured = process.UnknownExitCode
+		return err
+	}
+	w.captured = w.overrideCode
+	return nil
+}
+
+func (w *testProcessWaitable) Info() string                       { return "customWaitable" }
+func (w *testProcessWaitable) Flags() process.ProcessCreationFlag { return w.flags }
+func (w *testProcessWaitable) ExitCode() int32 {
+	<-w.captureDoneCh
+	return w.captured
+}
+
+var _ process.Waitable = (*testProcessWaitable)(nil)
+var _ process.ExitCodeSource = (*testProcessWaitable)(nil)

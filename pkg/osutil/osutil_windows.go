@@ -1,11 +1,9 @@
+//go:build windows
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-
-//go:build windows
-
-// Copyright (c) Microsoft Corporation. All rights reserved.
 
 package osutil
 
@@ -27,8 +25,7 @@ func IsAdmin() (bool, error) {
 		return true, err
 	}
 
-	// nolint:errcheck
-	defer windows.FreeSid(adminSid)
+	defer func() { _ = windows.FreeSid(adminSid) }() // best effort
 
 	// Get a virtual token for the process (not the actual token) to determine if the user is an admin
 	adminToken := windows.Token(0)

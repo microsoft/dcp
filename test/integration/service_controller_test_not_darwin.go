@@ -1,11 +1,9 @@
+//go:build !darwin
+
 /*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-
-//go:build !darwin
-
-// Copyright (c) Microsoft Corporation. All rights reserved.
 
 package integration_test
 

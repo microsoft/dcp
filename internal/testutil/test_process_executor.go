@@ -79,6 +79,7 @@ func (e *TestProcessExecutor) StartProcess(
 	cmd *exec.Cmd,
 	handler process.ProcessExitHandler,
 	_ process.ProcessCreationFlag,
+	_ process.SysCreateProcessFunc,
 ) (process.ProcessHandle, func(), error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
 	pid, pidErr := process.Int64_ToPidT(pid64)

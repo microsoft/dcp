@@ -8,6 +8,7 @@ package controllers
 import (
 	"fmt"
 	stdlib_maps "maps"
+	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,18 +29,15 @@ import (
 type ExecutableStartuptStage int
 
 const (
-	StartupStageInitial              ExecutableStartuptStage = -3
-	StartupStageCertificateDataReady ExecutableStartuptStage = -2
-	StartupStageDataInitialized      ExecutableStartuptStage = -1
-	StartupStageDefaultRunner        ExecutableStartuptStage = 0
+	StartupStageInitial         ExecutableStartuptStage = -2
+	StartupStageDataInitialized ExecutableStartuptStage = -1
+	StartupStageDefaultRunner   ExecutableStartuptStage = 0
 )
 
 func (s ExecutableStartuptStage) String() string {
 	switch s {
 	case StartupStageInitial:
 		return "initial"
-	case StartupStageCertificateDataReady:
-		return "certificate data ready"
 	case StartupStageDataInitialized:
 		return "run data initialized"
 	case StartupStageDefaultRunner:
@@ -72,6 +70,9 @@ type ExecutableRunInfo struct {
 
 	// Timestamp when the run was started
 	StartupTimestamp metav1.MicroTime
+
+	// Raw process identity time used to protect against PID reuse.
+	ProcessIdentityTime time.Time
 
 	// Timestamp when the run was finished
 	FinishTimestamp metav1.MicroTime
@@ -171,6 +172,10 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 	}
 
 	updated = setTimestampIfAfterOrUnknown(other.StartupTimestamp, &ri.StartupTimestamp) || updated
+	if !other.ProcessIdentityTime.IsZero() && !ri.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
+		ri.ProcessIdentityTime = other.ProcessIdentityTime
+		updated = true
+	}
 	updated = setTimestampIfAfterOrUnknown(other.FinishTimestamp, &ri.FinishTimestamp) || updated
 
 	if other.StdOutFile != "" && ri.StdOutFile != other.StdOutFile {
@@ -257,6 +262,7 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 		retval.ReservedPorts = stdlib_maps.Clone(ri.ReservedPorts)
 	}
 	retval.StartupTimestamp = ri.StartupTimestamp
+	retval.ProcessIdentityTime = ri.ProcessIdentityTime
 	retval.FinishTimestamp = ri.FinishTimestamp
 	retval.StdOutFile = ri.StdOutFile
 	retval.StdErrFile = ri.StdErrFile

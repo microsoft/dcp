@@ -7,6 +7,7 @@ package ctrlutil
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/termpty"
 	"github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -26,6 +28,7 @@ import (
 type TestProcessExecutableRunner struct {
 	inner          controllers.ExecutableRunner
 	autoExecutions []testutil.AutoExecution
+	afterStartRun  func(*apiv1.Executable, *controllers.ExecutableStartResult)
 	m              *sync.RWMutex
 }
 
@@ -59,6 +62,22 @@ func (e *TestProcessExecutableRunner) RemoveAutoExecution(sc testutil.ProcessSea
 	})
 }
 
+func (r *TestProcessExecutableRunner) SetAfterStartRunHook(hook func(*apiv1.Executable, *controllers.ExecutableStartResult)) {
+	r.m.Lock()
+	defer r.m.Unlock()
+
+	r.afterStartRun = hook
+}
+
+// SetTerminalProcessFactory overrides the function used by the wrapped
+// ProcessExecutableRunner to spawn a process attached to a pseudo-terminal.
+// Tests use this to substitute a TestPty-backed implementation.
+func (r *TestProcessExecutableRunner) SetTerminalProcessFactory(factory termpty.TerminalProcessFactory) {
+	if inner, ok := r.inner.(*exerunners.ProcessExecutableRunner); ok {
+		inner.SetTerminalProcessFactory(factory)
+	}
+}
+
 func (r *TestProcessExecutableRunner) StartRun(
 	ctx context.Context,
 	exe *apiv1.Executable,
@@ -77,7 +96,9 @@ func (r *TestProcessExecutableRunner) StartRun(
 	r.m.RUnlock()
 
 	if ae == nil || ae.AsynchronousStartupDelay == 0 {
-		return r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		result := r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		r.runAfterStartRunHook(exe, result)
+		return result
 	}
 
 	// Start a goroutine to call the underlying runner after the delay.
@@ -94,7 +115,8 @@ func (r *TestProcessExecutableRunner) StartRun(
 		// Call the underlying runner. It will call OnStartupCompleted() on the runChangeHandler.
 		// We don't need to do anything with the result here--it will be reported by the underlying runner
 		// via OnStartupCompleted().
-		_ = r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		result := r.inner.StartRun(ctx, exe, runChangeHandler, log)
+		r.runAfterStartRunHook(exe, result)
 	}()
 
 	result := controllers.NewExecutableStartResult()
@@ -102,9 +124,37 @@ func (r *TestProcessExecutableRunner) StartRun(
 	return result
 }
 
+func (r *TestProcessExecutableRunner) runAfterStartRunHook(exe *apiv1.Executable, result *controllers.ExecutableStartResult) {
+	r.m.RLock()
+	hook := r.afterStartRun
+	r.m.RUnlock()
+	if hook != nil {
+		hook(exe, result)
+	}
+}
+
 // StopRun implements ExecutableRunner by delegating to the underlying runner.
 func (r *TestProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	return r.inner.StopRun(ctx, runID, log)
 }
 
+func (r *TestProcessExecutableRunner) ReleaseRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
+	return r.inner.ReleaseRun(ctx, runID, log)
+}
+
+func (r *TestProcessExecutableRunner) AdoptRun(
+	ctx context.Context,
+	run controllers.ExecutableRunAdoptionInfo,
+	runChangeHandler controllers.RunChangeHandler,
+	log logr.Logger,
+) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent run adoption")
+	}
+
+	return persistentRunner.AdoptRun(ctx, run, runChangeHandler, log)
+}
+
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)
+var _ controllers.PersistentExecutableRunner = (*TestProcessExecutableRunner)(nil)

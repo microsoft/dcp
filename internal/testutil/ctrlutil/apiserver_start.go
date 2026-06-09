@@ -39,6 +39,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
@@ -216,7 +217,10 @@ func StartApiServer(
 		usvc_io.DCP_PRESERVE_EXECUTABLE_LOGS,
 		kubeconfig.DCP_SECURE_TOKEN,
 	)
-	env = append(env, fmt.Sprintf("%s=%s", usvc_io.DCP_SESSION_FOLDER, sessionFolder))
+	env = append(env,
+		fmt.Sprintf("%s=%s", usvc_io.DCP_SESSION_FOLDER, sessionFolder),
+		fmt.Sprintf("%s=%s", statestore.DCP_STATE_STORE_PATH, filepath.Join(sessionFolder, "state.sqlite3")),
+	)
 	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
@@ -236,7 +240,7 @@ func StartApiServer(
 		info.ApiServerExited.SetAndFreeze()
 	})
 
-	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone)
+	apiServerHandle, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone, nil)
 	if dcpStartErr != nil {
 		info.ApiServerExited.SetAndFreeze()
 		cleanup()

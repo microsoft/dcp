@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -27,6 +28,30 @@ const (
 	DCP_DISABLE_MONITOR_PROCESS = "DCP_DISABLE_MONITOR_PROCESS"
 )
 
+type ContainerWatcherOptions struct {
+	// StopOnly stops the container when the monitored process exits, but leaves the container resource in place.
+	StopOnly bool
+}
+
+func MonitorTargetFromFields(monitorPID *int64, monitorTimestamp metav1.MicroTime) (process.ProcessHandle, bool, error) {
+	if monitorPID == nil {
+		return process.ProcessHandle{}, false, nil
+	}
+	if monitorTimestamp.IsZero() {
+		return process.ProcessHandle{}, false, fmt.Errorf("monitor timestamp must be set when monitor PID is set")
+	}
+
+	pid, pidErr := process.Int64_ToPidT(*monitorPID)
+	if pidErr != nil {
+		return process.ProcessHandle{}, false, fmt.Errorf("invalid monitor PID %d: %w", *monitorPID, pidErr)
+	}
+
+	return process.ProcessHandle{
+		Pid:          pid,
+		IdentityTime: monitorTimestamp.Time,
+	}, true, nil
+}
+
 // Starts the process monitor for the given child process, using current process as the "monitored", or watched, process.
 // The caller should ensure that the current process is the correct process to monitor.
 // Errors are logged, but no error is returned if the process monitor fails to start--
@@ -35,6 +60,17 @@ const (
 // so monitoring DCPCTRL is a safe bet.
 func RunProcessWatcher(
 	pe process.Executor,
+	child process.ProcessHandle,
+	log logr.Logger,
+) {
+	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
+	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
+	RunProcessWatcherForMonitor(pe, process.NewHandle(monitorPid, monitorIdentityTime), child, log)
+}
+
+func RunProcessWatcherForMonitor(
+	pe process.Executor,
+	monitor process.ProcessHandle,
 	child process.ProcessHandle,
 	log logr.Logger,
 ) {
@@ -51,7 +87,7 @@ func RunProcessWatcher(
 	if !child.IdentityTime.IsZero() {
 		cmdArgs = append(cmdArgs, "--child-identity-time", child.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
-	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
+	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
 
 	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
@@ -68,6 +104,27 @@ func RunContainerWatcher(
 	containerID string,
 	log logr.Logger,
 ) {
+	monitorPid := process.Uint32_ToPidT(uint32(os.Getpid()))
+	monitorIdentityTime := process.ProcessIdentityTime(monitorPid)
+	RunContainerWatcherForMonitor(pe, process.NewHandle(monitorPid, monitorIdentityTime), containerID, log)
+}
+
+func RunContainerWatcherForMonitor(
+	pe process.Executor,
+	monitor process.ProcessHandle,
+	containerID string,
+	log logr.Logger,
+) {
+	RunContainerWatcherForMonitorWithOptions(pe, monitor, containerID, ContainerWatcherOptions{}, log)
+}
+
+func RunContainerWatcherForMonitorWithOptions(
+	pe process.Executor,
+	monitor process.ProcessHandle,
+	containerID string,
+	options ContainerWatcherOptions,
+	log logr.Logger,
+) {
 	if _, found := os.LookupEnv(DCP_DISABLE_MONITOR_PROCESS); found {
 		return
 	}
@@ -78,7 +135,10 @@ func RunContainerWatcher(
 		"monitor-container",
 		"--containerID", containerID,
 	}
-	cmdArgs = append(cmdArgs, getMonitorCmdArgs()...)
+	if options.StopOnly {
+		cmdArgs = append(cmdArgs, "--stop-only")
+	}
+	cmdArgs = append(cmdArgs, getMonitorCmdArgs(monitor)...)
 
 	startErr := startDcpProc(pe, cmdArgs)
 	if startErr != nil {
@@ -125,17 +185,13 @@ func StopProcessTree(
 	return nil
 }
 
-func getMonitorCmdArgs() []string {
-	monitorPid := os.Getpid()
-
+func getMonitorCmdArgs(monitor process.ProcessHandle) []string {
 	// Add monitor PID to the command args
-	cmdArgs := []string{"--monitor", strconv.Itoa(monitorPid)}
+	cmdArgs := []string{"--monitor", strconv.FormatInt(int64(monitor.Pid), 10)}
 
 	// Add monitor start time if available
-	rootPid := process.Uint32_ToPidT(uint32(monitorPid))
-	identityTime := process.ProcessIdentityTime(rootPid)
-	if !identityTime.IsZero() {
-		cmdArgs = append(cmdArgs, "--monitor-identity-time", identityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	if !monitor.IdentityTime.IsZero() {
+		cmdArgs = append(cmdArgs, "--monitor-identity-time", monitor.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
 	}
 
 	return cmdArgs

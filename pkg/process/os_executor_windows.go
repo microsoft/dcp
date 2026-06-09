@@ -5,8 +5,6 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-// Copyright (c) Microsoft Corporation. All rights reserved.
-
 package process
 
 import (
@@ -72,13 +70,13 @@ func (e *OSExecutor) stopSingleProcess(handle ProcessHandle, opts processStoppin
 		e.releaseLock()
 
 		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
-			return nil, ErrProcessNotFound{Pid: handle.Pid, Inner: err}
+			return nil, &ErrProcessNotFound{Pid: handle.Pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
 	}
 
-	waitable := makeWaitable(handle.Pid, proc)
+	waitable := makeProcessWaitable(handle.Pid, proc)
 	ws, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh

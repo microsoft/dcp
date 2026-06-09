@@ -35,6 +35,7 @@ import (
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/pubsub"
+	"github.com/microsoft/dcp/internal/termpty"
 )
 
 var (
@@ -564,6 +565,11 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		}
 	}
 
+	if options.Terminal != nil {
+		// Attach a TTY (-t) and keep STDIN open (-i) if a terminal is requested
+		args = append(args, "-it")
+	}
+
 	args = append(args, options.RunArgs...)
 
 	return args
@@ -669,7 +675,7 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	}
 
 	pco.log.V(1).Info("Running Podman command", "Command", cmd.String())
-	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	_, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start Podman command '%s'", "ExecContainer"))
@@ -677,6 +683,17 @@ func (pco *PodmanCliOrchestrator) ExecContainer(ctx context.Context, options con
 	startWaitForProcessExit()
 
 	return exitCh, nil
+}
+
+// Run `podman attach <container>` on a freshly allocated pseudo-terminal.
+func (pco *PodmanCliOrchestrator) AttachContainer(ctx context.Context, options containers.AttachContainerOptions) (*termpty.PseudoTerminalProcess, error) {
+	cmd := makePodmanCommand("attach", options.Container)
+	return termpty.StartProcessWithTerminal(ctx, pco.executor, &termpty.CommandSpec{
+		Cmd:           cmd,
+		CreationFlags: process.CreationFlagEnsureKillOnDispose,
+		Cols:          options.Cols,
+		Rows:          options.Rows,
+	})
 }
 
 func (pco *PodmanCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
@@ -1103,7 +1120,7 @@ func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, 
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		pco.log.Error(err, "Could not execute 'podman events' command; container events unavailable")
 		return
@@ -1163,7 +1180,7 @@ func (pco *PodmanCliOrchestrator) doWatchNetworks(watcherCtx context.Context, ss
 	// Container events are delivered on best-effort basis.
 	// If the "podman events" command fails unexpectedly, we will log the error,
 	// but we won't try to restart it.
-	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(watcherCtx, cmd, peh, process.CreationFlagsNone, nil)
 	if err != nil {
 		pco.log.Error(err, "Could not execute 'podman events' command; network events unavailable")
 		return
@@ -1216,7 +1233,7 @@ func (pco *PodmanCliOrchestrator) streamPodmanCommand(
 	}
 
 	pco.log.V(1).Info("Running podman command", "Command", cmd.String())
-	handle, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone)
+	handle, startWaitForProcessExit, err := pco.executor.StartProcess(ctx, cmd, process.ProcessExitHandlerFunc(exitHandler), process.CreationFlagsNone, nil)
 	if err != nil {
 		close(exitCh)
 		return nil, errors.Join(err, fmt.Errorf("failed to start podman command '%s'", commandName))
@@ -1287,6 +1304,13 @@ func (pco *PodmanCliOrchestrator) runBufferedPodmanCommand(
 
 func makePodmanCommand(args ...string) *exec.Cmd {
 	cmd := exec.Command("podman", args...)
+	// exec.Command resolves cmd.Path via LookPath but leaves cmd.Args[0] as
+	// the original "podman" string. Align Args[0] with the resolved Path so
+	// downstream consumers and child-process
+	// argv[0] observers see a consistent, fully-qualified command name.
+	if cmd.Path != "" {
+		cmd.Args[0] = cmd.Path
+	}
 	return cmd
 }
 

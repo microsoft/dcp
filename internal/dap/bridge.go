@@ -537,6 +537,7 @@ func (b *DapBridge) handleStartDebuggingRequest(req *dap.StartDebuggingRequest) 
 	// response back to the adapter once the child session is established.
 	return req, true, nil
 }
+
 // to the IDE. When the idePipe is available, messages are enqueued through it so that
 // sequence numbering and write serialization are handled by the pipe's writer goroutine.
 // When the idePipe is not yet created (e.g., adapter launch failure before the message loop),

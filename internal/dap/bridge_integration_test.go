@@ -372,9 +372,9 @@ func TestBridge_InitializeObservesStartDebuggingCapability(t *testing.T) {
 			Command: "initialize",
 		},
 		Arguments: dap.InitializeRequestArguments{
-			ClientID:                        "test",
-			SupportsStartDebuggingRequest:   true,
-			SupportsRunInTerminalRequest:    false,
+			ClientID:                      "test",
+			SupportsStartDebuggingRequest: true,
+			SupportsRunInTerminalRequest:  false,
 		},
 	}
 

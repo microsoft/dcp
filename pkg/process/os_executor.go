@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	stdlib_maps "maps"
-	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -53,6 +52,7 @@ func (e *OSExecutor) StartProcess(
 	cmd *exec.Cmd,
 	handler ProcessExitHandler,
 	flags ProcessCreationFlag,
+	sysCreateProcess SysCreateProcessFunc,
 ) (ProcessHandle, func(), error) {
 	e.acquireLock()
 	if e.disposed {
@@ -61,7 +61,7 @@ func (e *OSExecutor) StartProcess(
 	}
 	e.releaseLock()
 
-	handle, startProcessErr := e.startProcess(cmd, flags)
+	handle, waitable, startProcessErr := e.startProcess(cmd, flags, sysCreateProcess)
 	if startProcessErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, nil, startProcessErr
 	}
@@ -70,7 +70,7 @@ func (e *OSExecutor) StartProcess(
 
 	// Get the wait result channel, but do not actually start waiting
 	// This also has the effect of tying the wait for this process to the command that started it.
-	ws, _ := e.tryStartWaiting(handle, waitableCmd{cmd, flags}, waitReasonNone)
+	ws, _ := e.tryStartWaiting(handle, waitable, waitReasonNone)
 
 	// Start the goroutine that waits for the context to expire.
 	go func() {
@@ -80,12 +80,12 @@ func (e *OSExecutor) StartProcess(
 		case <-ws.waitEndedCh:
 			// The process exited before the context expired.
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
+				exitCode, execError := getProcessExecResult(ws.waitErr, ws.waitable, cmd)
 				handler.OnProcessExited(pid, exitCode, errors.Join(ctx.Err(), execError))
 			}
 
 		case <-ctx.Done():
-			_, shouldStopProcess := e.tryStartWaiting(handle, waitableCmd{cmd, flags}, waitReasonStopping)
+			_, shouldStopProcess := e.tryStartWaiting(handle, waitable, waitReasonStopping)
 			var stopProcessErr error = nil
 
 			if shouldStopProcess {
@@ -112,14 +112,14 @@ func (e *OSExecutor) StartProcess(
 			<-ws.waitEndedCh
 
 			if handler != nil {
-				exitCode, execError := getProcessExecResult(ws.waitErr, cmd)
+				exitCode, execError := getProcessExecResult(ws.waitErr, ws.waitable, cmd)
 				handler.OnProcessExited(pid, exitCode, errors.Join(stopProcessErr, execError, ctx.Err()))
 			}
 		}
 	}()
 
 	startWaitingForProcessExit := func() {
-		_, _ = e.tryStartWaiting(handle, waitableCmd{cmd, flags}, waitReasonMonitoring)
+		_, _ = e.tryStartWaiting(handle, waitable, waitReasonMonitoring)
 	}
 
 	return handle, startWaitingForProcessExit, nil
@@ -133,23 +133,17 @@ func (e *OSExecutor) StartAndForget(cmd *exec.Cmd, flags ProcessCreationFlag) (P
 	}
 	e.releaseLock()
 
-	handle, startProcessErr := e.startProcess(cmd, flags)
+	handle, waitable, startProcessErr := e.startProcess(cmd, flags, nil)
 	if startProcessErr != nil {
 		return ProcessHandle{Pid: UnknownPID}, startProcessErr
 	}
 
-	if cmd.Process == nil {
-		e.log.V(1).Info("Process info is not available after successful start???",
-			"PID", handle.Pid,
-			"Command", cmd.Path,
-			"Args", cmd.Args[1:],
-		)
-	} else {
-		// We have to wait (not cmd.Process.Release()) because if we don't, then if the child process exits
-		// before the parent process exist, the child becomes a zombie (on non-Windows platforms).
-		go func(p *os.Process) {
-			_, _ = p.Wait()
-		}(cmd.Process)
+	// We have to wait (not cmd.Process.Release()) because if we don't, then if the child process exits
+	// before the parent process exist, the child becomes a zombie (on non-Windows platforms).
+	if waitable != nil {
+		go func() {
+			_ = waitable.Wait()
+		}()
 	}
 
 	return handle, nil
@@ -167,16 +161,34 @@ func (e *OSExecutor) StopProcess(handle ProcessHandle, options ...ProcessStopOpt
 	return e.stopProcessInternal(handle, stopOptions.opts)
 }
 
-// Returns a ProcessHandle identifying the started process, or an error.
-func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (ProcessHandle, error) {
+// Returns the process handle, waitable process, and error.
+func (e *OSExecutor) startProcess(
+	cmd *exec.Cmd,
+	flags ProcessCreationFlag,
+	sysCreateProcess SysCreateProcessFunc,
+) (ProcessHandle, Waitable, error) {
 	e.prepareProcessStart(cmd, flags)
 
-	if err := cmd.Start(); err != nil {
-		return ProcessHandle{Pid: UnknownPID}, err
-	}
+	var pid Pid_t
+	var waitable Waitable
 
-	osPid := cmd.Process.Pid
-	pid := Uint32_ToPidT(uint32(osPid))
+	if sysCreateProcess != nil {
+		var sysCreateErr error
+		pid, waitable, sysCreateErr = sysCreateProcess(cmd)
+		if sysCreateErr != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, sysCreateErr
+		}
+		if waitable == nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("sysCreateProcess returned nil waitable")
+		}
+	} else {
+		if err := cmd.Start(); err != nil {
+			return ProcessHandle{Pid: UnknownPID}, nil, err
+		}
+		osPid := cmd.Process.Pid
+		pid = Uint32_ToPidT(uint32(osPid))
+		waitable = &waitableCmd{cmd, flags}
+	}
 
 	startLog := e.log.WithValues(
 		"PID", pid,
@@ -197,11 +209,11 @@ func (e *OSExecutor) startProcess(cmd *exec.Cmd, flags ProcessCreationFlag) (Pro
 			startLog.Error(stopErr, "Could not stop process after failed start")
 		}
 
-		return ProcessHandle{Pid: UnknownPID}, fmt.Errorf("could not complete process start: %w", startCompletionErr)
+		return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("could not complete process start: %w", startCompletionErr)
 	}
 
 	startLog.V(1).Info("Process started successfully", "PID", pid)
-	return handle, nil
+	return handle, waitable, nil
 }
 
 // Atomically starts waiting on the passed waitable if noting is already waiting in association with the process
@@ -225,10 +237,17 @@ func (e *OSExecutor) tryStartWaiting(handle ProcessHandle, waitable Waitable, re
 		}
 
 		callerShouldStopProcess = (reason&waitReasonStopping) != 0 && (ws.reason&waitReasonStopping) == 0
+
 		mustStartWaiting := ws.reason == waitReasonNone && reason != waitReasonNone
 		ws.reason |= reason
+
 		if mustStartWaiting {
-			go e.doWait(ws, waitable, handle.Pid)
+			// Prefer the waitable associated with process start, if available.
+			effectiveWaitable := ws.waitable
+			if effectiveWaitable == nil {
+				effectiveWaitable = waitable
+			}
+			go e.doWait(ws, effectiveWaitable, handle.Pid)
 		}
 	} else {
 		callerShouldStopProcess = (reason & waitReasonStopping) != 0
@@ -259,14 +278,20 @@ func (e *OSExecutor) doWait(ws *waitState, waitable Waitable, pid Pid_t) {
 	close(ws.waitEndedCh)
 }
 
-// Returns the process execution error and process exit code depending on the result of command wait call.
-func getProcessExecResult(waitErr error, cmd *exec.Cmd) (int32, error) {
+// Returns the process execution error and process exit code depending on the result
+// of a process wait operation.
+func getProcessExecResult(waitErr error, w Waitable, cmd *exec.Cmd) (int32, error) {
 	var ee *exec.ExitError
-	if waitErr == nil {
+	ecs, haveEcs := w.(ExitCodeSource)
+
+	switch {
+	case waitErr == nil && haveEcs:
+		return ecs.ExitCode(), nil
+	case waitErr == nil && cmd.ProcessState != nil:
 		return int32(cmd.ProcessState.ExitCode()), nil
-	} else if errors.As(waitErr, &ee) {
+	case waitErr != nil && errors.As(waitErr, &ee):
 		return int32(ee.ExitCode()), nil
-	} else {
+	default:
 		return UnknownExitCode, waitErr
 	}
 }

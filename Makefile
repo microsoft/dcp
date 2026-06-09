@@ -115,6 +115,7 @@ LFWRITER_TOOL ?= $(TOOL_BIN)/lfwriter$(exe_suffix)
 PARROT_TOOL ?= $(TOOL_BIN)/parrot$(exe_suffix)
 PARROT_TOOL_CONTAINER_BINARY ?= $(TOOL_BIN)/parrot_c
 DEBUGGEE_TOOL ?= $(TOOL_BIN)/debuggee$(exe_suffix)
+TERMCHILD_TOOL ?= $(TOOL_BIN)/termchild$(exe_suffix)
 GO_LICENSES ?= $(TOOL_BIN)/go-licenses$(exe_suffix)
 PROTOC ?= $(TOOL_BIN)/protoc/bin/protoc$(exe_suffix)
 
@@ -185,6 +186,10 @@ $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 	--output-file pkg/generated/openapi/zz_generated.openapi.go \
 	--go-header-file $(repo_dir)/hack/boilerplate.go.txt \
 	--output-dir "$(repo_dir)" \
+	--output-model-name-file zz_generated.model_name.go \
+	--readonly-pkg k8s.io/apimachinery/pkg/apis/meta/v1 \
+	--readonly-pkg k8s.io/apimachinery/pkg/runtime \
+	--readonly-pkg k8s.io/apimachinery/pkg/version \
 	--report-filename - \
 	$(OPENAPI_GEN_OPTS) \
 	github.com/microsoft/dcp/api/v1 \
@@ -192,13 +197,12 @@ $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 endef
 
 .PHONY: generate-openapi
-generate-openapi: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## Generates OpenAPI definitions for resources defined in this repo
+generate-openapi: ## Generates OpenAPI definitions for resources defined in this repo
+	$(run-openapi-gen)
 
 .PHONY: generate-openapi-debug
 generate-openapi-debug: OPENAPI_GEN_OPTS = -v 6
-generate-openapi-debug: $(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go ## Runs OpenAPI generator with additional options for debugging
-
-$(repo_dir)/pkg/generated/openapi/zz_generated.openapi.go: $(TYPE_SOURCES)
+generate-openapi-debug: ## Runs OpenAPI generator with additional options for debugging
 	$(run-openapi-gen)
 
 .PHONY: generate-goversioninfo
@@ -235,17 +239,18 @@ generate-licenses: generate-dependency-notices ## Generates license/notice files
 
 # # We ignore the standard library (go list std) as a workaround for https://github.com/google/go-licenses/issues/244.
 # The awk script converts the output of `go list std` (line separated modules) to the input that `--ignore` expects
+GO_LICENSES_STD_IGNORE := $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }'),internal/syscall/windows,internal/syscall/windows/registry,internal/syscall/windows/sysdll
 .PHONY: generate-dependency-notices
 generate-dependency-notices: go-licenses
 ifeq ($(detected_OS),windows)
-	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	$$env:GOOS="windows"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(GO_LICENSES_STD_IGNORE) > NOTICE.windows
+	$$env:GOOS="darwin"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(GO_LICENSES_STD_IGNORE) > NOTICE.darwin
+	$$env:GOOS="linux"; $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(GO_LICENSES_STD_IGNORE) > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 else
-	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.windows
-	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.darwin
-	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(shell go list std | awk 'NR > 1 { printf(",") } { printf("%s",$$0) } END { print "" }') > NOTICE.linux
+	GOOS="windows" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(GO_LICENSES_STD_IGNORE) > NOTICE.windows
+	GOOS="darwin" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(GO_LICENSES_STD_IGNORE) > NOTICE.darwin
+	GOOS="linux" $(GO_LICENSES) report ./cmd/dcp --template NOTICE.tmpl --ignore github.com/microsoft/dcp --ignore $(GO_LICENSES_STD_IGNORE) > NOTICE.linux
 	$(CLEAR_GOARGS) $(GO_BIN) run scripts/notice.go
 endif
 
@@ -336,9 +341,9 @@ endif
 # mirrored there.
 
 ifeq (4.4,$(firstword $(sort $(MAKE_VERSION) 4.4)))
-TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool cache-delve
+TEST_PREREQS := generate-grpc .WAIT build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool termchild-tool cache-delve
 else
-TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool cache-delve
+TEST_PREREQS := generate-grpc build-dcp build-dcptun-containerexe delay-tool lfwriter-tool parrot-tool parrot-tool-containerexe debuggee-tool termchild-tool cache-delve
 endif
 
 .PHONY: test-prereqs
@@ -404,6 +409,12 @@ delay-tool: $(DELAY_TOOL)
 $(DELAY_TOOL): $(wildcard ./test/delay/*.go) | $(TOOL_BIN)
 	$(GO_BIN) build -o $(DELAY_TOOL) github.com/microsoft/dcp/test/delay
 
+# termchild-tool is used for internal/termpty pseudo-terminal tests
+.PHONY: termchild-tool
+termchild-tool: $(TERMCHILD_TOOL)
+$(TERMCHILD_TOOL): $(wildcard ./test/termchild/*.go) | $(TOOL_BIN)
+	$(GO_BIN) build -o $(TERMCHILD_TOOL) github.com/microsoft/dcp/test/termchild
+
 # lfwriter tool is used for testing lockfile package
 .PHONY: lfwriter-tool
 lfwriter-tool: $(LFWRITER_TOOL)
@@ -441,4 +452,3 @@ cache-delve:
 .PHONY: httpcontent-stream-repro
 httpcontent-stream-repro:
 	dotnet build test/HttpContentStreamRepro.Server/HttpContentStreamRepro.Server.csproj
-

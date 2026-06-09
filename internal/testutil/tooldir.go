@@ -31,3 +31,16 @@ func GetTestToolDir(exeName string) (string, error) {
 		return "", fmt.Errorf("could not find '%s' test tool: %w", exeName, err)
 	}
 }
+
+func GetTestToolPath(exeName string) (string, error) {
+	dir, err := GetTestToolDir(exeName)
+	if err != nil {
+		return "", err
+	}
+
+	if runtime.GOOS == "windows" && !strings.HasSuffix(exeName, ".exe") {
+		exeName += ".exe"
+	}
+
+	return filepath.Join(dir, exeName), nil
+}

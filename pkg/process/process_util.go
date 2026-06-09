@@ -29,12 +29,24 @@ import (
 // Deprecated: Use ProcessHandle directly.
 type ProcessTreeItem = ProcessHandle
 
+func FormatIdentityTime(identityTime time.Time) string {
+	if identityTime.IsZero() {
+		return ""
+	}
+	return formatIdentityTime(identityTime)
+}
+
 var (
 	This func() (ProcessHandle, error)
 
 	// Essentially the same as ps.ErrorProcessNotRunning, but we do not want to
 	// expose the ps package outside of this package.
 	ErrorProcessNotFound = errors.New("process does not exist")
+
+	// Returned when a process with the requested PID exists, but its identity time
+	// does not match the expected identity time. This typically means the original
+	// process has exited and the PID has been reused by a different process.
+	ErrProcessIdentityMismatch = errors.New("process start time mismatch, pid might have been reused")
 )
 
 func getIDs(items []ProcessHandle) []Pid_t {
@@ -82,7 +94,7 @@ func RunToCompletion(ctx context.Context, executor Executor, cmd *exec.Cmd) (int
 	pic := make(chan ProcessExitInfo, 1)
 	peh := NewChannelProcessExitHandler(pic)
 
-	_, startWaitForProcessExit, startProcessErr := executor.StartProcess(ctx, cmd, peh, CreationFlagsNone)
+	_, startWaitForProcessExit, startProcessErr := executor.StartProcess(ctx, cmd, peh, CreationFlagsNone, nil)
 	if startProcessErr != nil {
 		return UnknownExitCode, startProcessErr
 	}
@@ -178,7 +190,8 @@ func findPsProcess(handle ProcessHandle) (*ps.Process, error) {
 		actualIdentityTime := processIdentityTime(proc)
 
 		return nil, fmt.Errorf(
-			"process start time mismatch, pid might have been reused: pid %d, expected start time %s, actual start time %s",
+			"%w: pid %d, expected start time %s, actual start time %s",
+			ErrProcessIdentityMismatch,
 			handle.Pid,
 			handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			actualIdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
@@ -266,12 +279,6 @@ func IsEarlyProcessExitError(err error) bool {
 	return isEChildErr
 }
 
-type Waitable interface {
-	Wait() error
-	Info() string
-	Flags() ProcessCreationFlag
-}
-
 type waitableCmd struct {
 	*exec.Cmd
 	flags ProcessCreationFlag
@@ -306,7 +313,7 @@ func (wl waitableLite) Flags() ProcessCreationFlag {
 var _ Waitable = waitableCmd{}
 var _ Waitable = waitableLite{}
 
-func makeWaitable(pid Pid_t, proc *os.Process) Waitable {
+func makeProcessWaitable(pid Pid_t, proc *os.Process) Waitable {
 	return waitableLite{
 		wait: func() error {
 			_, waitErr := proc.Wait()
