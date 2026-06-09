@@ -190,7 +190,7 @@ func createConnManager(
 		listener = boundListener
 	}
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
+	ctx, cancelCtx := context.WithCancel(lifetimeCtx)
 	initialCols, initialRows = NormalizeTerminalDimensions(initialCols, initialRows)
 
 	cm := &ConnManager{
@@ -212,6 +212,7 @@ func createConnManager(
 	} else {
 		cm.log.V(1).Info("Terminal connection manager is listening", "SocketPath", socketPath)
 	}
+	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
 
 	return cm, nil
 }
