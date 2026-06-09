@@ -95,13 +95,6 @@ type ConnManager struct {
 	// happens after any in-progress Serve has returned and the listener has
 	// been closed.
 	done chan struct{}
-
-	// lifetimeStopFuncCh carries the stop function returned by context.AfterFunc so that shutdown
-	// can unregister the lifetime-context callback, releasing the context's reference to this
-	// manager (otherwise managers that are shut down explicitly while the lifetime context is still
-	// live would accumulate until that context is cancelled). Buffered with capacity 1 and read with
-	// a non-blocking receive to stay race-free regardless of when the callback fires.
-	lifetimeStopFuncCh chan func() bool
 }
 
 // NewConnManager creates a connection manager that bridges HMP v1 client
@@ -211,8 +204,6 @@ func createConnManager(
 		cancelCtx:   cancelCtx,
 		ptpP:        concurrency.NewValuePromise[*PseudoTerminalProcess](),
 		done:        make(chan struct{}),
-
-		lifetimeStopFuncCh: make(chan func() bool, 1),
 	}
 	cm.shutdownOnce = sync.OnceFunc(cm.shutdown)
 
@@ -222,7 +213,6 @@ func createConnManager(
 		cm.log.V(1).Info("Terminal connection manager is listening", "SocketPath", socketPath)
 	}
 
-	cm.lifetimeStopFuncCh <- context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
 	return cm, nil
 }
 
@@ -533,38 +523,24 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 	wg.Wait()
 }
 
-// shutdown() is the manager's idempotent shutdown sequence. It cancels the
-// internal context (which terminates any in-progress Serve loop or pending
-// dial, and the underlying Hmp1Server's PTY reader worker) and, in listen mode,
-// removes the socket file (which DCP owns) and closes the listener (which
-// unblocks Accept). The socket file is removed before the listener is closed so
-// we only ever delete the file we bound, never one another owner may recreate
-// in the close→remove window. In connect mode the peer owns the socket file and
-// we leave it in place.
+// shutdown() is the manager's shutdown sequence.
+// Idempotecy is guaranteed via wrapping the method in a sync.Once.
 // Note: cm.done is closed when connLoop() exits.
 func (cm *ConnManager) shutdown() {
 	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
 
+	// Cancels HMP1 server and any data exchange with the client.
 	cm.cancelCtx()
 
-	// Release the lifetime-context callback registration so the context no longer references this
-	// manager. The non-blocking receive copes with shutdown being driven by the callback itself
-	// (in which case the stop func may not be enqueued yet and would be a no-op anyway).
-	select {
-	case stop := <-cm.lifetimeStopFuncCh:
-		stop()
-	default:
-	}
-
 	if cm.listener != nil {
-		if cm.ownsSocketFile() {
-			if removeErr := os.Remove(cm.socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				cm.log.V(1).Info("Removing terminal socket file failed", "error", removeErr.Error())
-			}
-		}
-
 		if closeErr := cm.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
 			cm.log.V(1).Info("Closing terminal socket listener failed", "error", closeErr.Error())
+		}
+
+		if cm.ownsSocketFile() {
+			if removeErr := os.Remove(cm.socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				cm.log.Error(removeErr, "Removing terminal socket file failed")
+			}
 		}
 	}
 }
