@@ -537,7 +537,7 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 	}
 
 	if found {
-		stopErr = errors.Join(stopErr, closeRunFiles(nil, runState))
+		stopErr = errors.Join(stopErr, closeRunFiles(ctx, runState))
 	}
 
 	if stopErr != nil {
