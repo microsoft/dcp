@@ -8,6 +8,7 @@ package io
 import (
 	"context"
 	"io"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -30,28 +31,46 @@ func WithNoDataStopRetries(n uint) FollowWriterOption {
 	}
 }
 
+// WithCloseSourceOnCancel makes Cancel synchronously close source if it implements io.Closer.
+// Once enabled, the FollowWriter owns source closure and closes it before Done on any exit.
+func WithCloseSourceOnCancel() FollowWriterOption {
+	return func(fw *FollowWriter) {
+		fw.closeSourceOnCancel = true
+	}
+}
+
 type FollowWriter struct {
-	err               atomic.Value
-	follow            atomic.Bool
-	cancel            context.CancelFunc
-	doneChan          chan struct{}
-	noDataStopRetries uint
+	err                 atomic.Value
+	follow              atomic.Bool
+	cancel              context.CancelFunc
+	closeSource         func()
+	closeSourceOnCancel bool
+	closeSourceOnce     sync.Once
+	doneChan            chan struct{}
+	noDataStopRetries   uint
 }
 
 // Creates a FollowWriter that reads content from the reader source and writes it to the writer destination.
 // Keeps trying to read new content even after EOF until StopFollow() is called, after which the next EOF
 // received will cause the reader and writer to stop.
-// If the source is an io.Closer, it will be closed when the FollowWriter is cancelled.
+// Source ownership stays with the caller unless WithCloseSourceOnCancel is used.
 //
 // Use WithNoDataStopRetries option to specify extra read attempts after StopFollow() is called
 // when no data has been seen yet. This is useful when the data source might not be ready immediately.
 func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts ...FollowWriterOption) *FollowWriter {
 	followCtx, cancel := context.WithCancel(ctx)
+	closeSource := func() {}
+	if sourceCloser, isCloser := source.(io.Closer); isCloser {
+		closeSource = func() {
+			_ = sourceCloser.Close()
+		}
+	}
 	fw := &FollowWriter{
-		err:      atomic.Value{},
-		follow:   atomic.Bool{},
-		cancel:   cancel,
-		doneChan: make(chan struct{}),
+		err:         atomic.Value{},
+		follow:      atomic.Bool{},
+		cancel:      cancel,
+		closeSource: closeSource,
+		doneChan:    make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -61,14 +80,13 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 	fw.follow.Store(true)
 
 	go func() {
+		defer close(fw.doneChan)
+		defer cancel()
 		defer func() {
-			// If the source can be closed, do so
-			if closer, isCloser := source.(io.Closer); isCloser {
-				closer.Close()
+			if fw.closeSourceOnCancel {
+				fw.closeSourceOnce.Do(fw.closeSource)
 			}
 		}()
-		defer cancel()
-		defer close(fw.doneChan)
 
 		buf := make([]byte, defaultBufferSize)
 		timer := time.NewTimer(0)
@@ -99,6 +117,9 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 			}
 
 			if readErr != nil && readErr != io.EOF {
+				if followCtx.Err() != nil {
+					return
+				}
 				fw.err.Store(readErr)
 				return
 			}
@@ -152,4 +173,7 @@ func (fw *FollowWriter) Done() <-chan struct{} {
 
 func (fw *FollowWriter) Cancel() {
 	fw.cancel()
+	if fw.closeSourceOnCancel {
+		fw.closeSourceOnce.Do(fw.closeSource)
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	stdslices "slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -61,40 +62,83 @@ func makeResourceLogPath(resourceId string, dir string) string {
 
 func ReleaseResourceLog(resourceId string) {
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
-
-	if sink, found := resourceSinks[resourceId]; found {
-		// Flush any buffered log entries to the file
-		sink.flush()
-		// We're making a best effort to close the file, but don't care if the operation failed
-		_ = sink.file.Close()
+	sink, found := resourceSinks[resourceId]
+	if found {
 		delete(resourceSinks, resourceId)
+	}
+	resourceLoggerLock.Unlock()
+
+	if found {
+		sink.flush()
+		_ = sink.file.Close()
+	}
+}
+
+func ReleaseResourceLogsInFolder(folder string) {
+	if folder == "" {
+		return
+	}
+
+	resourceLoggerLock.Lock()
+
+	sinksToRelease := []*resourceFileSink{}
+	for resourceId, sink := range resourceSinks {
+		if sameCleanPath(filepath.Dir(sink.file.Name()), folder) {
+			sinksToRelease = append(sinksToRelease, sink)
+			delete(resourceSinks, resourceId)
+		}
+	}
+	resourceLoggerLock.Unlock()
+
+	for _, sink := range sinksToRelease {
+		sink.flush()
+		_ = sink.file.Close()
 	}
 }
 
 func ReleaseAllResourceLogs() {
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
 
 	resourceLoggerDisabled.Store(true)
 
-	wg := &sync.WaitGroup{}
-	wg.Add(len(resourceSinks))
+	sinksToRelease := make([]*resourceFileSink, 0, len(resourceSinks))
+	for _, sink := range resourceSinks {
+		sinksToRelease = append(sinksToRelease, sink)
+	}
 
-	for resourceId, sink := range resourceSinks {
-		go func(resourceId string, sink *resourceFileSink) {
+	// Clear out all resource sinks
+	resourceSinks = map[string]*resourceFileSink{}
+	resourceLoggerLock.Unlock()
+
+	wg := &sync.WaitGroup{}
+	wg.Add(len(sinksToRelease))
+
+	for _, sink := range sinksToRelease {
+		go func(sink *resourceFileSink) {
 			defer wg.Done()
 			// Flush any buffered log entries to the file
 			sink.flush()
 			// We're making a best effort to close the file, but don't care if the operation failed
 			_ = sink.file.Close()
-		}(resourceId, sink)
+		}(sink)
 	}
 
-	// Clear out all resource sinks
-	resourceSinks = map[string]*resourceFileSink{}
-
 	wg.Wait()
+}
+
+func sameCleanPath(left string, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	if leftAbs, leftErr := filepath.Abs(left); leftErr == nil {
+		left = leftAbs
+	}
+	if rightAbs, rightErr := filepath.Abs(right); rightErr == nil {
+		right = rightAbs
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 type resourceSink struct {
@@ -119,12 +163,17 @@ func newResourceSink(atomicLevel zap.AtomicLevel, innerSink logr.LogSink, resour
 
 func (s *resourceSink) Flush() {
 	resourceLoggerLock.Lock()
-	defer resourceLoggerLock.Unlock()
+
+	sinksToFlush := make([]*resourceFileSink, 0, len(resourceSinks))
+	for _, sink := range resourceSinks {
+		sinksToFlush = append(sinksToFlush, sink)
+	}
+	resourceLoggerLock.Unlock()
 
 	wg := &sync.WaitGroup{}
-	wg.Add(len(resourceSinks))
+	wg.Add(len(sinksToFlush))
 
-	for _, sink := range resourceSinks {
+	for _, sink := range sinksToFlush {
 		go func(rfs *resourceFileSink) {
 			defer wg.Done()
 			rfs.flush()
