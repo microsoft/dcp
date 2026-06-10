@@ -170,7 +170,7 @@ func TestTunnelDataThroughput(t *testing.T) {
 	defer testCtxCancel()
 	log := testutil.NewLogForTesting(t.Name())
 
-	serverPort, portErr := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
+	serverPort, portErr := networking.GetFreePort(context.Background(), apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, portErr, "Failed to get free port for server")
 
 	serverProxyClient, proxyCleanup := createProxyPair(t, testCtx, log)

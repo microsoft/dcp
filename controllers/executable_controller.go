@@ -1019,6 +1019,10 @@ func (r *ExecutableReconciler) createEndpoints(
 		address = networking.IPv6LocalhostDefaultAddress
 	}
 
+	if reserveErr := reserveServiceProducerEndpointPort(ctx, r, serviceProducer, address, serviceProducer.Port, log); reserveErr != nil {
+		return nil, reserveErr
+	}
+
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 		return ep.Spec.ServiceName == serviceProducer.ServiceName &&
 			ep.Spec.ServiceNamespace == owner.GetNamespace() &&
