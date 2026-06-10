@@ -79,40 +79,6 @@ func (s *Store) CreateOrUpdatePortReservation(ctx context.Context, request PortR
 	return s.reservePort(ctx, request, true)
 }
 
-// IsPortReservedByOtherOwner reports whether an active owner other than ownerProcess holds the
-// requested protocol/IP/port tuple or a conflicting same-family wildcard tuple.
-func (s *Store) IsPortReservedByOtherOwner(ctx context.Context, binding ports.Binding, ownerProcess process.ProcessTreeItem) (bool, error) {
-	key, portErr := normalizePortReservationKey(binding)
-	if portErr != nil {
-		return false, portErr
-	}
-	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
-	if ownerErr != nil {
-		return false, fmt.Errorf("%w: %w", ErrInvalidArgument, ownerErr)
-	}
-
-	db, dbErr := s.requireDB()
-	if dbErr != nil {
-		return false, dbErr
-	}
-
-	reservations, reservationsErr := getConflictingPortReservations(ctx, db, key)
-	if reservationsErr != nil {
-		return false, reservationsErr
-	}
-	for _, reservation := range reservations {
-		if reservation.OwnerProcess.Pid == normalizedOwner.Pid &&
-			reservation.OwnerProcess.IdentityTime.Equal(normalizedOwner.IdentityTime) {
-			continue
-		}
-		if resourceLeaseOwnerIsActive(reservation.OwnerProcess) {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
 // ReleasePort removes this owner process' exact protocol/IP/port reservation.
 // Reservations held by other owners, or overlapping wildcard/specific reservations, are left intact.
 func (s *Store) ReleasePort(ctx context.Context, request PortReservationRequest) error {
