@@ -518,7 +518,7 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 }
 
 // shutdown() is the manager's shutdown sequence.
-// Idempotecy is guaranteed via wrapping the method in a sync.Once.
+// Idempotency is guaranteed via wrapping the method in a sync.Once.
 func (cm *ConnManager) shutdown() {
 	cm.log.V(1).Info("Shutting down terminal connection manager...", "SocketPath", cm.socketPath)
 	defer close(cm.done)
