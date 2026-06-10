@@ -19,8 +19,8 @@ type TerminalSocketMode string
 
 const (
 	// TerminalSocketModeListen means DCP listens on the socket and the client connects to it.
-	// In this mode DCP owns the socket file: it creates the file (removing a stale leftover from a
-	// previous run if present), and unlinks it when the terminal is torn down.
+	// In this mode DCP owns the socket file: it creates the file and unlinks it when the terminal
+	// is torn down. If a file already exists at the path, DCP refuses to bind and returns an error.
 	TerminalSocketModeListen TerminalSocketMode = "listen"
 	// TerminalSocketModeConnect means the client listens on the socket and DCP connects to it.
 	// In this mode the peer owns the socket file; DCP never creates or removes it.
