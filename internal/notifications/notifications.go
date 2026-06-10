@@ -10,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -20,12 +18,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/notifications/proto"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/grpcutil"
 	"github.com/microsoft/dcp/pkg/osutil"
-	"github.com/microsoft/dcp/pkg/randdata"
 )
 
 type NotificationKind string
@@ -134,42 +130,7 @@ func asNotification(nd *proto.NotificationData) (Notification, error) {
 // is reasonably unique to the calling process.
 // If the `rootDir` is empty, it will use the user's cache directory.
 func PrepareNotificationSocketPath(rootDir string, socketNamePrefix string) (string, error) {
-	if rootDir == "" {
-		cacheDir, cacheDirErr := os.UserCacheDir()
-		if cacheDirErr != nil {
-			return "", fmt.Errorf("failed to get user cache directory when creating a notification socket: %w", cacheDirErr)
-		} else {
-			rootDir = cacheDir
-		}
-	}
-
-	socketDir := filepath.Join(rootDir, dcppaths.DcpWorkDir)
-	if err := os.MkdirAll(socketDir, osutil.PermissionOnlyOwnerReadWriteTraverse); err != nil {
-		return "", fmt.Errorf("failed to create directory for notification socket: %w", err)
-	}
-
-	// On Windows the user cache directory always exists and is always private to the user,
-	// but on Unix-like systems, we need to ensure the directory is private.
-	if !osutil.IsWindows() {
-		info, infoErr := os.Stat(socketDir)
-		if infoErr != nil {
-			return "", fmt.Errorf("failed to check permissions on the notification socket directory: %w", infoErr)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("notification socket path %s is not a directory", socketDir)
-		}
-		if info.Mode().Perm() != osutil.PermissionOnlyOwnerReadWriteTraverse {
-			return "", fmt.Errorf("notification socket directory %s is not private to the user", socketDir)
-		}
-	}
-
-	suffix, suffixErr := randdata.MakeRandomString(8)
-	if suffixErr != nil {
-		return "", fmt.Errorf("failed to create random string for notification socket path suffix: %w", suffixErr)
-	}
-
-	socketPath := filepath.Join(socketDir, socketNamePrefix+string(suffix))
-	return socketPath, nil
+	return osutil.CreateRandomSocketPath(rootDir, socketNamePrefix)
 }
 
 // NotificationSubscription represents a subscription to notifications.
