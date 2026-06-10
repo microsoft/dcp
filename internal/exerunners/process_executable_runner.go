@@ -59,8 +59,7 @@ func persistentExecutableOutputBaseDir() string {
 }
 
 type processRunState struct {
-	pid          process.Pid_t
-	identityTime time.Time
+	handle process.ProcessHandle
 
 	// File handles for the process's output (applicable to non-terminal processes)
 	stdOutFile *os.File
@@ -76,7 +75,6 @@ type processRunState struct {
 	// Adopted (persistent) process data
 	adopted     bool
 	cancelWatch func() // If the process is adopted, this function can be used to cancel the watch over it.
-
 	// Change handler for notifying the Executable controller of process state changes.
 	runChangeHandler controllers.RunChangeHandler
 }
@@ -202,7 +200,8 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		}
 	})
 
-	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags, nil)
+	// We want to ensure that the service process tree is killed when DCP is stopped so that ports are released etc.
+	handle, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags, nil)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -225,29 +224,28 @@ func (r *ProcessExecutableRunner) startProcessRun(
 
 	if !exe.Spec.Persistent {
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, startLog)
+		dcpproc.RunProcessWatcher(r.pe, handle, startLog)
 	} else if monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp); monitorErr != nil {
 		startLog.Error(monitorErr, "Could not start persistent Executable lifecycle monitor")
 	} else if found {
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, pid, processIdentityTime, startLog)
+		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, handle, startLog)
 	}
 
-	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-		pid:              pid,
-		identityTime:     processIdentityTime,
+	r.runningProcesses.Store(pidToRunID(handle.Pid), &processRunState{
+		handle:           handle,
 		stdOutFile:       stdOutFile,
 		stdErrFile:       stdErrFile,
 		cmdInfo:          cmd.String(),
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime := process.StartTimeForProcess(pid)
-	result.RunID = pidToRunID(pid)
-	pointers.SetValue(&result.Pid, int64(pid))
+	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	result.RunID = pidToRunID(handle.Pid)
+	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
-	result.ProcessIdentityTime = processIdentityTime
+	result.ProcessIdentityTime = handle.IdentityTime
 	result.StartWaitForRunCompletion = startWaitForProcessExit
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
@@ -337,8 +335,7 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 
 	runID := pidToRunID(ptp.PID)
 	r.runningProcesses.Store(runID, &processRunState{
-		pid:              ptp.PID,
-		identityTime:     ptp.IdentityTime,
+		handle:           process.NewHandle(ptp.PID, ptp.IdentityTime),
 		ptp:              ptp,
 		connMgr:          connMgr,
 		cmdInfo:          cmd.String(),
@@ -436,7 +433,8 @@ func (r *ProcessExecutableRunner) AdoptRun(
 		return fmt.Errorf("cannot adopt process run %s without process identity time", run.RunID)
 	}
 
-	if _, findErr := process.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
+	handle := process.NewHandle(run.Pid, run.ProcessIdentityTime)
+	if _, findErr := process.FindProcess(handle); findErr != nil {
 		return fmt.Errorf("cannot adopt process run %s: %w", run.RunID, findErr)
 	}
 	stopWatching := make(chan struct{})
@@ -448,23 +446,21 @@ func (r *ProcessExecutableRunner) AdoptRun(
 	}
 
 	r.runningProcesses.Store(run.RunID, &processRunState{
-		pid:              run.Pid,
-		identityTime:     run.ProcessIdentityTime,
+		handle:           handle,
 		cmdInfo:          run.CommandInfo,
 		adopted:          true,
 		cancelWatch:      cancelWatch,
 		runChangeHandler: runChangeHandler,
 	})
 
-	go r.watchAdoptedProcess(run.RunID, run.Pid, run.ProcessIdentityTime, stopWatching, log)
+	go r.watchAdoptedProcess(run.RunID, handle, stopWatching, log)
 
 	return nil
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
 	runID controllers.RunID,
-	pid process.Pid_t,
-	identityTime time.Time,
+	handle process.ProcessHandle,
 	stopWatching <-chan struct{},
 	log logr.Logger,
 ) {
@@ -477,12 +473,12 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 			return
 
 		case <-timer.C:
-			if _, findErr := process.FindProcess(pid, identityTime); findErr != nil {
+			if _, findErr := process.FindProcess(handle); findErr != nil {
 				runState, found := r.runningProcesses.Load(runID)
 				if !found {
 					return
 				}
-				if runState.pid != pid || !runState.identityTime.Equal(identityTime) {
+				if runState.handle != handle {
 					return
 				}
 				if !r.runningProcesses.CompareAndDelete(runID, runState) {
@@ -494,7 +490,7 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 					runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, waitErr)
 				}
 				if waitErr != nil {
-					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.pid)
+					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.handle.Pid)
 				}
 				return
 			}
@@ -529,9 +525,9 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
 			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
 			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.pid, runState.identityTime, stopLog)
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
 		} else {
-			errCh <- r.pe.StopProcess(runState.pid, runState.identityTime)
+			errCh <- r.pe.StopProcess(runState.handle)
 		}
 	}()
 

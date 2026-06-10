@@ -3179,7 +3179,7 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 		pe process.Executor,
 		spec *termpty.CommandSpec,
 	) (*termpty.PseudoTerminalProcess, error) {
-		_, _, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
+		_, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
 		return nil, startErr
 	})
 

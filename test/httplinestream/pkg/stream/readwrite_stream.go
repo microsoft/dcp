@@ -32,7 +32,7 @@ func NewReadWriteStream() *ReadWriteStream {
 // Read implements io.Reader
 func (s *ReadWriteStream) Read(p []byte) (n int, err error) {
 	s.mu.Lock()
-	
+
 	// Check if there's data to read
 	if s.buf.Len() > 0 {
 		n, err = s.buf.Read(p)
@@ -40,25 +40,25 @@ func (s *ReadWriteStream) Read(p []byte) (n int, err error) {
 		s.mu.Unlock()
 		return n, err
 	}
-	
+
 	// No data and end of stream
 	if s.endOfStream {
 		s.mu.Unlock()
 		return 0, io.EOF
 	}
-	
+
 	// No data, need to wait for a write
 	s.mu.Unlock()
-	
+
 	// Wait for a write signal
 	<-s.writeSignal
-	
+
 	// Try reading again
 	s.mu.Lock()
 	n, err = s.buf.Read(p)
 	s.readPosition += int64(n)
 	s.mu.Unlock()
-	
+
 	return n, err
 }
 
@@ -73,14 +73,14 @@ func (s *ReadWriteStream) Write(p []byte) (n int, err error) {
 
 	n, err = s.buf.Write(p)
 	s.writePosition += int64(n)
-	
+
 	// Signal that data is available
 	select {
 	case s.writeSignal <- struct{}{}:
 	default:
 		// Channel already has signal
 	}
-	
+
 	return n, err
 }
 
@@ -88,15 +88,15 @@ func (s *ReadWriteStream) Write(p []byte) (n int, err error) {
 func (s *ReadWriteStream) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	s.endOfStream = true
-	
+
 	// Signal readers one last time
 	select {
 	case s.writeSignal <- struct{}{}:
 	default:
 	}
-	
+
 	return nil
 }
 
