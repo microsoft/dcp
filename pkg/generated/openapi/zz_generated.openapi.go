@@ -2438,6 +2438,7 @@ func schema_microsoft_dcp_api_v1_EnvVar(ref common.ReferenceCallback) common.Ope
 					"value": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Value of the environment variable. Defaults to \"\" (empty string).",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
