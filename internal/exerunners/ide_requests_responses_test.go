@@ -35,7 +35,7 @@ func TestRunSessionRequestCreation(t *testing.T) {
 
 	req := ideRunSessionRequestV1{
 		LaunchConfigurations: lconfigs,
-		Env:                  []apiv1.EnvVar{{Name: "key1", Value: "value1"}, {Name: "key2", Value: "value2"}},
+		Env:                  []apiv1.EnvVar{{Name: "key1", Value: "value1"}, {Name: "key2", Value: "value2"}, {Name: "empty", Value: ""}},
 		Args:                 []string{"arg1", "arg2"},
 	}
 
@@ -52,7 +52,8 @@ func TestRunSessionRequestCreation(t *testing.T) {
 		],
 		"env": [
 			{"name":"key1","value":"value1"},
-			{"name":"key2","value":"value2"}
+			{"name":"key2","value":"value2"},
+			{"name":"empty","value":""}
 		],
 		"args": [
 			"arg1",
