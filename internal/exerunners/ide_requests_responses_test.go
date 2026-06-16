@@ -110,4 +110,9 @@ func TestApiVersionComparison(t *testing.T) {
 	require.True(t, equalOrNewer("2024-04-23", "2024-04-23"))
 	require.True(t, equalOrNewer("2024-04-23", "2024-03-03"))
 	require.False(t, equalOrNewer("2024-03-03", "2024-04-23"))
+
+	// 2026-02-01 boundary
+	require.True(t, equalOrNewer("2026-02-01", "2026-02-01"))
+	require.True(t, equalOrNewer("2026-02-01", "2025-10-01"))
+	require.False(t, equalOrNewer("2025-10-01", "2026-02-01"))
 }

@@ -83,7 +83,7 @@ func GenerateServerCertificate(ip net.IP) (ServerCertificateData, error) {
 		Subject: pkix.Name{
 			CommonName: ip.String(),
 		},
-		NotBefore:             now,
+		NotBefore:             now.Add(-5 * time.Minute), // Valid 5 minutes in the past to account for clock skew
 		NotAfter:              now.AddDate(0, 0, defaultExpirationDays),
 		SubjectKeyId:          caSubjectKeyId[:],
 		IsCA:                  true,

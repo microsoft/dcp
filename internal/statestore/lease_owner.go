@@ -57,6 +57,6 @@ func resourceLeaseOwnerIsActive(owner process.ProcessTreeItem) bool {
 		return false
 	}
 
-	_, findErr := process.FindProcess(normalizedOwner.Pid, normalizedOwner.IdentityTime)
+	_, findErr := process.FindProcess(process.NewHandle(normalizedOwner.Pid, normalizedOwner.IdentityTime))
 	return findErr == nil
 }

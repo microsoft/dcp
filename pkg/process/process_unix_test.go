@@ -54,7 +54,7 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 
 	executor := process.NewOSExecutor(log)
 	start := time.Now()
-	err = executor.StopProcess(pid, time.Time{})
+	err = executor.StopProcess(process.NewHandle(pid, time.Time{}))
 	require.NoError(t, err)
 	elapsed := time.Since(start)
 	elapsedStr := osutil.FormatDuration(elapsed)

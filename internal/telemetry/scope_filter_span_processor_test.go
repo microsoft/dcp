@@ -28,7 +28,7 @@ func (p *captureProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 	defer p.mu.Unlock()
 	p.spans = append(p.spans, s)
 }
-func (p *captureProcessor) Shutdown(context.Context) error  { return nil }
+func (p *captureProcessor) Shutdown(context.Context) error   { return nil }
 func (p *captureProcessor) ForceFlush(context.Context) error { return nil }
 
 // Ensures that only allowed spans are included in the output of the ScopeAllowlistSpanProcessor

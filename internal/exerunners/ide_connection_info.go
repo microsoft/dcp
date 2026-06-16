@@ -137,7 +137,9 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 				connInfo.supportedApiVersions = info.ProtocolsSupported
 
 				// We will use the IDE endpoint ONLY IF we support at least one common API version
-				if slices.Contains(info.ProtocolsSupported, version20251001) {
+				if slices.Contains(info.ProtocolsSupported, version20260201) {
+					connInfo.apiVersion = version20260201
+				} else if slices.Contains(info.ProtocolsSupported, version20251001) {
 					connInfo.apiVersion = version20251001
 				} else if slices.Contains(info.ProtocolsSupported, version20240423) {
 					connInfo.apiVersion = version20240423
@@ -145,12 +147,17 @@ func NewIdeConnectionInfo(lifetimeCtx context.Context, log logr.Logger) (*ideCon
 					connInfo.apiVersion = version20240303
 				}
 
-				if len(info.SupportedLaunchConfigurationTypes) > 0 {
-					connInfo.supportedLaunchConfigurations = info.SupportedLaunchConfigurationTypes
-				} else {
-					// For backward compatibility, assume that if the IDE does not report supported launch configurations,
-					// it supports "project" configuration.
-					connInfo.supportedLaunchConfigurations = []string{vsProjectLaunchConfiguration}
+				// For protocol versions older than 2026-02-01, track the launch configurations
+				// supported by the IDE. In 2026-02-01 and later, the app host debug adapter config
+				// determines what can be run, so this information is not needed.
+				if !equalOrNewer(connInfo.apiVersion, version20260201) {
+					if len(info.SupportedLaunchConfigurationTypes) > 0 {
+						connInfo.supportedLaunchConfigurations = info.SupportedLaunchConfigurationTypes
+					} else {
+						// For backward compatibility, assume that if the IDE does not report supported launch configurations,
+						// it supports "project" configuration.
+						connInfo.supportedLaunchConfigurations = []string{vsProjectLaunchConfiguration}
+					}
 				}
 			}
 		}
@@ -208,4 +215,16 @@ func (connInfo *ideConnectionInfo) GetClient() *http.Client {
 
 func (connInfo *ideConnectionInfo) GetDialer() *websocket.Dialer {
 	return connInfo.wsDialer
+}
+
+// GetToken returns the security token used for IDE authentication.
+// This token is reused for debug bridge session authentication.
+func (connInfo *ideConnectionInfo) GetToken() string {
+	return connInfo.tokenStr
+}
+
+// SupportsDebugBridge returns true if the connected IDE supports the debug bridge feature.
+// This is available in API version 2026-02-01 and later.
+func (connInfo *ideConnectionInfo) SupportsDebugBridge() bool {
+	return equalOrNewer(connInfo.apiVersion, version20260201)
 }

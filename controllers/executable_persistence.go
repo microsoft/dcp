@@ -216,7 +216,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 				"OldLifecycleKey", record.LifecycleKey,
 				"NewLifecycleKey", lifecycleInfo.Key)
 		}
-		if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr == nil {
+		if _, findErr := process.FindProcess(process.NewHandle(record.PID, record.IdentityTime)); findErr == nil {
 			stopErr := r.stopPersistentExecutableRecord(ctx, exe, record, log)
 			if stopErr != nil {
 				log.Error(stopErr, "Could not stop persistent Executable process with stale lifecycle key", "PID", record.PID)
@@ -242,7 +242,7 @@ func (r *ExecutableReconciler) tryAdoptPersistentExecutableRecord(ctx context.Co
 		return false, noChange
 	}
 
-	if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr != nil {
+	if _, findErr := process.FindProcess(process.NewHandle(record.PID, record.IdentityTime)); findErr != nil {
 		log.Info("Persistent Executable process record is stale; process is no longer running",
 			"PID", record.PID,
 			"Error", findErr.Error())
@@ -327,7 +327,7 @@ func (r *ExecutableReconciler) finishPersistentExecutableStopWithoutStart(exe *a
 
 func (r *ExecutableReconciler) stopPersistentExecutableRecordWithoutLifecycle(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) (bool, objectChange) {
 	resourceKey := exe.GetLeaseKey()
-	if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr == nil {
+	if _, findErr := process.FindProcess(process.NewHandle(record.PID, record.IdentityTime)); findErr == nil {
 		stopErr := r.stopPersistentExecutableRecord(ctx, exe, record, log)
 		if stopErr != nil {
 			log.Error(stopErr, "Could not stop persistent Executable process", "PID", record.PID)
@@ -632,7 +632,7 @@ func (r *ExecutableReconciler) persistentProcessRecordCanBeReused(ctx context.Co
 		return false
 	}
 
-	if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr != nil {
+	if _, findErr := process.FindProcess(process.NewHandle(record.PID, record.IdentityTime)); findErr != nil {
 		log.Info("Persistent Executable process record is not reusable because the process is no longer running",
 			"PID", record.PID,
 			"Error", findErr.Error())
