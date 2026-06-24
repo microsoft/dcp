@@ -1296,7 +1296,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
-	if c.Spec.Build == nil && c.Spec.Image == "" {
+	effectiveMode := c.Spec.EffectiveMode()
+	requiresContainerImage := effectiveMode == ContainerModeSession || effectiveMode == ContainerModePersistent
+	if requiresContainerImage && c.Spec.Build == nil && c.Spec.Image == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
 	}
 
@@ -1356,7 +1358,6 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), c.Spec.Mode, supportedContainerModes))
 	}
 
-	effectiveMode := c.Spec.EffectiveMode()
 	if effectiveMode != ContainerModeSession {
 		if c.Spec.ContainerName == "" {
 			message := "containerName must be set to a value when mode requires an existing or persistent container"
