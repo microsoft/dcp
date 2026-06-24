@@ -224,8 +224,8 @@ func (r *ExecutableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
 	_, runInfo := r.runs.BorrowByNamespacedName(exe.NamespacedName())
 
-	if exe.Spec.Persistent {
-		log.V(1).Info("Persistent Executable is being deleted; leaving underlying process running")
+	if !shouldStopProcessOnDelete(exe.Spec.EffectiveMode()) {
+		log.V(1).Info("Executable is being deleted, leaving underlying process running")
 		var deletionChange objectChange
 		leaseChange := r.withPersistentExecutableLease(ctx, exe, log, func(context.Context, *statestore.ResourceLease) objectChange {
 			r.releasePersistentExecutableResources(ctx, exe, runInfo, log)
@@ -241,6 +241,16 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 	switch {
 	case runInfo == nil:
 		log.V(1).Info("Executable is being deleted (deleting finalizer only)...")
+		if exe.Spec.EffectiveMode() == apiv1.ExecutableModeCleanup {
+			var deletionChange objectChange
+			leaseChange := r.withPersistentExecutableLease(ctx, exe, log, func(ctx context.Context, _ *statestore.ResourceLease) objectChange {
+				cleanupChange := r.stopPersistentExecutableRecordForDeletion(ctx, exe, log)
+				r.runs.DeleteByNamespacedName(exe.NamespacedName())
+				deletionChange = deleteFinalizer(exe, executableFinalizer, log)
+				return cleanupChange | deletionChange
+			})
+			return leaseChange | deletionChange
+		}
 		change = deleteFinalizer(exe, executableFinalizer, log)
 
 	case runInfo.ExeState == apiv1.ExecutableStateStopping || runInfo.ExeState == apiv1.ExecutableStateStarting:
@@ -300,7 +310,11 @@ func handleNewExecutable(
 	runInfo *ExecutableRunInfo,
 	log logr.Logger,
 ) objectChange {
-	if exe.Spec.Persistent {
+	effectiveMode := exe.Spec.EffectiveMode()
+	reuseExisting := shouldReuseExistingProcess(effectiveMode)
+	createIfMissing := shouldCreateProcessIfMissing(effectiveMode)
+
+	if reuseExisting {
 		leaseErr := r.acquirePersistentExecutableResourceLease(ctx, exe, log)
 		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
 			return additionalReconciliationNeeded
@@ -312,12 +326,17 @@ func handleNewExecutable(
 	}
 
 	if exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
-		if exe.Spec.Persistent && (exe.Spec.Stop || !exe.ShouldStart()) {
+		if reuseExisting && (exe.Spec.Stop || !exe.ShouldStart() || !createIfMissing) {
 			adopted, adoptionChange := r.tryAdoptExistingPersistentExecutable(ctx, exe, log)
 			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
 			if adopted || adoptionChange != noChange {
 				return adoptionChange
 			}
+		}
+
+		if !createIfMissing {
+			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
+			return noChange
 		}
 
 		if !exe.ShouldStart() {
@@ -334,7 +353,7 @@ func handleNewExecutable(
 	}
 
 	change := r.startExecutable(ctx, exe, runInfo, log)
-	if exe.Spec.Persistent {
+	if reuseExisting {
 		_, updatedRunInfo := r.runs.BorrowByNamespacedName(exe.NamespacedName())
 		if !persistentExecutableStartupInProgress(updatedRunInfo) {
 			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
@@ -359,14 +378,20 @@ func ensureExecutableRunningState(
 		return change
 	}
 
-	if exe.Spec.Persistent && runInfo.Pid != apiv1.UnknownPID && !runInfo.ProcessIdentityTime.IsZero() {
+	if shouldReuseExistingProcess(exe.Spec.EffectiveMode()) && runInfo.Pid != apiv1.UnknownPID && !runInfo.ProcessIdentityTime.IsZero() {
 		pid, pidErr := process.Int64_ToPidT(*runInfo.Pid)
 		if pidErr != nil {
 			log.Error(pidErr, "Persistent Executable run has invalid PID")
 			runInfo.ExeState = apiv1.ExecutableStateUnknown
 			return change | r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
 		}
-		if _, findErr := process.FindProcess(pid, runInfo.ProcessIdentityTime); findErr != nil {
+		persistentRunner, persistentRunnerErr := r.getPersistentExecutableRunner(exe)
+		if persistentRunnerErr != nil {
+			log.Error(persistentRunnerErr, "The persistent Executable runner is not available")
+			runInfo.ExeState = apiv1.ExecutableStateUnknown
+			return change | r.setExecutableState(exe, apiv1.ExecutableStateUnknown)
+		}
+		if findErr := persistentRunner.FindProcess(pid, runInfo.ProcessIdentityTime); findErr != nil {
 			log.Info("Persistent Executable process is no longer running", "PID", pid, "Error", findErr.Error())
 			r.deletePersistentProcessRecord(ctx, exe.NamespacedName(), log)
 			runInfo.ExeState = apiv1.ExecutableStateFinished
@@ -481,7 +506,7 @@ func (r *ExecutableReconciler) startExecutable(
 
 	environmentChanged := noChange
 
-	if exe.Spec.Persistent && len(ri.startResults) == 0 {
+	if shouldReuseExistingProcess(exe.Spec.EffectiveMode()) && len(ri.startResults) == 0 {
 		computed, startupDataChanged := r.computeExecutableEnvironment(ctx, exe, log, ri)
 		environmentChanged |= startupDataChanged
 		if !computed {
@@ -514,7 +539,7 @@ func (r *ExecutableReconciler) startExecutable(
 
 	// Helper function to update Executable status when the start attempt was successful.
 	handleSuccessfulStart := func(res *ExecutableStartResult) objectChange {
-		if exe.Spec.Persistent {
+		if shouldReuseExistingProcess(exe.Spec.EffectiveMode()) {
 			persistErr := r.upsertPersistentProcessRecord(ctx, exe, res)
 			if persistErr != nil {
 				log.Error(persistErr, "Could not persist Executable process record")
@@ -723,7 +748,7 @@ func (r *ExecutableReconciler) processRunChangeNotification(
 	r.runs.QueueDeferredOp(name, func(_ types.NamespacedName, _ RunID, exe *apiv1.Executable) {
 		// The run may have been deleted by the time we get here, so we do not care if Update() returns false.
 		_ = runMap.Update(name, runID, runInfo)
-		if runIsTerminal && exe != nil && exe.Spec.Persistent {
+		if runIsTerminal && exe != nil && shouldReuseExistingProcess(exe.Spec.EffectiveMode()) {
 			r.deletePersistentProcessRecordWithLease(context.Background(), name, log)
 		}
 	})
@@ -1373,7 +1398,7 @@ func (r *ExecutableReconciler) setExecutableState(exe *apiv1.Executable, state a
 		}
 	}
 
-	if exe.Spec.Persistent && persistentExecutableLeaseReleaseState(state) {
+	if shouldReuseExistingProcess(exe.Spec.EffectiveMode()) && persistentExecutableLeaseReleaseState(state) {
 		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
 		_ = r.releasePersistentExecutableResourceLease(context.Background(), exe, r.Log, true)
 	}

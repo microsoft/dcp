@@ -67,6 +67,9 @@ type PersistentExecutableRunner interface {
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
 	) error
+
+	// Finds the process associated with a persistent run.
+	FindProcess(pid process.Pid_t, processStartTime time.Time) error
 }
 
 type RunMessageLevel string

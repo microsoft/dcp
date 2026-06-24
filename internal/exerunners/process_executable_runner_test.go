@@ -248,24 +248,14 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 	t.Parallel()
 
-	delayToolDir, delayToolDirErr := testutil.GetTestToolDir("delay")
-	require.NoError(t, delayToolDirErr)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "./delay", "--delay=1s")
-	cmd.Dir = delayToolDir
-	require.NoError(t, cmd.Start())
-	go func() {
-		_ = cmd.Wait()
-	}()
-
-	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	identityTime := process.ProcessIdentityTime(pid)
-	require.False(t, identityTime.IsZero())
-
-	runner := NewProcessExecutableRunner(testutil.NewTestProcessExecutor(ctx))
+	processExecutor := testutil.NewTestProcessExecutor(ctx)
+	cmd := exec.Command("./delay", "--delay=1s")
+	pid, identityTime, _, startProcessErr := processExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr)
+	runner := NewProcessExecutableRunner(processExecutor)
 	runID := pidToRunID(pid)
 	changeHandler := newRecordingRunChangeHandler()
 
@@ -276,6 +266,8 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 		CommandInfo:         "./delay --delay=1s",
 	}, changeHandler, logr.Discard())
 	require.NoError(t, adoptErr)
+
+	processExecutor.SimulateProcessExit(t, pid, 0)
 
 	select {
 	case completedRun := <-changeHandler.completedRuns:
