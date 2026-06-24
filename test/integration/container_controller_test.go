@@ -1896,7 +1896,7 @@ func TestContainerCleanupModeRemovesExistingContainerOnDelete(t *testing.T) {
 	require.NoError(t, err, "container object could not be deleted")
 
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
 		inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
 			Containers: []string{id},
 		})
