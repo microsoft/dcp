@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
 
@@ -21,6 +20,7 @@ import (
 	"github.com/microsoft/dcp/internal/notifications/proto"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/grpcutil"
+	"github.com/microsoft/dcp/pkg/osutil"
 )
 
 var (
@@ -40,7 +40,7 @@ type unixSocketNotificationSource struct {
 	lock        *sync.Mutex
 
 	// The Unix domain socket listener for incoming connections.
-	listener *net.UnixListener
+	listener *osutil.UnixSocketListener
 
 	// Subscriptions are just long-lived gRPC calls returning a stream of notifications.
 	// Each channel gets an unbounded channel for sending notifications to the client/subscriber.

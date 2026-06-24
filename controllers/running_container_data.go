@@ -426,6 +426,15 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 		change |= statusChanged
 	}
 
+	terminalSocketPath := ""
+	if rcd.connMgr != nil {
+		terminalSocketPath = rcd.connMgr.SocketPath()
+	}
+	if terminalSocketPath != "" && ctr.Status.TerminalSocketPath != terminalSocketPath {
+		ctr.Status.TerminalSocketPath = terminalSocketPath
+		change |= statusChanged
+	}
+
 	// From the runSpec the runningContainerData has, only Env and Args will ever be modified
 	// (as a result of evaluating template expressions that may be embedded in environment variables or command arguments).
 
@@ -493,8 +502,17 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 // ExitHandler, which in turn drives the ConnManager shutdown.
 func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log logr.Logger) {
 	ptp := rcd.ptp
+	connMgr := rcd.connMgr
 	rcd.ptp = nil
 	rcd.connMgr = nil
+
+	// Deterministically tear down the connection manager so the owned listen-mode socket file is
+	// removed promptly, rather than waiting for the lifetime context to cancel. Shutdown is
+	// idempotent, so this is safe even if process-exit observation also triggers it.
+	if connMgr != nil {
+		connMgr.Shutdown()
+	}
+
 	if ptp == nil {
 		return
 	}

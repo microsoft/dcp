@@ -17,6 +17,8 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/microsoft/dcp/pkg/concurrency"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -30,6 +32,10 @@ const (
 
 	// reconnectMinInterval bounds how frequently the manager will re-dial the peer in connect mode.
 	reconnectMinInterval = 500 * time.Millisecond
+
+	// terminalSocketNamePrefix is prepended to the random suffix when DCP generates a listen-mode
+	// terminal socket path because the spec left UDSPath empty.
+	terminalSocketNamePrefix = "term-sock-"
 )
 
 // SocketMode selects how a ConnManager establishes the HMP v1 connection over its Unix domain socket.
@@ -72,7 +78,7 @@ type ConnManager struct {
 
 	// Listener for the incoming HMP v1 connections.
 	// Only used when socketMode == SocketModeListen
-	listener *net.UnixListener
+	listener *osutil.UnixSocketListener
 
 	// ctx is an internal context cancelled when the manager begins to shut
 	// down (because the lifetime context was cancelled, because the process
@@ -84,9 +90,7 @@ type ConnManager struct {
 	// Runs shutdown code at most once.
 	shutdownOnce func()
 
-	// done is closed when the accept loop has fully terminated, which
-	// happens after any in-progress Serve has returned and the listener has
-	// been closed.
+	// done is closed when the ConnManager is fully shut down.
 	done chan struct{}
 }
 
@@ -98,6 +102,12 @@ type ConnManager struct {
 // In either case the manager will connect to- (SocketModeConnect)
 // or listen on- (SocketModeListen) the client socket immediately,
 // but the terminal data will flow only after the process is available.
+//
+// In listen mode socketPath may be empty, in which case the manager generates a
+// unique path in the DCP session/temp folder and owns the socket file (creating
+// it and removing it on shutdown). When socketPath is provided, it must not already
+// exist; a file already present at the path is treated as an error. The resolved
+// path is available via SocketPath(). In connect mode socketPath is required.
 func NewConnManager(
 	lifetimeCtx context.Context,
 	ptp *PseudoTerminalProcess,
@@ -110,7 +120,7 @@ func NewConnManager(
 	if lifetimeCtx == nil {
 		return nil, errors.New("lifetime context must not be nil")
 	}
-	if socketPath == "" {
+	if socketPath == "" && mode != SocketModeListen {
 		return nil, errors.New("socket path must not be empty")
 	}
 	// In eager mode the process must be valid up front; in attach-process mode
@@ -133,10 +143,7 @@ func NewConnManager(
 	} else {
 		cm.ptpP.Set(ptp)
 		go cm.watchProcessExit()
-		go func() {
-			defer close(cm.done)
-			cm.serveLoop(time.Time{})
-		}()
+		go cm.serveLoop(time.Time{})
 		return cm, nil
 	}
 }
@@ -149,21 +156,24 @@ func createConnManager(
 	initialRows uint16,
 	log logr.Logger,
 ) (*ConnManager, error) {
-	var listener *net.UnixListener
+	var listener *osutil.UnixSocketListener
 	if mode == SocketModeListen {
-		boundListener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
-		if listenErr != nil {
-			return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
+		var listenErr error
+		if socketPath == "" {
+			listener, listenErr = osutil.CreateRandomUnixSocketListener(usvc_io.DcpTempDir(), terminalSocketNamePrefix)
+			if listenErr != nil {
+				return nil, fmt.Errorf("could not create random terminal socket listener: %w", listenErr)
+			}
+			socketPath = listener.SocketPath()
+		} else {
+			listener, listenErr = osutil.CreateUnixSocketListener(socketPath)
+			if listenErr != nil {
+				return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
+			}
 		}
-
-		// Socket file lifecycle is owned by the caller, not by ConnManager.
-		// Without this opt-out, net.UnixListener.Close() would unlink the path.
-		boundListener.SetUnlinkOnClose(false)
-
-		listener = boundListener
 	}
 
-	ctx, cancelCtx := context.WithCancel(context.Background())
+	ctx, cancelCtx := context.WithCancel(lifetimeCtx)
 	initialCols, initialRows = NormalizeTerminalDimensions(initialCols, initialRows)
 
 	cm := &ConnManager{
@@ -185,8 +195,8 @@ func createConnManager(
 	} else {
 		cm.log.V(1).Info("Terminal connection manager is listening", "SocketPath", socketPath)
 	}
-
 	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
+
 	return cm, nil
 }
 
@@ -221,10 +231,18 @@ func (cm *ConnManager) AttachProcess(ptp *PseudoTerminalProcess) error {
 	return nil
 }
 
-// SocketPath returns the filesystem path of the Unix domain socket the
-// manager is (or was) listening on.
+// SocketPath returns the filesystem path of the Unix domain socket the manager
+// is (or was) listening on (or, in connect mode, dialing). When listen mode was
+// given an empty path at construction, this returns the path DCP generated.
 func (cm *ConnManager) SocketPath() string {
 	return cm.socketPath
+}
+
+// Shutdown deterministically tears down the manager: it terminates any active
+// Serve loop or pending dial and, in listen mode, removes the socket file and
+// closes the listener. It is idempotent and safe to call from any goroutine.
+func (cm *ConnManager) Shutdown() {
+	cm.shutdownOnce()
 }
 
 // Done returns a channel that is closed once the manager has fully
@@ -254,8 +272,6 @@ func (cm *ConnManager) watchProcessExit() {
 // process to be supplied via AttachProcess, then serves the warmed connection and
 // continues into the normal connection-serving loop.
 func (cm *ConnManager) prepareAndServe() {
-	defer close(cm.done)
-
 	conn, err := cm.nextConn()
 	if err != nil {
 		// Shutting down before any client connection could be established.
@@ -456,16 +472,13 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 	wg.Wait()
 }
 
-// shutdown() is the manager's idempotent shutdown sequence. It cancels the
-// internal context (which terminates any in-progress Serve loop or pending
-// dial, and the underlying Hmp1Server's PTY reader worker) and, in listen mode,
-// closes the listener (which unblocks Accept). The socket file at socketPath is
-// intentionally left in place — in listen mode the caller owns its lifecycle,
-// and in connect mode the peer owns it.
-// Note: cm.done is closed when connLoop() exits.
+// shutdown() is the manager's shutdown sequence.
+// Idempotency is guaranteed via wrapping the method in a sync.Once.
 func (cm *ConnManager) shutdown() {
-	cm.log.V(1).Info("Shutting down terminal connection manager", "SocketPath", cm.socketPath)
+	cm.log.V(1).Info("Shutting down terminal connection manager...", "SocketPath", cm.socketPath)
+	defer close(cm.done)
 
+	// Cancels HMP1 server and any data exchange with the client.
 	cm.cancelCtx()
 
 	if cm.listener != nil {
