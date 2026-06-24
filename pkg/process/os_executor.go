@@ -490,6 +490,11 @@ func (e *OSExecutor) Dispose() {
 	e.log.V(1).Info("Process executor disposed")
 }
 
+func (e *OSExecutor) FindProcess(pid Pid_t, processStartTime time.Time) error {
+	_, err := FindProcess(pid, processStartTime)
+	return err
+}
+
 type processStoppingOpts uint16
 
 const (

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os/exec"
 	"reflect"
 	"regexp"
 	std_slices "slices"
@@ -329,6 +330,145 @@ func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
 
 	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
 	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestExecutableModePersistentDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-mode-persistent-deletion"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModePersistent,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, processErr, "Executable process could not be started")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+
+	pe, found := testProcessExecutor.FindByPid(pid)
+	require.True(t, found, "expected process to still be tracked")
+	require.True(t, pe.Running(), "persistent mode should leave the process running")
+}
+
+func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-stops-existing"
+	serverInfo, teInfo, startupErr := StartTestEnvironment(
+		ctx,
+		ExecutableController,
+		testName,
+		t.TempDir(),
+	)
+	require.NoError(t, startupErr, "could not start test environment")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	pid, identityTime, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = teInfo.TestProcessExecutor.StopProcess(pid, identityTime)
+	})
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := teInfo.StateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, serverInfo.Client.Create(ctx, &exe), "Could not create Executable")
+
+	updatedExe := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable should adopt the seeded process")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return serverInfo.Client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &exe)
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		processExecution, found := teInfo.TestProcessExecutor.FindByPid(pid)
+		return found && processExecution.Finished(), nil
+	})
+	require.NoError(t, err, "process was not stopped")
+}
+
+func TestExecutablePersistentFieldOverridesCleanupMode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-persistent-overrides-cleanup"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+			Persistent:     true,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, processErr, "Executable process could not be started")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+
+	pe, found := testProcessExecutor.FindByPid(pid)
+	require.True(t, found, "expected process to still be tracked")
+	require.True(t, pe.Running(), "persistent=true should override cleanup mode and leave the process running")
 }
 
 // Ensure exit code of processes/run sessions are captured correctly

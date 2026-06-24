@@ -109,9 +109,13 @@ func StartTestEnvironment(
 		// This avoids a bunch of shutdown errors from the manager.
 		<-managerDone.Wait()
 
-		tpeCloseErr := pex.Close()
-		if tpeCloseErr != nil {
-			log.Error(tpeCloseErr, "Failed to close the test process executor")
+		if pex != nil {
+			tpeCloseErr := pex.Close()
+			if tpeCloseErr != nil {
+				log.Error(tpeCloseErr, "Failed to close the test process executor")
+			}
+		} else {
+			pex.Dispose()
 		}
 
 		stateStoreCleanup()

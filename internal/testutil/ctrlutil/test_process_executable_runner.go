@@ -156,5 +156,14 @@ func (r *TestProcessExecutableRunner) AdoptRun(
 	return persistentRunner.AdoptRun(ctx, run, runChangeHandler, log)
 }
 
+func (r *TestProcessExecutableRunner) FindProcess(pid process.Pid_t, processStartTime time.Time) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent process lookup")
+	}
+
+	return persistentRunner.FindProcess(pid, processStartTime)
+}
+
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)
 var _ controllers.PersistentExecutableRunner = (*TestProcessExecutableRunner)(nil)

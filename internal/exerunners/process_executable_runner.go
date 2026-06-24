@@ -149,7 +149,7 @@ func (r *ProcessExecutableRunner) makeProcessCommand(
 
 	var creationFlags process.ProcessCreationFlag = process.CreationFlagEnsureKillOnDispose
 	processCtx := ctx
-	if exe.Spec.Persistent {
+	if executableIsPersistent(exe) {
 		creationFlags = process.CreationFlagsNone
 		processCtx = context.WithoutCancel(ctx)
 	}
@@ -223,7 +223,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		return result
 	}
 
-	if !exe.Spec.Persistent {
+	if !executableIsPersistent(exe) {
 		// Use original log here, the watcher is a different process.
 		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, startLog)
 	} else if monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp); monitorErr != nil {
@@ -436,7 +436,7 @@ func (r *ProcessExecutableRunner) AdoptRun(
 		return fmt.Errorf("cannot adopt process run %s without process identity time", run.RunID)
 	}
 
-	if _, findErr := process.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
+	if findErr := r.pe.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
 		return fmt.Errorf("cannot adopt process run %s: %w", run.RunID, findErr)
 	}
 	stopWatching := make(chan struct{})
@@ -477,7 +477,7 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 			return
 
 		case <-timer.C:
-			if _, findErr := process.FindProcess(pid, identityTime); findErr != nil {
+			if findErr := r.pe.FindProcess(pid, identityTime); findErr != nil {
 				runState, found := r.runningProcesses.Load(runID)
 				if !found {
 					return
@@ -501,6 +501,10 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 			timer.Reset(2 * time.Second)
 		}
 	}
+}
+
+func (r *ProcessExecutableRunner) FindProcess(pid process.Pid_t, processStartTime time.Time) error {
+	return r.pe.FindProcess(pid, processStartTime)
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -622,7 +626,7 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 	// Persistent output files are keyed by resource UID to keep paths unique across persistent Executable instances.
 	// Kubernetes UIDs are effectively unique, so collisions between different Executable objects are not expected.
 	fileName := fmt.Sprintf("%s_%s", exe.UID, stream)
-	if !exe.Spec.Persistent {
+	if !executableIsPersistent(exe) {
 		return usvc_io.OpenTempFile(fileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	}
 
@@ -638,10 +642,14 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 }
 
 func executableOutputWriter(exe *apiv1.Executable, file *os.File) usvc_io.WriteSyncerCloser {
-	if exe.Spec.Persistent {
+	if executableIsPersistent(exe) {
 		return file
 	}
 	return usvc_io.NewTimestampWriter(file)
+}
+
+func executableIsPersistent(exe *apiv1.Executable) bool {
+	return exe.Spec.EffectiveMode() == apiv1.ExecutableModePersistent
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {

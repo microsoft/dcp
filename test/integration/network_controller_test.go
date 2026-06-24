@@ -183,6 +183,253 @@ func TestNetworkRemovePersistentInstance(t *testing.T) {
 	require.Len(t, inspected, 1, "expected to find a single network")
 }
 
+func TestNetworkModePersistentInstance(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-mode-persistent-instance"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: testName,
+			Mode:        apiv1.ContainerNetworkModePersistent,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNet := ensureNetworkCreated(t, ctx, &net)
+
+	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
+	require.NoError(t, err, "could not delete a ContainerNetwork object")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
+
+	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{updatedNet.Status.ID},
+	})
+	require.NoError(t, err, "could not inspect the network")
+	require.Len(t, inspected, 1, "expected to find a single network")
+}
+
+func TestNetworkExistingModeDoesNotCreateMissingNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-existing-mode-missing"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: testName,
+			Mode:        apiv1.ContainerNetworkModeExisting,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&net), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		return currentNet.Status.State == apiv1.ContainerNetworkStateNotFound, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{testName},
+	})
+	require.ErrorIs(t, err, containers.ErrNotFound, "expected no network resource to be created")
+	require.Len(t, inspected, 0, "expected no network resource to be created")
+}
+
+func TestNetworkExistingModeKeepsExistingNetworkOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-existing-mode-keeps-existing"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: testName,
+			Mode:        apiv1.ContainerNetworkModeExisting,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: testName,
+	})
+	require.NoError(t, err, "could not create a network")
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+	require.Equal(t, id, updatedNetwork.Status.ID, "network ID did not match expected value")
+
+	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
+	require.NoError(t, err, "could not delete a ContainerNetwork object")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
+
+	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the network")
+	require.Len(t, inspected, 1, "expected to find a single network")
+}
+
+func TestNetworkCleanupModeDoesNotCreateMissingNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-cleanup-mode-missing"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: testName,
+			Mode:        apiv1.ContainerNetworkModeCleanup,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&net), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		return currentNet.Status.State == apiv1.ContainerNetworkStateNotFound, nil
+	})
+
+	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
+	require.NoError(t, err, "could not delete a ContainerNetwork object")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
+
+	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{testName},
+	})
+	require.ErrorIs(t, err, containers.ErrNotFound, "expected no network resource to be created")
+	require.Len(t, inspected, 0, "expected no network resource to be created")
+}
+
+func TestNetworkCleanupModeRemovesExistingNetworkOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-cleanup-mode-removes-existing"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: testName,
+			Mode:        apiv1.ContainerNetworkModeCleanup,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: testName,
+	})
+	require.NoError(t, err, "could not create a network")
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+	require.Equal(t, id, updatedNetwork.Status.ID, "network ID did not match expected value")
+
+	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
+	require.NoError(t, err, "could not delete a ContainerNetwork object")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
+
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
+		inspectedNetworks, networkInspectionErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{id}})
+		if !errors.Is(networkInspectionErr, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
+			return false, nil
+		}
+
+		return true, nil
+	})
+	require.NoError(t, err, "network was not removed")
+}
+
+func TestNetworkPersistentFieldOverridesCleanupMode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-persistent-overrides-cleanup"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: testName,
+			Mode:        apiv1.ContainerNetworkModeCleanup,
+			Persistent:  true,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNet := ensureNetworkCreated(t, ctx, &net)
+
+	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = retryOnConflict(ctx, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return client.Delete(ctx, currentNet)
+	})
+	require.NoError(t, err, "could not delete a ContainerNetwork object")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
+
+	inspected, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{updatedNet.Status.ID},
+	})
+	require.NoError(t, err, "could not inspect the network")
+	require.Len(t, inspected, 1, "expected to find a single network")
+}
+
 func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.ContainerNetwork) *apiv1.ContainerNetwork {
 	updatedNet := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(network), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
 		if currentNet.Status.State == apiv1.ContainerNetworkStateFailedToStart {
