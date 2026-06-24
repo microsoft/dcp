@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -79,7 +78,7 @@ type ConnManager struct {
 
 	// Listener for the incoming HMP v1 connections.
 	// Only used when socketMode == SocketModeListen
-	listener *net.UnixListener
+	listener *osutil.UnixSocketListener
 
 	// ctx is an internal context cancelled when the manager begins to shut
 	// down (because the lifetime context was cancelled, because the process
@@ -157,32 +156,21 @@ func createConnManager(
 	initialRows uint16,
 	log logr.Logger,
 ) (*ConnManager, error) {
-	var listener *net.UnixListener
+	var listener *osutil.UnixSocketListener
 	if mode == SocketModeListen {
+		var listenErr error
 		if socketPath == "" {
-			generatedPath, genErr := generateListenSocketPath()
-			if genErr != nil {
-				return nil, genErr
+			listener, listenErr = osutil.CreateRandomUnixSocketListener(usvc_io.DcpTempDir(), terminalSocketNamePrefix)
+			if listenErr != nil {
+				return nil, fmt.Errorf("could not create random terminal socket listener: %w", listenErr)
 			}
-			socketPath = generatedPath
+			socketPath = listener.SocketPath()
+		} else {
+			listener, listenErr = osutil.CreateUnixSocketListener(socketPath)
+			if listenErr != nil {
+				return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
+			}
 		}
-
-		// DCP owns the socket file in listen mode: the path must be free before binding. A file
-		// already present at the path is treated as an error and left untouched.
-		if prepErr := prepareListenSocketPath(socketPath); prepErr != nil {
-			return nil, prepErr
-		}
-
-		boundListener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
-		if listenErr != nil {
-			return nil, fmt.Errorf("could not create terminal socket at %s: %w", socketPath, listenErr)
-		}
-
-		// The socket file is removed explicitly during shutdown (see shutdown()), so opt out of
-		// the listener's own unlink-on-close to keep removal ordering under our control.
-		boundListener.SetUnlinkOnClose(false)
-
-		listener = boundListener
 	}
 
 	ctx, cancelCtx := context.WithCancel(lifetimeCtx)
@@ -210,39 +198,6 @@ func createConnManager(
 	context.AfterFunc(lifetimeCtx, cm.shutdownOnce)
 
 	return cm, nil
-}
-
-// generateListenSocketPath returns a unique terminal socket path in the DCP
-// session/temp folder, used when a listen-mode manager is created without an
-// explicit socket path.
-func generateListenSocketPath() (string, error) {
-	socketPath, err := osutil.CreateRandomSocketPath(usvc_io.DcpTempDir(), terminalSocketNamePrefix)
-	if err != nil {
-		return "", fmt.Errorf("could not generate a terminal socket path: %w", err)
-	}
-	return socketPath, nil
-}
-
-// prepareListenSocketPath verifies that the path is free for binding a listen-mode
-// socket that DCP owns. DCP never reuses an existing file: any entry already present
-// at the path (socket, regular file, or directory) is treated as an error and left
-// intact. It returns nil only when nothing exists at the path.
-func prepareListenSocketPath(socketPath string) error {
-	_, lstatErr := os.Lstat(socketPath)
-	if errors.Is(lstatErr, os.ErrNotExist) {
-		return nil
-	}
-	if lstatErr != nil {
-		return fmt.Errorf("could not inspect existing terminal socket path %s: %w", socketPath, lstatErr)
-	}
-
-	return fmt.Errorf("terminal socket path %s already exists", socketPath)
-}
-
-// ownsSocketFile reports whether the manager is responsible for the lifecycle of
-// the socket file (true in listen mode, where DCP creates and removes it).
-func (cm *ConnManager) ownsSocketFile() bool {
-	return cm.socketMode == SocketModeListen
 }
 
 // validatePtp checks that a PseudoTerminalProcess is usable by a ConnManager.
@@ -529,12 +484,6 @@ func (cm *ConnManager) shutdown() {
 	if cm.listener != nil {
 		if closeErr := cm.listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
 			cm.log.V(1).Info("Closing terminal socket listener failed", "error", closeErr.Error())
-		}
-
-		if cm.ownsSocketFile() {
-			if removeErr := os.Remove(cm.socketPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				cm.log.Error(removeErr, "Removing terminal socket file failed")
-			}
 		}
 	}
 }

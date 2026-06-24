@@ -125,14 +125,6 @@ func asNotification(nd *proto.NotificationData) (Notification, error) {
 	}
 }
 
-// A helper function that ensures the notification socket can be created
-// in a folder that is writable only by the current user, and that the path
-// is reasonably unique to the calling process.
-// If the `rootDir` is empty, it will use the user's cache directory.
-func PrepareNotificationSocketPath(rootDir string, socketNamePrefix string) (string, error) {
-	return osutil.CreateRandomSocketPath(rootDir, socketNamePrefix)
-}
-
 // NotificationSubscription represents a subscription to notifications.
 type NotificationSubscription interface {
 	Active() bool // True if the subscription is active and receiving notifications.
@@ -179,16 +171,18 @@ type UnixSocketNotificationSource interface {
 	SocketPath() string
 }
 
-func NewNotificationSource(lifetimeCtx context.Context, socketPath string, log logr.Logger) (UnixSocketNotificationSource, error) {
-	listener, listenErr := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+// NewNotificationSource creates a notification source that listens on a random
+// Unix domain socket in a private per-program directory.
+func NewNotificationSource(lifetimeCtx context.Context, rootDir string, socketNamePrefix string, log logr.Logger) (UnixSocketNotificationSource, error) {
+	listener, listenErr := osutil.CreateRandomUnixSocketListener(rootDir, socketNamePrefix)
 	if listenErr != nil {
-		return nil, fmt.Errorf("could not create notification socket at %s: %w", socketPath, listenErr)
+		return nil, fmt.Errorf("could not create notification socket: %w", listenErr)
 	}
 
 	ns := &unixSocketNotificationSource{
 		lifetimeCtx:     lifetimeCtx,
 		log:             log,
-		socketPath:      socketPath,
+		socketPath:      listener.SocketPath(),
 		lock:            &sync.Mutex{},
 		listener:        listener,
 		subscriptions:   make(map[uint32]*concurrency.UnboundedChan[Notification]),
