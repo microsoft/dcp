@@ -658,6 +658,12 @@ type ExecutableStatus struct {
 	// The path of a temporary file that contains captured standard error data from the Executable process.
 	StdErrFile string `json:"stdErrFile,omitempty"`
 
+	// The filesystem path of the terminal HMP v1 Unix domain socket, when the Executable is
+	// configured with a terminal. In "listen" mode this is the socket DCP owns (and is the
+	// DCP-generated path when the spec left UDSPath empty); in "connect" mode it is the peer-owned
+	// socket DCP dials.
+	TerminalSocketPath string `json:"terminalSocketPath,omitempty"`
+
 	// Effective values of environment variables, after all substitutions are applied.
 	// +listType=map
 	// +listMapKey=name
