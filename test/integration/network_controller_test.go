@@ -77,7 +77,7 @@ func TestNetworkRemoveInstance(t *testing.T) {
 	})
 	require.NoError(t, err, "could not delete a ContainerNetwork object")
 
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
 		inspectedNetworks, networkInspectionErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
 		if !errors.Is(networkInspectionErr, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
 			return false, nil
@@ -379,7 +379,7 @@ func TestNetworkCleanupModeRemovesExistingNetworkOnDelete(t *testing.T) {
 
 	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &net)
 
-	err = wait.PollUntilContextCancel(ctx, waitPollInterval, true, func(_ context.Context) (bool, error) {
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
 		inspectedNetworks, networkInspectionErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{id}})
 		if !errors.Is(networkInspectionErr, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
 			return false, nil
