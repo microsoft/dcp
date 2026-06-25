@@ -457,13 +457,16 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 			return additionalReconciliationNeeded
 		}
 		if !shouldCreateMissingNetwork(effectiveMode) {
+			change := noChange
 			if network.Status.ID != "" {
 				network.Status.ID = ""
+				change |= statusChanged
 			}
 			if network.Status.NetworkName != networkName {
 				network.Status.NetworkName = networkName
+				change |= statusChanged
 			}
-			return statusChanged | r.setNetworkState(network, apiv1.ContainerNetworkStateNotFound, "")
+			return change | r.setNetworkState(network, apiv1.ContainerNetworkStateNotFound, "")
 		}
 	}
 

@@ -471,6 +471,34 @@ func TestExecutablePersistentFieldOverridesCleanupMode(t *testing.T) {
 	require.True(t, pe.Running(), "persistent=true should override cleanup mode and leave the process running")
 }
 
+func TestExecutableCleanupModeReportsNotFoundWhenProcessRecordMissing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-missing"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateNotFound, nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "cleanup mode should not start a missing process")
+}
+
 // Ensure exit code of processes/run sessions are captured correctly
 func TestExecutableExitCodeCaptured(t *testing.T) {
 	type testcase struct {

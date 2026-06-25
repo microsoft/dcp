@@ -1718,7 +1718,6 @@ func TestContainerExistingModeDoesNotCreateMissingContainer(t *testing.T) {
 	defer cancel()
 
 	const testName = "container-existing-mode-missing"
-	const imageName = testName + "-image"
 
 	ctr := apiv1.Container{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1726,7 +1725,6 @@ func TestContainerExistingModeDoesNotCreateMissingContainer(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image:         imageName,
 			ContainerName: testName,
 			Mode:          apiv1.ContainerModeExisting,
 		},
@@ -1737,7 +1735,40 @@ func TestContainerExistingModeDoesNotCreateMissingContainer(t *testing.T) {
 	require.NoError(t, err, "could not create a Container")
 
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
-		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateEmpty, nil
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateNotFound, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{testName},
+	})
+	require.ErrorIs(t, err, containers.ErrNotFound, "expected no container resource to be created")
+	require.Len(t, inspected, 0, "expected no container resource to be created")
+}
+
+func TestContainerCleanupModeDoesNotCreateMissingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-cleanup-mode-missing"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateNotFound, nil
 	})
 
 	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
