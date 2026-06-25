@@ -55,6 +55,7 @@ var executableStateInitializers = map[apiv1.ExecutableState]executableStateIniti
 	apiv1.ExecutableStateEmpty:         handleNewExecutable,
 	apiv1.ExecutableStateStarting:      handleNewExecutable,
 	apiv1.ExecutableStateRunning:       ensureExecutableRunningState,
+	apiv1.ExecutableStateNotFound:      handleNewExecutable,
 	apiv1.ExecutableStateStopping:      ensureExecutableStoppingState,
 	apiv1.ExecutableStateTerminated:    ensureExecutableFinalState,
 	apiv1.ExecutableStateFailedToStart: ensureExecutableFinalState,
@@ -244,7 +245,10 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 		if exe.Spec.EffectiveMode() == apiv1.ExecutableModeCleanup {
 			var deletionChange objectChange
 			leaseChange := r.withPersistentExecutableLease(ctx, exe, log, func(ctx context.Context, _ *statestore.ResourceLease) objectChange {
-				cleanupChange := r.stopPersistentExecutableRecordForDeletion(ctx, exe, log)
+				cleanupSucceeded, cleanupChange := r.stopPersistentExecutableRecordForDeletion(ctx, exe, log)
+				if !cleanupSucceeded {
+					return cleanupChange | additionalReconciliationNeeded
+				}
 				r.runs.DeleteByNamespacedName(exe.NamespacedName())
 				deletionChange = deleteFinalizer(exe, executableFinalizer, log)
 				return cleanupChange | deletionChange
@@ -325,7 +329,7 @@ func handleNewExecutable(
 		}
 	}
 
-	if exe.Status.State == apiv1.ExecutableStateEmpty && runInfo == nil {
+	if (exe.Status.State == apiv1.ExecutableStateEmpty || exe.Status.State == apiv1.ExecutableStateNotFound) && runInfo == nil {
 		if reuseExisting && (exe.Spec.Stop || !exe.ShouldStart() || !createIfMissing) {
 			adopted, adoptionChange := r.tryAdoptExistingPersistentExecutable(ctx, exe, log)
 			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
@@ -336,7 +340,7 @@ func handleNewExecutable(
 
 		if !createIfMissing {
 			_ = r.releasePersistentExecutableResourceLease(ctx, exe, log, false)
-			return noChange
+			return r.setExecutableState(exe, apiv1.ExecutableStateNotFound)
 		}
 
 		if !exe.ShouldStart() {
@@ -1425,7 +1429,7 @@ func updateExecutableHealthStatus(exe *apiv1.Executable, state apiv1.ExecutableS
 	var newHealthStatus apiv1.HealthStatus
 
 	switch state {
-	case apiv1.ExecutableStateEmpty, apiv1.ExecutableStateStarting, apiv1.ExecutableStateStopping, apiv1.ExecutableStateTerminated, apiv1.ExecutableStateUnknown:
+	case apiv1.ExecutableStateEmpty, apiv1.ExecutableStateStarting, apiv1.ExecutableStateNotFound, apiv1.ExecutableStateStopping, apiv1.ExecutableStateTerminated, apiv1.ExecutableStateUnknown:
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ExecutableStateRunning:

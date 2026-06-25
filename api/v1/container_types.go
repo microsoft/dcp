@@ -1143,6 +1143,9 @@ const (
 	// Container is in the process of starting
 	ContainerStateStarting ContainerState = "Starting"
 
+	// ContainerStateNotFound indicates the Container is waiting for an existing container that does not exist.
+	ContainerStateNotFound ContainerState = "NotFound"
+
 	// A start attempt was made, but it failed
 	ContainerStateFailedToStart ContainerState = "FailedToStart"
 

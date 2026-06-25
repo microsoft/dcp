@@ -491,8 +491,14 @@ func (e *OSExecutor) Dispose() {
 }
 
 func (e *OSExecutor) FindProcess(pid Pid_t, processStartTime time.Time) error {
-	_, err := FindProcess(pid, processStartTime)
-	return err
+	proc, err := FindProcess(pid, processStartTime)
+	if err != nil {
+		return err
+	}
+	if releaseErr := proc.Release(); releaseErr != nil {
+		e.log.Error(releaseErr, "Failed to release process handle", "PID", pid)
+	}
+	return nil
 }
 
 type processStoppingOpts uint16

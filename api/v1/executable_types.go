@@ -51,6 +51,9 @@ const (
 	// The Executable was successfully started and was running last time we checked.
 	ExecutableStateRunning ExecutableState = "Running"
 
+	// ExecutableStateNotFound indicates the Executable is waiting for an existing process record that does not exist.
+	ExecutableStateNotFound ExecutableState = "NotFound"
+
 	// Executable is stopping (DCP is trying to stop the process)
 	ExecutableStateStopping ExecutableState = "Stopping"
 
@@ -79,6 +82,13 @@ func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
 
 	switch {
 	case es == ExecutableStateEmpty:
+		return newState == ExecutableStateStarting ||
+			newState == ExecutableStateRunning ||
+			newState == ExecutableStateNotFound ||
+			newState == ExecutableStateTerminated ||
+			newState == ExecutableStateFailedToStart
+
+	case es == ExecutableStateNotFound:
 		return newState == ExecutableStateStarting ||
 			newState == ExecutableStateRunning ||
 			newState == ExecutableStateTerminated ||

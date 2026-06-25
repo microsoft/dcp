@@ -390,24 +390,23 @@ func (r *ExecutableReconciler) stopPersistentExecutableRecordWithoutLifecycle(ct
 	return true, r.finishPersistentExecutableStopWithoutStart(exe, record)
 }
 
-func (r *ExecutableReconciler) stopPersistentExecutableRecordForDeletion(ctx context.Context, exe *apiv1.Executable, log logr.Logger) objectChange {
+func (r *ExecutableReconciler) stopPersistentExecutableRecordForDeletion(ctx context.Context, exe *apiv1.Executable, log logr.Logger) (bool, objectChange) {
 	stateStore, stateStoreErr := r.getStateStore()
 	if stateStoreErr != nil {
 		log.Error(stateStoreErr, "Could not open state store to delete persistent Executable process record", "ResourceKey", exe.GetLeaseKey())
-		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
 	record, recordErr := stateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
 	if errors.Is(recordErr, statestore.ErrPersistentProcessNotFound) {
-		return noChange
+		return true, noChange
 	}
 	if recordErr != nil {
 		log.Error(recordErr, "Could not read persistent Executable process record", "ResourceKey", exe.GetLeaseKey())
-		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
+		return false, r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
-	_, change := r.stopPersistentExecutableRecordWithoutLifecycle(ctx, exe, record, log)
-	return change
+	return r.stopPersistentExecutableRecordWithoutLifecycle(ctx, exe, record, log)
 }
 
 func (r *ExecutableReconciler) stopPersistentExecutableRecord(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {

@@ -83,6 +83,7 @@ var (
 		apiv1.ContainerStateRuntimeUnhealthy: handleNewContainer,
 		apiv1.ContainerStateBuilding:         ensureContainerBuildingState,
 		apiv1.ContainerStateStarting:         ensureContainerStartingState,
+		apiv1.ContainerStateNotFound:         handleNewContainer,
 		apiv1.ContainerStateFailedToStart:    ensureContainerFailedToStartState,
 		apiv1.ContainerStateRunning:          ensureContainerRunningState,
 		apiv1.ContainerStatePaused:           ensureContainerRunningState,
@@ -469,7 +470,7 @@ func handleNewContainer(
 
 	if !shouldCreateIfMissing(effectiveMode) {
 		_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
-		return change
+		return change | r.setContainerState(container, apiv1.ContainerStateNotFound)
 	}
 
 	if !container.ShouldStart() {
@@ -2533,7 +2534,7 @@ func updateContainerHealthStatus(ctr *apiv1.Container, state apiv1.ContainerStat
 
 	switch state {
 
-	case apiv1.ContainerStateEmpty, apiv1.ContainerStatePending, apiv1.ContainerStateBuilding, apiv1.ContainerStateStarting, apiv1.ContainerStatePaused, apiv1.ContainerStateUnknown, apiv1.ContainerStateStopping:
+	case apiv1.ContainerStateEmpty, apiv1.ContainerStatePending, apiv1.ContainerStateBuilding, apiv1.ContainerStateStarting, apiv1.ContainerStateNotFound, apiv1.ContainerStatePaused, apiv1.ContainerStateUnknown, apiv1.ContainerStateStopping:
 		newHealthStatus = apiv1.HealthStatusCaution
 
 	case apiv1.ContainerStateRunning:
