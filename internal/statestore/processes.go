@@ -28,6 +28,18 @@ type PersistentProcessRecord struct {
 	StdErrFile        string
 	LifecycleMetadata string
 	UpdatedAt         time.Time
+	store             *Store
+}
+
+func (r *PersistentProcessRecord) Delete(ctx context.Context) error {
+	if r == nil {
+		return fmt.Errorf("%w: persistent process record cannot be nil", ErrInvalidArgument)
+	}
+	if r.store == nil {
+		return fmt.Errorf("%w: persistent process record store cannot be nil", ErrInvalidArgument)
+	}
+
+	return r.store.DeletePersistentProcess(ctx, r.ResourceKey)
 }
 
 func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentProcessRecord) error {
@@ -109,6 +121,7 @@ func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*
 	if scanErr != nil {
 		return nil, fmt.Errorf("could not get persistent process record '%s': %w", resourceKey, scanErr)
 	}
+	record.store = s
 
 	return record, nil
 }
@@ -140,6 +153,7 @@ func (s *Store) ListPersistentProcesses(ctx context.Context) ([]PersistentProces
 		if scanErr != nil {
 			return nil, fmt.Errorf("could not read persistent process record: %w", scanErr)
 		}
+		record.store = s
 		records = append(records, *record)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {

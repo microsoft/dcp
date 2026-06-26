@@ -490,7 +490,7 @@ func (e *OSExecutor) Dispose() {
 	e.log.V(1).Info("Process executor disposed")
 }
 
-func (e *OSExecutor) FindProcess(pid Pid_t, processStartTime time.Time) error {
+func (e *OSExecutor) CheckProcessRunning(pid Pid_t, processStartTime time.Time) error {
 	proc, err := FindProcess(pid, processStartTime)
 	if err != nil {
 		return err

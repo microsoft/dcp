@@ -66,8 +66,8 @@ func (*dummyProcessExecutor) StopProcess(_ process.Pid_t, _ time.Time, _ ...proc
 	return fmt.Errorf("there is no process executor configured, no processes can be stopped")
 }
 
-func (*dummyProcessExecutor) FindProcess(_ process.Pid_t, _ time.Time) error {
-	return fmt.Errorf("there is no process executor configured, no processes can be found")
+func (*dummyProcessExecutor) CheckProcessRunning(_ process.Pid_t, _ time.Time) error {
+	return fmt.Errorf("there is no process executor configured, no processes can be checked")
 }
 
 func (*dummyProcessExecutor) StartAndForget(_ *exec.Cmd, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {
