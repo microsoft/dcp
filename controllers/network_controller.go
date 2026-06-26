@@ -277,15 +277,26 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted")
 
-		err = r.deleteNetwork(ctx, &network, log)
-		if err != nil {
-			// deleteNetwork() logged the error already
-			change = additionalReconciliationNeeded
+		_, networkState := r.existingNetworks.BorrowByNamespacedName(network.NamespacedName())
+		if network.Spec.EffectiveMode() == apiv1.ContainerNetworkModeCleanup &&
+			networkState == nil &&
+			network.Status.State != apiv1.ContainerNetworkStateNotFound {
+			log.V(1).Info("ContainerNetwork is being deleted, resolving cleanup target before deleting finalizer")
+			change = r.manageNetwork(ctx, &network, log) | additionalReconciliationNeeded
 		} else {
-			// We've successfully deleted the network, so stop tracking it
-			r.existingNetworks.DeleteByNamespacedName(network.NamespacedName())
-			change = deleteFinalizer(&network, networkFinalizer, log)
-			r.releaseNetworkWatch(&network, log)
+			if networkState != nil && network.Status.ID == "" {
+				network.Status.ID = networkState.id
+			}
+			err = r.deleteNetwork(ctx, &network, log)
+			if err != nil {
+				// deleteNetwork() logged the error already
+				change = additionalReconciliationNeeded
+			} else {
+				// We've successfully deleted the network, so stop tracking it
+				r.existingNetworks.DeleteByNamespacedName(network.NamespacedName())
+				change = deleteFinalizer(&network, networkFinalizer, log)
+				r.releaseNetworkWatch(&network, log)
+			}
 		}
 	} else {
 		change = ensureFinalizer(&network, networkFinalizer, log)

@@ -300,6 +300,11 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 
 	switch {
 	case rcd == nil:
+		if container.Spec.EffectiveMode() == apiv1.ContainerModeCleanup && container.Status.State != apiv1.ContainerStateNotFound {
+			log.V(1).Info("Container is being deleted, resolving cleanup target before deleting finalizer")
+			return handleNewContainer(ctx, r, container, apiv1.ContainerStateEmpty, nil, log) | additionalReconciliationNeeded
+		}
+
 		log.V(1).Info("Container is being deleted (deleting finalizer only)...")
 		change = deleteFinalizer(container, containerFinalizer, log)
 
@@ -1277,7 +1282,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
-			r.runContainerLifecycleMonitor(rcd, log)
+			if rcd.runSpec.EffectiveMode() != apiv1.ContainerModePersistent {
+				r.runContainerLifecycleMonitor(rcd, log)
+			}
 
 			// Copy any general files specified in the container spec to the container's filesystem
 			fileModTime := time.Now()
@@ -1296,6 +1303,9 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			finishErr := r.finishCreatedContainerStartup(startupCtx, container, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
 			if finishErr != nil {
 				return finishErr
+			}
+			if rcd.runSpec.EffectiveMode() == apiv1.ContainerModePersistent {
+				r.runContainerLifecycleMonitor(rcd, log)
 			}
 
 			return nil
