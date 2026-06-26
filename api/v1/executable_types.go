@@ -68,14 +68,12 @@ const (
 
 	// Unknown means we are not tracking the actual-state counterpart of the Executable (process or IDE run session).
 	// As a result, we do not know whether it already finished, and what is the exit code, if any.
-	// This can happen if a controller launches a process and then terminates.
-	// When a new controller instance comes online, it may see non-zero ExecutionID Status,
-	// but it does not track the corresponding process or IDE session.
+	// Non-persistent processes are also guarded by a monitor process so they are stopped if DCP exits unexpectedly.
 	ExecutableStateUnknown ExecutableState = "Unknown"
 )
 
 func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
-	// We live in imperfect world, and losing track of Executable state is always a possibility.
+	// Unknown is an error fallback for paths that cannot determine the Executable's actual state.
 	if newState == ExecutableStateUnknown {
 		return true
 	}
@@ -160,6 +158,36 @@ var supportedExecutableModes = []string{
 	string(ExecutableModeSession),
 	string(ExecutableModePersistent),
 	string(ExecutableModeCleanup),
+}
+
+func (mode ExecutableMode) ShouldReuseExisting() bool {
+	switch mode {
+	case ExecutableModePersistent,
+		ExecutableModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ExecutableMode) ShouldCreateIfMissing() bool {
+	switch mode {
+	case ExecutableModeSession,
+		ExecutableModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ExecutableMode) ShouldStopProcessOnDelete() bool {
+	switch mode {
+	case ExecutableModeSession,
+		ExecutableModeCleanup:
+		return true
+	default:
+		return false
+	}
 }
 
 type EnvironmentBehavior string

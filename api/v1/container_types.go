@@ -83,6 +83,37 @@ var supportedContainerModes = []string{
 	string(ContainerModeCleanup),
 }
 
+func (mode ContainerMode) ShouldReuseExisting() bool {
+	switch mode {
+	case ContainerModePersistent,
+		ContainerModeExisting,
+		ContainerModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ContainerMode) ShouldCreateIfMissing() bool {
+	switch mode {
+	case ContainerModeSession,
+		ContainerModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ContainerMode) ShouldDeleteContainer() bool {
+	switch mode {
+	case ContainerModeSession,
+		ContainerModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
 type VolumeMountType string
 
 const (

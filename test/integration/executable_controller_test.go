@@ -499,6 +499,58 @@ func TestExecutableCleanupModeReportsNotFoundWhenProcessRecordMissing(t *testing
 	require.Empty(t, startedProcesses, "cleanup mode should not start a missing process")
 }
 
+func TestExecutableCleanupModeAdoptsProcessRecordCreatedAfterNotFound(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-late-record"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateNotFound, nil
+	})
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(pid, identityTime)
+	})
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable should adopt the late persistent process record")
+}
+
 // Ensure exit code of processes/run sessions are captured correctly
 func TestExecutableExitCodeCaptured(t *testing.T) {
 	type testcase struct {

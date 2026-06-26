@@ -280,7 +280,11 @@ func TestContainerInstanceStarts(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	_, _ = ensureContainerRunning(t, ctx, &ctr)
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	monitorProcesses := testProcessExecutor.FindAll([]string{"dcp", "monitor-container"}, "", func(pe *internal_testutil.ProcessExecution) bool {
+		return slices.Contains(pe.Cmd.Args, updatedCtr.Status.ContainerID)
+	})
+	require.Len(t, monitorProcesses, 1)
 }
 
 // Ensure a container instance is started after container runtime goes from unhealthy to healthy
@@ -1743,6 +1747,50 @@ func TestContainerExistingModeDoesNotCreateMissingContainer(t *testing.T) {
 	})
 	require.ErrorIs(t, err, containers.ErrNotFound, "expected no container resource to be created")
 	require.Len(t, inspected, 0, "expected no container resource to be created")
+}
+
+func TestContainerExistingModeAdoptsContainerCreatedAfterNotFound(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-existing-mode-late-container"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeExisting,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateNotFound, nil
+	})
+
+	seedSpec := ctr.Spec
+	seedSpec.Image = imageName
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: seedSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID did not match expected value")
 }
 
 func TestContainerCleanupModeDoesNotCreateMissingContainer(t *testing.T) {

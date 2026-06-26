@@ -108,9 +108,9 @@ type Executor interface {
 	// (to protect against stopping a wrong process, if the PID was reused).
 	StopProcess(pid Pid_t, processStartTime time.Time, options ...ProcessStopOption) error
 
-	// Finds the process with a given PID.
+	// Checks that the process with a given PID is running.
 	// The processStartTime, if provided (time.IsZero() returns false), is used to further validate the process.
-	FindProcess(pid Pid_t, processStartTime time.Time) error
+	CheckProcessRunning(pid Pid_t, processStartTime time.Time) error
 
 	// Starts a process that does not need to be tracked (the caller is not interested in its exit code),
 	// minimizing resource usage. An error is returned if the process could not be started.

@@ -301,19 +301,13 @@ func (r *ContainerReconciler) handleDeletionRequest(ctx context.Context, contain
 	switch {
 	case rcd == nil:
 		log.V(1).Info("Container is being deleted (deleting finalizer only)...")
-		if shouldDeleteContainer(container.Spec.EffectiveMode()) && container.Status.ContainerID != "" {
-			r.cleanupDcpContainerResources(ctx, container, log)
-			r.removeContainerNetworkConnections(ctx, container, log)
-			_ = r.removeExistingContainer(ctx, containerID(container.Status.ContainerID), nil, log)
-			logger.ReleaseResourceLog(container.GetResourceId())
-		}
 		change = deleteFinalizer(container, containerFinalizer, log)
 
 	case rcd.containerState == apiv1.ContainerStateBuilding || rcd.containerState == apiv1.ContainerStateStarting || rcd.containerState == apiv1.ContainerStateStopping:
 		log.V(1).Info("Container is being deleted, waiting for it to exit transient state...", "CurrentState", rcd.containerState)
 		change = r.manageContainer(ctx, container, log)
 
-	case (rcd.containerState == apiv1.ContainerStateRunning || rcd.containerState == apiv1.ContainerStatePaused) && shouldDeleteContainer(container.Spec.EffectiveMode()):
+	case (rcd.containerState == apiv1.ContainerStateRunning || rcd.containerState == apiv1.ContainerStatePaused) && container.Spec.EffectiveMode().ShouldDeleteContainer():
 		log.V(1).Info("Container is being deleted, but it needs to be stopped first...", "CurrentState", rcd.containerState)
 		rcd.containerState = apiv1.ContainerStateStopping
 		stoppingInitializer := getStateInitializer(containerStateInitializers, apiv1.ContainerStateStopping, log)
@@ -362,7 +356,7 @@ func handleNewContainer(
 
 	}
 
-	if shouldReuseExisting(effectiveMode) {
+	if effectiveMode.ShouldReuseExisting() {
 		// Check for an existing container
 		inspected, inspectedErr := inspectContainerIfExists(ctx, r.orchestrator, container.Spec.ContainerName)
 		if inspectedErr != nil && !errors.Is(inspectedErr, containers.ErrNotFound) {
@@ -401,7 +395,7 @@ func handleNewContainer(
 			// Produce a candidate RCD; this will only be persisted if we find an existing valid container.
 			rcd := newRunningContainerData(container)
 
-			if shouldCreateIfMissing(effectiveMode) {
+			if effectiveMode.ShouldCreateIfMissing() {
 				// We compute the effective environment and invocation args here because we need them
 				// to generate a stable lifecycle key.
 				envErr := r.computeEffectiveEnvironment(ctx, container, rcd, log)
@@ -458,7 +452,7 @@ func handleNewContainer(
 				return change | r.adoptExistingContainer(ctx, container, rcd, inspected, log)
 			}
 
-			if container.ShouldStart() && shouldCreateIfMissing(effectiveMode) {
+			if container.ShouldStart() && effectiveMode.ShouldCreateIfMissing() {
 				log.V(1).Info("Removing existing container")
 				if removeErr := r.removeExistingContainer(ctx, containerID(inspected.Id), inspected, log); removeErr != nil {
 					log.Error(removeErr, "Could not remove existing container")
@@ -468,9 +462,9 @@ func handleNewContainer(
 		}
 	}
 
-	if !shouldCreateIfMissing(effectiveMode) {
+	if !effectiveMode.ShouldCreateIfMissing() {
 		_ = r.releasePersistentContainerResourceLease(ctx, container, log, false)
-		return change | r.setContainerState(container, apiv1.ContainerStateNotFound)
+		return change | r.setContainerState(container, apiv1.ContainerStateNotFound) | additionalReconciliationNeeded
 	}
 
 	if !container.ShouldStart() {
@@ -504,6 +498,7 @@ func (r *ContainerReconciler) adoptExistingContainer(
 	log.Info("Found existing Container")
 
 	rcd.updateFromInspectedContainer(inspected)
+	r.runContainerLifecycleMonitor(rcd, log)
 
 	rcd.ensureStartupLogFiles(container, log)
 	rcd.startAttemptFinishedAt = metav1.NewMicroTime(inspected.StartedAt)
@@ -1282,6 +1277,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
+			r.runContainerLifecycleMonitor(rcd, log)
 
 			// Copy any general files specified in the container spec to the container's filesystem
 			fileModTime := time.Now()
@@ -1793,7 +1789,6 @@ func (r *ContainerReconciler) finishCreatedContainerStartup(
 			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", startedContainer.Status)
 			rcd.containerState = apiv1.ContainerStateExited
 		}
-		r.runPersistentContainerLifecycleMonitor(rcd, log)
 		return nil
 	}
 
@@ -1851,7 +1846,7 @@ func (r *ContainerReconciler) deleteContainer(ctx context.Context, container *ap
 	defer rcd.deleteStartupLogFiles(log)
 	defer rcd.closeTerminalResources(r.config.ProcessExecutor, log)
 
-	if !shouldDeleteContainer(container.Spec.EffectiveMode()) {
+	if !container.Spec.EffectiveMode().ShouldDeleteContainer() {
 		log.V(1).Info("Container is being deleted, leaving underlying resources")
 		return
 	}
@@ -2069,36 +2064,51 @@ func (r *ContainerReconciler) handleInitialNetworkConnections(
 			return nil, attachErr
 		}
 	}
-	r.runPersistentContainerLifecycleMonitor(rcd, log)
+	if inspected != nil {
+		rcd.updateFromInspectedContainer(inspected)
+	}
 
 	return inspected, nil
 }
 
-func (r *ContainerReconciler) runPersistentContainerLifecycleMonitor(rcd *runningContainerData, log logr.Logger) {
-	if rcd == nil || rcd.runSpec == nil || rcd.runSpec.EffectiveMode() != apiv1.ContainerModePersistent {
+func (r *ContainerReconciler) runContainerLifecycleMonitor(rcd *runningContainerData, log logr.Logger) {
+	if rcd == nil || rcd.runSpec == nil || !rcd.hasValidContainerID() {
 		return
 	}
 
-	monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(rcd.runSpec.MonitorPID, rcd.runSpec.MonitorTimestamp)
-	if monitorErr != nil {
-		log.Error(monitorErr, "Could not start persistent Container lifecycle monitor")
-		return
-	}
-	if !found {
-		return
-	}
-	if r.config.ProcessExecutor == nil {
-		log.Error(fmt.Errorf("process executor is not configured"), "Could not start persistent Container lifecycle monitor")
-		return
-	}
+	effectiveMode := rcd.runSpec.EffectiveMode()
+	switch {
+	case effectiveMode.ShouldDeleteContainer():
+		if r.config.ProcessExecutor == nil {
+			log.Error(fmt.Errorf("process executor is not configured"), "Could not start Container cleanup monitor")
+			return
+		}
+		dcpproc.RunContainerWatcher(r.config.ProcessExecutor, string(rcd.containerID), log)
 
-	dcpproc.RunContainerWatcherForMonitorWithOptions(
-		r.config.ProcessExecutor,
-		monitor,
-		string(rcd.containerID),
-		dcpproc.ContainerWatcherOptions{StopOnly: true},
-		log,
-	)
+	case effectiveMode == apiv1.ContainerModePersistent:
+		monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(rcd.runSpec.MonitorPID, rcd.runSpec.MonitorTimestamp)
+		if monitorErr != nil {
+			log.Error(monitorErr, "Could not start persistent Container lifecycle monitor")
+			return
+		}
+		if !found {
+			return
+		}
+		if r.config.ProcessExecutor == nil {
+			log.Error(fmt.Errorf("process executor is not configured"), "Could not start persistent Container lifecycle monitor")
+			return
+		}
+		dcpproc.RunContainerWatcherForMonitorWithOptions(
+			r.config.ProcessExecutor,
+			monitor,
+			string(rcd.containerID),
+			dcpproc.ContainerWatcherOptions{StopOnly: true},
+			log,
+		)
+
+	default:
+		return
+	}
 }
 
 // Connects the Container to networks as necessary, updating status.
@@ -2141,7 +2151,7 @@ func (r *ContainerReconciler) removeContainerNetworkConnections(
 	container *apiv1.Container,
 	log logr.Logger,
 ) {
-	if !shouldDeleteContainer(container.Spec.EffectiveMode()) {
+	if !container.Spec.EffectiveMode().ShouldDeleteContainer() {
 		return
 	}
 
@@ -2492,37 +2502,6 @@ func persistentContainerLeaseReleaseState(state apiv1.ContainerState) bool {
 		apiv1.ContainerStatePaused,
 		apiv1.ContainerStateExited,
 		apiv1.ContainerStateUnknown:
-		return true
-	default:
-		return false
-	}
-}
-
-func shouldReuseExisting(mode apiv1.ContainerMode) bool {
-	switch mode {
-	case apiv1.ContainerModePersistent,
-		apiv1.ContainerModeExisting,
-		apiv1.ContainerModeCleanup:
-		return true
-	default:
-		return false
-	}
-}
-
-func shouldCreateIfMissing(mode apiv1.ContainerMode) bool {
-	switch mode {
-	case apiv1.ContainerModeSession,
-		apiv1.ContainerModePersistent:
-		return true
-	default:
-		return false
-	}
-}
-
-func shouldDeleteContainer(mode apiv1.ContainerMode) bool {
-	switch mode {
-	case apiv1.ContainerModeSession,
-		apiv1.ContainerModeCleanup:
 		return true
 	default:
 		return false

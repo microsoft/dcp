@@ -213,7 +213,7 @@ func (e *TestProcessExecutor) StopProcess(pid process.Pid_t, processStartTime ti
 	return e.stopProcessImpl(pid, processStartTime, KilledProcessExitCode)
 }
 
-func (e *TestProcessExecutor) FindProcess(pid process.Pid_t, processStartTime time.Time) error {
+func (e *TestProcessExecutor) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
 	e.m.RLock()
 	defer e.m.RUnlock()
 
