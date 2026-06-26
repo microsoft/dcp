@@ -237,11 +237,17 @@ func (r *ExecutableReconciler) handleDeletionRequest(ctx context.Context, exe *a
 			}
 		}
 
+		r.releaseExecutableControllerResources(ctx, exe, log)
 		return deleteFinalizer(exe, executableFinalizer, log)
 	}
 
 	switch {
 	case runInfo == nil:
+		if effectiveMode == apiv1.ExecutableModeCleanup && exe.Status.State != apiv1.ExecutableStateNotFound {
+			log.V(1).Info("Executable is being deleted, resolving cleanup target before deleting finalizer")
+			return handleNewExecutable(ctx, r, exe, apiv1.ExecutableStateEmpty, nil, log) | additionalReconciliationNeeded
+		}
+
 		log.V(1).Info("Executable is being deleted (deleting finalizer only)...")
 		return deleteFinalizer(exe, executableFinalizer, log)
 
@@ -314,7 +320,7 @@ func handleNewExecutable(
 	var persistentLease *statestore.ResourceLease
 	defer func() {
 		if persistentLease != nil {
-			_ = persistentLease.Release(ctx)
+			_ = persistentLease.Release(context.WithoutCancel(ctx))
 		}
 	}()
 
@@ -429,7 +435,7 @@ func handleNewExecutable(
 	}
 
 	if exe.Spec.Stop && runInfo.startupStage == StartupStageInitial && len(runInfo.startResults) == 0 {
-		log.V(1).Info("No persistent Executable process was found to stop")
+		log.V(1).Info("No Executable process was found to stop")
 		return noChange
 	}
 
@@ -1005,9 +1011,13 @@ func allRunnersAttempted(currentStage ExecutableStartuptStage, exe *apiv1.Execut
 }
 
 func (r *ExecutableReconciler) releaseExecutableResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
-	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
+	r.releaseExecutableControllerResources(ctx, exe, log)
 	r.deleteOutputFiles(exe, log)
 	r.deleteCertificateFiles(exe, log)
+}
+
+func (r *ExecutableReconciler) releaseExecutableControllerResources(ctx context.Context, exe *apiv1.Executable, log logr.Logger) {
+	r.disableEndpointsAndHealthProbes(ctx, exe, nil, log)
 	logger.ReleaseResourceLog(exe.GetResourceId())
 }
 

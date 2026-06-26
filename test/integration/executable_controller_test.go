@@ -435,6 +435,71 @@ func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
 	require.NoError(t, err, "process was not stopped")
 }
 
+func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-delete-before-adopt"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(pid, identityTime)
+	})
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	leaseOwner := process.ProcessTreeItem{Pid: process.Pid_t(1), IdentityTime: time.Now()}
+	lease, leaseErr := testStateStore.AcquireResourceLease(ctx, &exe, leaseOwner, time.Minute)
+	require.NoError(t, leaseErr, "could not acquire persistent process lease")
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+	})
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	require.NoError(t, lease.Release(context.WithoutCancel(ctx)), "could not release persistent process lease")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		processExecution, found := testProcessExecutor.FindByPid(pid)
+		return found && processExecution.Finished(), nil
+	})
+	require.NoError(t, err, "process was not stopped")
+}
+
 func TestExecutablePersistentFieldOverridesCleanupMode(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

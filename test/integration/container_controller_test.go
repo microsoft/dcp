@@ -1987,6 +1987,79 @@ func TestContainerCleanupModeRemovesExistingContainerOnDelete(t *testing.T) {
 	require.NoError(t, err, "container was not removed")
 }
 
+func TestContainerCleanupModeDeletedBeforeAdoptionRemovesExistingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+
+	const testName = "container-cleanup-mode-delete-before-adopt"
+	const imageName = testName + "-image"
+
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
+	require.NoError(t, startupErr, "failed to start the API server")
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeCleanup,
+		},
+	}
+
+	id, err := serverInfo.ContainerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = serverInfo.ContainerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+	tco.SetRuntimeHealth(false)
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateRuntimeUnhealthy, nil
+	})
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflictEx(ctx, serverInfo.Client, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return serverInfo.Client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	tco.SetRuntimeHealth(true)
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &ctr)
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		inspected, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{id},
+		})
+		if !errors.Is(inspectErr, containers.ErrNotFound) || len(inspected) != 0 {
+			return false, nil
+		}
+		return true, nil
+	})
+	require.NoError(t, err, "container was not removed")
+}
+
 func TestContainerPersistentFieldOverridesCleanupMode(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
