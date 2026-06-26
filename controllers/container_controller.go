@@ -1952,6 +1952,7 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	})
 	if attachErr != nil {
 		log.Error(attachErr, "Failed to attach terminal to container")
+		connMgr.Shutdown()
 		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
 			log.Error(stopErr, "Failed to stop container after terminal attach failure")
 		}
@@ -1967,6 +1968,7 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 		if closeErr := ptp.PTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
 			log.Error(closeErr, "Failed to close PTY after terminal connection manager creation failure")
 		}
+		connMgr.Shutdown()
 		if _, stopErr := r.stopContainerIfNecessary(r.LifetimeCtx, rcd.containerID, nil, log); stopErr != nil {
 			log.Error(stopErr, "Failed to stop container after terminal connection manager creation failure")
 		}
@@ -1984,7 +1986,7 @@ func (r *ContainerReconciler) attachTerminalIfNeeded(
 	rcd.ptp = ptp
 	rcd.connMgr = connMgr
 
-	log.V(1).Info("Container terminal attached", "UDSPath", terminalSpec.UDSPath)
+	log.V(1).Info("Container terminal attached", "UDSPath", connMgr.SocketPath())
 	return nil
 }
 

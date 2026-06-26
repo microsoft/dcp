@@ -1961,6 +1961,13 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 							Format:      "",
 						},
 					},
+					"terminalSocketPath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The filesystem path of the terminal HMP v1 Unix domain socket, when the Container is configured with a terminal. In \"listen\" mode this is the socket DCP owns (and is the DCP-generated path when the spec left UDSPath empty); in \"connect\" mode it is the peer-owned socket DCP dials.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"exitCode": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Exit code of the Container. Default is -1, meaning the exit code is not known, or the container is still running.",
@@ -3095,6 +3102,13 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 							Format:      "",
 						},
 					},
+					"terminalSocketPath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The filesystem path of the terminal HMP v1 Unix domain socket, when the Executable is configured with a terminal. In \"listen\" mode this is the socket DCP owns (and is the DCP-generated path when the spec left UDSPath empty); in \"connect\" mode it is the peer-owned socket DCP dials.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"effectiveEnv": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -3962,14 +3976,14 @@ func schema_microsoft_dcp_api_v1_TerminalSpec(ref common.ReferenceCallback) comm
 				Properties: map[string]spec.Schema{
 					"udsPath": {
 						SchemaProps: spec.SchemaProps{
-							Description: "UDSPath is the Unix Domain Socket path used for the HMP v1 client connection. Required.",
+							Description: "Unix Domain Socket path used for the HMP v1 client connection. In \"listen\" mode UDSPath is optional: when empty, DCP chooses a unique socket path in the session/temp folder and reports the actual path in the resource Status. DCP owns the socket file in this mode (creates it and removes it on teardown); when UDSPath is provided it must not already exist, as DCP will not reuse or remove a pre-existing file. In \"connect\" mode UDSPath is required and refers to a socket the peer is listening on.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
 					"socketMode": {
 						SchemaProps: spec.SchemaProps{
-							Description: "SocketMode selects how DCP establishes the HMP v1 connection over UDSPath. \"listen\" (the default) means DCP listens on the socket and the client connects to it. \"connect\" means the client listens on the socket and DCP connects to it. The terminal data flow is identical in both modes; only connection establishment differs.",
+							Description: "SocketMode selects how DCP establishes the HMP v1 connection over UDSPath. \"listen\" (the default) means DCP listens on the socket and the client connects to it; DCP owns the socket file (creating and removing it). \"connect\" means the client listens on the socket (which it owns) and DCP connects to it. The terminal data flow is identical in both modes; only connection establishment differs.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
