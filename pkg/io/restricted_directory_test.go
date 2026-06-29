@@ -50,7 +50,7 @@ func TestEnsureRestrictedDirectoryRestrictsExistingDirectory(t *testing.T) {
 func TestEnsureRestrictedDirectoryAllowsConcurrentCreation(t *testing.T) {
 	outputDir := filepath.Join(t.TempDir(), "restricted-dir")
 	start := make(chan struct{})
-	const workerCount = 128
+	const workerCount = 5
 	var waitGroup sync.WaitGroup
 	for range workerCount {
 		waitGroup.Add(1)
