@@ -17,7 +17,9 @@ func EnsureRestrictedDirectory(dir string, perm os.FileMode) error {
 	info, statErr := os.Lstat(dir)
 	if errors.Is(statErr, os.ErrNotExist) {
 		if mkdirErr := os.Mkdir(dir, perm); mkdirErr != nil {
-			return fmt.Errorf("could not create directory '%s': %w", dir, mkdirErr)
+			if !errors.Is(mkdirErr, os.ErrExist) {
+				return fmt.Errorf("could not create directory '%s': %w", dir, mkdirErr)
+			}
 		}
 		info, statErr = os.Lstat(dir)
 	}
