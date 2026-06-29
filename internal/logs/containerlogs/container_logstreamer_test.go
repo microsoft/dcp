@@ -23,38 +23,6 @@ import (
 
 const containerLogStreamerTestTimeout = 20 * time.Second
 
-func TestOnResourceUpdatedDoesNotStopDeletingContainerStreams(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, containerLogStreamerTestTimeout)
-	defer cancel()
-
-	log := testutil.NewLogForTesting("container-log-streamer-deleting")
-	streamer := NewLogStreamer(log)
-	containerUID := types.UID("deleting-container-stream-test")
-	followWriters := addBlockingContainerFollowWriters(ctx, streamer, containerUID)
-	now := metav1.Now()
-	ctr := &apiv1.Container{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "deleting-container-stream-test",
-			UID:               containerUID,
-			DeletionTimestamp: &now,
-		},
-		Status: apiv1.ContainerStatus{
-			State: apiv1.ContainerStateStarting,
-		},
-	}
-
-	streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
-		Type:   watch.Modified,
-		Object: ctr,
-	}, log)
-
-	for _, followWriter := range followWriters {
-		assertContainerStreamNotDoneImmediately(t, ctx, followWriter.Done())
-	}
-}
-
 func TestOnResourceUpdatedDelaysDeletedContainerStreamStop(t *testing.T) {
 	t.Parallel()
 

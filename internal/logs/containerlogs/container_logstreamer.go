@@ -289,13 +289,6 @@ func (c *containerLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent,
 	case watch.Added, watch.Modified:
 		// "watch.Added" does not necessarily mean that the resource was just created.
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
-		deletionRequested := ctr.DeletionTimestamp != nil && !ctr.DeletionTimestamp.IsZero()
-		if deletionRequested {
-			if c.containerLogs != nil {
-				containerLogsToRelease = c.containerLogs
-			}
-		}
-
 		if ctr.Status.State != apiv1.ContainerStateStarting && ctr.Status.State != apiv1.ContainerStateBuilding {
 			// If done starting the container, ensure startup logs stop streaming once they reach EOF
 			streamsToStop = append(streamsToStop, takeLogStreamsForContainer(c.startupLogStreams, ctr, "startup", logs.DelayStopFollowing))
