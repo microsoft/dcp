@@ -51,6 +51,9 @@ const (
 	// The Executable was successfully started and was running last time we checked.
 	ExecutableStateRunning ExecutableState = "Running"
 
+	// ExecutableStateNotFound indicates the Executable is waiting for an existing process record that does not exist.
+	ExecutableStateNotFound ExecutableState = "NotFound"
+
 	// Executable is stopping (DCP is trying to stop the process)
 	ExecutableStateStopping ExecutableState = "Stopping"
 
@@ -65,20 +68,25 @@ const (
 
 	// Unknown means we are not tracking the actual-state counterpart of the Executable (process or IDE run session).
 	// As a result, we do not know whether it already finished, and what is the exit code, if any.
-	// This can happen if a controller launches a process and then terminates.
-	// When a new controller instance comes online, it may see non-zero ExecutionID Status,
-	// but it does not track the corresponding process or IDE session.
+	// Non-persistent processes are also guarded by a monitor process so they are stopped if DCP exits unexpectedly.
 	ExecutableStateUnknown ExecutableState = "Unknown"
 )
 
 func (es ExecutableState) CanUpdateTo(newState ExecutableState) bool {
-	// We live in imperfect world, and losing track of Executable state is always a possibility.
+	// Unknown is an error fallback for paths that cannot determine the Executable's actual state.
 	if newState == ExecutableStateUnknown {
 		return true
 	}
 
 	switch {
 	case es == ExecutableStateEmpty:
+		return newState == ExecutableStateStarting ||
+			newState == ExecutableStateRunning ||
+			newState == ExecutableStateNotFound ||
+			newState == ExecutableStateTerminated ||
+			newState == ExecutableStateFailedToStart
+
+	case es == ExecutableStateNotFound:
 		return newState == ExecutableStateStarting ||
 			newState == ExecutableStateRunning ||
 			newState == ExecutableStateTerminated ||
@@ -132,6 +140,54 @@ func (et ExecutionType) IsValid() bool {
 
 func (et ExecutionType) IsValidOrDefault() bool {
 	return et == "" || et.IsValid()
+}
+
+// +kubebuilder:validation:Enum=session;persistent;cleanup
+type ExecutableMode string
+
+const (
+	// ExecutableModeSession creates the process with the Executable resource and stops it when the resource is deleted.
+	ExecutableModeSession ExecutableMode = "session"
+	// ExecutableModePersistent creates or reuses the process and leaves it running when the resource is deleted.
+	ExecutableModePersistent ExecutableMode = "persistent"
+	// ExecutableModeCleanup reuses an existing process without creating it, then stops it when the resource is deleted.
+	ExecutableModeCleanup ExecutableMode = "cleanup"
+)
+
+var supportedExecutableModes = []string{
+	string(ExecutableModeSession),
+	string(ExecutableModePersistent),
+	string(ExecutableModeCleanup),
+}
+
+func (mode ExecutableMode) ShouldReuseExisting() bool {
+	switch mode {
+	case ExecutableModePersistent,
+		ExecutableModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ExecutableMode) ShouldCreateIfMissing() bool {
+	switch mode {
+	case ExecutableModeSession,
+		ExecutableModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ExecutableMode) ShouldStopProcessOnDelete() bool {
+	switch mode {
+	case ExecutableModeSession,
+		ExecutableModeCleanup:
+		return true
+	default:
+		return false
+	}
 }
 
 type EnvironmentBehavior string
@@ -268,6 +324,10 @@ type ExecutableSpec struct {
 	// +kubebuilder:default:=false
 	Stop bool `json:"stop,omitempty"`
 
+	// Controls how the Executable process is created, reused, and cleaned up.
+	// Ignored when persistent is true.
+	Mode ExecutableMode `json:"mode,omitempty"`
+
 	// Should this Executable be created and persisted between DCP runs?
 	Persistent bool `json:"persistent,omitempty"`
 
@@ -276,7 +336,7 @@ type ExecutableSpec struct {
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
 	// Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle.
-	// When set, MonitorTimestamp must also be set and Persistent must be true.
+	// When set, MonitorTimestamp must also be set and the effective mode must be persistent.
 	// +optional
 	MonitorPID *int64 `json:"monitorPid,omitempty"`
 
@@ -300,6 +360,27 @@ type ExecutableSpec struct {
 	// and API requests to fetch logs will fail.
 	// +optional
 	Terminal *TerminalSpec `json:"terminal,omitempty"`
+}
+
+func (es ExecutableSpec) EffectiveMode() ExecutableMode {
+	if es.Persistent {
+		return ExecutableModePersistent
+	}
+	if es.Mode == "" {
+		return ExecutableModeSession
+	}
+	return es.Mode
+}
+
+func executableModeSupported(mode ExecutableMode) bool {
+	switch mode {
+	case ExecutableModeSession,
+		ExecutableModePersistent,
+		ExecutableModeCleanup:
+		return true
+	default:
+		return false
+	}
 }
 
 func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
@@ -340,6 +421,10 @@ func (es ExecutableSpec) Equal(other ExecutableSpec) bool {
 	}
 
 	if es.Stop != other.Stop {
+		return false
+	}
+
+	if es.Mode != other.Mode {
 		return false
 	}
 
@@ -580,29 +665,51 @@ func (es ExecutableSpec) Validate(specPath *field.Path) field.ErrorList {
 		errorList = append(errorList, field.Invalid(specPath.Child("ambientEnvironment", "behavior"), es.AmbientEnvironment.Behavior, "Ambient environment behavior must be either Inherit or DoNotInherit."))
 	}
 
+	if !es.Persistent && es.Mode != "" && !executableModeSupported(es.Mode) {
+		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), es.Mode, supportedExecutableModes))
+	}
+
+	effectiveMode := es.EffectiveMode()
+	reusesExisting := effectiveMode != ExecutableModeSession
 	effectiveExecutionType := es.ExecutionType
 	if effectiveExecutionType == "" {
 		effectiveExecutionType = ExecutionTypeProcess
 	}
-	if es.Persistent && effectiveExecutionType != ExecutionTypeProcess {
-		errorList = append(errorList, field.Invalid(specPath.Child("persistent"), es.Persistent, "Persistent Executables only support Process execution type."))
+	if reusesExisting && effectiveExecutionType != ExecutionTypeProcess {
+		message := "Executable modes that reuse existing processes only support Process execution type."
+		path := specPath.Child("mode")
+		value := any(es.Mode)
+		if es.Persistent {
+			message = "Persistent Executables only support Process execution type."
+			path = specPath.Child("persistent")
+			value = es.Persistent
+		}
+		errorList = append(errorList, field.Invalid(path, value, message))
 	}
-	if es.Persistent && len(es.FallbackExecutionTypes) > 0 {
-		errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, "Persistent Executables cannot use fallback execution types."))
+	if reusesExisting && len(es.FallbackExecutionTypes) > 0 {
+		message := "Executable modes that reuse existing processes cannot use fallback execution types."
+		if es.Persistent {
+			message = "Persistent Executables cannot use fallback execution types."
+		}
+		errorList = append(errorList, field.Invalid(specPath.Child("fallbackExecutionTypes"), es.FallbackExecutionTypes, message))
 	}
-	if es.Persistent && es.Terminal != nil {
-		errorList = append(errorList, field.Forbidden(specPath.Child("terminal"), "Persistent Executables cannot use a terminal."))
+	if reusesExisting && es.Terminal != nil {
+		message := "Executable modes that reuse existing processes cannot use a terminal."
+		if es.Persistent {
+			message = "Persistent Executables cannot use a terminal."
+		}
+		errorList = append(errorList, field.Forbidden(specPath.Child("terminal"), message))
 	}
 
 	monitorTimestampSet := !es.MonitorTimestamp.IsZero()
 	if es.MonitorPID != nil && *es.MonitorPID <= 0 {
 		errorList = append(errorList, field.Invalid(specPath.Child("monitorPid"), *es.MonitorPID, "monitorPid must be positive"))
 	}
-	if !es.Persistent && es.MonitorPID != nil {
-		errorList = append(errorList, field.Forbidden(specPath.Child("monitorPid"), "monitorPid can only be set when persistent is true"))
+	if effectiveMode != ExecutableModePersistent && es.MonitorPID != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorPid"), "monitorPid can only be set for persistent executables"))
 	}
-	if !es.Persistent && monitorTimestampSet {
-		errorList = append(errorList, field.Forbidden(specPath.Child("monitorTimestamp"), "monitorTimestamp can only be set when persistent is true"))
+	if effectiveMode != ExecutableModePersistent && monitorTimestampSet {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorTimestamp"), "monitorTimestamp can only be set for persistent executables"))
 	}
 	if es.MonitorPID != nil && !monitorTimestampSet {
 		errorList = append(errorList, field.Required(specPath.Child("monitorTimestamp"), "monitorTimestamp must be set when monitorPid is set"))
@@ -809,6 +916,10 @@ func (e *Executable) ValidateUpdate(ctx context.Context, obj runtime.Object) fie
 
 	if oldExe.Spec.Persistent != e.Spec.Persistent {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
+	}
+
+	if oldExe.Spec.EffectiveMode() != e.Spec.EffectiveMode() {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "mode"), "mode cannot be changed"))
 	}
 
 	if !pointers.EqualValue(oldExe.Spec.MonitorPID, e.Spec.MonitorPID) {

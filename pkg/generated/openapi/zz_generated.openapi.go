@@ -1040,8 +1040,15 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref common.ReferenceCallba
 					},
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Shouild IPv6 be enabled for the network?",
+							Description: "Should IPv6 be enabled for the network?",
 							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Controls how the network is created, reused, and cleaned up. Ignored when persistent is true.",
+							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
@@ -1740,6 +1747,13 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 							},
 						},
 					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Controls how the container is created, reused, and cleaned up. Ignored when persistent is true.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should this container be created and persisted between DCP runs?",
@@ -1749,7 +1763,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 					},
 					"monitorPid": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Optional parent process PID used to scope persistent Container cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and Persistent must be true.",
+							Description: "Optional parent process PID used to scope persistent Container cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and the effective mode must be persistent.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -2951,6 +2965,13 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 							Format:      "",
 						},
 					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Controls how the Executable process is created, reused, and cleaned up. Ignored when persistent is true.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should this Executable be created and persisted between DCP runs?",
@@ -2967,7 +2988,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 					},
 					"monitorPid": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and Persistent must be true.",
+							Description: "Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and the effective mode must be persistent.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},

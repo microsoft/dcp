@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/exerunners"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/termpty"
 	"github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -144,7 +145,8 @@ func (r *TestProcessExecutableRunner) ReleaseRun(ctx context.Context, runID cont
 
 func (r *TestProcessExecutableRunner) AdoptRun(
 	ctx context.Context,
-	run controllers.ExecutableRunAdoptionInfo,
+	exe *apiv1.Executable,
+	record *statestore.PersistentProcessRecord,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) error {
@@ -153,7 +155,25 @@ func (r *TestProcessExecutableRunner) AdoptRun(
 		return fmt.Errorf("inner test process runner does not support persistent run adoption")
 	}
 
-	return persistentRunner.AdoptRun(ctx, run, runChangeHandler, log)
+	return persistentRunner.AdoptRun(ctx, exe, record, runChangeHandler, log)
+}
+
+func (r *TestProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent process stop")
+	}
+
+	return persistentRunner.StopPersistentProcess(ctx, exe, record, log)
+}
+
+func (r *TestProcessExecutableRunner) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
+	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
+	if !ok {
+		return fmt.Errorf("inner test process runner does not support persistent process liveness checks")
+	}
+
+	return persistentRunner.CheckProcessRunning(pid, processStartTime)
 }
 
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)

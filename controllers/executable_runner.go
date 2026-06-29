@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/statestore"
 
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -48,25 +49,23 @@ type ExecutableRunner interface {
 	ReleaseRun(ctx context.Context, runID RunID, log logr.Logger) error
 }
 
-type ExecutableRunAdoptionInfo struct {
-	RunID               RunID
-	Pid                 process.Pid_t
-	ProcessIdentityTime time.Time
-	StdOutFile          string
-	StdErrFile          string
-	CommandInfo         string
-}
-
 type PersistentExecutableRunner interface {
 	ExecutableRunner
 
-	// Adopts a persistent run that was started by a previous DCP controller instance.
+	// Adopts a persistent process record for controller-side tracking.
 	AdoptRun(
 		ctx context.Context,
-		run ExecutableRunAdoptionInfo,
+		exe *apiv1.Executable,
+		record *statestore.PersistentProcessRecord,
 		runChangeHandler RunChangeHandler,
 		log logr.Logger,
 	) error
+
+	// Stops the process referenced by a persistent process record without adopting it.
+	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
+
+	// Checks that the process associated with a persistent run is running.
+	CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error
 }
 
 type RunMessageLevel string
