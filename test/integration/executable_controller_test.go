@@ -2888,7 +2888,8 @@ func TestExecutableSystemLogsOnStartupFailure(t *testing.T) {
 	require.NoError(t, logsErr, "System logs should be available for Executable '%s' that failed to start", exeName)
 }
 
-// Verify that logs in follow mode end when Executable is deleted
+// Verify that logs in follow mode include output written after deletion is requested
+// and then end when Executable is deleted.
 func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -2926,6 +2927,8 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 			select {
 			case <-finishExecution.Wait():
 			case <-pe.Signal:
+				_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line after delete")))
+				require.NoError(t, stdoutErr, "Could not write delete-requested line to stdout of Executable '%s'", exeName)
 			}
 			return 0
 		},
@@ -2959,6 +2962,11 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Logf("Deleting Executable '%s'...", exeName)
 	err = client.Delete(ctx, &exe)
 	require.NoError(t, err, "Could not delete Executable '%s'", exeName)
+
+	t.Logf("Ensure log stream for Executable '%s' includes output written after deletion was requested...", exeName)
+	gotLine = scanner.Scan()
+	require.True(t, gotLine, "Could not read delete-requested line from log stream for Executable '%s', the reported error was %v", exeName, scanner.Err())
+	require.Equal(t, "Standard output log line after delete", scanner.Text(), "Delete-requested log line does not match expected content for Executable '%s'", exeName)
 
 	t.Logf("Ensure log stream for Executable '%s' has ended...", exeName)
 	gotLine = scanner.Scan()

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	stdslices "slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -83,7 +82,7 @@ func ReleaseResourceLogsInFolder(folder string) {
 
 	sinksToRelease := []*resourceFileSink{}
 	for resourceId, sink := range resourceSinks {
-		if sameCleanPath(filepath.Dir(sink.file.Name()), folder) {
+		if osutil.SameCleanPath(filepath.Dir(sink.file.Name()), folder) {
 			sinksToRelease = append(sinksToRelease, sink)
 			delete(resourceSinks, resourceId)
 		}
@@ -124,21 +123,6 @@ func ReleaseAllResourceLogs() {
 	}
 
 	wg.Wait()
-}
-
-func sameCleanPath(left string, right string) bool {
-	left = filepath.Clean(left)
-	right = filepath.Clean(right)
-	if leftAbs, leftErr := filepath.Abs(left); leftErr == nil {
-		left = leftAbs
-	}
-	if rightAbs, rightErr := filepath.Abs(right); rightErr == nil {
-		right = rightAbs
-	}
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(left, right)
-	}
-	return left == right
 }
 
 type resourceSink struct {
