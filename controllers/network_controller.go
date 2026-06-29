@@ -557,7 +557,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 		networkState.connections = make(map[string]*connectionState)
 
 		if !shouldKeepUnmanagedConnections(network.Spec.EffectiveMode()) {
-			// If this is not a persistent network, we assume these were all connected by us
+			// Session networks are fully managed by this resource, so assume these were all connected by us.
 			for _, containerID := range network.Status.ContainerIDs {
 				networkState.connections[containerID] = &connectionState{}
 			}
@@ -579,7 +579,7 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 
 		_, knownConnection := networkState.connections[containerID]
 		if !knownConnection && shouldKeepUnmanagedConnections(network.Spec.EffectiveMode()) {
-			// If this is a persistent network, we shouldn't disconnect any containers that we didn't explicitly connect
+			// Reused networks may have unmanaged connections, so only disconnect containers explicitly connected by us.
 			continue
 		}
 

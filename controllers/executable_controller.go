@@ -436,7 +436,7 @@ func handleNewExecutable(
 
 	if exe.Spec.Stop && runInfo.startupStage == StartupStageInitial && len(runInfo.startResults) == 0 {
 		log.V(1).Info("No Executable process was found to stop")
-		return noChange
+		return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 	}
 
 	if !exe.ShouldStart() {

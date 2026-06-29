@@ -183,10 +183,9 @@ func TestNoExistingPersistentExecutableStopWithoutStart(t *testing.T) {
 	t.Logf("Creating persistent Executable '%s' with Start=false and Stop=true", exe.ObjectMeta.Name)
 	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
 
-	t.Logf("Waiting for Executable '%s' to be observed without failing to start", exe.ObjectMeta.Name)
+	t.Logf("Waiting for Executable '%s' to report a terminal state", exe.ObjectMeta.Name)
 	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		require.NotEqual(t, apiv1.ExecutableStateFailedToStart, currentExe.Status.State, "Stop-only Executable should not fail startup when no persistent process exists")
-		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart && !currentExe.Status.FinishTimestamp.IsZero(), nil
 	})
 
 	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
