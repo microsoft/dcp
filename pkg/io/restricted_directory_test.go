@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,28 @@ func TestEnsureRestrictedDirectoryRestrictsExistingDirectory(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		require.Equal(t, osutil.PermissionOnlyOwnerReadWriteTraverse, info.Mode().Perm())
 	}
+}
+
+func TestEnsureRestrictedDirectoryAllowsConcurrentCreation(t *testing.T) {
+	outputDir := filepath.Join(t.TempDir(), "restricted-dir")
+	start := make(chan struct{})
+	const workerCount = 128
+	var waitGroup sync.WaitGroup
+	for range workerCount {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			require.NoError(t, usvc_io.EnsureRestrictedDirectory(outputDir, osutil.PermissionOnlyOwnerReadWriteTraverse))
+		}()
+	}
+
+	close(start)
+	waitGroup.Wait()
+
+	info, statErr := os.Lstat(outputDir)
+	require.NoError(t, statErr)
+	require.True(t, info.IsDir())
 }
 
 func TestValidateRestrictedDirectoryRejectsPermissiveDirectoryWithoutRestricting(t *testing.T) {
