@@ -24,62 +24,72 @@ import (
 
 const stdioLogStreamerTestTimeout = 20 * time.Second
 
-func TestOnResourceUpdatedDelaysDeletingResourceStreamStop(t *testing.T) {
+func TestOnResourceUpdatedDoesNotStopDeletingResourceStream(t *testing.T) {
 	t.Parallel()
 
-	testCases := []struct {
-		name           string
-		eventType      watch.EventType
-		markAsDeleting bool
-	}{
-		{
-			name:           "modified with deletion timestamp",
-			eventType:      watch.Modified,
-			markAsDeleting: true,
+	ctx, cancel := testutil.GetTestContext(t, stdioLogStreamerTestTimeout)
+	defer cancel()
+
+	streamer := &stdIoLogStreamer{
+		lock:          &sync.Mutex{},
+		activeStreams: make(logs.LogStreamMop),
+	}
+	log := testutil.NewLogForTesting("stdio-log-streamer-deleting")
+	followWriter := newBlockingFollowWriter(ctx)
+	resourceUID := types.UID("deleting-stream-test")
+	streamer.activeStreams[resourceUID] = map[logs.LogStreamID]*usvc_io.FollowWriter{
+		1: followWriter,
+	}
+	now := metav1.Now()
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "deleting-stream-test",
+			UID:               resourceUID,
+			DeletionTimestamp: &now,
 		},
-		{
-			name:      "deleted",
-			eventType: watch.Deleted,
+		Status: apiv1.ExecutableStatus{
+			FinishTimestamp: metav1.NowMicro(),
 		},
 	}
 
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
+	streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
+		Type:   watch.Modified,
+		Object: exe,
+	}, log)
 
-			ctx, cancel := testutil.GetTestContext(t, stdioLogStreamerTestTimeout)
-			defer cancel()
+	assertStreamNotDoneImmediately(t, ctx, followWriter.Done())
+}
 
-			streamer := &stdIoLogStreamer{
-				lock:          &sync.Mutex{},
-				activeStreams: make(logs.LogStreamMop),
-			}
-			log := testutil.NewLogForTesting("stdio-log-streamer-delete")
-			followWriter := newEOFFollowWriter(ctx)
-			resourceUID := types.UID("delete-stream-test")
-			streamer.activeStreams[resourceUID] = map[logs.LogStreamID]*usvc_io.FollowWriter{
-				1: followWriter,
-			}
-			exe := &apiv1.Executable{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "delete-stream-test",
-					UID:  resourceUID,
-				},
-			}
+func TestOnResourceUpdatedDelaysDeletedResourceStreamStop(t *testing.T) {
+	t.Parallel()
 
-			if testCase.markAsDeleting {
-				now := metav1.Now()
-				exe.DeletionTimestamp = &now
-			}
-			streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
-				Type:   testCase.eventType,
-				Object: exe,
-			}, log)
+	ctx, cancel := testutil.GetTestContext(t, stdioLogStreamerTestTimeout)
+	defer cancel()
 
-			assertStreamNotDoneImmediately(t, ctx, followWriter.Done())
-			assertStreamDone(t, ctx, followWriter.Done())
-		})
+	streamer := &stdIoLogStreamer{
+		lock:          &sync.Mutex{},
+		activeStreams: make(logs.LogStreamMop),
 	}
+	log := testutil.NewLogForTesting("stdio-log-streamer-delete")
+	followWriter := newEOFFollowWriter(ctx)
+	resourceUID := types.UID("delete-stream-test")
+	streamer.activeStreams[resourceUID] = map[logs.LogStreamID]*usvc_io.FollowWriter{
+		1: followWriter,
+	}
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "delete-stream-test",
+			UID:  resourceUID,
+		},
+	}
+
+	streamer.OnResourceUpdated(apiv1.ResourceWatcherEvent{
+		Type:   watch.Deleted,
+		Object: exe,
+	}, log)
+
+	assertStreamNotDoneImmediately(t, ctx, followWriter.Done())
+	assertStreamDone(t, ctx, followWriter.Done())
 }
 
 func TestDisposeCancelsStreamsImmediately(t *testing.T) {

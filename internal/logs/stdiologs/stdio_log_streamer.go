@@ -185,10 +185,7 @@ func (sls *stdIoLogStreamer) OnResourceUpdated(evt apiv1.ResourceWatcherEvent, l
 		// "watch.Added" does not necessarily mean that the resource was just created.
 		// It really means that the resource was added to the watch stream (has been observed for the first time).
 
-		if !resource.GetDeletionTimestamp().IsZero() {
-			logMessage = "Stopping log streams for resource that is being deleted"
-			stopStreams = logs.DelayStopFollowing
-		} else if resource.Done() {
+		if resource.GetDeletionTimestamp().IsZero() && resource.Done() {
 			// If the resource isn't running, ensure logs stop streaming once they reach EOF
 			logMessage = "Stopping log following for resource that reached its final state"
 			stopStreams = logs.DelayStopFollowing
