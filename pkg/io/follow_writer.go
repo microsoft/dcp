@@ -105,6 +105,9 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 
 				out, writeErr := dest.Write(buf[:read])
 				if writeErr != nil {
+					if followCtx.Err() != nil {
+						return
+					}
 					fw.err.Store(writeErr)
 					return
 				}

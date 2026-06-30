@@ -57,6 +57,17 @@ type eofReadCloser struct {
 	closed atomic.Bool
 }
 
+type cancelAwareErrorWriter struct {
+	ctx     context.Context
+	started chan struct{}
+}
+
+func (w *cancelAwareErrorWriter) Write(_ []byte) (int, error) {
+	close(w.started)
+	<-w.ctx.Done()
+	return 0, errors.New("destination closed")
+}
+
 func (r *eofReadCloser) Read(_ []byte) (int, error) {
 	return 0, io.EOF
 }
@@ -117,6 +128,36 @@ func TestFollowWriterDoesNotCloseSourceByDefault(t *testing.T) {
 	}
 
 	require.False(t, source.closed.Load())
+	require.NoError(t, writer.Err())
+}
+
+func TestFollowWriterIgnoresWriteErrorAfterCancel(t *testing.T) {
+	t.Parallel()
+
+	testCtx, cancelTestCtx := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancelTestCtx()
+
+	followCtx, cancelFollowCtx := context.WithCancel(testCtx)
+	dest := &cancelAwareErrorWriter{
+		ctx:     followCtx,
+		started: make(chan struct{}),
+	}
+
+	writer := usvc_io.NewFollowWriter(followCtx, strings.NewReader("content"), dest)
+
+	select {
+	case <-dest.started:
+		cancelFollowCtx()
+	case <-testCtx.Done():
+		t.Fatal("FollowWriter did not start writing before test timeout")
+	}
+
+	select {
+	case <-writer.Done():
+	case <-testCtx.Done():
+		t.Fatal("FollowWriter did not finish before test timeout")
+	}
+
 	require.NoError(t, writer.Err())
 }
 
