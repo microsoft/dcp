@@ -62,6 +62,58 @@ const (
 	RestartPolicyAlways ContainerRestartPolicy = "always"
 )
 
+// +kubebuilder:validation:Enum=session;persistent;existing;cleanup
+type ContainerMode string
+
+const (
+	// ContainerModeSession creates the container with the Container resource and removes it when the resource is deleted.
+	ContainerModeSession ContainerMode = "session"
+	// ContainerModePersistent creates or reuses the container and leaves it running when the resource is deleted.
+	ContainerModePersistent ContainerMode = "persistent"
+	// ContainerModeExisting reuses an existing container but does not create or delete it.
+	ContainerModeExisting ContainerMode = "existing"
+	// ContainerModeCleanup reuses an existing container without creating it, then removes it when the resource is deleted.
+	ContainerModeCleanup ContainerMode = "cleanup"
+)
+
+var supportedContainerModes = []string{
+	string(ContainerModeSession),
+	string(ContainerModePersistent),
+	string(ContainerModeExisting),
+	string(ContainerModeCleanup),
+}
+
+func (mode ContainerMode) ShouldReuseExisting() bool {
+	switch mode {
+	case ContainerModePersistent,
+		ContainerModeExisting,
+		ContainerModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ContainerMode) ShouldCreateIfMissing() bool {
+	switch mode {
+	case ContainerModeSession,
+		ContainerModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
+func (mode ContainerMode) ShouldDeleteContainer() bool {
+	switch mode {
+	case ContainerModeSession,
+		ContainerModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
 type VolumeMountType string
 
 const (
@@ -650,11 +702,15 @@ type ContainerSpec struct {
 	// +listType=atomic
 	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`
 
+	// Controls how the container is created, reused, and cleaned up.
+	// Ignored when persistent is true.
+	Mode ContainerMode `json:"mode,omitempty"`
+
 	// Should this container be created and persisted between DCP runs?
 	Persistent bool `json:"persistent,omitempty"`
 
 	// Optional parent process PID used to scope persistent Container cleanup to a process lifecycle.
-	// When set, MonitorTimestamp must also be set and Persistent must be true.
+	// When set, MonitorTimestamp must also be set and the effective mode must be persistent.
 	// +optional
 	MonitorPID *int64 `json:"monitorPid,omitempty"`
 
@@ -695,6 +751,35 @@ type ContainerSpec struct {
 	// PEM formatted public certificates to be created in the container
 	// +optional
 	PemCertificates *ContainerPemCertificates `json:"pemCertificates,omitempty"`
+
+	// Optional terminal/PTY configuration. When set, the container's primary process
+	// is started with connection to a pseudo-terminal
+	// and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1,
+	// instead of the container being run detached with separate log capture.
+	// +optional
+	Terminal *TerminalSpec `json:"terminal,omitempty"`
+}
+
+func (cs ContainerSpec) EffectiveMode() ContainerMode {
+	if cs.Persistent {
+		return ContainerModePersistent
+	}
+	if cs.Mode == "" {
+		return ContainerModeSession
+	}
+	return cs.Mode
+}
+
+func containerModeSupported(mode ContainerMode) bool {
+	switch mode {
+	case ContainerModeSession,
+		ContainerModePersistent,
+		ContainerModeExisting,
+		ContainerModeCleanup:
+		return true
+	default:
+		return false
+	}
 }
 
 func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
@@ -768,6 +853,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
+	if cs.Mode != other.Mode {
+		return false
+	}
+
 	if cs.Persistent != other.Persistent {
 		return false
 	}
@@ -809,6 +898,10 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 	if !slices.EqualFunc(cs.ImageLayers, other.ImageLayers, func(l1, l2 ImageLayer) bool {
 		return l1.Equal(&l2)
 	}) {
+		return false
+	}
+
+	if !cs.Terminal.Equal(other.Terminal) {
 		return false
 	}
 
@@ -1020,6 +1113,13 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		}
 	}
 
+	if cs.Terminal != nil {
+		// Columns and rows do not matter that much (the client can always resize the terminal as necessary),
+		// but once a Container is started with terminal support, the UDS path and socket mode do not change.
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.Terminal.UDSPath))
+		hashErr = errors.Join(hashErr, encoder.Encode(cs.Terminal.SocketMode.Normalized()))
+	}
+
 	// Compute the hash for the lifecycle key
 	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
 
@@ -1074,6 +1174,9 @@ const (
 	// Container is in the process of starting
 	ContainerStateStarting ContainerState = "Starting"
 
+	// ContainerStateNotFound indicates the Container is waiting for an existing container that does not exist.
+	ContainerStateNotFound ContainerState = "NotFound"
+
 	// A start attempt was made, but it failed
 	ContainerStateFailedToStart ContainerState = "FailedToStart"
 
@@ -1117,6 +1220,12 @@ type ContainerStatus struct {
 
 	// The path of a temporary file that contains captured standard error data from the Container startup process.
 	StartupStdErrFile string `json:"startupStdErrFile,omitempty"`
+
+	// The filesystem path of the terminal HMP v1 Unix domain socket, when the Container is
+	// configured with a terminal. In "listen" mode this is the socket DCP owns (and is the
+	// DCP-generated path when the spec left UDSPath empty); in "connect" mode it is the peer-owned
+	// socket DCP dials.
+	TerminalSocketPath string `json:"terminalSocketPath,omitempty"`
 
 	// Exit code of the Container.
 	// Default is -1, meaning the exit code is not known, or the container is still running.
@@ -1227,7 +1336,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
-	if c.Spec.Build == nil && c.Spec.Image == "" {
+	effectiveMode := c.Spec.EffectiveMode()
+	requiresContainerImage := effectiveMode == ContainerModeSession || effectiveMode == ContainerModePersistent
+	if requiresContainerImage && c.Spec.Build == nil && c.Spec.Image == "" {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "image"), "image must be set to a non-empty value"))
 	}
 
@@ -1282,28 +1393,46 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), c.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
 
-	if c.Spec.Persistent && c.Spec.ContainerName == "" {
-		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a value when persistent is true"))
+	specPath := field.NewPath("spec")
+	if !c.Spec.Persistent && c.Spec.Mode != "" && !containerModeSupported(c.Spec.Mode) {
+		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), c.Spec.Mode, supportedContainerModes))
+	}
+
+	if effectiveMode != ContainerModeSession {
+		if c.Spec.ContainerName == "" {
+			message := "containerName must be set to a value when mode requires an existing or persistent container"
+			if c.Spec.Persistent {
+				message = "containerName must be set to a value when persistent is true"
+			}
+			errorList = append(errorList, field.Required(specPath.Child("containerName"), message))
+		}
+		if c.Spec.Terminal != nil {
+			message := "Container modes that reuse existing containers cannot use a terminal."
+			if c.Spec.Persistent {
+				message = "Persistent Containers cannot use a terminal."
+			}
+			errorList = append(errorList, field.Forbidden(specPath.Child("terminal"), message))
+		}
 	}
 
 	monitorTimestampSet := !c.Spec.MonitorTimestamp.IsZero()
 	if c.Spec.MonitorPID != nil && *c.Spec.MonitorPID <= 0 {
-		errorList = append(errorList, field.Invalid(field.NewPath("spec", "monitorPid"), *c.Spec.MonitorPID, "monitorPid must be positive"))
+		errorList = append(errorList, field.Invalid(specPath.Child("monitorPid"), *c.Spec.MonitorPID, "monitorPid must be positive"))
 	}
-	if !c.Spec.Persistent && c.Spec.MonitorPID != nil {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorPid"), "monitorPid can only be set when persistent is true"))
+	if effectiveMode != ContainerModePersistent && c.Spec.MonitorPID != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorPid"), "monitorPid can only be set for persistent containers"))
 	}
-	if !c.Spec.Persistent && monitorTimestampSet {
-		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp can only be set when persistent is true"))
+	if effectiveMode != ContainerModePersistent && monitorTimestampSet {
+		errorList = append(errorList, field.Forbidden(specPath.Child("monitorTimestamp"), "monitorTimestamp can only be set for persistent containers"))
 	}
 	if c.Spec.MonitorPID != nil && !monitorTimestampSet {
-		errorList = append(errorList, field.Required(field.NewPath("spec", "monitorTimestamp"), "monitorTimestamp must be set when monitorPid is set"))
+		errorList = append(errorList, field.Required(specPath.Child("monitorTimestamp"), "monitorTimestamp must be set when monitorPid is set"))
 	}
 	if c.Spec.MonitorPID == nil && monitorTimestampSet {
-		errorList = append(errorList, field.Required(field.NewPath("spec", "monitorPid"), "monitorPid must be set when monitorTimestamp is set"))
+		errorList = append(errorList, field.Required(specPath.Child("monitorPid"), "monitorPid must be set when monitorTimestamp is set"))
 	}
 
-	healthProbesPath := field.NewPath("spec", "healthProbes")
+	healthProbesPath := specPath.Child("healthProbes")
 	for i, probe := range c.Spec.HealthProbes {
 		errorList = append(errorList, probe.Validate(healthProbesPath.Index(i))...)
 	}
@@ -1341,6 +1470,9 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 
 	// Validate PEM certificates configuration
 	errorList = append(errorList, c.Spec.PemCertificates.Validate(field.NewPath("spec", "pemCertificates"))...)
+
+	// Validate terminal configuration
+	errorList = append(errorList, c.Spec.Terminal.Validate(field.NewPath("spec", "terminal"))...)
 
 	// Validate that annotations don't exceed the Kubernetes size limit.
 	// This provides a clearer error message than the generic Kubernetes API server error,
@@ -1390,6 +1522,10 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	// Make sure Persistent isn't changed after the container is created
 	if oldContainer.Spec.Persistent != c.Spec.Persistent {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "persistent"), "persistent cannot be changed"))
+	}
+
+	if oldContainer.Spec.EffectiveMode() != c.Spec.EffectiveMode() {
+		errorList = append(errorList, field.Forbidden(field.NewPath("spec", "mode"), "mode cannot be changed"))
 	}
 
 	if !pointers.EqualValue(oldContainer.Spec.MonitorPID, c.Spec.MonitorPID) {
@@ -1442,6 +1578,8 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 			}
 		}
 	}
+
+	errorList = append(errorList, c.Spec.Terminal.ValidateUpdate(oldContainer.Spec.Terminal, field.NewPath("spec", "terminal"))...)
 
 	return errorList
 }

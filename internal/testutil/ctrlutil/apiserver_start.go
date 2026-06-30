@@ -242,7 +242,7 @@ func StartApiServer(
 		info.ApiServerExited.SetAndFreeze()
 	})
 
-	apiServerPID, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone)
+	apiServerPID, _, startWaitForProcessExit, dcpStartErr := pe.StartProcess(testRunCtx, cmd, apiserverExitHandler, process.CreationFlagsNone, nil)
 	if dcpStartErr != nil {
 		info.ApiServerExited.SetAndFreeze()
 		cleanup()

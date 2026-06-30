@@ -29,18 +29,15 @@ import (
 type ExecutableStartuptStage int
 
 const (
-	StartupStageInitial              ExecutableStartuptStage = -3
-	StartupStageCertificateDataReady ExecutableStartuptStage = -2
-	StartupStageDataInitialized      ExecutableStartuptStage = -1
-	StartupStageDefaultRunner        ExecutableStartuptStage = 0
+	StartupStageInitial         ExecutableStartuptStage = -2
+	StartupStageDataInitialized ExecutableStartuptStage = -1
+	StartupStageDefaultRunner   ExecutableStartuptStage = 0
 )
 
 func (s ExecutableStartuptStage) String() string {
 	switch s {
 	case StartupStageInitial:
 		return "initial"
-	case StartupStageCertificateDataReady:
-		return "certificate data ready"
 	case StartupStageDataInitialized:
 		return "run data initialized"
 	case StartupStageDefaultRunner:
@@ -83,6 +80,9 @@ type ExecutableRunInfo struct {
 	// Paths to captured standard output and standard error files
 	StdOutFile string
 	StdErrFile string
+
+	// Filesystem path of the terminal HMP v1 Unix domain socket, when the Executable has a terminal.
+	TerminalSocketPath string
 
 	// Paths to capture debug, info, and error logs
 	DebugLogFile string
@@ -191,6 +191,11 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 		updated = true
 	}
 
+	if other.TerminalSocketPath != "" && ri.TerminalSocketPath != other.TerminalSocketPath {
+		ri.TerminalSocketPath = other.TerminalSocketPath
+		updated = true
+	}
+
 	if other.DebugLogFile != "" && ri.DebugLogFile != other.DebugLogFile {
 		ri.DebugLogFile = other.DebugLogFile
 		updated = true
@@ -269,6 +274,7 @@ func (ri *ExecutableRunInfo) Clone() *ExecutableRunInfo {
 	retval.FinishTimestamp = ri.FinishTimestamp
 	retval.StdOutFile = ri.StdOutFile
 	retval.StdErrFile = ri.StdErrFile
+	retval.TerminalSocketPath = ri.TerminalSocketPath
 	retval.DebugLogFile = ri.DebugLogFile
 	retval.InfoLogFile = ri.InfoLogFile
 	retval.ErrorLogFile = ri.ErrorLogFile
@@ -327,6 +333,11 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 		changed = statusChanged
 	}
 
+	if ri.TerminalSocketPath != "" && status.TerminalSocketPath != ri.TerminalSocketPath {
+		status.TerminalSocketPath = ri.TerminalSocketPath
+		changed = statusChanged
+	}
+
 	updatedHealthResults, healthResultsChanged := health.UpdateHealthProbeResults(status.HealthProbeResults, ri.healthProbeResults)
 	if healthResultsChanged {
 		status.HealthProbeResults = updatedHealthResults
@@ -344,7 +355,7 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 
 func (ri *ExecutableRunInfo) String() string {
 	return fmt.Sprintf(
-		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, healthProbeResults=%s, healthProbesEnabled=%s, stopAttemptInitiated=%t, startupStage=%s, startResults=%s}",
+		"{exeState=%s, pid=%s, executionID=%s, exitCode=%s, startupTimestamp=%s, finishTimestamp=%s, stdOutFile=%s, stdErrFile=%s, terminalSocketPath=%s, healthProbeResults=%s, healthProbesEnabled=%s, stopAttemptInitiated=%t, startupStage=%s, startResults=%s}",
 		ri.ExeState,
 		logger.IntPtrValToString(ri.Pid),
 		logger.FriendlyString(string(ri.RunID)),
@@ -353,6 +364,7 @@ func (ri *ExecutableRunInfo) String() string {
 		logger.FriendlyMetav1Timestamp(ri.FinishTimestamp),
 		logger.FriendlyString(ri.StdOutFile),
 		logger.FriendlyString(ri.StdErrFile),
+		logger.FriendlyString(ri.TerminalSocketPath),
 		ri.healthProbesFriendlyString(),
 		logger.BoolPtrValToString(ri.healthProbesEnabled),
 		ri.stopAttemptInitiated,

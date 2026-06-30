@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/fs"
 	"math/big"
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	wait "k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/stretchr/testify/require"
@@ -278,7 +280,11 @@ func TestContainerInstanceStarts(t *testing.T) {
 	err := client.Create(ctx, &ctr)
 	require.NoError(t, err, "Could not create a Container object")
 
-	_, _ = ensureContainerRunning(t, ctx, &ctr)
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	monitorProcesses := testProcessExecutor.FindAll([]string{"dcp", "monitor-container"}, "", func(pe *internal_testutil.ProcessExecution) bool {
+		return slices.Contains(pe.Cmd.Args, updatedCtr.Status.ContainerID)
+	})
+	require.Len(t, monitorProcesses, 1)
 }
 
 // Ensure a container instance is started after container runtime goes from unhealthy to healthy
@@ -749,6 +755,320 @@ func TestNoExistingPersistentContainerDelayStart(t *testing.T) {
 		Containers: []string{updatedCtr.Status.ContainerID},
 	})
 	require.NoError(t, err, "expected the container to be gone")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestNoExistingPersistentContainerStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "no-existing-persistent-container-stop-without-start"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Logf("Ensure Container '%s' is observed without failing to start...", ctr.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		require.NotEqual(t, apiv1.ContainerStateFailedToStart, c.Status.State, "Stop-only Container should not fail startup when no persistent container exists")
+		return len(c.Finalizers) > 0 && (c.Status.State == apiv1.ContainerStateEmpty || c.Status.State == apiv1.ContainerStatePending), nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{testName},
+	})
+	require.Error(t, err, "expected no container resource to be created")
+	require.Len(t, inspected, 0, "expected no container resource to be created")
+}
+
+func TestExistingPersistentContainerStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-stop-without-start"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+		},
+	}
+
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-stop-with-start-allowed"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Stop:          true,
+		},
+	}
+
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
+
+	createSpec := ctr.Spec
+	createSpec.Stop = false
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "existing-persistent-container-stop-with-unresolved-template"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "MISSING_SERVICE_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
+				},
+			},
+		},
+	}
+
+	createSpec := ctr.Spec
+	createSpec.Start = nil
+	createSpec.Stop = false
+	createSpec.Env = nil
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: "unresolved-template-lifecycle-key",
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
+}
+
+func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "exited-persistent-container-stop-without-start"
+	const imageName = testName + "-image"
+
+	shouldStart := false
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Persistent:    true,
+			Start:         &shouldStart,
+			Stop:          true,
+		},
+	}
+
+	lifecycleKey, _, hashErr := ctr.Spec.GetLifecycleKey()
+	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
+
+	createSpec := ctr.Spec
+	createSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev.build",
+			Value: "test",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: lifecycleKey,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: createSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	_, err = containerOrchestrator.StopContainers(ctx, containers.StopContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not stop container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container")
+
+	t.Log("Ensure container state is 'Exited'...")
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.State == apiv1.ContainerStateExited, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not inspect the container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, containers.ContainerStatusExited, inspected[0].Status, "expected the container to be in 'exited' state")
 }
@@ -1352,6 +1672,435 @@ func TestPersistentContainerDeletion(t *testing.T) {
 	require.NoError(t, err, "expected to find a container")
 	require.Len(t, inspected, 1, "expected to find a single container")
 	require.Equal(t, inspected[0].Status, containers.ContainerStatusRunning, "expected the container to be running")
+}
+
+func TestContainerModePersistentDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-mode-persistent-deletion"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModePersistent,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, inspected[0].Status, containers.ContainerStatusRunning, "expected the container to be running")
+}
+
+func TestContainerExistingModeDoesNotCreateMissingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-existing-mode-missing"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeExisting,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateNotFound, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{testName},
+	})
+	require.ErrorIs(t, err, containers.ErrNotFound, "expected no container resource to be created")
+	require.Len(t, inspected, 0, "expected no container resource to be created")
+}
+
+func TestContainerExistingModeAdoptsContainerCreatedAfterNotFound(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-existing-mode-late-container"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeExisting,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateNotFound, nil
+	})
+
+	seedSpec := ctr.Spec
+	seedSpec.Image = imageName
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: seedSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID did not match expected value")
+}
+
+func TestContainerCleanupModeDoesNotCreateMissingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-cleanup-mode-missing"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateNotFound, nil
+	})
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{testName},
+	})
+	require.ErrorIs(t, err, containers.ErrNotFound, "expected no container resource to be created")
+	require.Len(t, inspected, 0, "expected no container resource to be created")
+}
+
+func TestContainerExistingModeKeepsExistingContainerOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-existing-mode-keeps-existing"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeExisting,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID did not match expected value")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusRunning, inspected[0].Status, "expected the container to be running")
+}
+
+func TestContainerExistingModeIgnoresLifecycleMismatch(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-existing-mode-ignores-lifecycle"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeExisting,
+		},
+	}
+
+	seedSpec := ctr.Spec
+	seedSpec.Labels = []apiv1.ContainerLabel{
+		{
+			Key:   "com.microsoft.developer.usvc-dev",
+			Value: "true",
+		},
+		{
+			Key:   "com.microsoft.developer.usvc-dev.lifecycle-key",
+			Value: "stale-lifecycle-key",
+		},
+	}
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: seedSpec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "existing mode should adopt the existing container despite stale lifecycle labels")
+}
+
+func TestContainerCleanupModeRemovesExistingContainerOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-cleanup-mode-removes-existing"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeCleanup,
+		},
+	}
+
+	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+	require.Equal(t, id, updatedCtr.Status.ContainerID, "container ID did not match expected value")
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		inspected, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{id},
+		})
+		if !errors.Is(inspectErr, containers.ErrNotFound) || len(inspected) != 0 {
+			return false, nil
+		}
+		return true, nil
+	})
+	require.NoError(t, err, "container was not removed")
+}
+
+func TestContainerCleanupModeDeletedBeforeAdoptionRemovesExistingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+
+	const testName = "container-cleanup-mode-delete-before-adopt"
+	const imageName = testName + "-image"
+
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, ContainerController, t.Name(), NoSeparateWorkingDir)
+	require.NoError(t, startupErr, "failed to start the API server")
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeCleanup,
+		},
+	}
+
+	id, err := serverInfo.ContainerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:          testName,
+		ContainerSpec: ctr.Spec,
+	})
+	require.NoError(t, err, "could not create container resource")
+
+	_, err = serverInfo.ContainerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
+		Containers: []string{id},
+	})
+	require.NoError(t, err, "could not start container resource")
+
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+	tco.SetRuntimeHealth(false)
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err = serverInfo.Client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
+		return len(currentCtr.Finalizers) > 0 && currentCtr.Status.State == apiv1.ContainerStateRuntimeUnhealthy, nil
+	})
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflictEx(ctx, serverInfo.Client, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return serverInfo.Client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	tco.SetRuntimeHealth(true)
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &ctr)
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		inspected, inspectErr := serverInfo.ContainerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+			Containers: []string{id},
+		})
+		if !errors.Is(inspectErr, containers.ErrNotFound) || len(inspected) != 0 {
+			return false, nil
+		}
+		return true, nil
+	})
+	require.NoError(t, err, "container was not removed")
+}
+
+func TestContainerPersistentFieldOverridesCleanupMode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "container-persistent-overrides-cleanup"
+	const imageName = testName + "-image"
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image:         imageName,
+			ContainerName: testName,
+			Mode:          apiv1.ContainerModeCleanup,
+			Persistent:    true,
+		},
+	}
+
+	t.Logf("Creating Container '%s'", ctr.ObjectMeta.Name)
+	err := client.Create(ctx, &ctr)
+	require.NoError(t, err, "could not create a Container")
+
+	updatedCtr, _ := ensureContainerRunning(t, ctx, &ctr)
+
+	t.Logf("Deleting Container object '%s'...", ctr.ObjectMeta.Name)
+	err = retryOnConflict(ctx, ctr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
+		return client.Delete(ctx, currentCtr)
+	})
+	require.NoError(t, err, "container object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &ctr)
+
+	inspected, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{updatedCtr.Status.ContainerID},
+	})
+	require.NoError(t, err, "expected to find a container")
+	require.Len(t, inspected, 1, "expected to find a single container")
+	require.Equal(t, containers.ContainerStatusRunning, inspected[0].Status, "expected the container to be running")
 }
 
 func TestPersistentContainerAlreadyExists(t *testing.T) {

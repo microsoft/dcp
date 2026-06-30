@@ -53,6 +53,8 @@ func MonitorPid(
 		monitorProc.WaitPollInterval = time.Second * time.Duration(pollInterval)
 	}
 
+	logger.Info("Started monitoring process", "PID", pid)
+
 	go func() {
 		defer monitorCtxCancel()
 		if waitErr := monitorProc.Wait(monitorCtx); waitErr != nil {

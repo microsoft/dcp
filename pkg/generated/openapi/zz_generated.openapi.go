@@ -82,6 +82,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.ServiceList{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ServiceList(ref),
 		v1.ServiceSpec{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_ServiceSpec(ref),
 		v1.ServiceStatus{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v1_ServiceStatus(ref),
+		v1.TerminalSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_TerminalSpec(ref),
 		v1.TunnelConfiguration{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
 		v1.TunnelStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_TunnelStatus(ref),
 		v1.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_VolumeMount(ref),
@@ -1039,8 +1040,15 @@ func schema_microsoft_dcp_api_v1_ContainerNetworkSpec(ref common.ReferenceCallba
 					},
 					"ipv6": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Shouild IPv6 be enabled for the network?",
+							Description: "Should IPv6 be enabled for the network?",
 							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Controls how the network is created, reused, and cleaned up. Ignored when persistent is true.",
+							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
@@ -1739,6 +1747,13 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 							},
 						},
 					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Controls how the container is created, reused, and cleaned up. Ignored when persistent is true.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should this container be created and persisted between DCP runs?",
@@ -1748,7 +1763,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 					},
 					"monitorPid": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Optional parent process PID used to scope persistent Container cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and Persistent must be true.",
+							Description: "Optional parent process PID used to scope persistent Container cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and the effective mode must be persistent.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -1878,11 +1893,17 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 							Ref:         ref(v1.ContainerPemCertificates{}.OpenAPIModelName()),
 						},
 					},
+					"terminal": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional terminal/PTY configuration. When set, the container's primary process is started with connection to a pseudo-terminal and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1, instead of the container being run detached with separate log capture.",
+							Ref:         ref(v1.TerminalSpec{}.OpenAPIModelName()),
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v1.ContainerBuildContext{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v1.ContainerPemCertificates{}.OpenAPIModelName(), v1.ContainerPort{}.OpenAPIModelName(), v1.CreateFileSystem{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.ImageLayer{}.OpenAPIModelName(), v1.VolumeMount{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.ContainerBuildContext{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v1.ContainerPemCertificates{}.OpenAPIModelName(), v1.ContainerPort{}.OpenAPIModelName(), v1.CreateFileSystem{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.ImageLayer{}.OpenAPIModelName(), v1.TerminalSpec{}.OpenAPIModelName(), v1.VolumeMount{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -1936,6 +1957,13 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 					"startupStdErrFile": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The path of a temporary file that contains captured standard error data from the Container startup process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"terminalSocketPath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The filesystem path of the terminal HMP v1 Unix domain socket, when the Container is configured with a terminal. In \"listen\" mode this is the socket DCP owns (and is the DCP-generated path when the spec left UDSPath empty); in \"connect\" mode it is the peer-owned socket DCP dials.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2438,6 +2466,7 @@ func schema_microsoft_dcp_api_v1_EnvVar(ref common.ReferenceCallback) common.Ope
 					"value": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Value of the environment variable. Defaults to \"\" (empty string).",
+							Default:     "",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -2936,6 +2965,13 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 							Format:      "",
 						},
 					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Controls how the Executable process is created, reused, and cleaned up. Ignored when persistent is true.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Should this Executable be created and persisted between DCP runs?",
@@ -2952,7 +2988,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 					},
 					"monitorPid": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and Persistent must be true.",
+							Description: "Optional parent process PID used to scope persistent Executable cleanup to a process lifecycle. When set, MonitorTimestamp must also be set and the effective mode must be persistent.",
 							Type:        []string{"integer"},
 							Format:      "int64",
 						},
@@ -2988,12 +3024,18 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 							Ref:         ref(v1.ExecutablePemCertificates{}.OpenAPIModelName()),
 						},
 					},
+					"terminal": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional terminal/PTY configuration. When set, the Executable process is started with connection to a pseudo-terminal and its stdin/stdout/stderr are bridged to the configured UDS via HMP v1. When terminal configuration is present, there will be no \"logs\", i.e. ExecutableStatus.StdOutFile and ExecutableStatus.StdErrFile will be empty, and API requests to fetch logs will fail.",
+							Ref:         ref(v1.TerminalSpec{}.OpenAPIModelName()),
+						},
+					},
 				},
 				Required: []string{"executablePath"},
 			},
 		},
 		Dependencies: []string{
-			v1.AmbientEnvironment{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.ExecutablePemCertificates{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.AmbientEnvironment{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.ExecutablePemCertificates{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.TerminalSpec{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -3056,6 +3098,13 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 					"stdErrFile": {
 						SchemaProps: spec.SchemaProps{
 							Description: "The path of a temporary file that contains captured standard error data from the Executable process.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"terminalSocketPath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The filesystem path of the terminal HMP v1 Unix domain socket, when the Executable is configured with a terminal. In \"listen\" mode this is the socket DCP owns (and is the DCP-generated path when the spec left UDSPath empty); in \"connect\" mode it is the peer-owned socket DCP dials.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -3910,6 +3959,47 @@ func schema_microsoft_dcp_api_v1_ServiceStatus(ref common.ReferenceCallback) com
 							Description: "When in Proxyless mode, the name of the Endpoint that was chosen to use as the service's effective address and port",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v1_TerminalSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "TerminalSpec configures pseudo-terminal allocation for an Executable or Container and the Unix domain socket that HMP v1 clients will connect to for terminal I/O.\n\nHMP spec is here: https://github.com/mitchdenny/hex1b/blob/main/docs/muxer-protocol.md\n\nPresence of this field on an Executable or Container spec activates the terminal path: DCP allocates a PTY for the underlying process and listens on UDSPath. When a client opens an HMP v1 connection, DCP starts an HMP v1 server on the connection and bridges:\n\n  - PTY output (from the process's tty)            ->  HMP v1 Output frames\n  - HMP v1 Input frames                            ->  PTY input (process stdin)\n  - HMP v1 Resize frames                           ->  PTY resize (TIOCSWINSZ / ResizePseudoConsole)\n  - Process exit                                   ->  HMP v1 Exit frame, then close",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"udsPath": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Unix Domain Socket path used for the HMP v1 client connection. In \"listen\" mode UDSPath is optional: when empty, DCP chooses a unique socket path in the session/temp folder and reports the actual path in the resource Status. DCP owns the socket file in this mode (creates it and removes it on teardown); when UDSPath is provided it must not already exist, as DCP will not reuse or remove a pre-existing file. In \"connect\" mode UDSPath is required and refers to a socket the peer is listening on.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"socketMode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "SocketMode selects how DCP establishes the HMP v1 connection over UDSPath. \"listen\" (the default) means DCP listens on the socket and the client connects to it; DCP owns the socket file (creating and removing it). \"connect\" means the client listens on the socket (which it owns) and DCP connects to it. The terminal data flow is identical in both modes; only connection establishment differs.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"cols": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Cols is the initial width of the pseudo-terminal in character columns. If zero, a sensible default (80) is used.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"rows": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Rows is the initial height of the pseudo-terminal in character rows. If zero, a sensible default (24) is used.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 				},

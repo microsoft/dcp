@@ -146,6 +146,135 @@ func TestContainerValidateMonitorFields(t *testing.T) {
 	}
 }
 
+func TestContainerValidateTerminalPersistentCombination(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		spec        ContainerSpec
+		expectError bool
+	}{
+		{
+			name: "non-persistent with terminal is allowed",
+			spec: ContainerSpec{
+				Image: "api:dev",
+				Terminal: &TerminalSpec{
+					UDSPath: "/tmp/api.sock",
+					Cols:    80,
+					Rows:    24,
+				},
+			},
+		},
+		{
+			name: "persistent without terminal is allowed",
+			spec: ContainerSpec{
+				Image:         "api:dev",
+				ContainerName: "api",
+				Persistent:    true,
+			},
+		},
+		{
+			name: "persistent with terminal is rejected",
+			spec: ContainerSpec{
+				Image:         "api:dev",
+				ContainerName: "api",
+				Persistent:    true,
+				Terminal: &TerminalSpec{
+					UDSPath: "/tmp/api.sock",
+					Cols:    80,
+					Rows:    24,
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			container := &Container{Spec: testCase.spec}
+			errors := container.Validate(nil)
+
+			if testCase.expectError {
+				require.NotEmpty(t, errors)
+			} else {
+				require.Empty(t, errors)
+			}
+		})
+	}
+}
+
+func TestContainerValidateImageOnlyRequiredForCreationModes(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		spec        ContainerSpec
+		expectError bool
+	}{
+		{
+			name:        "session mode requires image or build",
+			spec:        ContainerSpec{},
+			expectError: true,
+		},
+		{
+			name: "persistent mode requires image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModePersistent,
+			},
+			expectError: true,
+		},
+		{
+			name: "persistent override requires image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Persistent:    true,
+			},
+			expectError: true,
+		},
+		{
+			name: "existing mode does not require image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModeExisting,
+			},
+		},
+		{
+			name: "cleanup mode does not require image or build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModeCleanup,
+			},
+		},
+		{
+			name: "cleanup mode still validates explicit build",
+			spec: ContainerSpec{
+				ContainerName: "api",
+				Mode:          ContainerModeCleanup,
+				Build:         &ContainerBuildContext{},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			container := &Container{Spec: testCase.spec}
+			errors := container.Validate(nil)
+
+			if testCase.expectError {
+				require.NotEmpty(t, errors)
+			} else {
+				require.Empty(t, errors)
+			}
+		})
+	}
+}
+
 func TestImageLayerValidate(t *testing.T) {
 	t.Parallel()
 

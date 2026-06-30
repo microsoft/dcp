@@ -11,6 +11,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// MaxUnixSocketPathLen is a conservative upper bound on the length of a Unix
+// domain socket path. The Windows UNIX_PATH_MAX is 108; we reserve one byte for
+// the null terminator.
+const MaxUnixSocketPathLen = 107
+
 func IsAdmin() (bool, error) {
 	// Get the actual token for the process
 	var processToken windows.Token
@@ -25,8 +30,7 @@ func IsAdmin() (bool, error) {
 		return true, err
 	}
 
-	// nolint:errcheck
-	defer windows.FreeSid(adminSid)
+	defer func() { _ = windows.FreeSid(adminSid) }() // best effort
 
 	// Get a virtual token for the process (not the actual token) to determine if the user is an admin
 	adminToken := windows.Token(0)

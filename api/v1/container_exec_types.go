@@ -114,6 +114,12 @@ func (ce *ContainerExec) HasStdErr() bool {
 	return true
 }
 
+// HasTerminal implements StdIoStreamableResource. ContainerExec does not
+// support pseudo-terminal allocation, so this always returns false.
+func (ce *ContainerExec) HasTerminal() bool {
+	return false
+}
+
 // StdOutFile implements StdOutStreamableResource.
 func (ce *ContainerExec) GetStdOutFile() string {
 	return ce.Status.StdOutFile

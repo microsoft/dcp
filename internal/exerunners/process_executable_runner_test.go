@@ -25,6 +25,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -85,7 +86,7 @@ func TestProcessExecutableRunnerStartsLifecycleMonitor(t *testing.T) {
 				},
 			}
 
-			result := runner.StartRun(ctx, exe, &testRunChangeHandler{}, logr.Discard())
+			result := runner.StartRun(ctx, exe, newRecordingRunChangeHandler(), logr.Discard())
 
 			require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
 			t.Cleanup(func() {
@@ -186,7 +187,7 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 				},
 			}
 
-			result := runner.StartRun(ctx, exe, &testRunChangeHandler{}, logr.Discard())
+			result := runner.StartRun(ctx, exe, newRecordingRunChangeHandler(), logr.Discard())
 			require.Equal(t, apiv1.ExecutableStateRunning, result.ExeState)
 			t.Cleanup(func() {
 				require.NoError(t, runner.ReleaseRun(context.Background(), result.RunID, logr.Discard()))
@@ -222,56 +223,142 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	processExecutor := &recordingProcessExecutor{}
+	processExecutor := testutil.NewTestProcessExecutor(ctx)
 	runner := NewProcessExecutableRunner(processExecutor)
-	pid := process.Pid_t(42)
-	identityTime := time.Now().UTC()
-	originalRunID := pidToRunID(pid)
-	adoptedRunID := controllers.RunID(fmt.Sprintf("%s-adopted", originalRunID))
+	runner.disableConsoleStop = true // We are just simulating the run, so stopping via dcpproc/console would fail.
+	pid, identityTime, _, startErr := processExecutor.StartProcess(ctx, exec.Command("./delay", "--delay=1s"), nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startErr)
+	adoptedRunID := controllers.RunID(pidToRunID(pid + 1))
+	changeHandler := newRecordingRunChangeHandler()
 	runner.runningProcesses.Store(adoptedRunID, &processRunState{
-		pid:          pid,
-		identityTime: identityTime,
-		cmdInfo:      "/test/app",
-		adopted:      true,
+		pid:              pid,
+		identityTime:     identityTime,
+		cmdInfo:          "./delay --delay=1s",
+		adopted:          true,
+		runChangeHandler: changeHandler,
 	})
 
 	require.NoError(t, runner.StopRun(ctx, adoptedRunID, logr.Discard()))
 
-	require.Equal(t, pid, processExecutor.stoppedPID)
-	require.Equal(t, identityTime, processExecutor.stoppedIdentityTime)
+	execution, found := processExecutor.FindByPid(pid)
+	require.True(t, found)
+	require.True(t, execution.Finished())
+	require.Equal(t, int32(testutil.KilledProcessExitCode), execution.ExitCode)
+}
+
+func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
+	t.Parallel()
+
+	dcppaths.EnableTestPathProbing()
+
+	monitorPID := int64(12345)
+	monitorTimestamp := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	testCases := []struct {
+		name             string
+		spec             apiv1.ExecutableSpec
+		expectedMonitor  int
+		expectedMonitorP *int64
+	}{
+		{
+			name: "cleanup executable starts DCP cleanup monitor",
+			spec: apiv1.ExecutableSpec{
+				ExecutablePath: "/test/app",
+				Mode:           apiv1.ExecutableModeCleanup,
+			},
+			expectedMonitor: 1,
+		},
+		{
+			name: "persistent executable without monitor skips monitor",
+			spec: apiv1.ExecutableSpec{
+				ExecutablePath: "/test/app",
+				Persistent:     true,
+			},
+		},
+		{
+			name: "persistent executable with monitor starts scoped monitor",
+			spec: apiv1.ExecutableSpec{
+				ExecutablePath:   "/test/app",
+				Persistent:       true,
+				MonitorPID:       &monitorPID,
+				MonitorTimestamp: monitorTimestamp,
+			},
+			expectedMonitor:  1,
+			expectedMonitorP: &monitorPID,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			processExecutor := testutil.NewTestProcessExecutor(ctx)
+			runner := NewProcessExecutableRunner(processExecutor)
+			pid, identityTime, _, startErr := processExecutor.StartProcess(ctx, exec.Command("/test/app"), nil, process.CreationFlagsNone, nil)
+			require.NoError(t, startErr)
+			runID := pidToRunID(pid)
+			t.Cleanup(func() {
+				_ = runner.ReleaseRun(context.Background(), runID, logr.Discard())
+				_ = processExecutor.StopProcess(pid, identityTime)
+			})
+
+			exe := &apiv1.Executable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "api",
+					Namespace: "default",
+					UID:       types.UID(fmt.Sprintf("api-uid-%d", time.Now().UnixNano())),
+				},
+				Spec: testCase.spec,
+			}
+			record := &statestore.PersistentProcessRecord{
+				RunID:        string(runID),
+				PID:          pid,
+				IdentityTime: identityTime,
+			}
+
+			adoptErr := runner.AdoptRun(ctx, exe, record, newRecordingRunChangeHandler(), logr.Discard())
+			require.NoError(t, adoptErr)
+
+			monitorProcesses := processExecutor.FindAll([]string{"dcp", "monitor-process"}, "", nil)
+			require.Len(t, monitorProcesses, testCase.expectedMonitor)
+			if testCase.expectedMonitorP != nil {
+				require.Contains(t, monitorProcesses[0].Cmd.Args, "--monitor")
+				require.Contains(t, monitorProcesses[0].Cmd.Args, strconv.FormatInt(*testCase.expectedMonitorP, 10))
+				require.Contains(t, monitorProcesses[0].Cmd.Args, "--monitor-identity-time")
+				require.Contains(t, monitorProcesses[0].Cmd.Args, testCase.spec.MonitorTimestamp.Time.Format(osutil.RFC3339MiliTimestampFormat))
+			}
+		})
+	}
 }
 
 func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 	t.Parallel()
 
-	delayToolDir, delayToolDirErr := testutil.GetTestToolDir("delay")
-	require.NoError(t, delayToolDirErr)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "./delay", "--delay=1s")
-	cmd.Dir = delayToolDir
-	require.NoError(t, cmd.Start())
-	go func() {
-		_ = cmd.Wait()
-	}()
-
-	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	identityTime := process.ProcessIdentityTime(pid)
-	require.False(t, identityTime.IsZero())
-
-	runner := NewProcessExecutableRunner(&recordingProcessExecutor{})
+	processExecutor := testutil.NewTestProcessExecutor(ctx)
+	cmd := exec.Command("./delay", "--delay=1s")
+	pid, identityTime, _, startProcessErr := processExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr)
+	runner := NewProcessExecutableRunner(processExecutor)
 	runID := pidToRunID(pid)
 	changeHandler := newRecordingRunChangeHandler()
+	exe := &apiv1.Executable{
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "./delay",
+		},
+	}
+	record := &statestore.PersistentProcessRecord{
+		RunID:        string(runID),
+		PID:          pid,
+		IdentityTime: identityTime,
+	}
 
-	adoptErr := runner.AdoptRun(ctx, controllers.ExecutableRunAdoptionInfo{
-		RunID:               runID,
-		Pid:                 pid,
-		ProcessIdentityTime: identityTime,
-		CommandInfo:         "./delay --delay=1s",
-	}, changeHandler, logr.Discard())
+	adoptErr := runner.AdoptRun(ctx, exe, record, changeHandler, logr.Discard())
 	require.NoError(t, adoptErr)
+
+	processExecutor.SimulateProcessExit(t, pid, 0)
 
 	select {
 	case completedRun := <-changeHandler.completedRuns:
@@ -289,7 +376,9 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 func TestAdoptedProcessWatcherDoesNotDeleteReusedRunID(t *testing.T) {
 	t.Parallel()
 
-	runner := NewProcessExecutableRunner(&recordingProcessExecutor{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := NewProcessExecutableRunner(testutil.NewTestProcessExecutor(ctx))
 	runID := controllers.RunID("42")
 	watchedPID := process.Pid_t(42)
 	watchedIdentityTime := time.Unix(1, 0).UTC()
@@ -328,7 +417,9 @@ func TestReleaseRunClosesProcessRunFiles(t *testing.T) {
 		require.NoError(t, os.Remove(stdErrFile.Name()))
 	})
 
-	runner := NewProcessExecutableRunner(&recordingProcessExecutor{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner := NewProcessExecutableRunner(testutil.NewTestProcessExecutor(ctx))
 	runID := controllers.RunID("run-1")
 	runner.runningProcesses.Store(runID, &processRunState{
 		stdOutFile: stdOutFile,
@@ -367,38 +458,6 @@ func removeFileIfExists(t *testing.T, path string) {
 		require.NoError(t, removeErr)
 	}
 }
-
-type recordingProcessExecutor struct {
-	stoppedPID          process.Pid_t
-	stoppedIdentityTime time.Time
-}
-
-func (e *recordingProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, func(), error) {
-	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("process start is not supported by recordingProcessExecutor")
-}
-
-func (e *recordingProcessExecutor) StopProcess(pid process.Pid_t, processStartTime time.Time, _ ...process.ProcessStopOption) error {
-	e.stoppedPID = pid
-	e.stoppedIdentityTime = processStartTime
-	return nil
-}
-
-func (e *recordingProcessExecutor) StartAndForget(*exec.Cmd, process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {
-	return process.UnknownPID, time.Time{}, fmt.Errorf("process start is not supported by recordingProcessExecutor")
-}
-
-func (e *recordingProcessExecutor) Dispose() {}
-
-type testRunChangeHandler struct{}
-
-func (*testRunChangeHandler) OnMainProcessChanged(controllers.RunID, process.Pid_t) {}
-
-func (*testRunChangeHandler) OnRunCompleted(controllers.RunID, *int32, error) {}
-
-func (*testRunChangeHandler) OnStartupCompleted(types.NamespacedName, *controllers.ExecutableStartResult) {
-}
-
-func (*testRunChangeHandler) OnRunMessage(controllers.RunID, controllers.RunMessageLevel, string) {}
 
 type completedRunNotification struct {
 	runID    controllers.RunID

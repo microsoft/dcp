@@ -58,12 +58,16 @@ func GetProcessExecutor(ctx context.Context) process.Executor {
 
 type dummyProcessExecutor struct{}
 
-func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, func(), error) {
+func (*dummyProcessExecutor) StartProcess(_ context.Context, _ *exec.Cmd, _ process.ProcessExitHandler, _ process.ProcessCreationFlag, _ process.SysCreateProcessFunc) (process.Pid_t, time.Time, func(), error) {
 	return process.UnknownPID, time.Time{}, nil, fmt.Errorf("there is no process executor configured, no processes can be started")
 }
 
 func (*dummyProcessExecutor) StopProcess(_ process.Pid_t, _ time.Time, _ ...process.ProcessStopOption) error {
 	return fmt.Errorf("there is no process executor configured, no processes can be stopped")
+}
+
+func (*dummyProcessExecutor) CheckProcessRunning(_ process.Pid_t, _ time.Time) error {
+	return fmt.Errorf("there is no process executor configured, no processes can be checked")
 }
 
 func (*dummyProcessExecutor) StartAndForget(_ *exec.Cmd, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {

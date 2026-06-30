@@ -24,7 +24,7 @@ type EnvVar struct {
 
 	// Value of the environment variable. Defaults to "" (empty string).
 	// +optional
-	Value string `json:"value,omitempty"`
+	Value string `json:"value"`
 	// CONSIDER allowing expansion of existing variable references e.g. using ${VAR_NAME} syntax and $$ to escape the $ sign
 }
 
@@ -104,6 +104,12 @@ type StdIoStreamableResource interface {
 	GetStdErrFile() string
 	GetResourceId() string
 	Done() bool
+
+	// HasTerminal reports whether the resource is configured to bridge its
+	// stdin/stdout/stderr to a pseudo-terminal. When true, the resource does
+	// not produce stdout/stderr log files and API requests for those log
+	// streams should fail. System logs are unaffected.
+	HasTerminal() bool
 
 	// This is set by Kubernetes with 1-second precision when the resource is deleted
 	// Hence we use metav1.Time here instead of metav1.MicroTime

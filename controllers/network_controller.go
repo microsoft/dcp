@@ -277,15 +277,26 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if network.DeletionTimestamp != nil && !network.DeletionTimestamp.IsZero() {
 		log.Info("ContainerNetwork object is being deleted")
 
-		err = r.deleteNetwork(ctx, &network, log)
-		if err != nil {
-			// deleteNetwork() logged the error already
-			change = additionalReconciliationNeeded
+		_, networkState := r.existingNetworks.BorrowByNamespacedName(network.NamespacedName())
+		if network.Spec.EffectiveMode() == apiv1.ContainerNetworkModeCleanup &&
+			networkState == nil &&
+			network.Status.State != apiv1.ContainerNetworkStateNotFound {
+			log.V(1).Info("ContainerNetwork is being deleted, resolving cleanup target before deleting finalizer")
+			change = r.manageNetwork(ctx, &network, log) | additionalReconciliationNeeded
 		} else {
-			// We've successfully deleted the network, so stop tracking it
-			r.existingNetworks.DeleteByNamespacedName(network.NamespacedName())
-			change = deleteFinalizer(&network, networkFinalizer, log)
-			r.releaseNetworkWatch(&network, log)
+			if networkState != nil && network.Status.ID == "" {
+				network.Status.ID = networkState.id
+			}
+			err = r.deleteNetwork(ctx, &network, log)
+			if err != nil {
+				// deleteNetwork() logged the error already
+				change = additionalReconciliationNeeded
+			} else {
+				// We've successfully deleted the network, so stop tracking it
+				r.existingNetworks.DeleteByNamespacedName(network.NamespacedName())
+				change = deleteFinalizer(&network, networkFinalizer, log)
+				r.releaseNetworkWatch(&network, log)
+			}
 		}
 	} else {
 		change = ensureFinalizer(&network, networkFinalizer, log)
@@ -306,14 +317,13 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) error {
-	if network.Spec.Persistent {
+	if !shouldDeleteNetwork(network.Spec.EffectiveMode()) {
 		return nil
 	}
 
-	_, networkState := r.existingNetworks.BorrowByNamespacedName(network.NamespacedName())
-	if networkState != nil && networkState.state == apiv1.ContainerNetworkStateRunning {
+	if network.Status.ID != "" {
 		inspectedNetwork, err := r.orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
-			Networks: []string{networkState.id},
+			Networks: []string{network.Status.ID},
 		})
 
 		if errors.Is(err, containers.ErrNotFound) {
@@ -326,7 +336,7 @@ func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.Co
 
 		for _, container := range inspectedNetwork[0].Containers {
 			disconnectErr := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
-				Network:   networkState.id,
+				Network:   network.Status.ID,
 				Container: container.Id,
 			})
 
@@ -340,7 +350,7 @@ func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.Co
 			return err
 		}
 
-		err = removeNetwork(ctx, r.orchestrator, networkState.id, log)
+		err = removeNetwork(ctx, r.orchestrator, network.Status.ID, log)
 		if err != nil {
 			return err
 		}
@@ -380,7 +390,7 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	r.ensureNetworkWatch(network, log)
 
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
-	if network.Spec.Persistent {
+	if network.Spec.EffectiveMode() == apiv1.ContainerNetworkModePersistent {
 		var change objectChange
 		if r.config.StateStore == nil {
 			stateStoreErr := fmt.Errorf("state store is not configured")
@@ -430,14 +440,15 @@ func (r *NetworkReconciler) failNetworkToStart(network *apiv1.ContainerNetwork, 
 }
 
 func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *apiv1.ContainerNetwork, networkName string, log logr.Logger) objectChange {
-	if network.Spec.Persistent {
+	effectiveMode := network.Spec.EffectiveMode()
+	if shouldReuseExistingNetwork(effectiveMode) {
 		isNetworkSafeToReuse := r.harvester.IsDone() || r.harvester.TryProtectNetwork(ctx, networkName)
 		existing, err := inspectNetworkIfExists(ctx, r.orchestrator, networkName)
 		if err == nil {
 			if !isNetworkSafeToReuse {
 				// If the harvester is not done, we need to wait for it to complete before we can safely re-use an
 				// existing network.
-				log.V(1).Info("Waiting for the resource harvester to finish before re-using persistent network")
+				log.V(1).Info("Waiting for the resource harvester to finish before re-using existing network")
 				return additionalReconciliationNeeded
 			}
 
@@ -451,6 +462,22 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 			network.Status.Subnets = existing.Subnets
 			network.Status.Gateways = existing.Gateways
 			return statusChanged
+		}
+		if !errors.Is(err, containers.ErrNotFound) {
+			log.Error(err, "Could not inspect existing network")
+			return additionalReconciliationNeeded
+		}
+		if !shouldCreateMissingNetwork(effectiveMode) {
+			change := noChange
+			if network.Status.ID != "" {
+				network.Status.ID = ""
+				change |= statusChanged
+			}
+			if network.Status.NetworkName != networkName {
+				network.Status.NetworkName = networkName
+				change |= statusChanged
+			}
+			return change | r.setNetworkState(network, apiv1.ContainerNetworkStateNotFound, "")
 		}
 	}
 
@@ -469,7 +496,7 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 		Name: networkName,
 		IPv6: network.Spec.IPv6,
 		Labels: map[string]string{
-			PersistentLabel: fmt.Sprintf("%t", network.Spec.Persistent),
+			PersistentLabel: fmt.Sprintf("%t", effectiveMode == apiv1.ContainerNetworkModePersistent),
 		},
 	}
 
@@ -482,7 +509,7 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 	}
 
 	cnet, err := createNetwork(ctx, r.orchestrator, createOptions)
-	if network.Spec.Persistent && errors.Is(err, containers.ErrAlreadyExists) {
+	if effectiveMode == apiv1.ContainerNetworkModePersistent && errors.Is(err, containers.ErrAlreadyExists) {
 		log.V(1).Info("Persistent network already exists, but initial inspection failed, retrying...")
 		return additionalReconciliationNeeded
 	} else if errors.Is(err, containers.ErrCouldNotAllocate) {
@@ -529,8 +556,8 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	if networkState.connections == nil {
 		networkState.connections = make(map[string]*connectionState)
 
-		if !network.Spec.Persistent {
-			// If this is not a persistent network, we assume these were all connected by us
+		if !shouldKeepUnmanagedConnections(network.Spec.EffectiveMode()) {
+			// Session networks are fully managed by this resource, so assume these were all connected by us.
 			for _, containerID := range network.Status.ContainerIDs {
 				networkState.connections[containerID] = &connectionState{}
 			}
@@ -551,8 +578,8 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 		}
 
 		_, knownConnection := networkState.connections[containerID]
-		if !knownConnection && network.Spec.Persistent {
-			// If this is a persistent network, we shouldn't disconnect any containers that we didn't explicitly connect
+		if !knownConnection && shouldKeepUnmanagedConnections(network.Spec.EffectiveMode()) {
+			// Reused networks may have unmanaged connections, so only disconnect containers explicitly connected by us.
 			continue
 		}
 
@@ -712,7 +739,7 @@ func (r *NetworkReconciler) setNetworkState(network *apiv1.ContainerNetwork, sta
 		change = statusChanged
 	}
 
-	if network.Spec.Persistent && persistentNetworkLeaseReleaseState(state) {
+	if network.Spec.EffectiveMode() == apiv1.ContainerNetworkModePersistent && persistentNetworkLeaseReleaseState(state) {
 		// Intentionally ignore errors: this is a defensive, idempotent release attempt for stable states.
 		_ = r.releasePersistentNetworkResourceLease(context.Background(), network, r.Log, true)
 	}
@@ -732,13 +759,48 @@ func persistentNetworkLeaseReleaseState(state apiv1.ContainerNetworkState) bool 
 	}
 }
 
+func shouldReuseExistingNetwork(mode apiv1.ContainerNetworkMode) bool {
+	switch mode {
+	case apiv1.ContainerNetworkModePersistent,
+		apiv1.ContainerNetworkModeExisting,
+		apiv1.ContainerNetworkModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldCreateMissingNetwork(mode apiv1.ContainerNetworkMode) bool {
+	switch mode {
+	case apiv1.ContainerNetworkModeSession,
+		apiv1.ContainerNetworkModePersistent:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldDeleteNetwork(mode apiv1.ContainerNetworkMode) bool {
+	switch mode {
+	case apiv1.ContainerNetworkModeSession,
+		apiv1.ContainerNetworkModeCleanup:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldKeepUnmanagedConnections(mode apiv1.ContainerNetworkMode) bool {
+	return mode != apiv1.ContainerNetworkModeSession
+}
+
 func (r *NetworkReconciler) releasePersistentNetworkResourceLease(
 	ctx context.Context,
 	network *apiv1.ContainerNetwork,
 	log logr.Logger,
 	suppressNotHeldLog bool,
 ) error {
-	if !network.Spec.Persistent || r.config.StateStore == nil ||
+	if network.Spec.EffectiveMode() != apiv1.ContainerNetworkModePersistent || r.config.StateStore == nil ||
 		r.config.ResourceLeaseOwner.Pid <= 0 || r.config.ResourceLeaseOwner.IdentityTime.IsZero() {
 		return nil
 	}

@@ -55,13 +55,13 @@ func (e *OSExecutor) stopSingleProcess(pid Pid_t, processStartTime time.Time, op
 		e.releaseLock()
 
 		if (opts&optNotFoundIsError) != 0 && !alreadyEnded {
-			return nil, ErrProcessNotFound{Pid: pid, Inner: err}
+			return nil, &ErrProcessNotFound{Pid: pid, Inner: err}
 		} else {
 			return makeClosedChan(), nil
 		}
 	}
 
-	waitable := makeWaitable(pid, proc)
+	waitable := makeProcessWaitable(pid, proc)
 	ws, shouldStopProcess := e.tryStartWaiting(pid, processStartTime, waitable, waitReasonStopping)
 
 	waitEndedCh := ws.waitEndedCh
@@ -133,7 +133,7 @@ func (e *OSExecutor) prepareProcessStart(_ *exec.Cmd, _ ProcessCreationFlag) {
 	// No additional preparation needed for Unix-like systems.
 }
 
-func (e *OSExecutor) completeProcessStart(_ *exec.Cmd, _ Pid_t, _ time.Time, _ ProcessCreationFlag) error {
+func (e *OSExecutor) completeProcessStart(_ Pid_t, _ time.Time, _ ProcessCreationFlag) error {
 	// No additional actions needed on process start for Unix-like systems.
 	return nil
 }

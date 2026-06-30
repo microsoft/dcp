@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/appmgmt"
@@ -37,7 +38,12 @@ type DcpRunEventHandlers struct {
 
 // DcpRun() starts the API server and controllers and waits for the signal to terminate them.
 // It serves as a "skeleton" for commands such as "up" and "start-apiserver".
-// Additional logic can be added into the API server lifecycle via evtHandlers parameter.
+//
+// onApiServerReady, when non-nil, is invoked once the API server's listener is accepting
+// connections and the kubeconfig file has been saved. It is intentionally called before
+// the host services finish starting because external clients (e.g. Aspire's hosting layer)
+// only need the API server to be reachable to consider DCP "ready"; controllers come up
+// asynchronously afterwards. The callback runs synchronously on DcpRun's goroutine.
 func DcpRun(
 	ctx context.Context,
 	cwd string,
@@ -45,6 +51,7 @@ func DcpRun(
 	serverOnly bool,
 	allExtensions []DcpExtension,
 	invocationFlags []string,
+	onApiServerReady func(),
 	log logr.Logger,
 ) error {
 	// If the context is already complete, we should not proceed with running the API server and controllers.
@@ -58,13 +65,17 @@ func DcpRun(
 	defer cancelCleanupCtx()
 
 	// This context is used to trigger shutdown of the API server.
-	apiServerCtx, cancelApiServerCtx := context.WithCancel(context.Background())
+	// We intentionally root it on a fresh background context to detach its cancellation
+	// lifecycle, but we preserve the caller's span context so that spans created inside
+	// the API server (and other startup paths that derive from apiServerCtx) nest under
+	// the active "dcp.startup" span rather than starting new traces.
+	apiServerCtx, cancelApiServerCtx := context.WithCancel(trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(ctx)))
 	defer cancelApiServerCtx()
 
 	// This context is used to trigger shutdown of the controllers (or other extensions).
 	// We intentionally use context.Background() here to allow us to control the timing of when
 	// we shutdown the controllers.
-	hostCtx, cancelHostCtx := context.WithCancel(context.Background())
+	hostCtx, cancelHostCtx := context.WithCancel(trace.ContextWithSpanContext(context.Background(), trace.SpanContextFromContext(ctx)))
 	defer cancelHostCtx()
 
 	var notifySrc notifications.UnixSocketNotificationSource
@@ -132,6 +143,10 @@ func DcpRun(
 	apiServerShutdown, apiServerErr := apiServer.Run(apiServerCtx, runConfig)
 	if apiServerErr != nil {
 		return apiServerErr
+	}
+
+	if onApiServerReady != nil {
+		onApiServerReady()
 	}
 
 	log.V(1).Info("About to launch host services")
@@ -208,14 +223,7 @@ func DcpRun(
 func createNotificationSource(lifetimeCtx context.Context, log logr.Logger) (notifications.UnixSocketNotificationSource, error) {
 	const noNotifications = "Notifications will not be sent to controller process"
 
-	socketPath, socketPathErr := notifications.PrepareNotificationSocketPath("", "dcp-notify-sock-")
-	if socketPathErr != nil {
-		retErr := fmt.Errorf("failed to prepare notification socket path: %w", socketPathErr)
-		log.Error(socketPathErr, noNotifications)
-		return nil, retErr
-	}
-
-	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, socketPath, log)
+	ns, nsErr := notifications.NewNotificationSource(lifetimeCtx, "", "dcp-notify-sock-", log)
 	if nsErr != nil {
 		retErr := fmt.Errorf("failed to create notification source: %w", nsErr)
 		log.Error(nsErr, noNotifications)

@@ -25,6 +25,7 @@ type ResourceLease struct {
 	ResourceKey  string
 	OwnerProcess process.ProcessTreeItem
 	UpdatedAt    time.Time
+	store        *Store
 }
 
 type ResourceLeaseHeldError struct {
@@ -47,6 +48,17 @@ func HeldResourceLease(err error) (*ResourceLease, bool) {
 
 	lease := heldErr.Lease
 	return &lease, true
+}
+
+func (l *ResourceLease) Release(ctx context.Context) error {
+	if l == nil {
+		return fmt.Errorf("%w: resource lease cannot be nil", ErrInvalidArgument)
+	}
+	if l.store == nil {
+		return fmt.Errorf("%w: resource lease store cannot be nil", ErrInvalidArgument)
+	}
+
+	return l.store.releaseResourceLease(ctx, l.ResourceKey, l.OwnerProcess)
 }
 
 type LeasableResource interface {
@@ -113,6 +125,7 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 		sameOwner := existingLease.OwnerProcess.Pid == normalizedOwner.Pid &&
 			existingLease.OwnerProcess.IdentityTime.Equal(normalizedOwner.IdentityTime)
 		if !sameOwner && now.Sub(existingLease.UpdatedAt) < revalidationInterval {
+			existingLease.store = s
 			return &ResourceLeaseHeldError{Lease: *existingLease}
 		}
 		if !sameOwner && resourceLeaseOwnerIsActive(existingLease.OwnerProcess) {
@@ -120,6 +133,7 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 			if updateErr != nil {
 				return updateErr
 			}
+			existingLease.store = s
 			return &ResourceLeaseHeldError{Lease: *existingLease}
 		}
 
@@ -133,6 +147,7 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 	if txErr != nil {
 		return nil, txErr
 	}
+	lease.store = s
 
 	return lease, nil
 }
@@ -141,6 +156,14 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResou
 	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
 	if resourceKeyErr != nil {
 		return resourceKeyErr
+	}
+	return s.releaseResourceLease(ctx, resourceKey, ownerProcess)
+}
+
+func (s *Store) releaseResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessTreeItem) error {
+	resourceKey = strings.TrimSpace(resourceKey)
+	if resourceKey == "" {
+		return fmt.Errorf("%w: resource lease key cannot be empty", ErrInvalidArgument)
 	}
 	normalizedOwner, ownerErr := normalizeResourceLeaseOwner(ownerProcess)
 	if ownerErr != nil {
@@ -226,7 +249,7 @@ func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource
 	}
 
 	callbackErr := f(ctx, lease)
-	releaseErr := s.ReleaseResourceLease(context.Background(), resource, ownerProcess)
+	releaseErr := lease.Release(context.Background())
 	return errors.Join(callbackErr, releaseErr)
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os/exec"
 	"reflect"
 	"regexp"
 	std_slices "slices"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"golang.org/x/net/nettest"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	wait "k8s.io/apimachinery/pkg/util/wait"
@@ -33,6 +35,8 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/internal/termpty"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -154,6 +158,461 @@ func TestPersistentExecutableDelayStart(t *testing.T) {
 		return currentExe.Status.State == apiv1.ExecutableStateRunning || currentExe.Status.State == apiv1.ExecutableStateFinished, nil
 	})
 	waitResourceLeaseReleased(t, ctx, updatedExe)
+}
+
+func TestNoExistingPersistentExecutableStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "no-existing-persistent-executable-stop-without-start"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+		},
+	}
+
+	t.Logf("Creating persistent Executable '%s' with Start=false and Stop=true", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report a terminal state", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "persistent Executable with Start=false and Stop=true should not start a process")
+}
+
+func TestStalePersistentExecutableStopWithoutStart(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-without-start"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999999),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run",
+		StdOutFile:        "stale.out",
+		StdErrFile:        "stale.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Start=false and Stop=true", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished for the stale persistent process record", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestStalePersistentExecutableStopWithStartAllowed(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-with-start-allowed"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Stop:           true,
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999998),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run-with-start",
+		StdOutFile:        "stale-with-start.out",
+		StdErrFile:        "stale-with-start.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Stop=true", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished for the stale persistent process record", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "Stop=true should not start a replacement process when a persistent process record already existed")
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "stale-persistent-executable-stop-with-unresolved-template"
+	shouldStart := false
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Persistent:     true,
+			Start:          &shouldStart,
+			Stop:           true,
+			Env: []apiv1.EnvVar{
+				{
+					Name:  "MISSING_SERVICE_PORT",
+					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
+				},
+			},
+		},
+	}
+
+	err := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      "stale-lifecycle-key",
+		PID:               process.Pid_t(99999997),
+		IdentityTime:      time.Now().Add(-time.Hour),
+		RunID:             "stale-run-with-unresolved-template",
+		StdOutFile:        "stale-with-unresolved-template.out",
+		StdErrFile:        "stale-with-unresolved-template.err",
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, err, "could not create stale persistent process record")
+
+	t.Logf("Creating persistent Executable '%s' with Start=false, Stop=true, and unresolved template inputs", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	t.Logf("Waiting for Executable '%s' to report Finished without resolving template inputs", exe.ObjectMeta.Name)
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFinished && !currentExe.Status.FinishTimestamp.IsZero(), nil
+	})
+
+	_, err = testStateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.ErrorIs(t, err, statestore.ErrPersistentProcessNotFound, "stale persistent process record should be deleted")
+}
+
+func TestExecutableModePersistentDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-mode-persistent-deletion"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModePersistent,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, processErr, "Executable process could not be started")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+
+	pe, found := testProcessExecutor.FindByPid(pid)
+	require.True(t, found, "expected process to still be tracked")
+	require.True(t, pe.Running(), "persistent mode should leave the process running")
+}
+
+func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-stops-existing"
+	serverInfo, teInfo, startupErr := StartTestEnvironment(
+		ctx,
+		ExecutableController,
+		testName,
+		t.TempDir(),
+	)
+	require.NoError(t, startupErr, "could not start test environment")
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	pid, identityTime, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = teInfo.TestProcessExecutor.StopProcess(pid, identityTime)
+	})
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := teInfo.StateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, serverInfo.Client.Create(ctx, &exe), "Could not create Executable")
+
+	updatedExe := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable should adopt the seeded process")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflictEx(ctx, serverInfo.Client, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return serverInfo.Client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, serverInfo.Client, &exe)
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		processExecution, found := teInfo.TestProcessExecutor.FindByPid(pid)
+		return found && processExecution.Finished(), nil
+	})
+	require.NoError(t, err, "process was not stopped")
+}
+
+func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-delete-before-adopt"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(pid, identityTime)
+	})
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	leaseOwner := process.ProcessTreeItem{Pid: process.Pid_t(1), IdentityTime: time.Now()}
+	lease, leaseErr := testStateStore.AcquireResourceLease(ctx, &exe, leaseOwner, time.Minute)
+	require.NoError(t, leaseErr, "could not acquire persistent process lease")
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateEmpty, nil
+	})
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	require.NoError(t, lease.Release(context.WithoutCancel(ctx)), "could not release persistent process lease")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		processExecution, found := testProcessExecutor.FindByPid(pid)
+		return found && processExecution.Finished(), nil
+	})
+	require.NoError(t, err, "process was not stopped")
+}
+
+func TestExecutablePersistentFieldOverridesCleanupMode(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-persistent-overrides-cleanup"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+			Persistent:     true,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	pid, processErr := ensureProcessRunning(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, processErr, "Executable process could not be started")
+
+	t.Logf("Deleting Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, retryOnConflict(ctx, exe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		return client.Delete(ctx, currentExe)
+	}), "Executable object could not be deleted")
+
+	ctrl_testutil.WaitObjectDeleted(t, ctx, client, &exe)
+
+	pe, found := testProcessExecutor.FindByPid(pid)
+	require.True(t, found, "expected process to still be tracked")
+	require.True(t, pe.Running(), "persistent=true should override cleanup mode and leave the process running")
+}
+
+func TestExecutableCleanupModeReportsNotFoundWhenProcessRecordMissing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-missing"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateNotFound, nil
+	})
+
+	startedProcesses := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+	require.Empty(t, startedProcesses, "cleanup mode should not start a missing process")
+}
+
+func TestExecutableCleanupModeAdoptsProcessRecordCreatedAfterNotFound(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "executable-cleanup-mode-late-record"
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + testName,
+			Mode:           apiv1.ExecutableModeCleanup,
+		},
+	}
+
+	t.Logf("Creating Executable '%s'", exe.ObjectMeta.Name)
+	require.NoError(t, client.Create(ctx, &exe), "Could not create Executable")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Finalizers) > 0 && currentExe.Status.State == apiv1.ExecutableStateNotFound, nil
+	})
+
+	cmd := exec.Command(exe.Spec.ExecutablePath)
+	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	require.NoError(t, startProcessErr, "could not seed process execution")
+	t.Cleanup(func() {
+		_ = testProcessExecutor.StopProcess(pid, identityTime)
+	})
+
+	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
+	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
+
+	upsertErr := testStateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
+		ResourceKey:       exe.GetLeaseKey(),
+		LifecycleKey:      lifecycleKey,
+		PID:               pid,
+		IdentityTime:      identityTime,
+		RunID:             strconv.Itoa(int(pid)),
+		StdOutFile:        fmt.Sprintf("%s.out", exe.Name),
+		StdErrFile:        fmt.Sprintf("%s.err", exe.Name),
+		LifecycleMetadata: "{}",
+	})
+	require.NoError(t, upsertErr, "could not seed persistent process record")
+
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
+	})
+	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable should adopt the late persistent process record")
 }
 
 // Ensure exit code of processes/run sessions are captured correctly
@@ -771,6 +1230,83 @@ func TestExecutableStartupFallbackSucceeds(t *testing.T) {
 		return currentExe.Status.State == apiv1.ExecutableStateRunning, nil
 	})
 	require.Equal(t, strconv.Itoa(int(pid)), updatedExe.Status.ExecutionID, "Executable '%s' should expose the process execution ID after fallback", exeName)
+}
+
+func TestExecutableStartupFallbackPreservesStartupParameters(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "executable-startup-fallback-preserves-startup-parameters"
+	exePath := "/path/to/" + exeName
+	expectedArgs := []string{"--test-arg", "expected-value"}
+	expectedEnvName := "TEST_EXECUTABLE_FALLBACK_STARTUP_PARAMETER"
+	expectedEnvValue := "expected-env-value"
+
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath:         exePath,
+			ExecutionType:          apiv1.ExecutionTypeIDE,
+			FallbackExecutionTypes: []apiv1.ExecutionType{apiv1.ExecutionTypeProcess},
+			Args:                   expectedArgs,
+			Env: []apiv1.EnvVar{
+				{Name: expectedEnvName, Value: expectedEnvValue},
+			},
+		},
+	}
+
+	t.Logf("Creating Executable '%s'...", exeName)
+	require.NoError(t, client.Create(ctx, exe), "Could not create Executable '%s'", exeName)
+
+	t.Logf("Waiting for IDE startup attempt and effective startup data for Executable '%s'...", exeName)
+	_, ideRunErr := findIdeRun(ctx, exe.Spec.ExecutablePath)
+	require.NoError(t, ideRunErr, "IDE run session for Executable '%s' could not be found", exeName)
+
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return len(currentExe.Status.EffectiveArgs) == len(expectedArgs) && len(currentExe.Status.EffectiveEnv) > 0, nil
+	})
+
+	t.Logf("Clearing persisted effective startup data for Executable '%s' to simulate a lost status save...", exeName)
+	err := retryOnConflict(ctx, updatedExe.NamespacedName(), func(ctx context.Context, currentExe *apiv1.Executable) error {
+		exePatch := currentExe.DeepCopy()
+		exePatch.Status.EffectiveArgs = nil
+		exePatch.Status.EffectiveEnv = nil
+		return client.Status().Patch(ctx, exePatch, ctrl_client.MergeFromWithOptions(currentExe, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "Could not clear effective startup data for Executable '%s'", exeName)
+
+	t.Logf("Simulating IDE startup failure for Executable '%s' to trigger fallback...", exeName)
+	ideRunErr = ideRunner.SimulateFailedRunStart(exe.NamespacedName(), fmt.Errorf("simulated IDE startup failure for Executable '%s'", exeName))
+	require.NoError(t, ideRunErr, "Could not simulate IDE startup failure for Executable '%s'", exeName)
+
+	t.Logf("Waiting for process fallback to start for Executable '%s'...", exeName)
+	var processExecution *internal_testutil.ProcessExecution
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		attempts := testProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", nil)
+		if len(attempts) == 0 {
+			return false, nil
+		}
+		processExecution = attempts[0]
+		return true, nil
+	})
+	require.NoError(t, err, "Process fallback could not be started for Executable '%s'", exeName)
+	require.NotNil(t, processExecution, "Process fallback for Executable '%s' was not captured", exeName)
+
+	require.Equal(t, append([]string{exePath}, expectedArgs...), processExecution.Cmd.Args, "Process fallback for Executable '%s' did not receive expected startup arguments", exeName)
+
+	processEnv := maps.SliceToMap(processExecution.Cmd.Env, func(envVar string) (string, string) {
+		parts := strings.SplitN(envVar, "=", 2)
+		if len(parts) == 1 {
+			return parts[0], ""
+		}
+		return parts[0], parts[1]
+	})
+	require.Equal(t, expectedEnvValue, processEnv[expectedEnvName], "Process fallback for Executable '%s' did not receive expected startup environment variable", exeName)
 }
 
 // Verify ports are injected into Executable environment variables via portForServing template function.
@@ -2886,6 +3422,99 @@ func TestExecutableSystemLogsOnStartupFailure(t *testing.T) {
 	}
 	logsErr := waitForObjectLogs(ctx, updatedExe, opts, expectedLines, nil)
 	require.NoError(t, logsErr, "System logs should be available for Executable '%s' that failed to start", exeName)
+}
+
+// Verify that stdout and stderr log requests for an Executable that is
+// configured to use a pseudo-terminal fail with a BadRequest error, while
+// system logs remain accessible.
+func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const exeName = "test-executable-logs-rejected-terminal"
+
+	errMsg := fmt.Sprintf("simulated startup failure for Executable '%s'", exeName)
+	socketPath := pickTerminalSocketPath(t)
+	exe := &apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      exeName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/" + exeName,
+			// The Executable controller routes Spec.Terminal-backed Executables
+			// through a separate terminal-process factory. The UDSPath does not
+			// need to refer to a real socket — this test only exercises the
+			// apiserver log streaming path.
+			Terminal: &apiv1.TerminalSpec{
+				UDSPath: socketPath,
+				Cols:    80,
+				Rows:    24,
+			},
+		},
+	}
+
+	// Route the terminal-backed Executable through the shared test process
+	// executor so the AutoExecution below can simulate the startup failure.
+	_ = terminalProcessFactoryDispatcher.InstallHandler(t, exe.Spec.ExecutablePath, func(
+		ctx context.Context,
+		pe process.Executor,
+		spec *termpty.CommandSpec,
+	) (*termpty.PseudoTerminalProcess, error) {
+		_, _, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
+		return nil, startErr
+	})
+
+	// Force the Executable into FailedToStart so the system log file exists
+	// and we can verify it is still readable for a terminal-backed Executable.
+	testProcessExecutor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{exe.Spec.ExecutablePath},
+		},
+		StartupError: func(_ *internal_testutil.ProcessExecution) error {
+			return errors.New(errMsg)
+		},
+	})
+	defer testProcessExecutor.RemoveAutoExecution(internal_testutil.ProcessSearchCriteria{
+		Command: []string{exe.Spec.ExecutablePath},
+	})
+
+	t.Logf("Creating Executable '%s' with Spec.Terminal set...", exeName)
+	createErr := client.Create(ctx, exe)
+	require.NoError(t, createErr, "Could not create Executable '%s'", exeName)
+
+	t.Logf("Waiting for Executable '%s' to reach 'failed to start' state...", exeName)
+	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(exe), func(currentExe *apiv1.Executable) (bool, error) {
+		return currentExe.Status.State == apiv1.ExecutableStateFailedToStart, nil
+	})
+
+	// Verify stdout/stderr (and the default empty source, which maps to stdout)
+	// log requests fail with BadRequest because the Executable uses a terminal.
+	rejectedSources := []string{
+		"",
+		string(apiv1.LogStreamSourceStdout),
+		string(apiv1.LogStreamSourceStderr),
+	}
+	for _, src := range rejectedSources {
+		t.Logf("Verifying log stream request for source %q is rejected for terminal-backed Executable '%s'...", src, exeName)
+		opts := apiv1.LogOptions{Source: src}
+		stream, streamErr := openLogStream(ctx, updatedExe, opts, nil)
+		if stream != nil {
+			_ = stream.Close()
+		}
+		require.Errorf(t, streamErr, "Expected log stream request for source %q to fail for terminal-backed Executable '%s'", src, exeName)
+		require.Truef(t, apierrors.IsBadRequest(streamErr), "Expected BadRequest error for source %q on terminal-backed Executable '%s', got: %v", src, exeName, streamErr)
+	}
+
+	t.Logf("Verifying system logs are still available for terminal-backed Executable '%s'...", exeName)
+	sysOpts := apiv1.LogOptions{
+		Follow: false,
+		Source: string(apiv1.LogStreamSourceSystem),
+	}
+	logsErr := waitForObjectLogs(ctx, updatedExe, sysOpts, [][]byte{[]byte(errMsg)}, nil)
+	require.NoError(t, logsErr, "System logs should remain available for terminal-backed Executable '%s'", exeName)
 }
 
 // Verify that logs in follow mode include output written after deletion is requested
