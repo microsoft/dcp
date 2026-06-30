@@ -9,7 +9,7 @@ ifeq ($(OS),Windows_NT)
 	detected_OS := windows
 	detected_arch := amd64
 	SHELL := pwsh.exe
-	.SHELLFLAGS := -Command
+	.SHELLFLAGS := -NoProfile -NonInteractive -Command
 	repo_dir := $(shell Get-Location | Select-Object -ExpandProperty Path)
 	mkdir := New-Item -ItemType Directory -Force -Path
 	copy := Copy-Item -Force -Path
