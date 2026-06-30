@@ -119,12 +119,12 @@ func createUnversionedCurrentSchema(t *testing.T, ctx context.Context, path stri
 	require.NoError(t, execErr)
 }
 
-func testResourceLeaseOwner(t *testing.T, identityOffset time.Duration) (process.ProcessTreeItem, error) {
+func testResourceLeaseOwner(t *testing.T, identityOffset time.Duration) (process.ProcessHandle, error) {
 	t.Helper()
 
 	currentProcess, currentProcessErr := process.This()
 	if currentProcessErr != nil {
-		return process.ProcessTreeItem{}, currentProcessErr
+		return process.ProcessHandle{}, currentProcessErr
 	}
 
 	currentProcess.IdentityTime = currentProcess.IdentityTime.Add(identityOffset)
@@ -357,7 +357,7 @@ func TestResourceLeasePreservesOutOfUnixNanoRangeOwnerIdentityTime(t *testing.T)
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
 	store := openTestStore(t, ctx, storePath)
 
-	owner, ownerErr := normalizeResourceLeaseOwner(process.ProcessTreeItem{
+	owner, ownerErr := normalizeResourceLeaseOwner(process.ProcessHandle{
 		Pid:          process.Pid_t(1234),
 		IdentityTime: time.Date(1, time.January, 1, 0, 3, 10, 720000000, time.UTC),
 	})
@@ -453,7 +453,7 @@ func TestResourceLeaseCanBeAcquiredFromInactiveOwnerAfterRevalidationInterval(t 
 
 	currentProcess, currentProcessErr := process.This()
 	require.NoError(t, currentProcessErr)
-	staleOwner, staleOwnerErr := normalizeResourceLeaseOwner(process.ProcessTreeItem{
+	staleOwner, staleOwnerErr := normalizeResourceLeaseOwner(process.ProcessHandle{
 		Pid:          currentProcess.Pid,
 		IdentityTime: currentProcess.IdentityTime.Add(-time.Hour),
 	})
@@ -509,7 +509,7 @@ func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	require.NoError(t, currentProcessErr)
 	activeOwner, activeOwnerErr := normalizeResourceLeaseOwner(currentProcess)
 	require.NoError(t, activeOwnerErr)
-	staleOwner, staleOwnerErr := normalizeResourceLeaseOwner(process.ProcessTreeItem{
+	staleOwner, staleOwnerErr := normalizeResourceLeaseOwner(process.ProcessHandle{
 		Pid:          currentProcess.Pid,
 		IdentityTime: currentProcess.IdentityTime.Add(-time.Hour),
 	})

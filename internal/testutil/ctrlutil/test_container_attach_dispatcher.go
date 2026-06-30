@@ -158,7 +158,7 @@ func NewTestPtyContainerAttachFactory(pe process.Executor) ContainerAttachFactor
 		testPty := testutil.NewTestPty()
 		exitHandler := process.NewConcurrentProcessExitHandler()
 
-		pid, startTime, startWait, startErr := pe.StartProcess(
+		handle, startWait, startErr := pe.StartProcess(
 			ctx,
 			placeholderAttachCommand(containerName),
 			exitHandler,
@@ -172,8 +172,8 @@ func NewTestPtyContainerAttachFactory(pe process.Executor) ContainerAttachFactor
 
 		return &termpty.PseudoTerminalProcess{
 			PTY:              testPty,
-			PID:              pid,
-			IdentityTime:     startTime,
+			PID:              handle.Pid,
+			IdentityTime:     handle.IdentityTime,
 			StartWaitForExit: startWait,
 			ExitHandler:      exitHandler,
 			Executor:         pe,

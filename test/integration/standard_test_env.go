@@ -39,7 +39,7 @@ type TestEnvironmentInfo struct {
 	TerminalProcessFactoryDispatcher *ctrl_testutil.TerminalProcessFactoryDispatcher
 	ContainerAttachFactoryDispatcher *ctrl_testutil.ContainerAttachFactoryDispatcher
 	StateStore                       *statestore.Store
-	ResourceLeaseOwner               process.ProcessTreeItem
+	ResourceLeaseOwner               process.ProcessHandle
 	Log                              logr.Logger
 }
 

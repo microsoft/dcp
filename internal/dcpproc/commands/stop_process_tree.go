@@ -51,7 +51,8 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			"SkipDescendants", stopSkipDescendants,
 		)
 
-		_, procErr := process.FindWaitableProcess(stopPid, stopProcessStartTime)
+		handle := process.NewHandle(stopPid, stopProcessStartTime)
+		_, procErr := process.FindWaitableProcess(handle)
 		if procErr != nil {
 			log.Error(procErr, "Could not find the process to stop")
 			return procErr
@@ -63,7 +64,7 @@ func stopProcessTree(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			stopOptions = append(stopOptions, process.StopRootOnly())
 		}
 
-		stopErr := process.StopViaConsole(log, pe, stopPid, stopProcessStartTime, stopOptions...)
+		stopErr := process.StopViaConsole(log, pe, handle, stopOptions...)
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop process tree")
 			return stopErr

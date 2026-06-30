@@ -392,11 +392,13 @@ func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
 	}
 
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	pid, identityTime, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = teInfo.TestProcessExecutor.StopProcess(pid, identityTime)
+		_ = teInfo.TestProcessExecutor.StopProcess(handle)
 	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
 
 	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
 	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
@@ -452,11 +454,13 @@ func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testi
 	}
 
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(pid, identityTime)
+		_ = testProcessExecutor.StopProcess(handle)
 	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
 
 	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
 	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
@@ -473,7 +477,7 @@ func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testi
 	})
 	require.NoError(t, upsertErr, "could not seed persistent process record")
 
-	leaseOwner := process.ProcessTreeItem{Pid: process.Pid_t(1), IdentityTime: time.Now()}
+	leaseOwner := process.ProcessHandle{Pid: process.Pid_t(1), IdentityTime: time.Now()}
 	lease, leaseErr := testStateStore.AcquireResourceLease(ctx, &exe, leaseOwner, time.Minute)
 	require.NoError(t, leaseErr, "could not acquire persistent process lease")
 
@@ -588,11 +592,13 @@ func TestExecutableCleanupModeAdoptsProcessRecordCreatedAfterNotFound(t *testing
 	})
 
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(pid, identityTime)
+		_ = testProcessExecutor.StopProcess(handle)
 	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
 
 	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
 	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
@@ -3463,7 +3469,7 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 		pe process.Executor,
 		spec *termpty.CommandSpec,
 	) (*termpty.PseudoTerminalProcess, error) {
-		_, _, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
+		_, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
 		return nil, startErr
 	})
 

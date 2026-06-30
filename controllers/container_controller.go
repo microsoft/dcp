@@ -99,7 +99,7 @@ type ContainerReconcilerConfig struct {
 	MaxParallelContainerStarts      uint8
 	ContainerStartupTimeoutOverride time.Duration
 	StateStore                      *statestore.Store
-	ResourceLeaseOwner              process.ProcessTreeItem
+	ResourceLeaseOwner              process.ProcessHandle
 	ProcessExecutor                 process.Executor
 }
 

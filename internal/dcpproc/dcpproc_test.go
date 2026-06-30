@@ -87,7 +87,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentIdentityTime := process.ProcessIdentityTime(parentPid)
 	require.False(t, parentIdentityTime.IsZero(), "parent process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, IdentityTime: parentIdentityTime}, 1, testTimeout/3)
+	int_testutil.EnsureProcessTree(t, process.ProcessHandle{Pid: parentPid, IdentityTime: parentIdentityTime}, 1, testTimeout/3)
 
 	childrenCmd := exec.CommandContext(testCtx, "./delay", delayFlag, childSpecFlag)
 	childrenCmd.Dir = delayToolDir
@@ -100,7 +100,7 @@ func TestMonitorProcessTerminatesWatchedProcesses(t *testing.T) {
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(
 		t,
-		process.ProcessTreeItem{Pid: pid, IdentityTime: childIdentityTime},
+		process.ProcessHandle{Pid: pid, IdentityTime: childIdentityTime},
 		expectedChildCount,
 		testTimeout/3,
 	)
@@ -168,7 +168,7 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentIdentityTime := process.ProcessIdentityTime(parentPid)
 	require.False(t, parentIdentityTime.IsZero(), "parent process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, IdentityTime: parentIdentityTime}, 1, testTimeout/3)
+	int_testutil.EnsureProcessTree(t, process.ProcessHandle{Pid: parentPid, IdentityTime: parentIdentityTime}, 1, testTimeout/3)
 
 	childCmd := exec.CommandContext(testCtx, "./delay", delayFlag)
 	childCmd.Dir = delayToolDir
@@ -181,7 +181,7 @@ func TestMonitorProcessExitsCleanlyIfChildStartTimeDoesNotMatch(t *testing.T) {
 	childPid := process.Uint32_ToPidT(uint32(childCmd.Process.Pid))
 	childIdentityTime := process.ProcessIdentityTime(childPid)
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: childPid, IdentityTime: childIdentityTime}, 1, testTimeout/3)
+	int_testutil.EnsureProcessTree(t, process.ProcessHandle{Pid: childPid, IdentityTime: childIdentityTime}, 1, testTimeout/3)
 
 	bogusChildIdentityTime := childIdentityTime.Add(1 * time.Second)
 
@@ -247,7 +247,7 @@ func TestMonitorProcessCleansUpChildIfMonitorStartTimeDoesNotMatch(t *testing.T)
 	parentPid := process.Uint32_ToPidT(uint32(parentCmd.Process.Pid))
 	parentIdentityTime := process.ProcessIdentityTime(parentPid)
 	require.False(t, parentIdentityTime.IsZero(), "parent process start time should not be zero")
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: parentPid, IdentityTime: parentIdentityTime}, 1, testTimeout/3)
+	int_testutil.EnsureProcessTree(t, process.ProcessHandle{Pid: parentPid, IdentityTime: parentIdentityTime}, 1, testTimeout/3)
 
 	childCmd := exec.CommandContext(testCtx, "./delay", delayFlag)
 	childCmd.Dir = delayToolDir
@@ -265,7 +265,7 @@ func TestMonitorProcessCleansUpChildIfMonitorStartTimeDoesNotMatch(t *testing.T)
 	if osutil.IsWindows() {
 		expectedChildTreeSize = 2 // Account for conhost.exe hosting separate console for the child
 	}
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: childPid, IdentityTime: childIdentityTime}, expectedChildTreeSize, testTimeout/3)
+	int_testutil.EnsureProcessTree(t, process.ProcessHandle{Pid: childPid, IdentityTime: childIdentityTime}, expectedChildTreeSize, testTimeout/3)
 
 	// Pass an identity time that does not match the actual one to simulate a reused PID.
 	bogusMonitorIdentityTime := parentIdentityTime.Add(1 * time.Hour)
@@ -361,7 +361,7 @@ func TestMonitorProcessCleansUpChildWhenMonitoredProcessAlreadyExited(t *testing
 	if osutil.IsWindows() {
 		expectedChildTreeSize = 2 // Account for conhost.exe hosting separate console for the child
 	}
-	int_testutil.EnsureProcessTree(t, process.ProcessTreeItem{Pid: childPid, IdentityTime: childIdentityTime}, expectedChildTreeSize, testTimeout/3)
+	int_testutil.EnsureProcessTree(t, process.ProcessHandle{Pid: childPid, IdentityTime: childIdentityTime}, expectedChildTreeSize, testTimeout/3)
 
 	dcpProcOut := &dcpProcOutput{}
 	defer dcpProcOut.DumpOnFailure(t, "dcpproc (TestMonitorProcessCleansUpChildWhenMonitoredProcessAlreadyExited)")
@@ -923,7 +923,7 @@ func TestStopProcessTreeWorks(t *testing.T) {
 	require.False(t, childIdentityTime.IsZero(), "child process start time should not be zero")
 	int_testutil.EnsureProcessTree(
 		t,
-		process.ProcessTreeItem{Pid: pid, IdentityTime: childIdentityTime},
+		process.ProcessHandle{Pid: pid, IdentityTime: childIdentityTime},
 		expectedChildCount,
 		testTimeout/3,
 	)
