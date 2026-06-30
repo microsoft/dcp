@@ -43,9 +43,8 @@ type FollowWriter struct {
 	err                 atomic.Value
 	follow              atomic.Bool
 	cancel              context.CancelFunc
-	closeSource         func()
 	closeSourceOnCancel bool
-	closeSourceOnce     sync.Once
+	closeSourceOnce     func()
 	doneChan            chan struct{}
 	noDataStopRetries   uint
 }
@@ -59,18 +58,18 @@ type FollowWriter struct {
 // when no data has been seen yet. This is useful when the data source might not be ready immediately.
 func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts ...FollowWriterOption) *FollowWriter {
 	followCtx, cancel := context.WithCancel(ctx)
-	closeSource := func() {}
+	closeSourceOnce := sync.OnceFunc(func() {})
 	if sourceCloser, isCloser := source.(io.Closer); isCloser {
-		closeSource = func() {
+		closeSourceOnce = sync.OnceFunc(func() {
 			_ = sourceCloser.Close()
-		}
+		})
 	}
 	fw := &FollowWriter{
-		err:         atomic.Value{},
-		follow:      atomic.Bool{},
-		cancel:      cancel,
-		closeSource: closeSource,
-		doneChan:    make(chan struct{}),
+		err:             atomic.Value{},
+		follow:          atomic.Bool{},
+		cancel:          cancel,
+		closeSourceOnce: closeSourceOnce,
+		doneChan:        make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -84,7 +83,7 @@ func NewFollowWriter(ctx context.Context, source io.Reader, dest io.Writer, opts
 		defer cancel()
 		defer func() {
 			if fw.closeSourceOnCancel {
-				fw.closeSourceOnce.Do(fw.closeSource)
+				fw.closeSourceOnce()
 			}
 		}()
 
@@ -174,6 +173,6 @@ func (fw *FollowWriter) Done() <-chan struct{} {
 func (fw *FollowWriter) Cancel() {
 	fw.cancel()
 	if fw.closeSourceOnCancel {
-		fw.closeSourceOnce.Do(fw.closeSource)
+		fw.closeSourceOnce()
 	}
 }
