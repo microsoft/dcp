@@ -37,6 +37,7 @@ func TestResourceSink(t *testing.T) {
 	log.Info("This is a test log entry", "Key1", "Value1")
 
 	logger.Flush()
+	defer ReleaseResourceLog(resourceId)
 
 	// Ensure that the resource log file exists
 	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 10*time.Second, func() error {
@@ -89,6 +90,7 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 	log.Info("This log entry has no resource id", "Key3", "Value3")
 
 	logger.Flush()
+	defer ReleaseResourceLog(resourceId)
 
 	// Ensure that the resource log file exists
 	fileExistsErr := resiliency.RetryExponentialWithTimeout(t.Context(), 10*time.Second, func() error {
@@ -117,4 +119,40 @@ func TestResourceSinkNoResourceId(t *testing.T) {
 		require.Contains(c, string(contents), "info\tresource-sink-no-resource-id-log\tThis is a resource with an id\t{\"Key1\": \"Value1\", \"Key2\": \"Value2\"}")
 		require.Contains(c, string(contents), "error\tresource-sink-no-resource-id-log\tThis is an error record\t{\"Key1\": \"Value1\", \"error\": \"error of some sort\"}")
 	}, 10*time.Second, 200*time.Millisecond, "Expected to find a data and a log entry in resource log file")
+}
+
+func TestReleaseResourceLogsInFolder(t *testing.T) {
+	t.Parallel()
+
+	folderToRelease := t.TempDir()
+	folderToKeep := t.TempDir()
+	resourceIdSuffix, suffixErr := randdata.MakeRandomString(8)
+	require.NoError(t, suffixErr)
+	releasedResourceId := "resource-sink-release-folder-test-" + string(resourceIdSuffix)
+	keptResourceId := "resource-sink-keep-folder-test-" + string(resourceIdSuffix)
+	releasedResourceFilePath := makeResourceLogPath(releasedResourceId, folderToRelease)
+	keptResourceFilePath := makeResourceLogPath(keptResourceId, folderToKeep)
+
+	releasedLogger := New("resource-sink-release-folder-log").WithResourceSinkInto(folderToRelease)
+	keptLogger := New("resource-sink-keep-folder-log").WithResourceSinkInto(folderToKeep)
+	defer ReleaseResourceLog(keptResourceId)
+
+	releasedLogger.Logger.WithValues(RESOURCE_LOG_STREAM_ID, releasedResourceId).Info("release this resource log")
+	keptLog := keptLogger.Logger.WithValues(RESOURCE_LOG_STREAM_ID, keptResourceId)
+	keptLog.Info("keep this resource log")
+	releasedLogger.Flush()
+	keptLogger.Flush()
+
+	require.FileExists(t, releasedResourceFilePath)
+	require.FileExists(t, keptResourceFilePath)
+
+	ReleaseResourceLogsInFolder(folderToRelease)
+	require.NoError(t, os.RemoveAll(folderToRelease))
+
+	keptLog.Info("resource logging is still enabled")
+	keptLogger.Flush()
+	contents, readErr := os.ReadFile(keptResourceFilePath)
+	require.NoError(t, readErr)
+	require.Contains(t, string(contents), "keep this resource log")
+	require.Contains(t, string(contents), "resource logging is still enabled")
 }
