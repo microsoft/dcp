@@ -241,10 +241,9 @@ func TestChildrenTerminated(t *testing.T) {
 		{"external start", func(t *testing.T, cmd *exec.Cmd, _ process.Executor) process.ProcessHandle {
 			err := cmd.Start()
 			require.NoError(t, err, "could not start the 'delay' test program")
-			pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-			identityTime := process.ProcessIdentityTime(pid)
-			require.False(t, identityTime.IsZero(), "process identity time should not be zero")
-			return process.ProcessHandle{Pid: pid, IdentityTime: identityTime}
+			handle := process.ProcessHandleFromCmd(cmd)
+			require.False(t, handle.IdentityTime.IsZero(), "process identity time should not be zero")
+			return handle
 		}},
 		{"executor start, no wait", func(t *testing.T, cmd *exec.Cmd, e process.Executor) process.ProcessHandle {
 			handle, _, err := e.StartProcess(context.Background(), cmd, nil, process.CreationFlagsNone, nil)
@@ -437,7 +436,7 @@ func TestSysCreateProcess(t *testing.T) {
 			captureDoneCh: make(chan struct{}),
 		}
 		capturedWaitable = w
-		return process.Uint32_ToPidT(uint32(proc.Pid)), w, nil
+		return process.ProcessHandleFromProcess(proc).Pid, w, nil
 	})
 
 	exitInfoChan := make(chan process.ProcessExitInfo, 1)

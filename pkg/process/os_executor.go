@@ -170,6 +170,7 @@ func (e *OSExecutor) startProcess(
 	e.prepareProcessStart(cmd, flags)
 
 	var pid Pid_t
+	var handle ProcessHandle
 	var waitable Waitable
 
 	if sysCreateProcess != nil {
@@ -181,12 +182,13 @@ func (e *OSExecutor) startProcess(
 		if waitable == nil {
 			return ProcessHandle{Pid: UnknownPID}, nil, fmt.Errorf("sysCreateProcess returned nil waitable")
 		}
+		handle = NewHandle(pid, ProcessIdentityTime(pid))
 	} else {
 		if err := cmd.Start(); err != nil {
 			return ProcessHandle{Pid: UnknownPID}, nil, err
 		}
-		osPid := cmd.Process.Pid
-		pid = Uint32_ToPidT(uint32(osPid))
+		handle = ProcessHandleFromCmd(cmd)
+		pid = handle.Pid
 		waitable = &waitableCmd{cmd, flags}
 	}
 
@@ -196,8 +198,6 @@ func (e *OSExecutor) startProcess(
 		"Args", cmd.Args[1:],
 		"CreationFlags", flags,
 	)
-
-	handle := NewHandle(pid, ProcessIdentityTime(pid))
 
 	startCompletionErr := e.completeProcessStart(handle, flags)
 	if startCompletionErr != nil {

@@ -44,17 +44,15 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	identityTime := process.ProcessIdentityTime(pid)
-	require.False(t, identityTime.IsZero(), "process start time should not be zero")
-	rootP := process.ProcessHandle{Pid: pid, IdentityTime: identityTime}
+	rootP := process.ProcessHandleFromCmd(cmd)
+	require.False(t, rootP.IdentityTime.IsZero(), "process start time should not be zero")
 
 	// Only one process should be running, so the "tree" size is 1.
 	int_testutil.EnsureProcessTree(t, rootP, 1, 5*time.Second)
 
 	executor := process.NewOSExecutor(log)
 	start := time.Now()
-	err = executor.StopProcess(process.NewHandle(pid, time.Time{}))
+	err = executor.StopProcess(process.NewHandle(rootP.Pid, time.Time{}))
 	require.NoError(t, err)
 	elapsed := time.Since(start)
 	elapsedStr := osutil.FormatDuration(elapsed)
