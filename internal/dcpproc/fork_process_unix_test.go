@@ -9,11 +9,11 @@ package dcpproc_test
 
 import (
 	"context"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -29,16 +29,16 @@ func TestForkProcessStartsOutsideParentSession(t *testing.T) {
 	childPid, childPidErr := process.PidT_ToInt(forkedProcess.Pid)
 	require.NoError(t, childPidErr)
 
-	childProcessGroup, childProcessGroupErr := syscall.Getpgid(childPid)
+	childProcessGroup, childProcessGroupErr := unix.Getpgid(childPid)
 	require.NoError(t, childProcessGroupErr)
 
-	currentProcessGroup, currentProcessGroupErr := syscall.Getpgid(0)
+	currentProcessGroup, currentProcessGroupErr := unix.Getpgid(0)
 	require.NoError(t, currentProcessGroupErr)
 
-	childSession, childSessionErr := syscall.Getsid(childPid)
+	childSession, childSessionErr := unix.Getsid(childPid)
 	require.NoError(t, childSessionErr)
 
-	currentSession, currentSessionErr := syscall.Getsid(0)
+	currentSession, currentSessionErr := unix.Getsid(0)
 	require.NoError(t, currentSessionErr)
 
 	require.Equal(t, childPid, childProcessGroup, "forked process should lead its own process group")
