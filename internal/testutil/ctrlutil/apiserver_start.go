@@ -144,6 +144,8 @@ func StartApiServer(
 			}
 		}
 
+		logger.ReleaseResourceLogsInFolder(sessionFolder)
+
 		// Try a few times because it may not succeed immediately (e.g. AV software may be scanning the folder).
 		sessionFolderRemoveErr := resiliency.RetryExponentialWithTimeout(context.Background(), 5*time.Second, func() error {
 			return os.RemoveAll(sessionFolder)

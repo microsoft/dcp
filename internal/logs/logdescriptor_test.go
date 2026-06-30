@@ -77,7 +77,7 @@ func TestLogFollowingDelayWithinBounds(t *testing.T) {
 	stdOutFile, stdOutErr := io.OpenFile(stdOutPath, os.O_RDONLY, 0)
 	require.NoError(t, stdOutErr)
 
-	follow := io.NewFollowWriter(ctx, stdOutFile, buf)
+	follow := io.NewFollowWriter(ctx, stdOutFile, buf, io.WithCloseSourceOnCancel())
 
 	var logWriteTimes []time.Time
 	for i := 0; i < numWrites; i++ {
