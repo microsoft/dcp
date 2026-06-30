@@ -824,6 +824,10 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, options 
 	return removed, err
 }
 
+func (pco *PodmanCliOrchestrator) CreateFilesRequiresRunningContainer() bool {
+	return false
+}
+
 func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
 	args := []string{"container", "cp"}
 
@@ -1081,6 +1085,10 @@ func (pco *PodmanCliOrchestrator) ListNetworks(ctx context.Context, options cont
 
 func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
 	return "podman"
+}
+
+func (pco *PodmanCliOrchestrator) NetworksAttachedAtCreation() bool {
+	return false
 }
 
 func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {

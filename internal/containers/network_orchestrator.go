@@ -185,5 +185,11 @@ type NetworkOrchestrator interface {
 	// Get default (bridge-type) network name
 	DefaultNetworkName() string
 
+	// NetworksAttachedAtCreation reports whether the runtime can attach a container to networks only
+	// at creation time (true), versus being able to connect/disconnect a running container (false).
+	// Runtimes that return true (e.g. wslc) must be created already attached to their target networks
+	// and aliases; the controller skips the default-network create-then-detach flow for them.
+	NetworksAttachedAtCreation() bool
+
 	RuntimeStatusChecker
 }

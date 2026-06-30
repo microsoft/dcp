@@ -21,10 +21,11 @@ const (
 	UnknownRuntime RuntimeFlagValue = ""
 	DockerRuntime  RuntimeFlagValue = "docker"
 	PodmanRuntime  RuntimeFlagValue = "podman"
+	WslcRuntime    RuntimeFlagValue = "wslc"
 )
 
 var (
-	supportedRuntimeNames = []string{"docker", "podman"}
+	supportedRuntimeNames = []string{"docker", "podman", "wslc"}
 	runtime               = UnknownRuntime
 )
 

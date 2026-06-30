@@ -14,6 +14,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/docker"
 	"github.com/microsoft/dcp/internal/podman"
+	"github.com/microsoft/dcp/internal/wslc"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -24,6 +25,7 @@ var (
 	supportedRuntimes = map[flags.RuntimeFlagValue]ContainerOrchestratorFactory{
 		flags.DockerRuntime: docker.NewDockerCliOrchestrator,
 		flags.PodmanRuntime: podman.NewPodmanCliOrchestrator,
+		flags.WslcRuntime:   wslc.NewWslcCliOrchestrator,
 	}
 )
 

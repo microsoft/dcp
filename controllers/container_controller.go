@@ -8,6 +8,8 @@ package controllers
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -77,6 +80,14 @@ var (
 	containerFinalizer string = fmt.Sprintf("%s/container-reconciler", apiv1.GroupVersion.Group)
 	containerKind             = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Container{}).Name())
 
+	// bakedLayerModTime is a fixed, deterministic modification time applied to files baked into a
+	// derived image layer. Using a constant (rather than time.Now()) keeps the resulting tar bytes —
+	// and therefore the layer digest, which is the cache key — stable across runs when the file contents
+	// are unchanged, which is what lets the content-addressed derived-image cache reuse a built image.
+	// Certificate identity needs no special handling: the certificate bytes are part of the hashed tar,
+	// so rotating a certificate changes the digest and correctly misses the cache.
+	bakedLayerModTime = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+
 	containerStateInitializers = map[apiv1.ContainerState]containerStateInitializerFunc{
 		apiv1.ContainerStateEmpty:            handleNewContainer,
 		apiv1.ContainerStatePending:          handleNewContainer,
@@ -94,6 +105,11 @@ var (
 
 	winNamedPipeRegex = regexp.MustCompile(`^(\\\\.pipe\\|//.pipe/)`)
 )
+
+// errContainerNetworksNotReady is a retryable error returned during startup when a runtime that
+// attaches networks at creation time (see ContainerOrchestrator.NetworksAttachedAtCreation) must
+// wait for the referenced ContainerNetwork objects to become ready before creating the container.
+var errContainerNetworksNotReady = errors.New("referenced container networks are not ready")
 
 type ContainerReconcilerConfig struct {
 	MaxParallelContainerStarts      uint8
@@ -600,8 +616,9 @@ func ensureContainerStartingState(
 		r.scheduleContainerCreation(ctx, container, rcd, log, startupWithNoDelay)
 		change |= statusChanged
 
-	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld):
-		// Retry startup after a transient error or while another DCP instance is creating the persistent container.
+	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld), errors.Is(rcd.startupError, errContainerNetworksNotReady):
+		// Retry startup after a transient error, while another DCP instance is creating the persistent
+		// container, or while waiting for referenced networks to become ready (create-time network attach).
 
 		rcd.startupError = nil
 		rcd.startAttemptFinishedAt = metav1.MicroTime{}
@@ -1229,21 +1246,46 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("Starting container", "Image", container.SpecifiedImageNameOrDefault())
 
-			// Determine the default bridge network name used by the active orchestrator
+			// Determine how the container should be attached to networks at creation time.
+			// Most runtimes create the container on the default bridge network and connect custom
+			// networks afterward. Runtimes that can only attach networks at creation time (see
+			// NetworksAttachedAtCreation, e.g. wslc) are created already attached to the resolved
+			// custom networks and aliases; resolution waits until those networks are ready.
 			defaultNetwork := ""
+			var creationNetworks []containers.CreationNetwork
 			if rcd.runSpec.Networks != nil {
-				// See comment below why we create the container with default network explicitly enabled here.
-				defaultNetwork = r.orchestrator.DefaultNetworkName()
+				if r.orchestrator.NetworksAttachedAtCreation() {
+					resolved, resolveErr := r.resolveCreationNetworks(startupCtx, container, rcd, log)
+					if resolveErr != nil {
+						return resolveErr
+					}
+					creationNetworks = resolved
+				} else {
+					// See comment below why we create the container with default network explicitly enabled here.
+					defaultNetwork = r.orchestrator.DefaultNetworkName()
+				}
 			}
 
 			// Add labels to the container for lifecycle management and other metadata
-			lifecycleKey, hashErr := r.addContainerCreationLabels(container, rcd, log)
+			_, hashErr := r.addContainerCreationLabels(container, rcd, log)
 			if hashErr != nil {
 				return hashErr
 			}
 
+			// Runtimes that cannot copy files into a created-but-not-running container (e.g. wslc)
+			// bake the configured create-files and PEM certificates into a derived image as additional
+			// layers, so the files are present in the container filesystem before the entrypoint runs.
+			var createFilesLayers []apiv1.ImageLayer
+			if r.orchestrator.CreateFilesRequiresRunningContainer() {
+				bakedLayers, bakeErr := r.bakeCreateFilesImageLayers(startupCtx, rcd, log)
+				if bakeErr != nil {
+					return bakeErr
+				}
+				createFilesLayers = bakedLayers
+			}
+
 			// Apply any image layers that are specified in the container spec, and get the effective image to use for container creation
-			effectiveImage, imageLayersErr := r.applyContainerImageLayers(startupCtx, rcd, lifecycleKey, log)
+			effectiveImage, imageLayersErr := r.applyContainerImageLayers(startupCtx, rcd, createFilesLayers, log)
 			if imageLayersErr != nil {
 				return imageLayersErr
 			}
@@ -1267,6 +1309,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				ContainerSpec:        runSpecForCreation,
 				Name:                 containerName,
 				Network:              defaultNetwork,
+				CreationNetworks:     creationNetworks,
 				StreamCommandOptions: streamOptions,
 			}
 			inspected, createErr := createContainer(startupCtx, r.orchestrator, creationOptions)
@@ -1286,17 +1329,15 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				r.runContainerLifecycleMonitor(rcd, log)
 			}
 
-			// Copy any general files specified in the container spec to the container's filesystem
-			fileModTime := time.Now()
-			copyFilesErr := r.copyContainerCreateFiles(startupCtx, rcd, inspected, fileModTime, log)
-			if copyFilesErr != nil {
-				return copyFilesErr
-			}
-
-			// Copy any PEM certificates specified in the container spec to the container's filesystem
-			copyCertsErr := r.copyContainerPemCertificates(startupCtx, rcd, inspected, fileModTime, log)
-			if copyCertsErr != nil {
-				return copyCertsErr
+			// Copy any general files and PEM certificates specified in the container spec into the
+			// container's filesystem. Most runtimes copy into the created, not-yet-started container.
+			// Runtimes that can only write into a running container (e.g. wslc) cannot do this; they
+			// instead bake the files into the image as layers at creation time (see
+			// bakeCreateFilesImageLayers above), so the copy here is skipped for them.
+			if !r.orchestrator.CreateFilesRequiresRunningContainer() {
+				if copyErr := r.copyContainerCreateFilesAndCertificates(startupCtx, rcd, inspected.Id, time.Now(), r.orchestrator.CreateFiles, log); copyErr != nil {
+					return copyErr
+				}
 			}
 
 			// Finish the container startup process, including any finalization steps
@@ -1311,7 +1352,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			return nil
 		}()
 
-		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld)
+		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld) || errors.Is(err, errContainerNetworksNotReady)
 		if !retryableErr && !errors.Is(err, statestore.ErrResourceLeaseNotHeld) {
 			releaseErr := r.releasePersistentContainerResourceLease(context.WithoutCancel(startupCtx), container, log, false)
 			err = errors.Join(err, releaseErr)
@@ -1494,14 +1535,21 @@ func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Contai
 }
 
 // applyContainerImageLayers builds a derived image when image layers are configured and returns the image to create.
-func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd *runningContainerData, lifecycleKey string, log logr.Logger) (string, error) {
+func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd *runningContainerData, extraLayers []apiv1.ImageLayer, log logr.Logger) (string, error) {
 	effectiveImage := rcd.runSpec.Image
-	if len(rcd.runSpec.ImageLayers) == 0 {
+
+	// Combine the layers declared in the run spec with any layers baked at creation time (e.g. wslc
+	// create-files). Do not mutate rcd.runSpec.ImageLayers: the container creation block may retry, and
+	// mutating the spec would append the extra layers more than once.
+	layers := make([]apiv1.ImageLayer, 0, len(rcd.runSpec.ImageLayers)+len(extraLayers))
+	layers = append(layers, rcd.runSpec.ImageLayers...)
+	layers = append(layers, extraLayers...)
+	if len(layers) == 0 {
 		return effectiveImage, nil
 	}
 
-	digests := make([]string, len(rcd.runSpec.ImageLayers))
-	for i, layer := range rcd.runSpec.ImageLayers {
+	digests := make([]string, len(layers))
+	for i, layer := range layers {
 		digests[i] = layer.Digest
 	}
 	rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
@@ -1520,24 +1568,40 @@ func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd
 		return "", ensureErr
 	}
 
-	// Derive a tag by replacing the base image's tag/digest with the lifecycle key.
-	// The image ref may be name:tag or name@sha256:digest — we need just the name part.
+	// Derive a deterministic, content-addressed tag for the derived image. The tag keeps the base
+	// image's repository name and original tag as a prefix, then appends a digest over the resolved
+	// base image ID plus the applied layer digests, so identical inputs map to the same tag on every
+	// run while staying easy to correlate with the base image (e.g. redis:7.2 -> redis:7.2-dcp-<hash>).
+	// The image ref may be name:tag, name@sha256:digest, or name:tag@sha256:digest.
 	baseRepo := rcd.runSpec.Image
+	baseTag := ""
 	if atidx := strings.Index(baseRepo, "@"); atidx != -1 {
-		baseRepo = baseRepo[:atidx]
-	} else if colonidx := strings.LastIndex(baseRepo, ":"); colonidx != -1 {
-		// Only strip at colon if it's a tag separator, not part of a port/registry.
-		// A tag separator colon comes after the last slash (or is the only colon).
-		slashIdx := strings.LastIndex(baseRepo, "/")
-		if colonidx > slashIdx {
-			baseRepo = baseRepo[:colonidx]
-		}
+		baseRepo = baseRepo[:atidx] // drop any digest portion before parsing the tag
 	}
-	sanitizedKey := strings.ReplaceAll(lifecycleKey, ":", "-")
-	derivedTag := fmt.Sprintf("%s:dcp-%s", baseRepo, sanitizedKey)
+	// A tag separator colon comes after the last slash (otherwise the colon is part of a registry port).
+	if colonidx := strings.LastIndex(baseRepo, ":"); colonidx > strings.LastIndex(baseRepo, "/") {
+		baseTag = baseRepo[colonidx+1:]
+		baseRepo = baseRepo[:colonidx]
+	}
+	contentDigest := sha256.Sum256([]byte(baseImageInspected.Id + "\n" + strings.Join(digests, "\n")))
+	derivedTagSuffix := fmt.Sprintf("dcp-%x", contentDigest)
+	if baseTag != "" {
+		derivedTagSuffix = baseTag + "-" + derivedTagSuffix
+	}
+	derivedTag := fmt.Sprintf("%s:%s", baseRepo, derivedTagSuffix)
+
+	// Reuse a previously built derived image when one already exists for this exact content. Building
+	// the derived image is expensive (and on some runtimes mounts a build context that counts against a
+	// session-wide volume limit), so skipping it when the inputs are unchanged avoids redundant work
+	// across runs. A miss here is expected (first run, or inputs changed) and falls through to building.
+	if existing, inspectErr := r.orchestrator.InspectImages(ctx, containers.InspectImagesOptions{Images: []string{derivedTag}}); inspectErr == nil && len(existing) > 0 {
+		log.V(1).Info("Reusing cached derived image for image layers", "DerivedImage", derivedTag)
+		return derivedTag, nil
+	}
+
 	applyLayersOptions := containers.ApplyImageLayersOptions{
 		BaseImage: *baseImageInspected,
-		Layers:    rcd.runSpec.ImageLayers,
+		Layers:    layers,
 		Tag:       derivedTag,
 	}
 	derivedImage, applyErr := r.orchestrator.ApplyImageLayers(ctx, applyLayersOptions)
@@ -1622,12 +1686,18 @@ func (r *ContainerReconciler) releasePersistentContainerResourceLease(
 	return nil
 }
 
+// createFilesSink consumes a single CreateFiles operation. The default sink writes the files into a
+// container via the orchestrator; an alternative sink (see bakeCreateFilesImageLayers) turns each
+// operation into an image layer instead.
+type createFilesSink func(ctx context.Context, options containers.CreateFilesOptions) error
+
 // copyContainerCreateFiles copies configured file entries into the created container before it starts.
 func (r *ContainerReconciler) copyContainerCreateFiles(
 	ctx context.Context,
 	rcd *runningContainerData,
-	inspected *containers.InspectedContainer,
+	containerID string,
 	fileModTime time.Time,
+	sink createFilesSink,
 	log logr.Logger,
 ) error {
 	for _, createFileRequest := range rcd.runSpec.CreateFiles {
@@ -1637,7 +1707,7 @@ func (r *ContainerReconciler) copyContainerCreateFiles(
 		}
 
 		createFilesOptions := containers.CreateFilesOptions{
-			Container:    inspected.Id,
+			Container:    containerID,
 			Entries:      createFileRequest.Entries,
 			Destination:  createFileRequest.Destination,
 			DefaultOwner: createFileRequest.DefaultOwner,
@@ -1646,7 +1716,7 @@ func (r *ContainerReconciler) copyContainerCreateFiles(
 			ModTime:      fileModTime,
 		}
 
-		copyErr := r.orchestrator.CreateFiles(ctx, createFilesOptions)
+		copyErr := sink(ctx, createFilesOptions)
 		if copyErr != nil {
 			log.Error(copyErr, "Could not copy files to the container", "Destination", createFileRequest.Destination)
 			return copyErr
@@ -1658,12 +1728,63 @@ func (r *ContainerReconciler) copyContainerCreateFiles(
 	return nil
 }
 
+// copyContainerCreateFilesAndCertificates copies configured file entries and PEM certificates into the container.
+func (r *ContainerReconciler) copyContainerCreateFilesAndCertificates(
+	ctx context.Context,
+	rcd *runningContainerData,
+	containerID string,
+	fileModTime time.Time,
+	sink createFilesSink,
+	log logr.Logger,
+) error {
+	if copyFilesErr := r.copyContainerCreateFiles(ctx, rcd, containerID, fileModTime, sink, log); copyFilesErr != nil {
+		return copyFilesErr
+	}
+
+	return r.copyContainerPemCertificates(ctx, rcd, containerID, fileModTime, sink, log)
+}
+
+// bakeCreateFilesImageLayers converts the container's configured create-files and PEM certificates into
+// image layers (tar archives). Runtimes that cannot copy files into a created-but-not-running container
+// (e.g. wslc) bake these layers into a derived image at creation time, so injected files — including TLS
+// certificates an entrypoint reads at startup — are present before the container starts.
+func (r *ContainerReconciler) bakeCreateFilesImageLayers(ctx context.Context, rcd *runningContainerData, log logr.Logger) ([]apiv1.ImageLayer, error) {
+	layers := []apiv1.ImageLayer{}
+	sink := func(_ context.Context, options containers.CreateFilesOptions) error {
+		tarBytes, buildErr := containers.BuildCreateFilesTar(options, log)
+		if buildErr != nil {
+			return buildErr
+		}
+		if tarBytes == nil {
+			return nil
+		}
+
+		digest := sha256.Sum256(tarBytes)
+		layers = append(layers, apiv1.ImageLayer{
+			Digest:      hex.EncodeToString(digest[:]),
+			RawContents: base64.StdEncoding.EncodeToString(tarBytes),
+		})
+		return nil
+	}
+
+	// The container does not exist yet, so the container ID passed to the sink is empty; the sink
+	// ignores it and turns each CreateFiles operation into an image layer. A fixed, deterministic mod
+	// time is used so unchanged contents produce an identical layer digest on every run, allowing the
+	// content-addressed derived-image cache to reuse a previously built image.
+	if buildErr := r.copyContainerCreateFilesAndCertificates(ctx, rcd, "", bakedLayerModTime, sink, log); buildErr != nil {
+		return nil, buildErr
+	}
+
+	return layers, nil
+}
+
 // copyContainerPemCertificates installs configured PEM certificates and optional bundle overwrites into the container.
 func (r *ContainerReconciler) copyContainerPemCertificates(
 	ctx context.Context,
 	rcd *runningContainerData,
-	inspected *containers.InspectedContainer,
+	containerID string,
 	fileModTime time.Time,
+	sink createFilesSink,
 	log logr.Logger,
 ) error {
 	if rcd.runSpec.PemCertificates == nil {
@@ -1711,7 +1832,7 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 	}
 
 	createFilesOptions := containers.CreateFilesOptions{
-		Container:   inspected.Id,
+		Container:   containerID,
 		Destination: rcd.runSpec.PemCertificates.Destination,
 		Entries: []apiv1.FileSystemEntry{
 			{
@@ -1728,7 +1849,7 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 		ModTime: fileModTime,
 	}
 
-	copyErr := r.orchestrator.CreateFiles(ctx, createFilesOptions)
+	copyErr := sink(ctx, createFilesOptions)
 	if copyErr != nil {
 		log.Error(copyErr, "Could not copy certificates to the container", "Destination", createFilesOptions.Destination)
 		return copyErr
@@ -1738,9 +1859,16 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 		return path.Dir(bundlePath)
 	})
 
-	for bundleDir, files := range overwritePaths {
+	// Iterate the overwrite directories in a stable order. When these operations are baked into image
+	// layers, the layer sequence determines the content-addressed cache key, so a deterministic order is
+	// required for the derived-image cache to reuse a previously built image.
+	bundleDirs := maps.Keys(overwritePaths)
+	sort.Strings(bundleDirs)
+
+	for _, bundleDir := range bundleDirs {
+		files := overwritePaths[bundleDir]
 		bundleCreateFilesOptions := containers.CreateFilesOptions{
-			Container:   inspected.Id,
+			Container:   containerID,
 			Destination: bundleDir,
 			Entries: slices.Map[apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
 				return apiv1.FileSystemEntry{
@@ -1753,7 +1881,7 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 			ModTime: fileModTime,
 		}
 
-		bundleCopyErr := r.orchestrator.CreateFiles(ctx, bundleCreateFilesOptions)
+		bundleCopyErr := sink(ctx, bundleCreateFilesOptions)
 		if bundleCopyErr != nil {
 			if rcd.runSpec.PemCertificates.ContinueOnError {
 				log.Info("Could not overwrite certificate bundle in the container, continuing...", "Destination", bundleDir, "Error", bundleCopyErr.Error())
@@ -1810,6 +1938,15 @@ func (r *ContainerReconciler) finishCreatedContainerStartup(
 	//
 	// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
 	// The Network controller takes care of connecting the container resource to requested networks.
+	//
+	// Runtimes that attach networks at creation time (see NetworksAttachedAtCreation) are already
+	// connected to their requested networks, so there is nothing to detach. The container is left in
+	// the "starting" state so the normal network-connection flow creates ContainerNetworkConnection
+	// objects and then starts it.
+	if r.orchestrator.NetworksAttachedAtCreation() {
+		return nil
+	}
+
 	for i := range inspected.Networks {
 		networkID := inspected.Networks[i].Id
 		disconnectErr := disconnectNetwork(ctx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
@@ -2037,6 +2174,48 @@ func (r *ContainerReconciler) enableEndpointsAndHealthProbes(
 }
 
 // NETWORKING SUPPORT METHODS
+
+// resolveCreationNetworks resolves the container's requested networks to runtime network names and
+// aliases for runtimes that attach networks at creation time (see NetworksAttachedAtCreation).
+// It returns errContainerNetworksNotReady (a retryable startup error) if any referenced
+// ContainerNetwork object does not yet exist or has not been assigned a runtime network name.
+func (r *ContainerReconciler) resolveCreationNetworks(
+	ctx context.Context,
+	container *apiv1.Container,
+	rcd *runningContainerData,
+	log logr.Logger,
+) ([]containers.CreationNetwork, error) {
+	if rcd.runSpec.Networks == nil {
+		return nil, nil
+	}
+
+	var networks apiv1.ContainerNetworkList
+	if err := r.List(ctx, &networks, ctrl_client.InNamespace(container.GetNamespace())); err != nil {
+		log.Error(err, "Failed to list ContainerNetwork objects")
+		return nil, err
+	}
+
+	creationNetworks := make([]containers.CreationNetwork, 0, len(*rcd.runSpec.Networks))
+	for i := range *rcd.runSpec.Networks {
+		requested := (*rcd.runSpec.Networks)[i]
+		namespacedName := commonapi.AsNamespacedName(requested.Name, container.GetNamespace())
+
+		index := slices.IndexFunc(networks.Items, func(n apiv1.ContainerNetwork) bool {
+			return n.NamespacedName() == namespacedName
+		})
+		if index < 0 || networks.Items[index].Status.NetworkName == "" {
+			log.V(1).Info("Referenced container network is not ready yet, deferring container creation...", "Network", namespacedName.String())
+			return nil, errContainerNetworksNotReady
+		}
+
+		creationNetworks = append(creationNetworks, containers.CreationNetwork{
+			Name:    networks.Items[index].Status.NetworkName,
+			Aliases: requested.Aliases,
+		})
+	}
+
+	return creationNetworks, nil
+}
 
 // Creates initial set of ContainerNetworkConnection objects for this Container,
 // and if all connections are satisfied, starts the container.

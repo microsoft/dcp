@@ -300,6 +300,11 @@ type CreateContainerOptions struct {
 	//	     that the container will be connected to eventually, and not at creation time.
 	NetworkAliases []string
 
+	// CreationNetworks lists networks (by runtime name) to attach at creation time, together with
+	// per-network aliases. Used by runtimes that can only attach networks at creation time (see
+	// NetworksAttachedAtCreation). When non-empty, it takes precedence over Network/NetworkAliases.
+	CreationNetworks []CreationNetwork
+
 	// Healthcheck configuration for the container
 	// This is currently only used for testing purposes
 	Healthcheck ContainerHealthcheck
@@ -308,6 +313,15 @@ type CreateContainerOptions struct {
 	TimeoutOption
 
 	apiv1.ContainerSpec
+}
+
+// CreationNetwork describes a network (by runtime name) and aliases to attach to a container at creation time.
+type CreationNetwork struct {
+	// Runtime name of the network to attach.
+	Name string
+
+	// Network aliases for the container on this network.
+	Aliases []string
 }
 
 type ContainerHealthcheck struct {
@@ -444,6 +458,12 @@ type CreateFilesOptions struct {
 type CreateFiles interface {
 	// Create files/folders in the container based on the provided structure
 	CreateFiles(ctx context.Context, options CreateFilesOptions) error
+
+	// CreateFilesRequiresRunningContainer reports whether CreateFiles can only write into a running
+	// container. Runtimes that inject files by executing a command inside the container (e.g. wslc via
+	// `exec ... tar`) return true, so the controller defers the copy until after the container has
+	// started. Runtimes with a copy-into-created-container primitive (Docker/Podman `cp`) return false.
+	CreateFilesRequiresRunningContainer() bool
 }
 
 // ApplyImageLayers command types

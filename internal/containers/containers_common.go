@@ -52,6 +52,64 @@ func (o StreamContainerLogsOptions) Apply(args []string) []string {
 	return args
 }
 
+// BuildCreateFilesTar builds an in-memory tar archive (rooted at "/") containing the entries described
+// by options. It returns nil (with no error) when no content was produced, which can happen if every
+// entry is marked ContinueOnError and all of them fail. The archive can be extracted into a container
+// filesystem or used as an image layer.
+func BuildCreateFilesTar(options CreateFilesOptions, log logr.Logger) ([]byte, error) {
+	tarWriter := usvc_io.NewTarWriter()
+
+	certificateHashes := []string{}
+	for _, item := range options.Entries {
+		switch item.Type {
+		case apiv1.FileSystemEntryTypeDir:
+			if addDirectoryErr := AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, log); addDirectoryErr != nil {
+				return nil, addDirectoryErr
+			}
+		case apiv1.FileSystemEntryTypeSymlink:
+			if addSymlinkErr := AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, log); addSymlinkErr != nil {
+				if item.ContinueOnError {
+					log.Error(addSymlinkErr, "Failed to add symlink to tar archive, continuing", "SymLink", item)
+				} else {
+					return nil, addSymlinkErr
+				}
+			}
+		case apiv1.FileSystemEntryTypeOpenSSL:
+			hash, addCertErr := AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, log)
+			if addCertErr != nil {
+				if item.ContinueOnError {
+					log.Error(addCertErr, "Failed to add a certificate to the tar file, but continueOnError is set", "Certificate", item)
+				} else {
+					return nil, addCertErr
+				}
+			}
+
+			// Keep track of the certificate hashes we've added to this directory so that we can deal with the possibility of collisions
+			certificateHashes = append(certificateHashes, hash)
+		default:
+			if addFileErr := AddFileToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, log); addFileErr != nil {
+				if item.ContinueOnError {
+					log.Error(addFileErr, "Failed to add a file to the tar file, but continueOnError is set", "File", item)
+				} else {
+					return nil, addFileErr
+				}
+			}
+		}
+	}
+
+	if tarWriter.Empty() {
+		// Can happen if all ContinueOnError items fail
+		return nil, nil
+	}
+
+	buffer, bufferErr := tarWriter.Buffer()
+	if bufferErr != nil {
+		return nil, bufferErr
+	}
+
+	return buffer.Bytes(), nil
+}
+
 func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, certificate apiv1.FileSystemEntry, modTime time.Time, hashes []string, log logr.Logger) (string, error) {
 	if certificate.Type != apiv1.FileSystemEntryTypeOpenSSL {
 		return "", fmt.Errorf("item is not a certificate")
