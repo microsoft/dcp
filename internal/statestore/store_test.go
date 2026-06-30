@@ -578,7 +578,7 @@ func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	require.Equal(t, record.LifecycleMetadata, actual.LifecycleMetadata)
 	require.False(t, actual.UpdatedAt.IsZero())
 
-	require.NoError(t, store.DeletePersistentProcess(ctx, record.ResourceKey))
+	require.NoError(t, actual.Delete(ctx))
 
 	_, getErr = store.GetPersistentProcess(ctx, record.ResourceKey)
 	require.True(t, errors.Is(getErr, ErrPersistentProcessNotFound), "expected ErrPersistentProcessNotFound, got %v", getErr)

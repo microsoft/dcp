@@ -490,6 +490,17 @@ func (e *OSExecutor) Dispose() {
 	e.log.V(1).Info("Process executor disposed")
 }
 
+func (e *OSExecutor) CheckProcessRunning(pid Pid_t, processStartTime time.Time) error {
+	proc, err := FindProcess(pid, processStartTime)
+	if err != nil {
+		return err
+	}
+	if releaseErr := proc.Release(); releaseErr != nil {
+		e.log.Error(releaseErr, "Failed to release process handle", "PID", pid)
+	}
+	return nil
+}
+
 type processStoppingOpts uint16
 
 const (

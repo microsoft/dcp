@@ -108,7 +108,7 @@ func cleanupInvalidPersistentExecutableRecord(
 			"PID", currentRecord.PID,
 			"Error", findErr.Error())
 
-		if deleteErr := stateStore.DeletePersistentProcess(ctx, currentRecord.ResourceKey); deleteErr != nil {
+		if deleteErr := currentRecord.Delete(ctx); deleteErr != nil {
 			return fmt.Errorf("could not delete invalid persistent Executable process record '%s': %w", currentRecord.ResourceKey, deleteErr)
 		}
 		return removePersistentExecutableRecordLogs(ctx, *currentRecord, log)

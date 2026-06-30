@@ -24,6 +24,7 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcpproc"
 	"github.com/microsoft/dcp/internal/logs"
+	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/termpty"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -149,7 +150,7 @@ func (r *ProcessExecutableRunner) makeProcessCommand(
 
 	var creationFlags process.ProcessCreationFlag = process.CreationFlagEnsureKillOnDispose
 	processCtx := ctx
-	if exe.Spec.Persistent {
+	if executableIsPersistent(exe) {
 		creationFlags = process.CreationFlagsNone
 		processCtx = context.WithoutCancel(ctx)
 	}
@@ -223,15 +224,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		return result
 	}
 
-	if !exe.Spec.Persistent {
-		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, pid, processIdentityTime, startLog)
-	} else if monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp); monitorErr != nil {
-		startLog.Error(monitorErr, "Could not start persistent Executable lifecycle monitor")
-	} else if found {
-		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, pid, processIdentityTime, startLog)
-	}
+	r.runExecutableLifecycleMonitor(exe, pid, processIdentityTime, startLog)
 
 	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
 		pid:              pid,
@@ -336,6 +329,8 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	}
 
 	runID := pidToRunID(ptp.PID)
+	r.runExecutableLifecycleMonitor(exe, ptp.PID, ptp.IdentityTime, startLog)
+
 	r.runningProcesses.Store(runID, &processRunState{
 		pid:              ptp.PID,
 		identityTime:     ptp.IdentityTime,
@@ -422,23 +417,34 @@ func (r *ProcessExecutableRunner) watchTerminalRunExit(
 
 func (r *ProcessExecutableRunner) AdoptRun(
 	_ context.Context,
-	run controllers.ExecutableRunAdoptionInfo,
+	exe *apiv1.Executable,
+	record *statestore.PersistentProcessRecord,
 	runChangeHandler controllers.RunChangeHandler,
 	log logr.Logger,
 ) error {
-	if run.RunID == controllers.UnknownRunID {
-		return fmt.Errorf("cannot adopt a process run without a run ID")
+	if exe == nil {
+		return fmt.Errorf("cannot adopt a process run without an Executable")
 	}
-	if run.Pid == process.UnknownPID {
-		return fmt.Errorf("cannot adopt process run %s without a valid PID", run.RunID)
-	}
-	if run.ProcessIdentityTime.IsZero() {
-		return fmt.Errorf("cannot adopt process run %s without process identity time", run.RunID)
+	if record == nil {
+		return fmt.Errorf("cannot adopt a process run without a persistent process record")
 	}
 
-	if _, findErr := process.FindProcess(run.Pid, run.ProcessIdentityTime); findErr != nil {
-		return fmt.Errorf("cannot adopt process run %s: %w", run.RunID, findErr)
+	runID := controllers.RunID(record.RunID)
+	if runID == controllers.UnknownRunID {
+		return fmt.Errorf("cannot adopt a process run without a run ID")
 	}
+	if record.PID == process.UnknownPID {
+		return fmt.Errorf("cannot adopt process run %s without a valid PID", runID)
+	}
+	if record.IdentityTime.IsZero() {
+		return fmt.Errorf("cannot adopt process run %s without process identity time", runID)
+	}
+
+	if findErr := r.pe.CheckProcessRunning(record.PID, record.IdentityTime); findErr != nil {
+		return fmt.Errorf("cannot adopt process run %s: %w", runID, findErr)
+	}
+	r.runExecutableLifecycleMonitor(exe, record.PID, record.IdentityTime, log)
+
 	stopWatching := make(chan struct{})
 	var stopWatchingOnce sync.Once
 	cancelWatch := func() {
@@ -447,18 +453,76 @@ func (r *ProcessExecutableRunner) AdoptRun(
 		})
 	}
 
-	r.runningProcesses.Store(run.RunID, &processRunState{
-		pid:              run.Pid,
-		identityTime:     run.ProcessIdentityTime,
-		cmdInfo:          run.CommandInfo,
+	r.runningProcesses.Store(runID, &processRunState{
+		pid:              record.PID,
+		identityTime:     record.IdentityTime,
+		cmdInfo:          exe.Spec.ExecutablePath,
 		adopted:          true,
 		cancelWatch:      cancelWatch,
 		runChangeHandler: runChangeHandler,
 	})
 
-	go r.watchAdoptedProcess(run.RunID, run.Pid, run.ProcessIdentityTime, stopWatching, log)
+	go r.watchAdoptedProcess(runID, record.PID, record.IdentityTime, stopWatching, log)
 
 	return nil
+}
+
+func (r *ProcessExecutableRunner) runExecutableLifecycleMonitor(
+	exe *apiv1.Executable,
+	pid process.Pid_t,
+	identityTime time.Time,
+	log logr.Logger,
+) {
+	effectiveMode := exe.Spec.EffectiveMode()
+	switch {
+	case effectiveMode.ShouldStopProcessOnDelete():
+		// Use original log here, the watcher is a different process.
+		dcpproc.RunProcessWatcher(r.pe, pid, identityTime, log)
+		return
+
+	case effectiveMode == apiv1.ExecutableModePersistent:
+		monitor, found, monitorErr := dcpproc.MonitorTargetFromFields(exe.Spec.MonitorPID, exe.Spec.MonitorTimestamp)
+		if monitorErr != nil {
+			log.Error(monitorErr, "Could not start persistent Executable lifecycle monitor")
+			return
+		}
+		if !found {
+			return
+		}
+
+		// Use original log here, the watcher is a different process.
+		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, pid, identityTime, log)
+
+	default:
+		return
+	}
+}
+
+func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error {
+	if exe == nil {
+		return fmt.Errorf("cannot stop a persistent process run without an Executable")
+	}
+	if record == nil {
+		return fmt.Errorf("cannot stop a persistent process run without a persistent process record")
+	}
+
+	runID := controllers.RunID(record.RunID)
+	if runID == controllers.UnknownRunID {
+		return fmt.Errorf("cannot stop a persistent process run without a run ID")
+	}
+	if record.PID == process.UnknownPID {
+		return fmt.Errorf("cannot stop persistent process run %s without a valid PID", runID)
+	}
+	if record.IdentityTime.IsZero() {
+		return fmt.Errorf("cannot stop persistent process run %s without process identity time", runID)
+	}
+
+	return r.stopProcessRunState(ctx, runID, &processRunState{
+		pid:          record.PID,
+		identityTime: record.IdentityTime,
+		cmdInfo:      exe.Spec.ExecutablePath,
+		adopted:      true,
+	}, log)
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
@@ -477,7 +541,7 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 			return
 
 		case <-timer.C:
-			if _, findErr := process.FindProcess(pid, identityTime); findErr != nil {
+			if findErr := r.pe.CheckProcessRunning(pid, identityTime); findErr != nil {
 				runState, found := r.runningProcesses.Load(runID)
 				if !found {
 					return
@@ -503,12 +567,21 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 	}
 }
 
+func (r *ProcessExecutableRunner) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
+	return r.pe.CheckProcessRunning(pid, processStartTime)
+}
+
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
 	runState, found := r.runningProcesses.LoadAndDelete(runID)
 	if !found {
 		log.V(1).Info("Stop of a process run requested, but the run was already stopped", "RunID", runID)
 		return nil
 	}
+
+	return r.stopProcessRunState(ctx, runID, runState, log)
+}
+
+func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID controllers.RunID, runState *processRunState, log logr.Logger) error {
 	if runState.cancelWatch != nil {
 		runState.cancelWatch()
 	}
@@ -543,10 +616,8 @@ func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers
 		stopErr = fmt.Errorf("timed out waiting for process associated with run %s to stop", runID)
 	}
 
-	if found {
-		stopErr = errors.Join(stopErr, closeProcessRunResources(runState))
-		waitForConnManagerShutdown(ctx, runState, stopLog)
-	}
+	stopErr = errors.Join(stopErr, closeProcessRunResources(runState))
+	waitForConnManagerShutdown(ctx, runState, stopLog)
 
 	if stopErr != nil {
 		stopLog.Error(stopErr, "Failed to stop run")
@@ -622,7 +693,7 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 	// Persistent output files are keyed by resource UID to keep paths unique across persistent Executable instances.
 	// Kubernetes UIDs are effectively unique, so collisions between different Executable objects are not expected.
 	fileName := fmt.Sprintf("%s_%s", exe.UID, stream)
-	if !exe.Spec.Persistent {
+	if !executableIsPersistent(exe) {
 		return usvc_io.OpenTempFile(fileName, os.O_RDWR|os.O_CREATE|os.O_EXCL, osutil.PermissionOnlyOwnerReadWrite)
 	}
 
@@ -638,10 +709,14 @@ func openExecutableOutputFile(exe *apiv1.Executable, stream string) (*os.File, e
 }
 
 func executableOutputWriter(exe *apiv1.Executable, file *os.File) usvc_io.WriteSyncerCloser {
-	if exe.Spec.Persistent {
+	if executableIsPersistent(exe) {
 		return file
 	}
 	return usvc_io.NewTimestampWriter(file)
+}
+
+func executableIsPersistent(exe *apiv1.Executable) bool {
+	return exe.Spec.EffectiveMode() == apiv1.ExecutableModePersistent
 }
 
 func makeCommand(exe *apiv1.Executable) *exec.Cmd {

@@ -213,6 +213,30 @@ func (e *TestProcessExecutor) StopProcess(pid process.Pid_t, processStartTime ti
 	return e.stopProcessImpl(pid, processStartTime, KilledProcessExitCode)
 }
 
+func (e *TestProcessExecutor) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
+	e.m.RLock()
+	defer e.m.RUnlock()
+
+	i := e.findByPid(pid)
+	if i == NotFound {
+		return fmt.Errorf("no process with PID %d found", pid)
+	}
+
+	execution := e.Executions[i]
+	if !processStartTime.IsZero() && !osutil.Within(processStartTime, execution.StartedAt, process.ProcessIdentityTimeMaximumDifference) {
+		return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
+			pid,
+			processStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+			execution.StartedAt.Format(osutil.RFC3339MiliTimestampFormat),
+		)
+	}
+	if execution.Finished() {
+		return fmt.Errorf("process with PID %d is not running", pid)
+	}
+
+	return nil
+}
+
 // Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
 	err := e.stopProcessImpl(pid, time.Time{}, exitCode)
