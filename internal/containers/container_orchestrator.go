@@ -286,19 +286,9 @@ type CreateContainerOptions struct {
 	//       and not rely on ContainerSpec.ContainerName.
 	Name string
 
-	// Name or ID of a network to connect to _at creation time_.
-	// If not set, the container will be connected to default network.
-	//
-	// Note: ContainerSpec.Networks specifies which networks the container will be connected to eventually,
-	//       but that property should not be used at creation time.
-	Network string
-
-	// Network aliases to use for the container _at creation time_.
-	// This is only valid if Network is also specified.
-	//
-	// Note: ContainerSpec.Networks can include network alias information, but that applies to networks
-	//	     that the container will be connected to eventually, and not at creation time.
-	NetworkAliases []string
+	// Networks to connect to _at creation time_, with optional per-network aliases.
+	// If not set, the container will be connected to the default network.
+	Networks []CreateContainerNetworkOptions
 
 	// Healthcheck configuration for the container
 	// This is currently only used for testing purposes
@@ -308,6 +298,14 @@ type CreateContainerOptions struct {
 	TimeoutOption
 
 	apiv1.ContainerSpec
+}
+
+type CreateContainerNetworkOptions struct {
+	// Name or ID of a network to connect to _at creation time_.
+	Name string
+
+	// Network aliases to use for the container on this network _at creation time_.
+	Aliases []string
 }
 
 type ContainerHealthcheck struct {

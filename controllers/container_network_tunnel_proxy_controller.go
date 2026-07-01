@@ -1027,15 +1027,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, StandardDelay
 	}
 
-	// We cannot really connect the client proxy container to the target network immediately because
-	// it is managed by the ContainerNetwork controller and that controller may remove it from the network
-	// if it does not see the corresponding ContainerNetworkConnection object.
-	// And we cannot create the ContainerNetworkConnection without having a container ID (sort of a chicken-vs-egg problem).
-	// So we do the same trick as the Container controller does: create the client proxy container
-	// with a default network connection, disconnect the default network, then create a ContainerNetworkConnection object.
-	// that binds the container to the target network.
-	// The network controller will then connect the client proxy container to target ContainerNetwork.
-
 	log.V(1).Info("Starting client proxy container...")
 
 	createOpts := containers.CreateContainerOptions{
@@ -1054,8 +1045,13 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 				{ContainerPort: dcptun.DefaultContainerProxyDataPort},
 			},
 		},
-		Name:    clientProxyCtrName,
-		Network: r.config.Orchestrator.DefaultNetworkName(),
+		Name: clientProxyCtrName,
+		Networks: []containers.CreateContainerNetworkOptions{
+			{
+				Name:    containerNetwork.Status.NetworkName,
+				Aliases: tunnelProxy.Spec.Aliases,
+			},
+		},
 	}
 
 	thisProcess, thisProcessErr := process.This()
@@ -1094,16 +1090,6 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	}()
 
 	r.ContainerWatcher.EnsureContainerWatchForResource(tunnelProxy.UID, log)
-
-	disconnectErr := disconnectNetwork(ctx, r.config.Orchestrator, containers.DisconnectNetworkOptions{
-		Network: r.config.Orchestrator.DefaultNetworkName(), Container: created.Id, Force: true,
-	})
-	if disconnectErr != nil {
-		log.Error(disconnectErr, "Failed to disconnect client proxy container from default network")
-		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
-		pd.Message = fmt.Sprintf("Failed to disconnect client proxy container from default network: %v", disconnectErr)
-		return false, NoDelay
-	}
 
 	cncName, _, nameErr := MakeUniqueName(fmt.Sprintf("%s", tunnelProxy.Name))
 	if nameErr != nil {
