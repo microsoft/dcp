@@ -14,7 +14,7 @@ import (
 // ProcessHandle identifies a process instance by PID and identity time.
 //
 // IdentityTime may not be a valid wall-clock time on all platforms. On Linux it
-// is expressed as ticks since boot to avoid issues with system clock changes.
+// is expressed as milliseconds since boot to avoid issues with system clock changes.
 //
 // ProcessHandle is comparable and can be used as a map key for handles created
 // from the same identity time source.
