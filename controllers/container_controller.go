@@ -1275,6 +1275,14 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("Starting container", "Image", container.SpecifiedImageNameOrDefault())
 
+			createNetworks, networksReady, networkErr := r.getInitialCreateContainerNetworks(startupCtx, container, rcd.runSpec, log)
+			if networkErr != nil {
+				return networkErr
+			}
+			if !networksReady {
+				return errInitialContainerNetworksNotReady
+			}
+
 			// Add labels to the container for lifecycle management and other metadata
 			lifecycleKey, hashErr := r.addContainerCreationLabels(container, rcd, log)
 			if hashErr != nil {
@@ -1298,13 +1306,6 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// The derived image only exists locally; prevent docker create from
 				// attempting to pull it from a registry.
 				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
-			}
-			createNetworks, networksReady, networkErr := r.getInitialCreateContainerNetworks(startupCtx, container, &runSpecForCreation, log)
-			if networkErr != nil {
-				return networkErr
-			}
-			if !networksReady {
-				return errInitialContainerNetworksNotReady
 			}
 
 			// Create the container using the active orchestrator.
