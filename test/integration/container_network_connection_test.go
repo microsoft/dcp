@@ -189,7 +189,8 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+			Image:         imageName,
+			ContainerName: testName,
 			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
