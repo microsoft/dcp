@@ -2388,6 +2388,9 @@ func (r *ContainerReconciler) createEndpoints(
 		log.Error(err, "Could not determine host address and port for container port")
 		return nil, err
 	}
+	if reserveErr := reserveServiceProducerEndpointPort(ctx, r, serviceProducer, hostAddress, hostPort, log); reserveErr != nil {
+		return nil, reserveErr
+	}
 
 	endpointExists := slices.Any(existingEndpoints, func(ep *apiv1.Endpoint) bool {
 		return ep.Spec.ServiceName == serviceProducer.ServiceName &&

@@ -7,6 +7,8 @@ package controllers
 
 import (
 	"context"
+	"fmt"
+	"net/netip"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -16,8 +18,10 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
+	"github.com/microsoft/dcp/pkg/ports"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/syncmap"
 )
@@ -67,6 +71,76 @@ func SetupEndpointIndexWithManager(mgr ctrl.Manager) error {
 			return string(ref.UID)
 		})
 	})
+}
+
+func reserveServiceProducerEndpointPort(
+	ctx context.Context,
+	client ctrl_client.Client,
+	serviceProducer commonapi.ServiceProducer,
+	address string,
+	port int32,
+	log logr.Logger,
+) error {
+	var svc apiv1.Service
+	if getErr := client.Get(ctx, serviceProducer.ServiceNamespacedName(), &svc); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			return nil
+		}
+		return getErr
+	}
+
+	ip, ipErr := portReservationIP(address)
+	if ipErr != nil {
+		return ipErr
+	}
+	return networking.ReserveSpecificPort(ctx, ports.Binding{Protocol: string(svc.Spec.Protocol), IP: ip, Port: port}, log)
+}
+
+func portReservationIP(address string) (netip.Addr, error) {
+	normalizedAddress, addressErr := networking.NormalizePortAllocationAddress(address)
+	if addressErr != nil {
+		return netip.Addr{}, addressErr
+	}
+	ip, ipErr := netip.ParseAddr(networking.ToStandaloneAddress(normalizedAddress))
+	if ipErr != nil {
+		return netip.Addr{}, fmt.Errorf("could not parse port reservation IP '%s': %w", normalizedAddress, ipErr)
+	}
+	return ip, nil
+}
+
+func releaseEndpointPortReservation(ctx context.Context, client ctrl_client.Client, endpoint *apiv1.Endpoint, log logr.Logger) error {
+	var svc apiv1.Service
+	if getErr := client.Get(ctx, types.NamespacedName{Namespace: endpoint.Spec.ServiceNamespace, Name: endpoint.Spec.ServiceName}, &svc); getErr != nil {
+		if !apierrors.IsNotFound(getErr) {
+			log.Error(getErr, "Could not get Service for Endpoint port release",
+				"Endpoint", endpoint.NamespacedName().String(),
+				"ServiceNamespace", endpoint.Spec.ServiceNamespace,
+				"ServiceName", endpoint.Spec.ServiceName,
+			)
+			return getErr
+		}
+		return nil
+	}
+
+	return releaseEndpointPortReservationForProtocol(ctx, svc.Spec.Protocol, endpoint, log)
+}
+
+func releaseEndpointPortReservationForProtocol(ctx context.Context, protocol apiv1.PortProtocol, endpoint *apiv1.Endpoint, log logr.Logger) error {
+	ip, ipErr := portReservationIP(endpoint.Spec.Address)
+	if ipErr != nil {
+		return ipErr
+	}
+
+	releaseErr := networking.ReleaseSpecificPort(ctx, ports.Binding{Protocol: string(protocol), IP: ip, Port: endpoint.Spec.Port}, log)
+	if releaseErr != nil {
+		log.Error(releaseErr, "Could not release Endpoint port reservation",
+			"Endpoint", endpoint.NamespacedName().String(),
+			"Address", endpoint.Spec.Address,
+			"Port", endpoint.Spec.Port,
+		)
+		return releaseErr
+	}
+	return nil
 }
 
 // Attempts to create Endpoint objects for all Services exposed by the given workload object (owner parameter).
@@ -148,6 +222,8 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 						"Endpoint", endpoint.NamespacedName().String(),
 					)
 					existingEndpoints = append(existingEndpoints, endpoint)
+				} else {
+					_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
 				}
 			}
 		}
@@ -174,6 +250,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 		for _, endpoint := range newEndpoints {
 			if err = ctrl.SetControllerReference(owner, endpoint, r.Scheme()); err != nil {
 				svcLog.Error(err, "Failed to set owner for Endpoint")
+				_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
 				continue // Try to persist other endpoints
 			}
 
@@ -182,6 +259,7 @@ func ensureEndpointsForWorkload[EndpointCreationContext any](
 				if !apiv1.ResourceCreationProhibited.Load() {
 					svcLog.Error(err, "Could not persist Endpoint object")
 				}
+				_ = releaseEndpointPortReservation(ctx, r, endpoint, svcLog)
 				continue
 			}
 
@@ -214,6 +292,8 @@ func removeEndpointsForWorkload(ctx context.Context, r ctrl_client.Client, owner
 				"Endpoint", endpoint.NamespacedName().String(),
 				"Workload", owner.NamespacedName().String(),
 			)
+		} else {
+			_ = releaseEndpointPortReservation(ctx, r, &endpoint, log)
 		}
 
 		sweKey := ServiceWorkloadEndpointKey{
