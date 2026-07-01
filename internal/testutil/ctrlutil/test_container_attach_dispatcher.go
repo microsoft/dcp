@@ -106,7 +106,7 @@ func (d *ContainerAttachFactoryDispatcher) InstallHandler(
 		}
 		if tp, ok := result.PTY.(*testutil.TestPty); ok {
 			select {
-			case ch <- &AttachedTerminalInfo{TestPty: tp, Pid: result.PID}:
+			case ch <- &AttachedTerminalInfo{TestPty: tp, Pid: result.Handle.Pid}:
 			default:
 				// Channel buffer full — the caller is only expected to read once.
 			}
@@ -172,8 +172,7 @@ func NewTestPtyContainerAttachFactory(pe process.Executor) ContainerAttachFactor
 
 		return &termpty.PseudoTerminalProcess{
 			PTY:              testPty,
-			PID:              handle.Pid,
-			IdentityTime:     handle.IdentityTime,
+			Handle:           handle,
 			StartWaitForExit: startWait,
 			ExitHandler:      exitHandler,
 			Executor:         pe,

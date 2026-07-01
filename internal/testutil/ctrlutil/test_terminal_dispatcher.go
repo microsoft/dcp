@@ -130,8 +130,7 @@ func NewTestPtyTerminalFactory() termpty.TerminalProcessFactory {
 
 		return &termpty.PseudoTerminalProcess{
 			PTY:              testPty,
-			PID:              handle.Pid,
-			IdentityTime:     handle.IdentityTime,
+			Handle:           handle,
 			StartWaitForExit: startWait,
 			ExitHandler:      exitHandler,
 			Executor:         pe,

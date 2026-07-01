@@ -329,8 +329,8 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		return result
 	}
 
-	runID := pidToRunID(ptp.PID)
-	handle := process.NewHandle(ptp.PID, ptp.IdentityTime)
+	handle := ptp.Handle
+	runID := pidToRunID(handle.Pid)
 	r.runExecutableLifecycleMonitor(exe, handle, startLog)
 
 	r.runningProcesses.Store(runID, &processRunState{
@@ -345,12 +345,12 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime := process.StartTimeForProcess(ptp.PID)
+	displayStartTime := process.StartTimeForProcess(handle.Pid)
 	result.RunID = runID
-	pointers.SetValue(&result.Pid, int64(ptp.PID))
+	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
-	result.ProcessIdentityTime = ptp.IdentityTime
+	result.ProcessIdentityTime = handle.IdentityTime
 	result.StartWaitForRunCompletion = ptp.StartWaitForExit
 	result.TerminalSocketPath = connMgr.SocketPath()
 
