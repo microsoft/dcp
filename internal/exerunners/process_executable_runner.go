@@ -62,8 +62,7 @@ func persistentExecutableOutputBaseDir() string {
 }
 
 type processRunState struct {
-	pid          process.Pid_t
-	identityTime time.Time
+	handle process.ProcessHandle
 
 	// File handles for the process's output (applicable to non-terminal processes)
 	stdOutFile *os.File
@@ -205,7 +204,7 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		}
 	})
 
-	pid, processIdentityTime, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags, nil)
+	handle, startWaitForProcessExit, startErr := r.pe.StartProcess(processCtx, cmd, processExitHandler, creationFlags, nil)
 	if startErr != nil {
 		startLog.Error(startErr, "Failed to start a process")
 		result.CompletionTimestamp = metav1.NowMicro()
@@ -225,24 +224,22 @@ func (r *ProcessExecutableRunner) startProcessRun(
 		runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
 		return result
 	}
+	r.runExecutableLifecycleMonitor(exe, handle, startLog)
 
-	r.runExecutableLifecycleMonitor(exe, pid, processIdentityTime, startLog)
-
-	r.runningProcesses.Store(pidToRunID(pid), &processRunState{
-		pid:              pid,
-		identityTime:     processIdentityTime,
+	r.runningProcesses.Store(pidToRunID(handle.Pid), &processRunState{
+		handle:           handle,
 		stdOutFile:       stdOutFile,
 		stdErrFile:       stdErrFile,
 		cmdInfo:          cmd.String(),
 		runChangeHandler: runChangeHandler,
 	})
 
-	displayStartTime := process.StartTimeForProcess(pid)
-	result.RunID = pidToRunID(pid)
-	pointers.SetValue(&result.Pid, int64(pid))
+	displayStartTime := process.StartTimeForProcess(handle.Pid)
+	result.RunID = pidToRunID(handle.Pid)
+	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
-	result.ProcessIdentityTime = processIdentityTime
+	result.ProcessIdentityTime = handle.IdentityTime
 	result.StartWaitForRunCompletion = startWaitForProcessExit
 
 	runChangeHandler.OnStartupCompleted(exe.NamespacedName(), result)
@@ -332,12 +329,12 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 		return result
 	}
 
-	runID := pidToRunID(ptp.PID)
-	r.runExecutableLifecycleMonitor(exe, ptp.PID, ptp.IdentityTime, startLog)
+	handle := ptp.Handle
+	runID := pidToRunID(handle.Pid)
+	r.runExecutableLifecycleMonitor(exe, handle, startLog)
 
 	r.runningProcesses.Store(runID, &processRunState{
-		pid:              ptp.PID,
-		identityTime:     ptp.IdentityTime,
+		handle:           handle,
 		ptp:              ptp,
 		connMgr:          connMgr,
 		cmdInfo:          cmd.String(),
@@ -348,12 +345,12 @@ func (r *ProcessExecutableRunner) startTerminalRun(
 	// resources, and notify the run-change handler.
 	go r.watchTerminalRunExit(processCtx, runID, ptp, runChangeHandler, startLog)
 
-	displayStartTime := process.StartTimeForProcess(ptp.PID)
+	displayStartTime := process.StartTimeForProcess(handle.Pid)
 	result.RunID = runID
-	pointers.SetValue(&result.Pid, int64(ptp.PID))
+	pointers.SetValue(&result.Pid, int64(handle.Pid))
 	result.ExeState = apiv1.ExecutableStateRunning
 	result.CompletionTimestamp = metav1.NewMicroTime(displayStartTime)
-	result.ProcessIdentityTime = ptp.IdentityTime
+	result.ProcessIdentityTime = handle.IdentityTime
 	result.StartWaitForRunCompletion = ptp.StartWaitForExit
 	result.TerminalSocketPath = connMgr.SocketPath()
 
@@ -432,10 +429,11 @@ func (r *ProcessExecutableRunner) AdoptRun(
 		return fmt.Errorf("cannot adopt process run %s without process identity time", runID)
 	}
 
-	if findErr := r.pe.CheckProcessRunning(record.PID, record.IdentityTime); findErr != nil {
+	handle := record.ProcessHandle()
+	if findErr := r.pe.CheckProcessRunning(handle); findErr != nil {
 		return fmt.Errorf("cannot adopt process run %s: %w", runID, findErr)
 	}
-	r.runExecutableLifecycleMonitor(exe, record.PID, record.IdentityTime, log)
+	r.runExecutableLifecycleMonitor(exe, handle, log)
 
 	stopWatching := make(chan struct{})
 	var stopWatchingOnce sync.Once
@@ -446,30 +444,28 @@ func (r *ProcessExecutableRunner) AdoptRun(
 	}
 
 	r.runningProcesses.Store(runID, &processRunState{
-		pid:              record.PID,
-		identityTime:     record.IdentityTime,
+		handle:           handle,
 		cmdInfo:          exe.Spec.ExecutablePath,
 		adopted:          true,
 		cancelWatch:      cancelWatch,
 		runChangeHandler: runChangeHandler,
 	})
 
-	go r.watchAdoptedProcess(runID, record.PID, record.IdentityTime, stopWatching, log)
+	go r.watchAdoptedProcess(runID, handle, stopWatching, log)
 
 	return nil
 }
 
 func (r *ProcessExecutableRunner) runExecutableLifecycleMonitor(
 	exe *apiv1.Executable,
-	pid process.Pid_t,
-	identityTime time.Time,
+	handle process.ProcessHandle,
 	log logr.Logger,
 ) {
 	effectiveMode := exe.Spec.EffectiveMode()
 	switch {
 	case effectiveMode.ShouldStopProcessOnDelete():
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcher(r.pe, pid, identityTime, log)
+		dcpproc.RunProcessWatcher(r.pe, handle, log)
 		return
 
 	case effectiveMode == apiv1.ExecutableModePersistent:
@@ -483,7 +479,7 @@ func (r *ProcessExecutableRunner) runExecutableLifecycleMonitor(
 		}
 
 		// Use original log here, the watcher is a different process.
-		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, pid, identityTime, log)
+		dcpproc.RunProcessWatcherForMonitor(r.pe, monitor, handle, log)
 
 	default:
 		return
@@ -510,17 +506,15 @@ func (r *ProcessExecutableRunner) StopPersistentProcess(ctx context.Context, exe
 	}
 
 	return r.stopProcessRunState(ctx, runID, &processRunState{
-		pid:          record.PID,
-		identityTime: record.IdentityTime,
-		cmdInfo:      exe.Spec.ExecutablePath,
-		adopted:      true,
+		handle:  record.ProcessHandle(),
+		cmdInfo: exe.Spec.ExecutablePath,
+		adopted: true,
 	}, log)
 }
 
 func (r *ProcessExecutableRunner) watchAdoptedProcess(
 	runID controllers.RunID,
-	pid process.Pid_t,
-	identityTime time.Time,
+	handle process.ProcessHandle,
 	stopWatching <-chan struct{},
 	log logr.Logger,
 ) {
@@ -533,12 +527,12 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 			return
 
 		case <-timer.C:
-			if findErr := r.pe.CheckProcessRunning(pid, identityTime); findErr != nil {
+			if findErr := r.pe.CheckProcessRunning(handle); findErr != nil {
 				runState, found := r.runningProcesses.Load(runID)
 				if !found {
 					return
 				}
-				if runState.pid != pid || !runState.identityTime.Equal(identityTime) {
+				if runState.handle != handle {
 					return
 				}
 				if !r.runningProcesses.CompareAndDelete(runID, runState) {
@@ -551,7 +545,7 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 					runState.runChangeHandler.OnRunCompleted(runID, apiv1.UnknownExitCode, waitErr)
 				}
 				if waitErr != nil {
-					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.pid)
+					log.Error(waitErr, "Error watching adopted process", "RunID", runID, "PID", runState.handle.Pid)
 				}
 				return
 			}
@@ -560,8 +554,8 @@ func (r *ProcessExecutableRunner) watchAdoptedProcess(
 	}
 }
 
-func (r *ProcessExecutableRunner) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
-	return r.pe.CheckProcessRunning(pid, processStartTime)
+func (r *ProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHandle) error {
+	return r.pe.CheckProcessRunning(handle)
 }
 
 func (r *ProcessExecutableRunner) StopRun(ctx context.Context, runID controllers.RunID, log logr.Logger) error {
@@ -595,9 +589,9 @@ func (r *ProcessExecutableRunner) stopProcessRunState(ctx context.Context, runID
 			// This means we cannot send Ctrl-C to that process directly and need to use dcpproc StopProcessTree facility instead.
 			stopCtx, stopCtxCancel := context.WithTimeout(ctx, ProcessStopTimeout)
 			defer stopCtxCancel()
-			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.pid, runState.identityTime, stopLog)
+			errCh <- dcpproc.StopProcessTree(stopCtx, r.pe, runState.handle, stopLog)
 		} else {
-			errCh <- r.pe.StopProcess(runState.pid, runState.identityTime)
+			errCh <- r.pe.StopProcess(runState.handle)
 		}
 	}()
 

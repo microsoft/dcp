@@ -53,7 +53,7 @@ var (
 	restClient                       *clientgorest.RESTClient
 	containerOrchestrator            *ctrl_testutil.TestContainerOrchestrator
 	testStateStore                   *statestore.Store
-	testResourceLeaseOwner           process.ProcessTreeItem
+	testResourceLeaseOwner           process.ProcessHandle
 )
 
 const pollImmediately = true // Don't wait before polling for the first time

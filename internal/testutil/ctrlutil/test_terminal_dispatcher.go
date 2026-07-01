@@ -122,7 +122,7 @@ func NewTestPtyTerminalFactory() termpty.TerminalProcessFactory {
 		testPty := testutil.NewTestPty()
 		exitHandler := process.NewConcurrentProcessExitHandler()
 
-		pid, startTime, startWait, startErr := pe.StartProcess(ctx, spec.Cmd, exitHandler, spec.CreationFlags, nil)
+		handle, startWait, startErr := pe.StartProcess(ctx, spec.Cmd, exitHandler, spec.CreationFlags, nil)
 		if startErr != nil {
 			_ = testPty.Close()
 			return nil, startErr
@@ -130,8 +130,7 @@ func NewTestPtyTerminalFactory() termpty.TerminalProcessFactory {
 
 		return &termpty.PseudoTerminalProcess{
 			PTY:              testPty,
-			PID:              pid,
-			IdentityTime:     startTime,
+			Handle:           handle,
 			StartWaitForExit: startWait,
 			ExitHandler:      exitHandler,
 			Executor:         pe,

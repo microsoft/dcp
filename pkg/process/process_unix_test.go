@@ -44,17 +44,15 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		_ = cmd.Wait()
 	}()
 
-	pid := process.Uint32_ToPidT(uint32(cmd.Process.Pid))
-	identityTime := process.ProcessIdentityTime(pid)
-	require.False(t, identityTime.IsZero(), "process start time should not be zero")
-	rootP := process.ProcessTreeItem{pid, identityTime}
+	rootP := process.ProcessHandleFromCmd(cmd)
+	require.False(t, rootP.IdentityTime.IsZero(), "process start time should not be zero")
 
 	// Only one process should be running, so the "tree" size is 1.
 	int_testutil.EnsureProcessTree(t, rootP, 1, 5*time.Second)
 
 	executor := process.NewOSExecutor(log)
 	start := time.Now()
-	err = executor.StopProcess(pid, time.Time{})
+	err = executor.StopProcess(process.NewHandle(rootP.Pid, time.Time{}))
 	require.NoError(t, err)
 	elapsed := time.Since(start)
 	elapsedStr := osutil.FormatDuration(elapsed)
@@ -63,10 +61,10 @@ func TestStopProcessIgnoreSigterm(t *testing.T) {
 		// It should not take more than `signalAndWaitTimeout` though.
 		t.Fatal("Process was not terminated timely, elapsed time was ", elapsedStr)
 	}
-	ensureAllStopped(t, []process.ProcessTreeItem{rootP}, 5*time.Second)
+	ensureAllStopped(t, []process.ProcessHandle{rootP}, 5*time.Second)
 }
 
-func ensureAllStopped(t *testing.T, processes []process.ProcessTreeItem, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -83,7 +81,7 @@ func ensureAllStopped(t *testing.T, processes []process.ProcessTreeItem, timeout
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pp process.ProcessTreeItem) bool {
+func isStopped(pp process.ProcessHandle) bool {
 	// On Unix-like systems FindProcess() always succeeds, so it is not a reliable way of checking
 	// if the process is still running.
 	osPid, err := process.PidT_ToInt(pp.Pid)

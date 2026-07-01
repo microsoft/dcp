@@ -446,7 +446,7 @@ func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.Cont
 	return updatedNet
 }
 
-func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
+func nonExistentProcess(t *testing.T) process.ProcessHandle {
 	pps, ppsErr := ps.Processes()
 	require.NoError(t, ppsErr, "could not list processes")
 	pids := slices.Map[process.Pid_t](pps, func(pp *ps.Process) process.Pid_t {
@@ -463,7 +463,7 @@ func nonExistentProcess(t *testing.T) process.ProcessTreeItem {
 		require.NoError(t, candidateErr)
 
 		if !slices.Contains(pids, candidate) {
-			return process.ProcessTreeItem{
+			return process.ProcessHandle{
 				Pid:          candidate,
 				IdentityTime: time.Now().Add(-time.Minute),
 			}

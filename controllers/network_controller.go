@@ -139,7 +139,7 @@ type NetworkReconciler struct {
 
 type NetworkReconcilerConfig struct {
 	StateStore         *statestore.Store
-	ResourceLeaseOwner process.ProcessTreeItem
+	ResourceLeaseOwner process.ProcessHandle
 }
 
 var (
