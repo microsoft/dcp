@@ -181,8 +181,14 @@ func DcpRun(
 			// If we are in server-only mode (no standard controllers) such as when running tests,
 			// there is no point trying to clean up all resources on shutdown because no actual resources are involved,
 			// it is all test mocks. Another case to avoid full cleanup is when shutdown request explicitly disables it.
+			// Hosted services still need to shut down before we return so child processes can release session files.
 			if serverOnly || !resourceCleanup.IsFull() {
-				return nil // No cleanup needed, just return
+				err = shutdownHost()
+				if err != nil {
+					log.Error(err, "Failed to shut down hosted services")
+					return err
+				}
+				return nil
 			}
 
 			err = appmgmt.CleanupAllResources(log)

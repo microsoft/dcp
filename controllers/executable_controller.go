@@ -67,7 +67,7 @@ type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, 
 
 type ExecutableReconcilerConfig struct {
 	StateStore         *statestore.Store
-	ResourceLeaseOwner process.ProcessTreeItem
+	ResourceLeaseOwner process.ProcessHandle
 }
 
 // ExecutableReconciler reconciles a Executable object
@@ -343,7 +343,7 @@ func handleNewExecutable(
 				return r.setExecutableState(exe, apiv1.ExecutableStateFailedToStart)
 			}
 
-			findErr := persistentRunner.CheckProcessRunning(record.PID, record.IdentityTime)
+			findErr := persistentRunner.CheckProcessRunning(record.ProcessHandle())
 			if exe.Spec.Stop {
 				stopChange := noChange
 				if findErr == nil {

@@ -392,11 +392,13 @@ func TestExecutableCleanupModeStopsExistingProcessOnDelete(t *testing.T) {
 	}
 
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	pid, identityTime, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := teInfo.TestProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = teInfo.TestProcessExecutor.StopProcess(pid, identityTime)
+		_ = teInfo.TestProcessExecutor.StopProcess(handle)
 	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
 
 	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
 	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
@@ -452,11 +454,13 @@ func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testi
 	}
 
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(pid, identityTime)
+		_ = testProcessExecutor.StopProcess(handle)
 	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
 
 	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
 	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
@@ -473,7 +477,7 @@ func TestExecutableCleanupModeDeletedBeforeAdoptionStopsExistingProcess(t *testi
 	})
 	require.NoError(t, upsertErr, "could not seed persistent process record")
 
-	leaseOwner := process.ProcessTreeItem{Pid: process.Pid_t(1), IdentityTime: time.Now()}
+	leaseOwner := process.ProcessHandle{Pid: process.Pid_t(1), IdentityTime: time.Now()}
 	lease, leaseErr := testStateStore.AcquireResourceLease(ctx, &exe, leaseOwner, time.Minute)
 	require.NoError(t, leaseErr, "could not acquire persistent process lease")
 
@@ -588,11 +592,13 @@ func TestExecutableCleanupModeAdoptsProcessRecordCreatedAfterNotFound(t *testing
 	})
 
 	cmd := exec.Command(exe.Spec.ExecutablePath)
-	pid, identityTime, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := testProcessExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr, "could not seed process execution")
 	t.Cleanup(func() {
-		_ = testProcessExecutor.StopProcess(pid, identityTime)
+		_ = testProcessExecutor.StopProcess(handle)
 	})
+	pid := handle.Pid
+	identityTime := handle.IdentityTime
 
 	lifecycleKey, _, lifecycleKeyErr := exe.GetLifecycleKey()
 	require.NoError(t, lifecycleKeyErr, "could not calculate lifecycle key")
@@ -3463,7 +3469,7 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 		pe process.Executor,
 		spec *termpty.CommandSpec,
 	) (*termpty.PseudoTerminalProcess, error) {
-		_, _, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
+		_, _, startErr := pe.StartProcess(ctx, spec.Cmd, process.NewConcurrentProcessExitHandler(), spec.CreationFlags, nil)
 		return nil, startErr
 	})
 
@@ -3517,7 +3523,8 @@ func TestExecutableLogsRejectedWhenTerminalConfigured(t *testing.T) {
 	require.NoError(t, logsErr, "System logs should remain available for terminal-backed Executable '%s'", exeName)
 }
 
-// Verify that logs in follow mode end when Executable is deleted
+// Verify that logs in follow mode include output written after deletion is requested
+// and then end when Executable is deleted.
 func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -3555,6 +3562,8 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 			select {
 			case <-finishExecution.Wait():
 			case <-pe.Signal:
+				_, stdoutErr = pe.Cmd.Stdout.Write(osutil.WithNewline([]byte("Standard output log line after delete")))
+				require.NoError(t, stdoutErr, "Could not write delete-requested line to stdout of Executable '%s'", exeName)
 			}
 			return 0
 		},
@@ -3588,6 +3597,11 @@ func TestExecutableLogsFollowStreamEndsOnDelete(t *testing.T) {
 	t.Logf("Deleting Executable '%s'...", exeName)
 	err = client.Delete(ctx, &exe)
 	require.NoError(t, err, "Could not delete Executable '%s'", exeName)
+
+	t.Logf("Ensure log stream for Executable '%s' includes output written after deletion was requested...", exeName)
+	gotLine = scanner.Scan()
+	require.True(t, gotLine, "Could not read delete-requested line from log stream for Executable '%s', the reported error was %v", exeName, scanner.Err())
+	require.Equal(t, "Standard output log line after delete", scanner.Text(), "Delete-requested log line does not match expected content for Executable '%s'", exeName)
 
 	t.Logf("Ensure log stream for Executable '%s' has ended...", exeName)
 	gotLine = scanner.Scan()

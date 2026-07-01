@@ -167,13 +167,13 @@ func (r *TestProcessExecutableRunner) StopPersistentProcess(ctx context.Context,
 	return persistentRunner.StopPersistentProcess(ctx, exe, record, log)
 }
 
-func (r *TestProcessExecutableRunner) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
+func (r *TestProcessExecutableRunner) CheckProcessRunning(handle process.ProcessHandle) error {
 	persistentRunner, ok := r.inner.(controllers.PersistentExecutableRunner)
 	if !ok {
 		return fmt.Errorf("inner test process runner does not support persistent process liveness checks")
 	}
 
-	return persistentRunner.CheckProcessRunning(pid, processStartTime)
+	return persistentRunner.CheckProcessRunning(handle)
 }
 
 var _ controllers.ExecutableRunner = (*TestProcessExecutableRunner)(nil)

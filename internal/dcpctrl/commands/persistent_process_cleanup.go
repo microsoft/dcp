@@ -30,7 +30,7 @@ func (r persistentProcessLeaseResource) GetLeaseKey() string {
 func startInvalidPersistentExecutableRecordCleanup(
 	ctx context.Context,
 	stateStore *statestore.Store,
-	leaseOwner process.ProcessTreeItem,
+	leaseOwner process.ProcessHandle,
 	log logr.Logger,
 ) <-chan struct{} {
 	done := make(chan struct{})
@@ -49,7 +49,7 @@ func startInvalidPersistentExecutableRecordCleanup(
 func cleanupInvalidPersistentExecutableRecords(
 	ctx context.Context,
 	stateStore *statestore.Store,
-	leaseOwner process.ProcessTreeItem,
+	leaseOwner process.ProcessHandle,
 	log logr.Logger,
 ) error {
 	if stateStore == nil {
@@ -63,7 +63,7 @@ func cleanupInvalidPersistentExecutableRecords(
 
 	var cleanupErr error
 	for _, record := range records {
-		if _, findErr := process.FindProcess(record.PID, record.IdentityTime); findErr == nil {
+		if _, findErr := process.FindProcess(record.ProcessHandle()); findErr == nil {
 			continue
 		}
 
@@ -79,7 +79,7 @@ func cleanupInvalidPersistentExecutableRecords(
 func cleanupInvalidPersistentExecutableRecord(
 	ctx context.Context,
 	stateStore *statestore.Store,
-	leaseOwner process.ProcessTreeItem,
+	leaseOwner process.ProcessHandle,
 	record statestore.PersistentProcessRecord,
 	log logr.Logger,
 ) error {
@@ -95,7 +95,7 @@ func cleanupInvalidPersistentExecutableRecord(
 			return fmt.Errorf("could not reload persistent Executable process record '%s': %w", record.ResourceKey, getErr)
 		}
 
-		_, findErr := process.FindProcess(currentRecord.PID, currentRecord.IdentityTime)
+		_, findErr := process.FindProcess(currentRecord.ProcessHandle())
 		if findErr == nil {
 			log.V(1).Info("Persistent Executable process record became valid before cleanup, leaving it intact",
 				"ResourceKey", currentRecord.ResourceKey,

@@ -517,7 +517,7 @@ func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log
 		return
 	}
 
-	if ptp.PID != 0 && ptp.PID != process.UnknownPID {
+	if ptp.Handle.Pid != 0 && ptp.Handle.Pid != process.UnknownPID {
 		// Only attempt to stop the attach process if it has not already
 		// exited. The exit handler may already have fired (e.g., the
 		// container itself exited and the OS noticed the attach process
@@ -533,8 +533,8 @@ func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log
 		}
 		if !alreadyExited {
 			var notFound *process.ErrProcessNotFound
-			if stopErr := pe.StopProcess(ptp.PID, ptp.IdentityTime); stopErr != nil && !errors.As(stopErr, &notFound) {
-				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.PID, "Error", stopErr.Error())
+			if stopErr := pe.StopProcess(ptp.Handle); stopErr != nil && !errors.As(stopErr, &notFound) {
+				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.Handle.Pid, "Error", stopErr.Error())
 			}
 		}
 	}

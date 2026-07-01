@@ -21,7 +21,7 @@ import (
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
-func EnsureProcessTree(t *testing.T, rootP process.ProcessTreeItem, expectedSize int, timeout time.Duration) {
+func EnsureProcessTree(t *testing.T, rootP process.ProcessHandle, expectedSize int, timeout time.Duration) {
 	processesStartedCtx, processesStartedCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer processesStartedCancelFn()
 

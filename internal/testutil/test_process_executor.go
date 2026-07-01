@@ -80,11 +80,11 @@ func (e *TestProcessExecutor) StartProcess(
 	handler process.ProcessExitHandler,
 	_ process.ProcessCreationFlag,
 	_ process.SysCreateProcessFunc,
-) (process.Pid_t, time.Time, func(), error) {
+) (process.ProcessHandle, func(), error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
 	pid, err := process.Int64_ToPidT(pid64)
 	if err != nil {
-		return process.UnknownPID, time.Time{}, nil, err
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, err
 	}
 
 	e.m.Lock()
@@ -131,17 +131,17 @@ func (e *TestProcessExecutor) StartProcess(
 	}
 
 	if autoExecutionErr := e.maybeAutoExecute(&pe); autoExecutionErr != nil {
-		return process.UnknownPID, time.Time{}, nil, autoExecutionErr
+		return process.ProcessHandle{Pid: process.UnknownPID}, nil, autoExecutionErr
 	}
 
-	return pid, startTimestamp, startWaitingForExit, nil
+	return process.NewHandle(pid, startTimestamp), startWaitingForExit, nil
 }
 
-func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCreationFlag) (process.Pid_t, time.Time, error) {
+func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCreationFlag) (process.ProcessHandle, error) {
 	pid64 := atomic.AddInt64(&e.nextPID, 1)
 	pid, err := process.Int64_ToPidT(pid64)
 	if err != nil {
-		return process.UnknownPID, time.Time{}, err
+		return process.ProcessHandle{Pid: process.UnknownPID}, err
 	}
 
 	e.m.Lock()
@@ -167,10 +167,10 @@ func (e *TestProcessExecutor) StartAndForget(cmd *exec.Cmd, _ process.ProcessCre
 	e.Executions = append(e.Executions, &pe)
 
 	if autoExecutionErr := e.maybeAutoExecute(&pe); autoExecutionErr != nil {
-		return process.UnknownPID, time.Time{}, autoExecutionErr
+		return process.ProcessHandle{Pid: process.UnknownPID}, autoExecutionErr
 	}
 
-	return pid, startTimestamp, nil
+	return process.NewHandle(pid, startTimestamp), nil
 }
 
 func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
@@ -193,7 +193,7 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 						if !stopInitiated {
 							// RunCommand() "ended on its own" (as opposed to being triggered by StopProcess() or SimulateProcessExit()),
 							// so we need to do the resource cleanup.
-							stopProcessErr := e.stopProcessImpl(pe.PID, pe.StartedAt, exitCode)
+							stopProcessErr := e.stopProcessImpl(process.NewHandle(pe.PID, pe.StartedAt), exitCode)
 							if stopProcessErr != nil && ae.StopError == nil {
 								panic(fmt.Errorf("we should have an execution with PID=%d: %w", pe.PID, stopProcessErr))
 							}
@@ -209,29 +209,29 @@ func (e *TestProcessExecutor) maybeAutoExecute(pe *ProcessExecution) error {
 }
 
 // Called by the controller (via Executor interface)
-func (e *TestProcessExecutor) StopProcess(pid process.Pid_t, processStartTime time.Time, _ ...process.ProcessStopOption) error {
-	return e.stopProcessImpl(pid, processStartTime, KilledProcessExitCode)
+func (e *TestProcessExecutor) StopProcess(handle process.ProcessHandle, _ ...process.ProcessStopOption) error {
+	return e.stopProcessImpl(handle, KilledProcessExitCode)
 }
 
-func (e *TestProcessExecutor) CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error {
+func (e *TestProcessExecutor) CheckProcessRunning(handle process.ProcessHandle) error {
 	e.m.RLock()
 	defer e.m.RUnlock()
 
-	i := e.findByPid(pid)
+	i := e.findByPid(handle.Pid)
 	if i == NotFound {
-		return fmt.Errorf("no process with PID %d found", pid)
+		return fmt.Errorf("no process with PID %d found", handle.Pid)
 	}
 
 	execution := e.Executions[i]
-	if !processStartTime.IsZero() && !osutil.Within(processStartTime, execution.StartedAt, process.ProcessIdentityTimeMaximumDifference) {
+	if !handle.IdentityTime.IsZero() && !osutil.Within(handle.IdentityTime, execution.StartedAt, process.ProcessIdentityTimeMaximumDifference) {
 		return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
-			pid,
-			processStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+			handle.Pid,
+			handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 			execution.StartedAt.Format(osutil.RFC3339MiliTimestampFormat),
 		)
 	}
 	if execution.Finished() {
-		return fmt.Errorf("process with PID %d is not running", pid)
+		return fmt.Errorf("process with PID %d is not running", handle.Pid)
 	}
 
 	return nil
@@ -239,7 +239,7 @@ func (e *TestProcessExecutor) CheckProcessRunning(pid process.Pid_t, processStar
 
 // Called by tests to simulate a process exit with specific exit code.
 func (e *TestProcessExecutor) SimulateProcessExit(t *testing.T, pid process.Pid_t, exitCode int32) {
-	err := e.stopProcessImpl(pid, time.Time{}, exitCode)
+	err := e.stopProcessImpl(process.NewHandle(pid, time.Time{}), exitCode)
 	if err != nil {
 		require.Failf(t, "invalid PID (test issue)", err.Error())
 	}
@@ -328,21 +328,21 @@ func (e *TestProcessExecutor) findByPid(pid process.Pid_t) int {
 	return NotFound
 }
 
-func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTime time.Time, exitCode int32) error {
+func (e *TestProcessExecutor) stopProcessImpl(handle process.ProcessHandle, exitCode int32) error {
 	e.m.Lock()
 
-	i := e.findByPid(pid)
+	i := e.findByPid(handle.Pid)
 	if i == NotFound {
 		e.m.Unlock()
-		return fmt.Errorf("no process with PID %d found", pid)
+		return fmt.Errorf("no process with PID %d found", handle.Pid)
 	}
 
-	if !processStartTime.IsZero() {
-		if !osutil.Within(processStartTime, e.Executions[i].StartedAt, process.ProcessIdentityTimeMaximumDifference) {
+	if !handle.IdentityTime.IsZero() {
+		if !osutil.Within(handle.IdentityTime, e.Executions[i].StartedAt, process.ProcessIdentityTimeMaximumDifference) {
 			e.m.Unlock()
 			return fmt.Errorf("process start time mismatch for PID %d: expected %s, actual %s",
-				pid,
-				processStartTime.Format(osutil.RFC3339MiliTimestampFormat),
+				handle.Pid,
+				handle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				e.Executions[i].StartedAt.Format(osutil.RFC3339MiliTimestampFormat),
 			)
 		}
@@ -391,7 +391,7 @@ func (e *TestProcessExecutor) stopProcessImpl(pid process.Pid_t, processStartTim
 			case <-e.lifetimeCtx.Done():
 				return
 			case <-pe.startWaitingChan:
-				pe.ExitHandler.OnProcessExited(pid, exitCode, nil)
+				pe.ExitHandler.OnProcessExited(handle.Pid, exitCode, nil)
 			}
 		}()
 	}

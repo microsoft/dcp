@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,140 @@ const (
 	defaultTestTimeout       = 20 * time.Second
 	cleanupReadyPollInterval = 200 * time.Millisecond
 )
+
+type orderedBlockingReadCloser struct {
+	closeCh chan struct{}
+	events  chan string
+	closed  atomic.Bool
+}
+
+func newOrderedBlockingReadCloser() *orderedBlockingReadCloser {
+	return &orderedBlockingReadCloser{
+		closeCh: make(chan struct{}),
+		events:  make(chan string, 2),
+	}
+}
+
+func (r *orderedBlockingReadCloser) Read(_ []byte) (int, error) {
+	<-r.closeCh
+	return 0, usvc_io.ErrClosedReader
+}
+
+func (r *orderedBlockingReadCloser) Close() error {
+	if r.closed.CompareAndSwap(false, true) {
+		r.events <- "source-closed"
+		close(r.closeCh)
+	}
+	return nil
+}
+
+type eofReadCloser struct {
+	closed atomic.Bool
+}
+
+type cancelAwareErrorWriter struct {
+	ctx     context.Context
+	started chan struct{}
+}
+
+func (w *cancelAwareErrorWriter) Write(_ []byte) (int, error) {
+	close(w.started)
+	<-w.ctx.Done()
+	return 0, errors.New("destination closed")
+}
+
+func (r *eofReadCloser) Read(_ []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (r *eofReadCloser) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+func TestFollowWriterCancelClosesSourceBeforeDone(t *testing.T) {
+	t.Parallel()
+
+	source := newOrderedBlockingReadCloser()
+	buf := testutil.NewBufferWriter()
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+
+	writer := usvc_io.NewFollowWriter(ctx, source, buf, usvc_io.WithCloseSourceOnCancel())
+	go func() {
+		<-writer.Done()
+		source.events <- "done"
+	}()
+
+	writer.Cancel()
+
+	select {
+	case event := <-source.events:
+		require.Equal(t, "source-closed", event)
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not close source before test timeout")
+	}
+
+	select {
+	case event := <-source.events:
+		require.Equal(t, "done", event)
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not finish after source was closed")
+	}
+
+	require.NoError(t, writer.Err())
+}
+
+func TestFollowWriterDoesNotCloseSourceByDefault(t *testing.T) {
+	t.Parallel()
+
+	source := &eofReadCloser{}
+	buf := testutil.NewBufferWriter()
+	ctx, cancel := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancel()
+
+	writer := usvc_io.NewFollowWriter(ctx, source, buf)
+	writer.StopFollow()
+
+	select {
+	case <-writer.Done():
+	case <-ctx.Done():
+		t.Fatal("FollowWriter did not finish before test timeout")
+	}
+
+	require.False(t, source.closed.Load())
+	require.NoError(t, writer.Err())
+}
+
+func TestFollowWriterIgnoresWriteErrorAfterCancel(t *testing.T) {
+	t.Parallel()
+
+	testCtx, cancelTestCtx := testutil.GetTestContext(t, defaultTestTimeout)
+	defer cancelTestCtx()
+
+	followCtx, cancelFollowCtx := context.WithCancel(testCtx)
+	dest := &cancelAwareErrorWriter{
+		ctx:     followCtx,
+		started: make(chan struct{}),
+	}
+
+	writer := usvc_io.NewFollowWriter(followCtx, strings.NewReader("content"), dest)
+
+	select {
+	case <-dest.started:
+		cancelFollowCtx()
+	case <-testCtx.Done():
+		t.Fatal("FollowWriter did not start writing before test timeout")
+	}
+
+	select {
+	case <-writer.Done():
+	case <-testCtx.Done():
+		t.Fatal("FollowWriter did not finish before test timeout")
+	}
+
+	require.NoError(t, writer.Err())
+}
 
 // Ensure that follow writer in follow mode run on empty file does not return any data.
 func TestFollowWriterFollowEmptyFile(t *testing.T) {
