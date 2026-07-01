@@ -602,6 +602,27 @@ func TestConnManager_ExitCodePropagatedToClient(t *testing.T) {
 	}
 }
 
+func TestSendProcessExitCodePrefersExitedProcessAfterServeCancel(t *testing.T) {
+	t.Parallel()
+
+	exitHandler := process.NewConcurrentProcessExitHandler()
+	const wantExit int32 = 99
+	exitHandler.OnProcessExited(process.Pid_t(12345), wantExit, nil)
+
+	serveCtx, serveCancel := context.WithCancel(context.Background())
+	serveCancel()
+
+	exitCodeCh := make(chan int32, 1)
+	sendProcessExitCode(serveCtx, exitHandler, exitCodeCh)
+
+	select {
+	case got := <-exitCodeCh:
+		require.Equal(t, wantExit, got)
+	default:
+		t.Fatal("expected process exit code to be sent when process exit and serve cancellation are both ready")
+	}
+}
+
 // readHmp1FrameAllowEOF reads a single HMP v1 frame from conn. It returns
 // (0, nil) on EOF / closed-connection style errors instead of failing the
 // test. Useful for shutdown path tests where the connection may close
