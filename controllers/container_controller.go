@@ -2354,9 +2354,9 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		}
 
 		var containerNetwork *apiv1.ContainerNetwork
-		for i := range networks.Items {
-			if networks.Items[i].NamespacedName() == namespacedNetworkName {
-				containerNetwork = &networks.Items[i]
+		for networkIndex := range networks.Items {
+			if networks.Items[networkIndex].NamespacedName() == namespacedNetworkName {
+				containerNetwork = &networks.Items[networkIndex]
 				break
 			}
 		}
