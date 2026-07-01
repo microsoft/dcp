@@ -842,6 +842,10 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, options 
 	return removed, err
 }
 
+func (dco *DockerCliOrchestrator) CreateFilesRequiresRunningContainer() bool {
+	return false
+}
+
 func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
 	args := []string{"container", "cp"}
 
@@ -1089,6 +1093,10 @@ func (dco *DockerCliOrchestrator) ListNetworks(ctx context.Context, options cont
 
 func (dco *DockerCliOrchestrator) DefaultNetworkName() string {
 	return "bridge"
+}
+
+func (dco *DockerCliOrchestrator) NetworksAttachedAtCreation() bool {
+	return false
 }
 
 func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {

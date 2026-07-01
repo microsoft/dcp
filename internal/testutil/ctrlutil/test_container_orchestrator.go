@@ -1136,6 +1136,10 @@ func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
+func (to *TestContainerOrchestrator) NetworksAttachedAtCreation() bool {
+	return false
+}
+
 func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options containers.BuildImageOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
@@ -2077,6 +2081,10 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 	}
 
 	return result, err
+}
+
+func (to *TestContainerOrchestrator) CreateFilesRequiresRunningContainer() bool {
+	return false
 }
 
 func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
