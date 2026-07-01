@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,7 @@ var (
 	endpointAlreadyExistsRegEx = regexp.MustCompile(`(?i)endpoint with (.*) already exists in network`)
 	networkSubnetPoolFullRegEx = regexp.MustCompile(`(?i)could not find an available, non-overlapping (.*) address pool`)
 	dockerNotRunningRegEx      = regexp.MustCompile(`(?i)error during connect:`)
+	dockerVersionRegEx         = regexp.MustCompile(`(?i)^Docker version\s+([0-9]+)\.([0-9]+)\.([0-9]+)(?:[^\s,]*)`)
 	volumeInUseRegEx           = regexp.MustCompile(`(?i)volume is in use`)
 	imageNotFoundRegEx         = regexp.MustCompile(`(?i)(not found|no such image)`)
 
@@ -62,6 +64,9 @@ var (
 	// Telemetry shows there is a very long tail for Docker command completion times, so we use a conservative default.
 	ordinaryDockerCommandTimeout = 30 * time.Second
 
+	// Checking the Docker CLI version should never need to contact the Docker daemon.
+	dockerVersionCommandTimeout = 2 * time.Second
+
 	// We allow up to a minute for diagnostic commands to finish as we'd rather wait a bit longer than miss information.
 	diagnosticDockerCommandTimeout = 1 * time.Minute
 
@@ -77,7 +82,37 @@ var (
 	// Mutex to control read/write access to the cached status
 	updateStatus            = &sync.RWMutex{}
 	backgroundStatusUpdates atomic.Int32
+
+	errInvalidDockerVersionOutput = fmt.Errorf("invalid Docker CLI version output")
+
+	minimumSupportedDockerCliVersion = dockerCliVersion{
+		major: 25,
+		minor: 0,
+		patch: 0,
+	}
 )
+
+type dockerCliVersion struct {
+	major int
+	minor int
+	patch int
+}
+
+func (v dockerCliVersion) String() string {
+	return fmt.Sprintf("%d.%d.%d", v.major, v.minor, v.patch)
+}
+
+func (v dockerCliVersion) isBefore(other dockerCliVersion) bool {
+	if v.major != other.major {
+		return v.major < other.major
+	}
+
+	if v.minor != other.minor {
+		return v.minor < other.minor
+	}
+
+	return v.patch < other.patch
+}
 
 type DockerCliOrchestrator struct {
 	log logr.Logger
@@ -193,6 +228,37 @@ func (dco *DockerCliOrchestrator) EnsureBackgroundStatusUpdates(ctx context.Cont
 }
 
 func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.ContainerRuntimeStatus {
+	versionErr := dco.ensureSupportedDockerCliVersion(ctx)
+	if errors.Is(versionErr, exec.ErrNotFound) {
+		if unwrapErr := errors.Unwrap(versionErr); errors.Is(unwrapErr, exec.ErrNotFound) {
+			versionErr = unwrapErr
+		}
+
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     versionErr.Error(),
+		}
+	} else if errors.Is(versionErr, context.DeadlineExceeded) {
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     "Docker CLI timed out while checking version. Ensure Docker CLI is functioning correctly and try again.",
+		}
+	} else if errors.Is(versionErr, errInvalidDockerVersionOutput) {
+		return containers.ContainerRuntimeStatus{
+			Installed: false,
+			Running:   false,
+			Error:     "Output from Docker CLI didn't match the expected format. The Docker CLI found on your PATH may not be a valid Docker installation.",
+		}
+	} else if versionErr != nil {
+		return containers.ContainerRuntimeStatus{
+			Installed: true,
+			Running:   false,
+			Error:     versionErr.Error(),
+		}
+	}
+
 	// Docker always includes default networks and formats its response in a consistent way, so we can use this to ensure we're talking to Docker
 	// and not a symlinked runtime like Podman.
 	_, err := dco.ListNetworks(ctx, containers.ListNetworksOptions{})
@@ -242,6 +308,59 @@ func (dco *DockerCliOrchestrator) getStatus(ctx context.Context) containers.Cont
 		Installed: true,
 		Running:   true,
 	}
+}
+
+func (dco *DockerCliOrchestrator) ensureSupportedDockerCliVersion(ctx context.Context) error {
+	// Use the non-JSON `docker --version` output because `docker version --format` contacts the daemon
+	// and can hang when the engine is unresponsive.
+	cmd := makeDockerCommand("--version")
+	outBuf, errBuf, err := dco.runBufferedDockerCommand(ctx, "Version", cmd, nil, nil, dockerVersionCommandTimeout)
+	if err != nil {
+		return errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	version, parseErr := parseDockerCliVersion(outBuf.String())
+	if parseErr != nil {
+		return parseErr
+	}
+
+	if version.isBefore(minimumSupportedDockerCliVersion) {
+		return fmt.Errorf(
+			"docker CLI version %s is not supported; DCP requires Docker CLI version %s or newer",
+			version.String(),
+			minimumSupportedDockerCliVersion.String(),
+		)
+	}
+
+	return nil
+}
+
+func parseDockerCliVersion(versionOutput string) (dockerCliVersion, error) {
+	match := dockerVersionRegEx.FindStringSubmatch(strings.TrimSpace(versionOutput))
+	if match == nil {
+		return dockerCliVersion{}, errInvalidDockerVersionOutput
+	}
+
+	major, majorErr := strconv.Atoi(match[1])
+	if majorErr != nil {
+		return dockerCliVersion{}, fmt.Errorf("parse docker CLI major version: %w", majorErr)
+	}
+
+	minor, minorErr := strconv.Atoi(match[2])
+	if minorErr != nil {
+		return dockerCliVersion{}, fmt.Errorf("parse docker CLI minor version: %w", minorErr)
+	}
+
+	patch, patchErr := strconv.Atoi(match[3])
+	if patchErr != nil {
+		return dockerCliVersion{}, fmt.Errorf("parse docker CLI patch version: %w", patchErr)
+	}
+
+	return dockerCliVersion{
+		major: major,
+		minor: minor,
+		patch: patch,
+	}, nil
 }
 
 func (dco *DockerCliOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
