@@ -31,6 +31,10 @@ type PersistentProcessRecord struct {
 	store             *Store
 }
 
+func (r PersistentProcessRecord) ProcessHandle() process.ProcessHandle {
+	return process.NewHandle(r.PID, r.IdentityTime)
+}
+
 func (r *PersistentProcessRecord) Delete(ctx context.Context) error {
 	if r == nil {
 		return fmt.Errorf("%w: persistent process record cannot be nil", ErrInvalidArgument)

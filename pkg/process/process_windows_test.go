@@ -30,7 +30,7 @@ const (
 	STILL_ACTIVE = 259
 )
 
-func ensureAllStopped(t *testing.T, processes []process.ProcessTreeItem, timeout time.Duration) {
+func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
 	defer timeoutCtxCancelFn()
 
@@ -47,7 +47,7 @@ func ensureAllStopped(t *testing.T, processes []process.ProcessTreeItem, timeout
 	require.NoError(t, err, "not all processes could be stopped")
 }
 
-func isStopped(pp process.ProcessTreeItem) bool {
+func isStopped(pp process.ProcessHandle) bool {
 	osPid, err := process.PidT_ToUint32(pp.Pid)
 	if err != nil {
 		// Invalid PID value, so there is no process with such ID

@@ -119,7 +119,7 @@ func TestCleanupInvalidPersistentExecutableRecordsSkipsRecordsWithHeldLease(t *t
 	stateStore := openPersistentProcessCleanupTestStore(t, ctx)
 	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, heldLeaseOwnerErr)
-	cleanupLeaseOwner := process.ProcessTreeItem{
+	cleanupLeaseOwner := process.ProcessHandle{
 		Pid:          heldLeaseOwner.Pid,
 		IdentityTime: heldLeaseOwner.IdentityTime.Add(-time.Hour),
 	}
