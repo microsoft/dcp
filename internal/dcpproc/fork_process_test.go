@@ -32,10 +32,10 @@ func TestForkProcessStartsDetachedCommand(t *testing.T) {
 	require.False(t, forkedProcess.IdentityTime.IsZero(), "forked process start time should not be zero")
 	checkExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	defer checkExecutor.Dispose()
-	require.NoError(t, checkExecutor.CheckProcessRunning(forkedProcess.Pid, forkedProcess.IdentityTime))
+	require.NoError(t, checkExecutor.CheckProcessRunning(forkedProcess))
 }
 
-func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessTreeItem {
+func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessHandle {
 	t.Helper()
 
 	dcpProc, dcpProcErr := getDcpProcExecutablePath()
@@ -60,12 +60,12 @@ func startForkedDelay(t *testing.T, testCtx context.Context) process.ProcessTree
 	var identityTime time.Time
 	cleanupExecutor := process.NewOSExecutor(testutil.NewLogForTesting(t.Name()))
 	t.Cleanup(func() {
-		_ = cleanupExecutor.StopProcess(pid, identityTime)
+		_ = cleanupExecutor.StopProcess(process.NewHandle(pid, identityTime))
 		cleanupExecutor.Dispose()
 	})
 
 	identityTime = process.ProcessIdentityTime(pid)
 	require.False(t, identityTime.IsZero(), "forked process %d should still be running", pid)
 
-	return process.ProcessTreeItem{Pid: pid, IdentityTime: identityTime}
+	return process.NewHandle(pid, identityTime)
 }
