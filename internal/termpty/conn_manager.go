@@ -19,6 +19,7 @@ import (
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
@@ -436,20 +437,7 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 		defer wg.Done()
 		defer close(exitCodeCh)
 
-		// Wait for either the process to exit or the Serve loop to end.
-		select {
-		case <-ptp.ExitHandler.Exited():
-			ec := ptp.ExitHandler.ExitInfo().ExitCode
-			select {
-			case exitCodeCh <- ec:
-			case <-time.After(Hmp1ExitCodeWaitTimeout):
-				// Server has abandoned its exit-code read; close still
-				// happens via the deferred close below.
-			}
-
-		case <-serveCtx.Done():
-			// Process has not exited but we are done serving.
-		}
+		sendProcessExitCode(serveCtx, ptp.ExitHandler, exitCodeCh)
 	}()
 
 	serveErr := server.Serve(serveCtx, conn, exitCodeCh, Hmp1ServerOptions{
@@ -470,6 +458,35 @@ func (cm *ConnManager) serveConnection(conn net.Conn) {
 
 	// Make sure the exit code feeder goroutine has finished before we return.
 	wg.Wait()
+}
+
+// sendProcessExitCode is split out so tests can deterministically exercise the
+// process-exit vs. serve-cancellation timing.
+func sendProcessExitCode(
+	serveCtx context.Context,
+	exitHandler *process.ConcurrentProcessExitHandler,
+	exitCodeCh chan<- int32,
+) {
+	select {
+	case <-exitHandler.Exited():
+		sendExitCode(exitHandler, exitCodeCh)
+	case <-serveCtx.Done():
+		select {
+		case <-exitHandler.Exited():
+			sendExitCode(exitHandler, exitCodeCh)
+		default:
+			// Process has not exited but we are done serving.
+		}
+	}
+}
+
+func sendExitCode(exitHandler *process.ConcurrentProcessExitHandler, exitCodeCh chan<- int32) {
+	ec := exitHandler.ExitInfo().ExitCode
+	select {
+	case exitCodeCh <- ec:
+	case <-time.After(Hmp1ExitCodeWaitTimeout):
+		// Server has abandoned its exit-code read.
+	}
 }
 
 // shutdown() is the manager's shutdown sequence.
