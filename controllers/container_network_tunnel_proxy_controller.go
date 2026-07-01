@@ -1054,8 +1054,10 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 				{ContainerPort: dcptun.DefaultContainerProxyDataPort},
 			},
 		},
-		Name:    clientProxyCtrName,
-		Network: r.config.Orchestrator.DefaultNetworkName(),
+		Name: clientProxyCtrName,
+		Networks: []containers.CreateContainerNetworkOptions{
+			{Name: r.config.Orchestrator.DefaultNetworkName()},
+		},
 	}
 
 	thisProcess, thisProcessErr := process.This()

@@ -425,3 +425,62 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyCreateContainerOptionsNetworks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		options  ct.CreateContainerOptions
+		wantArgs []string
+	}{
+		{
+			name: "single network without aliases",
+			options: ct.CreateContainerOptions{
+				Networks: []ct.CreateContainerNetworkOptions{
+					{Name: "network-a"},
+				},
+			},
+			wantArgs: []string{"--network", "network-a"},
+		},
+		{
+			name: "single network with aliases",
+			options: ct.CreateContainerOptions{
+				Networks: []ct.CreateContainerNetworkOptions{
+					{
+						Name:    "network-a",
+						Aliases: []string{"alias-a", "alias-b"},
+					},
+				},
+			},
+			wantArgs: []string{"--network", "name=network-a,alias=alias-a,alias=alias-b"},
+		},
+		{
+			name: "multiple networks with aliases",
+			options: ct.CreateContainerOptions{
+				Networks: []ct.CreateContainerNetworkOptions{
+					{
+						Name:    "network-a",
+						Aliases: []string{"alias-a", "alias-b"},
+					},
+					{
+						Name:    "network-b",
+						Aliases: []string{"alias-c"},
+					},
+				},
+			},
+			wantArgs: []string{
+				"--network", "name=network-a,alias=alias-a,alias=alias-b",
+				"--network", "name=network-b,alias=alias-c",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := applyCreateContainerOptions([]string{}, tc.options)
+			require.Equal(t, tc.wantArgs, args)
+		})
+	}
+}
