@@ -25,6 +25,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/termpty"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -274,6 +275,12 @@ func TestContainerTerminalDeletionTearsDownPty(t *testing.T) {
 		t.Fatal("timed out waiting for TestPty from container attach factory")
 	}
 
+	// Status should report the configured terminal socket path.
+	running := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.TerminalSocketPath != "", nil
+	})
+	require.Equal(t, socketPath, running.Status.TerminalSocketPath, "Status should report the configured terminal socket path")
+
 	// Sanity check: the socket file exists before deletion.
 	_, statErr := os.Stat(socketPath)
 	require.NoError(t, statErr, "socket file should exist before deletion")
@@ -284,6 +291,72 @@ func TestContainerTerminalDeletionTearsDownPty(t *testing.T) {
 		return attached.TestPty.IsClosed(), nil
 	})
 	require.NoError(t, pollErr, "expected TestPty to be closed after Container deletion")
+
+	// DCP owns the listen-mode socket file, so it must be removed once the terminal is torn down.
+	removalErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		_, pollStatErr := os.Stat(socketPath)
+		return errors.Is(pollStatErr, os.ErrNotExist), nil
+	})
+	require.NoError(t, removalErr, "terminal socket file should be removed after Container deletion")
+}
+
+// TestContainerTerminalGeneratesSocketPathWhenUDSPathEmpty verifies that a terminal
+// Container created with an empty UDSPath reaches Running with a DCP-generated socket
+// path reported in Status, that the socket exists and serves while Running, and that the
+// generated file is removed once the Container is deleted.
+func TestContainerTerminalGeneratesSocketPathWhenUDSPathEmpty(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const ctrName = "test-ctr-term-autopath"
+	ctr := makeTerminalContainer(ctrName, "") // empty UDSPath: DCP generates the socket path.
+
+	infoCh := containerAttachFactoryDispatcher.InstallHandler(
+		t, ctr.Spec.ContainerName,
+		ctrl_testutil.NewTestPtyContainerAttachFactory(testProcessExecutor))
+
+	require.NoError(t, client.Create(ctx, ctr), "create Container")
+
+	_, _ = ensureContainerRunning(t, ctx, ctr)
+	var attached *ctrl_testutil.AttachedTerminalInfo
+	select {
+	case attached = <-infoCh:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for TestPty from container attach factory")
+	}
+
+	running := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(ctr), func(c *apiv1.Container) (bool, error) {
+		return c.Status.TerminalSocketPath != "", nil
+	})
+	generatedPath := running.Status.TerminalSocketPath
+	require.NotEmpty(t, generatedPath, "Status should report the DCP-generated terminal socket path")
+	require.Truef(t, strings.HasPrefix(generatedPath, usvc_io.DcpTempDir()),
+		"generated socket path %q should live under the DCP temp dir %q", generatedPath, usvc_io.DcpTempDir())
+	t.Cleanup(func() { _ = os.Remove(generatedPath) })
+
+	_, statErr := os.Stat(generatedPath)
+	require.NoError(t, statErr, "generated socket file should exist while Running")
+
+	// The generated socket must actually serve HMP v1 clients.
+	conn := dialTerminalSocketWhenReady(t, ctx, generatedPath)
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+	_ = conn.Close()
+
+	require.NoError(t, client.Delete(ctx, ctr), "delete Container")
+
+	pollErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		return attached.TestPty.IsClosed(), nil
+	})
+	require.NoError(t, pollErr, "expected TestPty to be closed after Container deletion")
+
+	removalErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		_, pollStatErr := os.Stat(generatedPath)
+		return errors.Is(pollStatErr, os.ErrNotExist), nil
+	})
+	require.NoError(t, removalErr, "generated terminal socket file should be removed after Container deletion")
 }
 
 // Verifies that when the container attach factory returns an error,

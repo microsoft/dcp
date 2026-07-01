@@ -10,7 +10,6 @@ package process
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/sys/windows"
@@ -27,11 +26,11 @@ var (
 // If attachment succeeds, it sends CTRL_C_EVENT to the entire console group and protects
 // the caller from its own signal.
 // If the target has no console or has already exited, it falls back to a regular StopProcess call.
-func StopViaConsole(log logr.Logger, executor Executor, pid Pid_t, startTime time.Time, options ...ProcessStopOption) error {
-	attached, attachErr := attachToTargetProcessConsole(log, pid)
+func StopViaConsole(log logr.Logger, executor Executor, handle ProcessHandle, options ...ProcessStopOption) error {
+	attached, attachErr := attachToTargetProcessConsole(log, handle.Pid)
 	if attachErr != nil {
 		// Error already logged in attachToTargetProcessConsole. Fall back to direct stop.
-		stopErr := executor.StopProcess(pid, startTime, options...)
+		stopErr := executor.StopProcess(handle, options...)
 		if stopErr != nil {
 			return errors.Join(attachErr, stopErr)
 		}
@@ -39,7 +38,7 @@ func StopViaConsole(log logr.Logger, executor Executor, pid Pid_t, startTime tim
 	}
 
 	if !attached {
-		return executor.StopProcess(pid, startTime, options...)
+		return executor.StopProcess(handle, options...)
 	}
 	defer restoreParentConsole(log)
 
@@ -53,7 +52,7 @@ func StopViaConsole(log logr.Logger, executor Executor, pid Pid_t, startTime tim
 	consoleOptions := make([]ProcessStopOption, 0, len(options)+1)
 	consoleOptions = append(consoleOptions, options...)
 	consoleOptions = append(consoleOptions, stopConsoleGroup())
-	return executor.StopProcess(pid, startTime, consoleOptions...)
+	return executor.StopProcess(handle, consoleOptions...)
 }
 
 func stopConsoleGroup() ProcessStopOption {

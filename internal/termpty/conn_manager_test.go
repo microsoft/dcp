@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	usvc_random "github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -54,8 +56,7 @@ func newConnMgrFixture(t *testing.T) (context.Context, *PseudoTerminalProcess, *
 
 	ptp := &PseudoTerminalProcess{
 		PTY:              pty,
-		PID:              process.Pid_t(12345),
-		IdentityTime:     time.Now(),
+		Handle:           process.NewHandle(process.Pid_t(12345), time.Now()),
 		StartWaitForExit: func() {},
 		ExitHandler:      process.NewConcurrentProcessExitHandler(),
 	}
@@ -154,8 +155,9 @@ func TestNewConnManager_RejectsInvalidArgs(t *testing.T) {
 	ctx, ptp, _, socketPath := newConnMgrFixture(t)
 	log := testutil.NewLogForTesting(t.Name())
 
-	t.Run("empty socket path", func(t *testing.T) {
-		_, err := NewConnManager(ctx, ptp, "", SocketModeListen, 0, 0, log)
+	t.Run("empty socket path in connect mode", func(t *testing.T) {
+		// In listen mode an empty path is allowed (DCP generates one); connect mode still requires it.
+		_, err := NewConnManager(ctx, ptp, "", SocketModeConnect, 0, 0, log)
 		require.Error(t, err)
 	})
 
@@ -186,6 +188,187 @@ func TestNewConnManager_FailsWhenSocketPathInUse(t *testing.T) {
 	second, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
 	require.Error(t, err, "expected error creating second manager on same socket")
 	require.Nil(t, second)
+}
+
+// --- Listen-mode socket file ownership ---
+
+// makeStaleSocketFile binds and immediately closes a Unix listener at path
+// (opting out of unlink-on-close), leaving a leftover socket file behind with no
+// live listener, as a crashed process would.
+func makeStaleSocketFile(t *testing.T, path string) {
+	t.Helper()
+	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	require.NoErrorf(t, err, "create stale socket at %s", path)
+	l.SetUnlinkOnClose(false)
+	require.NoError(t, l.Close())
+	_, statErr := os.Stat(path)
+	require.NoError(t, statErr, "stale socket file should remain after listener close")
+}
+
+// requireFileRemoved asserts that nothing exists at path.
+func requireFileRemoved(t *testing.T, path string) {
+	t.Helper()
+	_, statErr := os.Stat(path)
+	require.Truef(t, errors.Is(statErr, os.ErrNotExist), "expected %s to be removed, stat error was %v", path, statErr)
+}
+
+// TestConnManager_ListenMode_RefusesExistingSocketFile verifies that listen mode
+// refuses to bind when a leftover socket file is already present at the path and
+// leaves the existing file intact.
+func TestConnManager_ListenMode_RefusesExistingSocketFile(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	makeStaleSocketFile(t, socketPath)
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
+	require.Error(t, err, "listen mode must refuse an existing socket file")
+	require.Nil(t, cm)
+
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr, "existing socket file must not be removed")
+}
+func TestConnManager_ListenMode_DoesNotClobberActiveListener(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	// A live listener owns the path; it must survive a failed construction.
+	startPeerListener(t, socketPath)
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
+	require.Error(t, err, "listen mode must not bind over an active listener")
+	require.Nil(t, cm)
+
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr, "active listener socket file must not be removed")
+}
+
+// TestConnManager_ListenMode_RefusesDirectoryPath verifies that listen mode
+// never removes a directory that happens to sit at the socket path.
+func TestConnManager_ListenMode_RefusesDirectoryPath(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	require.NoError(t, os.Mkdir(socketPath, 0o700))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
+	require.Error(t, err, "listen mode must refuse a directory at the socket path")
+	require.Nil(t, cm)
+
+	info, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr, "directory must not be removed")
+	require.True(t, info.IsDir())
+}
+
+// TestConnManager_ListenMode_RemovesSocketFileOnProcessExit verifies that the
+// owned socket file is removed when the underlying process exits.
+func TestConnManager_ListenMode_RemovesSocketFileOnProcessExit(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr, "listen mode should create the socket file")
+
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+
+	requireFileRemoved(t, socketPath)
+}
+
+// TestConnManager_ListenMode_RemovesSocketFileOnLifetimeCancel verifies that the
+// owned socket file is removed when the lifetime context is cancelled.
+func TestConnManager_ListenMode_RemovesSocketFileOnLifetimeCancel(t *testing.T) {
+	t.Parallel()
+	parentCtx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	lifetimeCtx, lifetimeCancel := context.WithCancel(parentCtx)
+	defer lifetimeCancel()
+
+	cm, err := NewConnManager(lifetimeCtx, ptp, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr)
+
+	lifetimeCancel()
+	select {
+	case <-cm.Done():
+	case <-parentCtx.Done():
+		t.Fatal("ConnManager did not become dormant after lifetime cancel")
+	}
+
+	requireFileRemoved(t, socketPath)
+}
+
+// TestConnManager_ListenMode_ShutdownRemovesSocketFile verifies that the public
+// Shutdown() method removes the owned socket file and is idempotent.
+func TestConnManager_ListenMode_ShutdownRemovesSocketFile(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, socketPath := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeListen, 0, 0, log)
+	require.NoError(t, err)
+	_, statErr := os.Stat(socketPath)
+	require.NoError(t, statErr)
+
+	cm.Shutdown()
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after Shutdown")
+	}
+
+	requireFileRemoved(t, socketPath)
+
+	require.NotPanics(t, func() { cm.Shutdown() }, "Shutdown must be idempotent")
+}
+
+// TestConnManager_ListenMode_GeneratesSocketPathWhenEmpty verifies that an empty
+// socket path in listen mode causes DCP to generate a unique path under the DCP
+// temp dir, report it via SocketPath(), serve on it, and remove it on shutdown.
+func TestConnManager_ListenMode_GeneratesSocketPathWhenEmpty(t *testing.T) {
+	t.Parallel()
+	ctx, ptp, _, _ := newConnMgrFixture(t)
+	log := testutil.NewLogForTesting(t.Name())
+
+	cm, err := NewConnManager(ctx, ptp, "", SocketModeListen, 0, 0, log)
+	require.NoError(t, err, "listen mode must generate a socket path when none is supplied")
+
+	generatedPath := cm.SocketPath()
+	require.NotEmpty(t, generatedPath, "generated socket path must be reported via SocketPath()")
+	t.Cleanup(func() { _ = os.Remove(generatedPath) })
+
+	require.Truef(t, strings.HasPrefix(generatedPath, usvc_io.DcpTempDir()),
+		"generated socket path %q should live under the DCP temp dir %q", generatedPath, usvc_io.DcpTempDir())
+
+	_, statErr := os.Stat(generatedPath)
+	require.NoError(t, statErr, "generated socket file should exist while running")
+
+	// It must serve a client like any other listen-mode socket.
+	conn := dialConnMgr(t, ctx, generatedPath)
+	hello := drainHelloAndStateSync(t, ctx, conn)
+	require.Equal(t, 1, hello.Version)
+
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
+	select {
+	case <-cm.Done():
+	case <-ctx.Done():
+		t.Fatal("ConnManager did not become dormant after process exit")
+	}
+
+	requireFileRemoved(t, generatedPath)
 }
 
 // --- Normal serve ---
@@ -224,7 +407,7 @@ func TestConnManager_AcceptsAndServesClient(t *testing.T) {
 	require.Equal(t, "hello-client", string(payload))
 
 	// Tear down by simulating process exit; manager should shut down.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -246,7 +429,7 @@ func TestConnManager_HelloAdvertisesConfiguredInitialSize(t *testing.T) {
 	require.Equal(t, uint16(132), hello.Width)
 	require.Equal(t, uint16(50), hello.Height)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -283,7 +466,7 @@ func TestConnManager_ReusableAcrossSequentialConnections(t *testing.T) {
 	runSession("third")
 
 	// Shut down by cancelling lifetime via process exit.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -347,7 +530,7 @@ func TestConnManager_ProcessExitShutsDownManager(t *testing.T) {
 	require.NoError(t, err)
 
 	// Process exits BEFORE any client connects.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 7, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 7, nil)
 
 	select {
 	case <-cm.Done():
@@ -404,7 +587,7 @@ func TestConnManager_ExitCodePropagatedToClient(t *testing.T) {
 	// PTY-read pump unblocks with EOF (mimicking what the OS does when the
 	// child closes the slave fd). This triggers the exit-frame send path.
 	const wantExit int32 = 99
-	ptp.ExitHandler.OnProcessExited(ptp.PID, wantExit, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, wantExit, nil)
 	_ = pty.Close()
 
 	payload := drainUntilExit(t, ctx, conn)
@@ -511,7 +694,7 @@ func TestConnManager_ConnectModeDialsPeerAndServes(t *testing.T) {
 	require.Equal(t, "hello-client", string(payload))
 
 	// Tear down by simulating process exit; manager should shut down.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -538,7 +721,7 @@ func TestConnManager_ConnectModeStartsWithoutPeerThenDials(t *testing.T) {
 	conn := acceptPeer(t, ctx, peer)
 	drainHelloAndStateSync(t, ctx, conn)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -576,7 +759,7 @@ func TestConnManager_ConnectModeReconnectsAfterSessionEnds(t *testing.T) {
 	runSession("second")
 	runSession("third")
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -614,7 +797,7 @@ func TestConnManager_ConnectModeProcessExitWhileDialingShutsDown(t *testing.T) {
 	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 7, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 7, nil)
 
 	select {
 	case <-cm.Done():
@@ -683,7 +866,7 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 		"connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
 
 	// Shut down cleanly.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -754,7 +937,7 @@ func TestConnManager_AttachProcessListenMode_WarmsThenServesAfterAttach(t *testi
 	require.Equal(t, Hmp1FrameOutput, ft)
 	require.Equal(t, "hello-client", string(payload))
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -789,7 +972,7 @@ func TestConnManager_AttachProcessConnectMode_WarmsThenServesAfterAttach(t *test
 		t.Fatal("timed out waiting for client input to reach PTY")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -821,7 +1004,7 @@ func TestConnManager_AttachProcessMode_AttachBeforeClientConnects(t *testing.T) 
 		t.Fatal("timed out waiting for client input to reach PTY")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -862,7 +1045,7 @@ func TestConnManager_AttachProcessMode_ReconnectsAfterFirstSession(t *testing.T)
 		t.Fatal("timed out waiting for second session input")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -885,7 +1068,7 @@ func TestConnManager_AttachProcessMode_HelloAdvertisesConfiguredSize(t *testing.
 	require.Equal(t, uint16(132), hello.Width)
 	require.Equal(t, uint16(50), hello.Height)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -968,7 +1151,7 @@ func TestConnManager_AttachProcessMode_ClientDisconnectsBeforeAttachThenRecovers
 		t.Fatal("timed out waiting for fresh client input after recovery")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -1079,7 +1262,7 @@ func TestConnManager_AttachProcessConnectMode_RedialThrottledAfterImmediateClose
 	require.LessOrEqualf(t, got, maxExpected,
 		"attach-process connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():

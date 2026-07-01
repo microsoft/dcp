@@ -1221,6 +1221,12 @@ type ContainerStatus struct {
 	// The path of a temporary file that contains captured standard error data from the Container startup process.
 	StartupStdErrFile string `json:"startupStdErrFile,omitempty"`
 
+	// The filesystem path of the terminal HMP v1 Unix domain socket, when the Container is
+	// configured with a terminal. In "listen" mode this is the socket DCP owns (and is the
+	// DCP-generated path when the spec left UDSPath empty); in "connect" mode it is the peer-owned
+	// socket DCP dials.
+	TerminalSocketPath string `json:"terminalSocketPath,omitempty"`
+
 	// Exit code of the Container.
 	// Default is -1, meaning the exit code is not known, or the container is still running.
 	// +kubebuilder:default:=-1

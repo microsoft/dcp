@@ -426,6 +426,15 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 		change |= statusChanged
 	}
 
+	terminalSocketPath := ""
+	if rcd.connMgr != nil {
+		terminalSocketPath = rcd.connMgr.SocketPath()
+	}
+	if terminalSocketPath != "" && ctr.Status.TerminalSocketPath != terminalSocketPath {
+		ctr.Status.TerminalSocketPath = terminalSocketPath
+		change |= statusChanged
+	}
+
 	// From the runSpec the runningContainerData has, only Env and Args will ever be modified
 	// (as a result of evaluating template expressions that may be embedded in environment variables or command arguments).
 
@@ -493,13 +502,22 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 // ExitHandler, which in turn drives the ConnManager shutdown.
 func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log logr.Logger) {
 	ptp := rcd.ptp
+	connMgr := rcd.connMgr
 	rcd.ptp = nil
 	rcd.connMgr = nil
+
+	// Deterministically tear down the connection manager so the owned listen-mode socket file is
+	// removed promptly, rather than waiting for the lifetime context to cancel. Shutdown is
+	// idempotent, so this is safe even if process-exit observation also triggers it.
+	if connMgr != nil {
+		connMgr.Shutdown()
+	}
+
 	if ptp == nil {
 		return
 	}
 
-	if ptp.PID != 0 && ptp.PID != process.UnknownPID {
+	if ptp.Handle.Pid != 0 && ptp.Handle.Pid != process.UnknownPID {
 		// Only attempt to stop the attach process if it has not already
 		// exited. The exit handler may already have fired (e.g., the
 		// container itself exited and the OS noticed the attach process
@@ -515,8 +533,8 @@ func (rcd *runningContainerData) closeTerminalResources(pe process.Executor, log
 		}
 		if !alreadyExited {
 			var notFound *process.ErrProcessNotFound
-			if stopErr := pe.StopProcess(ptp.PID, ptp.IdentityTime); stopErr != nil && !errors.As(stopErr, &notFound) {
-				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.PID, "Error", stopErr.Error())
+			if stopErr := pe.StopProcess(ptp.Handle); stopErr != nil && !errors.As(stopErr, &notFound) {
+				log.V(1).Info("Failed to stop container terminal attach process", "PID", ptp.Handle.Pid, "Error", stopErr.Error())
 			}
 		}
 	}

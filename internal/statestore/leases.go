@@ -23,7 +23,7 @@ var (
 
 type ResourceLease struct {
 	ResourceKey  string
-	OwnerProcess process.ProcessTreeItem
+	OwnerProcess process.ProcessHandle
 	UpdatedAt    time.Time
 	store        *Store
 }
@@ -76,7 +76,7 @@ func resourceLeaseKey(resource LeasableResource) (string, error) {
 	return resourceKey, nil
 }
 
-func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration) (*ResourceLease, error) {
+func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle, revalidationInterval time.Duration) (*ResourceLease, error) {
 	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
 	if resourceKeyErr != nil {
 		return nil, resourceKeyErr
@@ -152,7 +152,7 @@ func (s *Store) AcquireResourceLease(ctx context.Context, resource LeasableResou
 	return lease, nil
 }
 
-func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) error {
+func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle) error {
 	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
 	if resourceKeyErr != nil {
 		return resourceKeyErr
@@ -160,7 +160,7 @@ func (s *Store) ReleaseResourceLease(ctx context.Context, resource LeasableResou
 	return s.releaseResourceLease(ctx, resourceKey, ownerProcess)
 }
 
-func (s *Store) releaseResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessTreeItem) error {
+func (s *Store) releaseResourceLease(ctx context.Context, resourceKey string, ownerProcess process.ProcessHandle) error {
 	resourceKey = strings.TrimSpace(resourceKey)
 	if resourceKey == "" {
 		return fmt.Errorf("%w: resource lease key cannot be empty", ErrInvalidArgument)
@@ -196,7 +196,7 @@ func (s *Store) releaseResourceLease(ctx context.Context, resourceKey string, ow
 	})
 }
 
-func (s *Store) VerifyResourceLeaseHeld(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem) error {
+func (s *Store) VerifyResourceLeaseHeld(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle) error {
 	resourceKey, resourceKeyErr := resourceLeaseKey(resource)
 	if resourceKeyErr != nil {
 		return resourceKeyErr
@@ -238,7 +238,7 @@ func (s *Store) VerifyResourceLeaseHeld(ctx context.Context, resource LeasableRe
 	return nil
 }
 
-func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessTreeItem, revalidationInterval time.Duration, f func(context.Context, *ResourceLease) error) error {
+func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource, ownerProcess process.ProcessHandle, revalidationInterval time.Duration, f func(context.Context, *ResourceLease) error) error {
 	if f == nil {
 		return fmt.Errorf("%w: lease callback cannot be nil", ErrInvalidArgument)
 	}
@@ -385,7 +385,7 @@ func updateResourceLeaseTimestamp(ctx context.Context, conn *sql.Conn, resourceK
 	return nil
 }
 
-func updateResourceLeaseOwner(ctx context.Context, conn *sql.Conn, resourceKey string, ownerProcess process.ProcessTreeItem, now time.Time) error {
+func updateResourceLeaseOwner(ctx context.Context, conn *sql.Conn, resourceKey string, ownerProcess process.ProcessHandle, now time.Time) error {
 	_, execErr := conn.ExecContext(
 		ctx,
 		`UPDATE resource_locks
