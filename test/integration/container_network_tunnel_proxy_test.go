@@ -198,10 +198,18 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	t.Logf("Creating ContainerNetwork object '%s'", network.ObjectMeta.Name)
 	err := serverInfo.Client.Create(ctx, &network)
 	require.NoError(t, err, "Could not create a ContainerNetwork object")
+	updatedNetwork := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		if currentNet.Status.State == apiv1.ContainerNetworkStateFailedToStart {
+			return false, fmt.Errorf("network creation failed: %s", currentNet.Status.Message)
+		}
+
+		return currentNet.Status.State == apiv1.ContainerNetworkStateRunning && currentNet.Status.NetworkName != "", nil
+	})
 
 	const serverControlPort int32 = 26444
 	simulateServerProxy(t, serverControlPort, teInfo.TestProcessExecutor)
 
+	aliases := []string{"client-proxy", "tunnel-client"}
 	tunnelProxy := apiv1.ContainerNetworkTunnelProxy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      testName,
@@ -209,6 +217,7 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 		},
 		Spec: apiv1.ContainerNetworkTunnelProxySpec{
 			ContainerNetworkName: network.ObjectMeta.Name,
+			Aliases:              aliases,
 			Tunnels: []apiv1.TunnelConfiguration{
 				{
 					Name:              "test-tunnel",
@@ -243,6 +252,9 @@ func TestTunnelProxyRunningStatus(t *testing.T) {
 	clientContainer := inspectedContainers[0]
 	require.Equal(t, updatedTunnelProxy.Status.ClientProxyContainerImage, clientContainer.Image, "Container should have the expected image")
 	require.Equal(t, containers.ContainerStatusRunning, clientContainer.Status, "Container should be running")
+	require.Len(t, clientContainer.Networks, 1, "Client proxy container should only be attached to the target network")
+	require.Equal(t, updatedNetwork.Status.NetworkName, clientContainer.Networks[0].Name, "Client proxy container should be attached to the target network during creation")
+	require.Equal(t, aliases, clientContainer.Networks[0].Aliases, "Client proxy container should have the requested aliases on the target network")
 
 	t.Log("Verifying client proxy container has correct labels...")
 	require.Contains(t, clientContainer.Labels, controllers.CreatorProcessIdLabel, "Container should have creator process ID label")
