@@ -7,7 +7,6 @@ package controllers
 
 import (
 	"context"
-	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
@@ -65,7 +64,7 @@ type PersistentExecutableRunner interface {
 	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
 
 	// Checks that the process associated with a persistent run is running.
-	CheckProcessRunning(pid process.Pid_t, processStartTime time.Time) error
+	CheckProcessRunning(handle process.ProcessHandle) error
 }
 
 type RunMessageLevel string

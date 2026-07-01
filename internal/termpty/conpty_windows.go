@@ -127,7 +127,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 	}
 
 	exitHandler := process.NewConcurrentProcessExitHandler()
-	pid, startTime, startWait, startErr := pe.StartProcess(
+	handle, startWait, startErr := pe.StartProcess(
 		ctx,
 		spec.Cmd,
 		exitHandler,
@@ -149,8 +149,7 @@ func startProcessWithTerminal(ctx context.Context, pe process.Executor, spec *Co
 			otherHandles: []windows.Handle{inputRead, outputWrite},
 			lock:         &sync.Mutex{},
 		},
-		PID:              pid,
-		IdentityTime:     startTime,
+		Handle:           handle,
 		StartWaitForExit: startWait,
 		ExitHandler:      exitHandler,
 		Executor:         pe,

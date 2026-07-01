@@ -1746,7 +1746,7 @@ func (to *TestContainerOrchestrator) fireAttachExitHandlers(container *testConta
 			// Already fired by another path (e.g. TestProcessExecutor.StopProcess).
 			continue
 		default:
-			tproc.ExitHandler.OnProcessExited(tproc.PID, exitCode, nil)
+			tproc.ExitHandler.OnProcessExited(tproc.Handle.Pid, exitCode, nil)
 		}
 	}
 }

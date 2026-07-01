@@ -56,8 +56,7 @@ func newConnMgrFixture(t *testing.T) (context.Context, *PseudoTerminalProcess, *
 
 	ptp := &PseudoTerminalProcess{
 		PTY:              pty,
-		PID:              process.Pid_t(12345),
-		IdentityTime:     time.Now(),
+		Handle:           process.NewHandle(process.Pid_t(12345), time.Now()),
 		StartWaitForExit: func() {},
 		ExitHandler:      process.NewConcurrentProcessExitHandler(),
 	}
@@ -277,7 +276,7 @@ func TestConnManager_ListenMode_RemovesSocketFileOnProcessExit(t *testing.T) {
 	_, statErr := os.Stat(socketPath)
 	require.NoError(t, statErr, "listen mode should create the socket file")
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -362,7 +361,7 @@ func TestConnManager_ListenMode_GeneratesSocketPathWhenEmpty(t *testing.T) {
 	hello := drainHelloAndStateSync(t, ctx, conn)
 	require.Equal(t, 1, hello.Version)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -408,7 +407,7 @@ func TestConnManager_AcceptsAndServesClient(t *testing.T) {
 	require.Equal(t, "hello-client", string(payload))
 
 	// Tear down by simulating process exit; manager should shut down.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -430,7 +429,7 @@ func TestConnManager_HelloAdvertisesConfiguredInitialSize(t *testing.T) {
 	require.Equal(t, uint16(132), hello.Width)
 	require.Equal(t, uint16(50), hello.Height)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -467,7 +466,7 @@ func TestConnManager_ReusableAcrossSequentialConnections(t *testing.T) {
 	runSession("third")
 
 	// Shut down by cancelling lifetime via process exit.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -531,7 +530,7 @@ func TestConnManager_ProcessExitShutsDownManager(t *testing.T) {
 	require.NoError(t, err)
 
 	// Process exits BEFORE any client connects.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 7, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 7, nil)
 
 	select {
 	case <-cm.Done():
@@ -588,7 +587,7 @@ func TestConnManager_ExitCodePropagatedToClient(t *testing.T) {
 	// PTY-read pump unblocks with EOF (mimicking what the OS does when the
 	// child closes the slave fd). This triggers the exit-frame send path.
 	const wantExit int32 = 99
-	ptp.ExitHandler.OnProcessExited(ptp.PID, wantExit, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, wantExit, nil)
 	_ = pty.Close()
 
 	payload := drainUntilExit(t, ctx, conn)
@@ -695,7 +694,7 @@ func TestConnManager_ConnectModeDialsPeerAndServes(t *testing.T) {
 	require.Equal(t, "hello-client", string(payload))
 
 	// Tear down by simulating process exit; manager should shut down.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -722,7 +721,7 @@ func TestConnManager_ConnectModeStartsWithoutPeerThenDials(t *testing.T) {
 	conn := acceptPeer(t, ctx, peer)
 	drainHelloAndStateSync(t, ctx, conn)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -760,7 +759,7 @@ func TestConnManager_ConnectModeReconnectsAfterSessionEnds(t *testing.T) {
 	runSession("second")
 	runSession("third")
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -798,7 +797,7 @@ func TestConnManager_ConnectModeProcessExitWhileDialingShutsDown(t *testing.T) {
 	cm, err := NewConnManager(ctx, ptp, socketPath, SocketModeConnect, 0, 0, log)
 	require.NoError(t, err)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 7, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 7, nil)
 
 	select {
 	case <-cm.Done():
@@ -867,7 +866,7 @@ func TestConnManager_ConnectModeAcceptThenCloseDoesNotHotLoop(t *testing.T) {
 		"connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
 
 	// Shut down cleanly.
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -938,7 +937,7 @@ func TestConnManager_AttachProcessListenMode_WarmsThenServesAfterAttach(t *testi
 	require.Equal(t, Hmp1FrameOutput, ft)
 	require.Equal(t, "hello-client", string(payload))
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -973,7 +972,7 @@ func TestConnManager_AttachProcessConnectMode_WarmsThenServesAfterAttach(t *test
 		t.Fatal("timed out waiting for client input to reach PTY")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -1005,7 +1004,7 @@ func TestConnManager_AttachProcessMode_AttachBeforeClientConnects(t *testing.T) 
 		t.Fatal("timed out waiting for client input to reach PTY")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -1046,7 +1045,7 @@ func TestConnManager_AttachProcessMode_ReconnectsAfterFirstSession(t *testing.T)
 		t.Fatal("timed out waiting for second session input")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -1069,7 +1068,7 @@ func TestConnManager_AttachProcessMode_HelloAdvertisesConfiguredSize(t *testing.
 	require.Equal(t, uint16(132), hello.Width)
 	require.Equal(t, uint16(50), hello.Height)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -1152,7 +1151,7 @@ func TestConnManager_AttachProcessMode_ClientDisconnectsBeforeAttachThenRecovers
 		t.Fatal("timed out waiting for fresh client input after recovery")
 	}
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():
@@ -1263,7 +1262,7 @@ func TestConnManager_AttachProcessConnectMode_RedialThrottledAfterImmediateClose
 	require.LessOrEqualf(t, got, maxExpected,
 		"attach-process connect mode hot-looped: %d accepts in %s (max expected %d)", got, window, maxExpected)
 
-	ptp.ExitHandler.OnProcessExited(ptp.PID, 0, nil)
+	ptp.ExitHandler.OnProcessExited(ptp.Handle.Pid, 0, nil)
 	select {
 	case <-cm.Done():
 	case <-ctx.Done():

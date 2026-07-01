@@ -226,13 +226,13 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	processExecutor := testutil.NewTestProcessExecutor(ctx)
 	runner := NewProcessExecutableRunner(processExecutor)
 	runner.disableConsoleStop = true // We are just simulating the run, so stopping via dcpproc/console would fail.
-	pid, identityTime, _, startErr := processExecutor.StartProcess(ctx, exec.Command("./delay", "--delay=1s"), nil, process.CreationFlagsNone, nil)
+	handle, _, startErr := processExecutor.StartProcess(ctx, exec.Command("./delay", "--delay=1s"), nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startErr)
+	pid := handle.Pid
 	adoptedRunID := controllers.RunID(pidToRunID(pid + 1))
 	changeHandler := newRecordingRunChangeHandler()
 	runner.runningProcesses.Store(adoptedRunID, &processRunState{
-		pid:              pid,
-		identityTime:     identityTime,
+		handle:           handle,
 		cmdInfo:          "./delay --delay=1s",
 		adopted:          true,
 		runChangeHandler: changeHandler,
@@ -294,12 +294,13 @@ func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 
 			processExecutor := testutil.NewTestProcessExecutor(ctx)
 			runner := NewProcessExecutableRunner(processExecutor)
-			pid, identityTime, _, startErr := processExecutor.StartProcess(ctx, exec.Command("/test/app"), nil, process.CreationFlagsNone, nil)
+			handle, _, startErr := processExecutor.StartProcess(ctx, exec.Command("/test/app"), nil, process.CreationFlagsNone, nil)
 			require.NoError(t, startErr)
+			pid := handle.Pid
 			runID := pidToRunID(pid)
 			t.Cleanup(func() {
 				_ = runner.ReleaseRun(context.Background(), runID, logr.Discard())
-				_ = processExecutor.StopProcess(pid, identityTime)
+				_ = processExecutor.StopProcess(handle)
 			})
 
 			exe := &apiv1.Executable{
@@ -313,7 +314,7 @@ func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 			record := &statestore.PersistentProcessRecord{
 				RunID:        string(runID),
 				PID:          pid,
-				IdentityTime: identityTime,
+				IdentityTime: handle.IdentityTime,
 			}
 
 			adoptErr := runner.AdoptRun(ctx, exe, record, newRecordingRunChangeHandler(), logr.Discard())
@@ -339,10 +340,10 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 
 	processExecutor := testutil.NewTestProcessExecutor(ctx)
 	cmd := exec.Command("./delay", "--delay=1s")
-	pid, identityTime, _, startProcessErr := processExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
+	handle, _, startProcessErr := processExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr)
 	runner := NewProcessExecutableRunner(processExecutor)
-	runID := pidToRunID(pid)
+	runID := pidToRunID(handle.Pid)
 	changeHandler := newRecordingRunChangeHandler()
 	exe := &apiv1.Executable{
 		Spec: apiv1.ExecutableSpec{
@@ -351,14 +352,14 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 	}
 	record := &statestore.PersistentProcessRecord{
 		RunID:        string(runID),
-		PID:          pid,
-		IdentityTime: identityTime,
+		PID:          handle.Pid,
+		IdentityTime: handle.IdentityTime,
 	}
 
 	adoptErr := runner.AdoptRun(ctx, exe, record, changeHandler, logr.Discard())
 	require.NoError(t, adoptErr)
 
-	processExecutor.SimulateProcessExit(t, pid, 0)
+	processExecutor.SimulateProcessExit(t, handle.Pid, 0)
 
 	select {
 	case completedRun := <-changeHandler.completedRuns:
@@ -384,14 +385,14 @@ func TestAdoptedProcessWatcherDoesNotDeleteReusedRunID(t *testing.T) {
 	watchedIdentityTime := time.Unix(1, 0).UTC()
 	reusedIdentityTime := watchedIdentityTime.Add(time.Minute)
 	changeHandler := newRecordingRunChangeHandler()
+	watchedHandle := process.NewHandle(watchedPID, watchedIdentityTime)
 	reusedRunState := &processRunState{
-		pid:              watchedPID,
-		identityTime:     reusedIdentityTime,
+		handle:           process.NewHandle(watchedPID, reusedIdentityTime),
 		runChangeHandler: changeHandler,
 	}
 	runner.runningProcesses.Store(runID, reusedRunState)
 
-	runner.watchAdoptedProcess(runID, watchedPID, watchedIdentityTime, make(chan struct{}), logr.Discard())
+	runner.watchAdoptedProcess(runID, watchedHandle, make(chan struct{}), logr.Discard())
 
 	storedRunState, found := runner.runningProcesses.Load(runID)
 	require.True(t, found)

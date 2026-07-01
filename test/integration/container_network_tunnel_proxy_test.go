@@ -1333,15 +1333,15 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 }
 
 func shutdownTestEnvironment(serverInfo *ctrl_testutil.ApiServerInfo, cancel context.CancelFunc) {
-	serverInfo.Dispose()
+	cancel()
 
-	// Wait for the API server cleanup to complete (with timeout)
+	// StartTestEnvironment closes its state store before disposing the API server. Wait
+	// for that full cleanup path before returning so t.TempDir cleanup does not race
+	// open SQLite file handles on Windows.
 	select {
 	case <-serverInfo.ApiServerDisposalComplete.Wait():
 	case <-time.After(20 * time.Second):
 	}
-
-	cancel()
 }
 
 func shutdownAdvancedTestEnvironment(
