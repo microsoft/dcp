@@ -67,8 +67,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 
 	_, containerCreateErr := co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-1",
-			Network: netPersistentWithContainer,
+			Name: prefix + "non-dcp-container-1",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netPersistentWithContainer},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
@@ -101,15 +103,19 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-2",
-			Network: netWithNonDcpContainers,
+			Name: prefix + "non-dcp-container-2",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithNonDcpContainers},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-3",
-			Network: netWithNonDcpContainers,
+			Name: prefix + "non-dcp-container-3",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithNonDcpContainers},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
@@ -127,8 +133,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "dcp-container-1",
-			Network: netWithMixedContainers,
+			Name: prefix + "dcp-container-1",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithMixedContainers},
+			},
 			ContainerSpec: apiv1.ContainerSpec{
 				Labels: []apiv1.ContainerLabel{
 					{
@@ -150,8 +158,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "non-dcp-container-4",
-			Network: netWithMixedContainers,
+			Name: prefix + "non-dcp-container-4",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithMixedContainers},
+			},
 		},
 	})
 	require.NoError(t, containerCreateErr)
@@ -169,8 +179,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "abandoned-persistent-container",
-			Network: netWithAbandonedPersistentContainer,
+			Name: prefix + "abandoned-persistent-container",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithAbandonedPersistentContainer},
+			},
 			ContainerSpec: apiv1.ContainerSpec{
 				Labels: []apiv1.ContainerLabel{
 					{
@@ -204,8 +216,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, netCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "dcp-container-2",
-			Network: netWithDcpContainers,
+			Name: prefix + "dcp-container-2",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithDcpContainers},
+			},
 			ContainerSpec: apiv1.ContainerSpec{
 				Labels: []apiv1.ContainerLabel{
 					{
@@ -227,8 +241,10 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	require.NoError(t, containerCreateErr)
 	_, containerCreateErr = co.RunContainer(ctx, containers.RunContainerOptions{
 		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:    prefix + "dcp-container-3",
-			Network: netWithDcpContainers,
+			Name: prefix + "dcp-container-3",
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: netWithDcpContainers},
+			},
 			ContainerSpec: apiv1.ContainerSpec{
 				Labels: []apiv1.ContainerLabel{
 					{

@@ -77,6 +77,8 @@ var (
 	containerFinalizer string = fmt.Sprintf("%s/container-reconciler", apiv1.GroupVersion.Group)
 	containerKind             = apiv1.GroupVersion.WithKind(reflect.TypeOf(apiv1.Container{}).Name())
 
+	errInitialContainerNetworksNotReady = errors.New("initial container networks are not ready")
+
 	containerStateInitializers = map[apiv1.ContainerState]containerStateInitializerFunc{
 		apiv1.ContainerStateEmpty:            handleNewContainer,
 		apiv1.ContainerStatePending:          handleNewContainer,
@@ -600,7 +602,7 @@ func ensureContainerStartingState(
 		r.scheduleContainerCreation(ctx, container, rcd, log, startupWithNoDelay)
 		change |= statusChanged
 
-	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld):
+	case templating.IsTransientTemplateError(rcd.startupError), errors.Is(rcd.startupError, statestore.ErrResourceLeaseHeld), errors.Is(rcd.startupError, errInitialContainerNetworksNotReady):
 		// Retry startup after a transient error or while another DCP instance is creating the persistent container.
 
 		rcd.startupError = nil
@@ -974,6 +976,50 @@ func (r *ContainerReconciler) scheduleContainerCreation(
 	}
 }
 
+func (r *ContainerReconciler) getInitialCreateContainerNetworks(
+	ctx context.Context,
+	container *apiv1.Container,
+	runSpec *apiv1.ContainerSpec,
+	log logr.Logger,
+) ([]containers.CreateContainerNetworkOptions, bool, error) {
+	if runSpec.Networks == nil {
+		return nil, true, nil
+	}
+
+	createNetworks := make([]containers.CreateContainerNetworkOptions, 0, len(*runSpec.Networks))
+	for _, networkConfig := range *runSpec.Networks {
+		namespacedNetworkName := commonapi.AsNamespacedName(networkConfig.Name, container.Namespace)
+
+		var network apiv1.ContainerNetwork
+		getErr := r.Get(ctx, namespacedNetworkName, &network)
+		if apierrors.IsNotFound(getErr) {
+			log.V(1).Info("Initial Container network is not available yet", "Network", namespacedNetworkName.String())
+			return nil, false, nil
+		}
+		if getErr != nil {
+			log.Error(getErr, "Failed to get initial Container network", "Network", namespacedNetworkName.String())
+			return nil, false, getErr
+		}
+
+		if network.Status.State != apiv1.ContainerNetworkStateRunning || network.Status.ID == "" || network.Status.NetworkName == "" {
+			log.V(1).Info("Initial Container network is not ready yet",
+				"Network", namespacedNetworkName.String(),
+				"NetworkState", network.Status.State,
+			)
+			return nil, false, nil
+		}
+
+		aliases := make([]string, len(networkConfig.Aliases))
+		copy(aliases, networkConfig.Aliases)
+		createNetworks = append(createNetworks, containers.CreateContainerNetworkOptions{
+			Name:    network.Status.NetworkName,
+			Aliases: aliases,
+		})
+	}
+
+	return createNetworks, true, nil
+}
+
 // Returns a function that builds the Container image.
 // The method is called as part of the reconciliation loop, but the returned function is executed asynchronously.
 // The passed runningContainerData should be a clone independent from what is stored in the runningContainers map.
@@ -1229,13 +1275,6 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("Starting container", "Image", container.SpecifiedImageNameOrDefault())
 
-			// Determine the default bridge network name used by the active orchestrator
-			defaultNetwork := ""
-			if rcd.runSpec.Networks != nil {
-				// See comment below why we create the container with default network explicitly enabled here.
-				defaultNetwork = r.orchestrator.DefaultNetworkName()
-			}
-
 			// Add labels to the container for lifecycle management and other metadata
 			lifecycleKey, hashErr := r.addContainerCreationLabels(container, rcd, log)
 			if hashErr != nil {
@@ -1260,13 +1299,20 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 				// attempting to pull it from a registry.
 				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
 			}
+			createNetworks, networksReady, networkErr := r.getInitialCreateContainerNetworks(startupCtx, container, &runSpecForCreation, log)
+			if networkErr != nil {
+				return networkErr
+			}
+			if !networksReady {
+				return errInitialContainerNetworksNotReady
+			}
 
 			// Create the container using the active orchestrator.
 			// Persistent container reuse happens only in handleNewContainer before startup is scheduled.
 			creationOptions := containers.CreateContainerOptions{
 				ContainerSpec:        runSpecForCreation,
 				Name:                 containerName,
-				Network:              defaultNetwork,
+				Networks:             createNetworks,
 				StreamCommandOptions: streamOptions,
 			}
 			inspected, createErr := createContainer(startupCtx, r.orchestrator, creationOptions)
@@ -1300,7 +1346,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			}
 
 			// Finish the container startup process, including any finalization steps
-			finishErr := r.finishCreatedContainerStartup(startupCtx, container, containerName, rcd, inspected, streamOptions, startupStdoutWriter, startupStderrWriter, log)
+			finishErr := r.finishCreatedContainerStartup(startupCtx, container, containerName, rcd, streamOptions, startupStdoutWriter, startupStderrWriter, log)
 			if finishErr != nil {
 				return finishErr
 			}
@@ -1311,7 +1357,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			return nil
 		}()
 
-		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld)
+		retryableErr := templating.IsTransientTemplateError(err) || errors.Is(err, statestore.ErrResourceLeaseHeld) || errors.Is(err, errInitialContainerNetworksNotReady)
 		if !retryableErr && !errors.Is(err, statestore.ErrResourceLeaseNotHeld) {
 			releaseErr := r.releasePersistentContainerResourceLease(context.WithoutCancel(startupCtx), container, log, false)
 			err = errors.Join(err, releaseErr)
@@ -1768,55 +1814,34 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 	return nil
 }
 
-// finishCreatedContainerStartup either starts the container immediately or prepares it for custom network attachment.
+// finishCreatedContainerStartup starts the container after creation.
 func (r *ContainerReconciler) finishCreatedContainerStartup(
 	ctx context.Context,
 	container *apiv1.Container,
 	containerName string,
 	rcd *runningContainerData,
-	inspected *containers.InspectedContainer,
 	streamOptions containers.StreamCommandOptions,
 	startupStdoutWriter usvc_io.ParagraphWriter,
 	startupStderrWriter usvc_io.ParagraphWriter,
 	log logr.Logger,
 ) error {
-	if rcd.runSpec.Networks == nil {
-		startedContainer, startErr := r.startContainerWithTimeout(ctx, containerName, rcd.containerID, streamOptions)
-		rcd.startAttemptFinishedAt = metav1.NowMicro()
-		startupTaskFinished(startupStdoutWriter, startupStderrWriter)
-		if startErr != nil {
-			log.Error(startErr, "Could not start the container")
-			return startErr
-		}
-
-		if startedContainer.Status == containers.ContainerStatusRunning {
-			log.V(1).Info("Container started")
-			if attachErr := r.attachTerminalIfNeeded(container, rcd, log); attachErr != nil {
-				return attachErr
-			}
-			rcd.containerState = apiv1.ContainerStateRunning
-		} else {
-			log.V(1).Info("Container started and exited shortly after", "ContainerStatus", startedContainer.Status)
-			rcd.containerState = apiv1.ContainerStateExited
-		}
-		return nil
+	startedContainer, startErr := r.startContainerWithTimeout(ctx, containerName, rcd.containerID, streamOptions)
+	rcd.startAttemptFinishedAt = metav1.NowMicro()
+	startupTaskFinished(startupStdoutWriter, startupStderrWriter)
+	if startErr != nil {
+		log.Error(startErr, "Could not start the container")
+		return startErr
 	}
 
-	// If a container resource is created without a network, it cannot be connected to a network later (orchestrator limitation).
-	// So for Containers that request attaching to custom networks via Spec, we create the corresponding container resource
-	// attached to default network(s) (usually one: "bridge" for Docker or "podman" for Podman).
-	// Here we detach it from the default network(s). Then we leave the Container object in "starting" state,
-	// and save the changes.
-	//
-	// During next reconciliation loop we create ContainerNetworkConnection objects and start the container resource.
-	// The Network controller takes care of connecting the container resource to requested networks.
-	for i := range inspected.Networks {
-		networkID := inspected.Networks[i].Id
-		disconnectErr := disconnectNetwork(ctx, r.orchestrator, containers.DisconnectNetworkOptions{Network: networkID, Container: string(rcd.containerID), Force: true})
-		if disconnectErr != nil {
-			log.Error(disconnectErr, "Could not detach network from the container", "NetworkID", networkID)
-			return disconnectErr
+	if startedContainer.Status == containers.ContainerStatusRunning {
+		log.V(1).Info("Container started")
+		if attachErr := r.attachTerminalIfNeeded(container, rcd, log); attachErr != nil {
+			return attachErr
 		}
+		rcd.containerState = apiv1.ContainerStateRunning
+	} else {
+		log.V(1).Info("Container started and exited shortly after", "ContainerStatus", startedContainer.Status)
+		rcd.containerState = apiv1.ContainerStateExited
 	}
 
 	return nil
@@ -2328,6 +2353,14 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			continue
 		}
 
+		var containerNetwork *apiv1.ContainerNetwork
+		for i := range networks.Items {
+			if networks.Items[i].NamespacedName() == namespacedNetworkName {
+				containerNetwork = &networks.Items[i]
+				break
+			}
+		}
+
 		uniqueName, _, err := MakeUniqueName(fmt.Sprint(container.Name, "-", namespacedNetworkName.Name))
 		if err != nil {
 			log.Error(err, "Could not generate unique name for ContainerNetworkConnection object")
@@ -2363,10 +2396,26 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 		} else {
 			log.Info("Added new ContainerNetworkConnection", "Network", namespacedNetworkName.String())
 			rcd.networkConnections[networkConnectionKey] = true
+			if inspected != nil && containerNetwork != nil && inspectedContainerConnectedToNetwork(inspected, containerNetwork) &&
+				!slices.Any(validConnectedNetworks, func(validNetwork *apiv1.ContainerNetwork) bool {
+					return validNetwork.NamespacedName() == containerNetwork.NamespacedName()
+				}) {
+				validConnectedNetworks = append(validConnectedNetworks, containerNetwork)
+			}
 		}
 	}
 
 	return validConnectedNetworks, nil
+}
+
+func inspectedContainerConnectedToNetwork(inspected *containers.InspectedContainer, network *apiv1.ContainerNetwork) bool {
+	if inspected == nil || network == nil || network.Status.NetworkName == "" {
+		return false
+	}
+
+	return slices.Any(inspected.Networks, func(existingNetworkConnection containers.InspectedContainerNetwork) bool {
+		return existingNetworkConnection.Name == network.Status.NetworkName
+	})
 }
 
 func (r *ContainerReconciler) createEndpoints(

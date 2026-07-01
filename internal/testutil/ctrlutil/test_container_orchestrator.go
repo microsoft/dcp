@@ -1317,35 +1317,62 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		return "", errRuntimeUnhealthy
 	}
 
+	createNetworks, err := to.resolveCreateContainerNetworks(options)
+	if err != nil {
+		return "", err
+	}
+
 	container, err := to.doCreateContainer(ctx, options)
 	if err != nil {
 		return "", err
 	}
 
-	effectiveNetwork := options.Network
-	if effectiveNetwork == "" {
-		effectiveNetwork = to.DefaultNetworkName()
-	}
-
-	allNetworks := maps.Values(to.networks)
-	i := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
-		return n.matches(effectiveNetwork)
-	})
-	if i < 0 {
-		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
-	}
-	net := allNetworks[i]
-
-	connectOpts := containers.ConnectNetworkOptions{
-		Network:   net.ID,
-		Container: container.ID,
-		Aliases:   options.NetworkAliases,
-	}
-	if err = to.doConnectNetwork(ctx, net, container, connectOpts); err != nil {
-		return container.ID, err
+	for _, createNetwork := range createNetworks {
+		connectOpts := containers.ConnectNetworkOptions{
+			Network:   createNetwork.network.ID,
+			Container: container.ID,
+			Aliases:   createNetwork.aliases,
+		}
+		if err = to.doConnectNetwork(ctx, createNetwork.network, container, connectOpts); err != nil {
+			return container.ID, err
+		}
 	}
 
 	return container.ID, nil
+}
+
+type resolvedCreateContainerNetwork struct {
+	network *containerNetwork
+	aliases []string
+}
+
+func (to *TestContainerOrchestrator) resolveCreateContainerNetworks(options containers.CreateContainerOptions) ([]resolvedCreateContainerNetwork, error) {
+	requestedNetworks := options.Networks
+	if len(requestedNetworks) == 0 {
+		requestedNetworks = []containers.CreateContainerNetworkOptions{
+			{Name: to.DefaultNetworkName()},
+		}
+	}
+
+	allNetworks := maps.Values(to.networks)
+	resolvedNetworks := make([]resolvedCreateContainerNetwork, 0, len(requestedNetworks))
+	for _, requestedNetwork := range requestedNetworks {
+		index := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
+			return n.matches(requestedNetwork.Name)
+		})
+		if index < 0 {
+			return nil, errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", requestedNetwork.Name))
+		}
+
+		aliases := make([]string, len(requestedNetwork.Aliases))
+		copy(aliases, requestedNetwork.Aliases)
+		resolvedNetworks = append(resolvedNetworks, resolvedCreateContainerNetwork{
+			network: allNetworks[index],
+			aliases: aliases,
+		})
+	}
+
+	return resolvedNetworks, nil
 }
 
 func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, options containers.CreateContainerOptions) (*testContainer, error) {
@@ -1569,32 +1596,25 @@ func (to *TestContainerOrchestrator) RunContainer(ctx context.Context, options c
 		return "", errRuntimeUnhealthy
 	}
 
+	createNetworks, err := to.resolveCreateContainerNetworks(options.CreateContainerOptions)
+	if err != nil {
+		return "", err
+	}
+
 	container, err := to.doCreateContainer(ctx, options.CreateContainerOptions)
 	if err != nil {
 		return "", err
 	}
 
-	effectiveNetwork := options.Network
-	if effectiveNetwork == "" {
-		effectiveNetwork = to.DefaultNetworkName()
-	}
-
-	allNetworks := maps.Values(to.networks)
-	i := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
-		return n.matches(effectiveNetwork)
-	})
-	if i < 0 {
-		return "", errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", effectiveNetwork))
-	}
-	net := allNetworks[i]
-
-	connectOpts := containers.ConnectNetworkOptions{
-		Network:   net.ID,
-		Container: container.ID,
-		Aliases:   options.NetworkAliases,
-	}
-	if err = to.doConnectNetwork(ctx, net, container, connectOpts); err != nil {
-		return container.ID, err
+	for _, createNetwork := range createNetworks {
+		connectOpts := containers.ConnectNetworkOptions{
+			Network:   createNetwork.network.ID,
+			Container: container.ID,
+			Aliases:   createNetwork.aliases,
+		}
+		if err = to.doConnectNetwork(ctx, createNetwork.network, container, connectOpts); err != nil {
+			return container.ID, err
+		}
 	}
 
 	if _, err = to.doStartContainer(ctx, container, options.StreamCommandOptions); err != nil {

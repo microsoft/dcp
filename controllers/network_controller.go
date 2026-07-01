@@ -555,16 +555,9 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 	// Initialize the connected network containers map if needed
 	if networkState.connections == nil {
 		networkState.connections = make(map[string]*connectionState)
-
-		if !shouldKeepUnmanagedConnections(network.Spec.EffectiveMode()) {
-			// Session networks are fully managed by this resource, so assume these were all connected by us.
-			for _, containerID := range network.Status.ContainerIDs {
-				networkState.connections[containerID] = &connectionState{}
-			}
-		}
 	}
 
-	// Disconnect unexpected containers from the network
+	// Disconnect containers only if this reconciler previously managed their connection.
 	for i := range network.Status.ContainerIDs {
 		containerID := network.Status.ContainerIDs[i]
 
@@ -578,13 +571,8 @@ func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv
 		}
 
 		_, knownConnection := networkState.connections[containerID]
-		if !knownConnection && shouldKeepUnmanagedConnections(network.Spec.EffectiveMode()) {
-			// Reused networks may have unmanaged connections, so only disconnect containers explicitly connected by us.
-			continue
-		}
-
 		if !knownConnection {
-			networkState.connections[containerID] = &connectionState{}
+			continue
 		}
 
 		err := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
@@ -788,10 +776,6 @@ func shouldDeleteNetwork(mode apiv1.ContainerNetworkMode) bool {
 	default:
 		return false
 	}
-}
-
-func shouldKeepUnmanagedConnections(mode apiv1.ContainerNetworkMode) bool {
-	return mode != apiv1.ContainerNetworkModeSession
 }
 
 func (r *NetworkReconciler) releasePersistentNetworkResourceLease(

@@ -465,14 +465,17 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--name", options.Name)
 	}
 
-	if options.Network != "" {
-		args = append(args, "--network", options.Network)
-
-		if len(options.NetworkAliases) > 0 {
-			for _, alias := range options.NetworkAliases {
-				args = append(args, "--network-alias", alias)
+	for _, network := range options.Networks {
+		networkArg := network.Name
+		for i, alias := range network.Aliases {
+			if i == 0 {
+				networkArg += ":"
+			} else {
+				networkArg += ","
 			}
+			networkArg += "alias=" + alias
 		}
+		args = append(args, "--network", networkArg)
 	}
 
 	for _, mount := range options.VolumeMounts {
