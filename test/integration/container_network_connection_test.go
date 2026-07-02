@@ -7,6 +7,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -96,7 +97,8 @@ func TestContainerNetworkChanges(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+			Image:         imageName,
+			ContainerName: testName,
 			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
@@ -187,7 +189,8 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Image: imageName,
+			Image:         imageName,
+			ContainerName: testName,
 			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
@@ -206,6 +209,8 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 
 	// Ensure the container is still starting
 	_ = ensureContainerState(t, ctx, client, &ctr, apiv1.ContainerStateStarting)
+	_, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{testName}})
+	require.True(t, errors.Is(inspectErr, containers.ErrNotFound), "Container resource should not be created before its initial network exists")
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -226,6 +231,68 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 		return n.Name == updatedNetwork.Status.NetworkName
 	})
 	require.True(t, found)
+}
+
+func TestContainerNetworkKeepsUnmanagedConnections(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-container-network-keeps-unmanaged"
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+
+	containerName := testName + "-container"
+	containerID, err := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: containerName,
+			Networks: []containers.CreateContainerNetworkOptions{
+				{Name: updatedNetwork.Status.NetworkName},
+			},
+			ContainerSpec: apiv1.ContainerSpec{Image: testName + "-image"},
+		},
+	})
+	require.NoError(t, err, "could not run unmanaged container")
+	defer func() {
+		_, _ = containerOrchestrator.RemoveContainers(context.Background(), containers.RemoveContainersOptions{
+			Containers: []string{containerID},
+			Force:      true,
+		})
+	}()
+
+	err = retryOnConflict(ctx, updatedNetwork.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		networkPatch := currentNet.DeepCopy()
+		if networkPatch.Annotations == nil {
+			networkPatch.Annotations = map[string]string{}
+		}
+		networkPatch.Annotations["test.dcp.microsoft.com/reconcile"] = "after-unmanaged-connect"
+		return client.Patch(ctx, networkPatch, ctrl_client.MergeFromWithOptions(currentNet, ctrl_client.MergeFromWithOptimisticLock{}))
+	})
+	require.NoError(t, err, "could not trigger network reconciliation")
+
+	waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(updatedNetwork), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+		return slices.Contains(currentNet.Status.ContainerIDs, containerID), nil
+	})
+
+	inspectedContainers, err := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.NoError(t, err, "could not inspect unmanaged container")
+	require.Len(t, inspectedContainers, 1)
+
+	found := slices.ContainsFunc(inspectedContainers[0].Networks, func(n containers.InspectedContainerNetwork) bool {
+		return n.Name == updatedNetwork.Status.NetworkName
+	})
+	require.True(t, found, "network controller should not disconnect unmanaged session network connections")
 }
 
 // Ensures that network aliases are applied to containers if Container Spec requests them

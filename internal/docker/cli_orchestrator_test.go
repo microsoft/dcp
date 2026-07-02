@@ -8,6 +8,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -319,6 +320,114 @@ func TestUnmarshalListedNetworks(t *testing.T) {
 	require.NoError(t, timestampErr)
 }
 
+func TestGetStatusChecksDockerVersionBeforeNetworks(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	defer func() {
+		require.NoError(t, executor.Close())
+	}()
+	dco := NewDockerCliOrchestrator(testr.New(t), executor).(*DockerCliOrchestrator)
+	installDockerVersionAutoExecution(executor, "Docker version 25.0.0, build 1234567\n", 0)
+	installDockerNetworkListAutoExecution(executor)
+
+	status := dco.getStatus(ctx)
+
+	require.True(t, status.Installed)
+	require.True(t, status.Running)
+	require.Empty(t, status.Error)
+	require.Len(t, executor.FindAll([]string{"docker", "--version"}, "", nil), 1)
+	require.Len(t, executor.FindAll([]string{"docker", "network", "ls"}, "", nil), 1)
+}
+
+func TestGetStatusRejectsUnsupportedDockerVersion(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	defer func() {
+		require.NoError(t, executor.Close())
+	}()
+	dco := NewDockerCliOrchestrator(testr.New(t), executor).(*DockerCliOrchestrator)
+	installDockerVersionAutoExecution(executor, "Docker version 24.0.9, build 2936816\n", 0)
+	installDockerNetworkListAutoExecution(executor)
+
+	status := dco.getStatus(ctx)
+
+	require.True(t, status.Installed)
+	require.False(t, status.Running)
+	require.Contains(t, status.Error, "requires Docker CLI version 25.0.0 or newer")
+	require.Len(t, executor.FindAll([]string{"docker", "--version"}, "", nil), 1)
+	require.Empty(t, executor.FindAll([]string{"docker", "network", "ls"}, "", nil))
+}
+
+func TestGetStatusRejectsInvalidDockerVersionOutput(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
+	defer cancel()
+	executor := internal_testutil.NewTestProcessExecutor(ctx)
+	defer func() {
+		require.NoError(t, executor.Close())
+	}()
+	dco := NewDockerCliOrchestrator(testr.New(t), executor).(*DockerCliOrchestrator)
+	installDockerVersionAutoExecution(executor, "podman version 5.3.1\n", 0)
+	installDockerNetworkListAutoExecution(executor)
+
+	status := dco.getStatus(ctx)
+
+	require.False(t, status.Installed)
+	require.False(t, status.Running)
+	require.Contains(t, status.Error, "may not be a valid Docker installation")
+	require.Len(t, executor.FindAll([]string{"docker", "--version"}, "", nil), 1)
+	require.Empty(t, executor.FindAll([]string{"docker", "network", "ls"}, "", nil))
+}
+
+func TestParseDockerCliVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		output  string
+		want    dockerCliVersion
+		wantErr error
+	}{
+		{
+			name:   "release version",
+			output: "Docker version 25.0.0, build e758fe5\n",
+			want: dockerCliVersion{
+				major: 25,
+				minor: 0,
+				patch: 0,
+			},
+		},
+		{
+			name:   "prerelease suffix",
+			output: "Docker version 25.0.0-beta.1, build e758fe5\n",
+			want: dockerCliVersion{
+				major: 25,
+				minor: 0,
+				patch: 0,
+			},
+		},
+		{
+			name:    "non docker output",
+			output:  "podman version 5.3.1\n",
+			wantErr: errInvalidDockerVersionOutput,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, parseErr := parseDockerCliVersion(testCase.output)
+			if testCase.wantErr != nil {
+				require.True(t, errors.Is(parseErr, testCase.wantErr))
+				return
+			}
+
+			require.NoError(t, parseErr)
+			require.Equal(t, testCase.want, got)
+		})
+	}
+}
+
 func waitForDockerEventsExecution(
 	t *testing.T,
 	ctx context.Context,
@@ -328,6 +437,41 @@ func waitForDockerEventsExecution(
 	pe, err := internal_testutil.WaitForCommand(executor, ctx, []string{"docker", "events"}, "", cond)
 	require.NoError(t, err)
 	return pe
+}
+
+func installDockerVersionAutoExecution(executor *internal_testutil.TestProcessExecutor, output string, exitCode int32) {
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"docker", "--version"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			_, writeErr := execution.Cmd.Stdout.Write([]byte(output))
+			if writeErr != nil {
+				return 1
+			}
+
+			return exitCode
+		},
+	})
+}
+
+func installDockerNetworkListAutoExecution(executor *internal_testutil.TestProcessExecutor) {
+	executor.InstallAutoExecution(internal_testutil.AutoExecution{
+		Condition: internal_testutil.ProcessSearchCriteria{
+			Command: []string{"docker", "network", "ls"},
+		},
+		RunCommand: func(execution *internal_testutil.ProcessExecution) int32 {
+			listedNetworksText := []byte(
+				`{ "CreatedAt": "2024-12-18 16:46:32.448140173 +0000 UTC", "Driver": "bridge", "ID": "6fa4fe834c76", "IPv6": "false", "Internal": "false", "Labels": "", "Name": "bridge", "Scope": "local" }` + "\n",
+			)
+			_, writeErr := execution.Cmd.Stdout.Write(listedNetworksText)
+			if writeErr != nil {
+				return 1
+			}
+
+			return 0
+		},
+	})
 }
 
 func waitForEvent(ctx context.Context, c <-chan ct.EventMessage) (ct.EventMessage, error) {
@@ -421,6 +565,65 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 			options := ct.CreateContainerOptions{}
 			options.VolumeMounts = []apiv1.VolumeMount{tc.mount}
 			args := applyCreateContainerOptions([]string{}, options)
+			require.Equal(t, tc.wantArgs, args)
+		})
+	}
+}
+
+func TestApplyCreateContainerOptionsNetworks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		options  ct.CreateContainerOptions
+		wantArgs []string
+	}{
+		{
+			name: "single network without aliases",
+			options: ct.CreateContainerOptions{
+				Networks: []ct.CreateContainerNetworkOptions{
+					{Name: "network-a"},
+				},
+			},
+			wantArgs: []string{"--network", "network-a"},
+		},
+		{
+			name: "single network with aliases",
+			options: ct.CreateContainerOptions{
+				Networks: []ct.CreateContainerNetworkOptions{
+					{
+						Name:    "network-a",
+						Aliases: []string{"alias-a", "alias-b"},
+					},
+				},
+			},
+			wantArgs: []string{"--network", "name=network-a,alias=alias-a,alias=alias-b"},
+		},
+		{
+			name: "multiple networks with aliases",
+			options: ct.CreateContainerOptions{
+				Networks: []ct.CreateContainerNetworkOptions{
+					{
+						Name:    "network-a",
+						Aliases: []string{"alias-a", "alias-b"},
+					},
+					{
+						Name:    "network-b",
+						Aliases: []string{"alias-c"},
+					},
+				},
+			},
+			wantArgs: []string{
+				"--network", "name=network-a,alias=alias-a,alias=alias-b",
+				"--network", "name=network-b,alias=alias-c",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			args := applyCreateContainerOptions([]string{}, tc.options)
 			require.Equal(t, tc.wantArgs, args)
 		})
 	}

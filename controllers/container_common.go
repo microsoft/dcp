@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	std_slices "slices"
 	"strconv"
 	"strings"
 	"time"
@@ -283,26 +282,6 @@ func startContainer(
 
 	inspected, err := callWithRetryAndVerification(startCtx, defaultContainerOrchestratorBackoff(), action, verify)
 	return inspected, err
-}
-
-func disconnectNetwork(ctx context.Context, o containers.ContainerOrchestrator, opts containers.DisconnectNetworkOptions) error {
-	action := func(ctx context.Context) error {
-		return o.DisconnectNetwork(ctx, opts)
-	}
-
-	verify := func(ctx context.Context) (*containers.InspectedNetwork, error) {
-		return verifyNetworkState(ctx, o, opts.Network, func(i *containers.InspectedNetwork) error {
-			if !std_slices.ContainsFunc(i.Containers, func(c containers.InspectedNetworkContainer) bool {
-				return c.Name == opts.Container || strings.HasPrefix(c.Id, opts.Container)
-			}) {
-				return nil
-			}
-			return fmt.Errorf("container %s is still connected to network %s", opts.Container, opts.Network)
-		})
-	}
-
-	_, err := callWithRetryAndVerification(ctx, defaultContainerOrchestratorBackoff(), action, verify)
-	return err
 }
 
 func inspectNetwork(ctx context.Context, o containers.NetworkOrchestrator, network string) (*containers.InspectedNetwork, error) {
