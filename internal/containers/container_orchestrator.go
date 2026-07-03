@@ -442,6 +442,13 @@ type CreateFilesOptions struct {
 type CreateFiles interface {
 	// Create files/folders in the container based on the provided structure
 	CreateFiles(ctx context.Context, options CreateFilesOptions) error
+
+	// CreateFilesRequiresRunningContainer reports whether CreateFiles can only write into a running
+	// container. Runtimes that inject files by executing a command inside the container (e.g. the
+	// Apple container runtime via `exec ... tar`) return true, so the controller bakes the files into
+	// a derived image instead of copying them into the created container. Runtimes with a
+	// copy-into-created-container primitive (Docker/Podman `cp`) return false.
+	CreateFilesRequiresRunningContainer() bool
 }
 
 // ApplyImageLayers command types

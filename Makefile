@@ -101,6 +101,7 @@ OUTPUT_BIN ?= $(repo_dir)/bin
 DCP_DIR ?= $(home_dir)/.dcp
 DCP_BINARY ?= ${OUTPUT_BIN}/dcp$(bin_exe_suffix)
 DCPTUN_CLIENT_BINARY ?= $(OUTPUT_BIN)/dcptun_c
+DCPDNS_BINARY ?= $(OUTPUT_BIN)/dcpdns_c
 
 # Locations and definitions for tool binaries
 GO_BIN ?= go
@@ -266,11 +267,11 @@ endif
 ##@ Development
 
 ifeq ($(build_os),linux)
-COMMON_BUILD_PREREQS := build-dcp build-dcptun-containerexe
+COMMON_BUILD_PREREQS := build-dcp build-dcptun-containerexe build-dcpdns-containerexe
 COMPILE_PREREQS := $(COMMON_BUILD_PREREQS)
 else
 COMMON_BUILD_PREREQS := build-dcp
-COMPILE_PREREQS := $(COMMON_BUILD_PREREQS) build-dcptun-containerexe
+COMPILE_PREREQS := $(COMMON_BUILD_PREREQS) build-dcptun-containerexe build-dcpdns-containerexe
 endif
 
 # Note: Go runtime is incompatible with C/C++ stack protection feature https://github.com/golang/go/blob/master/src/runtime/cgo/cgo.go#L28 More info/rationale https://github.com/golang/go/issues/21871#issuecomment-329330371
@@ -305,6 +306,15 @@ else
 	GOOS=linux $(GO_BIN) build -o $(DCPTUN_CLIENT_BINARY) $(BUILD_ARGS) ./cmd/dcptun
 endif
 
+.PHONY: build-dcpdns-containerexe
+build-dcpdns-containerexe: $(DCPDNS_BINARY) ## Builds DCP DNS forwarder binary for Linux (used in containers on the Apple container runtime)
+$(DCPDNS_BINARY): $(GO_SOURCES) go.mod | $(OUTPUT_BIN)
+ifeq ($(detected_OS),windows)
+	$$env:GOOS = "linux"; $(GO_BIN) build -o $(DCPDNS_BINARY) $(BUILD_ARGS) ./cmd/dcpdns
+else
+	GOOS=linux $(GO_BIN) build -o $(DCPDNS_BINARY) $(BUILD_ARGS) ./cmd/dcpdns
+endif
+
 .PHONY: clean
 clean: | ${OUTPUT_BIN} ${TOOL_BIN} ## Deletes build output (all binaries), and all cached tool binaries.
 	$(rm_rf) $(OUTPUT_BIN)/*
@@ -318,11 +328,13 @@ lint: golangci-lint generate-grpc ## Runs the linter
 install: compile | $(DCP_DIR) ## Installs all binaries to their destinations
 	$(install) $(DCP_BINARY) $(DCP_DIR)
 	$(install) $(DCPTUN_CLIENT_BINARY) $(DCP_DIR)
+	$(install) $(DCPDNS_BINARY) $(DCP_DIR)
 
 .PHONY: uninstall
 uninstall: ## Uninstalls all binaries from their destinations
 	$(rm_f) $(DCP_DIR)/dcp$(bin_exe_suffix)
 	$(rm_f) $(DCP_DIR)/dcptun_c
+	$(rm_f) $(DCP_DIR)/dcpdns_c
 
 ifneq ($(detected_OS),windows)
 .PHONY: link-dcp

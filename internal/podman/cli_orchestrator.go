@@ -827,6 +827,10 @@ func (pco *PodmanCliOrchestrator) RemoveContainers(ctx context.Context, options 
 	return removed, err
 }
 
+func (pco *PodmanCliOrchestrator) CreateFilesRequiresRunningContainer() bool {
+	return false
+}
+
 func (pco *PodmanCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
 	args := []string{"container", "cp"}
 
