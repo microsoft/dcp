@@ -130,6 +130,7 @@ func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
 		},
 		Spec: apiv1.ContainerNetworkSpec{
 			NetworkName: runtimeNetworkName,
+			Mode:        apiv1.ContainerNetworkModePersistent,
 		},
 	}
 
@@ -144,6 +145,25 @@ func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
 	require.NoError(t, err, "could not inspect the network by normalized name")
 	require.Len(t, inspectedNetworks, 1, "expected to find a single network")
 	require.Equal(t, updatedNet.Status.ID, inspectedNetworks[0].Id, "network ID did not match expected value")
+
+	reusedNet := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-reuse",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: runtimeNetworkName,
+			Mode:        apiv1.ContainerNetworkModePersistent,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", reusedNet.ObjectMeta.Name)
+	err = client.Create(ctx, &reusedNet)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedReusedNet := ensureNetworkCreated(t, ctx, &reusedNet)
+	require.Equal(t, expectedRuntimeNetworkName, updatedReusedNet.Status.NetworkName, "runtime network name was not normalized")
+	require.Equal(t, updatedNet.Status.ID, updatedReusedNet.Status.ID, "persistent network was not reused by normalized name")
 }
 
 func TestNetworkCreateExistingPersistentInstance(t *testing.T) {
