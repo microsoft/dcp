@@ -390,7 +390,12 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 	r.ensureNetworkWatch(network, log)
 
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
-	if network.Spec.EffectiveMode() == apiv1.ContainerNetworkModePersistent {
+	effectiveMode := network.Spec.EffectiveMode()
+	if networkName != "" && shouldCreateMissingNetwork(effectiveMode) {
+		networkName = strings.ToLower(networkName)
+	}
+
+	if effectiveMode == apiv1.ContainerNetworkModePersistent {
 		var change objectChange
 		if r.config.StateStore == nil {
 			stateStoreErr := fmt.Errorf("state store is not configured")
