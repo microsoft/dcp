@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,38 @@ func TestNetworkCreatePersistentInstance(t *testing.T) {
 	require.NoError(t, err, "could not create a ContainerNetwork object")
 
 	_ = ensureNetworkCreated(t, ctx, &net)
+}
+
+func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-create-normalizes-runtime-name"
+	const runtimeNetworkName = "Test-Network-Create-Normalizes-Runtime-Name"
+	expectedRuntimeNetworkName := strings.ToLower(runtimeNetworkName)
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: runtimeNetworkName,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNet := ensureNetworkCreated(t, ctx, &net)
+	require.Equal(t, expectedRuntimeNetworkName, updatedNet.Status.NetworkName, "runtime network name was not normalized")
+
+	inspectedNetworks, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{expectedRuntimeNetworkName}})
+	require.NoError(t, err, "could not inspect the network by normalized name")
+	require.Len(t, inspectedNetworks, 1, "expected to find a single network")
+	require.Equal(t, updatedNet.Status.ID, inspectedNetworks[0].Id, "network ID did not match expected value")
 }
 
 func TestNetworkCreateExistingPersistentInstance(t *testing.T) {

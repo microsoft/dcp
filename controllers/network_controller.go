@@ -492,6 +492,10 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 		log = log.WithValues("NetworkName", networkName)
 	}
 
+	if shouldCreateMissingNetwork(effectiveMode) {
+		networkName = strings.ToLower(networkName)
+	}
+
 	createOptions := containers.CreateNetworkOptions{
 		Name: networkName,
 		IPv6: network.Spec.IPv6,
