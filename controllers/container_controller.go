@@ -988,7 +988,7 @@ func (r *ContainerReconciler) getInitialCreateContainerNetworks(
 		aliases := make([]string, len(networkConfig.Aliases))
 		copy(aliases, networkConfig.Aliases)
 		createNetworks = append(createNetworks, containers.CreateContainerNetworkOptions{
-			Name:    network.Status.NetworkName,
+			Name:    network.Status.ID,
 			Aliases: aliases,
 		})
 	}

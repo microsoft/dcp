@@ -374,3 +374,64 @@ func TestContainerNetworkWithAliases(t *testing.T) {
 	require.Equal(t, aliases1, foundNetwork1.Aliases, "Network 1 aliases should match expected values")
 	require.Equal(t, aliases2, foundNetwork2.Aliases, "Network 2 aliases should match expected values")
 }
+
+func TestContainerConnectsToMixedCasePersistentNetworkWithAliases(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-container-mixed-case-persistent-network-aliases"
+	const runtimeNetworkName = "Test-Container-Mixed-Case-Persistent-Network-Aliases"
+
+	id, err := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: runtimeNetworkName,
+	})
+	require.NoError(t, err, "could not create a network")
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName + "-network",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: runtimeNetworkName,
+			Mode:        apiv1.ContainerNetworkModePersistent,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNetwork := ensureNetworkCreated(t, ctx, &net)
+	require.Equal(t, id, updatedNetwork.Status.ID, "network ID did not match expected value")
+	require.Equal(t, runtimeNetworkName, updatedNetwork.Status.NetworkName, "existing runtime network name was not preserved")
+
+	const imageName = testName + "-image"
+	aliases := []string{"web", "frontend"}
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			Image: imageName,
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+				{
+					Name:    net.ObjectMeta.Name,
+					Aliases: aliases,
+				},
+			},
+		},
+	}
+
+	t.Logf("Creating Container object '%s' with mixed-case persistent network and aliases", ctr.ObjectMeta.Name)
+	err = client.Create(ctx, &ctr)
+	require.NoError(t, err, "Could not create a Container object")
+
+	_, inspectedContainer := ensureContainerRunning(t, ctx, &ctr)
+	require.Len(t, inspectedContainer.Networks, 1, "Container should only be attached to the target network")
+	require.Equal(t, runtimeNetworkName, inspectedContainer.Networks[0].Name, "Container should be attached to the mixed-case network")
+	require.Equal(t, aliases, inspectedContainer.Networks[0].Aliases, "Container should have the requested aliases on the target network")
+}

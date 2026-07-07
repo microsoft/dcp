@@ -166,6 +166,39 @@ func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
 	require.Equal(t, updatedNet.Status.ID, updatedReusedNet.Status.ID, "persistent network was not reused by normalized name")
 }
 
+func TestNetworkPersistentReusesMixedCaseRuntimeName(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-persistent-reuses-mixed-case-runtime-name"
+	const runtimeNetworkName = "Test-Network-Persistent-Reuses-Mixed-Case-Runtime-Name"
+
+	id, err := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: runtimeNetworkName,
+	})
+	require.NoError(t, err, "could not create a network")
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: runtimeNetworkName,
+			Mode:        apiv1.ContainerNetworkModePersistent,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNet := ensureNetworkCreated(t, ctx, &net)
+	require.Equal(t, id, updatedNet.Status.ID, "network ID did not match expected value")
+	require.Equal(t, runtimeNetworkName, updatedNet.Status.NetworkName, "existing runtime network name was not preserved")
+}
+
 func TestNetworkCreateExistingPersistentInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
