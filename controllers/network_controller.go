@@ -391,10 +391,6 @@ func (r *NetworkReconciler) ensureNetwork(ctx context.Context, network *apiv1.Co
 
 	networkName := strings.TrimSpace(network.Spec.NetworkName)
 	effectiveMode := network.Spec.EffectiveMode()
-	if networkName != "" && shouldCreateMissingNetwork(effectiveMode) {
-		networkName = strings.ToLower(networkName)
-	}
-
 	if effectiveMode == apiv1.ContainerNetworkModePersistent {
 		var change objectChange
 		if r.config.StateStore == nil {
@@ -471,6 +467,33 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 		if !errors.Is(err, containers.ErrNotFound) {
 			log.Error(err, "Could not inspect existing network")
 			return additionalReconciliationNeeded
+		}
+		if shouldCreateMissingNetwork(effectiveMode) {
+			normalizedNetworkName := strings.ToLower(networkName)
+			if normalizedNetworkName != "" && normalizedNetworkName != networkName {
+				isNormalizedNetworkSafeToReuse := r.harvester.IsDone() || r.harvester.TryProtectNetwork(ctx, normalizedNetworkName)
+				existing, err = inspectNetworkIfExists(ctx, r.orchestrator, normalizedNetworkName)
+				if err == nil {
+					if !isNormalizedNetworkSafeToReuse {
+						log.V(1).Info("Waiting for the resource harvester to finish before re-using existing network")
+						return additionalReconciliationNeeded
+					}
+
+					r.existingNetworks.Store(network.NamespacedName(), existing.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateRunning, id: existing.Id})
+					network.Status.ID = existing.Id
+					network.Status.State = apiv1.ContainerNetworkStateRunning
+					network.Status.NetworkName = existing.Name
+					network.Status.Driver = existing.Driver
+					network.Status.IPv6 = existing.IPv6
+					network.Status.Subnets = existing.Subnets
+					network.Status.Gateways = existing.Gateways
+					return statusChanged
+				}
+				if !errors.Is(err, containers.ErrNotFound) {
+					log.Error(err, "Could not inspect normalized existing network")
+					return additionalReconciliationNeeded
+				}
+			}
 		}
 		if !shouldCreateMissingNetwork(effectiveMode) {
 			change := noChange
