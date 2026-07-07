@@ -1357,11 +1357,16 @@ func (to *TestContainerOrchestrator) resolveCreateContainerNetworks(options cont
 	allNetworks := maps.Values(to.networks)
 	resolvedNetworks := make([]resolvedCreateContainerNetwork, 0, len(requestedNetworks))
 	for _, requestedNetwork := range requestedNetworks {
+		requestedNetworkName := requestedNetwork.Name
+		if len(requestedNetwork.Aliases) > 0 {
+			requestedNetworkName = strings.ToLower(requestedNetworkName)
+		}
+
 		index := slices.IndexFunc(allNetworks, func(n *containerNetwork) bool {
-			return n.matches(requestedNetwork.Name)
+			return n.matches(requestedNetworkName)
 		})
 		if index < 0 {
-			return nil, errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", requestedNetwork.Name))
+			return nil, errors.Join(containers.ErrNotFound, fmt.Errorf("network %s not found", requestedNetworkName))
 		}
 
 		aliases := make([]string, len(requestedNetwork.Aliases))
