@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"testing"
 	"time"
 
@@ -114,14 +113,13 @@ func TestNetworkCreatePersistentInstance(t *testing.T) {
 	_ = ensureNetworkCreated(t, ctx, &net)
 }
 
-func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
+func TestNetworkCreatePreservesRuntimeName(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	const testName = "test-network-create-normalizes-runtime-name"
-	const runtimeNetworkName = "Test-Network-Create-Normalizes-Runtime-Name"
-	expectedRuntimeNetworkName := strings.ToLower(runtimeNetworkName)
+	const testName = "test-network-create-preserves-runtime-name"
+	const runtimeNetworkName = "Test-Network-Create-Preserves-Runtime-Name"
 
 	net := apiv1.ContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -139,10 +137,10 @@ func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
 	require.NoError(t, err, "could not create a ContainerNetwork object")
 
 	updatedNet := ensureNetworkCreated(t, ctx, &net)
-	require.Equal(t, expectedRuntimeNetworkName, updatedNet.Status.NetworkName, "runtime network name was not normalized")
+	require.Equal(t, runtimeNetworkName, updatedNet.Status.NetworkName, "runtime network name was not preserved")
 
-	inspectedNetworks, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{expectedRuntimeNetworkName}})
-	require.NoError(t, err, "could not inspect the network by normalized name")
+	inspectedNetworks, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{runtimeNetworkName}})
+	require.NoError(t, err, "could not inspect the network by runtime name")
 	require.Len(t, inspectedNetworks, 1, "expected to find a single network")
 	require.Equal(t, updatedNet.Status.ID, inspectedNetworks[0].Id, "network ID did not match expected value")
 
@@ -162,8 +160,8 @@ func TestNetworkCreateNormalizesRuntimeName(t *testing.T) {
 	require.NoError(t, err, "could not create a ContainerNetwork object")
 
 	updatedReusedNet := ensureNetworkCreated(t, ctx, &reusedNet)
-	require.Equal(t, expectedRuntimeNetworkName, updatedReusedNet.Status.NetworkName, "runtime network name was not normalized")
-	require.Equal(t, updatedNet.Status.ID, updatedReusedNet.Status.ID, "persistent network was not reused by normalized name")
+	require.Equal(t, runtimeNetworkName, updatedReusedNet.Status.NetworkName, "runtime network name was not preserved")
+	require.Equal(t, updatedNet.Status.ID, updatedReusedNet.Status.ID, "persistent network was not reused by runtime name")
 }
 
 func TestNetworkPersistentReusesMixedCaseRuntimeName(t *testing.T) {
