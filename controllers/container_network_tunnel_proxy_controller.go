@@ -1048,7 +1048,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		Name: clientProxyCtrName,
 		Networks: []containers.CreateContainerNetworkOptions{
 			{
-				Name:    containerNetwork.Status.NetworkName,
+				Name:    containerNetwork.Status.ID,
 				Aliases: tunnelProxy.Spec.Aliases,
 			},
 		},
