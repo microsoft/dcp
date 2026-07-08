@@ -24,9 +24,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GOPRIVATE: github.com/microsoft/usvc-*,github.com/microsoft/dcp
-
 jobs:
   aspire-regression:
     name: Aspire regression (latest daily)
