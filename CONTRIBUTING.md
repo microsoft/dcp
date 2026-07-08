@@ -96,26 +96,6 @@ If the test is killed while running under the debugger, may leave orphaned `dcp`
 ## Running Aspire tests
 You can run the Aspire tests against a local DCP instance using the `DcpPublisher__CliPath` environment variable. Set it with the absolute path to a local DCP executable, e.g. `DcpPublisher__CliPath=<dcprepo>/bin/dcp` and when you run Aspire tests, they'll use your local build instead of the current version inserted into the Aspire repo.
 
-### Aspire end-to-end regression test
-The `test/aspire` folder contains a self-contained end-to-end regression test that runs a real Aspire AppHost, orchestrated by a locally built DCP binary, against the latest Aspire daily build. It is intended to catch DCP regressions in the real Aspire integration (process orchestration, container creation, and container networking) before a DCP build is inserted into Aspire.
-
-`test/aspire/run-regression.sh` uses the [Aspire CLI](https://learn.microsoft.com/dotnet/aspire/cli/) to scaffold a minimal AppHost from the daily channel, preserves the generated daily `#:sdk` directive, appends `test/aspire/apphost-body.cs` (which adds an executable, a session container, and persistent containers on a shared network, covering both default container naming and one explicit mixed-case container name/aliases), and runs it with `DcpPublisher__CliPath` pointing Aspire at your local DCP build. The committed AppHost body intentionally has no pinned Aspire SDK version; the script passes only if `aspire run --detach` starts the AppHost and `aspire wait` reports every expected resource healthy.
-
-To run it locally:
-
-```bash
-# Prerequisites: a .NET 10 SDK, a container runtime (Docker/Podman), and the
-# daily Aspire CLI:
-#   curl -sSL https://aspire.dev/install.sh | bash -s -- -q dev
-make build
-test/aspire/run-regression.sh            # uses bin/dcp by default
-test/aspire/run-regression.sh --dcp /path/to/dcp
-```
-
-The script is intended for CI and does not remove the container runtime resources it creates. On GitHub-hosted runners these are cleaned up with the job environment; local runs may leave containers and persistent networks behind.
-
-In CI this runs on Linux (where the hosted runner provides a Docker runtime) via the `.github/workflows/aspire-regression.yml` workflow, on a nightly schedule, on pushes to `main`, on pull requests targeting `main`, and on demand through **Run workflow**.
-
 ## Troubleshooting and debugging tips
 
 ### `make lint` times out (or ends with an error that says "Killed")
