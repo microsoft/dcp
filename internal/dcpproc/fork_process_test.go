@@ -44,7 +44,7 @@ func TestForkProcessExitsWithChildExitCode(t *testing.T) {
 	t.Parallel()
 
 	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
-	defer testCancel()
+	t.Cleanup(testCancel)
 
 	dcpProc, dcpProcErr := getDcpProcExecutablePath()
 	require.NoError(t, dcpProcErr)
