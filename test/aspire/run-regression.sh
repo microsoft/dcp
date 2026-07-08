@@ -5,8 +5,8 @@
 # It scaffolds a minimal AppHost with the installed (ideally latest daily) Aspire
 # CLI, keeps the scaffolded daily "#:sdk" directive, appends
 # test/aspire/apphost-body.cs, and runs it while pointing Aspire at the local DCP
-# build via DcpPublisher__CliPath. The test passes only if every resource becomes
-# healthy and the AppHost exits cleanly.
+# build via DcpPublisher__CliPath. The test passes only if the Aspire CLI can
+# start the AppHost and every expected resource becomes healthy.
 #
 # Prerequisites:
 #   - The Aspire CLI on PATH (install the daily channel with:
@@ -68,8 +68,16 @@ fi
 
 work_dir="$(mktemp -d 2>/dev/null || mktemp -d -t dcp-aspire-regression)"
 run_id="$(date -u +%Y%m%d%H%M%S)-$$"
+apphost_started=false
 
 cleanup() {
+    if [[ "${apphost_started}" == "true" ]]; then
+        (
+            cd "${work_dir}"
+            aspire stop --non-interactive --apphost apphost.cs >/dev/null 2>&1 || true
+        )
+    fi
+
     rm -rf "${work_dir}"
 }
 trap cleanup EXIT
@@ -108,38 +116,22 @@ echo "==> Using scaffolded SDK pin: ${sdk_line}"
 
 echo "==> Running the regression AppHost against DCP at: ${dcp_cli_path}"
 output_log="${work_dir}/run.log"
-set +e
 (
     cd "${work_dir}"
     DcpPublisher__CliPath="${dcp_cli_path}" \
         DCP_ASPIRE_REGRESSION_RUN_ID="${run_id}" \
         ASPIRE_ALLOW_UNSECURED_TRANSPORT="true" \
         DOTNET_ENVIRONMENT="Development" \
-        dotnet run apphost.cs
+        aspire run --detach --isolated --format Json --non-interactive --apphost apphost.cs
 ) 2>&1 | tee "${output_log}"
-run_status=${PIPESTATUS[0]}
-set -e
-
-if [[ ${run_status} -ne 0 ]]; then
-    echo "AppHost exited with status ${run_status}" >&2
-    exit "${run_status}"
-fi
-
-if ! grep -q "DCP-REGRESSION-APPHOST-STARTED" "${output_log}"; then
-    echo "AppHost exited cleanly but did not report that it started" >&2
-    exit 1
-fi
+apphost_started=true
 
 for resource_name in worker cache persistent-cache persistent-worker web; do
-    if ! grep -q "DCP-REGRESSION-RESOURCE-HEALTHY: ${resource_name}" "${output_log}"; then
-        echo "AppHost exited cleanly but did not report resource healthy: ${resource_name}" >&2
-        exit 1
-    fi
+    echo "==> Waiting for Aspire resource to become healthy: ${resource_name}"
+    (
+        cd "${work_dir}"
+        aspire wait "${resource_name}" --status healthy --timeout 300 --non-interactive --apphost apphost.cs
+    )
 done
-
-if ! grep -q "DCP-REGRESSION-OK" "${output_log}"; then
-    echo "AppHost exited cleanly but did not report all resources healthy" >&2
-    exit 1
-fi
 
 echo "==> Aspire regression test passed"

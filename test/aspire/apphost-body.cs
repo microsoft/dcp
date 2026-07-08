@@ -7,14 +7,11 @@
 // latest Aspire daily CLI, preserves the generated daily SDK directive, appends
 // this body, and runs it.
 //
-// The AppHost starts the model, waits for every resource to become healthy, and
-// exits (0 on success, non-zero on failure). The scenario includes both session
-// and persistent containers. Resource names, container names, and container
-// network aliases intentionally use mixed casing to exercise DCP's case handling
-// (a past regression attached containers to the wrong network when network names
-// were mixed case).
+// The scenario includes both session and persistent containers. Resource names,
+// container names, and container network aliases intentionally use mixed casing
+// to exercise DCP's case handling (a past regression attached containers to the
+// wrong network when network names were mixed case).
 
-using Microsoft.Extensions.DependencyInjection;
 using Aspire.Hosting.ApplicationModel;
 
 var runId = Environment.GetEnvironmentVariable("DCP_ASPIRE_REGRESSION_RUN_ID");
@@ -59,7 +56,7 @@ var persistentWorker = builder.AddContainer("persistent-worker", "mcr.microsoft.
 
 // Session container depending on both session and persistent containers:
 // exercises container network attachment and dependency ordering.
-var web = builder.AddContainer("web", "mcr.microsoft.com/cbl-mariner/busybox", "2.0")
+builder.AddContainer("web", "mcr.microsoft.com/cbl-mariner/busybox", "2.0")
     .WithEntrypoint("sleep")
     .WithArgs("3600")
     .WithEnvironment("DCP_ASPIRE_REGRESSION_RUN_ID", runId)
@@ -67,24 +64,4 @@ var web = builder.AddContainer("web", "mcr.microsoft.com/cbl-mariner/busybox", "
     .WaitFor(cache)
     .WaitFor(persistentWorker);
 
-await using var app = builder.Build();
-using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-
-try
-{
-    await app.StartAsync(cts.Token);
-    Console.WriteLine("DCP-REGRESSION-APPHOST-STARTED");
-
-    var notifications = app.Services.GetRequiredService<ResourceNotificationService>();
-    foreach (var resourceName in new[] { "worker", "cache", "persistent-cache", "persistent-worker", "web" })
-    {
-        await notifications.WaitForResourceHealthyAsync(resourceName, cts.Token);
-        Console.WriteLine($"DCP-REGRESSION-RESOURCE-HEALTHY: {resourceName}");
-    }
-
-    Console.WriteLine("DCP-REGRESSION-OK: all resources healthy");
-}
-finally
-{
-    await app.StopAsync(cts.Token);
-}
+builder.Build().Run();
