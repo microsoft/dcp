@@ -1,0 +1,66 @@
+name: Aspire Regression
+
+# Runs a real Aspire AppHost, orchestrated by a freshly built DCP binary, against
+# the latest Aspire daily build. This catches DCP regressions in the real Aspire
+# integration (process orchestration, container creation, container networking)
+# before a DCP build is inserted into Aspire.
+#
+# Runs on Linux only, where a Docker runtime is available on the hosted runner so
+# the container resources in the AppHost can actually start.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly, to catch drift against the moving Aspire daily build even when DCP
+    # itself has not changed.
+    - cron: '0 7 * * *'
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  aspire-regression:
+    name: Aspire regression (latest daily)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Go environment
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+        architecture: 'x64'
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Build DCP
+      run: make build
+
+    - name: Install latest daily Aspire CLI
+      # The install script appends its install directory to $GITHUB_PATH when
+      # GITHUB_ACTIONS=true, so 'aspire' is available in later steps.
+      run: curl -sSL https://aspire.dev/install.sh | bash -s -- -q dev
+
+    - name: Run Aspire regression test
+      run: test/aspire/run-regression.sh
+      env:
+        DCP_DIAGNOSTICS_LOG_LEVEL: debug
+        DCP_DIAGNOSTICS_LOG_FOLDER: ${{ github.workspace }}/test-logs
+        DCP_PRESERVE_EXECUTABLE_LOGS: 'true'
+
+    - name: Upload DCP logs
+      uses: actions/upload-artifact@v4
+      if: ${{ failure() }}
+      with:
+        name: aspire-regression-logs
+        path: ${{ github.workspace }}/test-logs/
