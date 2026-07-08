@@ -8,7 +8,6 @@
 package dcpproc_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -16,13 +15,14 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestForkProcessStartsOutsideParentSession(t *testing.T) {
 	t.Parallel()
 
-	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer testCancel()
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	t.Cleanup(testCancel)
 
 	forkedProcess := startForkedDelay(t, testCtx)
 
