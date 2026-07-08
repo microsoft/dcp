@@ -114,7 +114,7 @@ test/aspire/run-regression.sh --dcp /path/to/dcp
 
 The script is intended for CI and does not remove the container runtime resources it creates. On GitHub-hosted runners these are cleaned up with the job environment; local runs may leave containers and persistent networks behind.
 
-In CI this runs on Linux (where the hosted runner provides a Docker runtime) via the `.github/workflows/aspire-regression.yml` workflow, on a nightly schedule, on pushes to `main`, and on demand through **Run workflow**.
+In CI this runs on Linux (where the hosted runner provides a Docker runtime) via the `.github/workflows/aspire-regression.yml` workflow, on a nightly schedule, on pushes to `main`, on pull requests targeting `main`, and on demand through **Run workflow**.
 
 ## Troubleshooting and debugging tips
 
