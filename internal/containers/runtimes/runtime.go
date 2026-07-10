@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/go-logr/logr"
+	"github.com/microsoft/dcp/internal/applecontainer"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/docker"
@@ -22,8 +23,9 @@ type ContainerOrchestratorFactory func(log logr.Logger, executor process.Executo
 var (
 	errNoRuntimeFound = fmt.Errorf("no container runtime was found")
 	supportedRuntimes = map[flags.RuntimeFlagValue]ContainerOrchestratorFactory{
-		flags.DockerRuntime: docker.NewDockerCliOrchestrator,
-		flags.PodmanRuntime: podman.NewPodmanCliOrchestrator,
+		flags.DockerRuntime:         docker.NewDockerCliOrchestrator,
+		flags.PodmanRuntime:         podman.NewPodmanCliOrchestrator,
+		flags.AppleContainerRuntime: applecontainer.NewAppleContainerCliOrchestrator,
 	}
 )
 

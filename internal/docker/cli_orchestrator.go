@@ -962,6 +962,10 @@ func (dco *DockerCliOrchestrator) RemoveContainers(ctx context.Context, options 
 	return removed, err
 }
 
+func (dco *DockerCliOrchestrator) CreateFilesRequiresRunningContainer() bool {
+	return false
+}
+
 func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
 	args := []string{"container", "cp"}
 

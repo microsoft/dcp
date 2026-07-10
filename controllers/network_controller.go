@@ -321,6 +321,12 @@ func (r *NetworkReconciler) deleteNetwork(ctx context.Context, network *apiv1.Co
 		return nil
 	}
 
+	if containers.UsesSingleNetwork(r.orchestrator) {
+		// The network was mapped onto the runtime's permanent, shared default network; there is
+		// nothing to disconnect or remove.
+		return nil
+	}
+
 	if network.Status.ID != "" {
 		inspectedNetwork, err := r.orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
 			Networks: []string{network.Status.ID},
@@ -440,6 +446,12 @@ func (r *NetworkReconciler) failNetworkToStart(network *apiv1.ContainerNetwork, 
 }
 
 func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *apiv1.ContainerNetwork, networkName string, log logr.Logger) objectChange {
+	if containers.UsesSingleNetwork(r.orchestrator) {
+		// The runtime exposes only the built-in default network (e.g. Apple container). Map this
+		// network onto it instead of creating a custom network.
+		return r.ensureSingleNetwork(ctx, network, log)
+	}
+
 	effectiveMode := network.Spec.EffectiveMode()
 	if shouldReuseExistingNetwork(effectiveMode) {
 		isNetworkSafeToReuse := r.harvester.IsDone() || r.harvester.TryProtectNetwork(ctx, networkName)
@@ -537,6 +549,37 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 	network.Status.IPv6 = cnet.IPv6
 	network.Status.Subnets = cnet.Subnets
 	network.Status.Gateways = cnet.Gateways
+
+	return statusChanged
+}
+
+// ensureSingleNetwork maps a ContainerNetwork onto the runtime's built-in default network for
+// single-network runtimes (e.g. Apple container), which have no concept of custom networks.
+// Containers are created directly on the default network and reach each other via their IPs, so
+// there is nothing to create — we just reflect the default network's details into the status.
+func (r *NetworkReconciler) ensureSingleNetwork(ctx context.Context, network *apiv1.ContainerNetwork, log logr.Logger) objectChange {
+	defaultNetwork, err := inspectNetwork(ctx, r.orchestrator, r.orchestrator.DefaultNetworkName())
+	if err != nil {
+		if errors.Is(err, containers.ErrRuntimeNotHealthy) {
+			log.Error(err, "Could not inspect the default network as the container runtime is not healthy, retrying...")
+			return additionalReconciliationNeeded
+		}
+
+		log.Error(err, "Could not inspect the default network")
+		r.existingNetworks.Store(network.NamespacedName(), network.Name, &runningNetworkState{state: apiv1.ContainerNetworkStateFailedToStart, message: err.Error()})
+		network.Status.State = apiv1.ContainerNetworkStateFailedToStart
+		network.Status.Message = err.Error()
+		return statusChanged
+	}
+
+	r.existingNetworks.Store(network.NamespacedName(), defaultNetwork.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateRunning, id: defaultNetwork.Id})
+	network.Status.ID = defaultNetwork.Id
+	network.Status.State = apiv1.ContainerNetworkStateRunning
+	network.Status.NetworkName = defaultNetwork.Name
+	network.Status.Driver = defaultNetwork.Driver
+	network.Status.IPv6 = defaultNetwork.IPv6
+	network.Status.Subnets = defaultNetwork.Subnets
+	network.Status.Gateways = defaultNetwork.Gateways
 
 	return statusChanged
 }

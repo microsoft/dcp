@@ -2105,6 +2105,10 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 	return result, err
 }
 
+func (to *TestContainerOrchestrator) CreateFilesRequiresRunningContainer() bool {
+	return false
+}
+
 func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options containers.CreateFilesOptions) error {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()

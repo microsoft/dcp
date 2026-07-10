@@ -51,7 +51,7 @@ func NewInfoCommand(log logr.Logger) (*cobra.Command, error) {
 }
 
 type containerRuntime struct {
-	// Name of the container runtime (i.e. docker, podman)
+	// Name of the container runtime (i.e. docker, podman, container)
 	Runtime string `json:"runtime"`
 
 	// Default hostname within a container for accessing the host machine network

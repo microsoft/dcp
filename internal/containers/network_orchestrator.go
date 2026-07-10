@@ -187,3 +187,22 @@ type NetworkOrchestrator interface {
 
 	RuntimeStatusChecker
 }
+
+// SingleNetworkOrchestrator is an optional capability implemented by orchestrators that expose
+// only a single, built-in network (the default network) and cannot create custom networks or
+// connect/disconnect containers after creation — for example the Apple `container` runtime.
+//
+// For such runtimes, all DCP-managed networks are mapped onto the default network: containers are
+// created directly on it and reach each other via their routable IPs, and the controllers skip
+// the create/connect/detach/disconnect machinery that is meaningless (and impossible) there.
+type SingleNetworkOrchestrator interface {
+	UsesSingleNetwork() bool
+}
+
+// UsesSingleNetwork reports whether the orchestrator exposes only the built-in default network
+// (see SingleNetworkOrchestrator). It is false for orchestrators that do not implement the
+// capability (Docker, Podman).
+func UsesSingleNetwork(o any) bool {
+	sno, ok := o.(SingleNetworkOrchestrator)
+	return ok && sno.UsesSingleNetwork()
+}

@@ -18,13 +18,14 @@ const RuntimeFlagName = "container-runtime"
 type RuntimeFlagValue string
 
 const (
-	UnknownRuntime RuntimeFlagValue = ""
-	DockerRuntime  RuntimeFlagValue = "docker"
-	PodmanRuntime  RuntimeFlagValue = "podman"
+	UnknownRuntime        RuntimeFlagValue = ""
+	DockerRuntime         RuntimeFlagValue = "docker"
+	PodmanRuntime         RuntimeFlagValue = "podman"
+	AppleContainerRuntime RuntimeFlagValue = "container"
 )
 
 var (
-	supportedRuntimeNames = []string{"docker", "podman"}
+	supportedRuntimeNames = []string{"docker", "podman", "container"}
 	runtime               = UnknownRuntime
 )
 
