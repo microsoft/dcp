@@ -8,14 +8,14 @@
 package exerunners
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/internal/testutil"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Verifies that Executables using a terminal do not have their windows hidden,
@@ -41,10 +41,10 @@ func TestProcessExecutableRunnerWindowsNotHiddenIfTerminalEnabledn(t *testing.T)
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 			defer cancel()
 
-			runner := NewProcessExecutableRunner(testutil.NewTestProcessExecutor(ctx))
+			runner := NewProcessExecutableRunner(internal_testutil.NewTestProcessExecutor(ctx))
 			exe := &apiv1.Executable{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "api",
