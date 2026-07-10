@@ -26,10 +26,15 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/statestore"
-	"github.com/microsoft/dcp/internal/testutil"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
+)
+
+const (
+	defaultExerunnerTestTimeout = 20 * time.Second
 )
 
 func TestProcessExecutableRunnerStartsLifecycleMonitor(t *testing.T) {
@@ -63,10 +68,10 @@ func TestProcessExecutableRunnerStartsLifecycleMonitor(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			dcppaths.EnableTestPathProbing()
 
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 			defer cancel()
 
-			processExecutor := testutil.NewTestProcessExecutor(ctx)
+			processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
 			runner := NewProcessExecutableRunner(processExecutor)
 			persistentOutputDir := ""
 			if testCase.persistent {
@@ -167,13 +172,13 @@ func TestProcessExecutableRunnerSkipsTimestampsForPersistentOutput(t *testing.T)
 		t.Run(testCase.name, func(t *testing.T) {
 			dcppaths.EnableTestPathProbing()
 
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 			defer cancel()
 
 			if testCase.persistent {
 				overridePersistentExecutableOutputDir(t)
 			}
-			processExecutor := testutil.NewTestProcessExecutor(ctx)
+			processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
 			runner := NewProcessExecutableRunner(processExecutor)
 			exe := &apiv1.Executable{
 				ObjectMeta: metav1.ObjectMeta{
@@ -220,10 +225,10 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 
 	dcppaths.EnableTestPathProbing()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 	defer cancel()
 
-	processExecutor := testutil.NewTestProcessExecutor(ctx)
+	processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
 	runner := NewProcessExecutableRunner(processExecutor)
 	runner.disableConsoleStop = true // We are just simulating the run, so stopping via dcpproc/console would fail.
 	handle, _, startErr := processExecutor.StartProcess(ctx, exec.Command("./delay", "--delay=1s"), nil, process.CreationFlagsNone, nil)
@@ -243,7 +248,7 @@ func TestAdoptedProcessStopUsesAdoptedPID(t *testing.T) {
 	execution, found := processExecutor.FindByPid(pid)
 	require.True(t, found)
 	require.True(t, execution.Finished())
-	require.Equal(t, int32(testutil.KilledProcessExitCode), execution.ExitCode)
+	require.Equal(t, int32(internal_testutil.KilledProcessExitCode), execution.ExitCode)
 }
 
 func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
@@ -289,10 +294,10 @@ func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(context.Background())
+			ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 			defer cancel()
 
-			processExecutor := testutil.NewTestProcessExecutor(ctx)
+			processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
 			runner := NewProcessExecutableRunner(processExecutor)
 			handle, _, startErr := processExecutor.StartProcess(ctx, exec.Command("/test/app"), nil, process.CreationFlagsNone, nil)
 			require.NoError(t, startErr)
@@ -335,10 +340,10 @@ func TestAdoptedProcessStartsLifecycleMonitor(t *testing.T) {
 func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 	defer cancel()
 
-	processExecutor := testutil.NewTestProcessExecutor(ctx)
+	processExecutor := internal_testutil.NewTestProcessExecutor(ctx)
 	cmd := exec.Command("./delay", "--delay=1s")
 	handle, _, startProcessErr := processExecutor.StartProcess(ctx, cmd, nil, process.CreationFlagsNone, nil)
 	require.NoError(t, startProcessErr)
@@ -377,9 +382,9 @@ func TestAdoptedProcessReportsCompletionWhenProcessExits(t *testing.T) {
 func TestAdoptedProcessWatcherDoesNotDeleteReusedRunID(t *testing.T) {
 	t.Parallel()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 	defer cancel()
-	runner := NewProcessExecutableRunner(testutil.NewTestProcessExecutor(ctx))
+	runner := NewProcessExecutableRunner(internal_testutil.NewTestProcessExecutor(ctx))
 	runID := controllers.RunID("42")
 	watchedPID := process.Pid_t(42)
 	watchedIdentityTime := time.Unix(1, 0).UTC()
@@ -418,9 +423,9 @@ func TestReleaseRunClosesProcessRunFiles(t *testing.T) {
 		require.NoError(t, os.Remove(stdErrFile.Name()))
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := testutil.GetTestContext(t, defaultExerunnerTestTimeout)
 	defer cancel()
-	runner := NewProcessExecutableRunner(testutil.NewTestProcessExecutor(ctx))
+	runner := NewProcessExecutableRunner(internal_testutil.NewTestProcessExecutor(ctx))
 	runID := controllers.RunID("run-1")
 	runner.runningProcesses.Store(runID, &processRunState{
 		stdOutFile: stdOutFile,
