@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 3
+	currentSchemaVersion = 2
 
 	migrationTableName      = "schema_migrations"
 	migrationLockFileSuffix = ".migrate.lock"

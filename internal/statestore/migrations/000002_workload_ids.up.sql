@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS persistent_containers (
 	resource_key TEXT PRIMARY KEY,
 	container_id TEXT NOT NULL,
 	container_name TEXT NOT NULL DEFAULT '',
+	runtime_name TEXT NOT NULL DEFAULT '',
 	workload_id TEXT NOT NULL DEFAULT '',
 	updated_at_unix_nano INTEGER NOT NULL
 );
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS persistent_networks (
 	resource_key TEXT PRIMARY KEY,
 	network_id TEXT NOT NULL,
 	network_name TEXT NOT NULL DEFAULT '',
+	runtime_name TEXT NOT NULL DEFAULT '',
 	workload_id TEXT NOT NULL DEFAULT '',
 	updated_at_unix_nano INTEGER NOT NULL
 );
