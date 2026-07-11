@@ -140,6 +140,7 @@ type NetworkReconciler struct {
 type NetworkReconcilerConfig struct {
 	StateStore         *statestore.Store
 	ResourceLeaseOwner process.ProcessHandle
+	WorkloadID         string
 }
 
 var (
@@ -529,6 +530,15 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 	log.Info("Network created")
 
 	r.existingNetworks.Store(network.NamespacedName(), cnet.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateRunning, id: cnet.Id})
+	if persistErr := r.upsertPersistentNetworkRecord(ctx, network, cnet, log); persistErr != nil {
+		removeErr := removeNetwork(ctx, r.orchestrator, cnet.Id, log)
+		persistErr = errors.Join(persistErr, removeErr)
+		log.Error(persistErr, "Could not persist ContainerNetwork workload record", "ResourceKey", network.GetLeaseKey())
+		r.existingNetworks.Store(network.NamespacedName(), cnet.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateFailedToStart, id: cnet.Id, message: persistErr.Error()})
+		network.Status.State = apiv1.ContainerNetworkStateFailedToStart
+		network.Status.Message = persistErr.Error()
+		return statusChanged
+	}
 
 	network.Status.ID = cnet.Id
 	network.Status.State = apiv1.ContainerNetworkStateRunning
@@ -539,6 +549,38 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 	network.Status.Gateways = cnet.Gateways
 
 	return statusChanged
+}
+
+func (r *NetworkReconciler) upsertPersistentNetworkRecord(
+	ctx context.Context,
+	network *apiv1.ContainerNetwork,
+	cnet *containers.InspectedNetwork,
+	log logr.Logger,
+) error {
+	if r.config.WorkloadID == "" || network.Spec.EffectiveMode() != apiv1.ContainerNetworkModePersistent {
+		return nil
+	}
+	if r.config.StateStore == nil {
+		return fmt.Errorf("state store is not configured")
+	}
+	if cnet == nil || strings.TrimSpace(cnet.Id) == "" {
+		return fmt.Errorf("cannot persist ContainerNetwork record without a valid network ID")
+	}
+
+	record := statestore.PersistentNetworkRecord{
+		ResourceKey: network.GetLeaseKey(),
+		NetworkID:   cnet.Id,
+		NetworkName: cnet.Name,
+		WorkloadID:  r.config.WorkloadID,
+	}
+	if record.NetworkName == "" {
+		record.NetworkName = network.Spec.NetworkName
+	}
+	if persistErr := r.config.StateStore.UpsertPersistentNetwork(ctx, record); persistErr != nil {
+		log.Error(persistErr, "Could not persist ContainerNetwork workload record", "ResourceKey", record.ResourceKey)
+		return persistErr
+	}
+	return nil
 }
 
 func (r *NetworkReconciler) ensureConnections(ctx context.Context, network *apiv1.ContainerNetwork, networkState *runningNetworkState, log logr.Logger) objectChange {

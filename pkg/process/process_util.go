@@ -44,6 +44,15 @@ var (
 	ErrProcessIdentityMismatch = errors.New("process start time mismatch, pid might have been reused")
 )
 
+// IsProcessGoneErr reports whether an error means the expected process exited, no longer exists, or its PID was reused.
+func IsProcessGoneErr(err error) bool {
+	var notFoundErr *ErrProcessNotFound
+	return errors.Is(err, os.ErrProcessDone) ||
+		errors.Is(err, ErrorProcessNotFound) ||
+		errors.Is(err, ErrProcessIdentityMismatch) ||
+		errors.As(err, &notFoundErr)
+}
+
 func getIDs(items []ProcessHandle) []Pid_t {
 	return slices.Map[Pid_t](items, func(item ProcessHandle) Pid_t {
 		return item.Pid

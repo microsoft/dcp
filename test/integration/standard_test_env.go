@@ -43,12 +43,30 @@ type TestEnvironmentInfo struct {
 	Log                              logr.Logger
 }
 
+type TestEnvironmentOptions struct {
+	WorkloadID string
+}
+
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
 func StartTestEnvironment(
 	ctx context.Context,
 	inclCtrl IncludedController,
 	instanceTag string,
 	testTempDir string,
+) (
+	*ctrl_testutil.ApiServerInfo,
+	*TestEnvironmentInfo,
+	error,
+) {
+	return StartTestEnvironmentWithOptions(ctx, inclCtrl, instanceTag, testTempDir, TestEnvironmentOptions{})
+}
+
+func StartTestEnvironmentWithOptions(
+	ctx context.Context,
+	inclCtrl IncludedController,
+	instanceTag string,
+	testTempDir string,
+	options TestEnvironmentOptions,
 ) (
 	*ctrl_testutil.ApiServerInfo,
 	*TestEnvironmentInfo,
@@ -146,6 +164,7 @@ func StartTestEnvironment(
 			controllers.ExecutableReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         options.WorkloadID,
 			},
 		)
 		if err = execR.SetupWithManager(mgr, instanceTag+"-ExecutableReconciler"); err != nil {
@@ -180,6 +199,7 @@ func StartTestEnvironment(
 			controllers.NetworkReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         options.WorkloadID,
 			},
 		)
 		if err = networkR.SetupWithManager(mgr, instanceTag+"-NetworkReconciler"); err != nil {
@@ -201,6 +221,7 @@ func StartTestEnvironment(
 				StateStore:                      stateStore,
 				ResourceLeaseOwner:              leaseOwner,
 				ProcessExecutor:                 pex,
+				WorkloadID:                      options.WorkloadID,
 			},
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {

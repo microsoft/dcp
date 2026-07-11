@@ -562,6 +562,7 @@ func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 		StdOutFile:        "/tmp/stdout",
 		StdErrFile:        "/tmp/stderr",
 		LifecycleMetadata: `{"args":["--port","5000"]}`,
+		WorkloadID:        "workload-a",
 	}
 
 	require.NoError(t, store.UpsertPersistentProcess(ctx, record))
@@ -576,10 +577,133 @@ func TestPersistentProcessRecordRoundTrip(t *testing.T) {
 	require.Equal(t, record.StdOutFile, actual.StdOutFile)
 	require.Equal(t, record.StdErrFile, actual.StdErrFile)
 	require.Equal(t, record.LifecycleMetadata, actual.LifecycleMetadata)
+	require.Equal(t, record.WorkloadID, actual.WorkloadID)
 	require.False(t, actual.UpdatedAt.IsZero())
 
 	require.NoError(t, actual.Delete(ctx))
 
 	_, getErr = store.GetPersistentProcess(ctx, record.ResourceKey)
 	require.True(t, errors.Is(getErr, ErrPersistentProcessNotFound), "expected ErrPersistentProcessNotFound, got %v", getErr)
+}
+
+func TestPersistentProcessRecordsListByWorkloadID(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+
+	for _, record := range []PersistentProcessRecord{
+		{
+			ResourceKey:  "api",
+			LifecycleKey: "api-lifecycle",
+			PID:          process.Pid_t(1234),
+			IdentityTime: time.Unix(100, 200).UTC(),
+			RunID:        "api-run",
+			WorkloadID:   "workload-a",
+		},
+		{
+			ResourceKey:  "worker",
+			LifecycleKey: "worker-lifecycle",
+			PID:          process.Pid_t(1235),
+			IdentityTime: time.Unix(101, 200).UTC(),
+			RunID:        "worker-run",
+			WorkloadID:   "workload-b",
+		},
+	} {
+		require.NoError(t, store.UpsertPersistentProcess(ctx, record))
+	}
+
+	records, listErr := store.ListPersistentProcessesByWorkloadID(ctx, "workload-a")
+	require.NoError(t, listErr)
+	require.Len(t, records, 1)
+	require.Equal(t, "api", records[0].ResourceKey)
+	require.Equal(t, "workload-a", records[0].WorkloadID)
+}
+
+func TestPersistentContainerRecordRoundTripByWorkloadID(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+
+	record := PersistentContainerRecord{
+		ResourceKey:   "containers/api",
+		ContainerID:   "container-id",
+		ContainerName: "api-container",
+		WorkloadID:    "workload-a",
+	}
+	require.NoError(t, store.UpsertPersistentContainer(ctx, record))
+
+	actual, getErr := store.GetPersistentContainer(ctx, record.ResourceKey)
+	require.NoError(t, getErr)
+	require.Equal(t, record.ResourceKey, actual.ResourceKey)
+	require.Equal(t, record.ContainerID, actual.ContainerID)
+	require.Equal(t, record.ContainerName, actual.ContainerName)
+	require.Equal(t, record.WorkloadID, actual.WorkloadID)
+	require.False(t, actual.UpdatedAt.IsZero())
+
+	records, listErr := store.ListPersistentContainersByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, listErr)
+	require.Len(t, records, 1)
+	require.Equal(t, record.ResourceKey, records[0].ResourceKey)
+	require.Equal(t, record.ContainerID, records[0].ContainerID)
+	require.Equal(t, record.ContainerName, records[0].ContainerName)
+	require.Equal(t, record.WorkloadID, records[0].WorkloadID)
+	require.False(t, records[0].UpdatedAt.IsZero())
+
+	require.NoError(t, records[0].Delete(ctx))
+
+	_, getErr = store.GetPersistentContainer(ctx, record.ResourceKey)
+	require.True(t, errors.Is(getErr, ErrPersistentContainerNotFound), "expected ErrPersistentContainerNotFound, got %v", getErr)
+
+	records, listErr = store.ListPersistentContainersByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, listErr)
+	require.Empty(t, records)
+}
+
+func TestPersistentNetworkRecordRoundTripByWorkloadID(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+
+	record := PersistentNetworkRecord{
+		ResourceKey: "containernetworks/app-network",
+		NetworkID:   "network-id",
+		NetworkName: "app-network",
+		WorkloadID:  "workload-a",
+	}
+	require.NoError(t, store.UpsertPersistentNetwork(ctx, record))
+
+	actual, getErr := store.GetPersistentNetwork(ctx, record.ResourceKey)
+	require.NoError(t, getErr)
+	require.Equal(t, record.ResourceKey, actual.ResourceKey)
+	require.Equal(t, record.NetworkID, actual.NetworkID)
+	require.Equal(t, record.NetworkName, actual.NetworkName)
+	require.Equal(t, record.WorkloadID, actual.WorkloadID)
+	require.False(t, actual.UpdatedAt.IsZero())
+
+	records, listErr := store.ListPersistentNetworksByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, listErr)
+	require.Len(t, records, 1)
+	require.Equal(t, record.ResourceKey, records[0].ResourceKey)
+	require.Equal(t, record.NetworkID, records[0].NetworkID)
+	require.Equal(t, record.NetworkName, records[0].NetworkName)
+	require.Equal(t, record.WorkloadID, records[0].WorkloadID)
+	require.False(t, records[0].UpdatedAt.IsZero())
+
+	require.NoError(t, records[0].Delete(ctx))
+
+	_, getErr = store.GetPersistentNetwork(ctx, record.ResourceKey)
+	require.True(t, errors.Is(getErr, ErrPersistentNetworkNotFound), "expected ErrPersistentNetworkNotFound, got %v", getErr)
+
+	records, listErr = store.ListPersistentNetworksByWorkloadID(ctx, record.WorkloadID)
+	require.NoError(t, listErr)
+	require.Empty(t, records)
 }

@@ -27,6 +27,7 @@ type PersistentProcessRecord struct {
 	StdOutFile        string
 	StdErrFile        string
 	LifecycleMetadata string
+	WorkloadID        string
 	UpdatedAt         time.Time
 	store             *Store
 }
@@ -68,9 +69,9 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			`INSERT INTO persistent_processes(
 				resource_key, lifecycle_key, pid,
 				identity_time, run_id,
-				stdout_file, stderr_file, lifecycle_metadata, updated_at_unix_nano
+				stdout_file, stderr_file, lifecycle_metadata, workload_id, updated_at_unix_nano
 			 )
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(resource_key) DO UPDATE SET
 				lifecycle_key = excluded.lifecycle_key,
 				pid = excluded.pid,
@@ -79,6 +80,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 				stdout_file = excluded.stdout_file,
 				stderr_file = excluded.stderr_file,
 				lifecycle_metadata = excluded.lifecycle_metadata,
+				workload_id = excluded.workload_id,
 				updated_at_unix_nano = excluded.updated_at_unix_nano`,
 			record.ResourceKey,
 			record.LifecycleKey,
@@ -88,6 +90,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			record.StdOutFile,
 			record.StdErrFile,
 			record.LifecycleMetadata,
+			record.WorkloadID,
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -113,7 +116,7 @@ func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*
 		ctx,
 		`SELECT resource_key, lifecycle_key, pid,
 			identity_time, run_id,
-			stdout_file, stderr_file, lifecycle_metadata, updated_at_unix_nano
+			stdout_file, stderr_file, lifecycle_metadata, workload_id, updated_at_unix_nano
 		 FROM persistent_processes WHERE resource_key = ?`,
 		resourceKey,
 	)
@@ -131,19 +134,36 @@ func (s *Store) GetPersistentProcess(ctx context.Context, resourceKey string) (*
 }
 
 func (s *Store) ListPersistentProcesses(ctx context.Context) ([]PersistentProcessRecord, error) {
+	return s.listPersistentProcesses(ctx, "")
+}
+
+func (s *Store) ListPersistentProcessesByWorkloadID(ctx context.Context, workloadID string) ([]PersistentProcessRecord, error) {
+	workloadID = strings.TrimSpace(workloadID)
+	if workloadID == "" {
+		return nil, fmt.Errorf("%w: persistent process workload ID cannot be empty", ErrInvalidArgument)
+	}
+
+	return s.listPersistentProcesses(ctx, workloadID)
+}
+
+func (s *Store) listPersistentProcesses(ctx context.Context, workloadID string) ([]PersistentProcessRecord, error) {
 	db, dbErr := s.requireDB()
 	if dbErr != nil {
 		return nil, dbErr
 	}
 
-	rows, queryErr := db.QueryContext(
-		ctx,
-		`SELECT resource_key, lifecycle_key, pid,
+	query := `SELECT resource_key, lifecycle_key, pid,
 			identity_time, run_id,
-			stdout_file, stderr_file, lifecycle_metadata, updated_at_unix_nano
-		 FROM persistent_processes
-		 ORDER BY resource_key`,
-	)
+			stdout_file, stderr_file, lifecycle_metadata, workload_id, updated_at_unix_nano
+		 FROM persistent_processes`
+	args := []any{}
+	if workloadID != "" {
+		query += ` WHERE workload_id = ?`
+		args = append(args, workloadID)
+	}
+	query += ` ORDER BY resource_key`
+
+	rows, queryErr := db.QueryContext(ctx, query, args...)
 	if queryErr != nil {
 		return nil, fmt.Errorf("could not list persistent process records: %w", queryErr)
 	}
@@ -201,6 +221,7 @@ func scanPersistentProcess(row persistentProcessScanner) (*PersistentProcessReco
 		&record.StdOutFile,
 		&record.StdErrFile,
 		&record.LifecycleMetadata,
+		&record.WorkloadID,
 		&updatedAtUnixNano,
 	)
 	if scanErr != nil {
