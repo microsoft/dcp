@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	dcpio "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -264,6 +265,52 @@ func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
 	records, listErr := stateStore.ListPersistentProcessesByWorkloadID(ctx, "workload-a")
 	require.NoError(t, listErr)
 	require.Empty(t, records)
+}
+
+func TestCleanupPersistentProcessRecordPreservesLogFiles(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+
+	stdoutPath := filepath.Join(t.TempDir(), "stdout.log")
+	stderrPath := filepath.Join(t.TempDir(), "stderr.log")
+	require.NoError(t, dcpio.WriteFile(stdoutPath, []byte("stdout"), 0o600))
+	require.NoError(t, dcpio.WriteFile(stderrPath, []byte("stderr"), 0o600))
+	record := statestore.PersistentProcessRecord{
+		ResourceKey:  "default/missing",
+		LifecycleKey: "missing-lifecycle",
+		PID:          process.Pid_t(999999),
+		IdentityTime: time.Unix(1, 0).UTC(),
+		RunID:        "missing-run",
+		StdOutFile:   stdoutPath,
+		StdErrFile:   stderrPath,
+		WorkloadID:   "workload-a",
+	}
+	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, record))
+
+	resourceID, cleaned, cleanupErr := cleanupPersistentProcessRecord(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		&fakePersistentProcessCleanupRunner{
+			checkErr: &process.ErrProcessNotFound{Pid: record.PID},
+		},
+		record,
+		logr.Discard(),
+	)
+
+	require.NoError(t, cleanupErr)
+	require.Equal(t, "999999", resourceID)
+	require.True(t, cleaned)
+	_, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
+	require.ErrorIs(t, getErr, statestore.ErrPersistentProcessNotFound)
+	require.FileExists(t, stdoutPath)
+	require.FileExists(t, stderrPath)
 }
 
 func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t *testing.T) {
