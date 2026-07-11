@@ -20,6 +20,7 @@ type PersistentNetworkRecord struct {
 	ResourceKey string
 	NetworkID   string
 	NetworkName string
+	RuntimeName string
 	WorkloadID  string
 	UpdatedAt   time.Time
 	store       *Store
@@ -39,12 +40,16 @@ func (r *PersistentNetworkRecord) Delete(ctx context.Context) error {
 func (s *Store) UpsertPersistentNetwork(ctx context.Context, record PersistentNetworkRecord) error {
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.NetworkID = strings.TrimSpace(record.NetworkID)
+	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
 	record.WorkloadID = strings.TrimSpace(record.WorkloadID)
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent network resource key cannot be empty", ErrInvalidArgument)
 	}
 	if record.NetworkID == "" {
 		return fmt.Errorf("%w: persistent network ID cannot be empty", ErrInvalidArgument)
+	}
+	if record.RuntimeName == "" {
+		return fmt.Errorf("%w: persistent network runtime name cannot be empty", ErrInvalidArgument)
 	}
 	if record.WorkloadID == "" {
 		return fmt.Errorf("%w: persistent network workload ID cannot be empty", ErrInvalidArgument)
@@ -54,16 +59,18 @@ func (s *Store) UpsertPersistentNetwork(ctx context.Context, record PersistentNe
 	return s.withImmediateTx(ctx, func(conn *sql.Conn) error {
 		_, execErr := conn.ExecContext(
 			ctx,
-			`INSERT INTO persistent_networks(resource_key, network_id, network_name, workload_id, updated_at_unix_nano)
-			 VALUES(?, ?, ?, ?, ?)
+			`INSERT INTO persistent_networks(resource_key, network_id, network_name, runtime_name, workload_id, updated_at_unix_nano)
+			 VALUES(?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(resource_key) DO UPDATE SET
 				network_id = excluded.network_id,
 				network_name = excluded.network_name,
+				runtime_name = excluded.runtime_name,
 				workload_id = excluded.workload_id,
 				updated_at_unix_nano = excluded.updated_at_unix_nano`,
 			record.ResourceKey,
 			record.NetworkID,
 			record.NetworkName,
+			record.RuntimeName,
 			record.WorkloadID,
 			unixNano(now),
 		)
@@ -87,7 +94,7 @@ func (s *Store) GetPersistentNetwork(ctx context.Context, resourceKey string) (*
 
 	row := db.QueryRowContext(
 		ctx,
-		`SELECT resource_key, network_id, network_name, workload_id, updated_at_unix_nano
+		`SELECT resource_key, network_id, network_name, runtime_name, workload_id, updated_at_unix_nano
 		 FROM persistent_networks
 		 WHERE resource_key = ?`,
 		resourceKey,
@@ -118,7 +125,7 @@ func (s *Store) ListPersistentNetworksByWorkloadID(ctx context.Context, workload
 
 	rows, queryErr := db.QueryContext(
 		ctx,
-		`SELECT resource_key, network_id, network_name, workload_id, updated_at_unix_nano
+		`SELECT resource_key, network_id, network_name, runtime_name, workload_id, updated_at_unix_nano
 		 FROM persistent_networks
 		 WHERE workload_id = ?
 		 ORDER BY resource_key`,
@@ -173,6 +180,7 @@ func scanPersistentNetwork(row persistentNetworkScanner) (*PersistentNetworkReco
 		&record.ResourceKey,
 		&record.NetworkID,
 		&record.NetworkName,
+		&record.RuntimeName,
 		&record.WorkloadID,
 		&updatedAtUnixNano,
 	)

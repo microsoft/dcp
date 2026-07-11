@@ -1670,6 +1670,7 @@ func (r *ContainerReconciler) upsertPersistentContainerRecord(
 		ResourceKey:   container.GetLeaseKey(),
 		ContainerID:   string(rcd.containerID),
 		ContainerName: rcd.containerName,
+		RuntimeName:   r.orchestrator.Name(),
 		WorkloadID:    r.config.WorkloadID,
 	}
 	if record.ContainerName == "" {

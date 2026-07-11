@@ -20,6 +20,7 @@ type PersistentContainerRecord struct {
 	ResourceKey   string
 	ContainerID   string
 	ContainerName string
+	RuntimeName   string
 	WorkloadID    string
 	UpdatedAt     time.Time
 	store         *Store
@@ -39,12 +40,16 @@ func (r *PersistentContainerRecord) Delete(ctx context.Context) error {
 func (s *Store) UpsertPersistentContainer(ctx context.Context, record PersistentContainerRecord) error {
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.ContainerID = strings.TrimSpace(record.ContainerID)
+	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
 	record.WorkloadID = strings.TrimSpace(record.WorkloadID)
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent container resource key cannot be empty", ErrInvalidArgument)
 	}
 	if record.ContainerID == "" {
 		return fmt.Errorf("%w: persistent container ID cannot be empty", ErrInvalidArgument)
+	}
+	if record.RuntimeName == "" {
+		return fmt.Errorf("%w: persistent container runtime name cannot be empty", ErrInvalidArgument)
 	}
 	if record.WorkloadID == "" {
 		return fmt.Errorf("%w: persistent container workload ID cannot be empty", ErrInvalidArgument)
@@ -54,16 +59,18 @@ func (s *Store) UpsertPersistentContainer(ctx context.Context, record Persistent
 	return s.withImmediateTx(ctx, func(conn *sql.Conn) error {
 		_, execErr := conn.ExecContext(
 			ctx,
-			`INSERT INTO persistent_containers(resource_key, container_id, container_name, workload_id, updated_at_unix_nano)
-			 VALUES(?, ?, ?, ?, ?)
+			`INSERT INTO persistent_containers(resource_key, container_id, container_name, runtime_name, workload_id, updated_at_unix_nano)
+			 VALUES(?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(resource_key) DO UPDATE SET
 				container_id = excluded.container_id,
 				container_name = excluded.container_name,
+				runtime_name = excluded.runtime_name,
 				workload_id = excluded.workload_id,
 				updated_at_unix_nano = excluded.updated_at_unix_nano`,
 			record.ResourceKey,
 			record.ContainerID,
 			record.ContainerName,
+			record.RuntimeName,
 			record.WorkloadID,
 			unixNano(now),
 		)
@@ -87,7 +94,7 @@ func (s *Store) GetPersistentContainer(ctx context.Context, resourceKey string) 
 
 	row := db.QueryRowContext(
 		ctx,
-		`SELECT resource_key, container_id, container_name, workload_id, updated_at_unix_nano
+		`SELECT resource_key, container_id, container_name, runtime_name, workload_id, updated_at_unix_nano
 		 FROM persistent_containers
 		 WHERE resource_key = ?`,
 		resourceKey,
@@ -118,7 +125,7 @@ func (s *Store) ListPersistentContainersByWorkloadID(ctx context.Context, worklo
 
 	rows, queryErr := db.QueryContext(
 		ctx,
-		`SELECT resource_key, container_id, container_name, workload_id, updated_at_unix_nano
+		`SELECT resource_key, container_id, container_name, runtime_name, workload_id, updated_at_unix_nano
 		 FROM persistent_containers
 		 WHERE workload_id = ?
 		 ORDER BY resource_key`,
@@ -173,6 +180,7 @@ func scanPersistentContainer(row persistentContainerScanner) (*PersistentContain
 		&record.ResourceKey,
 		&record.ContainerID,
 		&record.ContainerName,
+		&record.RuntimeName,
 		&record.WorkloadID,
 		&updatedAtUnixNano,
 	)

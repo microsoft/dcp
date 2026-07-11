@@ -571,6 +571,7 @@ func (r *NetworkReconciler) upsertPersistentNetworkRecord(
 		ResourceKey: network.GetLeaseKey(),
 		NetworkID:   cnet.Id,
 		NetworkName: cnet.Name,
+		RuntimeName: r.orchestrator.Name(),
 		WorkloadID:  r.config.WorkloadID,
 	}
 	if record.NetworkName == "" {

@@ -634,6 +634,7 @@ func TestPersistentContainerRecordRoundTripByWorkloadID(t *testing.T) {
 		ResourceKey:   "containers/api",
 		ContainerID:   "container-id",
 		ContainerName: "api-container",
+		RuntimeName:   "docker",
 		WorkloadID:    "workload-a",
 	}
 	require.NoError(t, store.UpsertPersistentContainer(ctx, record))
@@ -643,6 +644,7 @@ func TestPersistentContainerRecordRoundTripByWorkloadID(t *testing.T) {
 	require.Equal(t, record.ResourceKey, actual.ResourceKey)
 	require.Equal(t, record.ContainerID, actual.ContainerID)
 	require.Equal(t, record.ContainerName, actual.ContainerName)
+	require.Equal(t, record.RuntimeName, actual.RuntimeName)
 	require.Equal(t, record.WorkloadID, actual.WorkloadID)
 	require.False(t, actual.UpdatedAt.IsZero())
 
@@ -652,6 +654,7 @@ func TestPersistentContainerRecordRoundTripByWorkloadID(t *testing.T) {
 	require.Equal(t, record.ResourceKey, records[0].ResourceKey)
 	require.Equal(t, record.ContainerID, records[0].ContainerID)
 	require.Equal(t, record.ContainerName, records[0].ContainerName)
+	require.Equal(t, record.RuntimeName, records[0].RuntimeName)
 	require.Equal(t, record.WorkloadID, records[0].WorkloadID)
 	require.False(t, records[0].UpdatedAt.IsZero())
 
@@ -677,6 +680,7 @@ func TestPersistentNetworkRecordRoundTripByWorkloadID(t *testing.T) {
 		ResourceKey: "containernetworks/app-network",
 		NetworkID:   "network-id",
 		NetworkName: "app-network",
+		RuntimeName: "docker",
 		WorkloadID:  "workload-a",
 	}
 	require.NoError(t, store.UpsertPersistentNetwork(ctx, record))
@@ -686,6 +690,7 @@ func TestPersistentNetworkRecordRoundTripByWorkloadID(t *testing.T) {
 	require.Equal(t, record.ResourceKey, actual.ResourceKey)
 	require.Equal(t, record.NetworkID, actual.NetworkID)
 	require.Equal(t, record.NetworkName, actual.NetworkName)
+	require.Equal(t, record.RuntimeName, actual.RuntimeName)
 	require.Equal(t, record.WorkloadID, actual.WorkloadID)
 	require.False(t, actual.UpdatedAt.IsZero())
 
@@ -695,6 +700,7 @@ func TestPersistentNetworkRecordRoundTripByWorkloadID(t *testing.T) {
 	require.Equal(t, record.ResourceKey, records[0].ResourceKey)
 	require.Equal(t, record.NetworkID, records[0].NetworkID)
 	require.Equal(t, record.NetworkName, records[0].NetworkName)
+	require.Equal(t, record.RuntimeName, records[0].RuntimeName)
 	require.Equal(t, record.WorkloadID, records[0].WorkloadID)
 	require.False(t, records[0].UpdatedAt.IsZero())
 

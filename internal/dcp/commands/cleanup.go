@@ -33,7 +33,12 @@ const (
 	workloadCleanupStopContainerTimeout      = 10
 )
 
-type containerOrchestratorProvider func() (containers.ContainerOrchestrator, error)
+type containerOrchestratorProvider func(runtimeName string) (containers.ContainerOrchestrator, error)
+
+type resolvedContainerOrchestrator struct {
+	orchestrator containers.ContainerOrchestrator
+	err          error
+}
 
 type persistentProcessCleanupRunner interface {
 	CheckProcessRunning(handle process.ProcessHandle) error
@@ -105,8 +110,8 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 		processExecutor := process.NewOSExecutor(log)
 		defer processExecutor.Dispose()
 
-		getContainerOrchestrator := func() (containers.ContainerOrchestrator, error) {
-			return runtimes.FindAvailableContainerRuntime(cmd.Context(), log.WithName("ContainerOrchestrator"), processExecutor)
+		getContainerOrchestrator := func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			return runtimes.FindContainerRuntime(cmd.Context(), runtimeName, log.WithName("ContainerOrchestrator"), processExecutor)
 		}
 
 		report, cleanupErr := cleanupWorkloadResources(cmd.Context(), workloadID, stateStore, leaseOwner, getContainerOrchestrator, processExecutor, log)
@@ -131,6 +136,7 @@ func cleanupWorkloadResources(
 	log logr.Logger,
 ) (cleanupReport, error) {
 	report := cleanupReport{WorkloadID: workloadID}
+	getContainerOrchestrator = cachedContainerOrchestratorProvider(getContainerOrchestrator)
 
 	containerRecords, containerListErr := stateStore.ListPersistentContainersByWorkloadID(ctx, workloadID)
 	if containerListErr != nil {
@@ -145,40 +151,8 @@ func cleanupWorkloadResources(
 		return report, networkListErr
 	}
 
-	var containerOrchestrator containers.ContainerOrchestrator
-	var containerOrchestratorErr error
-	if len(containerRecords) > 0 || len(networkRecords) > 0 {
-		containerOrchestrator, containerOrchestratorErr = getContainerOrchestrator()
-	}
-
 	for _, record := range containerRecords {
-		if containerOrchestratorErr != nil {
-			resourceID, shouldReport, revalidationErr := withCurrentPersistentContainerRecord(ctx, workloadID, stateStore, leaseOwner, record, nil)
-			if revalidationErr != nil {
-				if resourceID == "" {
-					resourceID = record.ContainerID
-				}
-				report.Failures = append(report.Failures, cleanupFailureEntry{
-					Kind:        "container",
-					ResourceKey: record.ResourceKey,
-					ResourceID:  resourceID,
-					Error:       revalidationErr.Error(),
-				})
-				continue
-			}
-			if !shouldReport {
-				continue
-			}
-			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        "container",
-				ResourceKey: record.ResourceKey,
-				ResourceID:  resourceID,
-				Error:       containerOrchestratorErr.Error(),
-			})
-			continue
-		}
-
-		resourceID, cleaned, cleanupErr := cleanupPersistentContainerRecord(ctx, workloadID, stateStore, leaseOwner, containerOrchestrator, record, log)
+		resourceID, cleaned, cleanupErr := cleanupPersistentContainerRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
 		if cleanupErr != nil {
 			if resourceID == "" {
 				resourceID = record.ContainerID
@@ -217,33 +191,7 @@ func cleanupWorkloadResources(
 	}
 
 	for _, record := range networkRecords {
-		if containerOrchestratorErr != nil {
-			resourceID, shouldReport, revalidationErr := withCurrentPersistentNetworkRecord(ctx, workloadID, stateStore, leaseOwner, record, nil)
-			if revalidationErr != nil {
-				if resourceID == "" {
-					resourceID = record.NetworkID
-				}
-				report.Failures = append(report.Failures, cleanupFailureEntry{
-					Kind:        "network",
-					ResourceKey: record.ResourceKey,
-					ResourceID:  resourceID,
-					Error:       revalidationErr.Error(),
-				})
-				continue
-			}
-			if !shouldReport {
-				continue
-			}
-			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        "network",
-				ResourceKey: record.ResourceKey,
-				ResourceID:  resourceID,
-				Error:       containerOrchestratorErr.Error(),
-			})
-			continue
-		}
-
-		resourceID, cleaned, cleanupErr := cleanupPersistentNetworkRecord(ctx, workloadID, stateStore, leaseOwner, containerOrchestrator, record, log)
+		resourceID, cleaned, cleanupErr := cleanupPersistentNetworkRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
 		if cleanupErr != nil {
 			if resourceID == "" {
 				resourceID = record.NetworkID
@@ -267,26 +215,49 @@ func cleanupWorkloadResources(
 	return report, nil
 }
 
+func cachedContainerOrchestratorProvider(getContainerOrchestrator containerOrchestratorProvider) containerOrchestratorProvider {
+	resolvedByRuntime := map[string]resolvedContainerOrchestrator{}
+	return func(runtimeName string) (containers.ContainerOrchestrator, error) {
+		runtimeName = strings.TrimSpace(runtimeName)
+		resolved, ok := resolvedByRuntime[runtimeName]
+		if ok {
+			return resolved.orchestrator, resolved.err
+		}
+
+		orchestrator, resolveErr := getContainerOrchestrator(runtimeName)
+		resolvedByRuntime[runtimeName] = resolvedContainerOrchestrator{
+			orchestrator: orchestrator,
+			err:          resolveErr,
+		}
+		return orchestrator, resolveErr
+	}
+}
+
 func cleanupPersistentContainerRecord(
 	ctx context.Context,
 	workloadID string,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
-	orchestrator containers.ContainerOrchestrator,
+	getContainerOrchestrator containerOrchestratorProvider,
 	record statestore.PersistentContainerRecord,
 	log logr.Logger,
 ) (string, bool, error) {
 	cleaned := false
 	resourceID, _, cleanupErr := withCurrentPersistentContainerRecord(ctx, workloadID, stateStore, leaseOwner, record, func(ctx context.Context, currentRecord *statestore.PersistentContainerRecord) error {
-		cleaned = true
+		orchestrator, resolveErr := getContainerOrchestrator(currentRecord.RuntimeName)
+		if resolveErr != nil {
+			return fmt.Errorf("could not resolve container runtime %q: %w", currentRecord.RuntimeName, resolveErr)
+		}
 
-		if cleanupErr := removePersistentContainer(ctx, orchestrator, currentRecord.ContainerID); cleanupErr != nil {
-			return cleanupErr
+		removeErr := removePersistentContainer(ctx, orchestrator, currentRecord.ContainerID)
+		if removeErr != nil {
+			return removeErr
 		}
 		if deleteErr := stateStore.DeletePersistentContainer(ctx, currentRecord.ResourceKey); deleteErr != nil {
 			log.Error(deleteErr, "Could not delete persistent Container record", "ResourceKey", currentRecord.ResourceKey)
 			return deleteErr
 		}
+		cleaned = true
 		return nil
 	})
 	return resourceID, cleaned, cleanupErr
@@ -382,21 +353,26 @@ func cleanupPersistentNetworkRecord(
 	workloadID string,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
-	orchestrator containers.ContainerOrchestrator,
+	getContainerOrchestrator containerOrchestratorProvider,
 	record statestore.PersistentNetworkRecord,
 	log logr.Logger,
 ) (string, bool, error) {
 	cleaned := false
 	resourceID, _, cleanupErr := withCurrentPersistentNetworkRecord(ctx, workloadID, stateStore, leaseOwner, record, func(ctx context.Context, currentRecord *statestore.PersistentNetworkRecord) error {
-		cleaned = true
+		orchestrator, resolveErr := getContainerOrchestrator(currentRecord.RuntimeName)
+		if resolveErr != nil {
+			return fmt.Errorf("could not resolve container runtime %q: %w", currentRecord.RuntimeName, resolveErr)
+		}
 
-		if cleanupErr := removePersistentNetwork(ctx, orchestrator, currentRecord.NetworkID); cleanupErr != nil {
-			return cleanupErr
+		removeErr := removePersistentNetwork(ctx, orchestrator, currentRecord.NetworkID)
+		if removeErr != nil {
+			return removeErr
 		}
 		if deleteErr := stateStore.DeletePersistentNetwork(ctx, currentRecord.ResourceKey); deleteErr != nil {
 			log.Error(deleteErr, "Could not delete persistent ContainerNetwork record", "ResourceKey", currentRecord.ResourceKey)
 			return deleteErr
 		}
+		cleaned = true
 		return nil
 	})
 	return resourceID, cleaned, cleanupErr
