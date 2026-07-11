@@ -113,6 +113,37 @@ func TestNetworkCreatePersistentInstance(t *testing.T) {
 	_ = ensureNetworkCreated(t, ctx, &net)
 }
 
+func TestPersistentNetworkRecordsWorkloadID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, NetworkController, "PersistentNetworkWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "persistent-network-workload-id",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerNetworkSpec{
+			NetworkName: "persistent-network-workload-id",
+			Mode:        apiv1.ContainerNetworkModePersistent,
+		},
+	}
+	require.NoError(t, teInfo.StateStore.DeletePersistentNetwork(ctx, net.GetLeaseKey()))
+	require.NoError(t, serverInfo.Client.Create(ctx, &net))
+
+	updatedNet := ensureNetworkCreatedEx(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &net)
+
+	record, getErr := teInfo.StateStore.GetPersistentNetwork(ctx, net.GetLeaseKey())
+	require.NoError(t, getErr)
+	require.Equal(t, "workload-a", record.WorkloadID)
+	require.Equal(t, updatedNet.Status.ID, record.NetworkID)
+}
+
 func TestNetworkCreateExistingPersistentInstance(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -431,7 +462,11 @@ func TestNetworkPersistentFieldOverridesCleanupMode(t *testing.T) {
 }
 
 func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.ContainerNetwork) *apiv1.ContainerNetwork {
-	updatedNet := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(network), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
+	return ensureNetworkCreatedEx(t, ctx, client, containerOrchestrator, network)
+}
+
+func ensureNetworkCreatedEx(t *testing.T, ctx context.Context, apiClient ctrl_client.Client, co containers.ContainerOrchestrator, network *apiv1.ContainerNetwork) *apiv1.ContainerNetwork {
+	updatedNet := waitObjectAssumesStateEx(t, ctx, apiClient, ctrl_client.ObjectKeyFromObject(network), func(currentNet *apiv1.ContainerNetwork) (bool, error) {
 		if currentNet.Status.State == apiv1.ContainerNetworkStateFailedToStart {
 			return false, fmt.Errorf("network creation failed: %s", currentNet.Status.Message)
 		}
@@ -439,7 +474,7 @@ func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.Cont
 		return currentNet.Status.ID != "", nil
 	})
 
-	inspectedNetworks, err := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+	inspectedNetworks, err := co.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
 	require.NoError(t, err, "could not inspect the network")
 	require.Len(t, inspectedNetworks, 1, "expected to find a single network")
 

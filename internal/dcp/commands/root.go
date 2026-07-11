@@ -63,6 +63,8 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
+	rootCmd.AddCommand(NewCleanupCommand(log))
+
 	// Add dcpctrl sub-commands
 	rootCmd.AddCommand(dcpctrl_cmds.NewRunControllersCommand(log))
 

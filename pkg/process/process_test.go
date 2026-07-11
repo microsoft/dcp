@@ -8,6 +8,7 @@ package process_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +32,17 @@ var log logr.Logger
 func TestMain(m *testing.M) {
 	log = testutil.NewLogForTesting("process-tests")
 	os.Exit(m.Run())
+}
+
+func TestIsProcessGoneErr(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, process.IsProcessGoneErr(fmt.Errorf("wrapped: %w", os.ErrProcessDone)))
+	require.True(t, process.IsProcessGoneErr(fmt.Errorf("wrapped: %w", process.ErrorProcessNotFound)))
+	require.True(t, process.IsProcessGoneErr(fmt.Errorf("wrapped: %w", process.ErrProcessIdentityMismatch)))
+	require.True(t, process.IsProcessGoneErr(&process.ErrProcessNotFound{Pid: 1234}))
+	require.False(t, process.IsProcessGoneErr(errors.New("process table unavailable")))
+	require.False(t, process.IsProcessGoneErr(nil))
 }
 
 func TestRunCompleted(t *testing.T) {

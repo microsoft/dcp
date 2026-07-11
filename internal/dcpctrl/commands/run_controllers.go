@@ -8,6 +8,8 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +40,7 @@ import (
 
 const (
 	ControllerManagerShutdownTimeout = 60 * time.Second
+	dcpWorkloadIDEnvVar              = "DCP_WORKLOAD_ID"
 )
 
 var (
@@ -134,6 +137,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
 		}
 		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
+		workloadID := strings.TrimSpace(os.Getenv(dcpWorkloadIDEnvVar))
 
 		trySetupNotificationHandler(ctrlCtx, log)
 
@@ -204,6 +208,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			controllers.ExecutableReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
 			},
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -234,6 +239,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				StateStore:                 stateStore,
 				ResourceLeaseOwner:         leaseOwner,
 				ProcessExecutor:            processExecutor,
+				WorkloadID:                 workloadID,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -275,6 +281,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			controllers.NetworkReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
 			},
 		)
 		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {

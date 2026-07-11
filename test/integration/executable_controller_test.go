@@ -730,6 +730,42 @@ func TestExecutableExitCodeCaptured(t *testing.T) {
 	}
 }
 
+func TestPersistentExecutableRecordsWorkloadID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, ExecutableController, "PersistentExecutableWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+
+	exe := apiv1.Executable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "persistent-executable-workload-id",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ExecutableSpec{
+			ExecutablePath: "/path/to/persistent-executable-workload-id",
+			Mode:           apiv1.ExecutableModePersistent,
+		},
+	}
+	require.NoError(t, teInfo.StateStore.DeletePersistentProcess(ctx, exe.GetLeaseKey()))
+
+	require.NoError(t, serverInfo.Client.Create(ctx, &exe))
+	err := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(_ context.Context) (bool, error) {
+		runningProcessesWithPath := teInfo.TestProcessExecutor.FindAll([]string{exe.Spec.ExecutablePath}, "", func(pe *internal_testutil.ProcessExecution) bool {
+			return pe.Running()
+		})
+		return len(runningProcessesWithPath) == 1, nil
+	})
+	require.NoError(t, err)
+
+	record, getErr := teInfo.StateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
+	require.NoError(t, getErr)
+	require.Equal(t, "workload-a", record.WorkloadID)
+}
+
 // Verifies that when an IDE run completes synchronously during startup (the IDE delivers a
 // session termination notification before the run session creation request returns),
 // the resulting ExecutableStartResult carries both ExeState=Finished and ExitCode,

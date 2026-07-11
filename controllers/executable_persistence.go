@@ -141,6 +141,7 @@ func (r *ExecutableReconciler) upsertPersistentProcessRecord(ctx context.Context
 		RunID:        string(res.RunID),
 		StdOutFile:   res.StdOutFile,
 		StdErrFile:   res.StdErrFile,
+		WorkloadID:   r.config.WorkloadID,
 	}
 	lifecycleKey, hasDefaultLifecycleKey, lifecycleKeyErr := exe.GetLifecycleKey()
 	if lifecycleKeyErr != nil {

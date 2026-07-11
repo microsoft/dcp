@@ -113,6 +113,39 @@ func TestInvalidContainerName(t *testing.T) {
 	require.Len(t, ctr.Validate(ctx), 0, "Unexpected validation error for valid container name")
 }
 
+func TestPersistentContainerRecordsWorkloadID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, ContainerController, "PersistentContainerWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+	co := serverInfo.ContainerOrchestrator
+
+	ctr := apiv1.Container{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "persistent-container-workload-id",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerSpec{
+			ContainerName: "persistent-container-workload-id",
+			Image:         "persistent-container-workload-id-image",
+			Mode:          apiv1.ContainerModePersistent,
+		},
+	}
+	require.NoError(t, teInfo.StateStore.DeletePersistentContainer(ctx, ctr.GetLeaseKey()))
+	require.NoError(t, serverInfo.Client.Create(ctx, &ctr))
+
+	updatedCtr, _ := ensureContainerRunningEx(t, ctx, serverInfo.Client, co, &ctr)
+
+	record, getErr := teInfo.StateStore.GetPersistentContainer(ctx, ctr.GetLeaseKey())
+	require.NoError(t, getErr)
+	require.Equal(t, "workload-a", record.WorkloadID)
+	require.Equal(t, updatedCtr.Status.ContainerID, record.ContainerID)
+}
+
 func TestContainerLifecycleKey(t *testing.T) {
 	t.Parallel()
 
