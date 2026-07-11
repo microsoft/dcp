@@ -19,10 +19,8 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	cmds "github.com/microsoft/dcp/internal/commands"
 	"github.com/microsoft/dcp/internal/containers"
-	container_flags "github.com/microsoft/dcp/internal/containers/flags"
 	"github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/exerunners"
-	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
@@ -78,8 +76,6 @@ func NewCleanupCommand(log *logger.Logger) *cobra.Command {
 		RunE:  cleanup(log.Logger),
 		Args:  cobra.ExactArgs(1),
 	}
-
-	container_flags.EnsureRuntimeFlag(cleanupCmd.Flags())
 
 	return cleanupCmd
 }
@@ -319,19 +315,19 @@ func cleanupPersistentProcessRecord(
 		resourceID = fmt.Sprintf("%d", currentRecord.PID)
 		cleaned = true
 
-		deleteRecordAndLogs := func(deleteLogMessage string) error {
+		deleteRecord := func(deleteLogMessage string) error {
 			if deleteErr := stateStore.DeletePersistentProcess(ctx, currentRecord.ResourceKey); deleteErr != nil {
 				log.Error(deleteErr, deleteLogMessage, "ResourceKey", currentRecord.ResourceKey)
 				return deleteErr
 			}
-			return removePersistentProcessRecordLogs(ctx, *currentRecord, log)
+			return nil
 		}
 
 		if findErr := processRunner.CheckProcessRunning(currentRecord.ProcessHandle()); findErr != nil {
 			if !process.IsProcessGoneErr(findErr) {
 				return fmt.Errorf("could not verify persistent Executable process '%s' is running: %w", currentRecord.ResourceKey, findErr)
 			}
-			return deleteRecordAndLogs("Could not delete stale persistent Executable process record")
+			return deleteRecord("Could not delete stale persistent Executable process record")
 		}
 
 		executable := &apiv1.Executable{}
@@ -339,11 +335,11 @@ func cleanupPersistentProcessRecord(
 		stopErr := processRunner.StopPersistentProcess(ctx, executable, currentRecord, log)
 		if stopErr != nil {
 			if process.IsProcessGoneErr(stopErr) {
-				return deleteRecordAndLogs("Could not delete stale persistent Executable process record")
+				return deleteRecord("Could not delete stale persistent Executable process record")
 			}
 			return stopErr
 		}
-		return deleteRecordAndLogs("Could not delete persistent Executable process record")
+		return deleteRecord("Could not delete persistent Executable process record")
 	})
 	return resourceID, cleaned, cleanupErr
 }
@@ -469,22 +465,4 @@ func removePersistentNetwork(ctx context.Context, orchestrator containers.Contai
 		return inspectErr
 	}
 	return fmt.Errorf("network %s still exists after cleanup", networkID)
-}
-
-func removePersistentProcessRecordLogs(ctx context.Context, record statestore.PersistentProcessRecord, log logr.Logger) error {
-	removeLog := func(path string, stream string) error {
-		if path == "" {
-			return nil
-		}
-		if removeErr := logs.RemoveWithRetry(ctx, path); removeErr != nil {
-			log.Error(removeErr, "Could not remove persistent Executable log file", "ResourceKey", record.ResourceKey, "Path", path, "Stream", stream)
-			return removeErr
-		}
-		return nil
-	}
-
-	return errors.Join(
-		removeLog(record.StdOutFile, "stdout"),
-		removeLog(record.StdErrFile, "stderr"),
-	)
 }
