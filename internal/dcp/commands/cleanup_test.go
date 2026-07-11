@@ -24,6 +24,8 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+const cleanupTestRuntimeName = "test"
+
 func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -40,7 +42,7 @@ func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *test
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
+		func(string) (containers.ContainerOrchestrator, error) {
 			require.Fail(t, "container runtime should not be requested when there are no container or network records")
 			return nil, nil
 		},
@@ -81,12 +83,14 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 		ResourceKey:   "containers/api",
 		ContainerID:   containerID,
 		ContainerName: "api",
+		RuntimeName:   cleanupTestRuntimeName,
 		WorkloadID:    "workload-a",
 	}))
 	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
 		ResourceKey: "containernetworks/app-network",
 		NetworkID:   networkID,
 		NetworkName: "app-network",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
 
@@ -95,7 +99,8 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			require.Equal(t, cleanupTestRuntimeName, runtimeName)
 			return orchestrator, nil
 		},
 		processExecutor,
@@ -134,11 +139,13 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
 		ResourceKey: "containers/missing",
 		ContainerID: "missing-container",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
 	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
 		ResourceKey: "containernetworks/missing",
 		NetworkID:   "missing-network",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
 
@@ -147,7 +154,8 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			require.Equal(t, cleanupTestRuntimeName, runtimeName)
 			return orchestrator, nil
 		},
 		processExecutor,
@@ -159,7 +167,7 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 	require.Empty(t, report.Failures)
 }
 
-func TestCleanupWorkloadResourcesSkipsContainerRecordThatChangesWorkloadBeforeLease(t *testing.T) {
+func TestCleanupPersistentContainerRecordSkipsRecordThatChangedWorkload(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -167,8 +175,6 @@ func TestCleanupWorkloadResourcesSkipsContainerRecordThatChangesWorkloadBeforeLe
 	stateStore := openCleanupTestStore(t, ctx)
 	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, leaseOwnerErr)
-	processExecutor := process.NewOSExecutor(logr.Discard())
-	defer processExecutor.Dispose()
 	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
 	require.NoError(t, orchestratorErr)
 
@@ -177,42 +183,46 @@ func TestCleanupWorkloadResourcesSkipsContainerRecordThatChangesWorkloadBeforeLe
 	newContainerID, createNewContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "new-api"})
 	require.NoError(t, createNewContainerErr)
 
-	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+	staleRecord := statestore.PersistentContainerRecord{
 		ResourceKey:   "containers/api",
 		ContainerID:   oldContainerID,
 		ContainerName: "old-api",
+		RuntimeName:   cleanupTestRuntimeName,
 		WorkloadID:    "workload-a",
-	}))
+	}
+	currentRecord := statestore.PersistentContainerRecord{
+		ResourceKey:   staleRecord.ResourceKey,
+		ContainerID:   newContainerID,
+		ContainerName: "new-api",
+		RuntimeName:   cleanupTestRuntimeName,
+		WorkloadID:    "workload-b",
+	}
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, currentRecord))
 
-	report, cleanupErr := cleanupWorkloadResources(
+	resourceID, cleaned, cleanupErr := cleanupPersistentContainerRecord(
 		ctx,
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
-			require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
-				ResourceKey:   "containers/api",
-				ContainerID:   newContainerID,
-				ContainerName: "new-api",
-				WorkloadID:    "workload-b",
-			}))
+		func(string) (containers.ContainerOrchestrator, error) {
+			require.Fail(t, "container runtime should not be requested for stale container records")
 			return orchestrator, nil
 		},
-		processExecutor,
+		staleRecord,
 		logr.Discard(),
 	)
 
 	require.NoError(t, cleanupErr)
-	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
-	require.Empty(t, report.Failures)
+	require.Empty(t, resourceID)
+	require.False(t, cleaned)
 	_, inspectOldErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{oldContainerID}})
 	require.NoError(t, inspectOldErr)
 	_, inspectNewErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{newContainerID}})
 	require.NoError(t, inspectNewErr)
 	record, getErr := stateStore.GetPersistentContainer(ctx, "containers/api")
 	require.NoError(t, getErr)
-	require.Equal(t, "workload-b", record.WorkloadID)
-	require.Equal(t, newContainerID, record.ContainerID)
+	require.Equal(t, currentRecord.WorkloadID, record.WorkloadID)
+	require.Equal(t, currentRecord.ContainerID, record.ContainerID)
 }
 
 func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
@@ -240,7 +250,7 @@ func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
+		func(string) (containers.ContainerOrchestrator, error) {
 			require.Fail(t, "container runtime should not be requested for executable-only cleanup")
 			return nil, nil
 		},
@@ -270,11 +280,13 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
 		ResourceKey: "containers/api",
 		ContainerID: "api-container",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
 	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
 		ResourceKey: "containernetworks/api",
 		NetworkID:   "api-network",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
 	require.NoError(t, stateStore.UpsertPersistentProcess(ctx, statestore.PersistentProcessRecord{
@@ -287,12 +299,15 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	}))
 
 	runtimeErr := errors.New("container runtime unavailable")
+	runtimeRequests := 0
 	report, cleanupErr := cleanupWorkloadResources(
 		ctx,
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			require.Equal(t, cleanupTestRuntimeName, runtimeName)
+			runtimeRequests++
 			return nil, runtimeErr
 		},
 		processExecutor,
@@ -300,16 +315,17 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	)
 
 	require.Error(t, cleanupErr)
+	require.Equal(t, 1, runtimeRequests)
 	require.Equal(t, cleanupStoppedCounts{Executables: 1}, report.Stopped)
 	require.Len(t, report.Failures, 2)
 	require.Equal(t, "container", report.Failures[0].Kind)
 	require.Equal(t, "containers/api", report.Failures[0].ResourceKey)
 	require.Equal(t, "api-container", report.Failures[0].ResourceID)
-	require.Equal(t, runtimeErr.Error(), report.Failures[0].Error)
+	require.ErrorContains(t, errors.New(report.Failures[0].Error), runtimeErr.Error())
 	require.Equal(t, "network", report.Failures[1].Kind)
 	require.Equal(t, "containernetworks/api", report.Failures[1].ResourceKey)
 	require.Equal(t, "api-network", report.Failures[1].ResourceID)
-	require.Equal(t, runtimeErr.Error(), report.Failures[1].Error)
+	require.ErrorContains(t, errors.New(report.Failures[1].Error), runtimeErr.Error())
 	processRecords, listProcessErr := stateStore.ListPersistentProcessesByWorkloadID(ctx, "workload-a")
 	require.NoError(t, listProcessErr)
 	require.Empty(t, processRecords)
@@ -321,7 +337,7 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	require.Len(t, networkRecords, 1)
 }
 
-func TestCleanupWorkloadResourcesRuntimeFailureSkipsContainerAndNetworkRecordsThatChangedWorkload(t *testing.T) {
+func TestCleanupPersistentContainerAndNetworkRecordsSkipRecordsThatChangedWorkloadBeforeRuntimeResolution(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
@@ -329,54 +345,72 @@ func TestCleanupWorkloadResourcesRuntimeFailureSkipsContainerAndNetworkRecordsTh
 	stateStore := openCleanupTestStore(t, ctx)
 	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
 	require.NoError(t, leaseOwnerErr)
-	processExecutor := process.NewOSExecutor(logr.Discard())
-	defer processExecutor.Dispose()
 
-	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+	staleContainerRecord := statestore.PersistentContainerRecord{
 		ResourceKey: "containers/api",
 		ContainerID: "old-api-container",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
-	}))
-	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
+	}
+	currentContainerRecord := statestore.PersistentContainerRecord{
+		ResourceKey: staleContainerRecord.ResourceKey,
+		ContainerID: "new-api-container",
+		RuntimeName: cleanupTestRuntimeName,
+		WorkloadID:  "workload-b",
+	}
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, currentContainerRecord))
+	staleNetworkRecord := statestore.PersistentNetworkRecord{
 		ResourceKey: "containernetworks/api",
 		NetworkID:   "old-api-network",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
-	}))
+	}
+	currentNetworkRecord := statestore.PersistentNetworkRecord{
+		ResourceKey: staleNetworkRecord.ResourceKey,
+		NetworkID:   "new-api-network",
+		RuntimeName: cleanupTestRuntimeName,
+		WorkloadID:  "workload-b",
+	}
+	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, currentNetworkRecord))
 
 	runtimeErr := errors.New("container runtime unavailable")
-	report, cleanupErr := cleanupWorkloadResources(
+	getContainerOrchestrator := func(string) (containers.ContainerOrchestrator, error) {
+		require.Fail(t, "container runtime should not be requested for stale container or network records")
+		return nil, runtimeErr
+	}
+	containerResourceID, containerCleaned, containerCleanupErr := cleanupPersistentContainerRecord(
 		ctx,
 		"workload-a",
 		stateStore,
 		leaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
-			require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
-				ResourceKey: "containers/api",
-				ContainerID: "new-api-container",
-				WorkloadID:  "workload-b",
-			}))
-			require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
-				ResourceKey: "containernetworks/api",
-				NetworkID:   "new-api-network",
-				WorkloadID:  "workload-b",
-			}))
-			return nil, runtimeErr
-		},
-		processExecutor,
+		getContainerOrchestrator,
+		staleContainerRecord,
+		logr.Discard(),
+	)
+	networkResourceID, networkCleaned, networkCleanupErr := cleanupPersistentNetworkRecord(
+		ctx,
+		"workload-a",
+		stateStore,
+		leaseOwner,
+		getContainerOrchestrator,
+		staleNetworkRecord,
 		logr.Discard(),
 	)
 
-	require.NoError(t, cleanupErr)
-	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
-	require.Empty(t, report.Failures)
+	require.NoError(t, containerCleanupErr)
+	require.Empty(t, containerResourceID)
+	require.False(t, containerCleaned)
+	require.NoError(t, networkCleanupErr)
+	require.Empty(t, networkResourceID)
+	require.False(t, networkCleaned)
 	containerRecords, listContainerErr := stateStore.ListPersistentContainersByWorkloadID(ctx, "workload-b")
 	require.NoError(t, listContainerErr)
 	require.Len(t, containerRecords, 1)
-	require.Equal(t, "new-api-container", containerRecords[0].ContainerID)
+	require.Equal(t, currentContainerRecord.ContainerID, containerRecords[0].ContainerID)
 	networkRecords, listNetworkErr := stateStore.ListPersistentNetworksByWorkloadID(ctx, "workload-b")
 	require.NoError(t, listNetworkErr)
 	require.Len(t, networkRecords, 1)
-	require.Equal(t, "new-api-network", networkRecords[0].NetworkID)
+	require.Equal(t, currentNetworkRecord.NetworkID, networkRecords[0].NetworkID)
 }
 
 func TestCleanupPersistentProcessRecordSkipsRecordThatChangedWorkload(t *testing.T) {
@@ -530,11 +564,13 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 		ResourceKey:   "containers/blocked",
 		ContainerID:   containerID,
 		ContainerName: "blocked",
+		RuntimeName:   cleanupTestRuntimeName,
 		WorkloadID:    "workload-a",
 	}))
 	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
 		ResourceKey: "containernetworks/missing",
 		NetworkID:   "missing-network",
+		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
 	_, leaseErr := stateStore.AcquireResourceLease(ctx, cleanupLeaseResource("containers/blocked"), heldLeaseOwner, time.Minute)
@@ -545,7 +581,8 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 		"workload-a",
 		stateStore,
 		cleanupLeaseOwner,
-		func() (containers.ContainerOrchestrator, error) {
+		func(runtimeName string) (containers.ContainerOrchestrator, error) {
+			require.Equal(t, cleanupTestRuntimeName, runtimeName)
 			return orchestrator, nil
 		},
 		processExecutor,
