@@ -49,6 +49,7 @@ func (r *PersistentProcessRecord) Delete(ctx context.Context) error {
 
 func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentProcessRecord) error {
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
+	record.WorkloadID = strings.TrimSpace(record.WorkloadID)
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent process resource key cannot be empty", ErrInvalidArgument)
 	}

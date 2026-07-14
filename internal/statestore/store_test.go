@@ -601,7 +601,7 @@ func TestPersistentProcessRecordsListByWorkloadID(t *testing.T) {
 			PID:          process.Pid_t(1234),
 			IdentityTime: time.Unix(100, 200).UTC(),
 			RunID:        "api-run",
-			WorkloadID:   "workload-a",
+			WorkloadID:   " workload-a ",
 		},
 		{
 			ResourceKey:  "worker",
