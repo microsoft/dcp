@@ -142,7 +142,7 @@ func TestPersistentContainerRecordsWorkloadID(t *testing.T) {
 
 	record, getErr := teInfo.StateStore.GetPersistentContainer(ctx, ctr.GetLeaseKey())
 	require.NoError(t, getErr)
-	require.Equal(t, "workload-a", record.WorkloadID)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 	require.Equal(t, updatedCtr.Status.ContainerID, record.ContainerID)
 }
 

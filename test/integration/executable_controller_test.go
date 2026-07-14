@@ -763,7 +763,7 @@ func TestPersistentExecutableRecordsWorkloadID(t *testing.T) {
 
 	record, getErr := teInfo.StateStore.GetPersistentProcess(ctx, exe.GetLeaseKey())
 	require.NoError(t, getErr)
-	require.Equal(t, "workload-a", record.WorkloadID)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 }
 
 // Verifies that when an IDE run completes synchronously during startup (the IDE delivers a

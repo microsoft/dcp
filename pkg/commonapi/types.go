@@ -14,6 +14,9 @@ import (
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// WorkloadID identifies persistent resources that belong to a logical workload.
+type WorkloadID string
+
 // +kubebuilder:object:generate=false
 // +k8s:openapi-gen=false
 type NamespacedNameWithKind struct {

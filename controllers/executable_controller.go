@@ -68,7 +68,7 @@ type runStateMap = ObjectStateMap[RunID, ExecutableRunInfo, *ExecutableRunInfo, 
 type ExecutableReconcilerConfig struct {
 	StateStore         *statestore.Store
 	ResourceLeaseOwner process.ProcessHandle
-	WorkloadID         string
+	WorkloadID         commonapi.WorkloadID
 }
 
 // ExecutableReconciler reconciles a Executable object

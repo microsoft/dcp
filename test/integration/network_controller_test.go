@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -140,7 +141,7 @@ func TestPersistentNetworkRecordsWorkloadID(t *testing.T) {
 
 	record, getErr := teInfo.StateStore.GetPersistentNetwork(ctx, net.GetLeaseKey())
 	require.NoError(t, getErr)
-	require.Equal(t, "workload-a", record.WorkloadID)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
 	require.Equal(t, updatedNet.Status.ID, record.NetworkID)
 }
 

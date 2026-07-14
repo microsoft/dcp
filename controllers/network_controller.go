@@ -140,7 +140,7 @@ type NetworkReconciler struct {
 type NetworkReconcilerConfig struct {
 	StateStore         *statestore.Store
 	ResourceLeaseOwner process.ProcessHandle
-	WorkloadID         string
+	WorkloadID         commonapi.WorkloadID
 }
 
 var (

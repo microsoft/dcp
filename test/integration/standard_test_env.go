@@ -25,6 +25,7 @@ import (
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -44,7 +45,7 @@ type TestEnvironmentInfo struct {
 }
 
 type TestEnvironmentOptions struct {
-	WorkloadID string
+	WorkloadID commonapi.WorkloadID
 }
 
 // Starts the DCP API server (separate process) and standard controllers (in-proc).
