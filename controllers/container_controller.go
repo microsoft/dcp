@@ -103,7 +103,7 @@ type ContainerReconcilerConfig struct {
 	StateStore                      *statestore.Store
 	ResourceLeaseOwner              process.ProcessHandle
 	ProcessExecutor                 process.Executor
-	WorkloadID                      string
+	WorkloadID                      commonapi.WorkloadID
 }
 
 type containerStateInitializerFunc = stateInitializerFunc[

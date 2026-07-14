@@ -32,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
@@ -137,7 +138,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
 		}
 		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
-		workloadID := strings.TrimSpace(os.Getenv(dcpWorkloadIDEnvVar))
+		workloadID := commonapi.WorkloadID(strings.TrimSpace(os.Getenv(dcpWorkloadIDEnvVar)))
 
 		trySetupNotificationHandler(ctrlCtx, log)
 

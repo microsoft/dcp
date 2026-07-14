@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
@@ -619,7 +620,7 @@ func TestPersistentProcessRecordsListByWorkloadID(t *testing.T) {
 	require.NoError(t, listErr)
 	require.Len(t, records, 1)
 	require.Equal(t, "api", records[0].ResourceKey)
-	require.Equal(t, "workload-a", records[0].WorkloadID)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), records[0].WorkloadID)
 }
 
 func TestPersistentContainerRecordRoundTripByWorkloadID(t *testing.T) {

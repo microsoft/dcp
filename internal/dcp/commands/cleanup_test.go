@@ -20,6 +20,7 @@ import (
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	dcpio "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -52,7 +53,7 @@ func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *test
 	)
 
 	require.NoError(t, cleanupErr)
-	require.Equal(t, "workload-a", report.WorkloadID)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), report.WorkloadID)
 	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
 	require.Empty(t, report.Failures)
 }

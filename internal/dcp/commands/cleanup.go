@@ -22,6 +22,7 @@ import (
 	"github.com/microsoft/dcp/internal/containers/runtimes"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -50,7 +51,7 @@ func (r cleanupLeaseResource) GetLeaseKey() string {
 }
 
 type cleanupReport struct {
-	WorkloadID string                `json:"workloadId"`
+	WorkloadID commonapi.WorkloadID  `json:"workloadId"`
 	Stopped    cleanupStoppedCounts  `json:"stopped"`
 	Failures   []cleanupFailureEntry `json:"failures,omitempty"`
 }
@@ -70,7 +71,7 @@ type cleanupFailureEntry struct {
 
 func NewCleanupCommand(log *logger.Logger) *cobra.Command {
 	cleanupCmd := &cobra.Command{
-		Use:   "cleanup <id>",
+		Use:   "cleanup <workload id>",
 		Short: "Stops persistent resources associated with a workload ID.",
 		Long:  `Stops persistent containers, executables, and networks associated with a workload ID.`,
 		RunE:  cleanup(log.Logger),
@@ -83,7 +84,7 @@ func NewCleanupCommand(log *logger.Logger) *cobra.Command {
 func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log = log.WithName("cleanup")
-		workloadID := strings.TrimSpace(args[0])
+		workloadID := commonapi.WorkloadID(strings.TrimSpace(args[0]))
 		if workloadID == "" {
 			return fmt.Errorf("workload ID cannot be empty")
 		}
@@ -124,7 +125,7 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 
 func cleanupWorkloadResources(
 	ctx context.Context,
-	workloadID string,
+	workloadID commonapi.WorkloadID,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
 	getContainerOrchestrator containerOrchestratorProvider,
@@ -231,7 +232,7 @@ func cachedContainerOrchestratorProvider(getContainerOrchestrator containerOrche
 
 func cleanupPersistentContainerRecord(
 	ctx context.Context,
-	workloadID string,
+	workloadID commonapi.WorkloadID,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
 	getContainerOrchestrator containerOrchestratorProvider,
@@ -261,7 +262,7 @@ func cleanupPersistentContainerRecord(
 
 func withCurrentPersistentContainerRecord(
 	ctx context.Context,
-	workloadID string,
+	workloadID commonapi.WorkloadID,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
 	record statestore.PersistentContainerRecord,
@@ -292,7 +293,7 @@ func withCurrentPersistentContainerRecord(
 
 func cleanupPersistentProcessRecord(
 	ctx context.Context,
-	workloadID string,
+	workloadID commonapi.WorkloadID,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
 	processRunner persistentProcessCleanupRunner,
@@ -346,7 +347,7 @@ func cleanupPersistentProcessRecord(
 
 func cleanupPersistentNetworkRecord(
 	ctx context.Context,
-	workloadID string,
+	workloadID commonapi.WorkloadID,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
 	getContainerOrchestrator containerOrchestratorProvider,
@@ -376,7 +377,7 @@ func cleanupPersistentNetworkRecord(
 
 func withCurrentPersistentNetworkRecord(
 	ctx context.Context,
-	workloadID string,
+	workloadID commonapi.WorkloadID,
 	stateStore *statestore.Store,
 	leaseOwner process.ProcessHandle,
 	record statestore.PersistentNetworkRecord,

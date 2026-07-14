@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 var ErrPersistentContainerNotFound = errors.New("persistent container record not found")
@@ -21,7 +23,7 @@ type PersistentContainerRecord struct {
 	ContainerID   string
 	ContainerName string
 	RuntimeName   string
-	WorkloadID    string
+	WorkloadID    commonapi.WorkloadID
 	UpdatedAt     time.Time
 	store         *Store
 }
@@ -41,7 +43,7 @@ func (s *Store) UpsertPersistentContainer(ctx context.Context, record Persistent
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.ContainerID = strings.TrimSpace(record.ContainerID)
 	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
-	record.WorkloadID = strings.TrimSpace(record.WorkloadID)
+	record.WorkloadID = commonapi.WorkloadID(strings.TrimSpace(string(record.WorkloadID)))
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent container resource key cannot be empty", ErrInvalidArgument)
 	}
@@ -71,7 +73,7 @@ func (s *Store) UpsertPersistentContainer(ctx context.Context, record Persistent
 			record.ContainerID,
 			record.ContainerName,
 			record.RuntimeName,
-			record.WorkloadID,
+			string(record.WorkloadID),
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -112,8 +114,8 @@ func (s *Store) GetPersistentContainer(ctx context.Context, resourceKey string) 
 	return record, nil
 }
 
-func (s *Store) ListPersistentContainersByWorkloadID(ctx context.Context, workloadID string) ([]PersistentContainerRecord, error) {
-	workloadID = strings.TrimSpace(workloadID)
+func (s *Store) ListPersistentContainersByWorkloadID(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentContainerRecord, error) {
+	workloadID = commonapi.WorkloadID(strings.TrimSpace(string(workloadID)))
 	if workloadID == "" {
 		return nil, fmt.Errorf("%w: persistent container workload ID cannot be empty", ErrInvalidArgument)
 	}
@@ -129,7 +131,7 @@ func (s *Store) ListPersistentContainersByWorkloadID(ctx context.Context, worklo
 		 FROM persistent_containers
 		 WHERE workload_id = ?
 		 ORDER BY resource_key`,
-		workloadID,
+		string(workloadID),
 	)
 	if queryErr != nil {
 		return nil, fmt.Errorf("could not list persistent container records for workload '%s': %w", workloadID, queryErr)

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/process"
 )
 
@@ -27,7 +28,7 @@ type PersistentProcessRecord struct {
 	StdOutFile        string
 	StdErrFile        string
 	LifecycleMetadata string
-	WorkloadID        string
+	WorkloadID        commonapi.WorkloadID
 	UpdatedAt         time.Time
 	store             *Store
 }
@@ -49,7 +50,7 @@ func (r *PersistentProcessRecord) Delete(ctx context.Context) error {
 
 func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentProcessRecord) error {
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
-	record.WorkloadID = strings.TrimSpace(record.WorkloadID)
+	record.WorkloadID = commonapi.WorkloadID(strings.TrimSpace(string(record.WorkloadID)))
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent process resource key cannot be empty", ErrInvalidArgument)
 	}
@@ -91,7 +92,7 @@ func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentPr
 			record.StdOutFile,
 			record.StdErrFile,
 			record.LifecycleMetadata,
-			record.WorkloadID,
+			string(record.WorkloadID),
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -138,8 +139,8 @@ func (s *Store) ListPersistentProcesses(ctx context.Context) ([]PersistentProces
 	return s.listPersistentProcesses(ctx, "")
 }
 
-func (s *Store) ListPersistentProcessesByWorkloadID(ctx context.Context, workloadID string) ([]PersistentProcessRecord, error) {
-	workloadID = strings.TrimSpace(workloadID)
+func (s *Store) ListPersistentProcessesByWorkloadID(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentProcessRecord, error) {
+	workloadID = commonapi.WorkloadID(strings.TrimSpace(string(workloadID)))
 	if workloadID == "" {
 		return nil, fmt.Errorf("%w: persistent process workload ID cannot be empty", ErrInvalidArgument)
 	}
@@ -147,7 +148,7 @@ func (s *Store) ListPersistentProcessesByWorkloadID(ctx context.Context, workloa
 	return s.listPersistentProcesses(ctx, workloadID)
 }
 
-func (s *Store) listPersistentProcesses(ctx context.Context, workloadID string) ([]PersistentProcessRecord, error) {
+func (s *Store) listPersistentProcesses(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentProcessRecord, error) {
 	db, dbErr := s.requireDB()
 	if dbErr != nil {
 		return nil, dbErr
@@ -160,7 +161,7 @@ func (s *Store) listPersistentProcesses(ctx context.Context, workloadID string) 
 	args := []any{}
 	if workloadID != "" {
 		query += ` WHERE workload_id = ?`
-		args = append(args, workloadID)
+		args = append(args, string(workloadID))
 	}
 	query += ` ORDER BY resource_key`
 

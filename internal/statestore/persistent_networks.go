@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 var ErrPersistentNetworkNotFound = errors.New("persistent network record not found")
@@ -21,7 +23,7 @@ type PersistentNetworkRecord struct {
 	NetworkID   string
 	NetworkName string
 	RuntimeName string
-	WorkloadID  string
+	WorkloadID  commonapi.WorkloadID
 	UpdatedAt   time.Time
 	store       *Store
 }
@@ -41,7 +43,7 @@ func (s *Store) UpsertPersistentNetwork(ctx context.Context, record PersistentNe
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.NetworkID = strings.TrimSpace(record.NetworkID)
 	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
-	record.WorkloadID = strings.TrimSpace(record.WorkloadID)
+	record.WorkloadID = commonapi.WorkloadID(strings.TrimSpace(string(record.WorkloadID)))
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent network resource key cannot be empty", ErrInvalidArgument)
 	}
@@ -71,7 +73,7 @@ func (s *Store) UpsertPersistentNetwork(ctx context.Context, record PersistentNe
 			record.NetworkID,
 			record.NetworkName,
 			record.RuntimeName,
-			record.WorkloadID,
+			string(record.WorkloadID),
 			unixNano(now),
 		)
 		if execErr != nil {
@@ -112,8 +114,8 @@ func (s *Store) GetPersistentNetwork(ctx context.Context, resourceKey string) (*
 	return record, nil
 }
 
-func (s *Store) ListPersistentNetworksByWorkloadID(ctx context.Context, workloadID string) ([]PersistentNetworkRecord, error) {
-	workloadID = strings.TrimSpace(workloadID)
+func (s *Store) ListPersistentNetworksByWorkloadID(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentNetworkRecord, error) {
+	workloadID = commonapi.WorkloadID(strings.TrimSpace(string(workloadID)))
 	if workloadID == "" {
 		return nil, fmt.Errorf("%w: persistent network workload ID cannot be empty", ErrInvalidArgument)
 	}
@@ -129,7 +131,7 @@ func (s *Store) ListPersistentNetworksByWorkloadID(ctx context.Context, workload
 		 FROM persistent_networks
 		 WHERE workload_id = ?
 		 ORDER BY resource_key`,
-		workloadID,
+		string(workloadID),
 	)
 	if queryErr != nil {
 		return nil, fmt.Errorf("could not list persistent network records for workload '%s': %w", workloadID, queryErr)
