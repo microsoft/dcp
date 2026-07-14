@@ -410,13 +410,11 @@ func removePersistentContainer(ctx context.Context, orchestrator containers.Cont
 		return fmt.Errorf("container ID cannot be empty")
 	}
 
-	_, stopErr := orchestrator.StopContainers(ctx, containers.StopContainersOptions{
+	// Try a graceful stop first; force removal below can still reach the desired cleanup state if this fails.
+	_, _ = orchestrator.StopContainers(ctx, containers.StopContainersOptions{
 		Containers:    []string{containerID},
 		SecondsToKill: workloadCleanupStopContainerTimeout,
 	})
-	if stopErr != nil && !errors.Is(stopErr, containers.ErrNotFound) {
-		// Continue to force remove; a successful remove still reaches the desired cleanup state.
-	}
 
 	_, removeErr := orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 		Containers: []string{containerID},
