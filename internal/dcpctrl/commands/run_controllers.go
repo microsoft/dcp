@@ -53,8 +53,11 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 	runControllersCmd := &cobra.Command{
 		Use:   "run-controllers",
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
-		RunE:  runControllers(controllerLog),
-		Args:  cobra.NoArgs,
+		Long: `Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects).
+
+If DCP_WORKLOAD_ID is set, newly-created persistent Containers, Executables, and ContainerNetworks are associated with that workload ID. The cleanup command can stop persistent resources associated with a workload ID.`,
+		RunE: runControllers(controllerLog),
+		Args: cobra.NoArgs,
 	}
 
 	kubeconfig.EnsureKubeconfigFlag(runControllersCmd.Flags())
