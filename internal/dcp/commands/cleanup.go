@@ -73,9 +73,11 @@ func NewCleanupCommand(log *logger.Logger) *cobra.Command {
 	cleanupCmd := &cobra.Command{
 		Use:   "cleanup <workload id>",
 		Short: "Stops persistent resources associated with a workload ID.",
-		Long:  `Stops persistent containers, executables, and networks associated with a workload ID.`,
-		RunE:  cleanup(log.Logger),
-		Args:  cobra.ExactArgs(1),
+		Long: `Stops persistent containers, executables, and networks associated with a workload ID.
+
+Using workload IDs is optional. See "run-controllers" command for information on how to associate resources with workload IDs.`,
+		RunE: cleanup(log.Logger),
+		Args: cobra.ExactArgs(1),
 	}
 
 	return cleanupCmd
