@@ -50,7 +50,11 @@ func (r *PersistentProcessRecord) Delete(ctx context.Context) error {
 
 func (s *Store) UpsertPersistentProcess(ctx context.Context, record PersistentProcessRecord) error {
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
-	record.WorkloadID = commonapi.WorkloadID(strings.TrimSpace(string(record.WorkloadID)))
+	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(record.WorkloadID)
+	if workloadIDErr != nil {
+		return workloadIDErr
+	}
+	record.WorkloadID = normalizedWorkloadID
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent process resource key cannot be empty", ErrInvalidArgument)
 	}
@@ -140,7 +144,11 @@ func (s *Store) ListPersistentProcesses(ctx context.Context) ([]PersistentProces
 }
 
 func (s *Store) ListPersistentProcessesByWorkloadID(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentProcessRecord, error) {
-	workloadID = commonapi.WorkloadID(strings.TrimSpace(string(workloadID)))
+	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(workloadID)
+	if workloadIDErr != nil {
+		return nil, workloadIDErr
+	}
+	workloadID = normalizedWorkloadID
 	if workloadID == "" {
 		return nil, fmt.Errorf("%w: persistent process workload ID cannot be empty", ErrInvalidArgument)
 	}

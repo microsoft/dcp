@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -25,11 +26,13 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const (
 	workloadCleanupLeaseRevalidationInterval = 30 * time.Second
 	workloadCleanupStopContainerTimeout      = 10
+	workloadCleanupConcurrency               = uint16(8)
 )
 
 type containerOrchestratorProvider func(runtimeName string) (containers.ContainerOrchestrator, error)
@@ -42,6 +45,22 @@ type resolvedContainerOrchestrator struct {
 type persistentProcessCleanupRunner interface {
 	CheckProcessRunning(handle process.ProcessHandle) error
 	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
+}
+
+type cleanupWorkItem struct {
+	kind               string
+	resourceKey        string
+	fallbackResourceID string
+	clean              func() (string, bool, error)
+}
+
+type cleanupWorkResult struct {
+	kind               string
+	resourceKey        string
+	fallbackResourceID string
+	resourceID         string
+	cleaned            bool
+	err                error
 }
 
 type cleanupLeaseResource string
@@ -73,9 +92,10 @@ func NewCleanupCommand(log *logger.Logger) *cobra.Command {
 	cleanupCmd := &cobra.Command{
 		Use:   "cleanup <workload id>",
 		Short: "Stops persistent resources associated with a workload ID.",
-		Long: `Stops persistent containers, executables, and networks associated with a workload ID.
+		Long: fmt.Sprintf(`Stops persistent containers, executables, and networks associated with a workload ID.
 
-Using workload IDs is optional. See "run-controllers" command for information on how to associate resources with workload IDs.`,
+Using workload IDs is optional. Workload IDs are trimmed and must be no longer than %d bytes.
+See "run-controllers" command for information on how to associate resources with workload IDs.`, commonapi.MaxWorkloadIDLength),
 		RunE: cleanup(log.Logger),
 		Args: cobra.ExactArgs(1),
 	}
@@ -86,9 +106,12 @@ Using workload IDs is optional. See "run-controllers" command for information on
 func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		log = log.WithName("cleanup")
-		workloadID := commonapi.WorkloadID(strings.TrimSpace(args[0]))
+		workloadID := commonapi.NormalizeWorkloadID(args[0])
 		if workloadID == "" {
 			return fmt.Errorf("workload ID cannot be empty")
+		}
+		if workloadIDErr := workloadID.Validate(); workloadIDErr != nil {
+			return workloadIDErr
 		}
 
 		stateStore, stateStoreErr := statestore.Open(cmd.Context(), statestore.Options{})
@@ -150,60 +173,77 @@ func cleanupWorkloadResources(
 		return report, networkListErr
 	}
 
-	for _, record := range containerRecords {
-		resourceID, cleaned, cleanupErr := cleanupPersistentContainerRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
-		if cleanupErr != nil {
-			if resourceID == "" {
-				resourceID = record.ContainerID
-			}
-			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        "container",
-				ResourceKey: record.ResourceKey,
-				ResourceID:  resourceID,
-				Error:       cleanupErr.Error(),
-			})
-			continue
-		}
-		if cleaned {
-			report.Stopped.Containers++
-		}
-	}
-
 	processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
+	workItems := make([]cleanupWorkItem, 0, len(containerRecords)+len(processRecords)+len(networkRecords))
+	for _, record := range containerRecords {
+		record := record
+		workItems = append(workItems, cleanupWorkItem{
+			kind:               "container",
+			resourceKey:        record.ResourceKey,
+			fallbackResourceID: record.ContainerID,
+			clean: func() (string, bool, error) {
+				return cleanupPersistentContainerRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
+			},
+		})
+	}
 	for _, record := range processRecords {
-		resourceID, cleaned, cleanupErr := cleanupPersistentProcessRecord(ctx, workloadID, stateStore, leaseOwner, processRunner, record, log)
-		if cleanupErr != nil {
-			if resourceID == "" {
-				resourceID = fmt.Sprintf("%d", record.PID)
-			}
-			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        "executable",
-				ResourceKey: record.ResourceKey,
-				ResourceID:  resourceID,
-				Error:       cleanupErr.Error(),
-			})
-			continue
-		}
-		if cleaned {
-			report.Stopped.Executables++
-		}
+		record := record
+		workItems = append(workItems, cleanupWorkItem{
+			kind:               "executable",
+			resourceKey:        record.ResourceKey,
+			fallbackResourceID: fmt.Sprintf("%d", record.PID),
+			clean: func() (string, bool, error) {
+				return cleanupPersistentProcessRecord(ctx, workloadID, stateStore, leaseOwner, processRunner, record, log)
+			},
+		})
+	}
+	for _, record := range networkRecords {
+		record := record
+		workItems = append(workItems, cleanupWorkItem{
+			kind:               "network",
+			resourceKey:        record.ResourceKey,
+			fallbackResourceID: record.NetworkID,
+			clean: func() (string, bool, error) {
+				return cleanupPersistentNetworkRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
+			},
+		})
 	}
 
-	for _, record := range networkRecords {
-		resourceID, cleaned, cleanupErr := cleanupPersistentNetworkRecord(ctx, workloadID, stateStore, leaseOwner, getContainerOrchestrator, record, log)
-		if cleanupErr != nil {
+	results := slices.MapConcurrent[cleanupWorkResult](workItems, func(workItem cleanupWorkItem) cleanupWorkResult {
+		resourceID, cleaned, cleanupErr := workItem.clean()
+		return cleanupWorkResult{
+			kind:               workItem.kind,
+			resourceKey:        workItem.resourceKey,
+			fallbackResourceID: workItem.fallbackResourceID,
+			resourceID:         resourceID,
+			cleaned:            cleaned,
+			err:                cleanupErr,
+		}
+	}, workloadCleanupConcurrency)
+
+	for _, result := range results {
+		if result.err != nil {
+			resourceID := result.resourceID
 			if resourceID == "" {
-				resourceID = record.NetworkID
+				resourceID = result.fallbackResourceID
 			}
 			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        "network",
-				ResourceKey: record.ResourceKey,
+				Kind:        result.kind,
+				ResourceKey: result.resourceKey,
 				ResourceID:  resourceID,
-				Error:       cleanupErr.Error(),
+				Error:       result.err.Error(),
 			})
 			continue
 		}
-		if cleaned {
+		if !result.cleaned {
+			continue
+		}
+		switch result.kind {
+		case "container":
+			report.Stopped.Containers++
+		case "executable":
+			report.Stopped.Executables++
+		case "network":
 			report.Stopped.Networks++
 		}
 	}
@@ -216,8 +256,12 @@ func cleanupWorkloadResources(
 
 func cachedContainerOrchestratorProvider(getContainerOrchestrator containerOrchestratorProvider) containerOrchestratorProvider {
 	resolvedByRuntime := map[string]resolvedContainerOrchestrator{}
+	var resolvedByRuntimeLock sync.Mutex
 	return func(runtimeName string) (containers.ContainerOrchestrator, error) {
 		runtimeName = strings.TrimSpace(runtimeName)
+		resolvedByRuntimeLock.Lock()
+		defer resolvedByRuntimeLock.Unlock()
+
 		resolved, ok := resolvedByRuntime[runtimeName]
 		if ok {
 			return resolved.orchestrator, resolved.err

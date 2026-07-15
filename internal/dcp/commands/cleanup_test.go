@@ -9,10 +9,13 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
@@ -56,6 +59,17 @@ func TestCleanupWorkloadResourcesNoRecordsDoesNotRequireContainerRuntime(t *test
 	require.Equal(t, commonapi.WorkloadID("workload-a"), report.WorkloadID)
 	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
 	require.Empty(t, report.Failures)
+}
+
+func TestCleanupRejectsTooLongWorkloadID(t *testing.T) {
+	t.Parallel()
+
+	cleanupErr := cleanup(logr.Discard())(
+		&cobra.Command{},
+		[]string{strings.Repeat("a", commonapi.MaxWorkloadIDLength+1)},
+	)
+
+	require.ErrorContains(t, cleanupErr, "workload ID cannot be longer than")
 }
 
 func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
@@ -167,6 +181,90 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 	require.NoError(t, cleanupErr)
 	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, report.Stopped)
 	require.Empty(t, report.Failures)
+}
+
+func TestCleanupWorkloadResourcesRunsIndependentRecordsInParallel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	wrappedOrchestrator := &parallelCleanupContainerOrchestrator{
+		ContainerOrchestrator: orchestrator,
+		firstRemoveEntered:    make(chan struct{}),
+		secondRemoveEntered:   make(chan struct{}),
+		releaseFirstRemove:    make(chan struct{}),
+	}
+
+	firstContainerID, createFirstErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "api"})
+	require.NoError(t, createFirstErr)
+	secondContainerID, createSecondErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "worker"})
+	require.NoError(t, createSecondErr)
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+		ResourceKey:   "containers/api",
+		ContainerID:   firstContainerID,
+		ContainerName: "api",
+		RuntimeName:   cleanupTestRuntimeName,
+		WorkloadID:    "workload-a",
+	}))
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+		ResourceKey:   "containers/worker",
+		ContainerID:   secondContainerID,
+		ContainerName: "worker",
+		RuntimeName:   cleanupTestRuntimeName,
+		WorkloadID:    "workload-a",
+	}))
+
+	type cleanupResult struct {
+		report cleanupReport
+		err    error
+	}
+	resultCh := make(chan cleanupResult, 1)
+	go func() {
+		report, cleanupErr := cleanupWorkloadResources(
+			ctx,
+			"workload-a",
+			stateStore,
+			leaseOwner,
+			func(runtimeName string) (containers.ContainerOrchestrator, error) {
+				if runtimeName != cleanupTestRuntimeName {
+					return nil, errors.New("unexpected runtime name")
+				}
+				return wrappedOrchestrator, nil
+			},
+			processExecutor,
+			logr.Discard(),
+		)
+		resultCh <- cleanupResult{report: report, err: cleanupErr}
+	}()
+
+	select {
+	case <-wrappedOrchestrator.firstRemoveEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "first container cleanup did not start", ctx.Err())
+	}
+	select {
+	case <-wrappedOrchestrator.secondRemoveEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "second container cleanup did not start while the first cleanup was blocked", ctx.Err())
+	}
+	close(wrappedOrchestrator.releaseFirstRemove)
+
+	var result cleanupResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		require.FailNow(t, "cleanup did not finish", ctx.Err())
+	}
+	require.NoError(t, result.err)
+	require.Equal(t, cleanupStoppedCounts{Containers: 2}, result.report.Stopped)
+	require.Empty(t, result.report.Failures)
 }
 
 func TestCleanupPersistentContainerRecordSkipsRecordThatChangedWorkload(t *testing.T) {
@@ -672,4 +770,37 @@ func (r *fakePersistentProcessCleanupRunner) CheckProcessRunning(process.Process
 func (r *fakePersistentProcessCleanupRunner) StopPersistentProcess(context.Context, *apiv1.Executable, *statestore.PersistentProcessRecord, logr.Logger) error {
 	r.stopCalled = true
 	return r.stopErr
+}
+
+type parallelCleanupContainerOrchestrator struct {
+	containers.ContainerOrchestrator
+
+	lock                sync.Mutex
+	removeCount         int
+	firstRemoveEntered  chan struct{}
+	secondRemoveEntered chan struct{}
+	releaseFirstRemove  chan struct{}
+}
+
+func (o *parallelCleanupContainerOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
+	o.lock.Lock()
+	o.removeCount++
+	removeNumber := o.removeCount
+	switch removeNumber {
+	case 1:
+		close(o.firstRemoveEntered)
+	case 2:
+		close(o.secondRemoveEntered)
+	}
+	o.lock.Unlock()
+
+	if removeNumber == 1 {
+		select {
+		case <-o.releaseFirstRemove:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return o.ContainerOrchestrator.RemoveContainers(ctx, options)
 }

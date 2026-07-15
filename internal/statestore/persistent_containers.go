@@ -43,7 +43,11 @@ func (s *Store) UpsertPersistentContainer(ctx context.Context, record Persistent
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.ContainerID = strings.TrimSpace(record.ContainerID)
 	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
-	record.WorkloadID = commonapi.WorkloadID(strings.TrimSpace(string(record.WorkloadID)))
+	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(record.WorkloadID)
+	if workloadIDErr != nil {
+		return workloadIDErr
+	}
+	record.WorkloadID = normalizedWorkloadID
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent container resource key cannot be empty", ErrInvalidArgument)
 	}
@@ -115,7 +119,11 @@ func (s *Store) GetPersistentContainer(ctx context.Context, resourceKey string) 
 }
 
 func (s *Store) ListPersistentContainersByWorkloadID(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentContainerRecord, error) {
-	workloadID = commonapi.WorkloadID(strings.TrimSpace(string(workloadID)))
+	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(workloadID)
+	if workloadIDErr != nil {
+		return nil, workloadIDErr
+	}
+	workloadID = normalizedWorkloadID
 	if workloadID == "" {
 		return nil, fmt.Errorf("%w: persistent container workload ID cannot be empty", ErrInvalidArgument)
 	}

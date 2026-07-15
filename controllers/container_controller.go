@@ -1307,7 +1307,7 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
 			if persistErr := r.upsertPersistentContainerRecord(startupCtx, container, rcd, log); persistErr != nil {
-				removeErr := r.removeExistingContainer(startupCtx, rcd.containerID, inspected, log)
+				removeErr := r.removeExistingContainer(context.WithoutCancel(startupCtx), rcd.containerID, inspected, log)
 				return errors.Join(persistErr, removeErr)
 			}
 			if rcd.runSpec.EffectiveMode() != apiv1.ContainerModePersistent {

@@ -531,7 +531,7 @@ func (r *NetworkReconciler) ensureNetworkWithName(ctx context.Context, network *
 
 	r.existingNetworks.Store(network.NamespacedName(), cnet.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateRunning, id: cnet.Id})
 	if persistErr := r.upsertPersistentNetworkRecord(ctx, network, cnet, log); persistErr != nil {
-		removeErr := removeNetwork(ctx, r.orchestrator, cnet.Id, log)
+		removeErr := removeNetwork(context.WithoutCancel(ctx), r.orchestrator, cnet.Id, log)
 		persistErr = errors.Join(persistErr, removeErr)
 		log.Error(persistErr, "Could not persist ContainerNetwork workload record", "ResourceKey", network.GetLeaseKey())
 		r.existingNetworks.Store(network.NamespacedName(), cnet.Id, &runningNetworkState{state: apiv1.ContainerNetworkStateFailedToStart, id: cnet.Id, message: persistErr.Error()})
