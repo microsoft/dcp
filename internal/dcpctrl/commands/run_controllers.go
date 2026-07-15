@@ -49,14 +49,18 @@ func NewRunControllersCommand(log *logger.Logger) *cobra.Command {
 	runControllersCmd := &cobra.Command{
 		Use:   "run-controllers",
 		Short: "Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects)",
-		RunE:  runControllers(controllerLog),
-		Args:  cobra.NoArgs,
+		Long: `Runs the standard DCP controllers (for Executable, Container, and ContainerVolume objects).
+
+If --workload-id is set, newly-created persistent Containers, Executables, and ContainerNetworks are associated with that workload ID. If --workload-id is not set, DCP_WORKLOAD_ID is used when present. The cleanup command can stop persistent resources associated with a workload ID.`,
+		RunE: runControllers(controllerLog),
+		Args: cobra.NoArgs,
 	}
 
 	kubeconfig.EnsureKubeconfigFlag(runControllersCmd.Flags())
 	kubeconfig.EnsureKubeconfigPortFlag(runControllersCmd.Flags())
 
 	container_flags.EnsureRuntimeFlag(runControllersCmd.Flags())
+	cmds.AddWorkloadIDFlag(runControllersCmd)
 
 	cmds.AddMonitorFlags(runControllersCmd)
 	notifications.AddNotificationSocketFlag(runControllersCmd.Flags())
@@ -134,6 +138,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
 		}
 		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
+		workloadID, workloadIDErr := cmds.GetWorkloadIDFromFlags(cmd.Flags())
+		if workloadIDErr != nil {
+			return workloadIDErr
+		}
 
 		trySetupNotificationHandler(ctrlCtx, log)
 
@@ -204,6 +212,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			controllers.ExecutableReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
 			},
 		)
 		if err = exCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -234,6 +243,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 				StateStore:                 stateStore,
 				ResourceLeaseOwner:         leaseOwner,
 				ProcessExecutor:            processExecutor,
+				WorkloadID:                 workloadID,
 			},
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
@@ -275,6 +285,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			controllers.NetworkReconcilerConfig{
 				StateStore:         stateStore,
 				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         workloadID,
 			},
 		)
 		if err = networkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {

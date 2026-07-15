@@ -6,6 +6,7 @@
 package commonapi
 
 import (
+	"fmt"
 	"strings"
 
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -13,6 +14,30 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// MaxWorkloadIDLength is the maximum UTF-8 byte length for a workload ID.
+const MaxWorkloadIDLength = 1024
+
+// WorkloadID identifies persistent resources that belong to a logical workload.
+type WorkloadID string
+
+// NormalizeWorkloadID trims surrounding whitespace from a workload ID.
+func NormalizeWorkloadID(workloadID string) WorkloadID {
+	return WorkloadID(strings.TrimSpace(workloadID))
+}
+
+// Normalized returns the workload ID with surrounding whitespace removed.
+func (id WorkloadID) Normalized() WorkloadID {
+	return NormalizeWorkloadID(string(id))
+}
+
+// Validate returns an error if the workload ID violates DCP limits.
+func (id WorkloadID) Validate() error {
+	if len(id) > MaxWorkloadIDLength {
+		return fmt.Errorf("workload ID cannot be longer than %d bytes", MaxWorkloadIDLength)
+	}
+	return nil
+}
 
 // +kubebuilder:object:generate=false
 // +k8s:openapi-gen=false

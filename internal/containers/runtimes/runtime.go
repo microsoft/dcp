@@ -8,6 +8,7 @@ package runtimes
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	"github.com/microsoft/dcp/internal/containers"
@@ -68,14 +69,9 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 			}
 		}
 	} else {
-		orchestratorFactory := supportedRuntimes[runtimeFlagValue]
-		if orchestratorFactory != nil {
-			orchestrator := orchestratorFactory(log, executor)
-			status := orchestrator.CheckStatus(ctx, containers.IgnoreCachedRuntimeStatus)
-			availableRuntime = &runtimeSupport{
-				orchestrator,
-				status,
-			}
+		orchestrator, runtimeErr := FindContainerRuntime(ctx, string(runtimeFlagValue), log, executor)
+		if runtimeErr == nil {
+			return orchestrator, nil
 		}
 	}
 
@@ -86,4 +82,22 @@ func FindAvailableContainerRuntime(ctx context.Context, log logr.Logger, executo
 	log.V(1).Info("Runtime status", "Runtime", availableRuntime.orchestrator.Name(), "Status", availableRuntime.status)
 
 	return availableRuntime.orchestrator, nil
+}
+
+func FindContainerRuntime(ctx context.Context, runtimeName string, log logr.Logger, executor process.Executor) (containers.ContainerOrchestrator, error) {
+	runtimeName = strings.TrimSpace(strings.ToLower(runtimeName))
+	if runtimeName == "" {
+		return nil, fmt.Errorf("container runtime name cannot be empty")
+	}
+
+	orchestratorFactory := supportedRuntimes[flags.RuntimeFlagValue(runtimeName)]
+	if orchestratorFactory == nil {
+		return nil, fmt.Errorf("container runtime %q is not supported", runtimeName)
+	}
+
+	orchestrator := orchestratorFactory(log, executor)
+	status := orchestrator.CheckStatus(ctx, containers.IgnoreCachedRuntimeStatus)
+	log.V(1).Info("Runtime status", "Runtime", orchestrator.Name(), "Status", status)
+
+	return orchestrator, nil
 }

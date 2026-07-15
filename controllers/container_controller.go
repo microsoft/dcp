@@ -103,6 +103,7 @@ type ContainerReconcilerConfig struct {
 	StateStore                      *statestore.Store
 	ResourceLeaseOwner              process.ProcessHandle
 	ProcessExecutor                 process.Executor
+	WorkloadID                      commonapi.WorkloadID
 }
 
 type containerStateInitializerFunc = stateInitializerFunc[
@@ -1305,6 +1306,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			log.V(1).Info("Container created")
 			rcd.updateFromInspectedContainer(inspected)
+			if persistErr := r.upsertPersistentContainerRecord(startupCtx, container, rcd, log); persistErr != nil {
+				removeErr := r.removeExistingContainer(context.WithoutCancel(startupCtx), rcd.containerID, inspected, log)
+				return errors.Join(persistErr, removeErr)
+			}
 			if rcd.runSpec.EffectiveMode() != apiv1.ContainerModePersistent {
 				r.runContainerLifecycleMonitor(rcd, log)
 			}
@@ -1642,6 +1647,39 @@ func (r *ContainerReconciler) releasePersistentContainerResourceLease(
 		return releaseErr
 	}
 
+	return nil
+}
+
+func (r *ContainerReconciler) upsertPersistentContainerRecord(
+	ctx context.Context,
+	container *apiv1.Container,
+	rcd *runningContainerData,
+	log logr.Logger,
+) error {
+	if r.config.WorkloadID == "" || container.Spec.EffectiveMode() != apiv1.ContainerModePersistent {
+		return nil
+	}
+	if r.config.StateStore == nil {
+		return fmt.Errorf("state store is not configured")
+	}
+	if rcd == nil || !rcd.hasValidContainerID() {
+		return fmt.Errorf("cannot persist Container record without a valid container ID")
+	}
+
+	record := statestore.PersistentContainerRecord{
+		ResourceKey:   container.GetLeaseKey(),
+		ContainerID:   string(rcd.containerID),
+		ContainerName: rcd.containerName,
+		RuntimeName:   r.orchestrator.Name(),
+		WorkloadID:    r.config.WorkloadID,
+	}
+	if record.ContainerName == "" {
+		record.ContainerName = container.Spec.ContainerName
+	}
+	if persistErr := r.config.StateStore.UpsertPersistentContainer(ctx, record); persistErr != nil {
+		log.Error(persistErr, "Could not persist Container workload record", "ResourceKey", record.ResourceKey)
+		return persistErr
+	}
 	return nil
 }
 
