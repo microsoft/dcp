@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -621,6 +622,52 @@ func TestPersistentProcessRecordsListByWorkloadID(t *testing.T) {
 	require.Len(t, records, 1)
 	require.Equal(t, "api", records[0].ResourceKey)
 	require.Equal(t, commonapi.WorkloadID("workload-a"), records[0].WorkloadID)
+}
+
+func TestPersistentResourceWorkloadIDRejectsTooLong(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	tooLongWorkloadID := commonapi.WorkloadID(strings.Repeat("a", commonapi.MaxWorkloadIDLength+1))
+
+	processErr := store.UpsertPersistentProcess(ctx, PersistentProcessRecord{
+		ResourceKey:  "api",
+		LifecycleKey: "api-lifecycle",
+		PID:          process.Pid_t(1234),
+		IdentityTime: time.Unix(100, 200).UTC(),
+		RunID:        "api-run",
+		WorkloadID:   tooLongWorkloadID,
+	})
+	require.ErrorIs(t, processErr, ErrInvalidArgument)
+	require.ErrorContains(t, processErr, "workload ID cannot be longer than")
+
+	containerErr := store.UpsertPersistentContainer(ctx, PersistentContainerRecord{
+		ResourceKey: "containers/api",
+		ContainerID: "container-id",
+		RuntimeName: "docker",
+		WorkloadID:  tooLongWorkloadID,
+	})
+	require.ErrorIs(t, containerErr, ErrInvalidArgument)
+	require.ErrorContains(t, containerErr, "workload ID cannot be longer than")
+
+	networkErr := store.UpsertPersistentNetwork(ctx, PersistentNetworkRecord{
+		ResourceKey: "containernetworks/app-network",
+		NetworkID:   "network-id",
+		RuntimeName: "docker",
+		WorkloadID:  tooLongWorkloadID,
+	})
+	require.ErrorIs(t, networkErr, ErrInvalidArgument)
+	require.ErrorContains(t, networkErr, "workload ID cannot be longer than")
+
+	_, processListErr := store.ListPersistentProcessesByWorkloadID(ctx, tooLongWorkloadID)
+	require.ErrorIs(t, processListErr, ErrInvalidArgument)
+	_, containerListErr := store.ListPersistentContainersByWorkloadID(ctx, tooLongWorkloadID)
+	require.ErrorIs(t, containerListErr, ErrInvalidArgument)
+	_, networkListErr := store.ListPersistentNetworksByWorkloadID(ctx, tooLongWorkloadID)
+	require.ErrorIs(t, networkListErr, ErrInvalidArgument)
 }
 
 func TestPersistentContainerRecordRoundTripByWorkloadID(t *testing.T) {

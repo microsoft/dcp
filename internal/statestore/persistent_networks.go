@@ -43,7 +43,11 @@ func (s *Store) UpsertPersistentNetwork(ctx context.Context, record PersistentNe
 	record.ResourceKey = strings.TrimSpace(record.ResourceKey)
 	record.NetworkID = strings.TrimSpace(record.NetworkID)
 	record.RuntimeName = strings.TrimSpace(record.RuntimeName)
-	record.WorkloadID = commonapi.WorkloadID(strings.TrimSpace(string(record.WorkloadID)))
+	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(record.WorkloadID)
+	if workloadIDErr != nil {
+		return workloadIDErr
+	}
+	record.WorkloadID = normalizedWorkloadID
 	if record.ResourceKey == "" {
 		return fmt.Errorf("%w: persistent network resource key cannot be empty", ErrInvalidArgument)
 	}
@@ -115,7 +119,11 @@ func (s *Store) GetPersistentNetwork(ctx context.Context, resourceKey string) (*
 }
 
 func (s *Store) ListPersistentNetworksByWorkloadID(ctx context.Context, workloadID commonapi.WorkloadID) ([]PersistentNetworkRecord, error) {
-	workloadID = commonapi.WorkloadID(strings.TrimSpace(string(workloadID)))
+	normalizedWorkloadID, workloadIDErr := normalizePersistentWorkloadID(workloadID)
+	if workloadIDErr != nil {
+		return nil, workloadIDErr
+	}
+	workloadID = normalizedWorkloadID
 	if workloadID == "" {
 		return nil, fmt.Errorf("%w: persistent network workload ID cannot be empty", ErrInvalidArgument)
 	}
