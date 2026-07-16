@@ -139,6 +139,103 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	require.Empty(t, networkRecords)
 }
 
+func TestCleanupWorkloadResourcesRemovesContainersBeforeNetworks(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
+	processExecutor := process.NewOSExecutor(logr.Discard())
+	defer processExecutor.Dispose()
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	wrappedOrchestrator := &orderedCleanupContainerOrchestrator{
+		ContainerOrchestrator:   orchestrator,
+		removeContainersEntered: make(chan struct{}),
+		allowRemoveContainers:   make(chan struct{}),
+		removeNetworksEntered:   make(chan struct{}),
+	}
+
+	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})
+	require.NoError(t, createNetworkErr)
+	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "api",
+		Networks: []containers.CreateContainerNetworkOptions{
+			{Name: "app-network"},
+		},
+	})
+	require.NoError(t, createContainerErr)
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
+		ResourceKey:   "containers/api",
+		ContainerID:   containerID,
+		ContainerName: "api",
+		RuntimeName:   cleanupTestRuntimeName,
+		WorkloadID:    "workload-a",
+	}))
+	require.NoError(t, stateStore.UpsertPersistentNetwork(ctx, statestore.PersistentNetworkRecord{
+		ResourceKey: "containernetworks/app-network",
+		NetworkID:   networkID,
+		NetworkName: "app-network",
+		RuntimeName: cleanupTestRuntimeName,
+		WorkloadID:  "workload-a",
+	}))
+
+	type cleanupResult struct {
+		report cleanupReport
+		err    error
+	}
+	resultCh := make(chan cleanupResult, 1)
+	go func() {
+		report, cleanupErr := cleanupWorkloadResources(
+			ctx,
+			"workload-a",
+			stateStore,
+			leaseOwner,
+			func(runtimeName string) (containers.ContainerOrchestrator, error) {
+				if runtimeName != cleanupTestRuntimeName {
+					return nil, errors.New("unexpected runtime name")
+				}
+				return wrappedOrchestrator, nil
+			},
+			processExecutor,
+			logr.Discard(),
+		)
+		resultCh <- cleanupResult{report: report, err: cleanupErr}
+	}()
+
+	select {
+	case <-wrappedOrchestrator.removeContainersEntered:
+	case <-ctx.Done():
+		require.FailNow(t, "container cleanup did not start", ctx.Err())
+	}
+	networkStartedEarlyTimer := time.NewTimer(100 * time.Millisecond)
+	defer networkStartedEarlyTimer.Stop()
+	select {
+	case <-wrappedOrchestrator.removeNetworksEntered:
+		close(wrappedOrchestrator.allowRemoveContainers)
+		select {
+		case <-resultCh:
+		case <-ctx.Done():
+			require.FailNow(t, "cleanup did not finish", ctx.Err())
+		}
+		require.FailNow(t, "network cleanup started before container cleanup finished")
+	case <-networkStartedEarlyTimer.C:
+	}
+	close(wrappedOrchestrator.allowRemoveContainers)
+
+	var result cleanupResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		require.FailNow(t, "cleanup did not finish", ctx.Err())
+	}
+	require.NoError(t, result.err)
+	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, result.report.Stopped)
+	require.Empty(t, result.report.Failures)
+}
+
 func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +362,103 @@ func TestCleanupWorkloadResourcesRunsIndependentRecordsInParallel(t *testing.T) 
 	require.NoError(t, result.err)
 	require.Equal(t, cleanupStoppedCounts{Containers: 2}, result.report.Stopped)
 	require.Empty(t, result.report.Failures)
+}
+
+func TestCleanupResourceGroupsUnblocksDependentsWhenOnlyTheirPrerequisitesFinish(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	containerStarted := make(chan struct{})
+	releaseContainer := make(chan struct{})
+	executableStarted := make(chan struct{})
+	releaseExecutable := make(chan struct{})
+	networkStarted := make(chan struct{})
+
+	type cleanupResult struct {
+		results []cleanupWorkResult
+		err     error
+	}
+	resultCh := make(chan cleanupResult, 1)
+	go func() {
+		results, cleanupErr := cleanupResourceGroups([]cleanupResourceGroup{
+			{
+				kind: cleanupResourceKindContainer,
+				workItems: []cleanupWorkItem{
+					{
+						kind: cleanupResourceKindContainer,
+						clean: func() (string, bool, error) {
+							close(containerStarted)
+							select {
+							case <-releaseContainer:
+							case <-ctx.Done():
+								return "", false, ctx.Err()
+							}
+							return "container-id", true, nil
+						},
+					},
+				},
+			},
+			{
+				kind: cleanupResourceKindExecutable,
+				workItems: []cleanupWorkItem{
+					{
+						kind: cleanupResourceKindExecutable,
+						clean: func() (string, bool, error) {
+							close(executableStarted)
+							select {
+							case <-releaseExecutable:
+							case <-ctx.Done():
+								return "", false, ctx.Err()
+							}
+							return "executable-id", true, nil
+						},
+					},
+				},
+			},
+			{
+				kind:         cleanupResourceKindNetwork,
+				cleanUpAfter: []cleanupResourceKind{cleanupResourceKindContainer},
+				workItems: []cleanupWorkItem{
+					{
+						kind: cleanupResourceKindNetwork,
+						clean: func() (string, bool, error) {
+							close(networkStarted)
+							return "network-id", true, nil
+						},
+					},
+				},
+			},
+		})
+		resultCh <- cleanupResult{results: results, err: cleanupErr}
+	}()
+
+	select {
+	case <-containerStarted:
+	case <-ctx.Done():
+		require.FailNow(t, "container cleanup did not start", ctx.Err())
+	}
+	select {
+	case <-executableStarted:
+	case <-ctx.Done():
+		require.FailNow(t, "executable cleanup did not start", ctx.Err())
+	}
+	close(releaseContainer)
+	select {
+	case <-networkStarted:
+	case <-ctx.Done():
+		require.FailNow(t, "network cleanup did not start after container cleanup finished", ctx.Err())
+	}
+	close(releaseExecutable)
+
+	var result cleanupResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		require.FailNow(t, "cleanup did not finish", ctx.Err())
+	}
+	require.NoError(t, result.err)
+	require.Len(t, result.results, 3)
 }
 
 func TestCleanupPersistentContainerRecordSkipsRecordThatChangedWorkload(t *testing.T) {
@@ -803,4 +997,47 @@ func (o *parallelCleanupContainerOrchestrator) RemoveContainers(ctx context.Cont
 	}
 
 	return o.ContainerOrchestrator.RemoveContainers(ctx, options)
+}
+
+type orderedCleanupContainerOrchestrator struct {
+	containers.ContainerOrchestrator
+
+	lock                    sync.Mutex
+	removeContainersDone    bool
+	removeContainersOnce    sync.Once
+	removeNetworksOnce      sync.Once
+	removeContainersEntered chan struct{}
+	allowRemoveContainers   chan struct{}
+	removeNetworksEntered   chan struct{}
+}
+
+func (o *orderedCleanupContainerOrchestrator) RemoveContainers(ctx context.Context, options containers.RemoveContainersOptions) ([]string, error) {
+	o.removeContainersOnce.Do(func() {
+		close(o.removeContainersEntered)
+	})
+	select {
+	case <-o.allowRemoveContainers:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	ids, removeErr := o.ContainerOrchestrator.RemoveContainers(ctx, options)
+	o.lock.Lock()
+	o.removeContainersDone = true
+	o.lock.Unlock()
+	return ids, removeErr
+}
+
+func (o *orderedCleanupContainerOrchestrator) RemoveNetworks(ctx context.Context, options containers.RemoveNetworksOptions) ([]string, error) {
+	o.removeNetworksOnce.Do(func() {
+		close(o.removeNetworksEntered)
+	})
+	o.lock.Lock()
+	removeContainersDone := o.removeContainersDone
+	o.lock.Unlock()
+	if !removeContainersDone {
+		return nil, errors.New("network cleanup started before container cleanup finished")
+	}
+
+	return o.ContainerOrchestrator.RemoveNetworks(ctx, options)
 }

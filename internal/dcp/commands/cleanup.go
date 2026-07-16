@@ -30,9 +30,9 @@ import (
 )
 
 const (
-	workloadCleanupLeaseRevalidationInterval = 30 * time.Second
-	workloadCleanupStopContainerTimeout      = 10
-	workloadCleanupConcurrency               = uint16(8)
+	workloadCleanupLeaseRevalidationInterval    = 30 * time.Second
+	workloadCleanupStopContainerTimeout         = 10
+	workloadCleanupResourceKindConcurrencyLimit = uint16(8)
 )
 
 type containerOrchestratorProvider func(runtimeName string) (containers.ContainerOrchestrator, error)
@@ -47,15 +47,40 @@ type persistentProcessCleanupRunner interface {
 	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
 }
 
+type cleanupResourceKind string
+
+const (
+	cleanupResourceKindContainer  cleanupResourceKind = "container"
+	cleanupResourceKindExecutable cleanupResourceKind = "executable"
+	cleanupResourceKindNetwork    cleanupResourceKind = "network"
+)
+
+type cleanupResourceState uint
+
+const (
+	cleanupResourceStateInitial cleanupResourceState = iota
+	cleanupResourceStateProcessing
+	cleanupResourceStateDone
+)
+
+type cleanupResourceGroup struct {
+	kind         cleanupResourceKind
+	cleanUpAfter []cleanupResourceKind
+	workItems    []cleanupWorkItem
+
+	state      cleanupResourceState
+	waitingFor []cleanupResourceKind
+}
+
 type cleanupWorkItem struct {
-	kind               string
+	kind               cleanupResourceKind
 	resourceKey        string
 	fallbackResourceID string
 	clean              func() (string, bool, error)
 }
 
 type cleanupWorkResult struct {
-	kind               string
+	kind               cleanupResourceKind
 	resourceKey        string
 	fallbackResourceID string
 	resourceID         string
@@ -63,10 +88,27 @@ type cleanupWorkResult struct {
 	err                error
 }
 
+type cleanupResourceGroupResult struct {
+	groupIndex int
+	results    []cleanupWorkResult
+}
+
 type cleanupLeaseResource string
 
 func (r cleanupLeaseResource) GetLeaseKey() string {
 	return string(r)
+}
+
+var cleanupStoppedCounters = map[cleanupResourceKind]func(*cleanupStoppedCounts){
+	cleanupResourceKindContainer: func(counts *cleanupStoppedCounts) {
+		counts.Containers++
+	},
+	cleanupResourceKindExecutable: func(counts *cleanupStoppedCounts) {
+		counts.Executables++
+	},
+	cleanupResourceKindNetwork: func(counts *cleanupStoppedCounts) {
+		counts.Networks++
+	},
 }
 
 type cleanupReport struct {
@@ -174,11 +216,11 @@ func cleanupWorkloadResources(
 	}
 
 	processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
-	workItems := make([]cleanupWorkItem, 0, len(containerRecords)+len(processRecords)+len(networkRecords))
+	containerWorkItems := make([]cleanupWorkItem, 0, len(containerRecords))
 	for _, record := range containerRecords {
 		record := record
-		workItems = append(workItems, cleanupWorkItem{
-			kind:               "container",
+		containerWorkItems = append(containerWorkItems, cleanupWorkItem{
+			kind:               cleanupResourceKindContainer,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: record.ContainerID,
 			clean: func() (string, bool, error) {
@@ -186,10 +228,11 @@ func cleanupWorkloadResources(
 			},
 		})
 	}
+	processWorkItems := make([]cleanupWorkItem, 0, len(processRecords))
 	for _, record := range processRecords {
 		record := record
-		workItems = append(workItems, cleanupWorkItem{
-			kind:               "executable",
+		processWorkItems = append(processWorkItems, cleanupWorkItem{
+			kind:               cleanupResourceKindExecutable,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: fmt.Sprintf("%d", record.PID),
 			clean: func() (string, bool, error) {
@@ -197,10 +240,11 @@ func cleanupWorkloadResources(
 			},
 		})
 	}
+	networkWorkItems := make([]cleanupWorkItem, 0, len(networkRecords))
 	for _, record := range networkRecords {
 		record := record
-		workItems = append(workItems, cleanupWorkItem{
-			kind:               "network",
+		networkWorkItems = append(networkWorkItems, cleanupWorkItem{
+			kind:               cleanupResourceKindNetwork,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: record.NetworkID,
 			clean: func() (string, bool, error) {
@@ -209,17 +253,24 @@ func cleanupWorkloadResources(
 		})
 	}
 
-	results := slices.MapConcurrent[cleanupWorkResult](workItems, func(workItem cleanupWorkItem) cleanupWorkResult {
-		resourceID, cleaned, cleanupErr := workItem.clean()
-		return cleanupWorkResult{
-			kind:               workItem.kind,
-			resourceKey:        workItem.resourceKey,
-			fallbackResourceID: workItem.fallbackResourceID,
-			resourceID:         resourceID,
-			cleaned:            cleaned,
-			err:                cleanupErr,
-		}
-	}, workloadCleanupConcurrency)
+	results, runCleanupErr := cleanupResourceGroups([]cleanupResourceGroup{
+		{
+			kind:      cleanupResourceKindContainer,
+			workItems: containerWorkItems,
+		},
+		{
+			kind:      cleanupResourceKindExecutable,
+			workItems: processWorkItems,
+		},
+		{
+			kind:         cleanupResourceKindNetwork,
+			cleanUpAfter: []cleanupResourceKind{cleanupResourceKindContainer},
+			workItems:    networkWorkItems,
+		},
+	})
+	if runCleanupErr != nil {
+		return report, runCleanupErr
+	}
 
 	for _, result := range results {
 		if result.err != nil {
@@ -228,7 +279,7 @@ func cleanupWorkloadResources(
 				resourceID = result.fallbackResourceID
 			}
 			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        result.kind,
+				Kind:        string(result.kind),
 				ResourceKey: result.resourceKey,
 				ResourceID:  resourceID,
 				Error:       result.err.Error(),
@@ -238,20 +289,100 @@ func cleanupWorkloadResources(
 		if !result.cleaned {
 			continue
 		}
-		switch result.kind {
-		case "container":
-			report.Stopped.Containers++
-		case "executable":
-			report.Stopped.Executables++
-		case "network":
-			report.Stopped.Networks++
+		countStopped, ok := cleanupStoppedCounters[result.kind]
+		if !ok {
+			return report, fmt.Errorf("unknown cleanup resource kind %q", result.kind)
 		}
+		countStopped(&report.Stopped)
 	}
 
 	if len(report.Failures) > 0 {
 		return report, fmt.Errorf("failed to clean up %d persistent resource(s)", len(report.Failures))
 	}
 	return report, nil
+}
+
+func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, error) {
+	totalWorkItems := 0
+	for i := range groups {
+		groups[i].state = cleanupResourceStateInitial
+		groups[i].waitingFor = append([]cleanupResourceKind(nil), groups[i].cleanUpAfter...)
+		totalWorkItems += len(groups[i].workItems)
+	}
+
+	results := make([]cleanupWorkResult, 0, totalWorkItems)
+	groupDone := make(chan cleanupResourceGroupResult)
+	inProgress := 0
+	startReadyGroups := func() {
+		readyGroupIndexes := cleanupReadyGroupIndexes(groups)
+		for _, groupIndex := range readyGroupIndexes {
+			groups[groupIndex].state = cleanupResourceStateProcessing
+			inProgress++
+			go func(groupIndex int, workItems []cleanupWorkItem) {
+				groupDone <- cleanupResourceGroupResult{
+					groupIndex: groupIndex,
+					results:    cleanupWorkItems(workItems),
+				}
+			}(groupIndex, groups[groupIndex].workItems)
+		}
+	}
+
+	startReadyGroups()
+	for inProgress > 0 {
+		groupResult := <-groupDone
+		inProgress--
+		results = append(results, groupResult.results...)
+		groups[groupResult.groupIndex].state = cleanupResourceStateDone
+		completedKind := groups[groupResult.groupIndex].kind
+		for groupIndex := range groups {
+			if groups[groupIndex].state == cleanupResourceStateDone {
+				continue
+			}
+			groups[groupIndex].waitingFor = slices.Select(groups[groupIndex].waitingFor, func(kind cleanupResourceKind) bool {
+				return kind != completedKind
+			})
+		}
+		startReadyGroups()
+	}
+
+	blockedGroups := slices.Select(groups, func(group cleanupResourceGroup) bool {
+		return group.state != cleanupResourceStateDone
+	})
+	if len(blockedGroups) > 0 {
+		blockedGroupDescriptions := slices.Map[string](blockedGroups, func(group cleanupResourceGroup) string {
+			dependencies := slices.Map[string](group.waitingFor, func(kind cleanupResourceKind) string {
+				return string(kind)
+			})
+			return fmt.Sprintf("%s waiting for %s", group.kind, strings.Join(dependencies, ", "))
+		})
+		return results, fmt.Errorf("could not resolve cleanup resource dependencies: %s", strings.Join(blockedGroupDescriptions, "; "))
+	}
+
+	return results, nil
+}
+
+func cleanupReadyGroupIndexes(groups []cleanupResourceGroup) []int {
+	readyGroupIndexes := make([]int, 0, len(groups))
+	for groupIndex, group := range groups {
+		if group.state == cleanupResourceStateInitial && len(group.waitingFor) == 0 {
+			readyGroupIndexes = append(readyGroupIndexes, groupIndex)
+		}
+	}
+	return readyGroupIndexes
+}
+
+func cleanupWorkItems(workItems []cleanupWorkItem) []cleanupWorkResult {
+	return slices.MapConcurrent[cleanupWorkResult](workItems, func(workItem cleanupWorkItem) cleanupWorkResult {
+		resourceID, cleaned, cleanupErr := workItem.clean()
+		return cleanupWorkResult{
+			kind:               workItem.kind,
+			resourceKey:        workItem.resourceKey,
+			fallbackResourceID: workItem.fallbackResourceID,
+			resourceID:         resourceID,
+			cleaned:            cleaned,
+			err:                cleanupErr,
+		}
+	}, workloadCleanupResourceKindConcurrencyLimit)
 }
 
 func cachedContainerOrchestratorProvider(getContainerOrchestrator containerOrchestratorProvider) containerOrchestratorProvider {
