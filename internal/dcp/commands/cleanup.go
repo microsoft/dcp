@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	cmds "github.com/microsoft/dcp/internal/commands"
@@ -47,12 +48,12 @@ type persistentProcessCleanupRunner interface {
 	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
 }
 
-type cleanupResourceKind string
+type cleanupResourceKind = schema.GroupVersionResource
 
-const (
-	cleanupResourceKindContainer  cleanupResourceKind = "container"
-	cleanupResourceKindExecutable cleanupResourceKind = "executable"
-	cleanupResourceKindNetwork    cleanupResourceKind = "network"
+var (
+	cleanupResourceKindContainer  = (&apiv1.Container{}).GetGroupVersionResource()
+	cleanupResourceKindExecutable = (&apiv1.Executable{}).GetGroupVersionResource()
+	cleanupResourceKindNetwork    = (&apiv1.ContainerNetwork{}).GetGroupVersionResource()
 )
 
 type cleanupResourceState uint
@@ -283,7 +284,7 @@ func runCleanupResourceGroups(report *cleanupReport, groups []cleanupResourceGro
 				resourceID = result.fallbackResourceID
 			}
 			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        string(result.kind),
+				Kind:        cleanupResourceKindName(result.kind),
 				ResourceKey: result.resourceKey,
 				ResourceID:  resourceID,
 				Error:       result.err.Error(),
@@ -295,7 +296,7 @@ func runCleanupResourceGroups(report *cleanupReport, groups []cleanupResourceGro
 		}
 		countStopped, ok := cleanupStoppedCounters[result.kind]
 		if !ok {
-			return fmt.Errorf("unknown cleanup resource kind %q", result.kind)
+			return fmt.Errorf("unknown cleanup resource kind %q", cleanupResourceKindName(result.kind))
 		}
 		countStopped(&report.Stopped)
 	}
@@ -363,9 +364,9 @@ func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, 
 	if len(blockedGroups) > 0 {
 		blockedGroupDescriptions := slices.Map[string](blockedGroups, func(group cleanupResourceGroup) string {
 			dependencies := slices.Map[string](group.waitingFor, func(kind cleanupResourceKind) string {
-				return string(kind)
+				return cleanupResourceKindName(kind)
 			})
-			return fmt.Sprintf("%s waiting for %s", group.kind, strings.Join(dependencies, ", "))
+			return fmt.Sprintf("%s waiting for %s", cleanupResourceKindName(group.kind), strings.Join(dependencies, ", "))
 		})
 		return results, fmt.Errorf("could not resolve cleanup resource dependencies: %s", strings.Join(blockedGroupDescriptions, "; "))
 	}
@@ -381,6 +382,13 @@ func cleanupReadyGroupIndexes(groups []cleanupResourceGroup) []int {
 		}
 	}
 	return readyGroupIndexes
+}
+
+func cleanupResourceKindName(kind cleanupResourceKind) string {
+	if kind.Resource != "" {
+		return kind.Resource
+	}
+	return kind.String()
 }
 
 func cleanupWorkItems(workItems []cleanupWorkItem) []cleanupWorkResult {
