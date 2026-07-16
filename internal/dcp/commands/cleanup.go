@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	cmds "github.com/microsoft/dcp/internal/commands"
@@ -32,7 +33,7 @@ import (
 const (
 	workloadCleanupLeaseRevalidationInterval = 30 * time.Second
 	workloadCleanupStopContainerTimeout      = 10
-	workloadCleanupConcurrency               = uint16(8)
+	workloadCleanupResourceConcurrencyLimit  = uint16(8)
 )
 
 type containerOrchestratorProvider func(runtimeName string) (containers.ContainerOrchestrator, error)
@@ -47,15 +48,38 @@ type persistentProcessCleanupRunner interface {
 	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
 }
 
+var (
+	cleanupResourceContainerGVR  = (&apiv1.Container{}).GetGroupVersionResource()
+	cleanupResourceExecutableGVR = (&apiv1.Executable{}).GetGroupVersionResource()
+	cleanupResourceNetworkGVR    = (&apiv1.ContainerNetwork{}).GetGroupVersionResource()
+)
+
+type cleanupResourceState uint
+
+const (
+	cleanupResourceStateInitial cleanupResourceState = iota
+	cleanupResourceStateProcessing
+	cleanupResourceStateDone
+)
+
+type cleanupResourceGroup struct {
+	gvr          schema.GroupVersionResource
+	cleanUpAfter []schema.GroupVersionResource
+	workItems    []cleanupWorkItem
+
+	state      cleanupResourceState
+	waitingFor []schema.GroupVersionResource
+}
+
 type cleanupWorkItem struct {
-	kind               string
+	gvr                schema.GroupVersionResource
 	resourceKey        string
 	fallbackResourceID string
 	clean              func() (string, bool, error)
 }
 
 type cleanupWorkResult struct {
-	kind               string
+	gvr                schema.GroupVersionResource
 	resourceKey        string
 	fallbackResourceID string
 	resourceID         string
@@ -63,10 +87,27 @@ type cleanupWorkResult struct {
 	err                error
 }
 
+type cleanupResourceGroupResult struct {
+	groupIndex int
+	results    []cleanupWorkResult
+}
+
 type cleanupLeaseResource string
 
 func (r cleanupLeaseResource) GetLeaseKey() string {
 	return string(r)
+}
+
+var cleanupStoppedCounters = map[schema.GroupVersionResource]func(*cleanupStoppedCounts){
+	cleanupResourceContainerGVR: func(counts *cleanupStoppedCounts) {
+		counts.Containers++
+	},
+	cleanupResourceExecutableGVR: func(counts *cleanupStoppedCounts) {
+		counts.Executables++
+	},
+	cleanupResourceNetworkGVR: func(counts *cleanupStoppedCounts) {
+		counts.Networks++
+	},
 }
 
 type cleanupReport struct {
@@ -174,11 +215,11 @@ func cleanupWorkloadResources(
 	}
 
 	processRunner := exerunners.NewProcessExecutableRunner(processExecutor)
-	workItems := make([]cleanupWorkItem, 0, len(containerRecords)+len(processRecords)+len(networkRecords))
+	containerWorkItems := make([]cleanupWorkItem, 0, len(containerRecords))
 	for _, record := range containerRecords {
 		record := record
-		workItems = append(workItems, cleanupWorkItem{
-			kind:               "container",
+		containerWorkItems = append(containerWorkItems, cleanupWorkItem{
+			gvr:                cleanupResourceContainerGVR,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: record.ContainerID,
 			clean: func() (string, bool, error) {
@@ -186,10 +227,11 @@ func cleanupWorkloadResources(
 			},
 		})
 	}
+	processWorkItems := make([]cleanupWorkItem, 0, len(processRecords))
 	for _, record := range processRecords {
 		record := record
-		workItems = append(workItems, cleanupWorkItem{
-			kind:               "executable",
+		processWorkItems = append(processWorkItems, cleanupWorkItem{
+			gvr:                cleanupResourceExecutableGVR,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: fmt.Sprintf("%d", record.PID),
 			clean: func() (string, bool, error) {
@@ -197,10 +239,11 @@ func cleanupWorkloadResources(
 			},
 		})
 	}
+	networkWorkItems := make([]cleanupWorkItem, 0, len(networkRecords))
 	for _, record := range networkRecords {
 		record := record
-		workItems = append(workItems, cleanupWorkItem{
-			kind:               "network",
+		networkWorkItems = append(networkWorkItems, cleanupWorkItem{
+			gvr:                cleanupResourceNetworkGVR,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: record.NetworkID,
 			clean: func() (string, bool, error) {
@@ -209,18 +252,29 @@ func cleanupWorkloadResources(
 		})
 	}
 
-	results := slices.MapConcurrent[cleanupWorkResult](workItems, func(workItem cleanupWorkItem) cleanupWorkResult {
-		resourceID, cleaned, cleanupErr := workItem.clean()
-		return cleanupWorkResult{
-			kind:               workItem.kind,
-			resourceKey:        workItem.resourceKey,
-			fallbackResourceID: workItem.fallbackResourceID,
-			resourceID:         resourceID,
-			cleaned:            cleaned,
-			err:                cleanupErr,
-		}
-	}, workloadCleanupConcurrency)
+	runCleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
+		{
+			gvr:       cleanupResourceContainerGVR,
+			workItems: containerWorkItems,
+		},
+		{
+			gvr:       cleanupResourceExecutableGVR,
+			workItems: processWorkItems,
+		},
+		{
+			gvr:          cleanupResourceNetworkGVR,
+			cleanUpAfter: []schema.GroupVersionResource{cleanupResourceContainerGVR},
+			workItems:    networkWorkItems,
+		},
+	})
+	if runCleanupErr != nil {
+		return report, runCleanupErr
+	}
+	return report, nil
+}
 
+func runCleanupResourceGroups(report *cleanupReport, groups []cleanupResourceGroup) error {
+	results, runCleanupErr := cleanupResourceGroups(groups)
 	for _, result := range results {
 		if result.err != nil {
 			resourceID := result.resourceID
@@ -228,7 +282,7 @@ func cleanupWorkloadResources(
 				resourceID = result.fallbackResourceID
 			}
 			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        result.kind,
+				Kind:        cleanupResourceName(result.gvr),
 				ResourceKey: result.resourceKey,
 				ResourceID:  resourceID,
 				Error:       result.err.Error(),
@@ -238,20 +292,115 @@ func cleanupWorkloadResources(
 		if !result.cleaned {
 			continue
 		}
-		switch result.kind {
-		case "container":
-			report.Stopped.Containers++
-		case "executable":
-			report.Stopped.Executables++
-		case "network":
-			report.Stopped.Networks++
+		countStopped, ok := cleanupStoppedCounters[result.gvr]
+		if !ok {
+			return fmt.Errorf("unknown cleanup resource gvr %q", cleanupResourceName(result.gvr))
+		}
+		countStopped(&report.Stopped)
+	}
+
+	failureErr := cleanupFailuresError(report.Failures)
+	if runCleanupErr != nil {
+		return errors.Join(runCleanupErr, failureErr)
+	}
+	return failureErr
+}
+
+func cleanupFailuresError(failures []cleanupFailureEntry) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	return fmt.Errorf("failed to clean up %d persistent resource(s)", len(failures))
+}
+
+func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, error) {
+	totalWorkItems := 0
+	for i := range groups {
+		groups[i].state = cleanupResourceStateInitial
+		groups[i].waitingFor = append([]schema.GroupVersionResource(nil), groups[i].cleanUpAfter...)
+		totalWorkItems += len(groups[i].workItems)
+	}
+
+	results := make([]cleanupWorkResult, 0, totalWorkItems)
+	groupDone := make(chan cleanupResourceGroupResult)
+	inProgress := 0
+	startReadyGroups := func() {
+		readyGroupIndexes := cleanupReadyGroupIndexes(groups)
+		for _, groupIndex := range readyGroupIndexes {
+			groups[groupIndex].state = cleanupResourceStateProcessing
+			inProgress++
+			go func(groupIndex int, workItems []cleanupWorkItem) {
+				groupDone <- cleanupResourceGroupResult{
+					groupIndex: groupIndex,
+					results:    cleanupWorkItems(workItems),
+				}
+			}(groupIndex, groups[groupIndex].workItems)
 		}
 	}
 
-	if len(report.Failures) > 0 {
-		return report, fmt.Errorf("failed to clean up %d persistent resource(s)", len(report.Failures))
+	startReadyGroups()
+	for inProgress > 0 {
+		groupResult := <-groupDone
+		inProgress--
+		results = append(results, groupResult.results...)
+		groups[groupResult.groupIndex].state = cleanupResourceStateDone
+		completedGVR := groups[groupResult.groupIndex].gvr
+		for groupIndex := range groups {
+			if groups[groupIndex].state == cleanupResourceStateDone {
+				continue
+			}
+			groups[groupIndex].waitingFor = slices.Select(groups[groupIndex].waitingFor, func(gvr schema.GroupVersionResource) bool {
+				return gvr != completedGVR
+			})
+		}
+		startReadyGroups()
 	}
-	return report, nil
+
+	blockedGroups := slices.Select(groups, func(group cleanupResourceGroup) bool {
+		return group.state != cleanupResourceStateDone
+	})
+	if len(blockedGroups) > 0 {
+		blockedGroupDescriptions := slices.Map[string](blockedGroups, func(group cleanupResourceGroup) string {
+			dependencies := slices.Map[string](group.waitingFor, func(gvr schema.GroupVersionResource) string {
+				return cleanupResourceName(gvr)
+			})
+			return fmt.Sprintf("%s waiting for %s", cleanupResourceName(group.gvr), strings.Join(dependencies, ", "))
+		})
+		return results, fmt.Errorf("could not resolve cleanup resource dependencies: %s", strings.Join(blockedGroupDescriptions, "; "))
+	}
+
+	return results, nil
+}
+
+func cleanupReadyGroupIndexes(groups []cleanupResourceGroup) []int {
+	readyGroupIndexes := make([]int, 0, len(groups))
+	for groupIndex, group := range groups {
+		if group.state == cleanupResourceStateInitial && len(group.waitingFor) == 0 {
+			readyGroupIndexes = append(readyGroupIndexes, groupIndex)
+		}
+	}
+	return readyGroupIndexes
+}
+
+func cleanupResourceName(gvr schema.GroupVersionResource) string {
+	if gvr.Resource != "" {
+		return gvr.Resource
+	}
+	return gvr.String()
+}
+
+func cleanupWorkItems(workItems []cleanupWorkItem) []cleanupWorkResult {
+	return slices.MapConcurrent[cleanupWorkResult](workItems, func(workItem cleanupWorkItem) cleanupWorkResult {
+		resourceID, cleaned, cleanupErr := workItem.clean()
+		return cleanupWorkResult{
+			gvr:                workItem.gvr,
+			resourceKey:        workItem.resourceKey,
+			fallbackResourceID: workItem.fallbackResourceID,
+			resourceID:         resourceID,
+			cleaned:            cleaned,
+			err:                cleanupErr,
+		}
+	}, workloadCleanupResourceConcurrencyLimit)
 }
 
 func cachedContainerOrchestratorProvider(getContainerOrchestrator containerOrchestratorProvider) containerOrchestratorProvider {
