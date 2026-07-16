@@ -461,6 +461,61 @@ func TestCleanupResourceGroupsUnblocksDependentsWhenOnlyTheirPrerequisitesFinish
 	require.Len(t, result.results, 3)
 }
 
+func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *testing.T) {
+	t.Parallel()
+
+	report := cleanupReport{WorkloadID: "workload-a"}
+	cleanupItemErr := errors.New("cleanup item failed")
+	cleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
+		{
+			kind: cleanupResourceKindContainer,
+			workItems: []cleanupWorkItem{
+				{
+					kind: cleanupResourceKindContainer,
+					clean: func() (string, bool, error) {
+						return "container-id", true, nil
+					},
+				},
+			},
+		},
+		{
+			kind: cleanupResourceKindExecutable,
+			workItems: []cleanupWorkItem{
+				{
+					kind:               cleanupResourceKindExecutable,
+					resourceKey:        "executables/api",
+					fallbackResourceID: "123",
+					clean: func() (string, bool, error) {
+						return "", false, cleanupItemErr
+					},
+				},
+			},
+		},
+		{
+			kind:         cleanupResourceKindNetwork,
+			cleanUpAfter: []cleanupResourceKind{"missing"},
+			workItems: []cleanupWorkItem{
+				{
+					kind: cleanupResourceKindNetwork,
+					clean: func() (string, bool, error) {
+						return "network-id", true, nil
+					},
+				},
+			},
+		},
+	})
+
+	require.Error(t, cleanupErr)
+	require.ErrorContains(t, cleanupErr, "could not resolve cleanup resource dependencies")
+	require.ErrorContains(t, cleanupErr, "failed to clean up 1 persistent resource")
+	require.Equal(t, cleanupStoppedCounts{Containers: 1}, report.Stopped)
+	require.Len(t, report.Failures, 1)
+	require.Equal(t, "executable", report.Failures[0].Kind)
+	require.Equal(t, "executables/api", report.Failures[0].ResourceKey)
+	require.Equal(t, "123", report.Failures[0].ResourceID)
+	require.Equal(t, cleanupItemErr.Error(), report.Failures[0].Error)
+}
+
 func TestCleanupPersistentContainerRecordSkipsRecordThatChangedWorkload(t *testing.T) {
 	t.Parallel()
 
