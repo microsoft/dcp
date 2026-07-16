@@ -493,7 +493,7 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 		},
 		{
 			kind:         cleanupResourceKindNetwork,
-			cleanUpAfter: []cleanupResourceKind{"missing"},
+			cleanUpAfter: []cleanupResourceKind{{Resource: "missing"}},
 			workItems: []cleanupWorkItem{
 				{
 					kind: cleanupResourceKindNetwork,
@@ -510,7 +510,7 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 	require.ErrorContains(t, cleanupErr, "failed to clean up 1 persistent resource")
 	require.Equal(t, cleanupStoppedCounts{Containers: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
-	require.Equal(t, "executable", report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceKindName(cleanupResourceKindExecutable), report.Failures[0].Kind)
 	require.Equal(t, "executables/api", report.Failures[0].ResourceKey)
 	require.Equal(t, "123", report.Failures[0].ResourceID)
 	require.Equal(t, cleanupItemErr.Error(), report.Failures[0].Error)
@@ -713,11 +713,11 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	require.Equal(t, 1, runtimeRequests)
 	require.Equal(t, cleanupStoppedCounts{Executables: 1}, report.Stopped)
 	require.Len(t, report.Failures, 2)
-	require.Equal(t, "container", report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceKindName(cleanupResourceKindContainer), report.Failures[0].Kind)
 	require.Equal(t, "containers/api", report.Failures[0].ResourceKey)
 	require.Equal(t, "api-container", report.Failures[0].ResourceID)
 	require.ErrorContains(t, errors.New(report.Failures[0].Error), runtimeErr.Error())
-	require.Equal(t, "network", report.Failures[1].Kind)
+	require.Equal(t, cleanupResourceKindName(cleanupResourceKindNetwork), report.Failures[1].Kind)
 	require.Equal(t, "containernetworks/api", report.Failures[1].ResourceKey)
 	require.Equal(t, "api-network", report.Failures[1].ResourceID)
 	require.ErrorContains(t, errors.New(report.Failures[1].Error), runtimeErr.Error())
@@ -987,7 +987,7 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	require.Error(t, cleanupErr)
 	require.Equal(t, cleanupStoppedCounts{Networks: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
-	require.Equal(t, "container", report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceKindName(cleanupResourceKindContainer), report.Failures[0].Kind)
 	require.NotEmpty(t, report.Failures[0].Error)
 }
 
