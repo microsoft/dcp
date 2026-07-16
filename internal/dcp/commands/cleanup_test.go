@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
@@ -383,10 +384,10 @@ func TestCleanupResourceGroupsUnblocksDependentsWhenOnlyTheirPrerequisitesFinish
 	go func() {
 		results, cleanupErr := cleanupResourceGroups([]cleanupResourceGroup{
 			{
-				kind: cleanupResourceKindContainer,
+				gvr: cleanupResourceContainerGVR,
 				workItems: []cleanupWorkItem{
 					{
-						kind: cleanupResourceKindContainer,
+						gvr: cleanupResourceContainerGVR,
 						clean: func() (string, bool, error) {
 							close(containerStarted)
 							select {
@@ -400,10 +401,10 @@ func TestCleanupResourceGroupsUnblocksDependentsWhenOnlyTheirPrerequisitesFinish
 				},
 			},
 			{
-				kind: cleanupResourceKindExecutable,
+				gvr: cleanupResourceExecutableGVR,
 				workItems: []cleanupWorkItem{
 					{
-						kind: cleanupResourceKindExecutable,
+						gvr: cleanupResourceExecutableGVR,
 						clean: func() (string, bool, error) {
 							close(executableStarted)
 							select {
@@ -417,11 +418,11 @@ func TestCleanupResourceGroupsUnblocksDependentsWhenOnlyTheirPrerequisitesFinish
 				},
 			},
 			{
-				kind:         cleanupResourceKindNetwork,
-				cleanUpAfter: []cleanupResourceKind{cleanupResourceKindContainer},
+				gvr:          cleanupResourceNetworkGVR,
+				cleanUpAfter: []schema.GroupVersionResource{cleanupResourceContainerGVR},
 				workItems: []cleanupWorkItem{
 					{
-						kind: cleanupResourceKindNetwork,
+						gvr: cleanupResourceNetworkGVR,
 						clean: func() (string, bool, error) {
 							close(networkStarted)
 							return "network-id", true, nil
@@ -468,10 +469,10 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 	cleanupItemErr := errors.New("cleanup item failed")
 	cleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
 		{
-			kind: cleanupResourceKindContainer,
+			gvr: cleanupResourceContainerGVR,
 			workItems: []cleanupWorkItem{
 				{
-					kind: cleanupResourceKindContainer,
+					gvr: cleanupResourceContainerGVR,
 					clean: func() (string, bool, error) {
 						return "container-id", true, nil
 					},
@@ -479,10 +480,10 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 			},
 		},
 		{
-			kind: cleanupResourceKindExecutable,
+			gvr: cleanupResourceExecutableGVR,
 			workItems: []cleanupWorkItem{
 				{
-					kind:               cleanupResourceKindExecutable,
+					gvr:                cleanupResourceExecutableGVR,
 					resourceKey:        "executables/api",
 					fallbackResourceID: "123",
 					clean: func() (string, bool, error) {
@@ -492,11 +493,11 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 			},
 		},
 		{
-			kind:         cleanupResourceKindNetwork,
-			cleanUpAfter: []cleanupResourceKind{{Resource: "missing"}},
+			gvr:          cleanupResourceNetworkGVR,
+			cleanUpAfter: []schema.GroupVersionResource{{Resource: "missing"}},
 			workItems: []cleanupWorkItem{
 				{
-					kind: cleanupResourceKindNetwork,
+					gvr: cleanupResourceNetworkGVR,
 					clean: func() (string, bool, error) {
 						return "network-id", true, nil
 					},
@@ -510,7 +511,7 @@ func TestRunCleanupResourceGroupsReportsCompletedWorkBeforeDependencyError(t *te
 	require.ErrorContains(t, cleanupErr, "failed to clean up 1 persistent resource")
 	require.Equal(t, cleanupStoppedCounts{Containers: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
-	require.Equal(t, cleanupResourceKindName(cleanupResourceKindExecutable), report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceName(cleanupResourceExecutableGVR), report.Failures[0].Kind)
 	require.Equal(t, "executables/api", report.Failures[0].ResourceKey)
 	require.Equal(t, "123", report.Failures[0].ResourceID)
 	require.Equal(t, cleanupItemErr.Error(), report.Failures[0].Error)
@@ -713,11 +714,11 @@ func TestCleanupWorkloadResourcesRuntimeFailureDoesNotPreventExecutableCleanup(t
 	require.Equal(t, 1, runtimeRequests)
 	require.Equal(t, cleanupStoppedCounts{Executables: 1}, report.Stopped)
 	require.Len(t, report.Failures, 2)
-	require.Equal(t, cleanupResourceKindName(cleanupResourceKindContainer), report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceName(cleanupResourceContainerGVR), report.Failures[0].Kind)
 	require.Equal(t, "containers/api", report.Failures[0].ResourceKey)
 	require.Equal(t, "api-container", report.Failures[0].ResourceID)
 	require.ErrorContains(t, errors.New(report.Failures[0].Error), runtimeErr.Error())
-	require.Equal(t, cleanupResourceKindName(cleanupResourceKindNetwork), report.Failures[1].Kind)
+	require.Equal(t, cleanupResourceName(cleanupResourceNetworkGVR), report.Failures[1].Kind)
 	require.Equal(t, "containernetworks/api", report.Failures[1].ResourceKey)
 	require.Equal(t, "api-network", report.Failures[1].ResourceID)
 	require.ErrorContains(t, errors.New(report.Failures[1].Error), runtimeErr.Error())
@@ -987,7 +988,7 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	require.Error(t, cleanupErr)
 	require.Equal(t, cleanupStoppedCounts{Networks: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
-	require.Equal(t, cleanupResourceKindName(cleanupResourceKindContainer), report.Failures[0].Kind)
+	require.Equal(t, cleanupResourceName(cleanupResourceContainerGVR), report.Failures[0].Kind)
 	require.NotEmpty(t, report.Failures[0].Error)
 }
 
