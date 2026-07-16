@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	workloadCleanupLeaseRevalidationInterval    = 30 * time.Second
-	workloadCleanupStopContainerTimeout         = 10
-	workloadCleanupResourceKindConcurrencyLimit = uint16(8)
+	workloadCleanupLeaseRevalidationInterval = 30 * time.Second
+	workloadCleanupStopContainerTimeout      = 10
+	workloadCleanupResourceConcurrencyLimit  = uint16(8)
 )
 
 type containerOrchestratorProvider func(runtimeName string) (containers.ContainerOrchestrator, error)
@@ -48,12 +48,10 @@ type persistentProcessCleanupRunner interface {
 	StopPersistentProcess(ctx context.Context, exe *apiv1.Executable, record *statestore.PersistentProcessRecord, log logr.Logger) error
 }
 
-type cleanupResourceKind = schema.GroupVersionResource
-
 var (
-	cleanupResourceKindContainer  = (&apiv1.Container{}).GetGroupVersionResource()
-	cleanupResourceKindExecutable = (&apiv1.Executable{}).GetGroupVersionResource()
-	cleanupResourceKindNetwork    = (&apiv1.ContainerNetwork{}).GetGroupVersionResource()
+	cleanupResourceContainerGVR  = (&apiv1.Container{}).GetGroupVersionResource()
+	cleanupResourceExecutableGVR = (&apiv1.Executable{}).GetGroupVersionResource()
+	cleanupResourceNetworkGVR    = (&apiv1.ContainerNetwork{}).GetGroupVersionResource()
 )
 
 type cleanupResourceState uint
@@ -65,23 +63,23 @@ const (
 )
 
 type cleanupResourceGroup struct {
-	kind         cleanupResourceKind
-	cleanUpAfter []cleanupResourceKind
+	gvr          schema.GroupVersionResource
+	cleanUpAfter []schema.GroupVersionResource
 	workItems    []cleanupWorkItem
 
 	state      cleanupResourceState
-	waitingFor []cleanupResourceKind
+	waitingFor []schema.GroupVersionResource
 }
 
 type cleanupWorkItem struct {
-	kind               cleanupResourceKind
+	gvr                schema.GroupVersionResource
 	resourceKey        string
 	fallbackResourceID string
 	clean              func() (string, bool, error)
 }
 
 type cleanupWorkResult struct {
-	kind               cleanupResourceKind
+	gvr                schema.GroupVersionResource
 	resourceKey        string
 	fallbackResourceID string
 	resourceID         string
@@ -100,14 +98,14 @@ func (r cleanupLeaseResource) GetLeaseKey() string {
 	return string(r)
 }
 
-var cleanupStoppedCounters = map[cleanupResourceKind]func(*cleanupStoppedCounts){
-	cleanupResourceKindContainer: func(counts *cleanupStoppedCounts) {
+var cleanupStoppedCounters = map[schema.GroupVersionResource]func(*cleanupStoppedCounts){
+	cleanupResourceContainerGVR: func(counts *cleanupStoppedCounts) {
 		counts.Containers++
 	},
-	cleanupResourceKindExecutable: func(counts *cleanupStoppedCounts) {
+	cleanupResourceExecutableGVR: func(counts *cleanupStoppedCounts) {
 		counts.Executables++
 	},
-	cleanupResourceKindNetwork: func(counts *cleanupStoppedCounts) {
+	cleanupResourceNetworkGVR: func(counts *cleanupStoppedCounts) {
 		counts.Networks++
 	},
 }
@@ -221,7 +219,7 @@ func cleanupWorkloadResources(
 	for _, record := range containerRecords {
 		record := record
 		containerWorkItems = append(containerWorkItems, cleanupWorkItem{
-			kind:               cleanupResourceKindContainer,
+			gvr:                cleanupResourceContainerGVR,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: record.ContainerID,
 			clean: func() (string, bool, error) {
@@ -233,7 +231,7 @@ func cleanupWorkloadResources(
 	for _, record := range processRecords {
 		record := record
 		processWorkItems = append(processWorkItems, cleanupWorkItem{
-			kind:               cleanupResourceKindExecutable,
+			gvr:                cleanupResourceExecutableGVR,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: fmt.Sprintf("%d", record.PID),
 			clean: func() (string, bool, error) {
@@ -245,7 +243,7 @@ func cleanupWorkloadResources(
 	for _, record := range networkRecords {
 		record := record
 		networkWorkItems = append(networkWorkItems, cleanupWorkItem{
-			kind:               cleanupResourceKindNetwork,
+			gvr:                cleanupResourceNetworkGVR,
 			resourceKey:        record.ResourceKey,
 			fallbackResourceID: record.NetworkID,
 			clean: func() (string, bool, error) {
@@ -256,16 +254,16 @@ func cleanupWorkloadResources(
 
 	runCleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
 		{
-			kind:      cleanupResourceKindContainer,
+			gvr:       cleanupResourceContainerGVR,
 			workItems: containerWorkItems,
 		},
 		{
-			kind:      cleanupResourceKindExecutable,
+			gvr:       cleanupResourceExecutableGVR,
 			workItems: processWorkItems,
 		},
 		{
-			kind:         cleanupResourceKindNetwork,
-			cleanUpAfter: []cleanupResourceKind{cleanupResourceKindContainer},
+			gvr:          cleanupResourceNetworkGVR,
+			cleanUpAfter: []schema.GroupVersionResource{cleanupResourceContainerGVR},
 			workItems:    networkWorkItems,
 		},
 	})
@@ -284,7 +282,7 @@ func runCleanupResourceGroups(report *cleanupReport, groups []cleanupResourceGro
 				resourceID = result.fallbackResourceID
 			}
 			report.Failures = append(report.Failures, cleanupFailureEntry{
-				Kind:        cleanupResourceKindName(result.kind),
+				Kind:        cleanupResourceName(result.gvr),
 				ResourceKey: result.resourceKey,
 				ResourceID:  resourceID,
 				Error:       result.err.Error(),
@@ -294,9 +292,9 @@ func runCleanupResourceGroups(report *cleanupReport, groups []cleanupResourceGro
 		if !result.cleaned {
 			continue
 		}
-		countStopped, ok := cleanupStoppedCounters[result.kind]
+		countStopped, ok := cleanupStoppedCounters[result.gvr]
 		if !ok {
-			return fmt.Errorf("unknown cleanup resource kind %q", cleanupResourceKindName(result.kind))
+			return fmt.Errorf("unknown cleanup resource gvr %q", cleanupResourceName(result.gvr))
 		}
 		countStopped(&report.Stopped)
 	}
@@ -319,7 +317,7 @@ func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, 
 	totalWorkItems := 0
 	for i := range groups {
 		groups[i].state = cleanupResourceStateInitial
-		groups[i].waitingFor = append([]cleanupResourceKind(nil), groups[i].cleanUpAfter...)
+		groups[i].waitingFor = append([]schema.GroupVersionResource(nil), groups[i].cleanUpAfter...)
 		totalWorkItems += len(groups[i].workItems)
 	}
 
@@ -346,13 +344,13 @@ func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, 
 		inProgress--
 		results = append(results, groupResult.results...)
 		groups[groupResult.groupIndex].state = cleanupResourceStateDone
-		completedKind := groups[groupResult.groupIndex].kind
+		completedGVR := groups[groupResult.groupIndex].gvr
 		for groupIndex := range groups {
 			if groups[groupIndex].state == cleanupResourceStateDone {
 				continue
 			}
-			groups[groupIndex].waitingFor = slices.Select(groups[groupIndex].waitingFor, func(kind cleanupResourceKind) bool {
-				return kind != completedKind
+			groups[groupIndex].waitingFor = slices.Select(groups[groupIndex].waitingFor, func(gvr schema.GroupVersionResource) bool {
+				return gvr != completedGVR
 			})
 		}
 		startReadyGroups()
@@ -363,10 +361,10 @@ func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, 
 	})
 	if len(blockedGroups) > 0 {
 		blockedGroupDescriptions := slices.Map[string](blockedGroups, func(group cleanupResourceGroup) string {
-			dependencies := slices.Map[string](group.waitingFor, func(kind cleanupResourceKind) string {
-				return cleanupResourceKindName(kind)
+			dependencies := slices.Map[string](group.waitingFor, func(gvr schema.GroupVersionResource) string {
+				return cleanupResourceName(gvr)
 			})
-			return fmt.Sprintf("%s waiting for %s", cleanupResourceKindName(group.kind), strings.Join(dependencies, ", "))
+			return fmt.Sprintf("%s waiting for %s", cleanupResourceName(group.gvr), strings.Join(dependencies, ", "))
 		})
 		return results, fmt.Errorf("could not resolve cleanup resource dependencies: %s", strings.Join(blockedGroupDescriptions, "; "))
 	}
@@ -384,25 +382,25 @@ func cleanupReadyGroupIndexes(groups []cleanupResourceGroup) []int {
 	return readyGroupIndexes
 }
 
-func cleanupResourceKindName(kind cleanupResourceKind) string {
-	if kind.Resource != "" {
-		return kind.Resource
+func cleanupResourceName(gvr schema.GroupVersionResource) string {
+	if gvr.Resource != "" {
+		return gvr.Resource
 	}
-	return kind.String()
+	return gvr.String()
 }
 
 func cleanupWorkItems(workItems []cleanupWorkItem) []cleanupWorkResult {
 	return slices.MapConcurrent[cleanupWorkResult](workItems, func(workItem cleanupWorkItem) cleanupWorkResult {
 		resourceID, cleaned, cleanupErr := workItem.clean()
 		return cleanupWorkResult{
-			kind:               workItem.kind,
+			gvr:                workItem.gvr,
 			resourceKey:        workItem.resourceKey,
 			fallbackResourceID: workItem.fallbackResourceID,
 			resourceID:         resourceID,
 			cleaned:            cleaned,
 			err:                cleanupErr,
 		}
-	}, workloadCleanupResourceKindConcurrencyLimit)
+	}, workloadCleanupResourceConcurrencyLimit)
 }
 
 func cachedContainerOrchestratorProvider(getContainerOrchestrator containerOrchestratorProvider) containerOrchestratorProvider {
