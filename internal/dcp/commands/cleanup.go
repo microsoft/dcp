@@ -253,7 +253,7 @@ func cleanupWorkloadResources(
 		})
 	}
 
-	results, runCleanupErr := cleanupResourceGroups([]cleanupResourceGroup{
+	runCleanupErr := runCleanupResourceGroups(&report, []cleanupResourceGroup{
 		{
 			kind:      cleanupResourceKindContainer,
 			workItems: containerWorkItems,
@@ -271,7 +271,11 @@ func cleanupWorkloadResources(
 	if runCleanupErr != nil {
 		return report, runCleanupErr
 	}
+	return report, nil
+}
 
+func runCleanupResourceGroups(report *cleanupReport, groups []cleanupResourceGroup) error {
+	results, runCleanupErr := cleanupResourceGroups(groups)
 	for _, result := range results {
 		if result.err != nil {
 			resourceID := result.resourceID
@@ -291,15 +295,23 @@ func cleanupWorkloadResources(
 		}
 		countStopped, ok := cleanupStoppedCounters[result.kind]
 		if !ok {
-			return report, fmt.Errorf("unknown cleanup resource kind %q", result.kind)
+			return fmt.Errorf("unknown cleanup resource kind %q", result.kind)
 		}
 		countStopped(&report.Stopped)
 	}
 
-	if len(report.Failures) > 0 {
-		return report, fmt.Errorf("failed to clean up %d persistent resource(s)", len(report.Failures))
+	failureErr := cleanupFailuresError(report.Failures)
+	if runCleanupErr != nil {
+		return errors.Join(runCleanupErr, failureErr)
 	}
-	return report, nil
+	return failureErr
+}
+
+func cleanupFailuresError(failures []cleanupFailureEntry) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	return fmt.Errorf("failed to clean up %d persistent resource(s)", len(failures))
 }
 
 func cleanupResourceGroups(groups []cleanupResourceGroup) ([]cleanupWorkResult, error) {
