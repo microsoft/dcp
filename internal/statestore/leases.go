@@ -248,6 +248,50 @@ func (s *Store) WithResourceLease(ctx context.Context, resource LeasableResource
 		return acquireErr
 	}
 
+	return withResourceLeaseCallback(ctx, lease, f)
+}
+
+// WithResourceLeaseRetry retries held leases until the lease is acquired or ctx is cancelled.
+func (s *Store) WithResourceLeaseRetry(
+	ctx context.Context,
+	resource LeasableResource,
+	ownerProcess process.ProcessHandle,
+	revalidationInterval time.Duration,
+	retryInterval time.Duration,
+	f func(context.Context, *ResourceLease) error,
+) error {
+	if f == nil {
+		return fmt.Errorf("%w: lease callback cannot be nil", ErrInvalidArgument)
+	}
+	if retryInterval <= 0 {
+		return fmt.Errorf("%w: lease retry interval must be positive", ErrInvalidArgument)
+	}
+
+	for {
+		lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval)
+		if acquireErr == nil {
+			return withResourceLeaseCallback(ctx, lease, f)
+		}
+		if !errors.Is(acquireErr, ErrResourceLeaseHeld) {
+			return acquireErr
+		}
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return errors.Join(acquireErr, ctx.Err())
+		}
+	}
+}
+
+func withResourceLeaseCallback(ctx context.Context, lease *ResourceLease, f func(context.Context, *ResourceLease) error) error {
 	callbackErr := f(ctx, lease)
 	releaseErr := lease.Release(context.Background())
 	return errors.Join(callbackErr, releaseErr)

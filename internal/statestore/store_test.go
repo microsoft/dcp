@@ -498,6 +498,113 @@ func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 	require.False(t, callbackCalled)
 }
 
+func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
+	require.NoError(t, owner2Err)
+
+	resource := testLeasableResource("container/test")
+	_, acquireErr := store1.AcquireResourceLease(ctx, resource, owner1, time.Minute)
+	require.NoError(t, acquireErr)
+
+	type leaseResult struct {
+		callbackCalled bool
+		err            error
+	}
+	resultCh := make(chan leaseResult, 1)
+	go func() {
+		callbackCalled := false
+		leaseErr := store2.WithResourceLeaseRetry(ctx, resource, owner2, time.Minute, 10*time.Millisecond, func(context.Context, *ResourceLease) error {
+			callbackCalled = true
+			return nil
+		})
+		resultCh <- leaseResult{callbackCalled: callbackCalled, err: leaseErr}
+	}()
+
+	retryTimer := time.NewTimer(50 * time.Millisecond)
+	defer retryTimer.Stop()
+	select {
+	case result := <-resultCh:
+		require.FailNow(t, "lease retry finished before the held lease was released", result.err)
+	case <-retryTimer.C:
+	}
+
+	require.NoError(t, store1.ReleaseResourceLease(ctx, resource, owner1))
+
+	var result leaseResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		require.FailNow(t, "lease retry did not finish after the held lease was released", ctx.Err())
+	}
+	require.NoError(t, result.err)
+	require.True(t, result.callbackCalled)
+}
+
+func TestWithResourceLeaseRetryStopsWhenContextIsCanceled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
+	require.NoError(t, owner2Err)
+
+	resource := testLeasableResource("container/test")
+	_, acquireErr := store1.AcquireResourceLease(ctx, resource, owner1, time.Minute)
+	require.NoError(t, acquireErr)
+
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	defer cancelWait()
+
+	type leaseResult struct {
+		callbackCalled bool
+		err            error
+	}
+	resultCh := make(chan leaseResult, 1)
+	go func() {
+		callbackCalled := false
+		leaseErr := store2.WithResourceLeaseRetry(waitCtx, resource, owner2, time.Minute, 10*time.Millisecond, func(context.Context, *ResourceLease) error {
+			callbackCalled = true
+			return nil
+		})
+		resultCh <- leaseResult{callbackCalled: callbackCalled, err: leaseErr}
+	}()
+
+	retryTimer := time.NewTimer(50 * time.Millisecond)
+	defer retryTimer.Stop()
+	select {
+	case result := <-resultCh:
+		require.FailNow(t, "lease retry finished before the context was canceled", result.err)
+	case <-retryTimer.C:
+	}
+
+	cancelWait()
+
+	var result leaseResult
+	select {
+	case result = <-resultCh:
+	case <-ctx.Done():
+		require.FailNow(t, "lease retry did not finish after the context was canceled", ctx.Err())
+	}
+	require.ErrorIs(t, result.err, context.Canceled)
+	require.False(t, result.callbackCalled)
+}
+
 func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
 	t.Parallel()
 
