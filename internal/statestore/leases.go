@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
+
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 )
 
 var (
@@ -267,28 +270,21 @@ func (s *Store) WithResourceLeaseRetry(
 		return fmt.Errorf("%w: lease retry interval must be positive", ErrInvalidArgument)
 	}
 
-	for {
+	return resiliency.Retry(ctx, backoff.NewConstantBackOff(retryInterval), func() error {
 		lease, acquireErr := s.AcquireResourceLease(ctx, resource, ownerProcess, revalidationInterval)
 		if acquireErr == nil {
-			return withResourceLeaseCallback(ctx, lease, f)
+			callbackErr := withResourceLeaseCallback(ctx, lease, f)
+			if callbackErr != nil {
+				return resiliency.Permanent(callbackErr)
+			}
+			return nil
 		}
 		if !errors.Is(acquireErr, ErrResourceLeaseHeld) {
-			return acquireErr
+			return resiliency.Permanent(acquireErr)
 		}
 
-		timer := time.NewTimer(retryInterval)
-		select {
-		case <-timer.C:
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return errors.Join(acquireErr, ctx.Err())
-		}
-	}
+		return acquireErr
+	})
 }
 
 func withResourceLeaseCallback(ctx context.Context, lease *ResourceLease, f func(context.Context, *ResourceLease) error) error {
