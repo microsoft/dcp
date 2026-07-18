@@ -27,6 +27,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	dcpio "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -627,22 +628,23 @@ func TestCleanupPersistentContainerRecordWaitsForHeldLease(t *testing.T) {
 		resultCh <- cleanupResult{resourceID: resourceID, cleaned: cleaned, err: cleanupErr}
 	}()
 
-	retryTimer := time.NewTimer(100 * time.Millisecond)
-	defer retryTimer.Stop()
 	select {
 	case result := <-resultCh:
 		require.FailNow(t, "cleanup finished before the held lease was released", result.err)
-	case <-retryTimer.C:
+	default:
 	}
 
 	require.NoError(t, stateStore.ReleaseResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), heldLeaseOwner))
 
 	var result cleanupResult
-	select {
-	case result = <-resultCh:
-	case <-ctx.Done():
-		require.FailNow(t, "cleanup did not finish after the held lease was released", ctx.Err())
-	}
+	require.NoError(t, resiliency.RetryExponential(ctx, func() error {
+		select {
+		case result = <-resultCh:
+			return nil
+		default:
+			return errors.New("cleanup did not finish after the held lease was released")
+		}
+	}))
 	require.NoError(t, result.err)
 	require.Equal(t, containerID, result.resourceID)
 	require.True(t, result.cleaned)

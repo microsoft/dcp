@@ -23,6 +23,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -530,22 +531,23 @@ func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {
 		resultCh <- leaseResult{callbackCalled: callbackCalled, err: leaseErr}
 	}()
 
-	retryTimer := time.NewTimer(50 * time.Millisecond)
-	defer retryTimer.Stop()
 	select {
 	case result := <-resultCh:
 		require.FailNow(t, "lease retry finished before the held lease was released", result.err)
-	case <-retryTimer.C:
+	default:
 	}
 
 	require.NoError(t, store1.ReleaseResourceLease(ctx, resource, owner1))
 
 	var result leaseResult
-	select {
-	case result = <-resultCh:
-	case <-ctx.Done():
-		require.FailNow(t, "lease retry did not finish after the held lease was released", ctx.Err())
-	}
+	require.NoError(t, resiliency.RetryExponential(ctx, func() error {
+		select {
+		case result = <-resultCh:
+			return nil
+		default:
+			return errors.New("lease retry did not finish after the held lease was released")
+		}
+	}))
 	require.NoError(t, result.err)
 	require.True(t, result.callbackCalled)
 }
@@ -585,22 +587,23 @@ func TestWithResourceLeaseRetryStopsWhenContextIsCanceled(t *testing.T) {
 		resultCh <- leaseResult{callbackCalled: callbackCalled, err: leaseErr}
 	}()
 
-	retryTimer := time.NewTimer(50 * time.Millisecond)
-	defer retryTimer.Stop()
 	select {
 	case result := <-resultCh:
 		require.FailNow(t, "lease retry finished before the context was canceled", result.err)
-	case <-retryTimer.C:
+	default:
 	}
 
 	cancelWait()
 
 	var result leaseResult
-	select {
-	case result = <-resultCh:
-	case <-ctx.Done():
-		require.FailNow(t, "lease retry did not finish after the context was canceled", ctx.Err())
-	}
+	require.NoError(t, resiliency.RetryExponential(ctx, func() error {
+		select {
+		case result = <-resultCh:
+			return nil
+		default:
+			return errors.New("lease retry did not finish after the context was canceled")
+		}
+	}))
 	require.ErrorIs(t, result.err, context.Canceled)
 	require.False(t, result.callbackCalled)
 }
