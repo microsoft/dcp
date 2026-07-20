@@ -610,6 +610,7 @@ func TestCleanupPersistentContainerRecordWaitsForHeldLease(t *testing.T) {
 		err        error
 	}
 	resultCh := make(chan cleanupResult, 1)
+	// Start cleanup on a goroutine so it has to wait on the held resource lease.
 	go func() {
 		resourceID, cleaned, cleanupErr := cleanupPersistentContainerRecord(
 			ctx,
@@ -634,6 +635,8 @@ func TestCleanupPersistentContainerRecordWaitsForHeldLease(t *testing.T) {
 	default:
 	}
 
+	// Hold the lease beyond one retry interval, then release it while cleanup is still waiting.
+	time.Sleep(workloadCleanupLeaseRetryInterval + 100*time.Millisecond)
 	require.NoError(t, stateStore.ReleaseResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), heldLeaseOwner))
 
 	var result cleanupResult
