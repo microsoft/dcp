@@ -27,6 +27,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	dcpio "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -575,6 +576,87 @@ func TestCleanupPersistentContainerRecordSkipsRecordThatChangedWorkload(t *testi
 	require.Equal(t, currentRecord.ContainerID, record.ContainerID)
 }
 
+func TestCleanupPersistentContainerRecordWaitsForHeldLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, 5*time.Second)
+	defer cancel()
+	stateStore := openCleanupTestStore(t, ctx)
+	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, heldLeaseOwnerErr)
+	cleanupLeaseOwner := process.ProcessHandle{
+		Pid:          heldLeaseOwner.Pid,
+		IdentityTime: heldLeaseOwner.IdentityTime.Add(-time.Hour),
+	}
+	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+
+	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "api"})
+	require.NoError(t, createContainerErr)
+	record := statestore.PersistentContainerRecord{
+		ResourceKey:   "containers/api",
+		ContainerID:   containerID,
+		ContainerName: "api",
+		RuntimeName:   cleanupTestRuntimeName,
+		WorkloadID:    "workload-a",
+	}
+	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, record))
+	_, leaseErr := stateStore.AcquireResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), heldLeaseOwner, time.Minute)
+	require.NoError(t, leaseErr)
+
+	type cleanupResult struct {
+		resourceID string
+		cleaned    bool
+		err        error
+	}
+	resultCh := make(chan cleanupResult, 1)
+	// Start cleanup on a goroutine so it has to wait on the held resource lease.
+	go func() {
+		resourceID, cleaned, cleanupErr := cleanupPersistentContainerRecord(
+			ctx,
+			"workload-a",
+			stateStore,
+			cleanupLeaseOwner,
+			func(runtimeName string) (containers.ContainerOrchestrator, error) {
+				if runtimeName != cleanupTestRuntimeName {
+					return nil, errors.New("unexpected runtime name")
+				}
+				return orchestrator, nil
+			},
+			record,
+			logr.Discard(),
+		)
+		resultCh <- cleanupResult{resourceID: resourceID, cleaned: cleaned, err: cleanupErr}
+	}()
+
+	select {
+	case result := <-resultCh:
+		require.FailNow(t, "cleanup finished before the held lease was released", result.err)
+	default:
+	}
+
+	// Hold the lease long enough for at least one retry, then release it while cleanup is still waiting.
+	time.Sleep(2*workloadCleanupLeaseRetryInterval + 100*time.Millisecond)
+	require.NoError(t, stateStore.ReleaseResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), heldLeaseOwner))
+
+	var result cleanupResult
+	require.NoError(t, resiliency.RetryExponential(ctx, func() error {
+		select {
+		case result = <-resultCh:
+			return nil
+		default:
+			return errors.New("cleanup did not finish after the held lease was released")
+		}
+	}))
+	require.NoError(t, result.err)
+	require.Equal(t, containerID, result.resourceID)
+	require.True(t, result.cleaned)
+	_, getErr := stateStore.GetPersistentContainer(ctx, record.ResourceKey)
+	require.ErrorIs(t, getErr, statestore.ErrPersistentContainerNotFound)
+	_, inspectErr := orchestrator.InspectContainers(ctx, containers.InspectContainersOptions{Containers: []string{containerID}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+}
+
 func TestCleanupWorkloadResourcesTreatsMissingProcessAsSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -943,23 +1025,24 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 30*time.Second)
 	defer cancel()
 	stateStore := openCleanupTestStore(t, ctx)
-	heldLeaseOwner, heldLeaseOwnerErr := statestore.CurrentResourceLeaseOwner()
-	require.NoError(t, heldLeaseOwnerErr)
-	cleanupLeaseOwner := process.ProcessHandle{
-		Pid:          heldLeaseOwner.Pid,
-		IdentityTime: heldLeaseOwner.IdentityTime.Add(-time.Hour),
-	}
+	leaseOwner, leaseOwnerErr := statestore.CurrentResourceLeaseOwner()
+	require.NoError(t, leaseOwnerErr)
 	processExecutor := process.NewOSExecutor(logr.Discard())
 	defer processExecutor.Dispose()
 	orchestrator, orchestratorErr := ctrlutil.NewTestContainerOrchestrator(ctx, logr.Discard(), ctrlutil.TcoOptionNone)
 	require.NoError(t, orchestratorErr)
+	removeContainerErr := errors.New("container removal failed")
+	wrappedOrchestrator := &failingCleanupContainerOrchestrator{
+		ContainerOrchestrator: orchestrator,
+		removeContainersErr:   removeContainerErr,
+	}
 
-	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "blocked"})
+	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{Name: "invalid"})
 	require.NoError(t, createContainerErr)
 	require.NoError(t, stateStore.UpsertPersistentContainer(ctx, statestore.PersistentContainerRecord{
-		ResourceKey:   "containers/blocked",
+		ResourceKey:   "containers/invalid",
 		ContainerID:   containerID,
-		ContainerName: "blocked",
+		ContainerName: "invalid",
 		RuntimeName:   cleanupTestRuntimeName,
 		WorkloadID:    "workload-a",
 	}))
@@ -969,17 +1052,15 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
-	_, leaseErr := stateStore.AcquireResourceLease(ctx, cleanupLeaseResource("containers/blocked"), heldLeaseOwner, time.Minute)
-	require.NoError(t, leaseErr)
 
 	report, cleanupErr := cleanupWorkloadResources(
 		ctx,
 		"workload-a",
 		stateStore,
-		cleanupLeaseOwner,
+		leaseOwner,
 		func(runtimeName string) (containers.ContainerOrchestrator, error) {
 			require.Equal(t, cleanupTestRuntimeName, runtimeName)
-			return orchestrator, nil
+			return wrappedOrchestrator, nil
 		},
 		processExecutor,
 		logr.Discard(),
@@ -989,7 +1070,9 @@ func TestCleanupWorkloadResourcesReportsFailuresAndContinues(t *testing.T) {
 	require.Equal(t, cleanupStoppedCounts{Networks: 1}, report.Stopped)
 	require.Len(t, report.Failures, 1)
 	require.Equal(t, cleanupResourceName(cleanupResourceContainerGVR), report.Failures[0].Kind)
-	require.NotEmpty(t, report.Failures[0].Error)
+	require.Equal(t, "containers/invalid", report.Failures[0].ResourceKey)
+	require.Equal(t, containerID, report.Failures[0].ResourceID)
+	require.ErrorContains(t, errors.New(report.Failures[0].Error), removeContainerErr.Error())
 }
 
 func openCleanupTestStore(t *testing.T, ctx context.Context) *statestore.Store {
@@ -1096,4 +1179,14 @@ func (o *orderedCleanupContainerOrchestrator) RemoveNetworks(ctx context.Context
 	}
 
 	return o.ContainerOrchestrator.RemoveNetworks(ctx, options)
+}
+
+type failingCleanupContainerOrchestrator struct {
+	containers.ContainerOrchestrator
+
+	removeContainersErr error
+}
+
+func (o *failingCleanupContainerOrchestrator) RemoveContainers(context.Context, containers.RemoveContainersOptions) ([]string, error) {
+	return nil, o.removeContainersErr
 }
