@@ -23,6 +23,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -496,6 +497,119 @@ func TestWithResourceLeaseDoesNotRetryHeldLease(t *testing.T) {
 
 	require.ErrorIs(t, leaseErr, ErrResourceLeaseHeld)
 	require.False(t, callbackCalled)
+}
+
+func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
+	require.NoError(t, owner2Err)
+
+	resource := testLeasableResource("container/test")
+	_, acquireErr := store1.AcquireResourceLease(ctx, resource, owner1, time.Minute)
+	require.NoError(t, acquireErr)
+
+	type leaseResult struct {
+		callbackCalled bool
+		err            error
+	}
+	resultCh := make(chan leaseResult, 1)
+	leaseRetryInterval := 500 * time.Millisecond
+	// Start acquisition on a goroutine so it has to wait on the held lease.
+	go func() {
+		callbackCalled := false
+		leaseErr := store2.WithResourceLeaseRetry(ctx, resource, owner2, time.Minute, leaseRetryInterval, func(context.Context, *ResourceLease) error {
+			callbackCalled = true
+			return nil
+		})
+		resultCh <- leaseResult{callbackCalled: callbackCalled, err: leaseErr}
+	}()
+
+	select {
+	case result := <-resultCh:
+		require.FailNow(t, "lease retry finished before the held lease was released", result.err)
+	default:
+	}
+
+	// Hold the lease long enough for at least one retry, then release it while the goroutine is still waiting.
+	time.Sleep(2*leaseRetryInterval + 100*time.Millisecond)
+	require.NoError(t, store1.ReleaseResourceLease(ctx, resource, owner1))
+
+	var result leaseResult
+	require.NoError(t, resiliency.RetryExponential(ctx, func() error {
+		select {
+		case result = <-resultCh:
+			return nil
+		default:
+			return errors.New("lease retry did not finish after the held lease was released")
+		}
+	}))
+	require.NoError(t, result.err)
+	require.True(t, result.callbackCalled)
+}
+
+func TestWithResourceLeaseRetryStopsWhenContextIsCanceled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store1 := openTestStore(t, ctx, storePath)
+	store2 := openTestStore(t, ctx, storePath)
+
+	owner1, owner1Err := testResourceLeaseOwner(t, 0)
+	require.NoError(t, owner1Err)
+	owner2, owner2Err := testResourceLeaseOwner(t, -time.Hour)
+	require.NoError(t, owner2Err)
+
+	resource := testLeasableResource("container/test")
+	_, acquireErr := store1.AcquireResourceLease(ctx, resource, owner1, time.Minute)
+	require.NoError(t, acquireErr)
+
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	defer cancelWait()
+
+	type leaseResult struct {
+		callbackCalled bool
+		err            error
+	}
+	resultCh := make(chan leaseResult, 1)
+	go func() {
+		callbackCalled := false
+		leaseErr := store2.WithResourceLeaseRetry(waitCtx, resource, owner2, time.Minute, 10*time.Millisecond, func(context.Context, *ResourceLease) error {
+			callbackCalled = true
+			return nil
+		})
+		resultCh <- leaseResult{callbackCalled: callbackCalled, err: leaseErr}
+	}()
+
+	select {
+	case result := <-resultCh:
+		require.FailNow(t, "lease retry finished before the context was canceled", result.err)
+	default:
+	}
+
+	cancelWait()
+
+	var result leaseResult
+	require.NoError(t, resiliency.RetryExponential(ctx, func() error {
+		select {
+		case result = <-resultCh:
+			return nil
+		default:
+			return errors.New("lease retry did not finish after the context was canceled")
+		}
+	}))
+	require.ErrorIs(t, result.err, context.Canceled)
+	require.False(t, result.callbackCalled)
 }
 
 func TestDeleteInactiveResourceLeasesUsesOwnerProcessIdentity(t *testing.T) {
