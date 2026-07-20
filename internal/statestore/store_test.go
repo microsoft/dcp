@@ -522,10 +522,11 @@ func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {
 		err            error
 	}
 	resultCh := make(chan leaseResult, 1)
+	leaseRetryInterval := 500 * time.Millisecond
 	// Start acquisition on a goroutine so it has to wait on the held lease.
 	go func() {
 		callbackCalled := false
-		leaseErr := store2.WithResourceLeaseRetry(ctx, resource, owner2, time.Minute, 10*time.Millisecond, func(context.Context, *ResourceLease) error {
+		leaseErr := store2.WithResourceLeaseRetry(ctx, resource, owner2, time.Minute, leaseRetryInterval, func(context.Context, *ResourceLease) error {
 			callbackCalled = true
 			return nil
 		})
@@ -538,8 +539,8 @@ func TestWithResourceLeaseRetryWaitsForHeldLease(t *testing.T) {
 	default:
 	}
 
-	// Hold the lease beyond one retry interval, then release it while the goroutine is still waiting.
-	time.Sleep(25 * time.Millisecond)
+	// Hold the lease long enough for at least one retry, then release it while the goroutine is still waiting.
+	time.Sleep(2*leaseRetryInterval + 100*time.Millisecond)
 	require.NoError(t, store1.ReleaseResourceLease(ctx, resource, owner1))
 
 	var result leaseResult

@@ -635,8 +635,8 @@ func TestCleanupPersistentContainerRecordWaitsForHeldLease(t *testing.T) {
 	default:
 	}
 
-	// Hold the lease beyond one retry interval, then release it while cleanup is still waiting.
-	time.Sleep(workloadCleanupLeaseRetryInterval + 100*time.Millisecond)
+	// Hold the lease long enough for at least one retry, then release it while cleanup is still waiting.
+	time.Sleep(2*workloadCleanupLeaseRetryInterval + 100*time.Millisecond)
 	require.NoError(t, stateStore.ReleaseResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), heldLeaseOwner))
 
 	var result cleanupResult
