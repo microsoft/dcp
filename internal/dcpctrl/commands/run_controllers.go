@@ -26,6 +26,7 @@ import (
 	dcptunproto "github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/exerunners"
 	"github.com/microsoft/dcp/internal/health"
+	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/notifications"
 	"github.com/microsoft/dcp/internal/perftrace"
 	"github.com/microsoft/dcp/internal/proxy"
@@ -137,6 +138,10 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		if cleanupErr := stateStore.DeleteInactiveResourceLeases(ctrlCtx); cleanupErr != nil {
 			log.Error(cleanupErr, "Failed to clean up inactive state store resource leases")
 		}
+		if cleanupErr := stateStore.DeleteInactivePortReservations(ctrlCtx); cleanupErr != nil {
+			log.Error(cleanupErr, "Failed to clean up inactive state store port reservations")
+		}
+		networking.ConfigureStateStorePortAllocator(stateStore, leaseOwner)
 		startInvalidPersistentExecutableRecordCleanup(ctrlCtx, stateStore, leaseOwner, log)
 		workloadID, workloadIDErr := cmds.GetWorkloadIDFromFlags(cmd.Flags())
 		if workloadIDErr != nil {
