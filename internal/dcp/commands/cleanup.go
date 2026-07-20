@@ -32,6 +32,7 @@ import (
 
 const (
 	workloadCleanupLeaseRevalidationInterval = 30 * time.Second
+	workloadCleanupLeaseRetryInterval        = 500 * time.Millisecond
 	workloadCleanupStopContainerTimeout      = 10
 	workloadCleanupResourceConcurrencyLimit  = uint16(8)
 )
@@ -465,7 +466,7 @@ func withCurrentPersistentContainerRecord(
 ) (string, bool, error) {
 	var resourceID string
 	found := false
-	cleanupErr := stateStore.WithResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
+	cleanupErr := stateStore.WithResourceLeaseRetry(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, workloadCleanupLeaseRetryInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
 		currentRecord, getErr := stateStore.GetPersistentContainer(ctx, record.ResourceKey)
 		if errors.Is(getErr, statestore.ErrPersistentContainerNotFound) {
 			return nil
@@ -497,7 +498,7 @@ func cleanupPersistentProcessRecord(
 ) (string, bool, error) {
 	var resourceID string
 	cleaned := false
-	cleanupErr := stateStore.WithResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
+	cleanupErr := stateStore.WithResourceLeaseRetry(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, workloadCleanupLeaseRetryInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
 		currentRecord, getErr := stateStore.GetPersistentProcess(ctx, record.ResourceKey)
 		if errors.Is(getErr, statestore.ErrPersistentProcessNotFound) {
 			return nil
@@ -580,7 +581,7 @@ func withCurrentPersistentNetworkRecord(
 ) (string, bool, error) {
 	var resourceID string
 	found := false
-	cleanupErr := stateStore.WithResourceLease(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
+	cleanupErr := stateStore.WithResourceLeaseRetry(ctx, cleanupLeaseResource(record.ResourceKey), leaseOwner, workloadCleanupLeaseRevalidationInterval, workloadCleanupLeaseRetryInterval, func(ctx context.Context, _ *statestore.ResourceLease) error {
 		currentRecord, getErr := stateStore.GetPersistentNetwork(ctx, record.ResourceKey)
 		if errors.Is(getErr, statestore.ErrPersistentNetworkNotFound) {
 			return nil
