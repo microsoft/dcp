@@ -128,19 +128,9 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		return nil, fmt.Errorf("could not configure state store database '%s': %w", absPath, errors.Join(configureErr, closeErr))
 	}
 
-	migrationDB, migrationOpenErr := openSQLiteDB(ctx, absPath, busyTimeout)
-	if migrationOpenErr != nil {
+	if migrateErr := store.migrate(ctx, busyTimeout); migrateErr != nil {
 		closeErr := db.Close()
-		return nil, fmt.Errorf("could not initialize state store migration database '%s': %w", absPath, errors.Join(migrationOpenErr, closeErr))
-	}
-	if migrateErr := store.migrate(ctx, migrationDB, busyTimeout); migrateErr != nil {
-		migrationCloseErr := migrationDB.Close()
-		closeErr := db.Close()
-		return nil, fmt.Errorf("could not migrate state store database '%s': %w", absPath, errors.Join(migrateErr, migrationCloseErr, closeErr))
-	}
-	if migrationCloseErr := migrationDB.Close(); migrationCloseErr != nil {
-		closeErr := db.Close()
-		return nil, fmt.Errorf("could not close state store migration database '%s': %w", absPath, errors.Join(migrationCloseErr, closeErr))
+		return nil, fmt.Errorf("could not migrate state store database '%s': %w", absPath, errors.Join(migrateErr, closeErr))
 	}
 
 	return store, nil
