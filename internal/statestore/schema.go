@@ -103,8 +103,8 @@ type schemaVersionQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-// readSchemaMajorVersion reads the compatibility boundary recorded by golang-migrate.
-func readSchemaMajorVersion(ctx context.Context, queryer schemaVersionQueryer) (version int, found bool, dirty bool, err error) {
+// readSchemaMajorVersion reads the current major migration version from schema_migrations.
+func readSchemaMajorVersion(ctx context.Context, queryer schemaVersionQueryer) (int, bool, bool, error) {
 	tableRow := queryer.QueryRowContext(
 		ctx,
 		`SELECT EXISTS(
@@ -120,7 +120,13 @@ func readSchemaMajorVersion(ctx context.Context, queryer schemaVersionQueryer) (
 		return 0, false, false, nil
 	}
 
-	versionRow := queryer.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`)
+	versionQuery := fmt.Sprintf(
+		`SELECT version, dirty FROM %s LIMIT 1`,
+		quoteSQLiteIdentifier(schemaMajorMigrationTableName),
+	)
+	versionRow := queryer.QueryRowContext(ctx, versionQuery)
+	var version int
+	var dirty bool
 	if scanErr := versionRow.Scan(&version, &dirty); scanErr != nil {
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			return 0, false, false, nil
@@ -130,7 +136,7 @@ func readSchemaMajorVersion(ctx context.Context, queryer schemaVersionQueryer) (
 	return version, true, dirty, nil
 }
 
-// validateStoredSchemaMajorVersion permits legacy schema version 2 only so it can be imported below.
+// validateStoredSchemaMajorVersion rejects dirty major versions and versions with no supported migration path.
 func (s *Store) validateStoredSchemaMajorVersion(ctx context.Context) error {
 	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db)
 	if readErr != nil {
@@ -176,9 +182,13 @@ func (s *Store) importSchemaVersion2(ctx context.Context, busyTimeout time.Durat
 		return fmt.Errorf("could not import schema version 2 as a minor migration: %w", importErr)
 	}
 
+	updateQuery := fmt.Sprintf(
+		`UPDATE %s SET version = ? WHERE version = ? AND dirty = 0`,
+		quoteSQLiteIdentifier(schemaMajorMigrationTableName),
+	)
 	updateResult, updateErr := s.db.ExecContext(
 		ctx,
-		`UPDATE schema_migrations SET version = ? WHERE version = ? AND dirty = 0`,
+		updateQuery,
 		legacySchemaVersion2MajorVersion,
 		legacySchemaVersion2,
 	)
@@ -233,7 +243,7 @@ func (s *Store) runSchemaMigrations(ctx context.Context, busyTimeout time.Durati
 	return nil
 }
 
-func (s *Store) runSchemaMajorMigration(ctx context.Context, busyTimeout time.Duration, targetVersion int) (err error) {
+func (s *Store) runSchemaMajorMigration(ctx context.Context, busyTimeout time.Duration, targetVersion int) error {
 	migrationRunner, runnerErr := s.newMigrationRunner(
 		ctx,
 		busyTimeout,
@@ -243,15 +253,17 @@ func (s *Store) runSchemaMajorMigration(ctx context.Context, busyTimeout time.Du
 	if runnerErr != nil {
 		return runnerErr
 	}
-	defer func() {
-		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
-		err = errors.Join(err, sourceCloseErr, databaseCloseErr)
-	}()
 
-	if migrationErr := migrationRunner.Migrate(uint(targetVersion)); migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
-		return fmt.Errorf("could not migrate schema major version to %d: %w", targetVersion, migrationErr)
+	migrationErr := migrationRunner.Migrate(uint(targetVersion))
+	sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+	if migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
+		return errors.Join(
+			fmt.Errorf("could not migrate schema major version to %d: %w", targetVersion, migrationErr),
+			sourceCloseErr,
+			databaseCloseErr,
+		)
 	}
-	return nil
+	return errors.Join(sourceCloseErr, databaseCloseErr)
 }
 
 // runSchemaMinorMigrations accepts a clean newer version without asking golang-migrate to resolve unknown files.
@@ -259,7 +271,7 @@ func (s *Store) runSchemaMinorMigrations(
 	ctx context.Context,
 	busyTimeout time.Duration,
 	migration schemaMajorMigration,
-) (err error) {
+) error {
 	migrationRunner, runnerErr := s.newMigrationRunner(
 		ctx,
 		busyTimeout,
@@ -269,31 +281,44 @@ func (s *Store) runSchemaMinorMigrations(
 	if runnerErr != nil {
 		return runnerErr
 	}
-	defer func() {
-		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
-		err = errors.Join(err, sourceCloseErr, databaseCloseErr)
-	}()
 
 	databaseVersion, dirty, versionErr := migrationRunner.Version()
 	if versionErr != nil && !errors.Is(versionErr, gomigrate.ErrNilVersion) {
-		return fmt.Errorf("could not read schema major %d minor version: %w", migration.version, versionErr)
+		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+		return errors.Join(
+			fmt.Errorf("could not read schema major %d minor version: %w", migration.version, versionErr),
+			sourceCloseErr,
+			databaseCloseErr,
+		)
 	}
 	if dirty {
-		return fmt.Errorf("schema major %d minor version %d is dirty", migration.version, databaseVersion)
+		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+		return errors.Join(
+			fmt.Errorf("schema major %d minor version %d is dirty", migration.version, databaseVersion),
+			sourceCloseErr,
+			databaseCloseErr,
+		)
 	}
 	// A newer compatible migration implies that every older migration in this stream was applied.
 	if versionErr == nil && int(databaseVersion) > migration.latestMinorVersion {
-		return nil
+		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+		return errors.Join(sourceCloseErr, databaseCloseErr)
 	}
-	if migrationErr := migrationRunner.Migrate(uint(migration.latestMinorVersion)); migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
-		return fmt.Errorf(
-			"could not migrate schema major %d minor version to %d: %w",
-			migration.version,
-			migration.latestMinorVersion,
-			migrationErr,
+	migrationErr := migrationRunner.Migrate(uint(migration.latestMinorVersion))
+	sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+	if migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
+		return errors.Join(
+			fmt.Errorf(
+				"could not migrate schema major %d minor version to %d: %w",
+				migration.version,
+				migration.latestMinorVersion,
+				migrationErr,
+			),
+			sourceCloseErr,
+			databaseCloseErr,
 		)
 	}
-	return nil
+	return errors.Join(sourceCloseErr, databaseCloseErr)
 }
 
 // newMigrationRunner wires an embedded source to a dedicated golang-migrate version table.
