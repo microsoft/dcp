@@ -9,14 +9,19 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
+	gomigrate "github.com/golang-migrate/migrate/v4"
+	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -96,15 +101,158 @@ func TestDefaultStateStoreDirRestrictsLeafDirectoryOnly(t *testing.T) {
 	}
 }
 
-func requireMigrationVersion(t *testing.T, ctx context.Context, store *Store, expectedVersion int) {
+func requireSchemaMajorVersion(t *testing.T, ctx context.Context, store *Store, expectedVersion int) {
 	t.Helper()
 
-	row := store.db.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`)
+	requireSchemaMigrationVersion(t, ctx, store, schemaMajorMigrationTableName, expectedVersion)
+}
+
+func requireSchemaMinorVersion(t *testing.T, ctx context.Context, store *Store, expectedVersion int) {
+	t.Helper()
+
+	requireSchemaMigrationVersion(t, ctx, store, schemaMajorVersion1Migration.minorTableName, expectedVersion)
+}
+
+func requireSchemaMigrationVersion(
+	t *testing.T,
+	ctx context.Context,
+	store *Store,
+	tableName string,
+	expectedVersion int,
+) {
+	t.Helper()
+
+	query := fmt.Sprintf(`SELECT version, dirty FROM %s LIMIT 1`, quoteSQLiteIdentifier(tableName))
+	row := store.db.QueryRowContext(ctx, query)
 	var version int
 	var dirty bool
 	require.NoError(t, row.Scan(&version, &dirty))
 	require.Equal(t, expectedVersion, version)
 	require.False(t, dirty)
+}
+
+func resourceLocksHasColumn(ctx context.Context, conn *sql.Conn, columnName string) (bool, error) {
+	rows, queryErr := conn.QueryContext(ctx, `PRAGMA table_info(resource_locks)`)
+	if queryErr != nil {
+		return false, queryErr
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typeName string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		scanErr := rows.Scan(&cid, &name, &typeName, &notNull, &defaultValue, &primaryKey)
+		if scanErr != nil {
+			return false, scanErr
+		}
+		if name == columnName {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func TestSchemaMigrationDefinitions(t *testing.T) {
+	t.Parallel()
+
+	require.NotEmpty(t, schemaMajorMigrations)
+	embeddedMajorPaths, majorGlobErr := fs.Glob(migrationFiles, "migrations/*.up.sql")
+	require.NoError(t, majorGlobErr)
+	require.Len(t, embeddedMajorPaths, len(schemaMajorMigrations))
+
+	embeddedMinorPaths, minorGlobErr := fs.Glob(migrationFiles, "migrations/*/*.up.sql")
+	require.NoError(t, minorGlobErr)
+	registeredMinorPathCount := 0
+	previousMajorVersion := 0
+	for _, migration := range schemaMajorMigrations {
+		require.Greater(t, migration.version, previousMajorVersion)
+		require.NotEqual(t, legacySchemaVersion2, migration.version)
+		require.NotEmpty(t, migration.path)
+		require.NotEmpty(t, migration.minorTableName)
+		require.GreaterOrEqual(t, migration.latestMinorVersion, 0)
+
+		expectedMajorPrefix := fmt.Sprintf("migrations/%06d_", migration.version)
+		require.True(t, strings.HasPrefix(migration.path, expectedMajorPrefix))
+		require.True(t, strings.HasSuffix(migration.path, ".up.sql"))
+		_, majorStatErr := fs.Stat(migrationFiles, migration.path)
+		require.NoError(t, majorStatErr)
+		require.Contains(t, embeddedMajorPaths, migration.path)
+
+		minorPaths, minorPathGlobErr := fs.Glob(migrationFiles, migration.minorPath()+"/*.up.sql")
+		require.NoError(t, minorPathGlobErr)
+		registeredMinorPathCount += len(minorPaths)
+		if migration.latestMinorVersion == 0 {
+			require.Empty(t, minorPaths)
+		} else {
+			latestMinorPattern := fmt.Sprintf("%s/%06d_*.up.sql", migration.minorPath(), migration.latestMinorVersion)
+			latestMinorPaths, latestMinorGlobErr := fs.Glob(migrationFiles, latestMinorPattern)
+			require.NoError(t, latestMinorGlobErr)
+			require.Len(t, latestMinorPaths, 1)
+		}
+		previousMajorVersion = migration.version
+	}
+	require.Len(t, embeddedMinorPaths, registeredMinorPathCount)
+}
+
+func legacyMigrationFixture(t *testing.T, includeSchemaVersion2 bool) fstest.MapFS {
+	t.Helper()
+
+	initialMigration, initialReadErr := fs.ReadFile(migrationFiles, "migrations/000001_initial.up.sql")
+	require.NoError(t, initialReadErr)
+	migrationFS := fstest.MapFS{
+		"migrations/000001_initial.up.sql": {Data: initialMigration},
+	}
+	if includeSchemaVersion2 {
+		workloadMigrationPath := schemaMajorVersion1Migration.minorPath() + "/000001_workload_ids.up.sql"
+		workloadMigration, workloadReadErr := fs.ReadFile(migrationFiles, workloadMigrationPath)
+		require.NoError(t, workloadReadErr)
+		migrationFS["migrations/000002_workload_ids.up.sql"] = &fstest.MapFile{Data: workloadMigration}
+	}
+	return migrationFS
+}
+
+func runLegacyMigrationRunner(
+	ctx context.Context,
+	path string,
+	migrationFS fs.FS,
+) (err error) {
+	migrationDB, openErr := openSQLiteDB(ctx, path, 500*time.Millisecond)
+	if openErr != nil {
+		return openErr
+	}
+
+	sourceDriver, sourceErr := iofs.New(migrationFS, "migrations")
+	if sourceErr != nil {
+		return errors.Join(sourceErr, migrationDB.Close())
+	}
+	databaseDriver, databaseDriverErr := migratesqlite.WithInstance(migrationDB, &migratesqlite.Config{
+		DatabaseName:    path,
+		MigrationsTable: schemaMajorMigrationTableName,
+	})
+	if databaseDriverErr != nil {
+		return errors.Join(databaseDriverErr, sourceDriver.Close(), migrationDB.Close())
+	}
+	migrationRunner, runnerErr := gomigrate.NewWithInstance("iofs", sourceDriver, sqliteDriverName, databaseDriver)
+	if runnerErr != nil {
+		return errors.Join(runnerErr, sourceDriver.Close(), databaseDriver.Close(), migrationDB.Close())
+	}
+	defer func() {
+		sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+		migrationDBCloseErr := migrationDB.Close()
+		err = errors.Join(err, sourceCloseErr, databaseCloseErr, migrationDBCloseErr)
+	}()
+
+	migrationErr := migrationRunner.Up()
+	if errors.Is(migrationErr, gomigrate.ErrNoChange) {
+		return nil
+	}
+	return migrationErr
 }
 
 func createUnversionedCurrentSchema(t *testing.T, ctx context.Context, path string) {
@@ -158,7 +306,209 @@ func TestOpenCreatesSchema(t *testing.T) {
 	require.Equal(t, storePath, store.Path())
 	require.FileExists(t, storePath)
 
-	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+}
+
+func TestOpenMigratesVersionOneSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, false)))
+
+	store := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+}
+
+func TestCurrentSchemaRemainsCompatibleWithLegacyVersionOneRunner(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+
+	legacyRunnerErr := runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, false))
+
+	require.NoError(t, legacyRunnerErr)
+}
+
+func TestOpenImportsSchemaVersion2(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, true)))
+
+	schemaVersion2DB := openRawSQLiteDB(t, ctx, storePath)
+	_, insertErr := schemaVersion2DB.ExecContext(
+		ctx,
+		`INSERT INTO persistent_processes(
+			resource_key, lifecycle_key, pid, identity_time, run_id,
+			stdout_file, stderr_file, lifecycle_metadata, workload_id, updated_at_unix_nano
+		 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"executable/existing",
+		"lifecycle",
+		123,
+		timeString(time.Now().UTC()),
+		"run",
+		"stdout",
+		"stderr",
+		"metadata",
+		"workload-a",
+		unixNano(time.Now().UTC()),
+	)
+	require.NoError(t, insertErr)
+	require.NoError(t, schemaVersion2DB.Close())
+
+	store := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+	row := store.db.QueryRowContext(
+		ctx,
+		`SELECT workload_id FROM persistent_processes WHERE resource_key = ?`,
+		"executable/existing",
+	)
+	var workloadID string
+	require.NoError(t, row.Scan(&workloadID))
+	require.Equal(t, "workload-a", workloadID)
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, false)))
+}
+
+func TestOpenIgnoresUnknownSchemaMinorMigrations(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	updateQuery := fmt.Sprintf(
+		`UPDATE %s SET version = ?`,
+		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
+	)
+	_, updateErr := store.db.ExecContext(ctx, updateQuery, 999)
+	require.NoError(t, updateErr)
+
+	reopenedStore := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, reopenedStore, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, reopenedStore, 999)
+}
+
+func TestOpenRejectsDirtyNewerSchemaMinorVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	updateQuery := fmt.Sprintf(
+		`UPDATE %s SET version = ?, dirty = 1`,
+		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
+	)
+	_, updateErr := store.db.ExecContext(ctx, updateQuery, 999)
+	require.NoError(t, updateErr)
+
+	_, openErr := Open(ctx, Options{
+		Path:        storePath,
+		BusyTimeout: 500 * time.Millisecond,
+	})
+
+	require.ErrorContains(t, openErr, "minor version 999 is dirty")
+}
+
+func TestOpenRejectsUnknownSchemaMajorVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, false)))
+	db := openRawSQLiteDB(t, ctx, storePath)
+	_, updateErr := db.ExecContext(
+		ctx,
+		`UPDATE schema_migrations SET version = 3;
+		 DROP TABLE resource_locks;
+		 CREATE TABLE resource_locks (
+			resource_key TEXT PRIMARY KEY,
+			owner_instance_id TEXT NOT NULL,
+			updated_at_unix_nano INTEGER NOT NULL
+		 );`,
+	)
+	require.NoError(t, updateErr)
+	require.NoError(t, db.Close())
+	require.NoError(
+		t,
+		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
+	)
+
+	_, openErr := Open(ctx, Options{
+		Path:        storePath,
+		BusyTimeout: 500 * time.Millisecond,
+	})
+
+	require.ErrorContains(t, openErr, "unsupported schema major version 3")
+	db = openRawSQLiteDB(t, ctx, storePath)
+	defer func() {
+		require.NoError(t, db.Close())
+	}()
+	minorTableRow := db.QueryRowContext(
+		ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+		)`,
+		schemaMajorVersion1Migration.minorTableName,
+	)
+	var minorTableExists bool
+	require.NoError(t, minorTableRow.Scan(&minorTableExists))
+	require.False(t, minorTableExists)
+	conn, connErr := db.Conn(ctx)
+	require.NoError(t, connErr)
+	defer func() {
+		require.NoError(t, conn.Close())
+	}()
+	hasLegacyOwnerColumn, legacyOwnerColumnErr := resourceLocksHasColumn(ctx, conn, "owner_instance_id")
+	require.NoError(t, legacyOwnerColumnErr)
+	require.True(t, hasLegacyOwnerColumn)
+}
+
+func TestOpenRejectsDirtySchemaVersion2(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, true)))
+	schemaVersion2DB := openRawSQLiteDB(t, ctx, storePath)
+	_, updateErr := schemaVersion2DB.ExecContext(ctx, `UPDATE schema_migrations SET dirty = 1`)
+	require.NoError(t, updateErr)
+	require.NoError(t, schemaVersion2DB.Close())
+	require.NoError(
+		t,
+		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
+	)
+
+	_, openErr := Open(ctx, Options{
+		Path:        storePath,
+		BusyTimeout: 500 * time.Millisecond,
+	})
+
+	require.ErrorContains(t, openErr, "schema major version 2 is dirty")
 }
 
 func TestOpenWithExplicitPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
@@ -275,49 +625,13 @@ func TestOpenMigratesUnversionedCurrentSchemaWithoutLosingResourceLocks(t *testi
 	require.NoError(t, db.Close())
 
 	store := openTestStore(t, ctx, storePath)
-	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
 
 	otherOwner, otherOwnerErr := testResourceLeaseOwner(t, -time.Hour)
 	require.NoError(t, otherOwnerErr)
 	_, acquireErr := store.AcquireResourceLease(ctx, testLeasableResource("container/existing"), otherOwner, time.Minute)
 	require.ErrorIs(t, acquireErr, ErrResourceLeaseHeld)
-}
-
-func TestOpenMigratesUnversionedLegacyResourceLocksTable(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
-	defer cancel()
-	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
-
-	db := openRawSQLiteDB(t, ctx, storePath)
-	_, createErr := db.ExecContext(
-		ctx,
-		`CREATE TABLE resource_locks (
-			resource_key TEXT PRIMARY KEY,
-			owner_instance_id TEXT NOT NULL,
-			updated_at_unix_nano INTEGER NOT NULL
-		)`,
-	)
-	require.NoError(t, createErr)
-	require.NoError(t, db.Close())
-
-	store := openTestStore(t, ctx, storePath)
-	requireMigrationVersion(t, ctx, store, currentSchemaVersion)
-
-	conn, connErr := store.db.Conn(ctx)
-	require.NoError(t, connErr)
-	defer func() {
-		require.NoError(t, conn.Close())
-	}()
-
-	hasOwnerPIDColumn, ownerPIDColumnErr := resourceLocksHasColumn(ctx, conn, "owner_pid")
-	require.NoError(t, ownerPIDColumnErr)
-	require.True(t, hasOwnerPIDColumn)
-
-	hasLegacyOwnerColumn, legacyOwnerColumnErr := resourceLocksHasColumn(ctx, conn, "owner_instance_id")
-	require.NoError(t, legacyOwnerColumnErr)
-	require.False(t, hasLegacyOwnerColumn)
 }
 
 func TestResourceLeaseCoordinatesAcrossStoreHandles(t *testing.T) {
