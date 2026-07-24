@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	containerEventChanBuffer = 20 // Container events tend to come in bursts, so we can help a bit with buffering
+	containerEventChanBuffer = 1024 // Container events tend to come in bursts, so we can help with buffering
 )
 
 // Provides data and common functionality for reconcilers that need to watch (Docker/Podman) containers

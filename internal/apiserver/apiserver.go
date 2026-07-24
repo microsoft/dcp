@@ -31,6 +31,7 @@ import (
 	tiltstart "github.com/tilt-dev/tilt-apiserver/pkg/server/start"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/logs/containerlogs"
 	"github.com/microsoft/dcp/internal/logs/stdiologs"
 	"github.com/microsoft/dcp/internal/networking"
@@ -92,7 +93,13 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 	for _, o := range apiv1.PersistentTypes {
 		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
 	}
+	for _, o := range apiv2.PersistentTypes {
+		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
+	}
 	for _, o := range apiv1.AddtionalTypes {
+		apiServer.builder = apiServer.builder.WithResource(o)
+	}
+	for _, o := range apiv2.AdditionalTypes {
 		apiServer.builder = apiServer.builder.WithResource(o)
 	}
 	apiServer.builder = apiServer.builder.WithOpenAPIDefinitions(openApiConfigrationName, openApiConfigurationVersion, openapi.GetOpenAPIDefinitions)

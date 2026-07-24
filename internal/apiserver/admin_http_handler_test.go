@@ -19,10 +19,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/notifications"
 
@@ -436,6 +439,107 @@ func TestCannotCreateNewObjectsAfterClenupStarted(t *testing.T) {
 	t.Logf("Creating Executable object '%s'...", exe.Name)
 	createErr = serverInfo.Client.Create(ctx, &exe)
 	require.Error(t, createErr, "Executable creation should fail")
+}
+
+func TestCanCreateV2Namespace(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
+	defer cancel()
+
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
+	require.NoError(t, startupErr, "Failed to start the API server")
+	defer func() {
+		serverInfo.Dispose()
+
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-ctx.Done():
+		}
+	}()
+
+	ns := apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-v2-namespace",
+		},
+	}
+	createErr := serverInfo.Client.Create(ctx, &ns)
+	require.NoError(t, createErr, "Failed to create V2 Namespace")
+
+	var got apiv2.Namespace
+	getErr := serverInfo.Client.Get(ctx, types.NamespacedName{Name: ns.Name}, &got)
+	require.NoError(t, getErr, "Failed to get V2 Namespace")
+	require.Equal(t, ns.Name, got.Name)
+	require.Empty(t, got.Namespace)
+
+	var list apiv2.NamespaceList
+	listErr := serverInfo.Client.List(ctx, &list)
+	require.NoError(t, listErr, "Failed to list V2 Namespaces")
+	require.Len(t, list.Items, 1)
+	require.Equal(t, ns.Name, list.Items[0].Name)
+}
+
+func TestCanCreateV2PhysicalContainer(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, defaultApiServerTestTimeout)
+	defer cancel()
+
+	serverInfo, startupErr := createApiServerForHttpHandlerTests(t.Name(), ctx)
+	require.NoError(t, startupErr, "Failed to start the API server")
+	defer func() {
+		serverInfo.Dispose()
+
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-ctx.Done():
+		}
+	}()
+
+	ns := apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-v2-namespace",
+		},
+	}
+	createErr := serverInfo.Client.Create(ctx, &ns)
+	require.NoError(t, createErr, "Failed to create V2 Namespace")
+
+	pci := apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-v2-physical-container-image",
+			Namespace: ns.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image: "test-image",
+		},
+	}
+	createErr = serverInfo.Client.Create(ctx, &pci)
+	require.NoError(t, createErr, "Failed to create V2 PhysicalContainerImage")
+
+	pc := apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-v2-physical-container",
+			Namespace: ns.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ImageRef: pci.Name,
+		},
+	}
+	createErr = serverInfo.Client.Create(ctx, &pc)
+	require.NoError(t, createErr, "Failed to create V2 PhysicalContainer")
+
+	var got apiv2.PhysicalContainer
+	getErr := serverInfo.Client.Get(ctx, pc.NamespacedName(), &got)
+	require.NoError(t, getErr, "Failed to get V2 PhysicalContainer")
+	require.Equal(t, pc.Name, got.Name)
+	require.Equal(t, ns.Name, got.Namespace)
+	require.Equal(t, pci.Name, got.Spec.ImageRef)
+
+	var list apiv2.PhysicalContainerList
+	listErr := serverInfo.Client.List(ctx, &list, ctrl_client.InNamespace(ns.Name))
+	require.NoError(t, listErr, "Failed to list V2 PhysicalContainers")
+	require.Len(t, list.Items, 1)
+	require.Equal(t, pc.Name, list.Items[0].Name)
 }
 
 func TestCanCapturePerfTrace(t *testing.T) {

@@ -447,7 +447,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.TCP,
 			Address:  networking.IPv4LocalhostDefaultAddress,
 			Port:     13762,
 		},
@@ -464,7 +464,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.TCP,
 			Address:  networking.IPv4LocalhostDefaultAddress,
 			Port:     13763,
 		},
@@ -487,7 +487,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/exers-injects-ports-into-replicas",
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "SVC_PORT",
 							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svcAName),
@@ -528,7 +528,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			return updatedExe.Status.State == apiv1.ExecutableStateRunning, nil
 		})
 
-		effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+		effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 			return fmt.Sprintf("%s=%s", v.Name, v.Value)
 		})
 

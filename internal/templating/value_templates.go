@@ -270,17 +270,17 @@ func portForServingFromContainer(
 		}
 
 		// Follow the service producer annotation logic for Containers (compare with ContainerReconciler.getHostAddressAndPortForContainerPort()).
-		var matchedPort apiv1.ContainerPort
+		var matchedPort commonapi.ContainerPort
 		found := false
 
-		matchedByHost := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
+		matchedByHost := slices.Select(ctr.Spec.Ports, func(p commonapi.ContainerPort) bool {
 			return p.HostPort == sp.Port
 		})
 		if len(matchedByHost) > 0 {
 			matchedPort = matchedByHost[0]
 			found = true
 		} else {
-			matchedByContainer := slices.Select(ctr.Spec.Ports, func(p apiv1.ContainerPort) bool {
+			matchedByContainer := slices.Select(ctr.Spec.Ports, func(p commonapi.ContainerPort) bool {
 				return p.ContainerPort == sp.Port
 			})
 			if len(matchedByContainer) > 0 {

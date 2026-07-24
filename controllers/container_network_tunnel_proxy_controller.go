@@ -1030,20 +1030,18 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	log.V(1).Info("Starting client proxy container...")
 
 	createOpts := containers.CreateContainerOptions{
-		ContainerSpec: apiv1.ContainerSpec{
-			Image:   pd.ClientProxyContainerImage,
-			Command: dcptun.ClientProxyBinaryPath,
-			Args: append([]string{
-				"client",
-				"--client-control-address", networking.IPv4AllInterfaceAddress,
-				"--client-control-port", strconv.Itoa(dcptun.DefaultContainerProxyControlPort),
-				"--client-data-address", networking.IPv4AllInterfaceAddress,
-				"--client-data-port", strconv.Itoa(dcptun.DefaultContainerProxyDataPort),
-			}, r.createProxySecurityArgs(pd, log)...),
-			Ports: []apiv1.ContainerPort{
-				{ContainerPort: dcptun.DefaultContainerProxyControlPort},
-				{ContainerPort: dcptun.DefaultContainerProxyDataPort},
-			},
+		Image:      pd.ClientProxyContainerImage,
+		Entrypoint: dcptun.ClientProxyBinaryPath,
+		Command: append([]string{
+			"client",
+			"--client-control-address", networking.IPv4AllInterfaceAddress,
+			"--client-control-port", strconv.Itoa(dcptun.DefaultContainerProxyControlPort),
+			"--client-data-address", networking.IPv4AllInterfaceAddress,
+			"--client-data-port", strconv.Itoa(dcptun.DefaultContainerProxyDataPort),
+		}, r.createProxySecurityArgs(pd, log)...),
+		Ports: []containers.CreateContainerPort{
+			{ContainerPort: dcptun.DefaultContainerProxyControlPort},
+			{ContainerPort: dcptun.DefaultContainerProxyDataPort},
 		},
 		Name: clientProxyCtrName,
 		Networks: []containers.CreateContainerNetworkOptions{
@@ -1058,11 +1056,11 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 	if thisProcessErr != nil {
 		log.Error(thisProcessErr, "could not get the current process information; container will not have creator process information")
 	} else {
-		createOpts.ContainerSpec.Labels = append(createOpts.ContainerSpec.Labels, apiv1.ContainerLabel{
+		createOpts.Labels = append(createOpts.Labels, commonapi.Label{
 			Key:   CreatorProcessIdLabel,
 			Value: fmt.Sprintf("%d", thisProcess.Pid),
 		})
-		createOpts.ContainerSpec.Labels = append(createOpts.ContainerSpec.Labels, apiv1.ContainerLabel{
+		createOpts.Labels = append(createOpts.Labels, commonapi.Label{
 			Key:   CreatorProcessStartTimeLabel,
 			Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		})
@@ -1164,7 +1162,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, NoDelay
 	}
 
-	_, controlEndpointHostPort, controlEndpointErr := getHostAddressAndPortForContainerPort(createOpts.ContainerSpec, dcptun.DefaultContainerProxyControlPort, started, log)
+	_, controlEndpointHostPort, controlEndpointErr := getHostAddressAndPortForPorts(createOpts.Ports, dcptun.DefaultContainerProxyControlPort, started, log)
 	if controlEndpointErr != nil {
 		log.Error(controlEndpointErr, "Failed to determine control connection host port for the client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed
@@ -1172,7 +1170,7 @@ func (r *ContainerNetworkTunnelProxyReconciler) startClientProxy(
 		return false, NoDelay
 	}
 
-	_, dataEndpointHostPort, dataEndpointErr := getHostAddressAndPortForContainerPort(createOpts.ContainerSpec, dcptun.DefaultContainerProxyDataPort, started, log)
+	_, dataEndpointHostPort, dataEndpointErr := getHostAddressAndPortForPorts(createOpts.Ports, dcptun.DefaultContainerProxyDataPort, started, log)
 	if dataEndpointErr != nil {
 		log.Error(dataEndpointErr, "Failed to determine data connection host port for the client proxy container")
 		pd.State = apiv1.ContainerNetworkTunnelProxyStateFailed

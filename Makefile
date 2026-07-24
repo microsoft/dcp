@@ -136,11 +136,11 @@ export CGO_ENABLED ?= 0
 
 ifeq ($(detected_OS),windows)
 	GO_SOURCES := $(shell Get-ChildItem -Include '*.go' -Exclude 'zz_generated*' -Recurse -File | Select-Object -ExpandProperty FullName)
-	TYPE_SOURCES := $(shell Get-ChildItem -Path './api/v1/*' -Include '*.go' -Exclude 'zz_generated*' -File | Select-Object -ExpandProperty FullName)
+	TYPE_SOURCES := $(shell Get-ChildItem -Path './api/*/*','./pkg/commonapi/*' -Include '*.go' -Exclude 'zz_generated*' -File | Select-Object -ExpandProperty FullName)
 	PROTO_SOURCES := $(shell Get-ChildItem -Path './internal/*' -Include '*.proto' -Recurse -File | Select-Object -ExpandProperty FullName | % { [System.IO.Path]::GetRelativePath("$(repo_dir)", $$_) } )
 else
 	GO_SOURCES := $(shell find . -name '*.go' -not -name 'zz_generated*' -type f)
-	TYPE_SOURCES := $(shell find ./api/v1 -name '*.go' -not -name 'zz_generated*' -type f)
+	TYPE_SOURCES := $(shell find ./api ./pkg/commonapi -name '*.go' -not -name 'zz_generated*' -type f)
 	PROTO_SOURCES := $(shell find ./internal/*/proto -name '*.proto' -type f 2>/dev/null)
 endif
 
@@ -177,7 +177,7 @@ generate-ci: generate generate-licenses ## Generate all codegen artifacts includ
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
 $(repo_dir)/api/v1/zz_generated.deepcopy.go : $(TYPE_SOURCES)
-	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/v1/..."
+	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 
 define run-openapi-gen
 $(CLEAR_GOARGS) $(OPENAPI_GEN) \
@@ -192,6 +192,8 @@ $(CLEAR_GOARGS) $(OPENAPI_GEN) \
 	--report-filename - \
 	$(OPENAPI_GEN_OPTS) \
 	github.com/microsoft/dcp/api/v1 \
+	github.com/microsoft/dcp/api/v2 \
+	github.com/microsoft/dcp/pkg/commonapi \
 	k8s.io/apimachinery/pkg/apis/meta/v1 k8s.io/apimachinery/pkg/runtime k8s.io/apimachinery/pkg/version
 endef
 

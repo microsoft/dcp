@@ -9,14 +9,18 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
 	clientgorest "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/resiliency"
 )
@@ -118,4 +122,38 @@ func ApplyDcpOptions(config *clientgorest.Config) {
 		// If a token was supplied, use it to authenticate to the API server
 		config.BearerToken = token
 	}
+}
+
+// ResolveNamespaceWorkloadID returns the namespace workload ID annotation when present, or the default workload ID otherwise.
+func ResolveNamespaceWorkloadID(
+	ctx context.Context,
+	reader ctrl_client.Reader,
+	namespaceName string,
+	defaultWorkloadID commonapi.WorkloadID,
+) (commonapi.WorkloadID, error) {
+	trimmedNamespaceName := strings.TrimSpace(namespaceName)
+	if trimmedNamespaceName == "" {
+		return "", fmt.Errorf("namespace name is required")
+	}
+
+	var namespace apiv2.Namespace
+	getNamespaceErr := reader.Get(ctx, types.NamespacedName{Name: trimmedNamespaceName}, &namespace)
+	if getNamespaceErr != nil {
+		return "", fmt.Errorf("get namespace %q: %w", trimmedNamespaceName, getNamespaceErr)
+	}
+
+	workloadID, ok := namespace.GetAnnotations()[apiv2.NamespaceWorkloadIDAnnotation]
+	if ok {
+		normalizedWorkloadID := commonapi.NormalizeWorkloadID(workloadID)
+		if validationErr := normalizedWorkloadID.Validate(); validationErr != nil {
+			return "", fmt.Errorf("invalid namespace workload ID annotation %q on namespace %q: %w", apiv2.NamespaceWorkloadIDAnnotation, trimmedNamespaceName, validationErr)
+		}
+		return normalizedWorkloadID, nil
+	}
+
+	normalizedDefaultWorkloadID := defaultWorkloadID.Normalized()
+	if validationErr := normalizedDefaultWorkloadID.Validate(); validationErr != nil {
+		return "", fmt.Errorf("invalid default workload ID: %w", validationErr)
+	}
+	return normalizedDefaultWorkloadID, nil
 }

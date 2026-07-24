@@ -21,6 +21,7 @@ import (
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/health"
 	"github.com/microsoft/dcp/internal/termpty"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -325,8 +326,8 @@ func (rcd *runningContainerData) hasValidContainerID() bool {
 func (rcd *runningContainerData) updateFromInspectedContainer(inspected *ct.InspectedContainer) {
 	rcd.containerID = containerID(inspected.Id)
 	rcd.containerName = strings.TrimLeft(inspected.Name, "/")
-	rcd.runSpec.Env = maps.MapToSlice[apiv1.EnvVar](inspected.Env, func(key, value string) apiv1.EnvVar {
-		return apiv1.EnvVar{Name: key, Value: value}
+	rcd.runSpec.Env = maps.MapToSlice[commonapi.EnvVar](inspected.Env, func(key, value string) commonapi.EnvVar {
+		return commonapi.EnvVar{Name: key, Value: value}
 	})
 	rcd.runSpec.Args = inspected.Args
 
@@ -439,16 +440,16 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 	// (as a result of evaluating template expressions that may be embedded in environment variables or command arguments).
 
 	// For comparison between the environment maps, we need to convert them to map[string]string.
-	rawContainerEnv := maps.SliceToMap(ctr.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) {
+	rawContainerEnv := maps.SliceToMap(ctr.Status.EffectiveEnv, func(ev commonapi.EnvVar) (string, string) {
 		return ev.Name, ev.Value
 	})
-	rawCurrentEnv := maps.SliceToMap(rcd.runSpec.Env, func(ev apiv1.EnvVar) (string, string) {
+	rawCurrentEnv := maps.SliceToMap(rcd.runSpec.Env, func(ev commonapi.EnvVar) (string, string) {
 		return ev.Name, ev.Value
 	})
 	if len(rawCurrentEnv) > 0 && !stdmaps.Equal(rawContainerEnv, rawCurrentEnv) {
 		rawContainerEnv = maps.Apply(rawContainerEnv, rawCurrentEnv)
-		ctr.Status.EffectiveEnv = maps.MapToSlice[apiv1.EnvVar](rawContainerEnv, func(k, v string) apiv1.EnvVar {
-			return apiv1.EnvVar{Name: k, Value: v}
+		ctr.Status.EffectiveEnv = maps.MapToSlice[commonapi.EnvVar](rawContainerEnv, func(k, v string) commonapi.EnvVar {
+			return commonapi.EnvVar{Name: k, Value: v}
 		})
 		change |= statusChanged
 	}
@@ -473,10 +474,10 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 		}
 	}
 
-	if setTimestampIfBeforeOrUnknown(rcd.finishTimestamp, &ctr.Status.FinishTimestamp) {
-		change |= statusChanged
-	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && setTimestampIfBeforeOrUnknown(rcd.startAttemptFinishedAt, &ctr.Status.FinishTimestamp) {
-		change |= statusChanged
+	if finishTimestampChange := setTimestampIfBeforeOrUnknown(&ctr.Status.FinishTimestamp, rcd.finishTimestamp); finishTimestampChange != noChange {
+		change |= finishTimestampChange
+	} else if rcd.containerState == apiv1.ContainerStateFailedToStart {
+		change |= setTimestampIfBeforeOrUnknown(&ctr.Status.FinishTimestamp, rcd.startAttemptFinishedAt)
 	}
 
 	updatedHealthResults, healthResultsChanged := health.UpdateHealthProbeResults(ctr.Status.HealthProbeResults, rcd.healthProbeResults)

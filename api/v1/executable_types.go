@@ -299,7 +299,7 @@ type ExecutableSpec struct {
 	// Environment variables to be set for the Executable
 	// +listType=map
 	// +listMapKey=name
-	Env []EnvVar `json:"env,omitempty"`
+	Env []commonapi.EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate Executable environment during startup.
 	// +listType=set
@@ -486,7 +486,7 @@ func (es *ExecutableSpec) GetLifecycleKey() (string, bool, error) {
 
 	if len(es.Env) > 0 {
 		sortedEnv := stdslices.Clone(es.Env)
-		stdslices.SortFunc(sortedEnv, func(e1, e2 EnvVar) int {
+		stdslices.SortFunc(sortedEnv, func(e1, e2 commonapi.EnvVar) int {
 			return strings.Compare(e1.Name, e2.Name)
 		})
 
@@ -566,7 +566,7 @@ func effectiveLifecycleArgs(e *Executable) ([]string, error) {
 	return stdslices.Clone(e.Status.EffectiveArgs), nil
 }
 
-func explicitEffectiveLifecycleEnv(e *Executable) ([]EnvVar, error) {
+func explicitEffectiveLifecycleEnv(e *Executable) ([]commonapi.EnvVar, error) {
 	explicitNames, explicitNamesErr := explicitLifecycleEnvNames(e)
 	if explicitNamesErr != nil {
 		return nil, explicitNamesErr
@@ -583,15 +583,15 @@ func explicitEffectiveLifecycleEnv(e *Executable) ([]EnvVar, error) {
 		return nil, fmt.Errorf("executable lifecycle key cannot be calculated before effective environment is computed")
 	}
 
-	explicitEffectiveEnv := make([]EnvVar, 0, explicitNames.Len())
+	explicitEffectiveEnv := make([]commonapi.EnvVar, 0, explicitNames.Len())
 	for nameKey, name := range explicitNames.Data() {
 		value, found := effectiveEnvByName.Get(nameKey)
 		if !found {
 			continue
 		}
-		explicitEffectiveEnv = append(explicitEffectiveEnv, EnvVar{Name: name, Value: value})
+		explicitEffectiveEnv = append(explicitEffectiveEnv, commonapi.EnvVar{Name: name, Value: value})
 	}
-	stdslices.SortFunc(explicitEffectiveEnv, func(e1, e2 EnvVar) int {
+	stdslices.SortFunc(explicitEffectiveEnv, func(e1, e2 commonapi.EnvVar) int {
 		return strings.Compare(lifecycleEnvKey(e1.Name), lifecycleEnvKey(e2.Name))
 	})
 	return explicitEffectiveEnv, nil
@@ -774,7 +774,7 @@ type ExecutableStatus struct {
 	// Effective values of environment variables, after all substitutions are applied.
 	// +listType=map
 	// +listMapKey=name
-	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Executable, after all substitutions are applied.
 	// +listType=atomic
@@ -897,7 +897,7 @@ func (e *Executable) Validate(ctx context.Context) field.ErrorList {
 	// Validate that annotations don't exceed the Kubernetes size limit.
 	// This provides a clearer error message than the generic Kubernetes API server error,
 	// especially when long arguments or environment variables are stored in annotations.
-	errorList = append(errorList, ValidateAnnotationsSize(e.Annotations, field.NewPath("metadata", "annotations"))...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(e.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	return errorList
 }

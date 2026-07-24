@@ -20,8 +20,8 @@ import (
 	"golang.org/x/net/nettest"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcppaths"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -222,7 +222,7 @@ func GetEphemeralPortRange() (int, int, bool) {
 
 // Gets a free TCP or UDP port for a given address (defaults to localhost).
 // Even if this method is called twice in a row, it should not return the same port.
-func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (int32, error) {
+func GetFreePort(protocol commonapi.PortProtocol, address string, log logr.Logger) (int32, error) {
 	if address == "" {
 		address = Localhost
 	}
@@ -310,7 +310,7 @@ func GetFreePort(protocol apiv1.PortProtocol, address string, log logr.Logger) (
 	}
 }
 
-func CheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32, log logr.Logger) error {
+func CheckPortAvailable(protocol commonapi.PortProtocol, address string, port int32, log logr.Logger) error {
 	if address == "" {
 		address = Localhost
 	}
@@ -439,8 +439,8 @@ func GetIpVersionPreference() IpVersionPreference {
 	return ipVersionPreference
 }
 
-func doCheckPortAvailable(protocol apiv1.PortProtocol, address string, port int32) error {
-	if protocol == apiv1.UDP {
+func doCheckPortAvailable(protocol commonapi.PortProtocol, address string, port int32) error {
+	if protocol == commonapi.PortProtocolUDP {
 		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, port))
 		if err != nil {
 			return err
@@ -467,8 +467,8 @@ func doCheckPortAvailable(protocol apiv1.PortProtocol, address string, port int3
 	}
 }
 
-func doGetFreePort(protocol apiv1.PortProtocol, address string) (int32, error) {
-	if protocol == apiv1.UDP {
+func doGetFreePort(protocol commonapi.PortProtocol, address string) (int32, error) {
+	if protocol == commonapi.PortProtocolUDP {
 		udpaddr, err := net.ResolveUDPAddr("udp", AddressAndPort(address, 0))
 		if err != nil {
 			return 0, err

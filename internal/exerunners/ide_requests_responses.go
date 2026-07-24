@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 )
@@ -82,8 +82,8 @@ type ideRunSessionRequestV1 struct {
 	// Must have at least one element.
 	LaunchConfigurations json.RawMessage `json:"launch_configurations"`
 
-	Env  []apiv1.EnvVar `json:"env,omitempty"`
-	Args []string       `json:"args,omitempty"`
+	Env  []commonapi.EnvVar `json:"env,omitempty"`
+	Args []string           `json:"args,omitempty"`
 }
 
 type launchConfigurationBase struct {

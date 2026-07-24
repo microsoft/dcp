@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ func TestServiceRandomIPv4Address(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.TCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeIPv4Loopback,
 		},
 	}

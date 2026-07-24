@@ -1195,7 +1195,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.TCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -1241,7 +1241,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.TCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -1305,7 +1305,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 				"--conversations", fmt.Sprintf("%d", parrotConversations),
 				"--timeout", parrotTimeout.String(),
 			},
-			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
 				{
 					Name: network.Name,
 				},
@@ -1431,7 +1431,7 @@ func prepareTunnelServices(
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol:              apiv1.TCP,
+				Protocol:              commonapi.TCP,
 				AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 			},
 		}
@@ -1465,7 +1465,7 @@ func prepareTunnelServices(
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol:              apiv1.TCP,
+				Protocol:              commonapi.TCP,
 				AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 			},
 		}
@@ -1692,7 +1692,7 @@ ENTRYPOINT ["%[2]s"]
 
 	// Build the image
 	buildOptions := containers.BuildImageOptions{
-		ContainerBuildContext: &apiv1.ContainerBuildContext{
+		ContainerBuildContext: &commonapi.ContainerBuildContext{
 			Context:    tempDir,
 			Dockerfile: dockerfilePath,
 			Tags:       []string{imageName},

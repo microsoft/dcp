@@ -13,9 +13,9 @@ import (
 	"os/exec"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/pubsub"
 	"github.com/microsoft/dcp/internal/termpty"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
@@ -169,7 +169,7 @@ type InspectedContainer struct {
 	Args []string `json:"Args,omitempty"`
 
 	// Container volume/bind mounts
-	Mounts []apiv1.VolumeMount `json:"Mounts,omitempty"`
+	Mounts []commonapi.VolumeMount `json:"Mounts,omitempty"`
 
 	// Container ports
 	Ports InspectedContainerPortMapping `json:"Ports,omitempty"`
@@ -276,15 +276,59 @@ type RemoveContainers interface {
 
 // CreateContainer command types
 
+type CreateContainerPort struct {
+	HostPort      int32
+	ContainerPort int32
+	Protocol      string
+	HostIP        string
+}
+
+type CreateContainerVolumeMount struct {
+	Type     commonapi.VolumeMountType
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
 type CreateContainerOptions struct {
 	// Name of the container. If empty, the container orchestrator will provide a default name for the new container.
-	//
-	// Note: There is also ContainerSpec.ContainerName, but we need to have the ability
-	//       to use specific container name even if ContainerSpec.ContainerName is not set,
-	//       so this is why this property exist.
-	//       Container orchestrator implementations should use only Name property at creation time
-	//       and not rely on ContainerSpec.ContainerName.
 	Name string
+
+	// Image is the image used to create the container.
+	Image string
+
+	// Entrypoint is the container runtime entrypoint to run.
+	Entrypoint string
+
+	// Command is the command arguments passed to the container entrypoint.
+	Command []string
+
+	// Env contains environment variables to set in the container.
+	Env []commonapi.EnvVar
+
+	// EnvFiles contains files used to populate the container environment.
+	EnvFiles []string
+
+	// Ports describes ports to expose from the container.
+	Ports []CreateContainerPort
+
+	// VolumeMounts describes volume and bind mounts for the container.
+	VolumeMounts []CreateContainerVolumeMount
+
+	// Labels contains labels to apply to the container.
+	Labels []commonapi.Label
+
+	// RestartPolicy is the container runtime restart policy.
+	RestartPolicy commonapi.ContainerRestartPolicy
+
+	// PullPolicy controls how the runtime pulls the container image.
+	PullPolicy commonapi.ImagePullPolicy
+
+	// RunArgs are raw additional runtime arguments passed before the image name.
+	RunArgs []string
+
+	// AttachTerminal allocates a TTY and keeps standard input open for later attach operations.
+	AttachTerminal bool
 
 	// Networks to connect to _at creation time_, with optional per-network aliases.
 	// If not set, the container will be connected to the default network.
@@ -296,8 +340,6 @@ type CreateContainerOptions struct {
 
 	StreamCommandOptions
 	TimeoutOption
-
-	apiv1.ContainerSpec
 }
 
 type CreateContainerNetworkOptions struct {
@@ -368,7 +410,7 @@ type ExecContainerOptions struct {
 	WorkingDirectory string
 
 	// The environment variables to set
-	Env []apiv1.EnvVar
+	Env []commonapi.EnvVar
 
 	// Environment files to use to populate the environment for the command
 	EnvFiles []string
@@ -401,9 +443,8 @@ type AttachContainerOptions struct {
 }
 
 // AttachContainer attaches a pseudo-terminal to a running container's
-// stdin/stdout/stderr. The container must have been created with TTY support
-// (apiv1.ContainerSpec.Terminal set, which causes the orchestrator to pass -it
-// at creation time).
+// stdin/stdout/stderr. The container must have been created with AttachTerminal
+// set so the runtime allocates a TTY and keeps standard input open.
 //
 // Implementations typically spawn the runtime's "attach" subcommand
 // (docker attach / podman attach) on a freshly allocated PTY. The returned
@@ -436,7 +477,7 @@ type CreateFilesOptions struct {
 	Umask fs.FileMode
 
 	// The specific entries to create in the container (must have at least one item)
-	Entries []apiv1.FileSystemEntry
+	Entries []commonapi.FileSystemEntry
 }
 
 type CreateFiles interface {
@@ -451,13 +492,20 @@ type ApplyImageLayersOptions struct {
 	BaseImage InspectedImage
 
 	// The image layers to apply (tar files)
-	Layers []apiv1.ImageLayer
+	Layers []commonapi.ImageLayer
 
 	// Tag to apply to the derived image
 	Tag string
 
 	TimeoutOption
 }
+
+type LogStreamSource string
+
+const (
+	LogStreamSourceStdout LogStreamSource = "stdout"
+	LogStreamSourceStderr LogStreamSource = "stderr"
+)
 
 type ApplyImageLayers interface {
 	// Builds a derived image by applying additional tar layers on top of a base image.

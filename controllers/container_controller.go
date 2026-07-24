@@ -883,6 +883,40 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 	return inspected, nil
 }
 
+func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.CreateContainerOptions {
+	return containers.CreateContainerOptions{
+		Image:          spec.Image,
+		Entrypoint:     spec.Command,
+		Command:        spec.Args,
+		Env:            spec.Env,
+		EnvFiles:       spec.EnvFiles,
+		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
+		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
+		Labels:         spec.Labels,
+		RestartPolicy:  spec.RestartPolicy,
+		PullPolicy:     spec.PullPolicy,
+		RunArgs:        spec.RunArgs,
+		AttachTerminal: spec.Terminal != nil,
+	}
+}
+
+func v1PortsToCreateContainerPorts(ports []commonapi.ContainerPort) []containers.CreateContainerPort {
+	return commonPortsToCreateContainerPorts(ports)
+}
+
+func v1VolumeMountsToCreateContainerVolumeMounts(mounts []commonapi.VolumeMount) []containers.CreateContainerVolumeMount {
+	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
+	for i, mount := range mounts {
+		retval[i] = containers.CreateContainerVolumeMount{
+			Type:     mount.Type,
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		}
+	}
+	return retval
+}
+
 func (r *ContainerReconciler) removeExistingContainer(
 	ctx context.Context,
 	containerID containerID,
@@ -1010,7 +1044,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			log.V(1).Info("Building image", "Dockerfile", container.Spec.Build.Dockerfile, "Context", container.Spec.Build.Context)
 
 			rcd.runSpec.Build.Tags = append(rcd.runSpec.Build.Tags, container.SpecifiedImageNameOrDefault())
-			rcd.runSpec.Build.Labels = append(rcd.runSpec.Build.Labels, []apiv1.ContainerLabel{
+			rcd.runSpec.Build.Labels = append(rcd.runSpec.Build.Labels, []commonapi.Label{
 				{
 					Key:   dcpBuildLabel,
 					Value: version.ProductVersion,
@@ -1022,7 +1056,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 			}...)
 
 			buildOptions := containers.BuildImageOptions{
-				Pull:                  container.Spec.PullPolicy == apiv1.PullPolicyAlways,
+				Pull:                  container.Spec.PullPolicy == commonapi.PullPolicyAlways,
 				ContainerBuildContext: rcd.runSpec.Build,
 			}
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
@@ -1072,8 +1106,13 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 	changedMounts := map[string]bool{}
 
 	// Calculate differences between mounts
-	missingSpecMounts := slices.DiffFunc(rcd.runSpec.VolumeMounts, inspected.Mounts, func(a, b apiv1.VolumeMount) bool {
-		return a.Type == b.Type && a.Source == b.Source && a.Target == b.Target && a.ReadOnly == b.ReadOnly
+	missingSpecMounts := slices.Select(rcd.runSpec.VolumeMounts, func(specMount commonapi.VolumeMount) bool {
+		return !slices.Any(inspected.Mounts, func(inspectedMount commonapi.VolumeMount) bool {
+			return specMount.Type == inspectedMount.Type &&
+				specMount.Source == inspectedMount.Source &&
+				specMount.Target == inspectedMount.Target &&
+				specMount.ReadOnly == inspectedMount.ReadOnly
+		})
 	})
 
 	for _, mount := range missingSpecMounts {
@@ -1088,7 +1127,7 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 	}
 
 	for containerMount := range containerSpecMount {
-		if !slices.Any(rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) bool {
+		if !slices.Any(rcd.runSpec.VolumeMounts, func(mount commonapi.VolumeMount) bool {
 			return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source) == containerMount
 		}) {
 			changedMounts[containerMount] = true
@@ -1136,7 +1175,7 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 	}
 
 	for portBinding := range containerSpecPort {
-		if !slices.Any(rcd.runSpec.Ports, func(port apiv1.ContainerPort) bool {
+		if !slices.Any(rcd.runSpec.Ports, func(port commonapi.ContainerPort) bool {
 			protocol := "tcp"
 			if port.Protocol != "" {
 				protocol = strings.ToLower(string(port.Protocol))
@@ -1282,17 +1321,15 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 			if effectiveImage != rcd.runSpec.Image {
 				// The derived image only exists locally; prevent docker create from
 				// attempting to pull it from a registry.
-				runSpecForCreation.PullPolicy = apiv1.PullPolicyNever
+				runSpecForCreation.PullPolicy = commonapi.PullPolicyNever
 			}
 
 			// Create the container using the active orchestrator.
 			// Persistent container reuse happens only in handleNewContainer before startup is scheduled.
-			creationOptions := containers.CreateContainerOptions{
-				ContainerSpec:        runSpecForCreation,
-				Name:                 containerName,
-				Networks:             createNetworks,
-				StreamCommandOptions: streamOptions,
-			}
+			creationOptions := createContainerOptionsFromV1Spec(runSpecForCreation)
+			creationOptions.Name = containerName
+			creationOptions.Networks = createNetworks
+			creationOptions.StreamCommandOptions = streamOptions
 			inspected, createErr := createContainer(startupCtx, r.orchestrator, creationOptions)
 
 			// Close the startup log writers to ensure all output is flushed and resources are released
@@ -1393,7 +1430,7 @@ func (r *ContainerReconciler) computeContainerStartupInputs(ctx context.Context,
 // ensureContainerBindMountSources creates missing host paths for valid bind-mount sources.
 func ensureContainerBindMountSources(container *apiv1.Container, log logr.Logger) error {
 	for _, volume := range container.Spec.VolumeMounts {
-		if volume.Type != apiv1.BindMount {
+		if volume.Type != commonapi.BindMount {
 			continue
 		}
 
@@ -1432,7 +1469,7 @@ func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Contai
 		return "", hashErr
 	}
 
-	rcd.runSpec.Labels = append(rcd.runSpec.Labels, []apiv1.ContainerLabel{
+	rcd.runSpec.Labels = append(rcd.runSpec.Labels, []commonapi.Label{
 		{
 			Key:   dcpBuildLabel,
 			Value: version.ProductVersion,
@@ -1463,29 +1500,29 @@ func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Contai
 	if thisProcessErr != nil {
 		log.Error(thisProcessErr, "Could not get the current process information; container will not have creator process information")
 	} else {
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key:   CreatorProcessIdLabel,
 			Value: fmt.Sprintf("%d", thisProcess.Pid),
 		})
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key:   CreatorProcessStartTimeLabel,
 			Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 		})
 	}
 
 	if len(rcd.runSpec.Env) > 0 {
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key: envLabel,
-			Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
+			Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env commonapi.EnvVar) string {
 				return env.Name
 			}), "\n"),
 		})
 	}
 
 	if len(rcd.runSpec.Ports) > 0 {
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key: portsLabel,
-			Value: strings.Join(slices.Map[string](rcd.runSpec.Ports, func(port apiv1.ContainerPort) string {
+			Value: strings.Join(slices.Map[string](rcd.runSpec.Ports, func(port commonapi.ContainerPort) string {
 				protocol := "tcp"
 				if port.Protocol != "" {
 					protocol = strings.ToLower(string(port.Protocol))
@@ -1496,23 +1533,23 @@ func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Contai
 	}
 
 	if len(rcd.runSpec.VolumeMounts) > 0 {
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key: mountsLabel,
-			Value: strings.Join(slices.Map[string](rcd.runSpec.VolumeMounts, func(mount apiv1.VolumeMount) string {
+			Value: strings.Join(slices.Map[string](rcd.runSpec.VolumeMounts, func(mount commonapi.VolumeMount) string {
 				return fmt.Sprintf("type=%s,src=%s", mount.Type, mount.Source)
 			}), "\n"),
 		})
 	}
 
 	if len(rcd.runSpec.CreateFiles) > 0 {
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key:   createFilesLabel,
 			Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.CreateFiles)))),
 		})
 	}
 
 	if rcd.runSpec.PemCertificates != nil {
-		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+		rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 			Key:   pemCertificatesLabel,
 			Value: fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%v", rcd.runSpec.PemCertificates)))),
 		})
@@ -1532,7 +1569,7 @@ func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd
 	for i, layer := range rcd.runSpec.ImageLayers {
 		digests[i] = layer.Digest
 	}
-	rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
+	rcd.runSpec.Labels = append(rcd.runSpec.Labels, commonapi.Label{
 		Key:   imageLayersLabel,
 		Value: fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(digests, "\n")))),
 	})
@@ -1732,7 +1769,7 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 	}
 
 	fingerprints := []string{}
-	certFiles := []apiv1.FileSystemEntry{}
+	certFiles := []commonapi.FileSystemEntry{}
 	bundle := []string{}
 	for _, cert := range rcd.runSpec.PemCertificates.Certificates {
 		fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
@@ -1756,14 +1793,14 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 
 		certFiles = append(
 			certFiles,
-			apiv1.FileSystemEntry{
+			commonapi.FileSystemEntry{
 				Name:            fmt.Sprintf("%s.pem", cert.Thumbprint),
 				Contents:        cert.Contents,
 				ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
 			},
-			apiv1.FileSystemEntry{
+			commonapi.FileSystemEntry{
 				Name:            fmt.Sprintf("%s.%d", fingerprint, collisions),
-				Type:            apiv1.FileSystemEntryTypeSymlink,
+				Type:            commonapi.FileSystemEntryTypeSymlink,
 				Target:          fmt.Sprintf("./%s.pem", cert.Thumbprint),
 				ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
 			})
@@ -1774,14 +1811,14 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 	createFilesOptions := containers.CreateFilesOptions{
 		Container:   inspected.Id,
 		Destination: rcd.runSpec.PemCertificates.Destination,
-		Entries: []apiv1.FileSystemEntry{
+		Entries: []commonapi.FileSystemEntry{
 			{
 				Name:     "cert.pem",
 				Contents: strings.Join(bundle, "\n"),
 			},
 			{
 				Name:    "certs",
-				Type:    apiv1.FileSystemEntryTypeDir,
+				Type:    commonapi.FileSystemEntryTypeDir,
 				Entries: certFiles,
 			},
 		},
@@ -1803,8 +1840,8 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 		bundleCreateFilesOptions := containers.CreateFilesOptions{
 			Container:   inspected.Id,
 			Destination: bundleDir,
-			Entries: slices.Map[apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
-				return apiv1.FileSystemEntry{
+			Entries: slices.Map[commonapi.FileSystemEntry](files, func(file string) commonapi.FileSystemEntry {
+				return commonapi.FileSystemEntry{
 					Name:            path.Base(file),
 					Contents:        strings.Join(bundle, "\n"),
 					ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
@@ -2279,7 +2316,7 @@ func (r *ContainerReconciler) ensureContainerNetworkConnections(
 			Network:   commonapi.AsNamespacedName(connection.Name, container.Namespace),
 		}
 
-		found := slices.Any(*container.Spec.Networks, func(network apiv1.ContainerNetworkConnectionConfig) bool {
+		found := slices.Any(*container.Spec.Networks, func(network commonapi.ContainerNetworkConnectionConfig) bool {
 			return commonapi.AsNamespacedName(network.Name, container.GetNamespace()) == commonapi.AsNamespacedName(connection.Spec.ContainerNetworkName, container.GetNamespace())
 		})
 
@@ -2644,7 +2681,7 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 			return templateErr
 		}
 
-		acquiredRCD.runSpec.Env[i] = apiv1.EnvVar{Name: envVar.Name, Value: effectiveValue}
+		acquiredRCD.runSpec.Env[i] = commonapi.EnvVar{Name: envVar.Name, Value: effectiveValue}
 	}
 
 	return nil

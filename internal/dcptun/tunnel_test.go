@@ -27,9 +27,9 @@ import (
 	"google.golang.org/grpc/credentials"
 	stdproto "google.golang.org/protobuf/proto"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcptun/proto"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -170,7 +170,7 @@ func TestTunnelDataThroughput(t *testing.T) {
 	defer testCtxCancel()
 	log := testutil.NewLogForTesting(t.Name())
 
-	serverPort, portErr := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
+	serverPort, portErr := networking.GetFreePort(commonapi.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, portErr, "Failed to get free port for server")
 
 	serverProxyClient, proxyCleanup := createProxyPair(t, testCtx, log)

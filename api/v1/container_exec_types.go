@@ -33,7 +33,7 @@ type ContainerExecSpec struct {
 	// Environment settings
 	// +listType=map
 	// +listMapKey=name
-	Env []EnvVar `json:"env,omitempty"`
+	Env []commonapi.EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate the environment for the command
 	// +listType=set
@@ -74,7 +74,7 @@ type ContainerExecStatus struct {
 	// Effective values of environment variables, after all substitutions have been applied
 	// +listType=map
 	// +listMapKey=name
-	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
+	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of arguments to be passed to the command, after all substitutions have been applied
 	// +listType=atomic
@@ -194,7 +194,7 @@ func (ce *ContainerExec) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a non-empty value"))
 	}
 
-	errorList = append(errorList, ValidateAnnotationsSize(ce.Annotations, field.NewPath("metadata", "annotations"))...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(ce.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	return errorList
 }

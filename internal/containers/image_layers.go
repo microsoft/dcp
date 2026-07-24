@@ -18,7 +18,7 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
@@ -168,7 +168,7 @@ func ApplyImageLayersImpl(
 
 // verifyLayerSourceHash streams the source file through a SHA256 hasher
 // and verifies the hash matches, without buffering the full file in memory.
-func verifyLayerSourceHash(layer *apiv1.ImageLayer) error {
+func verifyLayerSourceHash(layer *commonapi.ImageLayer) error {
 	f, openErr := os.Open(layer.Source)
 	if openErr != nil {
 		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
@@ -194,7 +194,7 @@ func verifyLayerSourceHash(layer *apiv1.ImageLayer) error {
 
 // streamLayerFromSource streams a source-file layer directly into the tar writer
 // without buffering the full file contents in memory.
-func streamLayerFromSource(tw *usvc_io.TarWriter, layer *apiv1.ImageLayer, tarName string, modTime time.Time) error {
+func streamLayerFromSource(tw *usvc_io.TarWriter, layer *commonapi.ImageLayer, tarName string, modTime time.Time) error {
 	f, openErr := os.Open(layer.Source)
 	if openErr != nil {
 		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)

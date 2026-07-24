@@ -150,7 +150,7 @@ func TestContainerLifecycleKey(t *testing.T) {
 	t.Parallel()
 
 	spec := apiv1.ContainerSpec{
-		Env: []apiv1.EnvVar{
+		Env: []commonapi.EnvVar{
 			{
 				Name:  "A",
 				Value: "A",
@@ -169,7 +169,7 @@ func TestContainerLifecycleKey(t *testing.T) {
 
 	// Test with same env vars in different order
 	equivalentSpec := apiv1.ContainerSpec{
-		Env: []apiv1.EnvVar{
+		Env: []commonapi.EnvVar{
 			{
 				Name:  "Z",
 				Value: "Z",
@@ -187,7 +187,7 @@ func TestContainerLifecycleKey(t *testing.T) {
 	require.Equal(t, lifecycleKey, equivalentLifecycleKey, "expected lifecycle key to match")
 
 	differentSpec := apiv1.ContainerSpec{
-		Env: []apiv1.EnvVar{
+		Env: []commonapi.EnvVar{
 			{
 				Name:  "A",
 				Value: "A",
@@ -225,7 +225,7 @@ func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
 
 	spec := apiv1.ContainerSpec{
 		Image: imageName,
-		Build: &apiv1.ContainerBuildContext{
+		Build: &commonapi.ContainerBuildContext{
 			Context: tmpDir,
 		},
 	}
@@ -445,7 +445,7 @@ func TestContainerStartupFailure(t *testing.T) {
 	})
 }
 
-func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports []apiv1.ContainerPort) {
+func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports []commonapi.ContainerPort) {
 	for _, port := range ports {
 		protocol := port.Protocol
 		if protocol == "" {
@@ -491,7 +491,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{ContainerPort: 2345},
 				{ContainerPort: 3456},
 			},
@@ -517,7 +517,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{ContainerPort: 2345, HostPort: 8885},
 				{ContainerPort: 3456, HostPort: 8886},
 			},
@@ -543,7 +543,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{ContainerPort: 2345, HostIP: "127.0.2.3"},
 				{ContainerPort: 3456, HostIP: "127.0.2.4"},
 			},
@@ -569,7 +569,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{ContainerPort: 2345, HostIP: "127.0.3.4", Protocol: "tcp"},
 				{ContainerPort: 3456, HostIP: "127.0.4.4", Protocol: "udp"},
 			},
@@ -595,7 +595,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{ContainerPort: 2345, HostPort: 12202, HostIP: "127.0.3.4", Protocol: "tcp"},
 				{ContainerPort: 3456, HostPort: 12205, HostIP: "127.0.4.4", Protocol: "udp"},
 			},
@@ -859,7 +859,7 @@ func TestExistingPersistentContainerStopWithoutStart(t *testing.T) {
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -870,10 +870,9 @@ func TestExistingPersistentContainerStopWithoutStart(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -924,7 +923,7 @@ func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
 
 	createSpec := ctr.Spec
 	createSpec.Stop = false
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -935,10 +934,9 @@ func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -983,7 +981,7 @@ func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
 			Persistent:    true,
 			Start:         &shouldStart,
 			Stop:          true,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "MISSING_SERVICE_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
@@ -996,7 +994,7 @@ func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
 	createSpec.Start = nil
 	createSpec.Stop = false
 	createSpec.Env = nil
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -1007,10 +1005,9 @@ func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1062,7 +1059,7 @@ func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -1073,10 +1070,9 @@ func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1132,7 +1128,7 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -1143,10 +1139,9 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1479,7 +1474,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.TCP,
 				Address:  IPAddr,
 				Port:     11760,
 			},
@@ -1490,7 +1485,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.TCP,
 				Address:  IPAddr,
 				Port:     11761,
 			},
@@ -1527,11 +1522,11 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{HostPort: svcAHostPort, ContainerPort: svcAContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 				{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 			},
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_A_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-a"].ObjectMeta.Name),
@@ -1556,7 +1551,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAContainerPort)
 	require.Equal(t, fmt.Sprintf("%d", svcAContainerPort), inspected.Env["SVC_A_PORT"], "expected the container to have the env var %s", expectedEnvVar)
 
-	validatePorts(t, inspected, []apiv1.ContainerPort{
+	validatePorts(t, inspected, []commonapi.ContainerPort{
 		{ContainerPort: svcAContainerPort, HostPort: svcAHostPort, HostIP: IPAddr, Protocol: "tcp"},
 		{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 	})
@@ -1565,7 +1560,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
 		return len(currentCtr.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected port information for service A. The effective environemtn is %v", ctr.ObjectMeta.Name, effectiveEnv)
@@ -1594,7 +1589,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.TCP,
 			Address:  ServiceIPAddr,
 			Port:     26003,
 		},
@@ -1618,10 +1613,10 @@ func TestContainerServingAddressInjected(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
-			Ports: []apiv1.ContainerPort{
+			Ports: []commonapi.ContainerPort{
 				{ContainerPort: ContainerPort},
 			},
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SERVICE_ADDRESS",
 					Value: fmt.Sprintf(`{{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -1644,7 +1639,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	_, inspected := ensureContainerRunning(t, ctx, &ctr)
 	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
 	require.Equal(t, ServiceIPAddr, inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
-	validatePorts(t, inspected, []apiv1.ContainerPort{
+	validatePorts(t, inspected, []commonapi.ContainerPort{
 		{ContainerPort: ContainerPort, HostIP: networking.IPv4LocalhostDefaultAddress},
 	})
 
@@ -1652,7 +1647,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
 		return len(currentCtr.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected address information for service '%s'. The effective environemtn is %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, effectiveEnv)
@@ -1811,10 +1806,9 @@ func TestContainerExistingModeAdoptsContainerCreatedAfterNotFound(t *testing.T) 
 
 	seedSpec := ctr.Spec
 	seedSpec.Image = imageName
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: seedSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(seedSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1879,10 +1873,9 @@ func TestContainerExistingModeKeepsExistingContainerOnDelete(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1934,7 +1927,7 @@ func TestContainerExistingModeIgnoresLifecycleMismatch(t *testing.T) {
 	}
 
 	seedSpec := ctr.Spec
-	seedSpec.Labels = []apiv1.ContainerLabel{
+	seedSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev",
 			Value: "true",
@@ -1944,10 +1937,9 @@ func TestContainerExistingModeIgnoresLifecycleMismatch(t *testing.T) {
 			Value: "stale-lifecycle-key",
 		},
 	}
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: seedSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(seedSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1983,10 +1975,9 @@ func TestContainerCleanupModeRemovesExistingContainerOnDelete(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2049,10 +2040,9 @@ func TestContainerCleanupModeDeletedBeforeAdoptionRemovesExistingContainer(t *te
 		},
 	}
 
-	id, err := serverInfo.ContainerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := serverInfo.ContainerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = serverInfo.ContainerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2156,10 +2146,9 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2213,7 +2202,7 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 	}
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -2224,10 +2213,9 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2281,7 +2269,7 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 	}
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []apiv1.ContainerLabel{
+	createSpec.Labels = []commonapi.Label{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -2292,10 +2280,9 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2342,7 +2329,7 @@ func TestContainerWithBuildContextInstanceStarts(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Build: &apiv1.ContainerBuildContext{
+			Build: &commonapi.ContainerBuildContext{
 				Context:    ".",
 				Dockerfile: "./Dockerfile",
 			},
@@ -2373,7 +2360,7 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Build: &apiv1.ContainerBuildContext{
+			Build: &commonapi.ContainerBuildContext{
 				Context:    ".",
 				Dockerfile: "./Dockefile",
 			},
@@ -2383,10 +2370,9 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2440,10 +2426,9 @@ func TestPersistentContainerStartTime(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -3745,7 +3730,7 @@ func TestContainerNetworkConnectedFailedStartup(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
 				{
 					Name: networkName,
 				},
@@ -3806,10 +3791,10 @@ func TestContainerCreateFilesDefaultValues(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []apiv1.CreateFileSystem{
+			CreateFiles: []commonapi.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []apiv1.FileSystemEntry{
+					Entries: []commonapi.FileSystemEntry{
 						{
 							Name:     "hello.txt",
 							Contents: "hello!",
@@ -3863,10 +3848,10 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []apiv1.CreateFileSystem{
+			CreateFiles: []commonapi.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []apiv1.FileSystemEntry{
+					Entries: []commonapi.FileSystemEntry{
 						{
 							Name: "touch.txt",
 						},
@@ -3877,11 +3862,11 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 					Umask:        &umask,
 					DefaultOwner: 1000,
 					DefaultGroup: 1000,
-					Entries: []apiv1.FileSystemEntry{
+					Entries: []commonapi.FileSystemEntry{
 						{
-							Type: apiv1.FileSystemEntryTypeDir,
+							Type: commonapi.FileSystemEntryTypeDir,
 							Name: "some-dir",
-							Entries: []apiv1.FileSystemEntry{
+							Entries: []commonapi.FileSystemEntry{
 								{
 									Name:  "hello.txt",
 									Owner: &itemOwner,
@@ -3975,12 +3960,12 @@ func TestContainerCreateFilesCertificate(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []apiv1.CreateFileSystem{
+			CreateFiles: []commonapi.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []apiv1.FileSystemEntry{
+					Entries: []commonapi.FileSystemEntry{
 						{
-							Type:     apiv1.FileSystemEntryTypeOpenSSL,
+							Type:     commonapi.FileSystemEntryTypeOpenSSL,
 							Name:     "hello.pem",
 							Contents: buffer.String(),
 						},
@@ -4046,10 +4031,10 @@ func TestContainerCreateFilesContinueOnError(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []apiv1.CreateFileSystem{
+			CreateFiles: []commonapi.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []apiv1.FileSystemEntry{
+					Entries: []commonapi.FileSystemEntry{
 						{
 							Name:     "hello.txt",
 							Contents: "hello!",
@@ -4057,7 +4042,7 @@ func TestContainerCreateFilesContinueOnError(t *testing.T) {
 						{
 							Name:            "badcert.pem",
 							Contents:        "this is not a valid certificate",
-							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							Type:            commonapi.FileSystemEntryTypeOpenSSL,
 							ContinueOnError: true,
 						},
 					},
@@ -4107,20 +4092,20 @@ func TestContainerCreateFilesAllContinueOnErrorItemsFail(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []apiv1.CreateFileSystem{
+			CreateFiles: []commonapi.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []apiv1.FileSystemEntry{
+					Entries: []commonapi.FileSystemEntry{
 						{
 							Name:            "badcert1.pem",
 							Contents:        "this is not a valid certificate",
-							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							Type:            commonapi.FileSystemEntryTypeOpenSSL,
 							ContinueOnError: true,
 						},
 						{
 							Name:            "badcert2.pem",
 							Contents:        "this is also not a valid certificate",
-							Type:            apiv1.FileSystemEntryTypeOpenSSL,
+							Type:            commonapi.FileSystemEntryTypeOpenSSL,
 							ContinueOnError: true,
 						},
 					},
@@ -4214,7 +4199,7 @@ func TestContainerFastExitingWithNetwork(t *testing.T) {
 		Spec: apiv1.ContainerSpec{
 			Image:         imageName,
 			ContainerName: testName,
-			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
+			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
 				{
 					Name: networkName,
 				},
@@ -4301,7 +4286,7 @@ func TestContainerHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.TCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

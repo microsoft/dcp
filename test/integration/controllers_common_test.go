@@ -20,15 +20,16 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgorest "k8s.io/client-go/rest"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/stretchr/testify/require"
-
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -41,6 +42,7 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -57,6 +59,49 @@ var (
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
+
+func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.CreateContainerOptions {
+	return containers.CreateContainerOptions{
+		Image:          spec.Image,
+		Entrypoint:     spec.Command,
+		Command:        spec.Args,
+		Env:            spec.Env,
+		EnvFiles:       spec.EnvFiles,
+		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
+		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
+		Labels:         spec.Labels,
+		RestartPolicy:  spec.RestartPolicy,
+		PullPolicy:     spec.PullPolicy,
+		RunArgs:        spec.RunArgs,
+		AttachTerminal: spec.Terminal != nil,
+	}
+}
+
+func v1PortsToCreateContainerPorts(ports []commonapi.ContainerPort) []containers.CreateContainerPort {
+	retval := make([]containers.CreateContainerPort, len(ports))
+	for i, port := range ports {
+		retval[i] = containers.CreateContainerPort{
+			HostPort:      port.HostPort,
+			ContainerPort: port.ContainerPort,
+			Protocol:      string(port.Protocol),
+			HostIP:        port.HostIP,
+		}
+	}
+	return retval
+}
+
+func v1VolumeMountsToCreateContainerVolumeMounts(mounts []commonapi.VolumeMount) []containers.CreateContainerVolumeMount {
+	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
+	for i, mount := range mounts {
+		retval[i] = containers.CreateContainerVolumeMount{
+			Type:     mount.Type,
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		}
+	}
+	return retval
+}
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,6 +163,15 @@ func waitObjectAssumesStateEx[T commonapi.ObjectStruct, PT commonapi.PObjectStru
 		t.Fatal(err)
 	}
 	return updatedObject
+}
+
+func requireReadyCondition(t *testing.T, conditions []metav1.Condition, status metav1.ConditionStatus, reason string) {
+	t.Helper()
+
+	readyCondition := apimeta.FindStatusCondition(conditions, "Ready")
+	require.NotNil(t, readyCondition)
+	require.Equal(t, status, readyCondition.Status)
+	require.Equal(t, reason, readyCondition.Reason)
 }
 
 func waitServiceReady(t *testing.T, ctx context.Context, svcName types.NamespacedName) *apiv1.Service {

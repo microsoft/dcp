@@ -29,6 +29,7 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/perftrace"
+	"github.com/microsoft/dcp/internal/resourcecleanup"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/kubeconfig"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -59,7 +60,7 @@ const (
 )
 
 type cleanupResourceDescriptor struct {
-	apiv1.CleanupResource
+	resourcecleanup.CleanupResource
 	State        cleanupResourceState
 	CleanupError error
 	WaitingFor   []schema.GroupVersionResource
@@ -75,7 +76,7 @@ type resourceCleanupResult struct {
 }
 
 func CleanupAllResources(log logr.Logger) (cleanupResult error) {
-	if len(apiv1.CleanupResources) <= 0 {
+	if len(resourcecleanup.ShutdownResources) <= 0 {
 		log.Info("No resources to delete")
 		cleanupResult = nil
 		return
@@ -156,8 +157,8 @@ func doCleanup(log logr.Logger) error {
 		return err
 	}
 
-	shutdownResources := make([]*cleanupResourceDescriptor, len(apiv1.CleanupResources))
-	for i, cr := range apiv1.CleanupResources {
+	shutdownResources := make([]*cleanupResourceDescriptor, len(resourcecleanup.ShutdownResources))
+	for i, cr := range resourcecleanup.ShutdownResources {
 		shutdownResources[i] = &cleanupResourceDescriptor{
 			CleanupResource: *cr,
 			State:           initial,

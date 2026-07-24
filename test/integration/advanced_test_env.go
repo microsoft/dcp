@@ -113,6 +113,18 @@ func StartAdvancedTestEnvironmentWithFlags(
 		},
 	)
 
+	if inclCtrl&NamespaceController != 0 {
+		namespaceR := controllers.NewNamespaceReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("NamespaceReconciler"),
+		)
+		if err = namespaceR.SetupWithManager(mgr, instanceTag+"-NamespaceReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize Namespace reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ExecutableController != 0 {
 		execR := controllers.NewExecutableReconcilerWithConfig(
 			ctx,
@@ -184,6 +196,32 @@ func StartAdvancedTestEnvironmentWithFlags(
 		)
 		if err = containerR.SetupWithManager(mgr, instanceTag+"-ContainerReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize Container reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerImageController != 0 {
+		physicalContainerImageR := controllers.NewPhysicalContainerImageReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerImageReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalContainerImageR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerImageReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerImage reconciler: %w", err)
+		}
+	}
+
+	if inclCtrl&PhysicalContainerController != 0 {
+		physicalContainerR := controllers.NewPhysicalContainerReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalContainerR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainer reconciler: %w", err)
 		}
 	}
 

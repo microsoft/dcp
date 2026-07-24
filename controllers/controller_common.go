@@ -16,14 +16,18 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	apivalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_slices "github.com/microsoft/dcp/pkg/slices"
 )
@@ -116,6 +120,34 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	obj.SetFinalizers(finalizers)
 	log.V(1).Info("Removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
+}
+
+func ensureNamespace(
+	ctx context.Context,
+	client ctrl_client.Client,
+	namespaceName string,
+	applyPending func(string) objectChange,
+	applyFailed func(string) objectChange,
+	log logr.Logger,
+) (bool, objectChange) {
+	namespace := apiv2.Namespace{}
+	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
+	if apierrors.IsNotFound(getErr) {
+		return false, applyPending(fmt.Sprintf("Namespace %q does not exist.", namespaceName))
+	}
+	if getErr != nil {
+		log.Error(getErr, "Failed to get namespace", "Namespace", namespaceName)
+		return false, applyFailed(fmt.Sprintf("Failed to get namespace: %v", getErr))
+	}
+
+	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
+		return false, applyPending(fmt.Sprintf("Namespace %q is terminating.", namespaceName))
+	}
+	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
+		return false, applyPending(fmt.Sprintf("Namespace %q is not active.", namespaceName))
+	}
+
+	return true, noChange
 }
 
 // Returns a name made probabilistically unique by appending a random postfix,
@@ -221,36 +253,79 @@ func getStateInitializer[
 // We consider a timestamp to be "different" from another one if it is off by more than 2 microseconds.
 const timestampEpsilon = 2 * time.Microsecond
 
-// Sets "target" timestamp to "source" timestamp if "target" is before "source"
-// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
-// Returns true if the target timestamp was updated.
-func setTimestampIfBeforeOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+// Sets "target" timestamp to "source" timestamp if "target" is before "source" by more than
+// 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+func setTimestampIfBeforeOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if source.IsZero() {
-		return false
+		return noChange
 	}
 
 	if target.IsZero() || target.Add(timestampEpsilon).Before(source.Time) {
 		*target = source
-		return true
-	} else {
-		return false
+		return statusChanged
 	}
+	return noChange
 }
 
-// Sets "target" timestamp to "source" timestamp if "target" is after "source"
-// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
-// Returns true if the target timestamp was updated.
-func setTimestampIfAfterOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+// Sets "target" timestamp to "source" timestamp if "target" is after "source" by more than
+// 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+func setTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if source.IsZero() {
-		return false
+		return noChange
 	}
 
 	if target.IsZero() || source.Add(timestampEpsilon).Before(target.Time) {
 		*target = source
-		return true
-	} else {
-		return false
+		return statusChanged
 	}
+	return noChange
+}
+
+func trySetTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) bool {
+	return setTimestampIfAfterOrUnknown(target, source) != noChange
+}
+
+// Sets "target" timestamp to "source" timestamp if it is different by more than 2 microseconds.
+func setTimestamp(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
+	if target.Add(timestampEpsilon).Before(source.Time) || source.Add(timestampEpsilon).Before(target.Time) {
+		*target = source
+		return statusChanged
+	}
+	return noChange
+}
+
+func setValue[T comparable](target *T, value T) objectChange {
+	if *target == value {
+		return noChange
+	}
+	*target = value
+	return statusChanged
+}
+
+func setReadyCondition(
+	conditions *[]metav1.Condition,
+	generation int64,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) objectChange {
+	condition := metav1.Condition{
+		Type:               apiv2.ConditionReady,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: generation,
+	}
+	if existingCondition := apimeta.FindStatusCondition(*conditions, condition.Type); existingCondition != nil &&
+		existingCondition.Status == condition.Status &&
+		existingCondition.Reason == condition.Reason &&
+		existingCondition.Message == condition.Message &&
+		existingCondition.ObservedGeneration == condition.ObservedGeneration {
+		return noChange
+	}
+
+	apimeta.SetStatusCondition(conditions, condition)
+	return statusChanged
 }
 
 // Computes a valid Kubernetes label value from an arbitrary string.

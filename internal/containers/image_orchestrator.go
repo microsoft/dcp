@@ -8,7 +8,7 @@ package containers
 import (
 	"context"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // InspectImages command types
@@ -48,7 +48,7 @@ type BuildImageOptions struct {
 	IidFile string
 	Pull    bool
 
-	*apiv1.ContainerBuildContext
+	*commonapi.ContainerBuildContext
 
 	StreamCommandOptions
 	TimeoutOption

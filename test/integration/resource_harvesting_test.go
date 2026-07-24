@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"testing"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -137,20 +137,18 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithMixedContainers},
 			},
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "false",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
+			Labels: []commonapi.Label{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "false",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				},
 			},
 		},
@@ -183,20 +181,18 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithAbandonedPersistentContainer},
 			},
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "true",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
+			Labels: []commonapi.Label{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "true",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				},
 			},
 		},
@@ -220,20 +216,18 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithDcpContainers},
 			},
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "false",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
+			Labels: []commonapi.Label{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "false",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				},
 			},
 		},
@@ -245,20 +239,18 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithDcpContainers},
 			},
-			ContainerSpec: apiv1.ContainerSpec{
-				Labels: []apiv1.ContainerLabel{
-					{
-						Key:   controllers.PersistentLabel,
-						Value: "false",
-					},
-					{
-						Key:   controllers.CreatorProcessIdLabel,
-						Value: fmt.Sprintf("%d", procNonExistent.Pid),
-					},
-					{
-						Key:   controllers.CreatorProcessStartTimeLabel,
-						Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-					},
+			Labels: []commonapi.Label{
+				{
+					Key:   controllers.PersistentLabel,
+					Value: "false",
+				},
+				{
+					Key:   controllers.CreatorProcessIdLabel,
+					Value: fmt.Sprintf("%d", procNonExistent.Pid),
+				},
+				{
+					Key:   controllers.CreatorProcessStartTimeLabel,
+					Value: procNonExistent.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
 				},
 			},
 		},

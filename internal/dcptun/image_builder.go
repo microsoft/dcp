@@ -18,11 +18,11 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/version"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -153,11 +153,11 @@ func EnsureClientProxyImage(
 
 	// Build the image
 	buildOptions := containers.BuildImageOptions{
-		ContainerBuildContext: &apiv1.ContainerBuildContext{
+		ContainerBuildContext: &commonapi.ContainerBuildContext{
 			Context:    buildContext,
 			Dockerfile: filepath.Join(buildContext, dockerfileName),
 			Tags:       []string{imageName},
-			Labels: []apiv1.ContainerLabel{
+			Labels: []commonapi.Label{
 				{
 					Key:   baseImageDigestLabel,
 					Value: string(baseImageDigests[opts.BaseImage]),

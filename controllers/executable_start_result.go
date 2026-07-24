@@ -216,7 +216,7 @@ func (res *ExecutableStartResult) UpdateFrom(other *ExecutableStartResult) bool 
 		updated = true
 	}
 
-	updated = setTimestampIfAfterOrUnknown(other.CompletionTimestamp, &res.CompletionTimestamp) || updated
+	updated = trySetTimestampIfAfterOrUnknown(&res.CompletionTimestamp, other.CompletionTimestamp) || updated
 
 	if !other.ProcessIdentityTime.IsZero() && !res.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
 		res.ProcessIdentityTime = other.ProcessIdentityTime

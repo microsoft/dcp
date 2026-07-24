@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 func TestContainerGetLeaseKey(t *testing.T) {
@@ -205,6 +207,68 @@ func TestContainerValidateTerminalPersistentCombination(t *testing.T) {
 	}
 }
 
+func TestContainerValidatePortRanges(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name          string
+		ports         []commonapi.ContainerPort
+		expectedError string
+	}{
+		{
+			name: "valid port range",
+			ports: []commonapi.ContainerPort{
+				{
+					ContainerPort:    8080,
+					ContainerPortEnd: 8082,
+					HostPort:         18080,
+				},
+			},
+		},
+		{
+			name: "container port range end before start",
+			ports: []commonapi.ContainerPort{
+				{
+					ContainerPort:    8080,
+					ContainerPortEnd: 8079,
+				},
+			},
+			expectedError: "spec.ports[0].containerPortEnd",
+		},
+		{
+			name: "host port range exceeds max",
+			ports: []commonapi.ContainerPort{
+				{
+					ContainerPort:    8080,
+					ContainerPortEnd: 8082,
+					HostPort:         65534,
+				},
+			},
+			expectedError: "spec.ports[0].hostPort",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			container := &Container{
+				Spec: ContainerSpec{
+					Image: "api:dev",
+					Ports: testCase.ports,
+				},
+			}
+			errorList := container.Validate(nil)
+			if testCase.expectedError == "" {
+				require.Empty(t, errorList)
+			} else {
+				require.NotEmpty(t, errorList)
+				require.Contains(t, errorList.ToAggregate().Error(), testCase.expectedError)
+			}
+		})
+	}
+}
+
 func TestContainerValidateImageOnlyRequiredForCreationModes(t *testing.T) {
 	t.Parallel()
 
@@ -253,7 +317,7 @@ func TestContainerValidateImageOnlyRequiredForCreationModes(t *testing.T) {
 			spec: ContainerSpec{
 				ContainerName: "api",
 				Mode:          ContainerModeCleanup,
-				Build:         &ContainerBuildContext{},
+				Build:         &commonapi.ContainerBuildContext{},
 			},
 			expectError: true,
 		},
@@ -280,13 +344,13 @@ func TestImageLayerValidate(t *testing.T) {
 
 	testCases := []struct {
 		name        string
-		layer       ImageLayer
+		layer       commonapi.ImageLayer
 		expectError bool
 		errorFields []string
 	}{
 		{
 			name: "valid layer with source and sha256",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				Source: "/path/to/layer.tar",
 				SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -295,7 +359,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "valid layer with rawContents",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest:      "abc123",
 				RawContents: "dGVzdA==",
 			},
@@ -303,7 +367,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "missing digest",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Source: "/path/to/layer.tar",
 				SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			},
@@ -312,14 +376,14 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "missing source and rawContents",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 			},
 			expectError: true,
 		},
 		{
 			name: "both source and rawContents set",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest:      "abc123",
 				Source:      "/path/to/layer.tar",
 				SHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -330,7 +394,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "source without sha256",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				Source: "/path/to/layer.tar",
 			},
@@ -339,7 +403,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "invalid sha256 - too short",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				Source: "/path/to/layer.tar",
 				SHA256: "deadbeef",
@@ -349,7 +413,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "invalid sha256 - non-hex characters",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				Source: "/path/to/layer.tar",
 				SHA256: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
@@ -359,7 +423,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "valid sha256 with sha256: prefix",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				Source: "/path/to/layer.tar",
 				SHA256: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -368,7 +432,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "valid sha256 uppercase",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				Source: "/path/to/layer.tar",
 				SHA256: "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
@@ -377,7 +441,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "invalid rawContents - not valid base64",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest:      "abc123",
 				RawContents: "not-valid-base64!!!",
 			},
@@ -386,7 +450,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "sha256 with rawContents is forbidden",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest:      "abc123",
 				RawContents: "dGVzdA==",
 				SHA256:      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -396,7 +460,7 @@ func TestImageLayerValidate(t *testing.T) {
 		},
 		{
 			name: "sha256 without source is forbidden",
-			layer: ImageLayer{
+			layer: commonapi.ImageLayer{
 				Digest: "abc123",
 				SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			},
@@ -433,19 +497,19 @@ func TestImageLayerValidate(t *testing.T) {
 func TestImageLayerEqual(t *testing.T) {
 	t.Parallel()
 
-	layer1 := ImageLayer{
+	layer1 := commonapi.ImageLayer{
 		Digest: "abc123",
 		Source: "/path/to/layer.tar",
 		SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}
 
-	layer2 := ImageLayer{
+	layer2 := commonapi.ImageLayer{
 		Digest: "abc123",
 		Source: "/path/to/layer.tar",
 		SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}
 
-	layer3 := ImageLayer{
+	layer3 := commonapi.ImageLayer{
 		Digest: "different",
 		Source: "/path/to/layer.tar",
 		SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -456,7 +520,7 @@ func TestImageLayerEqual(t *testing.T) {
 	assert.True(t, layer1.Equal(&layer1), "layer should be equal to itself")
 	assert.False(t, layer1.Equal(nil), "layer should not be equal to nil")
 
-	var nilLayer *ImageLayer
+	var nilLayer *commonapi.ImageLayer
 	assert.True(t, nilLayer.Equal(nil), "two nil layers should be equal")
 	assert.False(t, nilLayer.Equal(&layer1), "nil layer should not be equal to non-nil layer")
 }
@@ -470,7 +534,7 @@ func TestGetLifecycleKeyIncludesImageLayers(t *testing.T) {
 
 	specWithLayers := ContainerSpec{
 		Image: "test:latest",
-		ImageLayers: []ImageLayer{
+		ImageLayers: []commonapi.ImageLayer{
 			{
 				Digest:      "layer1",
 				RawContents: "dGVzdA==",
@@ -480,7 +544,7 @@ func TestGetLifecycleKeyIncludesImageLayers(t *testing.T) {
 
 	specWithDifferentLayers := ContainerSpec{
 		Image: "test:latest",
-		ImageLayers: []ImageLayer{
+		ImageLayers: []commonapi.ImageLayer{
 			{
 				Digest:      "layer2",
 				RawContents: "dGVzdA==",
@@ -504,28 +568,28 @@ func TestGetLifecycleKeyIncludesImageLayers(t *testing.T) {
 func TestContainerBuildContextEqual(t *testing.T) {
 	t.Parallel()
 
-	build1 := ContainerBuildContext{
+	build1 := commonapi.ContainerBuildContext{
 		Context:    "/path/to/context",
 		Dockerfile: "Dockerfile",
 		Stage:      "runner",
 		Platform:   "linux/amd64",
 	}
 
-	build2 := ContainerBuildContext{
+	build2 := commonapi.ContainerBuildContext{
 		Context:    "/path/to/context",
 		Dockerfile: "Dockerfile",
 		Stage:      "runner",
 		Platform:   "linux/amd64",
 	}
 
-	buildDifferentPlatform := ContainerBuildContext{
+	buildDifferentPlatform := commonapi.ContainerBuildContext{
 		Context:    "/path/to/context",
 		Dockerfile: "Dockerfile",
 		Stage:      "runner",
 		Platform:   "linux/arm64",
 	}
 
-	buildNoPlatform := ContainerBuildContext{
+	buildNoPlatform := commonapi.ContainerBuildContext{
 		Context:    "/path/to/context",
 		Dockerfile: "Dockerfile",
 		Stage:      "runner",
@@ -537,7 +601,7 @@ func TestContainerBuildContextEqual(t *testing.T) {
 	assert.True(t, build1.Equal(&build1), "build context should be equal to itself")
 	assert.False(t, build1.Equal(nil), "build context should not be equal to nil")
 
-	var nilBuild *ContainerBuildContext
+	var nilBuild *commonapi.ContainerBuildContext
 	assert.True(t, nilBuild.Equal(nil), "two nil build contexts should be equal")
 	assert.False(t, nilBuild.Equal(&build1), "nil build context should not be equal to non-nil")
 }
@@ -546,14 +610,14 @@ func TestGetLifecycleKeyIncludesBuildPlatform(t *testing.T) {
 	t.Parallel()
 
 	specNoPlatform := ContainerSpec{
-		Build: &ContainerBuildContext{
+		Build: &commonapi.ContainerBuildContext{
 			Context:    "/nonexistent/context",
 			Dockerfile: "Dockerfile",
 		},
 	}
 
 	specAmd64 := ContainerSpec{
-		Build: &ContainerBuildContext{
+		Build: &commonapi.ContainerBuildContext{
 			Context:    "/nonexistent/context",
 			Dockerfile: "Dockerfile",
 			Platform:   "linux/amd64",
@@ -561,7 +625,7 @@ func TestGetLifecycleKeyIncludesBuildPlatform(t *testing.T) {
 	}
 
 	specArm64 := ContainerSpec{
-		Build: &ContainerBuildContext{
+		Build: &commonapi.ContainerBuildContext{
 			Context:    "/nonexistent/context",
 			Dockerfile: "Dockerfile",
 			Platform:   "linux/arm64",
@@ -587,7 +651,7 @@ func TestGetLifecycleKeyDisambiguatesStageAndPlatform(t *testing.T) {
 	// Without length framing, (Stage="ab", Platform="c") and
 	// (Stage="a", Platform="bc") would hash identically.
 	specA := ContainerSpec{
-		Build: &ContainerBuildContext{
+		Build: &commonapi.ContainerBuildContext{
 			Context:    "/nonexistent/context",
 			Dockerfile: "Dockerfile",
 			Stage:      "ab",
@@ -596,7 +660,7 @@ func TestGetLifecycleKeyDisambiguatesStageAndPlatform(t *testing.T) {
 	}
 
 	specB := ContainerSpec{
-		Build: &ContainerBuildContext{
+		Build: &commonapi.ContainerBuildContext{
 			Context:    "/nonexistent/context",
 			Dockerfile: "Dockerfile",
 			Stage:      "a",
