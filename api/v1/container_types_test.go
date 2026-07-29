@@ -68,6 +68,26 @@ func TestContainerSpecGetLifecycleKeyIncludesMonitorFields(t *testing.T) {
 	require.NotEqual(t, keyWithMonitor, keyWithDifferentMonitorTimestamp)
 }
 
+func TestContainerSpecGetLifecycleKeyPreservesLegacyPortKey(t *testing.T) {
+	t.Parallel()
+
+	spec := &ContainerSpec{
+		Image: "api:dev",
+		Ports: []commonapi.ContainerPort{
+			{
+				HostPort:      18080,
+				ContainerPort: 8080,
+				Protocol:      commonapi.PortProtocolTCP,
+				HostIP:        "127.0.0.1",
+			},
+		},
+	}
+
+	key, _, keyErr := spec.GetLifecycleKey()
+	require.NoError(t, keyErr)
+	require.Equal(t, "661ad26433aeea65f6a7398717a9843c", key)
+}
+
 func TestContainerValidateMonitorFields(t *testing.T) {
 	t.Parallel()
 
@@ -245,6 +265,16 @@ func TestContainerValidatePortRanges(t *testing.T) {
 				},
 			},
 			expectedError: "spec.ports[0].hostPort",
+		},
+		{
+			name: "unsupported protocol",
+			ports: []commonapi.ContainerPort{
+				{
+					ContainerPort: 8080,
+					Protocol:      commonapi.PortProtocol("SCTP"),
+				},
+			},
+			expectedError: "spec.ports[0].protocol",
 		},
 	}
 

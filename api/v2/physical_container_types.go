@@ -7,14 +7,16 @@ package v2
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"reflect"
-	"strings"
+	"regexp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	apiserver_resource "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource"
@@ -22,6 +24,12 @@ import (
 	apiserver_resourcestrategy "github.com/tilt-dev/tilt-apiserver/pkg/server/builder/resource/resourcestrategy"
 
 	"github.com/microsoft/dcp/pkg/commonapi"
+)
+
+var (
+	// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
+	validContainerName       = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
+	validContainerNameRegexp = regexp.MustCompile(validContainerName)
 )
 
 // PhysicalContainerPhase describes the lifecycle phase of a PhysicalContainer.
@@ -100,8 +108,9 @@ type PhysicalContainerSpec struct {
 	// Stop requests that the tracked runtime container be stopped.
 	Stop bool `json:"stop,omitempty"`
 
-	// RemoveOnDeletion controls whether the runtime container is removed when this resource is deleted.
-	RemoveOnDeletion bool `json:"removeOnDeletion,omitempty"`
+	// PreserveOnDeletion keeps the runtime container in place when this resource is deleted.
+	// By default the runtime container is removed.
+	PreserveOnDeletion bool `json:"preserveOnDeletion,omitempty"`
 
 	// ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.
 	ImageRef string `json:"imageRef,omitempty"`
@@ -277,8 +286,13 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 
 	if pc.Spec.ImageRef == "" {
 		errorList = append(errorList, field.Required(specPath.Child("imageRef"), "imageRef must be set when containerID is omitted"))
-	} else if strings.ContainsAny(pc.Spec.ImageRef, "\r\n\t ") {
-		errorList = append(errorList, field.Invalid(specPath.Child("imageRef"), pc.Spec.ImageRef, "imageRef must not contain whitespace or control characters"))
+	} else {
+		for _, validationMessage := range validation.IsDNS1123Subdomain(pc.Spec.ImageRef) {
+			errorList = append(errorList, field.Invalid(specPath.Child("imageRef"), pc.Spec.ImageRef, validationMessage))
+		}
+	}
+	if pc.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(pc.Spec.ContainerName) {
+		errorList = append(errorList, field.Invalid(specPath.Child("containerName"), pc.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
 
 	networksPath := specPath.Child("networks")
@@ -288,6 +302,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 		}
 	}
 	errorList = append(errorList, commonapi.ValidateContainerPorts(pc.Spec.Ports, specPath.Child("ports"))...)
+	errorList = append(errorList, validateLabels(pc.Spec.Labels, specPath.Child("labels"))...)
 
 	createFilesPath := specPath.Child("createFiles")
 	for i, createFile := range pc.Spec.CreateFiles {

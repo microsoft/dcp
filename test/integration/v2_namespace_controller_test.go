@@ -63,9 +63,8 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:         image.Name,
-			ContainerName:    "v2-ns-cleanup-container",
-			RemoveOnDeletion: true,
+			ImageRef:      image.Name,
+			ContainerName: "v2-ns-cleanup-container",
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))

@@ -41,9 +41,9 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID:      "existing-container-id",
-					Stop:             true,
-					RemoveOnDeletion: true,
+					ContainerID:        "existing-container-id",
+					Stop:               true,
+					PreserveOnDeletion: true,
 				},
 			},
 		},
@@ -84,6 +84,19 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-container",
 					Namespace: "test-namespace",
+				},
+			},
+			expectedError: "spec.imageRef",
+		},
+		{
+			name: "invalid imageRef",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ImageRef: "/",
 				},
 			},
 			expectedError: "spec.imageRef",
@@ -154,6 +167,71 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 			},
 			expectedError: "spec.ports[0].hostPort",
+		},
+		{
+			name: "unsupported port protocol",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ImageRef: "test-image",
+					Ports: []commonapi.ContainerPort{
+						{
+							ContainerPort: 8080,
+							Protocol:      commonapi.PortProtocol("SCTP"),
+						},
+					},
+				},
+			},
+			expectedError: "spec.ports[0].protocol",
+		},
+		{
+			name: "invalid container name",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ImageRef:      "test-image",
+					ContainerName: "-invalid-container",
+				},
+			},
+			expectedError: "spec.containerName",
+		},
+		{
+			name: "missing label key",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ImageRef: "test-image",
+					Labels: []commonapi.Label{
+						{Value: "test-value"},
+					},
+				},
+			},
+			expectedError: "spec.labels[0].key",
+		},
+		{
+			name: "missing label value",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ImageRef: "test-image",
+					Labels: []commonapi.Label{
+						{Key: "test-label"},
+					},
+				},
+			},
+			expectedError: "spec.labels[0].value",
 		},
 	}
 

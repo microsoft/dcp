@@ -447,9 +447,8 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:         image.Name,
-			ContainerName:    "v2-pctr-delete-created",
-			RemoveOnDeletion: true,
+			ImageRef:      image.Name,
+			ContainerName: "v2-pctr-delete-created",
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -476,8 +475,9 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pctr-retain-created",
+			ImageRef:           image.Name,
+			ContainerName:      "v2-pctr-retain-created",
+			PreserveOnDeletion: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -497,7 +497,7 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 	require.Len(t, inspectedContainers, 1)
 }
 
-func TestV2PhysicalContainerControllerDoesNotDeleteExistingContainer(t *testing.T) {
+func TestV2PhysicalContainerControllerPreservesExistingContainerOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -511,7 +511,8 @@ func TestV2PhysicalContainerControllerDoesNotDeleteExistingContainer(t *testing.
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ContainerID: existingContainerID,
+			ContainerID:        existingContainerID,
+			PreserveOnDeletion: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -527,7 +528,7 @@ func TestV2PhysicalContainerControllerDoesNotDeleteExistingContainer(t *testing.
 	require.Len(t, inspectedContainers, 1)
 }
 
-func TestV2PhysicalContainerControllerDeletesExistingContainerWhenRequested(t *testing.T) {
+func TestV2PhysicalContainerControllerDeletesExistingContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -541,8 +542,7 @@ func TestV2PhysicalContainerControllerDeletesExistingContainerWhenRequested(t *t
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ContainerID:      existingContainerID,
-			RemoveOnDeletion: true,
+			ContainerID: existingContainerID,
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))

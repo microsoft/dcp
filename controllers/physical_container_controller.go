@@ -666,7 +666,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		containerID = data.containerID
 	}
 
-	if container.Spec.RemoveOnDeletion && containerID != "" {
+	if !container.Spec.PreserveOnDeletion && containerID != "" {
 		_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 			Containers: []string{containerID},
 			Force:      true,

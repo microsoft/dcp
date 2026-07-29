@@ -98,6 +98,9 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 		if port.HostPort < 0 || port.HostPort > 65535 {
 			errorList = append(errorList, field.Invalid(portPath.Child("hostPort"), port.HostPort, "hostPort must be between 0 and 65535"))
 		}
+		if port.Protocol != "" && port.Protocol != PortProtocolTCP && port.Protocol != PortProtocolUDP {
+			errorList = append(errorList, field.NotSupported(portPath.Child("protocol"), port.Protocol, []string{string(PortProtocolTCP), string(PortProtocolUDP)}))
+		}
 		if port.HostPort != 0 && port.ContainerPortEnd != 0 {
 			hostPortEnd := int64(port.HostPort) + int64(port.ContainerPortEnd-port.ContainerPort)
 			if hostPortEnd > 65535 {

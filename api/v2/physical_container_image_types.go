@@ -237,7 +237,22 @@ func validatePhysicalContainerImageBuild(build *commonapi.ContainerBuildContext,
 			errorList = append(errorList, field.Required(secretPath.Child("source"), "source must be set to a non-empty value"))
 		}
 	}
+	errorList = append(errorList, validateLabels(build.Labels, buildPath.Child("labels"))...)
 
+	return errorList
+}
+
+func validateLabels(labels []commonapi.Label, labelsPath *field.Path) field.ErrorList {
+	errorList := field.ErrorList{}
+	for i, label := range labels {
+		labelPath := labelsPath.Index(i)
+		if label.Key == "" {
+			errorList = append(errorList, field.Required(labelPath.Child("key"), "key must be set to a non-empty value"))
+		}
+		if label.Value == "" {
+			errorList = append(errorList, field.Required(labelPath.Child("value"), "value must be set to a non-empty value"))
+		}
+	}
 	return errorList
 }
 

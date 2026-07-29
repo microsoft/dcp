@@ -143,6 +143,9 @@ func ensureNamespace(
 	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
 		return false, applyPending(fmt.Sprintf("Namespace %q is terminating.", namespaceName))
 	}
+	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
+		return false, applyPending(fmt.Sprintf("Namespace %q is not ready.", namespaceName))
+	}
 	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
 		return false, applyPending(fmt.Sprintf("Namespace %q is not active.", namespaceName))
 	}

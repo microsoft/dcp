@@ -501,7 +501,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 			})
 
 			for i := range sortedLabels {
-				hashErr = errors.Join(hashErr, encoder.Encode(sortedLabels[i]))
+				hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashContainerLabel(sortedLabels[i])))
 			}
 		}
 
@@ -513,7 +513,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 			})
 
 			for i := range sortedSecrets {
-				hashErr = errors.Join(hashErr, encoder.Encode(sortedSecrets[i]))
+				hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashContainerBuildSecret(sortedSecrets[i])))
 				switch sortedSecrets[i].Type {
 				case "", commonapi.BuildSecretTypeFile:
 					// For file type secrets, track the contents of the file as part of the hash
@@ -540,7 +540,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		})
 
 		for i := range sortedVolumes {
-			hashErr = errors.Join(hashErr, encoder.Encode(sortedVolumes[i]))
+			hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashVolumeMount(sortedVolumes[i])))
 		}
 	}
 
@@ -563,7 +563,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		})
 
 		for i := range sortedPorts {
-			hashErr = errors.Join(hashErr, encoder.Encode(sortedPorts[i]))
+			hashErr = errors.Join(hashErr, encodeContainerPortLifecycleHash(encoder, sortedPorts[i]))
 		}
 	}
 
@@ -575,7 +575,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		})
 
 		for i := range sortedEnv {
-			hashErr = errors.Join(hashErr, encoder.Encode(sortedEnv[i]))
+			hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashEnvVar(sortedEnv[i])))
 		}
 	}
 
@@ -607,7 +607,7 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		})
 
 		for i := range sortedCreateFiles {
-			hashErr = errors.Join(hashErr, encoder.Encode(sortedCreateFiles[i]))
+			hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashCreateFileSystem(sortedCreateFiles[i])))
 		}
 	}
 

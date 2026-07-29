@@ -12,8 +12,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // To get consistent output from gob encoders, we need to introduce types in
@@ -23,14 +21,15 @@ import (
 func initializeLifecycleHashEncoder() {
 	initEncoder := gob.NewEncoder(io.Discard)
 
-	_ = initEncoder.Encode(commonapi.Label{})
-	_ = initEncoder.Encode(commonapi.ContainerBuildSecret{})
-	_ = initEncoder.Encode(commonapi.VolumeMount{})
-	_ = initEncoder.Encode(commonapi.ContainerPort{})
-	_ = initEncoder.Encode(commonapi.EnvVar{})
-	_ = initEncoder.Encode(commonapi.CreateFileSystem{})
+	_ = initEncoder.Encode(ContainerLabel{})
+	_ = initEncoder.Encode(ContainerBuildSecret{})
+	_ = initEncoder.Encode(VolumeMount{})
+	_ = initEncoder.Encode(ContainerPort{})
+	_ = initEncoder.Encode(containerPortRangeLifecycleHash{})
+	_ = initEncoder.Encode(EnvVar{})
+	_ = initEncoder.Encode(CreateFileSystem{})
 	_ = initEncoder.Encode(ContainerPemCertificates{})
-	_ = initEncoder.Encode(commonapi.ImageLayer{})
+	_ = initEncoder.Encode(ImageLayer{})
 
 	_ = initEncoder.Encode(time.Time{})
 	_ = initEncoder.Encode(ExecutablePemCertificates{})

@@ -193,6 +193,42 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 			},
 			expectedError: "spec.build.secrets[0].source",
 		},
+		{
+			name: "missing build label key",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{
+					Build: &commonapi.ContainerBuildContext{
+						Context: "test-context",
+						Labels: []commonapi.Label{
+							{Value: "test-value"},
+						},
+					},
+				},
+			},
+			expectedError: "spec.build.labels[0].key",
+		},
+		{
+			name: "missing build label value",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{
+					Build: &commonapi.ContainerBuildContext{
+						Context: "test-context",
+						Labels: []commonapi.Label{
+							{Key: "test-label"},
+						},
+					},
+				},
+			},
+			expectedError: "spec.build.labels[0].value",
+		},
 	}
 
 	for _, tc := range testCases {
