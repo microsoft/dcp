@@ -207,9 +207,6 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Contex
 		if !imageReady {
 			return imageChange
 		}
-		if container.Status.Image == "" {
-			return imageChange | additionalReconciliationNeeded
-		}
 		if imageChange != noChange {
 			return imageChange | r.schedulePhysicalContainerCreate(container, log)
 		}
@@ -842,7 +839,7 @@ func physicalContainerPortMappingsFromInspected(ports containers.InspectedContai
 
 func parseInspectedContainerPortKey(portKey string) (int32, commonapi.PortProtocol, error) {
 	portParts := strings.Split(portKey, "/")
-	if len(portParts) == 0 || portParts[0] == "" {
+	if portParts[0] == "" {
 		return 0, "", fmt.Errorf("parse container port key %q: container port is missing", portKey)
 	}
 
