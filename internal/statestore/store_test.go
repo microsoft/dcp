@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -129,6 +131,15 @@ func requireSchemaMigrationVersion(
 	require.NoError(t, row.Scan(&version, &dirty))
 	require.Equal(t, expectedVersion, version)
 	require.False(t, dirty)
+}
+
+func requireWorkloadIDColumn(t *testing.T, ctx context.Context, db *sql.DB, expected bool) {
+	t.Helper()
+
+	row := db.QueryRowContext(ctx, workloadIDsMigrationAppliedProbe)
+	var hasColumn bool
+	require.NoError(t, row.Scan(&hasColumn))
+	require.Equal(t, expected, hasColumn)
 }
 
 func resourceLocksHasColumn(ctx context.Context, conn *sql.Conn, columnName string) (bool, error) {
@@ -407,7 +418,7 @@ func TestOpenIgnoresUnknownSchemaMinorMigrations(t *testing.T) {
 	requireSchemaMinorVersion(t, ctx, reopenedStore, 999)
 }
 
-func TestOpenRejectsDirtyNewerSchemaMinorVersion(t *testing.T) {
+func TestOpenAcceptsDirtyNewerSchemaMinorVersion(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -422,12 +433,121 @@ func TestOpenRejectsDirtyNewerSchemaMinorVersion(t *testing.T) {
 	_, updateErr := store.db.ExecContext(ctx, updateQuery, 999)
 	require.NoError(t, updateErr)
 
+	reopenedStore := openTestStore(t, ctx, storePath)
+
+	// The interrupted migration belongs to a newer DCP, which is the only binary that can decide
+	// whether it was applied. Everything this binary needs is present either way.
+	version, found, dirty, readErr := readSchemaVersion(
+		ctx,
+		reopenedStore.db,
+		schemaMajorVersion1Migration.minorTableName,
+	)
+	require.NoError(t, readErr)
+	require.True(t, found)
+	require.True(t, dirty)
+	require.Equal(t, 999, version)
+}
+
+func TestOpenRepairsDirtySchemaMinorVersionWhenMigrationApplied(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	updateQuery := fmt.Sprintf(
+		`UPDATE %s SET dirty = 1`,
+		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
+	)
+	_, updateErr := store.db.ExecContext(ctx, updateQuery)
+	require.NoError(t, updateErr)
+
+	reopenedStore := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, reopenedStore, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, reopenedStore, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
+}
+
+func TestOpenRepairsDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	// Undo the minor migration's schema changes to simulate a migration that never committed,
+	// leaving only the dirty marker behind.
+	_, revertErr := store.db.ExecContext(
+		ctx,
+		`DROP INDEX idx_persistent_processes_workload_id;
+		 ALTER TABLE persistent_processes DROP COLUMN workload_id;`,
+	)
+	require.NoError(t, revertErr)
+	updateQuery := fmt.Sprintf(
+		`UPDATE %s SET dirty = 1`,
+		quoteSQLiteIdentifier(schemaMajorVersion1Migration.minorTableName),
+	)
+	_, updateErr := store.db.ExecContext(ctx, updateQuery)
+	require.NoError(t, updateErr)
+	requireWorkloadIDColumn(t, ctx, store.db, false)
+
+	reopenedStore := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, reopenedStore, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, reopenedStore, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
+}
+
+func TestOpenRepairsDirtyInitialSchemaMajorVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	db := openRawSQLiteDB(t, ctx, storePath)
+	_, createErr := db.ExecContext(
+		ctx,
+		`CREATE TABLE schema_migrations (version uint64, dirty bool);
+		 CREATE UNIQUE INDEX version_unique ON schema_migrations (version);
+		 INSERT INTO schema_migrations (version, dirty) VALUES (1, 1);`,
+	)
+	require.NoError(t, createErr)
+	require.NoError(t, db.Close())
+
+	store := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, store.db, true)
+}
+
+func TestOpenRejectsDirtyUnknownSchemaMajorVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, false)))
+	db := openRawSQLiteDB(t, ctx, storePath)
+	_, updateErr := db.ExecContext(ctx, `UPDATE schema_migrations SET version = 3, dirty = 1`)
+	require.NoError(t, updateErr)
+	require.NoError(t, db.Close())
+	require.NoError(
+		t,
+		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
+	)
+
 	_, openErr := Open(ctx, Options{
 		Path:        storePath,
 		BusyTimeout: 500 * time.Millisecond,
 	})
 
-	require.ErrorContains(t, openErr, "minor version 999 is dirty")
+	require.ErrorContains(t, openErr, "schema major version 3 is dirty")
 }
 
 func TestOpenRejectsUnknownSchemaMajorVersion(t *testing.T) {
@@ -486,7 +606,7 @@ func TestOpenRejectsUnknownSchemaMajorVersion(t *testing.T) {
 	require.True(t, hasLegacyOwnerColumn)
 }
 
-func TestOpenRejectsDirtySchemaVersion2(t *testing.T) {
+func TestOpenRepairsDirtySchemaVersion2WhenMigrationApplied(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -495,6 +615,13 @@ func TestOpenRejectsDirtySchemaVersion2(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
 	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, true)))
 	schemaVersion2DB := openRawSQLiteDB(t, ctx, storePath)
+	_, insertErr := schemaVersion2DB.ExecContext(
+		ctx,
+		`INSERT INTO persistent_processes (
+			resource_key, lifecycle_key, pid, identity_time, run_id, stdout_file, stderr_file, updated_at_unix_nano, workload_id
+		 ) VALUES ('executable/existing', 'lifecycle', 1234, '', 'run', '', '', 0, 'workload-a')`,
+	)
+	require.NoError(t, insertErr)
 	_, updateErr := schemaVersion2DB.ExecContext(ctx, `UPDATE schema_migrations SET dirty = 1`)
 	require.NoError(t, updateErr)
 	require.NoError(t, schemaVersion2DB.Close())
@@ -503,12 +630,45 @@ func TestOpenRejectsDirtySchemaVersion2(t *testing.T) {
 		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
 	)
 
-	_, openErr := Open(ctx, Options{
-		Path:        storePath,
-		BusyTimeout: 500 * time.Millisecond,
-	})
+	store := openTestStore(t, ctx, storePath)
 
-	require.ErrorContains(t, openErr, "schema major version 2 is dirty")
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, store.db, true)
+	row := store.db.QueryRowContext(
+		ctx,
+		`SELECT workload_id FROM persistent_processes WHERE resource_key = ?`,
+		"executable/existing",
+	)
+	var workloadID string
+	require.NoError(t, row.Scan(&workloadID))
+	require.Equal(t, "workload-a", workloadID)
+}
+
+func TestOpenRepairsDirtySchemaVersion2WhenMigrationNotApplied(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	// Only the initial legacy migration committed, but the version marker already advanced to the
+	// dirty version 2 that the interrupted migration was about to apply.
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	require.NoError(t, runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, false)))
+	schemaVersion1DB := openRawSQLiteDB(t, ctx, storePath)
+	_, updateErr := schemaVersion1DB.ExecContext(ctx, `UPDATE schema_migrations SET version = 2, dirty = 1`)
+	require.NoError(t, updateErr)
+	require.NoError(t, schemaVersion1DB.Close())
+	require.NoError(
+		t,
+		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
+	)
+
+	store := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, store.db, true)
 }
 
 func TestOpenWithExplicitPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
@@ -1188,4 +1348,106 @@ func TestPersistentNetworkRecordRoundTripByWorkloadID(t *testing.T) {
 	records, listErr = store.ListPersistentNetworksByWorkloadID(ctx, record.WorkloadID)
 	require.NoError(t, listErr)
 	require.Empty(t, records)
+}
+
+// migrationVersionsInDir returns the migration versions declared by the up migration files
+// directly under the given embedded directory.
+func migrationVersionsInDir(t *testing.T, dir string) []int {
+	t.Helper()
+
+	entries, readErr := fs.ReadDir(migrationFiles, dir)
+	require.NoError(t, readErr)
+
+	versions := []int{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".up.sql") {
+			continue
+		}
+		versionText, _, found := strings.Cut(entry.Name(), "_")
+		require.True(t, found, "migration file '%s' does not start with a version prefix", entry.Name())
+		version, parseErr := strconv.Atoi(versionText)
+		require.NoError(t, parseErr)
+		versions = append(versions, version)
+	}
+	return versions
+}
+
+// TestEveryMigrationHasAnAppliedProbe guards the repair of interrupted migrations: without a probe
+// for every migration, a dirty version marker cannot be resolved and startup fails.
+func TestEveryMigrationHasAnAppliedProbe(t *testing.T) {
+	t.Parallel()
+
+	majorVersions := migrationVersionsInDir(t, "migrations")
+	require.NotEmpty(t, majorVersions)
+	for _, version := range majorVersions {
+		require.True(
+			t,
+			slices.ContainsFunc(schemaMajorProbes, func(probe schemaMigrationProbe) bool { return probe.version == version }),
+			"schemaMajorProbes has no probe for major version %d",
+			version,
+		)
+	}
+	require.True(
+		t,
+		slices.ContainsFunc(schemaMajorProbes, func(probe schemaMigrationProbe) bool {
+			return probe.version == legacySchemaVersion2
+		}),
+		"schemaMajorProbes has no probe for the legacy schema version 2 marker",
+	)
+
+	for _, migration := range schemaMajorMigrations {
+		minorVersions := migrationVersionsInDir(t, migration.minorPath())
+		require.Equal(
+			t,
+			len(minorVersions),
+			migration.latestMinorVersion,
+			"major version %d declares latestMinorVersion %d but has %d minor migration files",
+			migration.version,
+			migration.latestMinorVersion,
+			len(minorVersions),
+		)
+		for _, version := range minorVersions {
+			require.True(
+				t,
+				slices.ContainsFunc(migration.minorProbes, func(probe schemaMigrationProbe) bool {
+					return probe.version == version
+				}),
+				"major version %d has no probe for minor version %d",
+				migration.version,
+				version,
+			)
+		}
+	}
+}
+
+// TestMigrationsAreTransactional guards the invariant that lets an interrupted migration be repaired:
+// the migration driver wraps every migration in a transaction, so a migration either commits in full
+// or not at all. Statements that commit implicitly would break that invariant.
+func TestMigrationsAreTransactional(t *testing.T) {
+	t.Parallel()
+
+	forbiddenStatements := []string{"BEGIN", "COMMIT", "ROLLBACK", "VACUUM", "PRAGMA", "ATTACH", "DETACH"}
+	walkErr := fs.WalkDir(migrationFiles, "migrations", func(path string, entry fs.DirEntry, entryErr error) error {
+		if entryErr != nil {
+			return entryErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sql") {
+			return nil
+		}
+		contents, readErr := fs.ReadFile(migrationFiles, path)
+		require.NoError(t, readErr)
+		upperContents := strings.ToUpper(string(contents))
+		for _, statement := range forbiddenStatements {
+			require.NotContains(
+				t,
+				upperContents,
+				statement,
+				"migration '%s' must not use %s; it breaks migration atomicity",
+				path,
+				statement,
+			)
+		}
+		return nil
+	})
+	require.NoError(t, walkErr)
 }
