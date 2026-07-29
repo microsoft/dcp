@@ -35,6 +35,8 @@ import (
 )
 
 var (
+	physicalContainerImageFinalizer string = fmt.Sprintf("%s/physicalcontainerimage-reconciler", apiv2.GroupVersion.Group)
+
 	physicalContainerImageDataInitializers = map[string]physicalContainerImageDataInitializerFunc{
 		apiv2.PhysicalContainerImageReasonPulling:     handlePhysicalContainerImageOperationInProgress,
 		apiv2.PhysicalContainerImageReasonBuilding:    handlePhysicalContainerImageOperationInProgress,
@@ -130,6 +132,9 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
 			log.V(1).Info("PhysicalContainerImage not found, nothing to do...")
+			// The finalizer normally guarantees the deletion is observed, but drop any lingering
+			// state in case the object disappeared without it (for example a forced deletion).
+			r.discardPhysicalContainerImageData(req.NamespacedName, log)
 			getNotFoundCounter.Add(ctx, 1)
 			return ctrl.Result{}, nil
 		}
@@ -142,14 +147,41 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 
 	r.imageData.RunDeferredOps(req.NamespacedName, &image)
 
+	var change objectChange
+	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
+
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
-		r.imageData.DeleteByNamespacedName(image.NamespacedName())
-		return ctrl.Result{}, nil
+		change = r.handleDeletionRequest(&image, log)
+	} else if change = ensureFinalizer(&image, physicalContainerImageFinalizer, log); change != noChange {
+		// Make additional changes during the next reconciliation.
+	} else {
+		change = r.managePhysicalContainerImage(ctx, &image, log)
 	}
 
-	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
-	change := r.managePhysicalContainerImage(ctx, &image, log)
 	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, nil, log)
+}
+
+// Removes in-memory state for the image, cancelling the pull or build operation if one may still be running.
+func (r *PhysicalContainerImageReconciler) discardPhysicalContainerImageData(name types.NamespacedName, log logr.Logger) {
+	_, data := r.imageData.BorrowByNamespacedName(name)
+	if data == nil {
+		return
+	}
+
+	if data.operationInProgress() && data.cancelOperation != nil {
+		log.V(1).Info("Cancelling in-flight PhysicalContainerImage operation", "Reason", data.conditionReason)
+		data.cancelOperation()
+	}
+
+	r.imageData.DeleteByNamespacedName(name)
+}
+
+// Releases the resources tracked for a deleted image and removes the finalizer.
+// The image itself is left in the container runtime; it is a shared artifact that
+// outlives the resource describing it.
+func (r *PhysicalContainerImageReconciler) handleDeletionRequest(image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
+	r.discardPhysicalContainerImageData(image.NamespacedName(), log)
+	return deleteFinalizer(image, physicalContainerImageFinalizer, log)
 }
 
 func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(ctx context.Context, image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
@@ -271,16 +303,22 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(
 	log logr.Logger,
 ) objectChange {
 	stateKey := physicalContainerImageDataKey(image)
+	operationCtx, cancelOperation := context.WithCancel(r.LifetimeCtx)
 	data := &physicalContainerImageData{
 		conditionReason: apiv2.PhysicalContainerImageReasonPulling,
+		cancelOperation: cancelOperation,
 	}
 	r.imageData.Store(image.NamespacedName(), stateKey, data)
 	imageSnapshot := image.DeepCopy()
 	dataSnapshot := data.Clone()
-	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
+	// The work queue supplies the reconciler lifetime context; operationCtx derives from it and
+	// additionally lets deletion of the image cancel the pull.
+	enqueueErr := r.operationQueue.Enqueue(func(context.Context) {
+		defer cancelOperation()
 		r.pullPhysicalContainerImage(operationCtx, imageSnapshot, stateKey, dataSnapshot, outputImage, log)
 	})
 	if enqueueErr != nil {
+		cancelOperation()
 		r.imageData.DeleteByNamespacedName(image.NamespacedName())
 		log.Error(enqueueErr, "Failed to queue PhysicalContainerImage pull", "Image", outputImage)
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
@@ -299,17 +337,23 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 	log logr.Logger,
 ) objectChange {
 	stateKey := physicalContainerImageDataKey(image)
+	operationCtx, cancelOperation := context.WithCancel(r.LifetimeCtx)
 	data := &physicalContainerImageData{
 		conditionReason: apiv2.PhysicalContainerImageReasonBuilding,
+		cancelOperation: cancelOperation,
 	}
 	r.imageData.Store(image.NamespacedName(), stateKey, data)
 	imageSnapshot := image.DeepCopy()
 	dataSnapshot := data.Clone()
 	buildContextSnapshot := *buildContext
-	enqueueErr := r.operationQueue.Enqueue(func(operationCtx context.Context) {
+	// The work queue supplies the reconciler lifetime context; operationCtx derives from it and
+	// additionally lets deletion of the image cancel the build.
+	enqueueErr := r.operationQueue.Enqueue(func(context.Context) {
+		defer cancelOperation()
 		r.buildPhysicalContainerImage(operationCtx, imageSnapshot, stateKey, dataSnapshot, outputImage, &buildContextSnapshot, log)
 	})
 	if enqueueErr != nil {
+		cancelOperation()
 		r.imageData.DeleteByNamespacedName(image.NamespacedName())
 		log.Error(enqueueErr, "Failed to queue PhysicalContainerImage build", "Image", outputImage)
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)

@@ -6,6 +6,8 @@
 package controllers
 
 import (
+	"context"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -17,6 +19,9 @@ type physicalContainerImageData struct {
 	conditionReason string
 	imageID         string
 	failureMessage  string
+
+	// Cancels the queued pull or build operation. Set for as long as the operation may still be running.
+	cancelOperation context.CancelFunc
 }
 
 func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
@@ -24,6 +29,7 @@ func (data *physicalContainerImageData) Clone() *physicalContainerImageData {
 		conditionReason: data.conditionReason,
 		imageID:         data.imageID,
 		failureMessage:  data.failureMessage,
+		cancelOperation: data.cancelOperation,
 	}
 }
 
@@ -47,6 +53,11 @@ func (data *physicalContainerImageData) UpdateFrom(other *physicalContainerImage
 	}
 
 	return updated
+}
+
+func (data *physicalContainerImageData) operationInProgress() bool {
+	return data.conditionReason == apiv2.PhysicalContainerImageReasonPulling ||
+		data.conditionReason == apiv2.PhysicalContainerImageReasonBuilding
 }
 
 func (data *physicalContainerImageData) applyTo(image *apiv2.PhysicalContainerImage) objectChange {

@@ -138,3 +138,53 @@ func TestImagePullBackoffHonorsRetryLimit(t *testing.T) {
 		})
 	}
 }
+
+// ObjectStateMap.Update() rebuilds the stored state from a clone of the current value and then
+// applies UpdateFrom(), so the cancellation function must survive both or a queued pull/build
+// becomes impossible to cancel once its first result is recorded.
+func TestPhysicalContainerImageDataPreservesCancelOperation(t *testing.T) {
+	t.Parallel()
+
+	cancelled := false
+	data := &physicalContainerImageData{
+		conditionReason: apiv2.PhysicalContainerImageReasonPulling,
+		cancelOperation: func() { cancelled = true },
+	}
+
+	stored := data.Clone()
+	require.NotNil(t, stored.cancelOperation)
+
+	// A result reported by the queued operation carries no cancellation function.
+	require.True(t, stored.UpdateFrom(&physicalContainerImageData{
+		conditionReason: apiv2.PhysicalContainerImageReasonPulled,
+		imageID:         "image-id",
+	}))
+	require.NotNil(t, stored.cancelOperation)
+
+	stored.cancelOperation()
+	require.True(t, cancelled)
+}
+
+func TestPhysicalContainerImageDataOperationInProgress(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		conditionReason string
+		expected        bool
+	}{
+		{apiv2.PhysicalContainerImageReasonPulling, true},
+		{apiv2.PhysicalContainerImageReasonBuilding, true},
+		{apiv2.PhysicalContainerImageReasonPulled, false},
+		{apiv2.PhysicalContainerImageReasonBuilt, false},
+		{apiv2.PhysicalContainerImageReasonPullFailed, false},
+		{apiv2.PhysicalContainerImageReasonBuildFailed, false},
+		{"", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.conditionReason, func(t *testing.T) {
+			data := &physicalContainerImageData{conditionReason: tc.conditionReason}
+			require.Equal(t, tc.expected, data.operationInProgress())
+		})
+	}
+}

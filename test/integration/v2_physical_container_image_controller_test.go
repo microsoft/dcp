@@ -17,6 +17,7 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
+	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -237,4 +238,46 @@ func TestV2PhysicalContainerImageControllerHonorsDisabledPullRetries(t *testing.
 	require.Never(t, func() bool {
 		return containerOrchestrator.PullImageCallCount(sourceImage) > 1
 	}, 3*time.Second, 250*time.Millisecond)
+}
+
+func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-delete-pull")
+	sourceImage := "v2-pci-deleted-source"
+	releasePull := containerOrchestrator.BlockPullImage(sourceImage)
+	defer releasePull()
+
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "deleted-pulling-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image:      sourceImage,
+			PullPolicy: apiv2.PullPolicyAlways,
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	waitPullImageCallCount(t, ctx, sourceImage, 1)
+
+	pullingImage := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(currentImage *apiv2.PhysicalContainerImage) (bool, error) {
+		return len(currentImage.Finalizers) > 0, nil
+	})
+	require.Contains(t, pullingImage.Finalizers, apiv2.GroupName+"/physicalcontainerimage-reconciler")
+
+	require.NoError(t, client.Delete(ctx, image))
+
+	// The finalizer must be released without waiting for the blocked pull to complete.
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
+
+	// Releasing the block proves the pull was cancelled rather than merely orphaned: a still-running
+	// pull would resume here and register the image with the runtime.
+	releasePull()
+	require.Never(t, func() bool {
+		return containerOrchestrator.HasImage(sourceImage)
+	}, 2*time.Second, 250*time.Millisecond)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 }
