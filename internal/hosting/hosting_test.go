@@ -11,14 +11,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-logr/logr"
-	"github.com/go-logr/zapr"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
+
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
+const hostingTestTimeout = 10 * time.Second
+
 func Test_Host_CanRunWithNoServices(t *testing.T) {
-	ctx, cancel := context.WithDeadline(createContext(t), time.Now().Add(time.Second*5))
+	ctx, cancel := testutil.GetTestContext(t, hostingTestTimeout)
 	defer cancel()
 
 	host := &Host{
@@ -30,7 +31,7 @@ func Test_Host_CanRunWithNoServices(t *testing.T) {
 }
 
 func Test_Host_DetectsDuplicates(t *testing.T) {
-	ctx, cancel := context.WithDeadline(createContext(t), time.Now().Add(time.Second*5))
+	ctx, cancel := testutil.GetTestContext(t, hostingTestTimeout)
 	defer cancel()
 
 	host := &Host{
@@ -45,7 +46,7 @@ func Test_Host_DetectsDuplicates(t *testing.T) {
 }
 
 func Test_Host_RunMultipleServices_HandlesExit(t *testing.T) {
-	ctx, cancel := context.WithDeadline(createContext(t), time.Now().Add(time.Second*5))
+	ctx, cancel := testutil.GetTestContext(t, hostingTestTimeout)
 	defer cancel()
 
 	started := make(chan struct{})
@@ -127,10 +128,15 @@ func Test_Host_RunMultipleServices_HandlesExit(t *testing.T) {
 }
 
 func Test_Host_RunMultipleServices_ShutdownTimeout(t *testing.T) {
-	ctx, cancel := context.WithDeadline(createContext(t), time.Now().Add(time.Second*5))
+	ctx, cancel := testutil.GetTestContext(t, hostingTestTimeout)
 	defer cancel()
 
 	started := make(chan struct{})
+
+	// The two services below stay blocked for the rest of the test binary's life on purpose. Once the
+	// host gives up waiting it closes the channel it collects service results on, so a service that
+	// finishes afterwards would panic trying to report its result. Do not release them at test cleanup.
+	neverTerminates := make(chan struct{})
 
 	host := &Host{
 		Services: []Service{
@@ -138,14 +144,14 @@ func Test_Host_RunMultipleServices_ShutdownTimeout(t *testing.T) {
 				// Does not terminate
 				started <- struct{}{}
 				<-c.Done()
-				time.Sleep(time.Second * 30)
+				<-neverTerminates
 				return nil
 			}),
 			NewFuncService("B", func(c context.Context) error {
 				// Does not terminate
 				started <- struct{}{}
 				<-c.Done()
-				time.Sleep(time.Second * 30)
+				<-neverTerminates
 				return nil
 			}),
 		},
@@ -197,8 +203,4 @@ func (s *FuncService) Run(ctx context.Context) error {
 	}
 
 	return s.run(ctx)
-}
-
-func createContext(t *testing.T) context.Context {
-	return logr.NewContext(context.Background(), zapr.NewLogger(zaptest.NewLogger(t)))
 }
