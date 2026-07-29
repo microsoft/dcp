@@ -24,7 +24,7 @@ DCP repairs a dirty version instead of failing startup. The migration driver wra
 This repair depends on two invariants, both covered by unit tests:
 
 - Every migration has an applied probe, and that probe reports false before the migration runs and true afterwards. Without a probe, DCP cannot tell whether the migration committed and startup fails with the dirty version. A probe that does not distinguish the two states is worse: DCP would keep a version marker for a migration that never ran, permanently skipping it.
-- Migration SQL never commits implicitly. `BEGIN`, `COMMIT`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` would break migration atomicity and are rejected.
+- Migration SQL never commits implicitly. `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` would break migration atomicity and are rejected. SQLite treats `END` as an alias for `COMMIT`; an `END` that closes a `CASE` expression is fine.
 
 A dirty minor version newer than any migration embedded in this binary cannot be probed, because the migration belongs to a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed; DCP logs the condition, leaves the marker alone, and lets the binary that owns the migration repair it.
 
@@ -57,7 +57,7 @@ Minor migrations must remain safe when an older DCP uses the database afterward:
 - Do not add unique indexes, check constraints, foreign keys, changed primary keys, or other constraints that can reject writes accepted by older binaries without an explicit compatibility design.
 - Preserve `resource_locks` so old and new DCP processes coordinate through the same lock records.
 - Preserve persistent resource tables and records so older binaries can continue reading and updating them.
-- Do not include `BEGIN`, `COMMIT`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, or `DETACH`; the SQLite migration driver wraps each migration in a transaction and these statements would break its atomicity.
+- Do not include `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, or `DETACH`; the SQLite migration driver wraps each migration in a transaction and these statements would break its atomicity. SQLite treats `END` as an alias for `COMMIT`, so only an `END` that closes a `CASE` expression is allowed.
 
 ## Adding a breaking major migration
 
