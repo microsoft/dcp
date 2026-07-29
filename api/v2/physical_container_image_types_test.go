@@ -41,7 +41,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
 					},
 				},
@@ -56,7 +56,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{
 					Image: "test-target-image",
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
 					},
 				},
@@ -70,11 +70,11 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
-						Secrets: []commonapi.ContainerBuildSecret{
+						Secrets: []ContainerBuildSecret{
 							{
-								Type:   commonapi.FileSecret,
+								Type:   FileSecret,
 								ID:     "test-secret",
 								Source: "test-secret-file",
 							},
@@ -91,11 +91,11 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
-						Secrets: []commonapi.ContainerBuildSecret{
+						Secrets: []ContainerBuildSecret{
 							{
-								Type: commonapi.EnvSecret,
+								Type: EnvSecret,
 								ID:   "test-secret",
 							},
 						},
@@ -147,7 +147,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{},
+					Build: &ContainerBuildContext{},
 				},
 			},
 			expectedError: "spec.build.context",
@@ -160,11 +160,11 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
-						Secrets: []commonapi.ContainerBuildSecret{
+						Secrets: []ContainerBuildSecret{
 							{
-								Type: commonapi.FileSecret,
+								Type: FileSecret,
 								ID:   "test-secret",
 							},
 						},
@@ -181,9 +181,9 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
-						Secrets: []commonapi.ContainerBuildSecret{
+						Secrets: []ContainerBuildSecret{
 							{
 								ID: "test-secret",
 							},
@@ -201,7 +201,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
 						Labels: []commonapi.Label{
 							{Value: "test-value"},
@@ -219,7 +219,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerImageSpec{
-					Build: &commonapi.ContainerBuildContext{
+					Build: &ContainerBuildContext{
 						Context: "test-context",
 						Labels: []commonapi.Label{
 							{Key: "test-label"},

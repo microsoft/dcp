@@ -15,8 +15,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 type Endpoint struct {
@@ -111,7 +111,7 @@ type Proxy interface {
 // The Proxy.EffectiveAddress() returns the actual IPv4 or IPv6 address used for listening.
 // If the port is 0, the proxy will listen on a random port. Proxy.EffectivePort() will return the actual listened-on port.
 type ProxyFactory func(
-	mode commonapi.PortProtocol,
+	mode apiv1.PortProtocol,
 	listenAddress string,
 	listenPort int32,
 	lifetimeCtx context.Context,

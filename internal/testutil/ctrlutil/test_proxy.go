@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/proxy"
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 type TestProxy struct {
@@ -37,7 +37,7 @@ var (
 	startFailuresLock   = &sync.Mutex{}
 )
 
-func NewTestProxy(mode commonapi.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) proxy.Proxy {
+func NewTestProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) proxy.Proxy {
 	return &TestProxy{
 		lifetimeCtx: lifetimeCtx,
 		inner:       proxy.NewRuntimeProxy(mode, listenAddress, listenPort, lifetimeCtx, log),

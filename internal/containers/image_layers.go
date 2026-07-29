@@ -18,11 +18,29 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
 
 const defaultApplyImageLayersTimeout = 10 * time.Minute
+
+// ImageLayer represents a tar file to be applied as an additional image layer when running the
+// container. The layer is provided either as a path to a tar file (with a SHA256 hash for
+// verification) or as base64-encoded tar contents.
+type ImageLayer struct {
+	// An opaque identifier for this layer, used to track whether a layer has meaningfully changed
+	// independently of the raw binary content (which may vary due to timestamps or other
+	// materially unimportant differences in the tar file).
+	Digest string `json:"digest"`
+
+	// Path to a tar file on the host filesystem. Mutually exclusive with RawContents.
+	Source string `json:"source,omitempty"`
+
+	// SHA256 hash of the tar file referenced by Source. Required when Source is set.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Base64-encoded tar file contents. Mutually exclusive with Source.
+	RawContents string `json:"rawContents,omitempty"`
+}
 
 // ApplyImageLayersImpl builds a derived container image by applying additional tar layers
 // on top of a base image. It streams a build context tar (containing a generated Dockerfile
@@ -168,7 +186,7 @@ func ApplyImageLayersImpl(
 
 // verifyLayerSourceHash streams the source file through a SHA256 hasher
 // and verifies the hash matches, without buffering the full file in memory.
-func verifyLayerSourceHash(layer *commonapi.ImageLayer) error {
+func verifyLayerSourceHash(layer *ImageLayer) error {
 	f, openErr := os.Open(layer.Source)
 	if openErr != nil {
 		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)
@@ -194,7 +212,7 @@ func verifyLayerSourceHash(layer *commonapi.ImageLayer) error {
 
 // streamLayerFromSource streams a source-file layer directly into the tar writer
 // without buffering the full file contents in memory.
-func streamLayerFromSource(tw *usvc_io.TarWriter, layer *commonapi.ImageLayer, tarName string, modTime time.Time) error {
+func streamLayerFromSource(tw *usvc_io.TarWriter, layer *ImageLayer, tarName string, modTime time.Time) error {
 	f, openErr := os.Open(layer.Source)
 	if openErr != nil {
 		return fmt.Errorf("opening layer source file %q: %w", layer.Source, openErr)

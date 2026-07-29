@@ -33,7 +33,7 @@ type ContainerExecSpec struct {
 	// Environment settings
 	// +listType=map
 	// +listMapKey=name
-	Env []commonapi.EnvVar `json:"env,omitempty"`
+	Env []EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate the environment for the command
 	// +listType=set
@@ -74,7 +74,7 @@ type ContainerExecStatus struct {
 	// Effective values of environment variables, after all substitutions have been applied
 	// +listType=map
 	// +listMapKey=name
-	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
+	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of arguments to be passed to the command, after all substitutions have been applied
 	// +listType=atomic

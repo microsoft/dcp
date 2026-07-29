@@ -26,7 +26,6 @@ import (
 	"github.com/microsoft/dcp/internal/logs"
 	"github.com/microsoft/dcp/internal/statestore"
 	"github.com/microsoft/dcp/internal/termpty"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/pointers"
@@ -704,7 +703,7 @@ func makeCommand(exe *apiv1.Executable) *exec.Cmd {
 	cmd := exec.Command(exe.Spec.ExecutablePath)
 	cmd.Args = append([]string{exe.Spec.ExecutablePath}, exe.Status.EffectiveArgs...)
 
-	cmd.Env = slices.Map[string](exe.Status.EffectiveEnv, func(e commonapi.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
+	cmd.Env = slices.Map[string](exe.Status.EffectiveEnv, func(e apiv1.EnvVar) string { return fmt.Sprintf("%s=%s", e.Name, e.Value) })
 
 	cmd.Dir = exe.Spec.WorkingDirectory
 

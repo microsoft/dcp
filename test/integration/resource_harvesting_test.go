@@ -9,15 +9,15 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
-	"github.com/stretchr/testify/require"
 )
 
 func TestUnusedNetworkHarvesting(t *testing.T) {
@@ -137,7 +137,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithMixedContainers},
 			},
-			Labels: []commonapi.Label{
+			Labels: []containers.Label{
 				{
 					Key:   controllers.PersistentLabel,
 					Value: "false",
@@ -181,7 +181,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithAbandonedPersistentContainer},
 			},
-			Labels: []commonapi.Label{
+			Labels: []containers.Label{
 				{
 					Key:   controllers.PersistentLabel,
 					Value: "true",
@@ -216,7 +216,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithDcpContainers},
 			},
-			Labels: []commonapi.Label{
+			Labels: []containers.Label{
 				{
 					Key:   controllers.PersistentLabel,
 					Value: "false",
@@ -239,7 +239,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: netWithDcpContainers},
 			},
-			Labels: []commonapi.Label{
+			Labels: []containers.Label{
 				{
 					Key:   controllers.PersistentLabel,
 					Value: "false",

@@ -74,7 +74,7 @@ type ServiceSpec struct {
 	Port int32 `json:"port,omitempty"`
 
 	// The protocol, TCP or UDP
-	Protocol commonapi.PortProtocol `json:"protocol,omitempty"`
+	Protocol PortProtocol `json:"protocol,omitempty"`
 
 	// The mode for address allocation. If Address is set, this will be ignored.
 	AddressAllocationMode AddressAllocationMode `json:"addressAllocationMode,omitempty"`

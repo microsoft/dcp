@@ -177,7 +177,7 @@ generate-ci: generate generate-licenses ## Generate all codegen artifacts includ
 .PHONY: generate-object-methods
 generate-object-methods: $(repo_dir)/api/v1/zz_generated.deepcopy.go ## Generates object copy methods for resourced defined in this repo
 $(repo_dir)/api/v1/zz_generated.deepcopy.go : $(TYPE_SOURCES)
-	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+	$(CLEAR_GOARGS) $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..." paths="./pkg/commonapi/..."
 
 define run-openapi-gen
 $(CLEAR_GOARGS) $(OPENAPI_GEN) \

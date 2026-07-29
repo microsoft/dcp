@@ -115,7 +115,7 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 		Spec: apiv2.PhysicalContainerSpec{
 			ImageRef:      image.Name,
 			ContainerName: "v2-pctr-networked-container",
-			Networks: []commonapi.ContainerNetworkConnectionConfig{
+			Networks: []apiv2.ContainerNetworkConnectionConfig{
 				{
 					Name:    networkName,
 					Aliases: []string{"api", "service"},
@@ -153,13 +153,13 @@ func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
 		Spec: apiv2.PhysicalContainerSpec{
 			ImageRef:      image.Name,
 			ContainerName: "v2-pctr-ported-container",
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv2.ContainerPort{
 				{
 					ContainerPort: 8080,
 				},
 				{
 					ContainerPort: 9090,
-					Protocol:      commonapi.UDP,
+					Protocol:      commonapi.PortProtocolUDP,
 					HostIP:        "127.0.0.2",
 					HostPort:      19090,
 				},
@@ -180,32 +180,32 @@ func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
 
 	firstMapping := updatedContainer.Status.PortMappings[0]
 	require.Equal(t, int32(8080), firstMapping.ContainerPort)
-	require.Equal(t, commonapi.TCP, firstMapping.Protocol)
+	require.Equal(t, commonapi.PortProtocolTCP, firstMapping.Protocol)
 	require.NotEmpty(t, firstMapping.HostIP)
 	require.GreaterOrEqual(t, firstMapping.HostPort, int32(ctrl_testutil.MinRandomHostPort))
 	require.LessOrEqual(t, firstMapping.HostPort, int32(ctrl_testutil.MaxRandomHostPort))
 
 	secondMapping := updatedContainer.Status.PortMappings[1]
 	require.Equal(t, int32(9090), secondMapping.ContainerPort)
-	require.Equal(t, commonapi.UDP, secondMapping.Protocol)
+	require.Equal(t, commonapi.PortProtocolUDP, secondMapping.Protocol)
 	require.Equal(t, "127.0.0.2", secondMapping.HostIP)
 	require.Equal(t, int32(19090), secondMapping.HostPort)
 
 	thirdMapping := updatedContainer.Status.PortMappings[2]
 	require.Equal(t, int32(9100), thirdMapping.ContainerPort)
-	require.Equal(t, commonapi.TCP, thirdMapping.Protocol)
+	require.Equal(t, commonapi.PortProtocolTCP, thirdMapping.Protocol)
 	require.Equal(t, "127.0.0.3", thirdMapping.HostIP)
 	require.Equal(t, int32(19100), thirdMapping.HostPort)
 
 	fourthMapping := updatedContainer.Status.PortMappings[3]
 	require.Equal(t, int32(9101), fourthMapping.ContainerPort)
-	require.Equal(t, commonapi.TCP, fourthMapping.Protocol)
+	require.Equal(t, commonapi.PortProtocolTCP, fourthMapping.Protocol)
 	require.Equal(t, "127.0.0.3", fourthMapping.HostIP)
 	require.Equal(t, int32(19101), fourthMapping.HostPort)
 
 	fifthMapping := updatedContainer.Status.PortMappings[4]
 	require.Equal(t, int32(9102), fifthMapping.ContainerPort)
-	require.Equal(t, commonapi.TCP, fifthMapping.Protocol)
+	require.Equal(t, commonapi.PortProtocolTCP, fifthMapping.Protocol)
 	require.Equal(t, "127.0.0.3", fifthMapping.HostIP)
 	require.Equal(t, int32(19102), fifthMapping.HostPort)
 }
@@ -225,10 +225,10 @@ func TestV2PhysicalContainerControllerCopiesCreateFilesBeforeStart(t *testing.T)
 		Spec: apiv2.PhysicalContainerSpec{
 			ImageRef:      image.Name,
 			ContainerName: "v2-pctr-files-container",
-			CreateFiles: []commonapi.CreateFileSystem{
+			CreateFiles: []apiv2.CreateFileSystem{
 				{
 					Destination: "/workspace",
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv2.FileSystemEntry{
 						{
 							Name:     "hello.txt",
 							Contents: "hello",

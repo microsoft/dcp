@@ -24,7 +24,6 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -484,9 +483,9 @@ func (dco *DockerCliOrchestrator) BuildImage(ctx context.Context, options contai
 	// Apply all specified build secrets
 	for _, secret := range options.Secrets {
 		switch secret.Type {
-		case commonapi.BuildSecretTypeFile, "":
+		case containers.FileSecret, "":
 			args = append(args, "--secret", fmt.Sprintf("id=%s,src=%s", secret.ID, secret.Source))
-		case commonapi.BuildSecretTypeEnv:
+		case containers.EnvSecret:
 			if secret.Source != "" {
 				args = append(args, "--secret", fmt.Sprintf("id=%s,env=%s", secret.ID, secret.Source))
 				if secret.Value != "" {
@@ -660,7 +659,7 @@ func applyCreateContainerOptions(args []string, options containers.CreateContain
 		args = append(args, "--label", fmt.Sprintf("%s=%s", label.Key, label.Value))
 	}
 
-	if options.RestartPolicy != "" && options.RestartPolicy != commonapi.RestartPolicyNone {
+	if options.RestartPolicy != "" && options.RestartPolicy != containers.RestartPolicyNone {
 		args = append(args, fmt.Sprintf("--restart=%s", options.RestartPolicy))
 	}
 
@@ -975,11 +974,11 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 	certificateHashes := []string{}
 	for _, item := range options.Entries {
 		switch item.Type {
-		case commonapi.FileSystemEntryTypeDir:
+		case containers.FileSystemEntryTypeDir:
 			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
-		case commonapi.FileSystemEntryTypeSymlink:
+		case containers.FileSystemEntryTypeSymlink:
 			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, dco.log); addSymlinkErr != nil {
 				if item.ContinueOnError {
 					dco.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, continuing", "SymLink", item)
@@ -987,7 +986,7 @@ func (dco *DockerCliOrchestrator) CreateFiles(ctx context.Context, options conta
 					return addSymlinkErr
 				}
 			}
-		case commonapi.FileSystemEntryTypeOpenSSL:
+		case containers.FileSystemEntryTypeOpenSSL:
 			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, dco.log)
 			if addCertErr != nil {
 				if item.ContinueOnError {
@@ -1573,14 +1572,14 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	ic.Healthcheck = dci.Config.Healthcheck.Test
 	ic.Health = dci.State.Health
 
-	ic.Mounts = make([]commonapi.VolumeMount, len(dci.Mounts))
+	ic.Mounts = make([]containers.VolumeMount, len(dci.Mounts))
 	for i, mount := range dci.Mounts {
 		source := mount.Source
-		if mount.Type == commonapi.VolumeMountTypeVolume {
+		if mount.Type == containers.NamedVolumeMount {
 			source = mount.Name
 		}
 
-		ic.Mounts[i] = commonapi.VolumeMount{
+		ic.Mounts[i] = containers.VolumeMount{
 			Type:     mount.Type,
 			Source:   source,
 			Target:   mount.Destination,
@@ -1720,7 +1719,7 @@ type dockerInspectedContainer struct {
 }
 
 type dockerInspectedContainerMount struct {
-	Type        commonapi.VolumeMountType `json:"Type,omitempty"`
+	Type        containers.VolumeMountType `json:"Type,omitempty"`
 	Name        string                    `json:"Name,omitempty"`
 	Source      string                    `json:"Source,omitempty"`
 	Destination string                    `json:"Destination,omitempty"`

@@ -12,7 +12,14 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+// EnvVar represents an environment variable present in a Container or Executable.
+// Aliased to the shared type so that other packages can construct environment variables
+// without depending on a specific API version.
+type EnvVar = commonapi.EnvVar
 
 // To get consistent output from gob encoders, we need to introduce types in
 // a deterministic order as the encoder generates (and globally caches) an incrementing ID
@@ -25,7 +32,6 @@ func initializeLifecycleHashEncoder() {
 	_ = initEncoder.Encode(ContainerBuildSecret{})
 	_ = initEncoder.Encode(VolumeMount{})
 	_ = initEncoder.Encode(ContainerPort{})
-	_ = initEncoder.Encode(containerPortRangeLifecycleHash{})
 	_ = initEncoder.Encode(EnvVar{})
 	_ = initEncoder.Encode(CreateFileSystem{})
 	_ = initEncoder.Encode(ContainerPemCertificates{})

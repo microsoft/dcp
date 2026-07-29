@@ -85,7 +85,7 @@ func TestEndpointCreatedAndDeletedForContainer(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{
 					ContainerPort: 80,
 					HostPort:      8080,
@@ -190,7 +190,7 @@ func TestEndpointDeletedIfContainerStopped(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{
 					ContainerPort: 80,
 					HostPort:      8080,
@@ -242,7 +242,7 @@ func TestEndpointRecreatedIfContainerPortsChange(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{
 					ContainerPort: containerPort,
 					// No host port specified (host port is dynamically assigned)

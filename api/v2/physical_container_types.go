@@ -132,20 +132,20 @@ type PhysicalContainerSpec struct {
 
 	// Ports describes ports to expose from the container.
 	// +listType=atomic
-	Ports []commonapi.ContainerPort `json:"ports,omitempty"`
+	Ports []ContainerPort `json:"ports,omitempty"`
 
 	// VolumeMounts describes volume and bind mounts for the container.
 	// +listType=atomic
-	VolumeMounts []commonapi.VolumeMount `json:"volumeMounts,omitempty"`
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 
 	// Networks describes runtime networks to attach the container to when it is created.
 	// If omitted, the container runtime chooses the default network.
 	// +listType=atomic
-	Networks []commonapi.ContainerNetworkConnectionConfig `json:"networks,omitempty"`
+	Networks []ContainerNetworkConnectionConfig `json:"networks,omitempty"`
 
 	// CreateFiles describes files and folders to copy into the container before it starts.
 	// +listType=atomic
-	CreateFiles []commonapi.CreateFileSystem `json:"createFiles,omitempty"`
+	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime container.
 	// +listType=map
@@ -301,7 +301,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 			errorList = append(errorList, field.Required(networksPath.Index(i).Child("name"), "name must be set to a non-empty value"))
 		}
 	}
-	errorList = append(errorList, commonapi.ValidateContainerPorts(pc.Spec.Ports, specPath.Child("ports"))...)
+	errorList = append(errorList, ValidateContainerPorts(pc.Spec.Ports, specPath.Child("ports"))...)
 	errorList = append(errorList, validateLabels(pc.Spec.Labels, specPath.Child("labels"))...)
 
 	createFilesPath := specPath.Child("createFiles")

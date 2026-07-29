@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 func TestExecutableShouldStart(t *testing.T) {
@@ -266,7 +265,7 @@ func TestExecutableGetLifecycleKeyIgnoresImplicitEffectiveEnv(t *testing.T) {
 
 	exe := lifecycleKeyTestExecutable()
 	exe.Status.EffectiveArgs = []string{"--port", "5000"}
-	exe.Status.EffectiveEnv = []commonapi.EnvVar{
+	exe.Status.EffectiveEnv = []EnvVar{
 		{Name: "PATH", Value: "/first/path"},
 		{Name: "EXPLICIT", Value: "stable"},
 		{Name: "ASPNETCORE_URLS", Value: "http://127.0.0.1:5000"},
@@ -278,7 +277,7 @@ func TestExecutableGetLifecycleKeyIgnoresImplicitEffectiveEnv(t *testing.T) {
 
 	exeWithDifferentImplicitEnv := lifecycleKeyTestExecutable()
 	exeWithDifferentImplicitEnv.Status.EffectiveArgs = []string{"--port", "5000"}
-	exeWithDifferentImplicitEnv.Status.EffectiveEnv = []commonapi.EnvVar{
+	exeWithDifferentImplicitEnv.Status.EffectiveEnv = []EnvVar{
 		{Name: "PATH", Value: "/different/path"},
 		{Name: "EXPLICIT", Value: "stable"},
 		{Name: "ASPNETCORE_URLS", Value: "http://127.0.0.1:5001"},
@@ -294,7 +293,7 @@ func TestExecutableGetLifecycleKeyIncludesExplicitEffectiveEnv(t *testing.T) {
 
 	exe := lifecycleKeyTestExecutable()
 	exe.Status.EffectiveArgs = []string{"--port", "5000"}
-	exe.Status.EffectiveEnv = []commonapi.EnvVar{
+	exe.Status.EffectiveEnv = []EnvVar{
 		{Name: "EXPLICIT", Value: "first"},
 	}
 
@@ -303,7 +302,7 @@ func TestExecutableGetLifecycleKeyIncludesExplicitEffectiveEnv(t *testing.T) {
 
 	exeWithDifferentExplicitEnv := lifecycleKeyTestExecutable()
 	exeWithDifferentExplicitEnv.Status.EffectiveArgs = []string{"--port", "5000"}
-	exeWithDifferentExplicitEnv.Status.EffectiveEnv = []commonapi.EnvVar{
+	exeWithDifferentExplicitEnv.Status.EffectiveEnv = []EnvVar{
 		{Name: "EXPLICIT", Value: "second"},
 	}
 
@@ -317,14 +316,14 @@ func TestExecutableGetLifecycleKeyIncludesEffectiveArgs(t *testing.T) {
 
 	exe := lifecycleKeyTestExecutable()
 	exe.Status.EffectiveArgs = []string{"--port", "5000"}
-	exe.Status.EffectiveEnv = []commonapi.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+	exe.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
 
 	key, _, keyErr := exe.GetLifecycleKey()
 	require.NoError(t, keyErr)
 
 	exeWithDifferentEffectiveArgs := lifecycleKeyTestExecutable()
 	exeWithDifferentEffectiveArgs.Status.EffectiveArgs = []string{"--port", "5001"}
-	exeWithDifferentEffectiveArgs.Status.EffectiveEnv = []commonapi.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+	exeWithDifferentEffectiveArgs.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
 
 	keyWithDifferentEffectiveArgs, _, differentEffectiveArgsErr := exeWithDifferentEffectiveArgs.GetLifecycleKey()
 	require.NoError(t, differentEffectiveArgsErr)
@@ -335,7 +334,7 @@ func TestExecutableGetLifecycleKeyRequiresEffectiveArgs(t *testing.T) {
 	t.Parallel()
 
 	exe := lifecycleKeyTestExecutable()
-	exe.Status.EffectiveEnv = []commonapi.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+	exe.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
 
 	_, _, keyErr := exe.GetLifecycleKey()
 
@@ -360,7 +359,7 @@ func TestExecutableGetLifecycleKeyReturnsEnvFileReadError(t *testing.T) {
 	exe := lifecycleKeyTestExecutable()
 	exe.Spec.EnvFiles = []string{missingEnvFile}
 	exe.Status.EffectiveArgs = []string{"--port", "5000"}
-	exe.Status.EffectiveEnv = []commonapi.EnvVar{{Name: "EXPLICIT", Value: "stable"}}
+	exe.Status.EffectiveEnv = []EnvVar{{Name: "EXPLICIT", Value: "stable"}}
 
 	_, _, keyErr := exe.GetLifecycleKey()
 
@@ -374,7 +373,7 @@ func lifecycleKeyTestExecutable() *Executable {
 			ExecutablePath:   "/path/to/app",
 			WorkingDirectory: "/path/to/workdir",
 			Args:             []string{"--port", "{{ port }}"},
-			Env:              []commonapi.EnvVar{{Name: "EXPLICIT", Value: "{{ value }}"}},
+			Env:              []EnvVar{{Name: "EXPLICIT", Value: "{{ value }}"}},
 			Persistent:       true,
 		},
 	}

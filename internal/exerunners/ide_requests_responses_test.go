@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/dcp/pkg/commonapi"
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/pkg/osutil"
 )
 
@@ -35,7 +35,7 @@ func TestRunSessionRequestCreation(t *testing.T) {
 
 	req := ideRunSessionRequestV1{
 		LaunchConfigurations: lconfigs,
-		Env:                  []commonapi.EnvVar{{Name: "key1", Value: "value1"}, {Name: "key2", Value: "value2"}, {Name: "empty", Value: ""}},
+		Env:                  []apiv1.EnvVar{{Name: "key1", Value: "value1"}, {Name: "key2", Value: "value2"}, {Name: "empty", Value: ""}},
 		Args:                 []string{"arg1", "arg2"},
 	}
 

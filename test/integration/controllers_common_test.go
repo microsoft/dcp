@@ -28,6 +28,8 @@ import (
 	clientgorest "k8s.io/client-go/rest"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/stretchr/testify/require"
+
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
@@ -42,7 +44,6 @@ import (
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
-	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -69,77 +70,38 @@ func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.Creat
 		EnvFiles:       spec.EnvFiles,
 		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
 		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
-		Labels:         spec.Labels,
-		RestartPolicy:  spec.RestartPolicy,
-		PullPolicy:     spec.PullPolicy,
+		Labels:         v1LabelsToContainerLabels(spec.Labels),
+		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
+		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
 		RunArgs:        spec.RunArgs,
 		AttachTerminal: spec.Terminal != nil,
 	}
 }
 
-func v1PortsToCreateContainerPorts(ports []commonapi.ContainerPort) []containers.CreateContainerPort {
-	retval := make([]containers.CreateContainerPort, 0, len(ports))
-	for _, port := range ports {
-		containerPortEnd := port.ContainerPort
-		if port.ContainerPortEnd != 0 {
-			containerPortEnd = port.ContainerPortEnd
-		}
-		for containerPortValue := int64(port.ContainerPort); containerPortValue <= int64(containerPortEnd); containerPortValue++ {
-			containerPort := int32(containerPortValue)
-			hostPort := port.HostPort
-			if hostPort != 0 {
-				hostPort += containerPort - port.ContainerPort
-			}
-			retval = append(retval, containers.CreateContainerPort{
-				HostPort:      hostPort,
-				ContainerPort: containerPort,
-				Protocol:      string(port.Protocol),
-				HostIP:        port.HostIP,
-			})
+func v1LabelsToContainerLabels(labels []apiv1.ContainerLabel) []containers.Label {
+	return slices.Map[containers.Label](labels, func(label apiv1.ContainerLabel) containers.Label {
+		return containers.Label{Key: label.Key, Value: label.Value}
+	})
+}
+
+func v1PortsToCreateContainerPorts(ports []apiv1.ContainerPort) []containers.CreateContainerPort {
+	retval := make([]containers.CreateContainerPort, len(ports))
+	for i, port := range ports {
+		retval[i] = containers.CreateContainerPort{
+			HostPort:      port.HostPort,
+			ContainerPort: port.ContainerPort,
+			Protocol:      string(port.Protocol),
+			HostIP:        port.HostIP,
 		}
 	}
 	return retval
 }
 
-func TestV1PortsToCreateContainerPortsExpandsRanges(t *testing.T) {
-	t.Parallel()
-
-	ports := v1PortsToCreateContainerPorts([]commonapi.ContainerPort{
-		{
-			HostPort:         19100,
-			ContainerPort:    9100,
-			ContainerPortEnd: 9102,
-			Protocol:         commonapi.TCP,
-			HostIP:           "127.0.0.3",
-		},
-	})
-	require.Equal(t, []containers.CreateContainerPort{
-		{
-			HostPort:      19100,
-			ContainerPort: 9100,
-			Protocol:      string(commonapi.TCP),
-			HostIP:        "127.0.0.3",
-		},
-		{
-			HostPort:      19101,
-			ContainerPort: 9101,
-			Protocol:      string(commonapi.TCP),
-			HostIP:        "127.0.0.3",
-		},
-		{
-			HostPort:      19102,
-			ContainerPort: 9102,
-			Protocol:      string(commonapi.TCP),
-			HostIP:        "127.0.0.3",
-		},
-	}, ports)
-}
-
-func v1VolumeMountsToCreateContainerVolumeMounts(mounts []commonapi.VolumeMount) []containers.CreateContainerVolumeMount {
+func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []containers.CreateContainerVolumeMount {
 	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
 	for i, mount := range mounts {
 		retval[i] = containers.CreateContainerVolumeMount{
-			Type:     mount.Type,
+			Type:     containers.VolumeMountType(mount.Type),
 			Source:   mount.Source,
 			Target:   mount.Target,
 			ReadOnly: mount.ReadOnly,

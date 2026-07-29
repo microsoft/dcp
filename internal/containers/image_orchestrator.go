@@ -7,8 +7,6 @@ package containers
 
 import (
 	"context"
-
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // InspectImages command types
@@ -44,11 +42,62 @@ type InspectImages interface {
 
 // BuildImage command types
 
+type BuildSecretType string
+
+const (
+	EnvSecret  BuildSecretType = "env"
+	FileSecret BuildSecretType = "file"
+)
+
+// ContainerBuildSecret is a secret made available to the image builder.
+type ContainerBuildSecret struct {
+	// The type of secret (defaults to file).
+	Type BuildSecretType `json:"type,omitempty"`
+
+	// The ID of the secret.
+	ID string `json:"id"`
+
+	// For file secrets, the source filepath of the secret; for env secrets, the environment
+	// variable name. Required for file secrets, optional for env secrets (defaults to the ID).
+	Source string `json:"source,omitempty"`
+
+	// Only used for env secrets. If set, this value is applied via the configured environment
+	// variable to the build command. If unset, the value comes from the ambient environment.
+	Value string `json:"value,omitempty"`
+}
+
+// ContainerBuildContext describes how to build a container image from source.
+type ContainerBuildContext struct {
+	// The path to the directory to be used as the root of the build context.
+	Context string `json:"context"`
+
+	// The path to a Dockerfile to use for the build.
+	Dockerfile string `json:"dockerfile,omitempty"`
+
+	// Additional tags to apply to the image.
+	Tags []string `json:"tags,omitempty"`
+
+	// Additional --build-arg values to pass to the build command.
+	Args []EnvVar `json:"args,omitempty"`
+
+	// Build time secrets to be passed in to the builder via --secret.
+	Secrets []ContainerBuildSecret `json:"secrets,omitempty"`
+
+	// Optional: the name of the build stage to use for the build.
+	Stage string `json:"stage,omitempty"`
+
+	// Labels to apply to the built image.
+	Labels []Label `json:"labels,omitempty"`
+
+	// Optional target platform for the build (e.g. "linux/amd64").
+	Platform string `json:"platform,omitempty"`
+}
+
 type BuildImageOptions struct {
 	IidFile string
 	Pull    bool
 
-	*commonapi.ContainerBuildContext
+	*ContainerBuildContext
 
 	StreamCommandOptions
 	TimeoutOption

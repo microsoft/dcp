@@ -21,7 +21,6 @@ import (
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/maps"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -522,7 +521,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "named volume includes src",
 			mount: ct.CreateContainerVolumeMount{
-				Type:   commonapi.VolumeMountTypeVolume,
+				Type:   ct.NamedVolumeMount,
 				Source: "myvolume",
 				Target: "/data",
 			},
@@ -531,7 +530,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "anonymous volume omits src",
 			mount: ct.CreateContainerVolumeMount{
-				Type:   commonapi.VolumeMountTypeVolume,
+				Type:   ct.NamedVolumeMount,
 				Source: "",
 				Target: "/data",
 			},
@@ -540,7 +539,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "named volume readonly",
 			mount: ct.CreateContainerVolumeMount{
-				Type:     commonapi.VolumeMountTypeVolume,
+				Type:     ct.NamedVolumeMount,
 				Source:   "myvolume",
 				Target:   "/data",
 				ReadOnly: true,
@@ -550,7 +549,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "anonymous volume readonly",
 			mount: ct.CreateContainerVolumeMount{
-				Type:     commonapi.VolumeMountTypeVolume,
+				Type:     ct.NamedVolumeMount,
 				Source:   "",
 				Target:   "/data",
 				ReadOnly: true,

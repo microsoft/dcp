@@ -56,7 +56,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerSpec{
 					ImageRef: "test-image",
-					Ports: []commonapi.ContainerPort{
+					Ports: []ContainerPort{
 						{
 							ContainerPort:    8080,
 							ContainerPortEnd: 8082,
@@ -138,7 +138,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerSpec{
 					ImageRef: "test-image",
-					Ports: []commonapi.ContainerPort{
+					Ports: []ContainerPort{
 						{
 							ContainerPort:    8080,
 							ContainerPortEnd: 8079,
@@ -157,7 +157,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerSpec{
 					ImageRef: "test-image",
-					Ports: []commonapi.ContainerPort{
+					Ports: []ContainerPort{
 						{
 							ContainerPort:    8080,
 							ContainerPortEnd: 8082,
@@ -177,7 +177,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerSpec{
 					ImageRef: "test-image",
-					Ports: []commonapi.ContainerPort{
+					Ports: []ContainerPort{
 						{
 							ContainerPort: 8080,
 							Protocol:      commonapi.PortProtocol("SCTP"),

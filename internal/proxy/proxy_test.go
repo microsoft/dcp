@@ -24,8 +24,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
@@ -159,7 +159,7 @@ func TestTCPClientCanSendDataBeforeEndpointsExist(t *testing.T) {
 	}
 
 	// Configure the proxy with valid endpoint
-	port, err := networking.GetFreePort(commonapi.TCP, networking.IPv4LocalhostDefaultAddress, log)
+	port, err := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, err)
 	config := ProxyConfig{
 		Endpoints: []Endpoint{
@@ -408,7 +408,7 @@ func TestTCPParkedConnectionMaxCountLimit(t *testing.T) {
 	defer cancelFunc()
 	// Use logr.Discard() instead of mock logger since this test causes expected TCP errors
 	// when connections are closed due to the limit
-	proxy := newNetProxy(commonapi.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 	err := proxy.Start()
 	require.NoError(t, err)
@@ -502,7 +502,7 @@ func TestRandomEndpointSelection(t *testing.T) {
 	const tries = 20
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
-	proxy := newNetProxy(commonapi.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.Discard())
 	require.NotNil(t, proxy)
 	defer cancelFunc()
 
@@ -693,7 +693,7 @@ func TestTCPProxyContinuousStream(t *testing.T) {
 
 	t.Parallel()
 
-	serverPort, portErr := networking.GetFreePort(commonapi.TCP, networking.IPv4LocalhostDefaultAddress, log)
+	serverPort, portErr := networking.GetFreePort(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, log)
 	require.NoError(t, portErr, "Failed to get free port for server")
 
 	// Set up a proxy
@@ -755,7 +755,7 @@ func setupTcpServer(t *testing.T, port int32) (net.Listener, int) {
 
 func setupTcpProxy(t *testing.T, ctx context.Context) (*netProxy, *testutil.MockLoggerSink) {
 	logSink := testutil.NewMockLoggerSink()
-	proxy := newNetProxy(commonapi.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
+	proxy := newNetProxy(apiv1.TCP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()
@@ -802,7 +802,7 @@ func setupUdpServer(t *testing.T, port int32) (net.PacketConn, int) {
 
 func setupUdpProxy(t *testing.T, ctx context.Context) (*netProxy, *testutil.MockLoggerSink) {
 	logSink := testutil.NewMockLoggerSink()
-	proxy := newNetProxy(commonapi.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
+	proxy := newNetProxy(apiv1.UDP, networking.IPv4LocalhostDefaultAddress, 0, ctx, logr.New(logSink))
 	require.NotNil(t, proxy)
 
 	err := proxy.Start()

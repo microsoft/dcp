@@ -35,7 +35,7 @@ import (
 
 type runningContainerExecStatus struct {
 	state         apiv1.ExecutableState
-	effectiveEnv  []commonapi.EnvVar
+	effectiveEnv  []apiv1.EnvVar
 	effectiveArgs []string
 
 	// Paths to captured standard output and standard error files
@@ -296,9 +296,9 @@ func (r *ContainerExecReconciler) computeEffectiveEnvironment(
 	exec *apiv1.ContainerExec,
 	ctr *apiv1.Container,
 	log logr.Logger,
-) ([]commonapi.EnvVar, error) {
+) ([]apiv1.EnvVar, error) {
 	// Note: there is no value substitution by DCP for .env files, these are handled by container orchestrator directly.
-	effectiveEnv := []commonapi.EnvVar{}
+	effectiveEnv := []apiv1.EnvVar{}
 
 	tmpl, err := templating.NewSpecValueTemplate(ctx, r, ctr, nil, log)
 	if err != nil {
@@ -312,7 +312,7 @@ func (r *ContainerExecReconciler) computeEffectiveEnvironment(
 			return effectiveEnv, templateErr
 		}
 
-		effectiveEnv = append(effectiveEnv, commonapi.EnvVar{Name: envVar.Name, Value: effectiveValue})
+		effectiveEnv = append(effectiveEnv, apiv1.EnvVar{Name: envVar.Name, Value: effectiveValue})
 	}
 
 	return effectiveEnv, nil

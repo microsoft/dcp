@@ -1250,8 +1250,8 @@ func (r *ExecutableReconciler) computeEffectiveEnvironment(
 		envMap.DeletePrefix(prefix)
 	}
 
-	exe.Status.EffectiveEnv = maps.MapToSlice[commonapi.EnvVar](envMap.Data(), func(key string, value string) commonapi.EnvVar {
-		return commonapi.EnvVar{Name: key, Value: value}
+	exe.Status.EffectiveEnv = maps.MapToSlice[apiv1.EnvVar](envMap.Data(), func(key string, value string) apiv1.EnvVar {
+		return apiv1.EnvVar{Name: key, Value: value}
 	})
 
 	return nil

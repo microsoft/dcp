@@ -28,6 +28,7 @@ import (
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
+	dcpslices "github.com/microsoft/dcp/pkg/slices"
 )
 
 var (
@@ -159,7 +160,7 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context
 		}
 	}
 
-	if image.Spec.PullPolicy == commonapi.PullPolicyAlways {
+	if image.Spec.PullPolicy == apiv2.PullPolicyAlways {
 		return r.schedulePhysicalContainerImagePull(image, image.Spec.Image, log)
 	}
 
@@ -173,7 +174,7 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context
 		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 		return change
 	}
-	if image.Spec.PullPolicy == commonapi.PullPolicyNever {
+	if image.Spec.PullPolicy == apiv2.PullPolicyNever {
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
 		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Image %q is not available locally.", image.Spec.Image))
 		return change
@@ -201,7 +202,7 @@ func (r *PhysicalContainerImageReconciler) ensureBuiltImage(ctx context.Context,
 	buildContext := *image.Spec.Build
 	buildContext.Tags = append([]string{}, buildContext.Tags...)
 	buildContext.Args = append([]commonapi.EnvVar{}, buildContext.Args...)
-	buildContext.Secrets = append([]commonapi.ContainerBuildSecret{}, buildContext.Secrets...)
+	buildContext.Secrets = append([]apiv2.ContainerBuildSecret{}, buildContext.Secrets...)
 	buildContext.Labels = append([]commonapi.Label{}, buildContext.Labels...)
 	buildContext.Tags = physicalContainerImageBuildTags(buildContext.Tags, outputImage)
 
@@ -238,7 +239,7 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(
 func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 	image *apiv2.PhysicalContainerImage,
 	outputImage string,
-	buildContext *commonapi.ContainerBuildContext,
+	buildContext *apiv2.ContainerBuildContext,
 	log logr.Logger,
 ) objectChange {
 	stateKey := physicalContainerImageDataKey(image)
@@ -293,7 +294,7 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
 	outputImage string,
-	buildContext *commonapi.ContainerBuildContext,
+	buildContext *apiv2.ContainerBuildContext,
 	log logr.Logger,
 ) {
 	log.V(1).Info("Building PhysicalContainerImage", "Context", buildContext.Context, "Dockerfile", buildContext.Dockerfile, "Image", outputImage)
@@ -322,9 +323,9 @@ func (r *PhysicalContainerImageReconciler) buildPhysicalContainerImage(
 	}
 
 	buildErr := r.orchestrator.BuildImage(ctx, containers.BuildImageOptions{
-		Pull:                  image.Spec.PullPolicy == commonapi.PullPolicyAlways,
+		Pull:                  image.Spec.PullPolicy == apiv2.PullPolicyAlways,
 		IidFile:               iidFileName,
-		ContainerBuildContext: buildContext,
+		ContainerBuildContext: v2BuildContextToContainerBuildContext(buildContext),
 	})
 	if buildErr != nil {
 		log.Error(buildErr, "Failed to build PhysicalContainerImage", "Image", outputImage)
@@ -515,4 +516,28 @@ func setPhysicalContainerImageTags(image *apiv2.PhysicalContainerImage, tags []s
 	}
 	image.Status.Tags = append([]string{}, tags...)
 	return statusChanged
+}
+
+func v2BuildContextToContainerBuildContext(build *apiv2.ContainerBuildContext) *containers.ContainerBuildContext {
+	if build == nil {
+		return nil
+	}
+
+	return &containers.ContainerBuildContext{
+		Context:    build.Context,
+		Dockerfile: build.Dockerfile,
+		Tags:       build.Tags,
+		Args:       build.Args,
+		Secrets: dcpslices.Map[containers.ContainerBuildSecret](build.Secrets, func(secret apiv2.ContainerBuildSecret) containers.ContainerBuildSecret {
+			return containers.ContainerBuildSecret{
+				Type:   containers.BuildSecretType(secret.Type),
+				ID:     secret.ID,
+				Source: secret.Source,
+				Value:  secret.Value,
+			}
+		}),
+		Stage:    build.Stage,
+		Labels:   build.Labels,
+		Platform: build.Platform,
+	}
 }

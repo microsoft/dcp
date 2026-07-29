@@ -19,7 +19,6 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/networking"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -449,9 +448,9 @@ func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 }
 
 // Returns the host address and port for the given service producer port.
-// The spec is checked for a matching commonapi.ContainerPort in the spec, first by matching on commonapi.ContainerPort.HostPort,
-// and if unsuccessful, by matching on commonapi.ContainerPort.ContainerPort.
-// If a matching ContainerPort is found in the spec, and that matching ContainerPort has a HostPort property set
+// The spec is checked for a matching port, first by matching on the host port, and if
+// unsuccessful, by matching on the container port.
+// If a matching port is found in the spec, and that matching port has a HostPort property set
 // (i.e. host port is not auto-assigned), the host address and port in the spec are returned.
 // Otherwise the function takes the inspected container and searches for port config that matches the service producer port
 // (on the container side). If found, corresponding host port and host IP are returned.
@@ -462,30 +461,6 @@ func getHostAddressAndPortForContainerPort(
 	log logr.Logger,
 ) (string, int32, error) {
 	return getHostAddressAndPortForPorts(v1PortsToCreateContainerPorts(ctrSpec.Ports), serviceProducerPort, inspected, log)
-}
-
-func commonPortsToCreateContainerPorts(ports []commonapi.ContainerPort) []containers.CreateContainerPort {
-	retval := make([]containers.CreateContainerPort, 0, len(ports))
-	for _, port := range ports {
-		containerPortEnd := port.ContainerPort
-		if port.ContainerPortEnd != 0 {
-			containerPortEnd = port.ContainerPortEnd
-		}
-		for containerPortValue := int64(port.ContainerPort); containerPortValue <= int64(containerPortEnd); containerPortValue++ {
-			containerPort := int32(containerPortValue)
-			hostPort := port.HostPort
-			if hostPort != 0 {
-				hostPort += containerPort - port.ContainerPort
-			}
-			retval = append(retval, containers.CreateContainerPort{
-				HostPort:      hostPort,
-				ContainerPort: containerPort,
-				Protocol:      string(port.Protocol),
-				HostIP:        port.HostIP,
-			})
-		}
-	}
-	return retval
 }
 
 func getHostAddressAndPortForPorts(
@@ -572,10 +547,10 @@ func ensureBaseImageForLayers(
 	ctx context.Context,
 	o containers.ContainerOrchestrator,
 	image string,
-	pullPolicy commonapi.ImagePullPolicy,
+	pullPolicy containers.ImagePullPolicy,
 	log logr.Logger,
 ) (*containers.InspectedImage, error) {
-	if pullPolicy == commonapi.PullPolicyAlways {
+	if pullPolicy == containers.PullPolicyAlways {
 		log.V(1).Info("Pulling base image (pull policy: always)", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {
@@ -593,12 +568,12 @@ func ensureBaseImageForLayers(
 		return nil, fmt.Errorf("inspecting base image %q: %w", image, inspectErr)
 	}
 
-	if pullPolicy == commonapi.PullPolicyNever {
+	if pullPolicy == containers.PullPolicyNever {
 		return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
 	}
 
 	// Default / "missing" behavior: image not found, so pull and retry inspect
-	if pullPolicy != commonapi.PullPolicyAlways {
+	if pullPolicy != containers.PullPolicyAlways {
 		log.V(1).Info("Base image not found locally, pulling", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {

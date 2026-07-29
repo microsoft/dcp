@@ -33,6 +33,7 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const physicalContainerImageRefField = ".spec.imageRef"
@@ -494,7 +495,7 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 
 		createFilesOptions := containers.CreateFilesOptions{
 			Container:    data.containerID,
-			Entries:      createFileRequest.Entries,
+			Entries:      v2FileSystemEntriesToContainerFileSystemEntries(createFileRequest.Entries),
 			Destination:  createFileRequest.Destination,
 			DefaultOwner: createFileRequest.DefaultOwner,
 			DefaultGroup: createFileRequest.DefaultGroup,
@@ -721,15 +722,34 @@ func (r *PhysicalContainerReconciler) releasePhysicalContainerWatch(container *a
 	r.ReleaseContainerWatchForResource(container.UID, log)
 }
 
-func physicalPortsToCreateContainerPorts(ports []commonapi.ContainerPort) []containers.CreateContainerPort {
-	return commonPortsToCreateContainerPorts(ports)
+// physicalPortsToCreateContainerPorts expands each V2 container port (which may describe an
+// inclusive range) into one orchestrator port per concrete container port.
+func physicalPortsToCreateContainerPorts(ports []apiv2.ContainerPort) []containers.CreateContainerPort {
+	retval := make([]containers.CreateContainerPort, 0, len(ports))
+	for _, port := range ports {
+		containerPortEnd := port.EffectiveContainerPortEnd()
+		for containerPortValue := int64(port.ContainerPort); containerPortValue <= int64(containerPortEnd); containerPortValue++ {
+			containerPort := int32(containerPortValue)
+			hostPort := port.HostPort
+			if hostPort != 0 {
+				hostPort += containerPort - port.ContainerPort
+			}
+			retval = append(retval, containers.CreateContainerPort{
+				HostPort:      hostPort,
+				ContainerPort: containerPort,
+				Protocol:      string(port.Protocol),
+				HostIP:        port.HostIP,
+			})
+		}
+	}
+	return retval
 }
 
-func physicalVolumeMountsToCreateContainerVolumeMounts(mounts []commonapi.VolumeMount) []containers.CreateContainerVolumeMount {
+func physicalVolumeMountsToCreateContainerVolumeMounts(mounts []apiv2.VolumeMount) []containers.CreateContainerVolumeMount {
 	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
 	for i, mount := range mounts {
 		retval[i] = containers.CreateContainerVolumeMount{
-			Type:     mount.Type,
+			Type:     containers.VolumeMountType(mount.Type),
 			Source:   mount.Source,
 			Target:   mount.Target,
 			ReadOnly: mount.ReadOnly,
@@ -738,7 +758,7 @@ func physicalVolumeMountsToCreateContainerVolumeMounts(mounts []commonapi.Volume
 	return retval
 }
 
-func physicalNetworksToCreateContainerNetworks(networks []commonapi.ContainerNetworkConnectionConfig) []containers.CreateContainerNetworkOptions {
+func physicalNetworksToCreateContainerNetworks(networks []apiv2.ContainerNetworkConnectionConfig) []containers.CreateContainerNetworkOptions {
 	retval := make([]containers.CreateContainerNetworkOptions, len(networks))
 	for i, network := range networks {
 		aliases := make([]string, len(network.Aliases))
@@ -851,7 +871,7 @@ func parseInspectedContainerPortKey(portKey string) (int32, commonapi.PortProtoc
 		return 0, "", fmt.Errorf("parse container port key %q: container port must be greater than zero", portKey)
 	}
 
-	protocol := commonapi.TCP
+	protocol := commonapi.PortProtocolTCP
 	if len(portParts) > 1 && portParts[1] != "" {
 		protocol = commonapi.PortProtocol(strings.ToUpper(portParts[1]))
 	}
@@ -889,4 +909,21 @@ func setPhysicalContainerExitCode(container *apiv2.PhysicalContainer, inspectedC
 	exitCode := inspectedContainer.ExitCode
 	container.Status.ExitCode = &exitCode
 	return statusChanged
+}
+
+func v2FileSystemEntriesToContainerFileSystemEntries(entries []apiv2.FileSystemEntry) []containers.FileSystemEntry {
+	return slices.Map[containers.FileSystemEntry](entries, func(entry apiv2.FileSystemEntry) containers.FileSystemEntry {
+		return containers.FileSystemEntry{
+			Type:            containers.FileSystemEntryType(entry.Type),
+			Name:            entry.Name,
+			Owner:           entry.Owner,
+			Group:           entry.Group,
+			Mode:            entry.Mode,
+			Source:          entry.Source,
+			Contents:        entry.Contents,
+			RawContents:     entry.RawContents,
+			ContinueOnError: entry.ContinueOnError,
+			Entries:         v2FileSystemEntriesToContainerFileSystemEntries(entry.Entries),
+		}
+	})
 }

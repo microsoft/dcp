@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 func TestInspectedContainerDeserialization(t *testing.T) {
@@ -82,7 +81,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "named volume includes src",
 			mount: containers.CreateContainerVolumeMount{
-				Type:   commonapi.VolumeMountTypeVolume,
+				Type:   containers.NamedVolumeMount,
 				Source: "myvolume",
 				Target: "/data",
 			},
@@ -91,7 +90,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "anonymous volume omits src",
 			mount: containers.CreateContainerVolumeMount{
-				Type:   commonapi.VolumeMountTypeVolume,
+				Type:   containers.NamedVolumeMount,
 				Source: "",
 				Target: "/data",
 			},
@@ -100,7 +99,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "named volume readonly",
 			mount: containers.CreateContainerVolumeMount{
-				Type:     commonapi.VolumeMountTypeVolume,
+				Type:     containers.NamedVolumeMount,
 				Source:   "myvolume",
 				Target:   "/data",
 				ReadOnly: true,
@@ -110,7 +109,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		{
 			name: "anonymous volume readonly",
 			mount: containers.CreateContainerVolumeMount{
-				Type:     commonapi.VolumeMountTypeVolume,
+				Type:     containers.NamedVolumeMount,
 				Source:   "",
 				Target:   "/data",
 				ReadOnly: true,

@@ -225,7 +225,7 @@ func TestChangingDockerfileModifiesLifecycleKey(t *testing.T) {
 
 	spec := apiv1.ContainerSpec{
 		Image: imageName,
-		Build: &commonapi.ContainerBuildContext{
+		Build: &apiv1.ContainerBuildContext{
 			Context: tmpDir,
 		},
 	}
@@ -445,7 +445,7 @@ func TestContainerStartupFailure(t *testing.T) {
 	})
 }
 
-func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports []commonapi.ContainerPort) {
+func validatePorts(t *testing.T, inspected containers.InspectedContainer, ports []apiv1.ContainerPort) {
 	for _, port := range ports {
 		protocol := port.Protocol
 		if protocol == "" {
@@ -491,7 +491,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{ContainerPort: 2345},
 				{ContainerPort: 3456},
 			},
@@ -517,7 +517,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{ContainerPort: 2345, HostPort: 8885},
 				{ContainerPort: 3456, HostPort: 8886},
 			},
@@ -543,7 +543,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{ContainerPort: 2345, HostIP: "127.0.2.3"},
 				{ContainerPort: 3456, HostIP: "127.0.2.4"},
 			},
@@ -569,7 +569,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{ContainerPort: 2345, HostIP: "127.0.3.4", Protocol: "tcp"},
 				{ContainerPort: 3456, HostIP: "127.0.4.4", Protocol: "udp"},
 			},
@@ -595,7 +595,7 @@ func TestContainerStartWithPorts(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{ContainerPort: 2345, HostPort: 12202, HostIP: "127.0.3.4", Protocol: "tcp"},
 				{ContainerPort: 3456, HostPort: 12205, HostIP: "127.0.4.4", Protocol: "udp"},
 			},
@@ -859,7 +859,7 @@ func TestExistingPersistentContainerStopWithoutStart(t *testing.T) {
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -923,7 +923,7 @@ func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
 
 	createSpec := ctr.Spec
 	createSpec.Stop = false
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -994,7 +994,7 @@ func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
 	createSpec.Start = nil
 	createSpec.Stop = false
 	createSpec.Env = nil
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -1059,7 +1059,7 @@ func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -1128,7 +1128,7 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 	require.NoError(t, hashErr, "expected no error when generating lifecycle key")
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -1474,7 +1474,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: commonapi.TCP,
+				Protocol: apiv1.TCP,
 				Address:  IPAddr,
 				Port:     11760,
 			},
@@ -1485,7 +1485,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: commonapi.TCP,
+				Protocol: apiv1.TCP,
 				Address:  IPAddr,
 				Port:     11761,
 			},
@@ -1522,7 +1522,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{HostPort: svcAHostPort, ContainerPort: svcAContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 				{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 			},
@@ -1551,7 +1551,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAContainerPort)
 	require.Equal(t, fmt.Sprintf("%d", svcAContainerPort), inspected.Env["SVC_A_PORT"], "expected the container to have the env var %s", expectedEnvVar)
 
-	validatePorts(t, inspected, []commonapi.ContainerPort{
+	validatePorts(t, inspected, []apiv1.ContainerPort{
 		{ContainerPort: svcAContainerPort, HostPort: svcAHostPort, HostIP: IPAddr, Protocol: "tcp"},
 		{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 	})
@@ -1589,7 +1589,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  ServiceIPAddr,
 			Port:     26003,
 		},
@@ -1613,7 +1613,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: testName + "-image",
-			Ports: []commonapi.ContainerPort{
+			Ports: []apiv1.ContainerPort{
 				{ContainerPort: ContainerPort},
 			},
 			Env: []commonapi.EnvVar{
@@ -1639,7 +1639,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	_, inspected := ensureContainerRunning(t, ctx, &ctr)
 	require.Contains(t, inspected.Args, expectedArg, "expected the container to have the startup arg %s", expectedArg)
 	require.Equal(t, ServiceIPAddr, inspected.Env["SERVICE_ADDRESS"], "expected the container to have the env var %s", expectedEnvVar)
-	validatePorts(t, inspected, []commonapi.ContainerPort{
+	validatePorts(t, inspected, []apiv1.ContainerPort{
 		{ContainerPort: ContainerPort, HostIP: networking.IPv4LocalhostDefaultAddress},
 	})
 
@@ -1927,7 +1927,7 @@ func TestContainerExistingModeIgnoresLifecycleMismatch(t *testing.T) {
 	}
 
 	seedSpec := ctr.Spec
-	seedSpec.Labels = []commonapi.Label{
+	seedSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev",
 			Value: "true",
@@ -2202,7 +2202,7 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 	}
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -2269,7 +2269,7 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 	}
 
 	createSpec := ctr.Spec
-	createSpec.Labels = []commonapi.Label{
+	createSpec.Labels = []apiv1.ContainerLabel{
 		{
 			Key:   "com.microsoft.developer.usvc-dev.build",
 			Value: "test",
@@ -2329,7 +2329,7 @@ func TestContainerWithBuildContextInstanceStarts(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Build: &commonapi.ContainerBuildContext{
+			Build: &apiv1.ContainerBuildContext{
 				Context:    ".",
 				Dockerfile: "./Dockerfile",
 			},
@@ -2360,7 +2360,7 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ContainerSpec{
-			Build: &commonapi.ContainerBuildContext{
+			Build: &apiv1.ContainerBuildContext{
 				Context:    ".",
 				Dockerfile: "./Dockefile",
 			},
@@ -3730,7 +3730,7 @@ func TestContainerNetworkConnectedFailedStartup(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: networkName,
 				},
@@ -3791,10 +3791,10 @@ func TestContainerCreateFilesDefaultValues(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []commonapi.CreateFileSystem{
+			CreateFiles: []apiv1.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv1.FileSystemEntry{
 						{
 							Name:     "hello.txt",
 							Contents: "hello!",
@@ -3848,10 +3848,10 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []commonapi.CreateFileSystem{
+			CreateFiles: []apiv1.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv1.FileSystemEntry{
 						{
 							Name: "touch.txt",
 						},
@@ -3862,11 +3862,11 @@ func TestContainerCreateFilesMultipleFiles(t *testing.T) {
 					Umask:        &umask,
 					DefaultOwner: 1000,
 					DefaultGroup: 1000,
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv1.FileSystemEntry{
 						{
-							Type: commonapi.FileSystemEntryTypeDir,
+							Type: apiv1.FileSystemEntryTypeDir,
 							Name: "some-dir",
-							Entries: []commonapi.FileSystemEntry{
+							Entries: []apiv1.FileSystemEntry{
 								{
 									Name:  "hello.txt",
 									Owner: &itemOwner,
@@ -3960,12 +3960,12 @@ func TestContainerCreateFilesCertificate(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []commonapi.CreateFileSystem{
+			CreateFiles: []apiv1.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv1.FileSystemEntry{
 						{
-							Type:     commonapi.FileSystemEntryTypeOpenSSL,
+							Type:     apiv1.FileSystemEntryTypeOpenSSL,
 							Name:     "hello.pem",
 							Contents: buffer.String(),
 						},
@@ -4031,10 +4031,10 @@ func TestContainerCreateFilesContinueOnError(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []commonapi.CreateFileSystem{
+			CreateFiles: []apiv1.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv1.FileSystemEntry{
 						{
 							Name:     "hello.txt",
 							Contents: "hello!",
@@ -4042,7 +4042,7 @@ func TestContainerCreateFilesContinueOnError(t *testing.T) {
 						{
 							Name:            "badcert.pem",
 							Contents:        "this is not a valid certificate",
-							Type:            commonapi.FileSystemEntryTypeOpenSSL,
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
 							ContinueOnError: true,
 						},
 					},
@@ -4092,20 +4092,20 @@ func TestContainerCreateFilesAllContinueOnErrorItemsFail(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			CreateFiles: []commonapi.CreateFileSystem{
+			CreateFiles: []apiv1.CreateFileSystem{
 				{
 					Destination: "/tmp",
-					Entries: []commonapi.FileSystemEntry{
+					Entries: []apiv1.FileSystemEntry{
 						{
 							Name:            "badcert1.pem",
 							Contents:        "this is not a valid certificate",
-							Type:            commonapi.FileSystemEntryTypeOpenSSL,
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
 							ContinueOnError: true,
 						},
 						{
 							Name:            "badcert2.pem",
 							Contents:        "this is also not a valid certificate",
-							Type:            commonapi.FileSystemEntryTypeOpenSSL,
+							Type:            apiv1.FileSystemEntryTypeOpenSSL,
 							ContinueOnError: true,
 						},
 					},
@@ -4199,7 +4199,7 @@ func TestContainerFastExitingWithNetwork(t *testing.T) {
 		Spec: apiv1.ContainerSpec{
 			Image:         imageName,
 			ContainerName: testName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: networkName,
 				},
@@ -4286,7 +4286,7 @@ func TestContainerHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

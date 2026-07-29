@@ -447,7 +447,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  networking.IPv4LocalhostDefaultAddress,
 			Port:     13762,
 		},
@@ -464,7 +464,7 @@ func TestExecutableReplicaSetInjectsPortsIntoReplicas(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  networking.IPv4LocalhostDefaultAddress,
 			Port:     13763,
 		},

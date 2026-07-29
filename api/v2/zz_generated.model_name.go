@@ -11,6 +11,36 @@
 package v2
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerBuildContext) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ContainerBuildContext"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerBuildSecret) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ContainerBuildSecret"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerNetworkConnectionConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ContainerNetworkConnectionConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerPort) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.ContainerPort"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in CreateFileSystem) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.CreateFileSystem"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in FileSystemEntry) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.FileSystemEntry"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in Namespace) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.Namespace"
 }
@@ -68,4 +98,9 @@ func (in PhysicalContainerSpec) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in VolumeMount) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.VolumeMount"
 }

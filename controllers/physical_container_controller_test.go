@@ -33,24 +33,24 @@ func TestPhysicalContainerPortMappingsFromInspected(t *testing.T) {
 	require.Equal(t, []apiv2.PhysicalContainerPortMapping{
 		{
 			ContainerPort: 7070,
-			Protocol:      commonapi.TCP,
+			Protocol:      commonapi.PortProtocolTCP,
 			HostPort:      17070,
 		},
 		{
 			ContainerPort: 8080,
-			Protocol:      commonapi.TCP,
+			Protocol:      commonapi.PortProtocolTCP,
 			HostIP:        "127.0.0.1",
 			HostPort:      18080,
 		},
 		{
 			ContainerPort: 8080,
-			Protocol:      commonapi.TCP,
+			Protocol:      commonapi.PortProtocolTCP,
 			HostIP:        "::1",
 			HostPort:      18080,
 		},
 		{
 			ContainerPort: 9090,
-			Protocol:      commonapi.UDP,
+			Protocol:      commonapi.PortProtocolUDP,
 		},
 	}, portMappings)
 }

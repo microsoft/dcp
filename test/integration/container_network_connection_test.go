@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestContainerNetworkConnectsToExisting(t *testing.T) {
@@ -50,7 +50,7 @@ func TestContainerNetworkConnectsToExisting(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
 				},
@@ -100,7 +100,7 @@ func TestContainerNetworkChanges(t *testing.T) {
 		Spec: apiv1.ContainerSpec{
 			Image:         imageName,
 			ContainerName: testName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
 				},
@@ -134,7 +134,7 @@ func TestContainerNetworkChanges(t *testing.T) {
 
 	err = retryOnConflict(ctx, updatedCtr.NamespacedName(), func(ctx context.Context, currentCtr *apiv1.Container) error {
 		containerPatch := currentCtr.DeepCopy()
-		updatedNetworks := append(*(currentCtr.Spec.Networks), commonapi.ContainerNetworkConnectionConfig{
+		updatedNetworks := append(*(currentCtr.Spec.Networks), apiv1.ContainerNetworkConnectionConfig{
 			Name: net2.NamespacedName().String(),
 		})
 		containerPatch.Spec.Networks = &updatedNetworks
@@ -192,7 +192,7 @@ func TestContainerNetworkDoesNotStartUntilNetworkExists(t *testing.T) {
 		Spec: apiv1.ContainerSpec{
 			Image:         imageName,
 			ContainerName: testName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name: testName,
 				},
@@ -340,7 +340,7 @@ func TestContainerNetworkWithAliases(t *testing.T) {
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name:    testName + "-net1",
 					Aliases: aliases1,
@@ -418,7 +418,7 @@ func TestContainerConnectsToMixedCasePersistentNetworkWithAliases(t *testing.T) 
 		},
 		Spec: apiv1.ContainerSpec{
 			Image: imageName,
-			Networks: &[]commonapi.ContainerNetworkConnectionConfig{
+			Networks: &[]apiv1.ContainerNetworkConnectionConfig{
 				{
 					Name:    net.ObjectMeta.Name,
 					Aliases: aliases,

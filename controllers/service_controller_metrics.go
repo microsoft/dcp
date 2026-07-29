@@ -13,7 +13,6 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/telemetry"
-	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 var (
@@ -68,9 +67,9 @@ func serviceCounters(ctx context.Context, service *apiv1.Service, addend int64) 
 	}
 
 	switch service.Spec.Protocol {
-	case commonapi.TCP:
+	case apiv1.TCP:
 		tcpServiceCounter.Add(ctx, addend)
-	case commonapi.UDP:
+	case apiv1.UDP:
 		udpServiceCounter.Add(ctx, addend)
 	}
 }

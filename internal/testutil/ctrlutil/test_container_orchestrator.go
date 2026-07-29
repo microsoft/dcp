@@ -1342,7 +1342,7 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	}
 
 	for _, secret := range options.Secrets {
-		if secret.Type == commonapi.BuildSecretTypeEnv && secret.Value != "" {
+		if secret.Type == containers.EnvSecret && secret.Value != "" {
 			image.secrets[secret.ID] = secret.Value
 		}
 	}
@@ -2370,11 +2370,11 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 	certificateHashes := []string{}
 	for _, item := range options.Entries {
 		switch item.Type {
-		case commonapi.FileSystemEntryTypeDir:
+		case containers.FileSystemEntryTypeDir:
 			if addDirectoryErr := containers.AddDirectoryToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
-		case commonapi.FileSystemEntryTypeSymlink:
+		case containers.FileSystemEntryTypeSymlink:
 			if addSymlinkErr := containers.AddSymlinkToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, to.log); addSymlinkErr != nil {
 				if item.ContinueOnError {
 					to.log.Error(addSymlinkErr, "Failed to add symlink to tar archive, but continueOnError is set", "SymLink", item)
@@ -2382,7 +2382,7 @@ func (to *TestContainerOrchestrator) CreateFiles(ctx context.Context, options co
 					return addSymlinkErr
 				}
 			}
-		case commonapi.FileSystemEntryTypeOpenSSL:
+		case containers.FileSystemEntryTypeOpenSSL:
 			hash, addCertErr := containers.AddCertificateToTar(tarWriter, options.Destination, options.DefaultOwner, options.DefaultGroup, options.Umask, item, options.ModTime, certificateHashes, to.log)
 			if addCertErr != nil {
 				if item.ContinueOnError {

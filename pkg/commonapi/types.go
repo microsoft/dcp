@@ -20,6 +20,7 @@ const MaxWorkloadIDLength = 1024
 
 // EnvVar represents an environment variable present in a resource.
 // +k8s:openapi-gen=true
+// +kubebuilder:object:generate=true
 type EnvVar struct {
 	// Name of the environment variable.
 	Name string `json:"name"`
@@ -32,6 +33,7 @@ type EnvVar struct {
 
 // Label represents a key/value label to apply to a resource managed outside the API server.
 // +k8s:openapi-gen=true
+// +kubebuilder:object:generate=true
 type Label struct {
 	// Key is the label key.
 	Key string `json:"key"`
@@ -39,6 +41,14 @@ type Label struct {
 	// Value is the label value.
 	Value string `json:"value"`
 }
+
+// PortProtocol is the transport protocol used by a network port.
+type PortProtocol string
+
+const (
+	PortProtocolTCP PortProtocol = "TCP"
+	PortProtocolUDP PortProtocol = "UDP"
+)
 
 // WorkloadID identifies persistent resources that belong to a logical workload.
 type WorkloadID string

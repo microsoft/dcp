@@ -21,6 +21,11 @@ func (in Container) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerBuildContext) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerBuildContext"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ContainerBuildSecret) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.ContainerBuildSecret"
 }
@@ -73,6 +78,11 @@ func (in ContainerNetwork) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ContainerNetworkConnection) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.ContainerNetworkConnection"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ContainerNetworkConnectionConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v1.ContainerNetworkConnectionConfig"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
@@ -183,11 +193,6 @@ func (in EndpointSpec) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in EndpointStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.EndpointStatus"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in EnvVar) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v1.EnvVar"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

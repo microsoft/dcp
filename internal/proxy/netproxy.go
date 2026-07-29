@@ -21,8 +21,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/networking"
-	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/concurrency"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/queue"
@@ -80,7 +80,7 @@ type udpStream struct {
 // netProxy is an in-process implementation of the Proxy interface that uses
 // the standard library's net package to proxy TCP and UDP connections.
 type netProxy struct {
-	mode          commonapi.PortProtocol
+	mode          apiv1.PortProtocol
 	listenAddress string
 	listenPort    int32
 
@@ -102,12 +102,12 @@ type netProxy struct {
 	lock        sync.Locker
 }
 
-func NewRuntimeProxy(mode commonapi.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) Proxy {
+func NewRuntimeProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) Proxy {
 	return newNetProxy(mode, listenAddress, listenPort, lifetimeCtx, log)
 }
 
-func newNetProxy(mode commonapi.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *netProxy {
-	if mode != commonapi.PortProtocolTCP && mode != commonapi.PortProtocolUDP {
+func newNetProxy(mode apiv1.PortProtocol, listenAddress string, listenPort int32, lifetimeCtx context.Context, log logr.Logger) *netProxy {
+	if mode != apiv1.TCP && mode != apiv1.UDP {
 		panic(fmt.Errorf("unsupported proxy mode: %s", mode))
 	}
 
@@ -165,7 +165,7 @@ func (p *netProxy) Start() error {
 
 	lc := net.ListenConfig{}
 	switch p.mode {
-	case commonapi.PortProtocolTCP:
+	case apiv1.TCP:
 		tcpListener, err := lc.Listen(p.lifetimeCtx, "tcp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
@@ -177,7 +177,7 @@ func (p *netProxy) Start() error {
 		p.effectivePort = int32(tcpAddr.Port)
 
 		go p.runTCP(tcpListener)
-	case commonapi.PortProtocolUDP:
+	case apiv1.UDP:
 		udpListener, err := lc.ListenPacket(p.lifetimeCtx, "udp", networking.AddressAndPort(p.listenAddress, p.listenPort))
 		if err != nil {
 			_ = p.setState(ProxyStateAny, ProxyStateFailed)
@@ -204,7 +204,7 @@ func (p *netProxy) Configure(newConfig ProxyConfig) error {
 	// but the call to Configure might come during shutdown, so we do not return an error in that case.
 	if state != ProxyStateFinished {
 		p.endpointConfigLoadedChannel.In <- newConfig.Clone()
-		if p.mode == commonapi.PortProtocolUDP {
+		if p.mode == apiv1.UDP {
 			p.shutdownAllUDPStreams()
 		}
 		if state == ProxyStateRunning {

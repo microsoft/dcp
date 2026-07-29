@@ -7,6 +7,7 @@ package v1
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -42,6 +43,23 @@ var (
 	// See: https://github.com/moby/moby/blob/master/daemon/names/names.go
 	validContainerName       = `^[a-zA-Z0-9][a-zA-Z0-9_.-]+$`
 	validContainerNameRegexp = regexp.MustCompile(validContainerName)
+	validSHA256HexRegexp     = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+)
+
+type ContainerRestartPolicy string
+
+const (
+	// Do not automatically restart the container when it exits (default)
+	RestartPolicyNone ContainerRestartPolicy = "no"
+
+	// Restart only if the container exits with non-zero status
+	RestartPolicyOnFailure ContainerRestartPolicy = "on-failure"
+
+	// Restart container, except if container is explicitly stopped (or container daemon is stopped/restarted)
+	RestartPolicyUnlessStopped ContainerRestartPolicy = "unless-stopped"
+
+	// Always try to restart the container
+	RestartPolicyAlways ContainerRestartPolicy = "always"
 )
 
 // +kubebuilder:validation:Enum=session;persistent;existing;cleanup
@@ -94,6 +112,461 @@ func (mode ContainerMode) ShouldDeleteContainer() bool {
 	default:
 		return false
 	}
+}
+
+type VolumeMountType string
+
+const (
+	// A volume mount to a host directory
+	BindMount VolumeMountType = "bind"
+
+	// A volume mount to a named volume managed by an orchestrator
+	NamedVolumeMount VolumeMountType = "volume"
+)
+
+// +k8s:openapi-gen=true
+type VolumeMount struct {
+	Type VolumeMountType `json:"type"`
+
+	// Bind mounts: the host directory to mount
+	// Volume mounts: name of the volume to mount
+	Source string `json:"source"`
+
+	// The path within the container that the mount will use
+	Target string `json:"target"`
+
+	// True if the mounted file system is supposed to be read-only
+	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+// PortProtocol is aliased to the shared type so that networking and proxy code can
+// describe port protocols without depending on a specific API version.
+type PortProtocol = commonapi.PortProtocol
+
+const (
+	TCP = commonapi.PortProtocolTCP
+	UDP = commonapi.PortProtocolUDP
+)
+
+// +k8s:openapi-gen=true
+type ContainerPort struct {
+	// Optional: If specified, this must be a valid port number, 0 < x < 65536.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	HostPort int32 `json:"hostPort,omitempty"`
+
+	// Required: This must be a valid port number, 0 < x < 65536.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	ContainerPort int32 `json:"containerPort"`
+
+	// The port to be used, defaults to TCP
+	Protocol PortProtocol `json:"protocol,omitempty"`
+
+	// Optional: What host IP to bind the external port to.
+	HostIP string `json:"hostIP,omitempty"`
+}
+
+type BuildSecretType string
+
+const (
+	EnvSecret  BuildSecretType = "env"
+	FileSecret BuildSecretType = "file"
+)
+
+// +k8s:openapi-gen=true
+type ContainerBuildSecret struct {
+	// The type of secret (defaults to file)
+	Type BuildSecretType `json:"type,omitempty"`
+
+	// The ID of the secret
+	ID string `json:"id"`
+
+	// If type is file (or empty), the source filepath of the secret, if type is env, the environment variable name
+	// Required for file secrets, optional for env secrets (defaults to the ID)
+	Source string `json:"source,omitempty"`
+
+	// Only used for "env" type secrets. If set, this value is applied via the configured environment variable
+	// to the build command. If unset, it is assumed the environment secret comes from an ambient environment variables
+	Value string `json:"value,omitempty"`
+}
+
+// +k8s:openapi-gen=true
+type ContainerBuildContext struct {
+	// The path to the directory to be used as the root of the build context
+	Context string `json:"context"`
+
+	// The path to a Dockerfile to use for the build
+	Dockerfile string `json:"dockerfile,omitempty"`
+
+	// Additional tags to apply to the image
+	// +listType=set
+	Tags []string `json:"tags,omitempty"`
+
+	// Additional --build-arg values to pass to the build command
+	// +listType=atomic
+	Args []EnvVar `json:"args,omitempty"`
+
+	// Build time secrets to be passed in to the builder via --secret
+	// +listType=atomic
+	Secrets []ContainerBuildSecret `json:"secrets,omitempty"`
+
+	// Optional: The name of the build stage to use for the build
+	Stage string `json:"stage,omitempty"`
+
+	// Labels to apply to the built image
+	// +listType=map
+	// +listMapKey=key
+	Labels []ContainerLabel `json:"labels,omitempty"`
+
+	// Optional target platform for the build (e.g. "linux/amd64")
+	Platform string `json:"platform,omitempty"`
+}
+
+// +k8s:openapi-gen=true
+type ContainerLabel struct {
+	// The label key
+	Key string `json:"key"`
+
+	// The label value
+	Value string `json:"value"`
+}
+
+type PullPolicy string
+
+const (
+	// Always pull the container image
+	PullPolicyAlways PullPolicy = "always"
+
+	// Pull the container image only if it is not present
+	PullPolicyMissing PullPolicy = "missing"
+
+	// Never pull the container image
+	PullPolicyNever PullPolicy = "never"
+)
+
+type FileSystemEntryType string
+
+const (
+	FileSystemEntryTypeFile    FileSystemEntryType = "file"    // default
+	FileSystemEntryTypeOpenSSL FileSystemEntryType = "openssl" // special type for OpenSSL certificates
+	FileSystemEntryTypeDir     FileSystemEntryType = "directory"
+	// The public CreateFiles API validation doesn't allow specifying "symlink" as a FileSystemEntry
+	// type, but the internal ContainerOrchestrator.CreateFiles library does support it.
+	FileSystemEntryTypeSymlink FileSystemEntryType = "symlink"
+)
+
+// Represents part of the file structure to be created in the container
+// +k8s:openapi-gen=true
+type FileSystemEntry struct {
+	// The type of entry (file, symlink, or directory)
+	Type FileSystemEntryType `json:"type,omitempty"`
+
+	// The name of the entry (required)
+	Name string `json:"name"`
+
+	// The UID of the file owner. Defaults to 0 (root).
+	Owner *int32 `json:"owner,omitempty"`
+
+	// The ID of the file group. Defaults to 0 (root).
+	Group *int32 `json:"group,omitempty"`
+
+	// The unix mode permissions of this entry. If Mode is 0, the umask for the create file request will be applied.
+	Mode fs.FileMode `json:"mode,omitempty"`
+
+	// For file type entries, an optional path to a source file to copy. It's an error to set both a Source and Contents for a file.
+	Source string `json:"source,omitempty"`
+
+	// For symlink type entries, the target of the symlink. The target must be a valid path in the container (existing or created as
+	// part of this create files set). The value can either be an absolute path or a relative path from the newly created symlink.
+	Target string `json:"target,omitempty"`
+
+	// For file type entries, the string contents of the file. Optional.
+	Contents string `json:"contents,omitempty"`
+
+	// For file type entries, the Base64 encoded byte contents of the file. Optional
+	RawContents string `json:"rawContents,omitempty"`
+
+	// For file type entries, if true, errors creating this file will be logged, but will not cause the overall CreateFiles operation to fail.
+	ContinueOnError bool `json:"continueOnError,omitempty"`
+
+	// For directory type entries, the child entries (files or directories). Optional.
+	// +listType=atomic
+	Entries []FileSystemEntry `json:"entries,omitempty"`
+}
+
+func (fse *FileSystemEntry) GetType() FileSystemEntryType {
+	if fse.Type == "" {
+		return FileSystemEntryTypeFile
+	}
+
+	return fse.Type
+}
+
+func (cfi *FileSystemEntry) Equal(other *FileSystemEntry) bool {
+	if cfi == other {
+		return true
+	}
+
+	if cfi == nil || other == nil {
+		return false
+	}
+
+	if cfi.Type != other.Type {
+		return false
+	}
+
+	if cfi.Name != other.Name {
+		return false
+	}
+
+	if !pointers.EqualValue(cfi.Owner, other.Owner) {
+		return false
+	}
+
+	if !pointers.EqualValue(cfi.Group, other.Group) {
+		return false
+	}
+
+	if cfi.Mode != other.Mode {
+		return false
+	}
+
+	if cfi.Source != other.Source {
+		return false
+	}
+
+	if cfi.Contents != other.Contents {
+		return false
+	}
+
+	if cfi.RawContents != other.RawContents {
+		return false
+	}
+
+	if cfi.ContinueOnError != other.ContinueOnError {
+		return false
+	}
+
+	if !slices.EqualFunc(cfi.Entries, other.Entries, func(i1, i2 FileSystemEntry) bool {
+		return i1.Equal(&i2)
+	}) {
+		return false
+	}
+
+	return true
+}
+
+func (fse *FileSystemEntry) Validate(fieldPath *field.Path) field.ErrorList {
+	if fse == nil {
+		return nil
+	}
+
+	var errorList field.ErrorList
+
+	if fse.Name == "" {
+		errorList = append(errorList, field.Required(fieldPath.Child("name"), "name must be set to a non-empty value"))
+	}
+
+	if path.Dir(fse.Name) != "." {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("name"), fse.Name, "name must not include a path component"))
+	}
+
+	if fse.Owner != nil && *fse.Owner < 0 {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("owner"), fse.Owner, "owner must be a non-negative integer"))
+	}
+
+	if fse.Group != nil && *fse.Group < 0 {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("group"), fse.Group, "group must be a non-negative integer"))
+	}
+
+	if fse.GetType() != FileSystemEntryTypeFile && fse.GetType() != FileSystemEntryTypeOpenSSL && fse.GetType() != FileSystemEntryTypeDir {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("type"), fse.Type, "type must be one of 'file', 'certificate', or 'directory'"))
+	}
+
+	if fse.GetType() == FileSystemEntryTypeFile || fse.GetType() == FileSystemEntryTypeOpenSSL {
+		if len(fse.Entries) > 0 {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("entries"), fmt.Sprintf("dirEntry cannot be set for %s type entries", fse.GetType())))
+		}
+
+		if fse.Source != "" && fse.Contents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "source and contents cannot be set at the same time"))
+		}
+
+		if fse.Source != "" && fse.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "source and rawContents cannot be set at the same time"))
+		}
+
+		if fse.Contents != "" && fse.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "contents and rawContents cannot be set at the same time"))
+		}
+	}
+
+	if fse.GetType() == FileSystemEntryTypeDir {
+		if fse.Source != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("source"), "source cannot be set for directory type entries"))
+		}
+
+		if fse.Contents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("contents"), "contents cannot be set for directory type entries"))
+		}
+
+		if fse.RawContents != "" {
+			errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "rawContents cannot be set for directory type entries"))
+		}
+
+		for i, entry := range fse.Entries {
+			errorList = append(errorList, entry.Validate(fieldPath.Child("entries").Index(i))...)
+		}
+	}
+
+	if !fse.Mode.IsRegular() {
+		errorList = append(errorList, field.Invalid(fieldPath.Child("mode"), fse.Mode, "mode must not include type bits"))
+	}
+
+	return errorList
+}
+
+// Describes files and/or folders to be created in the Container before it is started
+// +k8s:openapi-gen=true
+type CreateFileSystem struct {
+	// The destination path for the file (should already exist in the container)
+	Destination string `json:"destination,omitempty"`
+
+	// The default owner ID for created files (defaults to 0 for root)
+	DefaultOwner int32 `json:"defaultOwner,omitempty"`
+
+	// The default group ID for created files (defaults to 0 for root)
+	DefaultGroup int32 `json:"defaultGroup,omitempty"`
+
+	// The umask for created files and folders without explicit permissions set (defaults to 022)
+	Umask *fs.FileMode `json:"umask,omitempty"`
+
+	// The specific entries to create in the container (must have at least one item)
+	// +listType=atomic
+	Entries []FileSystemEntry `json:"entries,omitempty"`
+}
+
+func (cf *CreateFileSystem) Equal(other *CreateFileSystem) bool {
+	if cf == other {
+		return true
+	}
+
+	if cf == nil || other == nil {
+		return false
+	}
+
+	if cf.Destination != other.Destination {
+		return false
+	}
+
+	if !pointers.EqualValue(cf.Umask, other.Umask) {
+		return false
+	}
+
+	if !slices.EqualFunc(cf.Entries, other.Entries, func(i1, i2 FileSystemEntry) bool {
+		return i1.Equal(&i2)
+	}) {
+		return false
+	}
+
+	return true
+}
+
+// Represents a tar file to be applied as an additional image layer when running the container.
+// The layer can be provided either as a path to a tar file (with a SHA256 hash for verification)
+// or as base64-encoded tar contents.
+// +k8s:openapi-gen=true
+type ImageLayer struct {
+	// An opaque identifier for this layer used in lifecycle key generation.
+	// This allows tracking whether a layer has meaningfully changed independently of
+	// the raw binary content (which may vary due to timestamps or other
+	// materially unimportant differences in the tar file).
+	Digest string `json:"digest"`
+
+	// Path to a tar file on the host filesystem. Mutually exclusive with RawContents.
+	Source string `json:"source,omitempty"`
+
+	// SHA256 hash of the tar file referenced by Source, used for integrity verification. Required when Source is set.
+	SHA256 string `json:"sha256,omitempty"`
+
+	// Base64-encoded tar file contents. Mutually exclusive with Source.
+	RawContents string `json:"rawContents,omitempty"`
+}
+
+func (il *ImageLayer) Equal(other *ImageLayer) bool {
+	if il == other {
+		return true
+	}
+
+	if il == nil || other == nil {
+		return false
+	}
+
+	if il.Digest != other.Digest {
+		return false
+	}
+
+	if il.Source != other.Source {
+		return false
+	}
+
+	if il.SHA256 != other.SHA256 {
+		return false
+	}
+
+	if il.RawContents != other.RawContents {
+		return false
+	}
+
+	return true
+}
+
+func (il *ImageLayer) Validate(fieldPath *field.Path) field.ErrorList {
+	if il == nil {
+		return nil
+	}
+
+	var errorList field.ErrorList
+
+	if il.Digest == "" {
+		errorList = append(errorList, field.Required(fieldPath.Child("digest"), "digest must be set to a non-empty value"))
+	}
+
+	if il.Source == "" && il.RawContents == "" {
+		errorList = append(errorList, field.Required(fieldPath, "either source or rawContents must be set"))
+	}
+
+	if il.Source != "" && il.RawContents != "" {
+		errorList = append(errorList, field.Forbidden(fieldPath.Child("rawContents"), "source and rawContents cannot be set at the same time"))
+	}
+
+	if il.Source != "" && il.SHA256 == "" {
+		errorList = append(errorList, field.Required(fieldPath.Child("sha256"), "sha256 must be set when source is specified"))
+	}
+
+	if il.SHA256 != "" && il.Source == "" {
+		errorList = append(errorList, field.Forbidden(fieldPath.Child("sha256"), "sha256 can only be set when source is specified"))
+	}
+
+	if il.SHA256 != "" {
+		// Accept with or without "sha256:" prefix; the hex portion must be exactly 64 hex characters
+		hexPart := il.SHA256
+		if strings.HasPrefix(strings.ToLower(hexPart), "sha256:") {
+			hexPart = hexPart[7:]
+		}
+		if !validSHA256HexRegexp.MatchString(hexPart) {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("sha256"), il.SHA256, "sha256 must be a 64-character hex string, optionally prefixed with 'sha256:'"))
+		}
+	}
+
+	if il.RawContents != "" {
+		if _, decodeErr := base64.StdEncoding.DecodeString(il.RawContents); decodeErr != nil {
+			errorList = append(errorList, field.Invalid(fieldPath.Child("rawContents"), "<base64 data>", fmt.Sprintf("rawContents must be valid base64: %s", decodeErr.Error())))
+		}
+	}
+
+	return errorList
 }
 
 // Represents a collection of PEM formatted certificates to be written into the container
@@ -186,30 +659,30 @@ type ContainerSpec struct {
 	Image string `json:"image,omitempty"`
 
 	// Optional build context to use to build the container image
-	Build *commonapi.ContainerBuildContext `json:"build,omitempty"`
+	Build *ContainerBuildContext `json:"build,omitempty"`
 
 	// Optional container name
 	ContainerName string `json:"containerName,omitempty"`
 
 	// Consumed volume information
 	// +listType=atomic
-	VolumeMounts []commonapi.VolumeMount `json:"volumeMounts,omitempty"`
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
 
 	// Exposed ports
 	// +listType=atomic
-	Ports []commonapi.ContainerPort `json:"ports,omitempty"`
+	Ports []ContainerPort `json:"ports,omitempty"`
 
 	// Environment settings
 	// +listType=map
 	// +listMapKey=name
-	Env []commonapi.EnvVar `json:"env,omitempty"`
+	Env []EnvVar `json:"env,omitempty"`
 
 	// Environment files to use to populate Container environment during startup.
 	// +listType=set
 	EnvFiles []string `json:"envFiles,omitempty"`
 
 	// Container restart policy
-	RestartPolicy commonapi.ContainerRestartPolicy `json:"restartPolicy,omitempty"`
+	RestartPolicy ContainerRestartPolicy `json:"restartPolicy,omitempty"`
 
 	// Command to run in the container
 	Command string `json:"command,omitempty"`
@@ -229,7 +702,7 @@ type ContainerSpec struct {
 	// ContainerNetworks resources the container should be attached to. If omitted or nil, the container will
 	// be attached to the default network and the controller will not manage network connections.
 	// +listType=atomic
-	Networks *[]commonapi.ContainerNetworkConnectionConfig `json:"networks,omitempty"`
+	Networks *[]ContainerNetworkConnectionConfig `json:"networks,omitempty"`
 
 	// Controls how the container is created, reused, and cleaned up.
 	// Ignored when persistent is true.
@@ -254,7 +727,7 @@ type ContainerSpec struct {
 	// Labels to apply to the container
 	// +listType=map
 	// +listMapKey=key
-	Labels []commonapi.Label `json:"labels,omitempty"`
+	Labels []ContainerLabel `json:"labels,omitempty"`
 
 	// Health probe configuration for the Container
 	// +listType=atomic
@@ -265,17 +738,17 @@ type ContainerSpec struct {
 	LifecycleKey string `json:"lifecycleKey,omitempty"`
 
 	// Pull policy for container base images, if not set uses the default configuration for the container runtime.
-	PullPolicy commonapi.ImagePullPolicy `json:"pullPolicy,omitempty"`
+	PullPolicy PullPolicy `json:"pullPolicy,omitempty"`
 
 	// Files to create in the container before starting it
 	// +listType=atomic
-	CreateFiles []commonapi.CreateFileSystem `json:"createFiles,omitempty"`
+	CreateFiles []CreateFileSystem `json:"createFiles,omitempty"`
 
 	// Tar files to apply as additional image layers when running the container.
 	// Each layer tar will be applied on top of the base image, producing a derived image
 	// that is used to create the container.
 	// +listType=atomic
-	ImageLayers []commonapi.ImageLayer `json:"imageLayers,omitempty"`
+	ImageLayers []ImageLayer `json:"imageLayers,omitempty"`
 
 	// PEM formatted public certificates to be created in the container
 	// +optional
@@ -324,7 +797,7 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
-	if !pointers.EqualValueFunc(cs.Build, other.Build, func(c1, c2 *commonapi.ContainerBuildContext) bool {
+	if !pointers.EqualValueFunc(cs.Build, other.Build, func(c1, c2 *ContainerBuildContext) bool {
 		return c1.Equal(c2)
 	}) {
 		return false
@@ -374,8 +847,8 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
-	if !pointers.EqualValueFunc(cs.Networks, other.Networks, func(c1, c2 *[]commonapi.ContainerNetworkConnectionConfig) bool {
-		return slices.EqualFunc(*c1, *c2, func(cncc1, cncc2 commonapi.ContainerNetworkConnectionConfig) bool {
+	if !pointers.EqualValueFunc(cs.Networks, other.Networks, func(c1, c2 *[]ContainerNetworkConnectionConfig) bool {
+		return slices.EqualFunc(*c1, *c2, func(cncc1, cncc2 ContainerNetworkConnectionConfig) bool {
 			return cncc1.Equal(&cncc2)
 		})
 	}) {
@@ -424,7 +897,7 @@ func (cs *ContainerSpec) Equal(other *ContainerSpec) bool {
 		return false
 	}
 
-	if !slices.EqualFunc(cs.ImageLayers, other.ImageLayers, func(l1, l2 commonapi.ImageLayer) bool {
+	if !slices.EqualFunc(cs.ImageLayers, other.ImageLayers, func(l1, l2 ImageLayer) bool {
 		return l1.Equal(&l2)
 	}) {
 		return false
@@ -496,33 +969,33 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		if len(cs.Build.Labels) > 0 {
 			// Add the build labels to the hash
 			sortedLabels := slices.Clone(cs.Build.Labels)
-			slices.SortFunc(sortedLabels, func(l1, l2 commonapi.Label) int {
+			slices.SortFunc(sortedLabels, func(l1, l2 ContainerLabel) int {
 				return strings.Compare(l1.Key, l2.Key)
 			})
 
 			for i := range sortedLabels {
-				hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashContainerLabel(sortedLabels[i])))
+				hashErr = errors.Join(hashErr, encoder.Encode(sortedLabels[i]))
 			}
 		}
 
 		if len(cs.Build.Secrets) > 0 {
 			// Add the build secrets to the hash
 			sortedSecrets := slices.Clone(cs.Build.Secrets)
-			slices.SortFunc(sortedSecrets, func(s1, s2 commonapi.ContainerBuildSecret) int {
+			slices.SortFunc(sortedSecrets, func(s1, s2 ContainerBuildSecret) int {
 				return strings.Compare(s1.ID, s2.ID)
 			})
 
 			for i := range sortedSecrets {
-				hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashContainerBuildSecret(sortedSecrets[i])))
+				hashErr = errors.Join(hashErr, encoder.Encode(sortedSecrets[i]))
 				switch sortedSecrets[i].Type {
-				case "", commonapi.BuildSecretTypeFile:
+				case "", FileSecret:
 					// For file type secrets, track the contents of the file as part of the hash
 					fileContents, secretFileReadErr := os.ReadFile(sortedSecrets[i].Source)
 					if secretFileReadErr == nil {
 						_, writeErr = fnvHash.Write(fileContents)
 						hashErr = errors.Join(hashErr, writeErr)
 					}
-				case commonapi.BuildSecretTypeEnv:
+				case EnvSecret:
 					// For env type secrets, track the value of the environment variable
 					value := os.Getenv(sortedSecrets[i].Source)
 					_, writeErr = fnvHash.Write([]byte(value))
@@ -535,19 +1008,19 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 	if len(cs.VolumeMounts) > 0 {
 		// Add the volume mounts to the hash
 		sortedVolumes := slices.Clone(cs.VolumeMounts)
-		slices.SortFunc(sortedVolumes, func(v1, v2 commonapi.VolumeMount) int {
+		slices.SortFunc(sortedVolumes, func(v1, v2 VolumeMount) int {
 			return strings.Compare(v1.Target, v2.Target)
 		})
 
 		for i := range sortedVolumes {
-			hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashVolumeMount(sortedVolumes[i])))
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedVolumes[i]))
 		}
 	}
 
 	if len(cs.Ports) > 0 {
 		// Add the ports to the hash
 		sortedPorts := slices.Clone(cs.Ports)
-		slices.SortFunc(sortedPorts, func(p1, p2 commonapi.ContainerPort) int {
+		slices.SortFunc(sortedPorts, func(p1, p2 ContainerPort) int {
 			compare := strings.Compare(string(p1.Protocol), string(p2.Protocol))
 			if compare != 0 {
 				return compare
@@ -563,19 +1036,19 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 		})
 
 		for i := range sortedPorts {
-			hashErr = errors.Join(hashErr, encodeContainerPortLifecycleHash(encoder, sortedPorts[i]))
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedPorts[i]))
 		}
 	}
 
 	if len(cs.Env) > 0 {
 		// Add the environment variables to the hash
 		sortedEnv := slices.Clone(cs.Env)
-		slices.SortFunc(sortedEnv, func(e1, e2 commonapi.EnvVar) int {
+		slices.SortFunc(sortedEnv, func(e1, e2 EnvVar) int {
 			return strings.Compare(e1.Name, e2.Name)
 		})
 
 		for i := range sortedEnv {
-			hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashEnvVar(sortedEnv[i])))
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedEnv[i]))
 		}
 	}
 
@@ -602,12 +1075,12 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 	if len(cs.CreateFiles) > 0 {
 		// Add the create files to the hash
 		sortedCreateFiles := slices.Clone(cs.CreateFiles)
-		slices.SortFunc(sortedCreateFiles, func(f1, f2 commonapi.CreateFileSystem) int {
+		slices.SortFunc(sortedCreateFiles, func(f1, f2 CreateFileSystem) int {
 			return strings.Compare(f1.Destination, f2.Destination)
 		})
 
 		for i := range sortedCreateFiles {
-			hashErr = errors.Join(hashErr, encoder.Encode(lifecycleHashCreateFileSystem(sortedCreateFiles[i])))
+			hashErr = errors.Join(hashErr, encoder.Encode(sortedCreateFiles[i]))
 		}
 	}
 
@@ -653,6 +1126,36 @@ func (cs *ContainerSpec) GetLifecycleKey() (string, bool, error) {
 	lifecycleKey := fmt.Sprintf("%x", fnvHash.Sum(nil))
 
 	return lifecycleKey, true, hashErr
+}
+
+// +k8s:openapi-gen=true
+type ContainerNetworkConnectionConfig struct {
+	// Name of the network to connect to
+	Name string `json:"name"`
+
+	// Aliases of the container on the network
+	// +listType=atomic
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+func (cncc *ContainerNetworkConnectionConfig) Equal(other *ContainerNetworkConnectionConfig) bool {
+	if cncc == other {
+		return true
+	}
+
+	if cncc == nil || other == nil {
+		return false
+	}
+
+	if cncc.Name != other.Name {
+		return false
+	}
+
+	if !slices.Equal(cncc.Aliases, other.Aliases) {
+		return false
+	}
+
+	return true
 }
 
 type ContainerState string
@@ -738,7 +1241,7 @@ type ContainerStatus struct {
 	// Effective values of environment variables, after all substitutions are applied.
 	// +listType=map
 	// +listMapKey=name
-	EffectiveEnv []commonapi.EnvVar `json:"effectiveEnv,omitempty"`
+	EffectiveEnv []EnvVar `json:"effectiveEnv,omitempty"`
 
 	// Effective values of launch arguments to be passed to the Container, after all substitutions are applied.
 	// +listType=atomic
@@ -851,7 +1354,7 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		}
 
 		for i, secret := range c.Spec.Build.Secrets {
-			if secret.Type != "" && secret.Type != commonapi.BuildSecretTypeFile && secret.Type != commonapi.BuildSecretTypeEnv {
+			if secret.Type != "" && secret.Type != FileSecret && secret.Type != EnvSecret {
 				errorList = append(errorList, field.Invalid(field.NewPath("spec", "build", "secrets").Index(i).Child("type"), secret.Type, "type must be one of 'file' or 'env'"))
 			}
 
@@ -859,7 +1362,7 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("id"), "id must be set to a non-empty value"))
 			}
 
-			if secret.Type != commonapi.BuildSecretTypeEnv && secret.Source == "" {
+			if secret.Type != EnvSecret && secret.Source == "" {
 				errorList = append(errorList, field.Required(field.NewPath("spec", "build", "secrets").Index(i).Child("source"), "source must be set to a non-empty value"))
 			}
 		}
@@ -887,14 +1390,12 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 		}
 	}
 
-	specPath := field.NewPath("spec")
-	errorList = append(errorList, commonapi.ValidateContainerPorts(c.Spec.Ports, specPath.Child("ports"))...)
-
 	// Validate the object name to ensure it is a valid container name
 	if c.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(c.Spec.ContainerName) {
 		errorList = append(errorList, field.Invalid(field.NewPath("spec", "containerName"), c.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
 
+	specPath := field.NewPath("spec")
 	if !c.Spec.Persistent && c.Spec.Mode != "" && !containerModeSupported(c.Spec.Mode) {
 		errorList = append(errorList, field.NotSupported(specPath.Child("mode"), c.Spec.Mode, supportedContainerModes))
 	}
@@ -1083,6 +1584,45 @@ func (c *Container) ValidateUpdate(ctx context.Context, obj runtime.Object) fiel
 	errorList = append(errorList, c.Spec.Terminal.ValidateUpdate(oldContainer.Spec.Terminal, field.NewPath("spec", "terminal"))...)
 
 	return errorList
+}
+
+// Equivalence check for ContainerBuildContext for use in validation
+func (c1 *ContainerBuildContext) Equal(c2 *ContainerBuildContext) bool {
+	if c1 == c2 {
+		return true
+	}
+
+	if c1 == nil || c2 == nil {
+		return false
+	}
+
+	if c1.Context != c2.Context {
+		return false
+	}
+
+	if c1.Dockerfile != c2.Dockerfile {
+		return false
+	}
+
+	if c1.Stage != c2.Stage {
+		return false
+	}
+
+	if c1.Platform != c2.Platform {
+		return false
+	}
+
+	// If the build arguments aren't the same
+	if !slices.Equal(c1.Args, c2.Args) {
+		return false
+	}
+
+	// If the secret arguments aren't the same
+	if !slices.Equal(c1.Secrets, c2.Secrets) {
+		return false
+	}
+
+	return true
 }
 
 func (c *Container) SpecifiedImageNameOrDefault() string {

@@ -73,10 +73,10 @@ type PhysicalContainerImageSpec struct {
 	Image string `json:"image,omitempty"`
 
 	// Build describes how to build the image locally.
-	Build *commonapi.ContainerBuildContext `json:"build,omitempty"`
+	Build *ContainerBuildContext `json:"build,omitempty"`
 
 	// PullPolicy controls source image pulling. If omitted, missing is used.
-	PullPolicy commonapi.ImagePullPolicy `json:"pullPolicy,omitempty"`
+	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
 }
 
 // PhysicalContainerImageStatus describes the observed runtime image.
@@ -182,12 +182,12 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	}
 
 	switch pci.Spec.PullPolicy {
-	case "", commonapi.PullPolicyAlways, commonapi.PullPolicyMissing, commonapi.PullPolicyNever:
+	case "", PullPolicyAlways, PullPolicyMissing, PullPolicyNever:
 	default:
 		errorList = append(errorList, field.NotSupported(specPath.Child("pullPolicy"), pci.Spec.PullPolicy, []string{
-			string(commonapi.PullPolicyAlways),
-			string(commonapi.PullPolicyMissing),
-			string(commonapi.PullPolicyNever),
+			string(PullPolicyAlways),
+			string(PullPolicyMissing),
+			string(PullPolicyNever),
 		}))
 	}
 
@@ -209,7 +209,7 @@ func (pci *PhysicalContainerImage) ValidateUpdate(ctx context.Context, old runti
 	return errorList
 }
 
-func validatePhysicalContainerImageBuild(build *commonapi.ContainerBuildContext, buildPath *field.Path) field.ErrorList {
+func validatePhysicalContainerImageBuild(build *ContainerBuildContext, buildPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	if build.Context == "" {
@@ -226,14 +226,14 @@ func validatePhysicalContainerImageBuild(build *commonapi.ContainerBuildContext,
 			errorList = append(errorList, field.Required(secretPath.Child("id"), "id is required"))
 		}
 		switch secret.Type {
-		case "", commonapi.FileSecret, commonapi.EnvSecret:
+		case "", FileSecret, EnvSecret:
 		default:
 			errorList = append(errorList, field.NotSupported(secretPath.Child("type"), secret.Type, []string{
-				string(commonapi.FileSecret),
-				string(commonapi.EnvSecret),
+				string(FileSecret),
+				string(EnvSecret),
 			}))
 		}
-		if secret.Type != commonapi.EnvSecret && secret.Source == "" {
+		if secret.Type != EnvSecret && secret.Source == "" {
 			errorList = append(errorList, field.Required(secretPath.Child("source"), "source must be set to a non-empty value"))
 		}
 	}

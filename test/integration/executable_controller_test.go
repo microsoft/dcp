@@ -1364,7 +1364,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  "127.22.33.44",
 			Port:     7732,
 		},
@@ -1451,7 +1451,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: commonapi.TCP,
+					Protocol: apiv1.TCP,
 					Address:  "127.22.33.45",
 					Port:     7740,
 				},
@@ -1573,7 +1573,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: commonapi.TCP,
+					Protocol: apiv1.TCP,
 					Address:  "127.22.33.66",
 					Port:     7745,
 				},
@@ -1651,7 +1651,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  "127.22.31.31",
 			Port:     7492,
 		},
@@ -1733,7 +1733,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: commonapi.TCP,
+				Protocol: apiv1.TCP,
 				Address:  IPAddr,
 				Port:     11740,
 			},
@@ -1744,7 +1744,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: commonapi.TCP,
+				Protocol: apiv1.TCP,
 				Address:  IPAddr,
 				Port:     11741,
 			},
@@ -1755,7 +1755,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: commonapi.TCP,
+				Protocol: apiv1.TCP,
 				Address:  IPAddr,
 				Port:     11742,
 			},
@@ -1766,7 +1766,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: commonapi.TCP,
+				Protocol: apiv1.TCP,
 				Address:  IPAddr,
 				Port:     11743,
 			},
@@ -1952,7 +1952,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  "127.22.33.45",
 			Port:     expectedPort,
 		},
@@ -2044,7 +2044,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  "127.22.33.45",
 		},
 	}
@@ -2055,7 +2055,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  "127.22.33.45",
 			Port:     26021,
 		},
@@ -2274,7 +2274,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: commonapi.TCP,
+					Protocol: apiv1.TCP,
 					Address:  tc.address,
 				},
 			}
@@ -2461,7 +2461,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  IPAddr,
 			Port:     26010,
 		},
@@ -4195,7 +4195,7 @@ func TestExecutableHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},
@@ -4276,7 +4276,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Port:     7227,
 		},
 	}
@@ -4451,7 +4451,7 @@ func TestExecutableHttpHealthProbePortsInjectedAfterServiceCreated(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: commonapi.TCP,
+			Protocol: apiv1.TCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

@@ -61,7 +61,7 @@ func TestV2PhysicalContainerImageControllerDoesNotDuplicatePullWhileStatusPendin
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{
 			Image:      sourceImage,
-			PullPolicy: commonapi.PullPolicyAlways,
+			PullPolicy: apiv2.PullPolicyAlways,
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -96,7 +96,7 @@ func TestV2PhysicalContainerImageControllerRetriesPullAfterFailure(t *testing.T)
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{
 			Image:      sourceImage,
-			PullPolicy: commonapi.PullPolicyAlways,
+			PullPolicy: apiv2.PullPolicyAlways,
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -120,7 +120,7 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{
 			Image: "v2-pci-built-target-image",
-			Build: &commonapi.ContainerBuildContext{
+			Build: &apiv2.ContainerBuildContext{
 				Context: "test-context",
 				Tags:    []string{"v2-pci-built-image"},
 				Args: []commonapi.EnvVar{
@@ -166,7 +166,7 @@ func TestV2PhysicalContainerImageControllerDoesNotDuplicateBuildWhileStatusPendi
 		},
 		Spec: apiv2.PhysicalContainerImageSpec{
 			Image: targetImage,
-			Build: &commonapi.ContainerBuildContext{
+			Build: &apiv2.ContainerBuildContext{
 				Context: "test-context",
 			},
 		},

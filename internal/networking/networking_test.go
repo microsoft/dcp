@@ -12,25 +12,25 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/microsoft/dcp/pkg/commonapi"
+	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/pkg/logger"
 	"github.com/stretchr/testify/require"
 )
 
 type protocolTestCase struct {
 	name     string
-	protocol commonapi.PortProtocol
+	protocol apiv1.PortProtocol
 }
 
 var (
 	protocolTestCases = []protocolTestCase{
 		{
 			name:     "TCP",
-			protocol: commonapi.PortProtocolTCP,
+			protocol: apiv1.TCP,
 		},
 		{
 			name:     "UDP",
-			protocol: commonapi.PortProtocolUDP,
+			protocol: apiv1.UDP,
 		},
 	}
 
@@ -114,7 +114,7 @@ func TestCheckPortAvailable(t *testing.T) {
 					var listener io.Closer
 					ap := AddressAndPort(address, port)
 
-					if tc.protocol == commonapi.PortProtocolUDP {
+					if tc.protocol == apiv1.UDP {
 						udpaddr, resolutionErr := net.ResolveUDPAddr("udp", ap)
 						require.NoError(t, resolutionErr, "Could not resolve UDP address %s", ap)
 						listener, err = net.ListenUDP("udp", udpaddr)
