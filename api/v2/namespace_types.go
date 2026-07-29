@@ -28,6 +28,9 @@ type NamespacePhase string
 const (
 	// NamespaceWorkloadIDAnnotation overrides the global workload ID for V2 resources in the namespace.
 	NamespaceWorkloadIDAnnotation = GroupName + "/workload-id"
+
+	// NamespaceFinalizer keeps a Namespace until namespace-scoped child cleanup completes.
+	NamespaceFinalizer = GroupName + "/namespace-reconciler"
 )
 
 const (

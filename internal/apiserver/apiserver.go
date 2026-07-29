@@ -93,8 +93,9 @@ func NewApiServer(name string, config *kubeconfig.Kubeconfig, logger logr.Logger
 	for _, o := range apiv1.PersistentTypes {
 		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
 	}
+	v2StorageFS := newV2ResourceMemoryFS()
 	for _, o := range apiv2.PersistentTypes {
-		apiServer.builder = apiServer.builder.WithResourceMemoryStorage(o, dataFolderPath)
+		apiServer.withV2ResourceMemoryStorage(o, dataFolderPath, v2StorageFS)
 	}
 	for _, o := range apiv1.AddtionalTypes {
 		apiServer.builder = apiServer.builder.WithResource(o)

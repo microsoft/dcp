@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	namespaceFinalizer string = fmt.Sprintf("%s/namespace-reconciler", apiv2.GroupVersion.Group)
+	namespaceFinalizer string = apiv2.NamespaceFinalizer
 )
 
 type namespaceCleanupResourceHandler func(*NamespaceReconciler, context.Context, *apiv2.Namespace, logr.Logger) (bool, error)
