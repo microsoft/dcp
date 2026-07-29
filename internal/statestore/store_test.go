@@ -13,14 +13,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/go-logr/logr"
 	gomigrate "github.com/golang-migrate/migrate/v4"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -31,6 +32,7 @@ import (
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
+	"github.com/microsoft/dcp/pkg/slices"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -669,6 +671,46 @@ func TestOpenRepairsDirtySchemaVersion2WhenMigrationNotApplied(t *testing.T) {
 	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
 	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
 	requireWorkloadIDColumn(t, ctx, store.db, true)
+}
+
+// TestOpenRepairsSchemaDirtiedByOlderDcp covers how a dirty marker is produced in practice: a store
+// this binary normalized to major version 1 is opened by an older DCP, whose single-stream migration
+// layout re-applies the workload ID migration. That migration fails because the column already
+// exists, leaving the dirty version 2 marker behind for this binary to repair.
+func TestOpenRepairsSchemaDirtiedByOlderDcp(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+	requireSchemaMajorVersion(t, ctx, store, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, store, currentSchemaMinorVersion)
+	require.NoError(t, store.Close())
+
+	// An older DCP sees major version 1 and tries to advance its own stream to version 2.
+	legacyErr := runLegacyMigrationRunner(ctx, storePath, legacyMigrationFixture(t, true))
+	require.ErrorContains(t, legacyErr, "duplicate column name: workload_id")
+
+	dirtyDB := openRawSQLiteDB(t, ctx, storePath)
+	row := dirtyDB.QueryRowContext(ctx, `SELECT version, dirty FROM schema_migrations LIMIT 1`)
+	var version int
+	var dirty bool
+	require.NoError(t, row.Scan(&version, &dirty))
+	require.Equal(t, legacySchemaVersion2, version)
+	require.True(t, dirty)
+	require.NoError(t, dirtyDB.Close())
+	require.NoError(
+		t,
+		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
+	)
+
+	repaired := openTestStore(t, ctx, storePath)
+
+	requireSchemaMajorVersion(t, ctx, repaired, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, repaired, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, repaired.db, true)
 }
 
 func TestOpenWithExplicitPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
@@ -1382,14 +1424,14 @@ func TestEveryMigrationHasAnAppliedProbe(t *testing.T) {
 	for _, version := range majorVersions {
 		require.True(
 			t,
-			slices.ContainsFunc(schemaMajorProbes, func(probe schemaMigrationProbe) bool { return probe.version == version }),
+			slices.Any(schemaMajorProbes, func(probe schemaMigrationProbe) bool { return probe.version == version }),
 			"schemaMajorProbes has no probe for major version %d",
 			version,
 		)
 	}
 	require.True(
 		t,
-		slices.ContainsFunc(schemaMajorProbes, func(probe schemaMigrationProbe) bool {
+		slices.Any(schemaMajorProbes, func(probe schemaMigrationProbe) bool {
 			return probe.version == legacySchemaVersion2
 		}),
 		"schemaMajorProbes has no probe for the legacy schema version 2 marker",
@@ -1409,7 +1451,7 @@ func TestEveryMigrationHasAnAppliedProbe(t *testing.T) {
 		for _, version := range minorVersions {
 			require.True(
 				t,
-				slices.ContainsFunc(migration.minorProbes, func(probe schemaMigrationProbe) bool {
+				slices.Any(migration.minorProbes, func(probe schemaMigrationProbe) bool {
 					return probe.version == version
 				}),
 				"major version %d has no probe for minor version %d",
@@ -1420,13 +1462,139 @@ func TestEveryMigrationHasAnAppliedProbe(t *testing.T) {
 	}
 }
 
+// newUnmigratedTestStore opens a store database without running any migration, so a test can
+// drive individual migration streams to a specific version.
+func newUnmigratedTestStore(t *testing.T, ctx context.Context, path string) *Store {
+	t.Helper()
+
+	require.NoError(t, usvc_io.EnsureRestrictedDirectory(filepath.Dir(path), osutil.PermissionOnlyOwnerReadWriteTraverse))
+	db, openErr := openSQLiteDB(ctx, path, 500*time.Millisecond)
+	require.NoError(t, openErr)
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
+	return &Store{db: db, path: path, log: logr.Discard()}
+}
+
+// migrateStreamTo advances a single migration stream to the requested version.
+// Passing noSchemaVersion leaves the stream untouched.
+func migrateStreamTo(
+	t *testing.T,
+	ctx context.Context,
+	store *Store,
+	sourcePath string,
+	tableName string,
+	version int,
+) {
+	t.Helper()
+
+	if version <= 0 {
+		return
+	}
+	migrationRunner, runnerErr := store.newMigrationRunner(ctx, 500*time.Millisecond, sourcePath, tableName)
+	require.NoError(t, runnerErr)
+	migrationErr := migrationRunner.Migrate(uint(version))
+	sourceCloseErr, databaseCloseErr := migrationRunner.Close()
+	require.NoError(t, sourceCloseErr)
+	require.NoError(t, databaseCloseErr)
+	if migrationErr != nil && !errors.Is(migrationErr, gomigrate.ErrNoChange) {
+		require.NoError(t, migrationErr)
+	}
+}
+
+func evaluateAppliedProbe(t *testing.T, ctx context.Context, store *Store, probe schemaMigrationProbe) bool {
+	t.Helper()
+
+	var applied bool
+	require.NoError(t, store.db.QueryRowContext(ctx, probe.appliedQuery).Scan(&applied))
+	return applied
+}
+
+// TestAppliedProbesDetectTheirOwnMigration verifies that each probe actually distinguishes its
+// migration having been applied from not. A probe that is always true (a copy of a neighboring
+// migration's probe, for example) satisfies TestEveryMigrationHasAnAppliedProbe but makes
+// repairDirtySchemaVersion keep a version marker for a migration that never ran, permanently
+// skipping it and corrupting the schema.
+func TestAppliedProbesDetectTheirOwnMigration(t *testing.T) {
+	t.Parallel()
+
+	type probedStream struct {
+		name       string
+		sourcePath string
+		tableName  string
+		probes     []schemaMigrationProbe
+		// prepare brings the database to the state this stream starts migrating from.
+		prepare func(t *testing.T, ctx context.Context, store *Store)
+	}
+
+	streams := []probedStream{{
+		name:       "major",
+		sourcePath: "migrations",
+		tableName:  schemaMajorMigrationTableName,
+		probes:     schemaMajorProbes,
+	}}
+	for _, migration := range schemaMajorMigrations {
+		streams = append(streams, probedStream{
+			name:       fmt.Sprintf("major-%d-minor", migration.version),
+			sourcePath: migration.minorPath(),
+			tableName:  migration.minorTableName,
+			probes:     migration.minorProbes,
+			prepare: func(t *testing.T, ctx context.Context, store *Store) {
+				migrateStreamTo(t, ctx, store, "migrations", schemaMajorMigrationTableName, migration.version)
+			},
+		})
+	}
+
+	for _, stream := range streams {
+		for _, version := range migrationVersionsInDir(t, stream.sourcePath) {
+			t.Run(fmt.Sprintf("%s-%d", stream.name, version), func(t *testing.T) {
+				t.Parallel()
+
+				ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+				defer cancel()
+
+				probeIndex := slices.IndexFunc(stream.probes, func(probe schemaMigrationProbe) bool {
+					return probe.version == version
+				})
+				require.GreaterOrEqual(t, probeIndex, 0, "no probe registered for %s version %d", stream.name, version)
+				probe := stream.probes[probeIndex]
+
+				store := newUnmigratedTestStore(t, ctx, filepath.Join(t.TempDir(), "state.sqlite3"))
+				if stream.prepare != nil {
+					stream.prepare(t, ctx, store)
+				}
+
+				migrateStreamTo(t, ctx, store, stream.sourcePath, stream.tableName, version-1)
+				require.False(
+					t,
+					evaluateAppliedProbe(t, ctx, store, probe),
+					"probe for %s version %d reports applied before the migration ran",
+					stream.name,
+					version,
+				)
+
+				migrateStreamTo(t, ctx, store, stream.sourcePath, stream.tableName, version)
+				require.True(
+					t,
+					evaluateAppliedProbe(t, ctx, store, probe),
+					"probe for %s version %d reports not applied after the migration ran",
+					stream.name,
+					version,
+				)
+			})
+		}
+	}
+}
+
 // TestMigrationsAreTransactional guards the invariant that lets an interrupted migration be repaired:
 // the migration driver wraps every migration in a transaction, so a migration either commits in full
 // or not at all. Statements that commit implicitly would break that invariant.
 func TestMigrationsAreTransactional(t *testing.T) {
 	t.Parallel()
 
-	forbiddenStatements := []string{"BEGIN", "COMMIT", "ROLLBACK", "VACUUM", "PRAGMA", "ATTACH", "DETACH"}
+	// Match whole words only so identifiers that merely contain a keyword (a "commit_sha" column,
+	// for example) are not reported as forbidden statements.
+	forbiddenStatements := regexp.MustCompile(`(?i)\b(BEGIN|COMMIT|ROLLBACK|VACUUM|PRAGMA|ATTACH|DETACH)\b`)
 	walkErr := fs.WalkDir(migrationFiles, "migrations", func(path string, entry fs.DirEntry, entryErr error) error {
 		if entryErr != nil {
 			return entryErr
@@ -1436,17 +1604,14 @@ func TestMigrationsAreTransactional(t *testing.T) {
 		}
 		contents, readErr := fs.ReadFile(migrationFiles, path)
 		require.NoError(t, readErr)
-		upperContents := strings.ToUpper(string(contents))
-		for _, statement := range forbiddenStatements {
-			require.NotContains(
-				t,
-				upperContents,
-				statement,
-				"migration '%s' must not use %s; it breaks migration atomicity",
-				path,
-				statement,
-			)
-		}
+		match := forbiddenStatements.FindString(string(contents))
+		require.Empty(
+			t,
+			match,
+			"migration '%s' must not use %s; it breaks migration atomicity",
+			path,
+			match,
+		)
 		return nil
 	})
 	require.NoError(t, walkErr)

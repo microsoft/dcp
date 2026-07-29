@@ -223,7 +223,8 @@ func DcpRun(
 				// Nothing reconciles application resources without the built-in controllers, so keeping
 				// the API server alive would leave clients waiting indefinitely for resources that will
 				// never become ready. Shut down instead so the failure is visible. Resource cleanup also
-				// needs the controllers, so requesting it here would only delay the failure.
+				// needs the controllers, so requesting it here (along with the cleanup notifications that
+				// go with it) would only delay the failure without releasing anything.
 				if msg.ServiceName == builtInControllerServiceName && controllerHostErr == nil {
 					controllerHostErr = fmt.Errorf("DCP cannot run without the built-in controllers: %w", msg.Err)
 					log.Error(controllerHostErr, "Terminating...")

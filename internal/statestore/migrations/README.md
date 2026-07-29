@@ -23,7 +23,7 @@ DCP repairs a dirty version instead of failing startup. The migration driver wra
 
 This repair depends on two invariants, both covered by unit tests:
 
-- Every migration has an applied probe. Without one, DCP cannot tell whether the migration committed and startup fails with the dirty version.
+- Every migration has an applied probe, and that probe reports false before the migration runs and true afterwards. Without a probe, DCP cannot tell whether the migration committed and startup fails with the dirty version. A probe that does not distinguish the two states is worse: DCP would keep a version marker for a migration that never ran, permanently skipping it.
 - Migration SQL never commits implicitly. `BEGIN`, `COMMIT`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` would break migration atomicity and are rejected.
 
 A dirty minor version newer than any migration embedded in this binary cannot be probed, because the migration belongs to a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed; DCP logs the condition, leaves the marker alone, and lets the binary that owns the migration repair it.

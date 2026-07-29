@@ -194,6 +194,10 @@ func (s *Store) setSchemaVersion(ctx context.Context, tableName string, version 
 // migration actually committed, and returns the repaired version (noSchemaVersion when the stream is
 // left empty). It fails when no probe is registered for the dirty version, because the applied state
 // of an unknown migration cannot be determined.
+//
+// The caller must only pass a version that the migration driver marked dirty. Migrations are applied
+// in ascending order and a version is only marked dirty once the preceding one is recorded clean, so
+// version-1 is known to be applied and is a valid repair target when the probe reports false.
 func (s *Store) repairDirtySchemaVersion(
 	ctx context.Context,
 	tableName string,
