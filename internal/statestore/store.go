@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	_ "modernc.org/sqlite"
 
 	"github.com/microsoft/dcp/internal/dcppaths"
@@ -52,11 +53,15 @@ type Options struct {
 
 	// BusyTimeout is the SQLite busy timeout used when another process holds a database lock.
 	BusyTimeout time.Duration
+
+	// Log receives messages about schema maintenance, such as repairs of interrupted migrations.
+	Log logr.Logger
 }
 
 type Store struct {
 	db   *sql.DB
 	path string
+	log  logr.Logger
 }
 
 func DefaultPath() (string, error) {
@@ -113,6 +118,11 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 		busyTimeout = DefaultBusyTimeout
 	}
 
+	log := options.Log
+	if log.GetSink() == nil {
+		log = logr.Discard()
+	}
+
 	db, openErr := openSQLiteDB(ctx, absPath, busyTimeout)
 	if openErr != nil {
 		return nil, fmt.Errorf("could not initialize state store database '%s': %w", absPath, openErr)
@@ -121,6 +131,7 @@ func Open(ctx context.Context, options Options) (*Store, error) {
 	store := &Store{
 		db:   db,
 		path: absPath,
+		log:  log,
 	}
 
 	if configureErr := store.configure(ctx, busyTimeout); configureErr != nil {

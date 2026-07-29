@@ -17,11 +17,20 @@ For each supported major version, DCP:
 2. Advances `schema_migrations` when moving to the next major version.
 3. Applies the new major version's minor migrations.
 
-`golang-migrate` marks a version as dirty before running its SQL and clears the dirty flag after the SQL succeeds. A dirty version therefore means a migration did not complete. DCP fails startup for a dirty major or minor version rather than guessing which schema changes were applied.
+`golang-migrate` marks a version as dirty before running its SQL and clears the dirty flag after the SQL succeeds. A dirty version therefore means a migration did not complete.
+
+DCP repairs a dirty version instead of failing startup. The migration driver wraps each migration in a transaction, so an interrupted migration either committed in full or never committed at all — the schema is never partially migrated. Every migration registers an *applied probe* in `schema.go`: a SQL predicate that reports whether that migration's schema changes are present. When DCP finds a dirty version, it evaluates the probe and rewrites the version table to the version that actually matches the schema, then continues migrating normally.
+
+This repair depends on two invariants, both covered by unit tests:
+
+- Every migration has an applied probe. Without one, DCP cannot tell whether the migration committed and startup fails with the dirty version.
+- Migration SQL never commits implicitly. `BEGIN`, `COMMIT`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` would break migration atomicity and are rejected.
+
+A dirty minor version newer than any migration embedded in this binary cannot be probed, because the migration belongs to a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed; DCP logs the condition, leaves the marker alone, and lets the binary that owns the migration repair it.
 
 An older DCP may find a clean minor version newer than any migration embedded in its binary. DCP accepts that version without invoking `golang-migrate`. Calling the library with an unknown current version would fail because the older binary does not contain that migration file. Accepting the version is safe only when every minor migration follows the compatibility rules below.
 
-DCP fails startup when it encounters an unknown major version. Major versions are reserved for changes that older binaries cannot use safely.
+DCP fails startup when it encounters an unknown major version, dirty or not. Major versions are reserved for changes that older binaries cannot use safely.
 
 ## Schema version 2 transition
 
@@ -33,7 +42,9 @@ Major version 2 remains reserved for this transition. The next breaking schema c
 
 ## Adding a compatible minor migration
 
-Add compatible migrations beneath the major migration they extend. For example, migrations for major version 1 belong in `000001_initial/`. Use normal `golang-migrate` file names such as `000002_description.up.sql`, and update that major version's `latestMinorVersion` in `schema.go`.
+Add compatible migrations beneath the major migration they extend. For example, migrations for major version 1 belong in `000001_initial/`. Use normal `golang-migrate` file names such as `000002_description.up.sql`, update that major version's `latestMinorVersion` in `schema.go`, and add an applied probe for the new version to that major version's `minorProbes`.
+
+The applied probe must return a single boolean column that is true exactly when the migration's schema changes are present, and it must remain valid against both the pre-migration and post-migration schema. Probing `sqlite_master` for a new table or `pragma_table_info` for a new column works well.
 
 Minor migrations must remain safe when an older DCP uses the database afterward:
 
@@ -46,10 +57,10 @@ Minor migrations must remain safe when an older DCP uses the database afterward:
 - Do not add unique indexes, check constraints, foreign keys, changed primary keys, or other constraints that can reject writes accepted by older binaries without an explicit compatibility design.
 - Preserve `resource_locks` so old and new DCP processes coordinate through the same lock records.
 - Preserve persistent resource tables and records so older binaries can continue reading and updating them.
-- Do not include `BEGIN` or `COMMIT`; the SQLite migration driver wraps each migration in a transaction.
+- Do not include `BEGIN`, `COMMIT`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, or `DETACH`; the SQLite migration driver wraps each migration in a transaction and these statements would break its atomicity.
 
 ## Adding a breaking major migration
 
 Use a new major version only when the resulting schema cannot remain safe for older DCP binaries.
 
-Add its migration at the migration root, register it in `schemaMajorMigrations`, and give it a dedicated minor migration table. Compatible follow-up migrations belong in a directory named after the major migration. Once the major marker advances, older DCP binaries will reject the database.
+Add its migration at the migration root, register it in `schemaMajorMigrations`, add an applied probe for the new version to `schemaMajorProbes`, and give it a dedicated minor migration table. Compatible follow-up migrations belong in a directory named after the major migration. Once the major marker advances, older DCP binaries will reject the database.
