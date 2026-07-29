@@ -797,10 +797,7 @@ func physicalContainerPortMappingsFromInspected(ports containers.InspectedContai
 			return nil, parseErr
 		}
 
-		portMapping := apiv2.PhysicalContainerPortMapping{
-			ContainerPort: containerPort,
-			Protocol:      protocol,
-		}
+		hostPortMappingFound := false
 		for _, hostPortConfig := range hostPortConfigs {
 			if hostPortConfig.HostPort == "" {
 				continue
@@ -812,19 +809,33 @@ func physicalContainerPortMappingsFromInspected(ports containers.InspectedContai
 			if hostPort <= 0 {
 				return nil, fmt.Errorf("parse host port %q for container port %q: host port must be greater than zero", hostPortConfig.HostPort, portKey)
 			}
-			portMapping.HostIP = hostPortConfig.HostIp
-			portMapping.HostPort = int32(hostPort)
-			break
+			portMappings = append(portMappings, apiv2.PhysicalContainerPortMapping{
+				ContainerPort: containerPort,
+				Protocol:      protocol,
+				HostIP:        hostPortConfig.HostIp,
+				HostPort:      int32(hostPort),
+			})
+			hostPortMappingFound = true
 		}
-
-		portMappings = append(portMappings, portMapping)
+		if !hostPortMappingFound {
+			portMappings = append(portMappings, apiv2.PhysicalContainerPortMapping{
+				ContainerPort: containerPort,
+				Protocol:      protocol,
+			})
+		}
 	}
 
 	std_slices.SortFunc(portMappings, func(left, right apiv2.PhysicalContainerPortMapping) int {
 		if left.ContainerPort != right.ContainerPort {
 			return cmp.Compare(left.ContainerPort, right.ContainerPort)
 		}
-		return strings.Compare(string(left.Protocol), string(right.Protocol))
+		if protocolComparison := strings.Compare(string(left.Protocol), string(right.Protocol)); protocolComparison != 0 {
+			return protocolComparison
+		}
+		if hostIPComparison := strings.Compare(left.HostIP, right.HostIP); hostIPComparison != 0 {
+			return hostIPComparison
+		}
+		return cmp.Compare(left.HostPort, right.HostPort)
 	})
 	return portMappings, nil
 }
