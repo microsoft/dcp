@@ -50,15 +50,31 @@ const (
 	// Image pulls retry with exponential backoff to absorb transient registry and network failures.
 	// The budget is deliberately small so an unreachable or misspelled image still reports failure promptly.
 	imagePullRetryInitialInterval = 1 * time.Second
-	imagePullRetryMaxInterval     = 10 * time.Second
-	imagePullRetryMaxElapsedTime  = 30 * time.Second
+	imagePullRetryMaxInterval     = 5 * time.Second
+	imagePullRetryMaxElapsedTime  = 15 * time.Second
+
+	// Number of pull retries used when the image does not specify PullRetryLimit.
+	defaultImagePullRetryLimit int32 = 3
 )
 
-func imagePullBackoff() *backoff.ExponentialBackOff {
-	return backoff.NewExponentialBackOff(
-		backoff.WithInitialInterval(imagePullRetryInitialInterval),
-		backoff.WithMaxInterval(imagePullRetryMaxInterval),
-		backoff.WithMaxElapsedTime(imagePullRetryMaxElapsedTime),
+// Builds the retry policy for pulling the given image. A PullRetryLimit of zero disables
+// retries entirely, so the pull fails as soon as the first attempt does.
+func imagePullBackoff(image *apiv2.PhysicalContainerImage) backoff.BackOff {
+	retryLimit := defaultImagePullRetryLimit
+	if image.Spec.PullRetryLimit != nil {
+		retryLimit = *image.Spec.PullRetryLimit
+	}
+	if retryLimit <= 0 {
+		return &backoff.StopBackOff{}
+	}
+
+	return backoff.WithMaxRetries(
+		backoff.NewExponentialBackOff(
+			backoff.WithInitialInterval(imagePullRetryInitialInterval),
+			backoff.WithMaxInterval(imagePullRetryMaxInterval),
+			backoff.WithMaxElapsedTime(imagePullRetryMaxElapsedTime),
+		),
+		uint64(retryLimit),
 	)
 }
 
@@ -315,7 +331,7 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImage(
 ) {
 	log.V(1).Info("Pulling PhysicalContainerImage source image", "Image", outputImage)
 	attempt := 0
-	pulledImageID, pullErr := resiliency.RetryGet(ctx, imagePullBackoff(), func() (string, error) {
+	pulledImageID, pullErr := resiliency.RetryGet(ctx, imagePullBackoff(image), func() (string, error) {
 		attempt++
 		imageID, attemptErr := r.orchestrator.PullImage(ctx, containers.PullImageOptions{Image: outputImage})
 		if attemptErr != nil {

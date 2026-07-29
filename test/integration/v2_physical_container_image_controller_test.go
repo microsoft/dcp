@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -203,4 +204,37 @@ func waitBuildImageCallCount(t *testing.T, ctx context.Context, tag string, expe
 		return containerOrchestrator.BuildImageCallCount(tag) >= expected, nil
 	})
 	require.NoError(t, waitErr)
+}
+
+func TestV2PhysicalContainerImageControllerHonorsDisabledPullRetries(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-no-retry")
+	sourceImage := "v2-pci-no-retry-source"
+	containerOrchestrator.FailNextPullImage(sourceImage, errors.New("pull failed once"))
+
+	noRetries := int32(0)
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "no-retry-pulled-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image:          sourceImage,
+			PullPolicy:     apiv2.PullPolicyAlways,
+			PullRetryLimit: &noRetries,
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+
+	// The single attempt must be the only one: retries are disabled and a recorded
+	// pull failure is terminal, so the controller must not re-enter the pull path.
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
+	require.Never(t, func() bool {
+		return containerOrchestrator.PullImageCallCount(sourceImage) > 1
+	}, 3*time.Second, 250*time.Millisecond)
 }

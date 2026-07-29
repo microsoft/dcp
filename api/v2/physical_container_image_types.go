@@ -77,6 +77,13 @@ type PhysicalContainerImageSpec struct {
 
 	// PullPolicy controls source image pulling. If omitted, missing is used.
 	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
+
+	// PullRetryLimit is how many times a failed source image pull is retried, with exponential
+	// backoff between attempts. Set to zero to fail on the first error. If omitted, a small
+	// default number of retries is used to absorb transient registry and network failures.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	PullRetryLimit *int32 `json:"pullRetryLimit,omitempty"`
 }
 
 // PhysicalContainerImageStatus describes the observed runtime image.
@@ -189,6 +196,10 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 			string(PullPolicyMissing),
 			string(PullPolicyNever),
 		}))
+	}
+
+	if pci.Spec.PullRetryLimit != nil && *pci.Spec.PullRetryLimit < 0 {
+		errorList = append(errorList, field.Invalid(specPath.Child("pullRetryLimit"), *pci.Spec.PullRetryLimit, "pullRetryLimit must not be negative"))
 	}
 
 	if pci.Spec.Build != nil {

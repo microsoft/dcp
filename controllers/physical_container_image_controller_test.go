@@ -8,6 +8,7 @@ package controllers
 import (
 	"testing"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -83,4 +84,57 @@ func TestPhysicalContainerImageOperationFailedTerminallyWithoutReadyCondition(t 
 	}
 
 	require.False(t, physicalContainerImageOperationFailedTerminally(image))
+}
+
+func TestImagePullBackoffHonorsRetryLimit(t *testing.T) {
+	t.Parallel()
+
+	disabled := int32(0)
+	explicit := int32(1)
+
+	testCases := []struct {
+		name            string
+		retryLimit      *int32
+		expectedRetries int
+	}{
+		{
+			name:            "default is used when unset",
+			retryLimit:      nil,
+			expectedRetries: int(defaultImagePullRetryLimit),
+		},
+		{
+			name:            "zero disables retries",
+			retryLimit:      &disabled,
+			expectedRetries: 0,
+		},
+		{
+			name:            "explicit limit is honored",
+			retryLimit:      &explicit,
+			expectedRetries: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			image := &apiv2.PhysicalContainerImage{
+				Spec: apiv2.PhysicalContainerImageSpec{
+					Image:          "some-image",
+					PullRetryLimit: tc.retryLimit,
+				},
+			}
+
+			policy := imagePullBackoff(image)
+			retries := 0
+			for retries <= int(defaultImagePullRetryLimit)+2 {
+				if policy.NextBackOff() == backoff.Stop {
+					break
+				}
+				retries++
+			}
+
+			require.Equal(t, tc.expectedRetries, retries)
+		})
+	}
 }
