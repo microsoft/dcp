@@ -20,7 +20,7 @@ const MaxAnnotationsTotalSize = 256 * 1024 // 256 KB = 262144 bytes
 func ValidateAnnotationsSize(annotations map[string]string, fieldPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	totalSize := CalculateAnnotationsSize(annotations)
+	totalSize := calculateAnnotationsSize(annotations)
 	if totalSize > MaxAnnotationsTotalSize {
 		errorList = append(errorList, field.TooLongMaxLength(
 			fieldPath,
@@ -32,8 +32,8 @@ func ValidateAnnotationsSize(annotations map[string]string, fieldPath *field.Pat
 	return errorList
 }
 
-// CalculateAnnotationsSize calculates the total size of annotations in bytes.
-func CalculateAnnotationsSize(annotations map[string]string) int {
+// calculateAnnotationsSize calculates the total size of annotations in bytes.
+func calculateAnnotationsSize(annotations map[string]string) int {
 	totalSize := 0
 	for key, value := range annotations {
 		totalSize += len(key) + len(value)
@@ -41,8 +41,8 @@ func CalculateAnnotationsSize(annotations map[string]string) int {
 	return totalSize
 }
 
-// AnnotationsSizeInfo returns a human-readable description of the annotation size.
-func AnnotationsSizeInfo(annotations map[string]string) string {
-	totalSize := CalculateAnnotationsSize(annotations)
+// annotationsSizeInfo returns a human-readable description of the annotation size.
+func annotationsSizeInfo(annotations map[string]string) string {
+	totalSize := calculateAnnotationsSize(annotations)
 	return fmt.Sprintf("%d bytes (limit: %d bytes / 256 KB)", totalSize, MaxAnnotationsTotalSize)
 }

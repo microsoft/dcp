@@ -139,7 +139,7 @@ func TestCalculateAnnotationsSize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			size := CalculateAnnotationsSize(tc.annotations)
+			size := calculateAnnotationsSize(tc.annotations)
 			require.Equal(t, tc.expectedSize, size)
 		})
 	}
@@ -152,7 +152,7 @@ func TestAnnotationsSizeInfo(t *testing.T) {
 		"key": "value",
 	}
 
-	info := AnnotationsSizeInfo(annotations)
+	info := annotationsSizeInfo(annotations)
 
 	require.Contains(t, info, "8 bytes", "should contain the calculated size")
 	require.Contains(t, info, "262144 bytes", "should contain the limit")
