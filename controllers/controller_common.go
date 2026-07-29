@@ -63,6 +63,9 @@ const (
 	NoDelay       AdditionalReconciliationDelay = 1
 	LongDelay     AdditionalReconciliationDelay = 2
 	TestDelay     AdditionalReconciliationDelay = 3
+	// MonitoringDelay paces periodic polling of resources that are in a steady state,
+	// where reconciliation only guards against runtime events that were missed or never delivered.
+	MonitoringDelay AdditionalReconciliationDelay = 4
 )
 
 type durationAndJitter struct {
@@ -73,10 +76,11 @@ type durationAndJitter struct {
 var (
 	// Maps additionalReconciliationDelay values to actual time.Duration values for delay and jitter.
 	delayDurations = map[AdditionalReconciliationDelay]durationAndJitter{
-		StandardDelay: {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
-		LongDelay:     {Duration: 5 * time.Second, Jitter: 2 * time.Second},
-		TestDelay:     {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
-		NoDelay:       {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
+		StandardDelay:   {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
+		LongDelay:       {Duration: 5 * time.Second, Jitter: 2 * time.Second},
+		MonitoringDelay: {Duration: 30 * time.Second, Jitter: 5 * time.Second},
+		TestDelay:       {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
+		NoDelay:         {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
 	}
 )
 

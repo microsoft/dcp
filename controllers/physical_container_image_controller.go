@@ -13,9 +13,12 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -42,6 +45,22 @@ var (
 		"": handleUnknownPhysicalContainerImageDataReason,
 	}
 )
+
+const (
+	// Image pulls retry with exponential backoff to absorb transient registry and network failures.
+	// The budget is deliberately small so an unreachable or misspelled image still reports failure promptly.
+	imagePullRetryInitialInterval = 1 * time.Second
+	imagePullRetryMaxInterval     = 10 * time.Second
+	imagePullRetryMaxElapsedTime  = 30 * time.Second
+)
+
+func imagePullBackoff() *backoff.ExponentialBackOff {
+	return backoff.NewExponentialBackOff(
+		backoff.WithInitialInterval(imagePullRetryInitialInterval),
+		backoff.WithMaxInterval(imagePullRetryMaxInterval),
+		backoff.WithMaxElapsedTime(imagePullRetryMaxElapsedTime),
+	)
+}
 
 type physicalContainerImageDataInitializerFunc = stateInitializerFunc[
 	apiv2.PhysicalContainerImage, *apiv2.PhysicalContainerImage,
@@ -114,7 +133,7 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 
 	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 	change := r.managePhysicalContainerImage(ctx, &image, log)
-	return r.SaveChangesWithDelay(ctx, &image, patch, change, LongDelay, nil, log)
+	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, nil, log)
 }
 
 func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(ctx context.Context, image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
@@ -139,10 +158,31 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(ctx cont
 		return change
 	}
 
+	if physicalContainerImageOperationFailedTerminally(image) {
+		return change
+	}
+
 	if image.Spec.Build != nil {
 		return r.ensureBuiltImage(ctx, image, log)
 	}
 	return r.ensurePulledImage(ctx, image, log)
+}
+
+// Reports whether the image already recorded a terminal pull or build failure.
+// Pulls exhaust their retry budget before reporting failure and the image spec is immutable,
+// so re-entering the pull/build path could never produce a different outcome.
+func physicalContainerImageOperationFailedTerminally(image *apiv2.PhysicalContainerImage) bool {
+	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseFailed {
+		return false
+	}
+
+	readyCondition := apimeta.FindStatusCondition(image.Status.Conditions, apiv2.ConditionReady)
+	if readyCondition == nil {
+		return false
+	}
+
+	return readyCondition.Reason == apiv2.PhysicalContainerImageReasonPullFailed ||
+		readyCondition.Reason == apiv2.PhysicalContainerImageReasonBuildFailed
 }
 
 func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context, image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
@@ -274,7 +314,15 @@ func (r *PhysicalContainerImageReconciler) pullPhysicalContainerImage(
 	log logr.Logger,
 ) {
 	log.V(1).Info("Pulling PhysicalContainerImage source image", "Image", outputImage)
-	pulledImageID, pullErr := r.orchestrator.PullImage(ctx, containers.PullImageOptions{Image: outputImage})
+	attempt := 0
+	pulledImageID, pullErr := resiliency.RetryGet(ctx, imagePullBackoff(), func() (string, error) {
+		attempt++
+		imageID, attemptErr := r.orchestrator.PullImage(ctx, containers.PullImageOptions{Image: outputImage})
+		if attemptErr != nil {
+			log.V(1).Info("PhysicalContainerImage pull attempt failed", "Image", outputImage, "Attempt", attempt, "Error", attemptErr)
+		}
+		return imageID, attemptErr
+	})
 	if pullErr != nil {
 		log.Error(pullErr, "Failed to pull PhysicalContainerImage source image", "Image", outputImage)
 		data.conditionReason = apiv2.PhysicalContainerImageReasonPullFailed
@@ -407,7 +455,7 @@ func handlePhysicalContainerImageOperationCompleted(
 		reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 		failureChange := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
 		failureChange |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, "Image operation completed without an image ID.")
-		return failureChange | additionalReconciliationNeeded
+		return failureChange
 	}
 
 	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, reconciler.orchestrator, data.imageID)
@@ -416,7 +464,7 @@ func handlePhysicalContainerImageOperationCompleted(
 		reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 		failureChange := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
 		failureChange |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
-		return failureChange | additionalReconciliationNeeded
+		return failureChange
 	}
 
 	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
@@ -434,7 +482,9 @@ func handlePhysicalContainerImageOperationFailed(
 ) objectChange {
 	reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 	log.V(1).Info("PhysicalContainerImage operation failed; saving image status", "Message", data.failureMessage)
-	return additionalReconciliationNeeded
+	// The failure is terminal: pulls already retry with backoff before reporting failure,
+	// and spec is immutable, so no further reconciliation can make progress.
+	return noChange
 }
 
 func handleUnknownPhysicalContainerImageDataReason(

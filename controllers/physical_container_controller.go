@@ -168,7 +168,14 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		change = r.managePhysicalContainer(ctx, &container, log)
 	}
 
-	return r.SaveChangesWithDelay(ctx, &container, patch, change, LongDelay, nil, log)
+	// A running container is in a steady state and relies on runtime events for status changes.
+	// Reconcile it on a slow cadence purely to recover from events that were missed or never delivered.
+	additionalReconcileDelay := StandardDelay
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning {
+		additionalReconcileDelay = MonitoringDelay
+	}
+
+	return r.SaveChangesWithDelay(ctx, &container, patch, change, additionalReconcileDelay, nil, log)
 }
 
 func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Context, container *apiv2.PhysicalContainer, log logr.Logger) objectChange {
@@ -336,7 +343,8 @@ func handlePhysicalContainerOperationFailed(
 		reconciler.containerData.DeleteByNamespacedName(container.NamespacedName())
 	}
 	log.V(1).Info("Physical container operation failed; saving container status", "Message", data.failureMessage)
-	return additionalReconciliationNeeded
+	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
+	return noChange
 }
 
 func handleUnknownPhysicalContainerDataReason(
@@ -812,7 +820,7 @@ func applyInspectedPhysicalContainerStatus(container *apiv2.PhysicalContainer, i
 		log.Error(portMappingErr, "Failed to resolve physical container port mappings", "ContainerID", inspectedContainer.Id)
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, message)
-		return change | additionalReconciliationNeeded
+		return change
 	}
 	change |= setPhysicalContainerPortMappings(container, portMappings)
 
@@ -820,15 +828,18 @@ func applyInspectedPhysicalContainerStatus(container *apiv2.PhysicalContainer, i
 	case containers.ContainerStatusRunning, containers.ContainerStatusRestarting, containers.ContainerStatusPaused:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseRunning)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning, "Runtime container is running.")
+		// Keep polling slowly so a missed runtime event cannot strand the container in a stale state.
+		change |= additionalReconciliationNeeded
 	case containers.ContainerStatusExited, containers.ContainerStatusDead:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseExited)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerExited, "Runtime container has exited.")
 	default:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerPending, "Runtime container is not running.")
+		change |= additionalReconciliationNeeded
 	}
 
-	return change | additionalReconciliationNeeded
+	return change
 }
 
 func physicalContainerPortMappingsFromInspected(ports containers.InspectedContainerPortMapping) ([]apiv2.PhysicalContainerPortMapping, error) {
