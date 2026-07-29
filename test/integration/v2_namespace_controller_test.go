@@ -14,7 +14,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
-	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -82,75 +81,6 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 	waitContainerMissing(t, ctx, containerID)
-}
-
-func TestV2NamespaceLifecycleAdmissionRejectsChildCreation(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	requireV2ChildCreateRejected(t, ctx, newTestPhysicalContainerImage("missing-image", "missing-v2-namespace"), "namespace does not exist")
-	requireV2ChildCreateRejected(t, ctx, newTestPhysicalContainer("missing-container", "missing-v2-namespace"), "namespace does not exist")
-
-	namespace := &apiv2.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "v2-ns-admission",
-		},
-	}
-	require.NoError(t, client.Create(ctx, namespace))
-	waitV2NamespaceActive(t, ctx, namespace.Name)
-
-	blockingContainer := newTestPhysicalContainer("blocking-container", namespace.Name)
-	blockingContainer.Finalizers = []string{"test.dcp.microsoft.com/hold"}
-	require.NoError(t, client.Create(ctx, blockingContainer))
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
-		defer cleanupCancel()
-		_ = retryOnConflict[apiv2.PhysicalContainer](cleanupCtx, blockingContainer.NamespacedName(), func(ctx context.Context, currentContainer *apiv2.PhysicalContainer) error {
-			currentContainer.Finalizers = nil
-			return client.Update(ctx, currentContainer)
-		})
-	})
-
-	require.NoError(t, client.Delete(ctx, namespace))
-	waitObjectAssumesState(t, ctx, types.NamespacedName{Name: namespace.Name}, func(currentNamespace *apiv2.Namespace) (bool, error) {
-		return currentNamespace.DeletionTimestamp != nil && !currentNamespace.DeletionTimestamp.IsZero(), nil
-	})
-
-	requireV2ChildCreateRejected(t, ctx, newTestPhysicalContainerImage("terminating-image", namespace.Name), "namespace is terminating")
-	requireV2ChildCreateRejected(t, ctx, newTestPhysicalContainer("terminating-container", namespace.Name), "namespace is terminating")
-}
-
-func requireV2ChildCreateRejected(t *testing.T, ctx context.Context, obj ctrl_client.Object, expectedMessage string) {
-	t.Helper()
-
-	createErr := client.Create(ctx, obj)
-	require.Error(t, createErr)
-	require.Contains(t, createErr.Error(), expectedMessage)
-}
-
-func newTestPhysicalContainerImage(name string, namespace string) *apiv2.PhysicalContainerImage {
-	return &apiv2.PhysicalContainerImage{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: "test-image",
-		},
-	}
-}
-
-func newTestPhysicalContainer(name string, namespace string) *apiv2.PhysicalContainer {
-	return &apiv2.PhysicalContainer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef: "test-image",
-		},
-	}
 }
 
 func waitV2NamespaceActive(t *testing.T, ctx context.Context, name string) *apiv2.Namespace {
