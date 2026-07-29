@@ -31,6 +31,13 @@ var (
 	namespaceFinalizer string = fmt.Sprintf("%s/namespace-reconciler", apiv2.GroupVersion.Group)
 )
 
+type namespaceCleanupResourceHandler func(*NamespaceReconciler, context.Context, *apiv2.Namespace, logr.Logger) (bool, error)
+
+var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
+	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():      (*NamespaceReconciler).cleanupPhysicalContainers,
+	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerImages,
+}
+
 type NamespaceReconciler struct {
 	*ReconcilerBase[apiv2.Namespace, *apiv2.Namespace]
 }
@@ -183,14 +190,12 @@ func (r *NamespaceReconciler) cleanupNamespaceResource(
 	gvr schema.GroupVersionResource,
 	log logr.Logger,
 ) (bool, error) {
-	switch gvr {
-	case (&apiv2.PhysicalContainer{}).GetGroupVersionResource():
-		return r.cleanupPhysicalContainers(ctx, namespace, log)
-	case (&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():
-		return r.cleanupPhysicalContainerImages(ctx, namespace, log)
-	default:
+	handler, ok := namespaceCleanupResourceHandlers[gvr]
+	if !ok {
 		return false, fmt.Errorf("unsupported namespace cleanup resource %q", gvr.String())
 	}
+
+	return handler(r, ctx, namespace, log)
 }
 
 func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (bool, error) {
