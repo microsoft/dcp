@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -59,6 +60,9 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.Equal(t, "created-image", inspectedContainers[0].Image)
 	require.Equal(t, []string{"run"}, inspectedContainers[0].Args)
 	require.Equal(t, "test-value", inspectedContainers[0].Env["TEST_ENV"])
+	require.Equal(t, "false", inspectedContainers[0].Labels[controllers.PersistentLabel])
+	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 }
 
 func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(t *testing.T) {
@@ -410,6 +414,13 @@ func TestV2PhysicalContainerControllerTracksExistingContainer(t *testing.T) {
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	require.Equal(t, existingContainerID, updatedContainer.Status.ContainerID)
 	require.Equal(t, "v2-pctr-existing-runtime", updatedContainer.Status.ContainerName)
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: []string{existingContainerID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, 1)
+	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessIdLabel)
 }
 
 func TestV2PhysicalContainerControllerReportsMissingExistingContainer(t *testing.T) {
@@ -495,6 +506,7 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 	})
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
+	require.Equal(t, "true", inspectedContainers[0].Labels[controllers.PersistentLabel])
 }
 
 func TestV2PhysicalContainerControllerPreservesExistingContainerOnDeletion(t *testing.T) {

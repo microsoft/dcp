@@ -25,7 +25,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - Long-running or blocking operations should run through bounded queued work, with reconciliation recording progress and returning quickly.
 - Queued action completion should enqueue a follow-up reconcile instead of directly mutating Kubernetes objects from worker code.
 - Non-idempotent side effects should be guarded by lightweight in-memory data so stale or competing reconciles do not duplicate runtime work.
-- DCP does not currently support controller crash recovery; in-memory progress data is acceptable because API server teardown and watcher processes clean up orphaned runtime resources after controller crashes.
+- DCP does not currently replay in-memory progress after controller crashes; queued side effects that create non-preserved runtime resources must stamp creator and persistence labels so startup harvesting can remove abandoned resources.
 
 ### In-memory progress data
 
