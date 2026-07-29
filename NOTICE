@@ -18,7 +18,7 @@ required to debug changes to any libraries licensed under the GNU Lesser General
 ----------------------------------------------------------
 
 cel.dev/expr v0.25.1 - Apache-2.0
-https://github.com/google/cel-spec/blob/v0.25.1/LICENSE
+https://github.com/cel-expr/cel-spec/blob/v0.25.1/LICENSE
 
 
                                  Apache License
