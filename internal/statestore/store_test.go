@@ -1586,15 +1586,101 @@ func TestAppliedProbesDetectTheirOwnMigration(t *testing.T) {
 	}
 }
 
+// sqlCommentPattern matches SQL line and block comments. They are removed before looking for
+// transaction statements so that prose does not trip the check.
+var sqlCommentPattern = regexp.MustCompile(`(?s)--[^\n]*|/\*.*?\*/`)
+
+// sqlWordPattern matches a whole SQL identifier or keyword, so an identifier that merely contains a
+// keyword (a "commit_sha" column, for example) is not mistaken for the keyword.
+var sqlWordPattern = regexp.MustCompile(`[A-Za-z0-9_]+`)
+
+var transactionBreakingStatements = []string{
+	"BEGIN", "COMMIT", "END", "ROLLBACK", "VACUUM", "PRAGMA", "ATTACH", "DETACH",
+}
+
+// findTransactionBreakingStatement returns the first statement in migrationSQL that would end the
+// transaction the migration driver wraps around each migration, or an empty string when there is
+// none. SQLite treats END as an alias for COMMIT, but END also closes a CASE expression, so an END
+// is only reported when no CASE is open.
+func findTransactionBreakingStatement(migrationSQL string) string {
+	withoutComments := sqlCommentPattern.ReplaceAllString(migrationSQL, " ")
+
+	caseDepth := 0
+	for _, word := range sqlWordPattern.FindAllString(withoutComments, -1) {
+		upperWord := strings.ToUpper(word)
+		switch upperWord {
+		case "CASE":
+			caseDepth++
+		case "END":
+			if caseDepth > 0 {
+				caseDepth--
+				continue
+			}
+			return upperWord
+		default:
+			if slices.Contains(transactionBreakingStatements, upperWord) {
+				return upperWord
+			}
+		}
+	}
+	return ""
+}
+
+// TestFindTransactionBreakingStatement covers the guard that TestMigrationsAreTransactional relies
+// on, including the SQL that legitimately uses the keywords it looks for.
+func TestFindTransactionBreakingStatement(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		sql      string
+		expected string
+	}{
+		{name: "plain DDL", sql: "CREATE TABLE t (a TEXT NOT NULL);", expected: ""},
+		{name: "commit", sql: "UPDATE t SET a = 1;\nCOMMIT;", expected: "COMMIT"},
+		{name: "begin", sql: "BEGIN;\nUPDATE t SET a = 1;", expected: "BEGIN"},
+		{name: "end as commit alias", sql: "UPDATE t SET a = 1;\nEND;", expected: "END"},
+		{name: "end transaction", sql: "END TRANSACTION;", expected: "END"},
+		{name: "pragma", sql: "PRAGMA foreign_keys = ON;", expected: "PRAGMA"},
+		{
+			name:     "case expression is allowed",
+			sql:      "UPDATE t SET a = CASE WHEN b IS NULL THEN 0 ELSE b END;",
+			expected: "",
+		},
+		{
+			name:     "nested case expressions are allowed",
+			sql:      "UPDATE t SET a = CASE WHEN b THEN CASE WHEN c THEN 1 ELSE 2 END ELSE 3 END;",
+			expected: "",
+		},
+		{
+			name:     "end after a closed case still reports",
+			sql:      "UPDATE t SET a = CASE WHEN b THEN 1 ELSE 2 END;\nEND;",
+			expected: "END",
+		},
+		{
+			name:     "keywords inside identifiers are allowed",
+			sql:      "CREATE TABLE t (commit_sha TEXT, begin_time INTEGER, appended TEXT, end2 TEXT);",
+			expected: "",
+		},
+		{name: "keywords inside a line comment are allowed", sql: "-- no COMMIT needed at the end\nSELECT 1;", expected: ""},
+		{name: "keywords inside a block comment are allowed", sql: "/* do not\nVACUUM here */\nSELECT 1;", expected: ""},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, testCase.expected, findTransactionBreakingStatement(testCase.sql))
+		})
+	}
+}
+
 // TestMigrationsAreTransactional guards the invariant that lets an interrupted migration be repaired:
 // the migration driver wraps every migration in a transaction, so a migration either commits in full
 // or not at all. Statements that commit implicitly would break that invariant.
 func TestMigrationsAreTransactional(t *testing.T) {
 	t.Parallel()
 
-	// Match whole words only so identifiers that merely contain a keyword (a "commit_sha" column,
-	// for example) are not reported as forbidden statements.
-	forbiddenStatements := regexp.MustCompile(`(?i)\b(BEGIN|COMMIT|ROLLBACK|VACUUM|PRAGMA|ATTACH|DETACH)\b`)
 	walkErr := fs.WalkDir(migrationFiles, "migrations", func(path string, entry fs.DirEntry, entryErr error) error {
 		if entryErr != nil {
 			return entryErr
@@ -1604,13 +1690,13 @@ func TestMigrationsAreTransactional(t *testing.T) {
 		}
 		contents, readErr := fs.ReadFile(migrationFiles, path)
 		require.NoError(t, readErr)
-		match := forbiddenStatements.FindString(string(contents))
+		statement := findTransactionBreakingStatement(string(contents))
 		require.Empty(
 			t,
-			match,
+			statement,
 			"migration '%s' must not use %s; it breaks migration atomicity",
 			path,
-			match,
+			statement,
 		)
 		return nil
 	})

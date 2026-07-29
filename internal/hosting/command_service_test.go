@@ -15,12 +15,14 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 
-	"github.com/microsoft/dcp/internal/testutil"
+	internal_testutil "github.com/microsoft/dcp/internal/testutil"
 	"github.com/microsoft/dcp/pkg/process"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const (
-	commandServiceTestName = "test-service"
+	commandServiceTestName    = "test-service"
+	commandServiceTestTimeout = 10 * time.Second
 
 	// The test executor hands out sequential PIDs starting at 1, and every test uses its own executor.
 	firstTestProcessPID process.Pid_t = 1
@@ -45,7 +47,7 @@ func newTestCommandService(
 
 // waitForTestProcessStart blocks until the service has started its process, so the test can
 // simulate an exit for it.
-func waitForTestProcessStart(t *testing.T, ctx context.Context, executor *testutil.TestProcessExecutor) {
+func waitForTestProcessStart(t *testing.T, ctx context.Context, executor *internal_testutil.TestProcessExecutor) {
 	t.Helper()
 
 	ticker := time.NewTicker(time.Millisecond)
@@ -71,10 +73,10 @@ func runCommandServiceAsync(svc *CommandService, ctx context.Context) <-chan err
 }
 
 func Test_CommandService_CleanExitIsNotAnError(t *testing.T) {
-	execCtx, cancelExecCtx := context.WithDeadline(createContext(t), time.Now().Add(time.Second*10))
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, commandServiceTestTimeout)
 	defer cancelExecCtx()
 
-	executor := testutil.NewTestProcessExecutor(execCtx)
+	executor := internal_testutil.NewTestProcessExecutor(execCtx)
 	defer executor.Dispose()
 
 	svc := newTestCommandService(t, executor, 0)
@@ -90,10 +92,10 @@ func Test_CommandService_CleanExitIsNotAnError(t *testing.T) {
 // component the service was hosting: the process exits on its own with a non-zero code while the
 // service is still supposed to be running.
 func Test_CommandService_UnexpectedExitIsReported(t *testing.T) {
-	execCtx, cancelExecCtx := context.WithDeadline(createContext(t), time.Now().Add(time.Second*10))
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, commandServiceTestTimeout)
 	defer cancelExecCtx()
 
-	executor := testutil.NewTestProcessExecutor(execCtx)
+	executor := internal_testutil.NewTestProcessExecutor(execCtx)
 	defer executor.Dispose()
 
 	svc := newTestCommandService(t, executor, 0)
@@ -112,10 +114,10 @@ func Test_CommandService_UnexpectedExitIsReported(t *testing.T) {
 // report a failure. Terminating a process yields a non-zero exit code on most platforms, and that
 // is the expected outcome once the service context is cancelled.
 func Test_CommandService_ExitAfterCancellationIsNotAnError(t *testing.T) {
-	execCtx, cancelExecCtx := context.WithDeadline(createContext(t), time.Now().Add(time.Second*10))
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, commandServiceTestTimeout)
 	defer cancelExecCtx()
 
-	executor := testutil.NewTestProcessExecutor(execCtx)
+	executor := internal_testutil.NewTestProcessExecutor(execCtx)
 	defer executor.Dispose()
 
 	svcCtx, cancelSvcCtx := context.WithCancel(execCtx)
@@ -126,7 +128,7 @@ func Test_CommandService_ExitAfterCancellationIsNotAnError(t *testing.T) {
 
 	waitForTestProcessStart(t, execCtx, executor)
 	cancelSvcCtx()
-	executor.SimulateProcessExit(t, firstTestProcessPID, testutil.KilledProcessExitCode)
+	executor.SimulateProcessExit(t, firstTestProcessPID, internal_testutil.KilledProcessExitCode)
 
 	require.NoError(t, <-runResult)
 }
@@ -135,10 +137,10 @@ func Test_CommandService_ExitAfterCancellationIsNotAnError(t *testing.T) {
 // services that outlive their context (CommandServiceRunOptionDontTerminate), which take a
 // different path out of Run.
 func Test_CommandService_UnexpectedExitIsReportedWhenNotTerminated(t *testing.T) {
-	execCtx, cancelExecCtx := context.WithDeadline(createContext(t), time.Now().Add(time.Second*10))
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, commandServiceTestTimeout)
 	defer cancelExecCtx()
 
-	executor := testutil.NewTestProcessExecutor(execCtx)
+	executor := internal_testutil.NewTestProcessExecutor(execCtx)
 	defer executor.Dispose()
 
 	svc := newTestCommandService(t, executor, CommandServiceRunOptionDontTerminate)
@@ -155,12 +157,12 @@ func Test_CommandService_UnexpectedExitIsReportedWhenNotTerminated(t *testing.T)
 // Test_CommandService_ProcessTrackingErrorIsReported verifies that a failure to observe the process
 // exit is surfaced even though no exit code is available.
 func Test_CommandService_ProcessTrackingErrorIsReported(t *testing.T) {
-	execCtx, cancelExecCtx := context.WithDeadline(createContext(t), time.Now().Add(time.Second*10))
+	execCtx, cancelExecCtx := testutil.GetTestContext(t, commandServiceTestTimeout)
 	defer cancelExecCtx()
 
 	trackingErr := errors.New("could not track the process")
 	executor := &exitErrorExecutor{
-		TestProcessExecutor: testutil.NewTestProcessExecutor(execCtx),
+		TestProcessExecutor: internal_testutil.NewTestProcessExecutor(execCtx),
 		exitErr:             trackingErr,
 	}
 	defer executor.Dispose()
@@ -173,7 +175,7 @@ func Test_CommandService_ProcessTrackingErrorIsReported(t *testing.T) {
 // exitErrorExecutor reports process exit with an error instead of an exit code, which happens when
 // the process could not be tracked to completion.
 type exitErrorExecutor struct {
-	*testutil.TestProcessExecutor
+	*internal_testutil.TestProcessExecutor
 	exitErr error
 }
 
