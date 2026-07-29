@@ -503,6 +503,7 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 	}
 	createErr := serverInfo.Client.Create(ctx, &ns)
 	require.NoError(t, createErr, "Failed to create V2 Namespace")
+	activateV2Namespace(t, ctx, serverInfo.Client, &ns)
 
 	pci := apiv2.PhysicalContainerImage{
 		ObjectMeta: metav1.ObjectMeta{
@@ -540,6 +541,20 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 	require.NoError(t, listErr, "Failed to list V2 PhysicalContainers")
 	require.Len(t, list.Items, 1)
 	require.Equal(t, pc.Name, list.Items[0].Name)
+}
+
+// activateV2Namespace applies the finalizer and Active phase that the namespace controller
+// would normally apply, so namespaced V2 resources pass admission in API-server-only tests.
+func activateV2Namespace(t *testing.T, ctx context.Context, client ctrl_client.Client, ns *apiv2.Namespace) {
+	t.Helper()
+
+	ns.Finalizers = append(ns.Finalizers, apiv2.NamespaceFinalizer)
+	updateErr := client.Update(ctx, ns)
+	require.NoError(t, updateErr, "Failed to add the namespace finalizer")
+
+	ns.Status.Phase = apiv2.NamespacePhaseActive
+	statusErr := client.Status().Update(ctx, ns)
+	require.NoError(t, statusErr, "Failed to activate the V2 Namespace")
 }
 
 func TestCanCapturePerfTrace(t *testing.T) {

@@ -39,6 +39,12 @@ func (s *ApiServer) withV2ResourceMemoryStorage(obj tiltresource.Object, rootPat
 		statusProvider := newV2JSONFilepathStorageProvider(obj, rootPath, fs, watchSet, true)
 		s.builder = s.builder.WithSubResourceAndHandler(obj, "status", (&v2StatusProvider{provider: statusProvider}).Get)
 	}
+
+	if genericSubresources, hasGenericSubresources := obj.(tiltresource.ObjectWithGenericSubResource); hasGenericSubresources {
+		for _, subresource := range genericSubresources.GenericSubResources() {
+			s.builder = s.builder.WithSubResourceAndHandler(obj, subresource.Name(), subresource.GetStorageProvider(obj, subresource.Name(), provider))
+		}
+	}
 }
 
 func newV2JSONFilepathStorageProvider(
