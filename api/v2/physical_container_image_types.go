@@ -210,7 +210,7 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 }
 
 func (pci *PhysicalContainerImage) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
-	errorList := pci.Validate(ctx)
+	errorList := field.ErrorList{}
 
 	oldImage := old.(*PhysicalContainerImage)
 	if !reflect.DeepEqual(oldImage.Spec, pci.Spec) {

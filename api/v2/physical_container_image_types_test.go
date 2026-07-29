@@ -262,3 +262,28 @@ func TestPhysicalContainerImageValidateUpdateRejectsSpecChanges(t *testing.T) {
 	require.NotEmpty(t, errorList)
 	require.Contains(t, errorList.ToAggregate().Error(), "spec")
 }
+
+func TestPhysicalContainerImageValidateUpdateAllowsStatusUpdateDuringShutdown(t *testing.T) {
+	commonapi.ResourceCreationProhibited.Store(true)
+	defer commonapi.ResourceCreationProhibited.Store(false)
+
+	oldImage := &PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-image",
+			Namespace: "test-namespace",
+		},
+		Spec: PhysicalContainerImageSpec{
+			Image: "test-source-image",
+		},
+	}
+	newImage := oldImage.DeepCopy()
+	newImage.Status.Phase = PhysicalContainerImagePhaseReady
+
+	validationErr := newImage.Validate(context.Background()).ToAggregate()
+	require.Error(t, validationErr)
+	require.Contains(t, validationErr.Error(), commonapi.ErrResourceCreationProhibited.Error())
+
+	errorList := newImage.ValidateUpdate(context.Background(), oldImage)
+
+	require.Empty(t, errorList)
+}

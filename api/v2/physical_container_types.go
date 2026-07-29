@@ -331,7 +331,7 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 }
 
 func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
-	errorList := pc.Validate(ctx)
+	errorList := field.ErrorList{}
 
 	oldPhysicalContainer := old.(*PhysicalContainer)
 	if oldPhysicalContainer.Spec.Stop && !pc.Spec.Stop {

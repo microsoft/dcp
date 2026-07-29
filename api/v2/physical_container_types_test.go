@@ -285,6 +285,31 @@ func TestPhysicalContainerValidateUpdateAllowsStopRequest(t *testing.T) {
 	require.Empty(t, errorList)
 }
 
+func TestPhysicalContainerValidateUpdateAllowsStatusUpdateDuringShutdown(t *testing.T) {
+	commonapi.ResourceCreationProhibited.Store(true)
+	defer commonapi.ResourceCreationProhibited.Store(false)
+
+	oldContainer := &PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-container",
+			Namespace: "test-namespace",
+		},
+		Spec: PhysicalContainerSpec{
+			ImageRef: "test-image",
+		},
+	}
+	newContainer := oldContainer.DeepCopy()
+	newContainer.Status.Phase = PhysicalContainerPhaseRunning
+
+	validationErr := newContainer.Validate(context.Background()).ToAggregate()
+	require.Error(t, validationErr)
+	require.Contains(t, validationErr.Error(), commonapi.ErrResourceCreationProhibited.Error())
+
+	errorList := newContainer.ValidateUpdate(context.Background(), oldContainer)
+
+	require.Empty(t, errorList)
+}
+
 func TestPhysicalContainerValidateUpdateRejectsClearingStop(t *testing.T) {
 	oldContainer := &PhysicalContainer{
 		ObjectMeta: metav1.ObjectMeta{
