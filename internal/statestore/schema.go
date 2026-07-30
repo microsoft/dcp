@@ -42,9 +42,10 @@ const (
 )
 
 // schemaMigrationProbe reports whether a single migration's schema changes are present in the database.
-// golang-migrate applies each migration inside its own transaction, so a dirty version marker means
-// the migration either committed in full or never committed at all. The probe tells the two apart so
-// a dirty marker can be repaired instead of failing startup.
+// golang-migrate applies each migration inside its own transaction, so a dirty version marker does not
+// necessarily mean the migration failed: it either committed in full or never committed at all. The
+// probe tells the two apart so the marker can be cleared, as long as a probe is registered for that
+// schema version.
 type schemaMigrationProbe struct {
 	version int
 	// appliedQuery must return a single boolean column that is true when the migration has been applied.
@@ -190,15 +191,15 @@ func (s *Store) setSchemaVersion(ctx context.Context, tableName string, version 
 	})
 }
 
-// repairDirtySchemaVersion clears a dirty migration marker by determining whether the interrupted
-// migration actually committed, and returns the repaired version (noSchemaVersion when the stream is
+// recoverDirtySchemaVersion clears a dirty migration marker by determining whether the interrupted
+// migration actually committed, and returns the recovered version (noSchemaVersion when the stream is
 // left empty). It fails when no probe is registered for the dirty version, because the applied state
 // of an unknown migration cannot be determined.
 //
 // The caller must only pass a version that the migration driver marked dirty. Migrations are applied
 // in ascending order and a version is only marked dirty once the preceding one is recorded clean, so
-// version-1 is known to be applied and is a valid repair target when the probe reports false.
-func (s *Store) repairDirtySchemaVersion(
+// version-1 is known to be applied and is a valid recovery target when the probe reports false.
+func (s *Store) recoverDirtySchemaVersion(
 	ctx context.Context,
 	tableName string,
 	version int,
@@ -215,27 +216,27 @@ func (s *Store) repairDirtySchemaVersion(
 		return 0, fmt.Errorf("could not determine whether dirty schema version %d was applied: %w", version, scanErr)
 	}
 
-	repairedVersion := version
+	recoveredVersion := version
 	if !applied {
-		repairedVersion = version - 1
-		if repairedVersion < 1 {
-			repairedVersion = noSchemaVersion
+		recoveredVersion = version - 1
+		if recoveredVersion < 1 {
+			recoveredVersion = noSchemaVersion
 		}
 	}
 
-	if setErr := s.setSchemaVersion(ctx, tableName, repairedVersion); setErr != nil {
-		return 0, fmt.Errorf("could not repair dirty schema version %d: %w", version, setErr)
+	if setErr := s.setSchemaVersion(ctx, tableName, recoveredVersion); setErr != nil {
+		return 0, fmt.Errorf("could not recover dirty schema version %d: %w", version, setErr)
 	}
 	s.log.Info(
-		"Repaired an interrupted state store migration",
+		"Recovered an interrupted state store migration",
 		"Table", tableName,
 		"DirtyVersion", version,
-		"RepairedVersion", repairedVersion,
+		"RecoveredVersion", recoveredVersion,
 	)
-	return repairedVersion, nil
+	return recoveredVersion, nil
 }
 
-// validateStoredSchemaMajorVersion repairs a dirty major version and rejects versions with no supported migration path.
+// validateStoredSchemaMajorVersion recovers a dirty major version and rejects versions with no supported migration path.
 func (s *Store) validateStoredSchemaMajorVersion(ctx context.Context) error {
 	version, found, dirty, readErr := readSchemaMajorVersion(ctx, s.db)
 	if readErr != nil {
@@ -245,14 +246,14 @@ func (s *Store) validateStoredSchemaMajorVersion(ctx context.Context) error {
 		return nil
 	}
 	if dirty {
-		repairedVersion, repairErr := s.repairDirtySchemaVersion(ctx, schemaMajorMigrationTableName, version, schemaMajorProbes)
-		if repairErr != nil {
-			return fmt.Errorf("schema major version %d is dirty: %w", version, repairErr)
+		recoveredVersion, recoverErr := s.recoverDirtySchemaVersion(ctx, schemaMajorMigrationTableName, version, schemaMajorProbes)
+		if recoverErr != nil {
+			return fmt.Errorf("schema major version %d is dirty: %w", version, recoverErr)
 		}
-		if repairedVersion == noSchemaVersion {
+		if recoveredVersion == noSchemaVersion {
 			return nil
 		}
-		version = repairedVersion
+		version = recoveredVersion
 	}
 	if version != legacySchemaVersion2 && !isSupportedSchemaMajorVersion(version) {
 		return fmt.Errorf("unsupported schema major version %d", version)
@@ -372,7 +373,7 @@ func (s *Store) runSchemaMajorMigration(ctx context.Context, busyTimeout time.Du
 	return errors.Join(sourceCloseErr, databaseCloseErr)
 }
 
-// runSchemaMinorMigrations repairs an interrupted migration and accepts a clean newer version
+// runSchemaMinorMigrations recovers an interrupted migration and accepts a clean newer version
 // without asking golang-migrate to resolve unknown files.
 func (s *Store) runSchemaMinorMigrations(
 	ctx context.Context,
@@ -384,19 +385,19 @@ func (s *Store) runSchemaMinorMigrations(
 		return fmt.Errorf("could not read schema major %d minor version: %w", migration.version, versionErr)
 	}
 	if dirty {
-		repairedVersion, repairErr := s.repairDirtySchemaVersion(
+		recoveredVersion, recoverErr := s.recoverDirtySchemaVersion(
 			ctx,
 			migration.minorTableName,
 			databaseVersion,
 			migration.minorProbes,
 		)
-		if repairErr != nil {
+		if recoverErr != nil {
 			// A dirty version this binary does not know about belongs to a newer DCP. Minor migrations
 			// are additive, so every migration this binary needs is already present regardless of
 			// whether the interrupted one committed. Leave the marker for the binary that owns it.
 			if databaseVersion > migration.latestMinorVersion {
 				s.log.Info(
-					"State store has an interrupted migration from a newer DCP version. A newer DCP will repair it.",
+					"State store has an interrupted migration from a newer DCP version. A newer DCP will recover it.",
 					"Table", migration.minorTableName,
 					"DirtyVersion", databaseVersion,
 					"SupportedVersion", migration.latestMinorVersion,
@@ -407,11 +408,11 @@ func (s *Store) runSchemaMinorMigrations(
 				"schema major %d minor version %d is dirty: %w",
 				migration.version,
 				databaseVersion,
-				repairErr,
+				recoverErr,
 			)
 		}
-		databaseVersion = repairedVersion
-		found = repairedVersion != noSchemaVersion
+		databaseVersion = recoveredVersion
+		found = recoveredVersion != noSchemaVersion
 	}
 	// A newer compatible migration implies that every older migration in this stream was applied.
 	if found && databaseVersion > migration.latestMinorVersion {
