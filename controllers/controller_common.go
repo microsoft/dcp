@@ -316,8 +316,21 @@ func setReadyCondition(
 	reason string,
 	message string,
 ) objectChange {
+	return setCondition(conditions, apiv2.ConditionReady, generation, status, reason, message)
+}
+
+// Records the condition, reporting noChange when the condition already holds the same values
+// so that repeated reconciliation of an unchanged state does not produce status writes.
+func setCondition(
+	conditions *[]metav1.Condition,
+	conditionType string,
+	generation int64,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) objectChange {
 	condition := metav1.Condition{
-		Type:               apiv2.ConditionReady,
+		Type:               conditionType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
