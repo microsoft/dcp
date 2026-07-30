@@ -126,6 +126,17 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	return metadataChanged
 }
 
+// ensureNamespace reports whether a namespaced V2 resource may perform runtime work, applying
+// a Pending or Failed status change when it may not.
+//
+// This is the single gate for runtime side effects of namespaced V2 resources, and it is
+// deliberately enforced here in the controllers rather than at admission. The API server does
+// accept child resources whose namespace is missing or terminating, so such a child can exist
+// briefly as an API object; because every controller calls this before touching the container
+// runtime, that child never produces a container or image and simply sits in Pending until it
+// is cleaned up with the namespace. An admission-time equivalent was tried and reverted: it
+// required forking tilt's storage registration path to read the namespace outside the REST
+// layer, which is a large amount of borrowed machinery to prevent an inert API record.
 func ensureNamespace(
 	ctx context.Context,
 	client ctrl_client.Client,

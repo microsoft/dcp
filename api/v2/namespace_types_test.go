@@ -96,3 +96,37 @@ func TestNamespaceValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestNamespaceValidateUpdateRejectsInvalidWorkloadID(t *testing.T) {
+	oldNamespace := &Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-namespace"},
+	}
+	newNamespace := oldNamespace.DeepCopy()
+	newNamespace.Annotations = map[string]string{
+		NamespaceWorkloadIDAnnotation: strings.Repeat("a", commonapi.MaxWorkloadIDLength+1),
+	}
+
+	errorList := newNamespace.ValidateUpdate(context.Background(), oldNamespace)
+
+	require.NotEmpty(t, errorList)
+	require.Contains(t, errorList.ToAggregate().Error(), NamespaceWorkloadIDAnnotation)
+}
+
+func TestNamespaceValidateUpdateAllowsStatusUpdateDuringShutdown(t *testing.T) {
+	commonapi.ResourceCreationProhibited.Store(true)
+	defer commonapi.ResourceCreationProhibited.Store(false)
+
+	oldNamespace := &Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-namespace"},
+	}
+	newNamespace := oldNamespace.DeepCopy()
+	newNamespace.Status.Phase = NamespacePhaseTerminating
+
+	validationErr := newNamespace.Validate(context.Background()).ToAggregate()
+	require.Error(t, validationErr)
+	require.Contains(t, validationErr.Error(), commonapi.ErrResourceCreationProhibited.Error())
+
+	errorList := newNamespace.ValidateUpdate(context.Background(), oldNamespace)
+
+	require.Empty(t, errorList)
+}

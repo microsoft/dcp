@@ -150,6 +150,29 @@ func (ns *Namespace) Validate(ctx context.Context) field.ErrorList {
 	return errorList
 }
 
+// ValidateUpdate validates mutable metadata on an existing Namespace.
+//
+// Namespace has no spec, so there is nothing to freeze here; annotations are the only
+// mutable input that carries meaning. Note that this runs for status writes as well as
+// user-initiated updates, so it must not re-run creation-only checks. In particular the
+// ResourceCreationProhibited gate in Validate is deliberately absent: applying it here
+// would block the namespace controller from recording cleanup status or removing its
+// finalizer during shutdown, which would deadlock namespace deletion.
+func (ns *Namespace) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
+	metadataPath := field.NewPath("metadata")
+	errorList := commonapi.ValidateAnnotationsSize(ns.Annotations, metadataPath.Child("annotations"))
+
+	workloadIDText, hasWorkloadID := ns.Annotations[NamespaceWorkloadIDAnnotation]
+	if hasWorkloadID {
+		normalizedWorkloadID := commonapi.NormalizeWorkloadID(workloadIDText)
+		if validationErr := normalizedWorkloadID.Validate(); validationErr != nil {
+			errorList = append(errorList, field.Invalid(metadataPath.Child("annotations").Key(NamespaceWorkloadIDAnnotation), workloadIDText, validationErr.Error()))
+		}
+	}
+
+	return errorList
+}
+
 // NamespaceList contains a list of Namespace instances.
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
@@ -187,3 +210,4 @@ var _ apiserver_resource.ObjectList = (*NamespaceList)(nil)
 var _ commonapi.ListWithObjectItems[Namespace, *Namespace] = (*NamespaceList)(nil)
 var _ apiserver_resourcerest.ShortNamesProvider = (*Namespace)(nil)
 var _ apiserver_resourcestrategy.Validater = (*Namespace)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*Namespace)(nil)

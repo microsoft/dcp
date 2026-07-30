@@ -75,6 +75,13 @@ type resourceCleanupResult struct {
 	Error error
 }
 
+// CleanupAllResources deletes all resource kinds listed in resourcecleanup.ShutdownResources,
+// in cleanup order, and waits for the deletions to complete.
+//
+// This must be called while the controllers are still running and their lifetime context is
+// still live. Controllers hand long-running cleanup work to resiliency.WorkQueue instances,
+// which drop queued items once their lifetime context is done, so calling this after the
+// controller host has shut down would silently skip cleanup and leak containers.
 func CleanupAllResources(log logr.Logger) (cleanupResult error) {
 	if len(resourcecleanup.ShutdownResources) <= 0 {
 		log.Info("No resources to delete")
