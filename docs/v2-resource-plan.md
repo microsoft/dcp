@@ -126,3 +126,39 @@ After the physical primitives are in place, add logical V2 resources that expres
    - Include exactly one run configuration initially: executable or container.
    - Include data required to run a debug adapter for the application.
    - Refine the design before implementation, especially debug adapter acquisition, which remains an open question.
+
+### Log streaming
+
+V2 has no log surface. `AdditionalTypes` is empty and no V2 resource exposes a `log` subresource, so output from a V2 runtime container cannot be read through the V2 API. This is the largest user-visible gap in the current V2 foundation.
+
+The V1 mechanism, for reference:
+
+- Logs are a generic `log` subresource served at `/apis/{group}/{version}/{resource}/{name}/log`, backed per resource kind by the `apiv1.ResourceLogStreamers` registry keyed by `GroupVersionResource`.
+- `LogOptions` carries the query parameters. `LogStreamer` exists only because a Kubernetes storage object must be associated with a type.
+- Two streamer implementations back the registry: file-based (`stdiologs`, for `Executable` and `ContainerExec`) and runtime-based (`containerlogs`, for `Container`).
+- OpenAPI generation is suppressed for the subresource because the response is raw text rather than a structured object.
+
+Whether log streams belong to physical resources, logical resources, or both is an open question. The existing source model is the strongest available evidence:
+
+- The orchestrator layer (`internal/containers`) defines exactly two sources, `stdout` and `stderr`, because those are what a container runtime produces.
+- The V1 API defines five, adding `startup_stdout`, `startup_stderr`, and `system`, which are DCP-level concepts with no runtime equivalent.
+- V1 pulls and builds images inside the `Container` resource, so that output surfaces as the `startup_*` sources. In V2 that work belongs to `PhysicalContainerImage`, which can own its own stream instead.
+
+That split suggests physical resources should expose only the streams their runtime object actually produces, while logical resources compose those streams and add DCP-level sources. Confirm the model before implementing it.
+
+This work is cross-cutting rather than sequenced after the logical layer. The ownership decision needs enough of the logical shape to be credible, but exposing physical container and image output does not need to wait for the full logical layer to land.
+
+1. Decide the ownership model for log streams.
+   - Determine whether physical resources, logical resources, or both expose a `log` subresource.
+   - Decide whether a logical resource aggregates streams from the physical resources it references, and how a caller selects between an aggregated view and a single underlying stream.
+   - Decide whether V2 `startup_*` output becomes a stream on the referenced `PhysicalContainerImage` rather than a source on the container.
+   - Decide whether V2 reuses the V1 source names or defines a source set per resource kind.
+
+2. Decide where the shared log plumbing lives.
+   - `ResourceLogStreamer`, `ResourceLogStreamers`, and `LogOptions` live in `api/v1` but are version-neutral in shape. Decide whether to hoist them into `pkg/commonapi`, as was done for `ResourceCreationProhibited`, or to give V2 its own copies consistent with the type ownership rules above.
+   - Confirm the subresource plumbing works for namespace-scoped resources. Client-side path construction is already generic (`NamespaceIfScoped`), but every V1 resource that exposes logs today is cluster-scoped, and both `LogStreamer` and `LogOptions` return `false` from `NamespaceScoped`, so the server-side registration is unproven for namespaced kinds.
+
+3. Add log streaming to V2 resources once the model is settled.
+   - Expose runtime container output for `PhysicalContainer`.
+   - Expose pull and build output for `PhysicalContainerImage`.
+   - Terminate in-flight streams when the resource or its namespace is deleted, so streaming does not block namespace cleanup.
