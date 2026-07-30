@@ -1474,7 +1474,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11760,
 			},
@@ -1485,7 +1485,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11761,
 			},
@@ -1589,7 +1589,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  ServiceIPAddr,
 			Port:     26003,
 		},
@@ -4286,7 +4286,7 @@ func TestContainerHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

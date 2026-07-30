@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
 // goldenContainerLifecycleKey is the lifecycle key produced by goldenContainerSpec.
@@ -55,8 +57,8 @@ func goldenContainerSpec() *ContainerSpec {
 			{Type: NamedVolumeMount, Source: "cache", Target: "/cache"},
 		},
 		Ports: []ContainerPort{
-			{HostPort: 18080, ContainerPort: 8080, Protocol: TCP, HostIP: "127.0.0.1"},
-			{HostPort: 15353, ContainerPort: 53, Protocol: UDP},
+			{HostPort: 18080, ContainerPort: 8080, Protocol: commonapi.PortProtocolTCP, HostIP: "127.0.0.1"},
+			{HostPort: 15353, ContainerPort: 53, Protocol: commonapi.PortProtocolUDP},
 		},
 		Env: []EnvVar{
 			{Name: "B_VAR", Value: "2"},

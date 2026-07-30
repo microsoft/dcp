@@ -27,7 +27,7 @@ func TestServiceRandomIPv4Address(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeIPv4Loopback,
 		},
 	}

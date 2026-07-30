@@ -139,15 +139,6 @@ type VolumeMount struct {
 	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
-// PortProtocol is aliased to the shared type so that networking and proxy code can
-// describe port protocols without depending on a specific API version.
-type PortProtocol = commonapi.PortProtocol
-
-const (
-	TCP = commonapi.PortProtocolTCP
-	UDP = commonapi.PortProtocolUDP
-)
-
 // +k8s:openapi-gen=true
 type ContainerPort struct {
 	// Optional: If specified, this must be a valid port number, 0 < x < 65536.
@@ -161,7 +152,7 @@ type ContainerPort struct {
 	ContainerPort int32 `json:"containerPort"`
 
 	// The port to be used, defaults to TCP
-	Protocol PortProtocol `json:"protocol,omitempty"`
+	Protocol commonapi.PortProtocol `json:"protocol,omitempty"`
 
 	// Optional: What host IP to bind the external port to.
 	HostIP string `json:"hostIP,omitempty"`

@@ -1195,7 +1195,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -1241,7 +1241,7 @@ func TestTunnelProxyWithRealOrchestrator(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol:              apiv1.TCP,
+			Protocol:              commonapi.PortProtocolTCP,
 			AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 		},
 	}
@@ -1431,7 +1431,7 @@ func prepareTunnelServices(
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol:              apiv1.TCP,
+				Protocol:              commonapi.PortProtocolTCP,
 				AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 			},
 		}
@@ -1465,7 +1465,7 @@ func prepareTunnelServices(
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol:              apiv1.TCP,
+				Protocol:              commonapi.PortProtocolTCP,
 				AddressAllocationMode: apiv1.AddressAllocationModeProxyless,
 			},
 		}

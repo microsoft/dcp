@@ -675,9 +675,7 @@ func (in *ContainerSpec) DeepCopyInto(out *ContainerSpec) {
 	if in.Ports != nil {
 		in, out := &in.Ports, &out.Ports
 		*out = make([]ContainerPort, len(*in))
-		for i := range *in {
-			(*in)[i].DeepCopyInto(&(*out)[i])
-		}
+		copy(*out, *in)
 	}
 	if in.Env != nil {
 		in, out := &in.Env, &out.Env
@@ -1577,7 +1575,7 @@ func (in *Service) DeepCopyInto(out *Service) {
 	*out = *in
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	in.Spec.DeepCopyInto(&out.Spec)
+	out.Spec = in.Spec
 	in.Status.DeepCopyInto(&out.Status)
 }
 
