@@ -34,17 +34,24 @@ DCP repairs a dirty version instead of failing startup. Every migration register
 - The probe reports true, so the migration committed. DCP records the dirty version as clean and continues with the following migration.
 - The probe reports false, so the migration never committed. DCP records the preceding version as clean, or empties the stream when the dirty version was the first migration, and the migration runs again.
 
-This is sound because the migration driver wraps each migration in its own transaction. An interrupted migration either committed in full or never committed at all, so the schema always matches one of the two cases above and is never partially migrated. DCP repairs the major version stream and each major version's minor stream the same way.
-
-This repair depends on two invariants, both covered by unit tests:
-
-- Every migration has an applied probe, and that probe reports false before the migration runs and true afterwards. Without a probe, DCP cannot tell whether the migration committed and startup fails with the dirty version. A probe that does not distinguish the two states is worse: DCP would keep a version marker for a migration that never ran, permanently skipping it.
-- Migration SQL never commits implicitly. `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` would break migration atomicity and are rejected. SQLite treats `END` as an alias for `COMMIT`; an `END` that closes a `CASE` expression is fine.
-
 DCP does not repair every dirty marker:
 
 - A dirty minor version newer than any migration embedded in this binary cannot be probed, because the migration belongs to a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed; DCP logs the condition, leaves the marker alone, and lets the binary that owns the migration repair it.
 - An unknown major version fails startup whether it is dirty or clean. Major versions are reserved for changes that older binaries cannot use safely.
+
+### Why repairing a dirty version is safe
+
+A dirty marker for version *v* has exactly two possible meanings:
+
+1. The migration's transaction never committed, so the schema is exactly at version *v-1*.
+2. The transaction committed but DCP stopped before clearing the dirty flag, so the schema is exactly at version *v*.
+
+There is no third case where the schema sits part way between the two. That is what makes the probe result a reliable answer rather than a guess, and it holds because of two constraints this repository places on migration authoring, both enforced by unit tests:
+
+- **Migration SQL never commits implicitly.** The SQLite migration driver wraps each migration in a single transaction, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` are rejected. `TestMigrationsAreTransactional` checks every embedded migration file. SQLite treats `END` as an alias for `COMMIT`, so only an `END` that closes a `CASE` expression is allowed. A migration that ended its transaction part way through would leave a schema that is neither version, and no probe could describe it.
+- **Every migration has an applied probe that discriminates.** The probe must report false before the migration runs and true afterwards. Without a probe DCP cannot tell which of the two cases it is in, and startup fails with the dirty version. A probe that does not distinguish the two states is worse: DCP would keep a version marker for a migration that never ran, permanently skipping it.
+
+Because the schema always matches one of the two versions exactly, DCP can determine the real migration state and record it. Repair only rewrites the version marker; it never edits schema or data. When the probe reports false the schema is exactly at *v-1*, so re-running the migration is an ordinary first application rather than a retry against a half-changed schema. DCP repairs the major version stream and each major version's minor stream the same way.
 
 ### Accepting a newer clean minor version
 
@@ -75,7 +82,7 @@ Minor migrations must remain safe when an older DCP uses the database afterward:
 - Do not add unique indexes, check constraints, foreign keys, changed primary keys, or other constraints that can reject writes accepted by older binaries without an explicit compatibility design.
 - Preserve `resource_locks` so old and new DCP processes coordinate through the same lock records.
 - Preserve persistent resource tables and records so older binaries can continue reading and updating them.
-- Do not include `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, or `DETACH`; the SQLite migration driver wraps each migration in a transaction and these statements would break its atomicity. SQLite treats `END` as an alias for `COMMIT`, so only an `END` that closes a `CASE` expression is allowed.
+- Do not include `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, or `DETACH`. These end the transaction the driver wraps the migration in, and [Why repairing a dirty version is safe](#why-repairing-a-dirty-version-is-safe) explains why that would make a dirty version unrecoverable. Only an `END` that closes a `CASE` expression is allowed.
 
 ## Adding a breaking major migration
 
