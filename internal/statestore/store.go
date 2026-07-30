@@ -54,7 +54,7 @@ type Options struct {
 	// BusyTimeout is the SQLite busy timeout used when another process holds a database lock.
 	BusyTimeout time.Duration
 
-	// Log receives messages about schema maintenance, such as repairs of interrupted migrations.
+	// Log receives messages about schema maintenance, such as recovery of interrupted migrations.
 	Log logr.Logger
 }
 

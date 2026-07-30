@@ -21,7 +21,7 @@ For each supported major version, DCP:
 
 `golang-migrate` does not serialize migrations across processes when using SQLite. Its `Driver` interface lets an implementation opt out of locking, and the SQLite driver does: `Lock` only flips an in-process flag on the driver instance. DCP builds a fresh migration runner for every `Open`, so that flag serializes nothing at all.
 
-The lock DCP takes in `migrate` is therefore the only thing that keeps two DCP instances from migrating the same store at once, and it must stay wrapped around the whole read, repair, and migrate sequence.
+The lock DCP takes in `migrate` is therefore the only thing that keeps two DCP instances from migrating the same store at once, and it must stay wrapped around the whole read, recover, and migrate sequence.
 
 The lock is an advisory file lock held on an open file descriptor, so the operating system releases it when the owning process exits, including a crash. DCP waits for the lock rather than failing when another instance holds it. An interrupted migration therefore leaves a dirty version marker but never a permanently stuck lock, which is what lets the next DCP acquire the lock and clear the marker.
 
@@ -34,9 +34,9 @@ Every migration registers an *applied probe* in `schema.go`: a SQL predicate tha
 - If the probe reports true, the migration committed. DCP clears the dirty flag and continues with the following migration.
 - If the probe reports false, the migration never committed. DCP marks the preceding version as clean (or assumes no migrations happened if the dirty version was the first migration), clears the dirty flag for the failed migration, and re-applies it.
 
-DCP does not repair every dirty marker.
+DCP does not clear every dirty marker.
 
-A dirty minor version newer than any migration embedded in current binary cannot be probed--it was attempted by a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed. DCP logs the condition, leaves the dirty marker alone, and lets the binary that owns the migration repair it.
+A dirty minor version newer than any migration embedded in current binary cannot be probed--it was attempted by a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed. DCP logs the condition, leaves the dirty marker alone, and lets the binary that owns the migration clear it.
 
 An unknown major version fails startup whether it is dirty or clean. Major versions are reserved for changes that older binaries cannot use safely.
 
@@ -54,7 +54,7 @@ The use of single transaction for each migration is also what makes the probe re
 - **Migration SQL never commits implicitly.** The SQLite migration driver wraps each migration in a single transaction, so `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` are rejected. `TestMigrationsAreTransactional` checks every embedded migration file. SQLite treats `END` as an alias for `COMMIT`, so only an `END` that closes a `CASE` expression is allowed. A migration that ended its transaction part way through would leave a schema that is neither version, and no probe could describe it.
 - **Every migration has an applied probe that discriminates.** The probe must reliably report `false` before the migration is applied and `true` afterwards.
 
-Because the schema always matches one of the two versions exactly, DCP can determine the real migration state and record it. Repair only rewrites the version marker; it never edits schema or data. When the probe reports false the schema is exactly at *v-1*, so re-running the migration is an ordinary first application rather than a retry against a half-changed schema. DCP detects existing schema version for major and minor migrations in the same way, and clears the `golang-migrate` dirty flag for both.
+Because the schema always matches one of the two versions exactly, DCP can determine the real migration state and record it. Recovery only rewrites the version marker; it never edits schema or data. When the probe reports false the schema is exactly at *v-1*, so re-running the migration is an ordinary first application rather than a retry against a half-changed schema. DCP detects existing schema version for major and minor migrations in the same way, and clears the `golang-migrate` dirty flag for both.
 
 ### Accepting a newer clean minor version
 
@@ -66,9 +66,9 @@ The original migration layout used one sequence for every schema change: version
 
 The new layout classifies that change as major version 1, minor version 1. When DCP finds a clean database created by the old version 2 migration, it records minor version 1 in `schema_minor_migrations_v1` and changes the major marker from 2 back to 1. This only reclassifies an already-applied migration; it does not undo schema changes or delete data.
 
-Binaries built before this reclassification advance a single migration stream unconditionally and carry no applied probes. When one of them opens a store a current DCP has normalized, it tries to advance that stream to version 2 again, and its `ALTER TABLE` fails because `workload_id` is already present, leaving a dirty marker behind. Probe-based repair clears that marker the next time a current DCP opens the store; `TestOpenRepairsSchemaDirtiedByOlderDcp` covers it.
+Binaries built before this reclassification advance a single migration stream unconditionally and carry no applied probes. When one of them opens a store a current DCP has normalized, it tries to advance that stream to version 2 again, and its `ALTER TABLE` fails because `workload_id` is already present, leaving a dirty marker behind. Probe-based recovery clears that marker the next time a current DCP opens the store; `TestOpenRecoversSchemaDirtiedByOlderDcp` covers it.
 
-Those binaries reached only Aspire's main and daily channels during a short window and were never part of a stable release. This is therefore the most common source of dirty markers at the time of writing but not a lasting one: it affects machines that ran one of those builds, and work that has not yet picked up the current layout, and it stops happening once those binaries fall out of use. Repair itself is not tied to this transition and remains in place for interrupted migrations generally.
+Those binaries reached only Aspire's main and daily channels during a short window and were never part of a stable release. This is therefore the most common source of dirty markers at the time of writing but not a lasting one: it affects machines that ran one of those builds, and work that has not yet picked up the current layout, and it stops happening once those binaries fall out of use. Recovery itself is not tied to this transition and remains in place for interrupted migrations generally.
 
 Major version 2 remains reserved for this transition. The next breaking schema change must use major version 3.
 

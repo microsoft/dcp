@@ -450,7 +450,7 @@ func TestOpenAcceptsDirtyNewerSchemaMinorVersion(t *testing.T) {
 	require.Equal(t, 999, version)
 }
 
-func TestOpenRepairsDirtySchemaMinorVersionWhenMigrationApplied(t *testing.T) {
+func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationApplied(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -472,7 +472,7 @@ func TestOpenRepairsDirtySchemaMinorVersionWhenMigrationApplied(t *testing.T) {
 	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
 }
 
-func TestOpenRepairsDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T) {
+func TestOpenRecoversDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -503,7 +503,7 @@ func TestOpenRepairsDirtySchemaMinorVersionWhenMigrationNotApplied(t *testing.T)
 	requireWorkloadIDColumn(t, ctx, reopenedStore.db, true)
 }
 
-func TestOpenRepairsDirtyInitialSchemaMajorVersion(t *testing.T) {
+func TestOpenRecoversDirtyInitialSchemaMajorVersion(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -608,7 +608,7 @@ func TestOpenRejectsUnknownSchemaMajorVersion(t *testing.T) {
 	require.True(t, hasLegacyOwnerColumn)
 }
 
-func TestOpenRepairsDirtySchemaVersion2WhenMigrationApplied(t *testing.T) {
+func TestOpenRecoversDirtySchemaVersion2WhenMigrationApplied(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -647,7 +647,7 @@ func TestOpenRepairsDirtySchemaVersion2WhenMigrationApplied(t *testing.T) {
 	require.Equal(t, "workload-a", workloadID)
 }
 
-func TestOpenRepairsDirtySchemaVersion2WhenMigrationNotApplied(t *testing.T) {
+func TestOpenRecoversDirtySchemaVersion2WhenMigrationNotApplied(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -673,11 +673,11 @@ func TestOpenRepairsDirtySchemaVersion2WhenMigrationNotApplied(t *testing.T) {
 	requireWorkloadIDColumn(t, ctx, store.db, true)
 }
 
-// TestOpenRepairsSchemaDirtiedByOlderDcp covers how a dirty marker is produced in practice: a store
+// TestOpenRecoversSchemaDirtiedByOlderDcp covers how a dirty marker is produced in practice: a store
 // this binary normalized to major version 1 is opened by an older DCP, whose single-stream migration
 // layout re-applies the workload ID migration. That migration fails because the column already
-// exists, leaving the dirty version 2 marker behind for this binary to repair.
-func TestOpenRepairsSchemaDirtiedByOlderDcp(t *testing.T) {
+// exists, leaving the dirty version 2 marker behind for this binary to recover.
+func TestOpenRecoversSchemaDirtiedByOlderDcp(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
@@ -706,11 +706,11 @@ func TestOpenRepairsSchemaDirtiedByOlderDcp(t *testing.T) {
 		usvc_io.EnsureRestrictedDirectory(filepath.Dir(storePath), osutil.PermissionOnlyOwnerReadWriteTraverse),
 	)
 
-	repaired := openTestStore(t, ctx, storePath)
+	recovered := openTestStore(t, ctx, storePath)
 
-	requireSchemaMajorVersion(t, ctx, repaired, currentSchemaMajorVersion)
-	requireSchemaMinorVersion(t, ctx, repaired, currentSchemaMinorVersion)
-	requireWorkloadIDColumn(t, ctx, repaired.db, true)
+	requireSchemaMajorVersion(t, ctx, recovered, currentSchemaMajorVersion)
+	requireSchemaMinorVersion(t, ctx, recovered, currentSchemaMinorVersion)
+	requireWorkloadIDColumn(t, ctx, recovered.db, true)
 }
 
 func TestOpenWithExplicitPathRejectsPermissiveExistingParentDirectory(t *testing.T) {
@@ -1414,7 +1414,7 @@ func migrationVersionsInDir(t *testing.T, dir string) []int {
 	return versions
 }
 
-// TestEveryMigrationHasAnAppliedProbe guards the repair of interrupted migrations: without a probe
+// TestEveryMigrationHasAnAppliedProbe guards recovery of interrupted migrations: without a probe
 // for every migration, a dirty version marker cannot be resolved and startup fails.
 func TestEveryMigrationHasAnAppliedProbe(t *testing.T) {
 	t.Parallel()
@@ -1513,7 +1513,7 @@ func evaluateAppliedProbe(t *testing.T, ctx context.Context, store *Store, probe
 // TestAppliedProbesDetectTheirOwnMigration verifies that each probe actually distinguishes its
 // migration having been applied from not. A probe that is always true (a copy of a neighboring
 // migration's probe, for example) satisfies TestEveryMigrationHasAnAppliedProbe but makes
-// repairDirtySchemaVersion keep a version marker for a migration that never ran, permanently
+// recoverDirtySchemaVersion keep a version marker for a migration that never ran, permanently
 // skipping it and corrupting the schema.
 func TestAppliedProbesDetectTheirOwnMigration(t *testing.T) {
 	t.Parallel()
@@ -1675,7 +1675,7 @@ func TestFindTransactionBreakingStatement(t *testing.T) {
 	}
 }
 
-// TestMigrationsAreTransactional guards the invariant that lets an interrupted migration be repaired:
+// TestMigrationsAreTransactional guards the invariant that lets an interrupted migration be recovered:
 // the migration driver wraps every migration in a transaction, so a migration either commits in full
 // or not at all. Statements that commit implicitly would break that invariant.
 func TestMigrationsAreTransactional(t *testing.T) {
