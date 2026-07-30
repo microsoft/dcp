@@ -17,20 +17,38 @@ For each supported major version, DCP:
 2. Advances `schema_migrations` when moving to the next major version.
 3. Applies the new major version's minor migrations.
 
-`golang-migrate` marks a version as dirty before running its SQL and clears the dirty flag after the SQL succeeds. A dirty version therefore means a migration did not complete.
+### Serializing concurrent migrations
 
-DCP repairs a dirty version instead of failing startup. The migration driver wraps each migration in a transaction, so an interrupted migration either committed in full or never committed at all — the schema is never partially migrated. Every migration registers an *applied probe* in `schema.go`: a SQL predicate that reports whether that migration's schema changes are present. When DCP finds a dirty version, it evaluates the probe and rewrites the version table to the version that actually matches the schema, then continues migrating normally.
+`golang-migrate` does not serialize migrations across processes when using SQLite. Its `Driver` interface lets an implementation opt out of locking, and the SQLite driver does: `Lock` only flips an in-process flag on the driver instance. DCP builds a fresh migration runner for every `Open`, so that flag serializes nothing at all.
+
+The lock DCP takes in `migrate` is therefore the only thing that keeps two DCP instances from migrating the same store at once, and it must stay wrapped around the whole read, repair, and migrate sequence. `golang-migrate` reads the current version and then writes the version marker in separate transactions, so instances that are not serialized can both read the same version, both decide to migrate, and both run the same migration — the loser fails to start or leaves a dirty marker behind.
+
+The lock is an advisory file lock held on an open file descriptor, so the operating system releases it when the owning process exits, including a crash. DCP waits for the lock rather than failing when another instance holds it, which also covers Windows releasing the lock asynchronously after a process dies. An interrupted migration therefore leaves a dirty version marker but never a permanently stuck lock, which is what lets the next DCP acquire the lock and repair the marker.
+
+### Recovering a dirty version
+
+`golang-migrate` marks a version as dirty before running its SQL and clears the dirty flag after the SQL succeeds. A dirty version therefore means a migration did not complete. That happens when DCP is interrupted part way through a migration, and also when an older DCP re-runs a migration a newer DCP already applied: the older binary expects a version marker the newer layout no longer records, re-runs the migration, and its SQL fails because the schema change is already present.
+
+DCP repairs a dirty version instead of failing startup. Every migration registers an *applied probe* in `schema.go`: a SQL predicate that reports whether that migration's schema changes are present. DCP evaluates the probe for the dirty version and rewrites the version table:
+
+- The probe reports true, so the migration committed. DCP records the dirty version as clean and continues with the following migration.
+- The probe reports false, so the migration never committed. DCP records the preceding version as clean, or empties the stream when the dirty version was the first migration, and the migration runs again.
+
+This is sound because the migration driver wraps each migration in its own transaction. An interrupted migration either committed in full or never committed at all, so the schema always matches one of the two cases above and is never partially migrated. DCP repairs the major version stream and each major version's minor stream the same way.
 
 This repair depends on two invariants, both covered by unit tests:
 
 - Every migration has an applied probe, and that probe reports false before the migration runs and true afterwards. Without a probe, DCP cannot tell whether the migration committed and startup fails with the dirty version. A probe that does not distinguish the two states is worse: DCP would keep a version marker for a migration that never ran, permanently skipping it.
 - Migration SQL never commits implicitly. `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `VACUUM`, `PRAGMA`, `ATTACH`, and `DETACH` would break migration atomicity and are rejected. SQLite treats `END` as an alias for `COMMIT`; an `END` that closes a `CASE` expression is fine.
 
-A dirty minor version newer than any migration embedded in this binary cannot be probed, because the migration belongs to a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed; DCP logs the condition, leaves the marker alone, and lets the binary that owns the migration repair it.
+DCP does not repair every dirty marker:
+
+- A dirty minor version newer than any migration embedded in this binary cannot be probed, because the migration belongs to a newer DCP. Minor migrations are additive, so every migration this binary needs is present regardless of whether the interrupted one committed; DCP logs the condition, leaves the marker alone, and lets the binary that owns the migration repair it.
+- An unknown major version fails startup whether it is dirty or clean. Major versions are reserved for changes that older binaries cannot use safely.
+
+### Accepting a newer clean minor version
 
 An older DCP may find a clean minor version newer than any migration embedded in its binary. DCP accepts that version without invoking `golang-migrate`. Calling the library with an unknown current version would fail because the older binary does not contain that migration file. Accepting the version is safe only when every minor migration follows the compatibility rules below.
-
-DCP fails startup when it encounters an unknown major version, dirty or not. Major versions are reserved for changes that older binaries cannot use safely.
 
 ## Schema version 2 transition
 
