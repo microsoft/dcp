@@ -27,7 +27,7 @@ The lock is an advisory file lock held on an open file descriptor, so the operat
 
 ### How DCP handles failed migrations
 
-`golang-migrate` marks a version as dirty before running its SQL and clears the dirty flag after the SQL succeeds. A dirty version therefore means a migration did not complete. That can happen when DCP is interrupted part way through a migration. It also happens when a DCP that predates probe-based repair opens a store a newer DCP has already migrated: the older binary has no probes and advances its own migration stream unconditionally, so its SQL fails because the schema change is already present. `TestOpenRepairsSchemaDirtiedByOlderDcp` covers that case.
+`golang-migrate` marks a version as dirty before running its SQL and clears the dirty flag after the SQL succeeds. A dirty version therefore means a migration did not complete, normally because DCP was interrupted part way through one. A binary that predates the major and minor version split can also leave one behind, which is a transitional condition described in [Schema version 2 transition](#schema-version-2-transition).
 
 Every migration registers an *applied probe* in `schema.go`: a SQL predicate that reports whether that migration's schema changes are present. DCP evaluates the probe for the dirty version(s) and rewrites the version table:
 
@@ -65,6 +65,10 @@ An older DCP may find a clean minor version newer than any migration embedded in
 The original migration layout used one sequence for every schema change: version 1 created the state store, and version 2 added workload IDs and persistent container and network tables. Version 2 was additive and remained compatible with DCP binaries that only knew version 1. However, recording version 2 in `schema_migrations` caused those older binaries to fail.
 
 The new layout classifies that change as major version 1, minor version 1. When DCP finds a clean database created by the old version 2 migration, it records minor version 1 in `schema_minor_migrations_v1` and changes the major marker from 2 back to 1. This only reclassifies an already-applied migration; it does not undo schema changes or delete data.
+
+Binaries built before this reclassification advance a single migration stream unconditionally and carry no applied probes. When one of them opens a store a current DCP has normalized, it tries to advance that stream to version 2 again, and its `ALTER TABLE` fails because `workload_id` is already present, leaving a dirty marker behind. Probe-based repair clears that marker the next time a current DCP opens the store; `TestOpenRepairsSchemaDirtiedByOlderDcp` covers it.
+
+Those binaries reached only Aspire's main and daily channels during a short window and were never part of a stable release. This is therefore the most common source of dirty markers at the time of writing but not a lasting one: it affects machines that ran one of those builds, and work that has not yet picked up the current layout, and it stops happening once those binaries fall out of use. Repair itself is not tied to this transition and remains in place for interrupted migrations generally.
 
 Major version 2 remains reserved for this transition. The next breaking schema change must use major version 3.
 
