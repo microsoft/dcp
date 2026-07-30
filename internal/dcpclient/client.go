@@ -125,6 +125,12 @@ func ApplyDcpOptions(config *clientgorest.Config) {
 }
 
 // ResolveNamespaceWorkloadID returns the namespace workload ID annotation when present, or the default workload ID otherwise.
+//
+// TODO: this has no production caller yet. It is groundwork for V2 persistent resources, which will
+// need a workload ID to scope reuse and orphan reaping the way V1 persistent containers do through
+// the state store. Until that lands, apiv2.NamespaceWorkloadIDAnnotation is validated but has no
+// effect on behavior. See the "Physical resource layer" roadmap item covering crash cleanup in
+// docs/v2-resource-plan.md.
 func ResolveNamespaceWorkloadID(
 	ctx context.Context,
 	reader ctrl_client.Reader,
