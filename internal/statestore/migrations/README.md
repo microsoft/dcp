@@ -21,7 +21,7 @@ For each supported major version, DCP:
 
 `golang-migrate` does not serialize migrations across processes when using SQLite. Its `Driver` interface lets an implementation opt out of locking, and the SQLite driver does: `Lock` only flips an in-process flag on the driver instance. DCP builds a fresh migration runner for every `Open`, so that flag serializes nothing at all.
 
-The lock DCP takes in `migrate` is therefore the only thing that keeps two DCP instances from migrating the same store at once, and it must stay wrapped around the whole read schema version, repair, and migrate sequence. `golang-migrate` reads the current version and then writes the version marker in separate transactions, so instances that are not serialized can both read the same version, both decide to migrate, and both run the same migration — the loser fails to start or leaves a dirty marker behind.
+The lock DCP takes in `migrate` is therefore the only thing that keeps two DCP instances from migrating the same store at once, and it must stay wrapped around the whole read, repair, and migrate sequence.
 
 The lock is an advisory file lock held on an open file descriptor, so the operating system releases it when the owning process exits, including a crash. DCP waits for the lock rather than failing when another instance holds it. An interrupted migration therefore leaves a dirty version marker but never a permanently stuck lock, which is what lets the next DCP acquire the lock and clear the marker.
 
