@@ -225,16 +225,16 @@ func StartAdvancedTestEnvironmentWithFlags(
 		}
 	}
 
-	if inclCtrl&PhysicalNetworkController != 0 {
-		physicalNetworkR := controllers.NewPhysicalNetworkReconciler(
+	if inclCtrl&PhysicalContainerNetworkController != 0 {
+		physicalContainerNetworkR := controllers.NewPhysicalContainerNetworkReconciler(
 			ctx,
 			mgr.GetClient(),
 			mgr.GetAPIReader(),
-			log.WithName("PhysicalNetworkReconciler"),
+			log.WithName("PhysicalContainerNetworkReconciler"),
 			serverInfo.ContainerOrchestrator,
 		)
-		if err = physicalNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalNetworkReconciler"); err != nil {
-			return nil, nil, fmt.Errorf("failed to initialize PhysicalNetwork reconciler: %w", err)
+		if err = physicalContainerNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerNetworkReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerNetwork reconciler: %w", err)
 		}
 	}
 

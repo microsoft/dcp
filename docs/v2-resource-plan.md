@@ -76,21 +76,21 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup.
 - `PhysicalContainerImage` provides source image pull and build workflows.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
-- `PhysicalNetwork` creates or tracks one runtime container network and reports its observed identity, driver, and address allocations.
+- `PhysicalContainerNetwork` creates or tracks one runtime container network and reports its observed identity, driver, and address allocations.
 - The physical resources use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
 
 ## Follow-up roadmap
 
 ### Physical resource layer
 
-1. Add V2 `PhysicalVolume`.
+1. Add V2 `PhysicalContainerVolume`.
    - Represent concrete container runtime volumes.
    - Expose runtime volume identity and observed volume details.
    - Preserve namespace-scoped cleanup semantics.
 
 2. Update `PhysicalContainer` to use physical network and volume resources.
-   - Replace direct runtime network names with references to same-namespace `PhysicalNetwork` resources where appropriate.
-   - Replace direct runtime volume names with references to same-namespace `PhysicalVolume` resources where appropriate.
+   - Replace direct runtime network names with references to same-namespace `PhysicalContainerNetwork` resources where appropriate.
+   - Replace direct runtime volume names with references to same-namespace `PhysicalContainerVolume` resources where appropriate.
    - Watch referenced network and volume resources so containers reconcile when dependencies become ready.
 
 3. Decide how monitor processes should clean up physical resources after DCP crashes.
@@ -114,7 +114,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
 
 7. Reconcile network harvesting with `preserveOnDeletion`.
-   - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalNetwork` with `preserveOnDeletion: true` is therefore still removed after a DCP crash, unlike a preserved container.
+   - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalContainerNetwork` with `preserveOnDeletion: true` is therefore still removed after a DCP crash, unlike a preserved container.
    - This asymmetry is inherited from V1. Decide whether harvesting should honor the persistent label for networks, and change V1 and V2 together if it should.
 
 ### Logical resource layer

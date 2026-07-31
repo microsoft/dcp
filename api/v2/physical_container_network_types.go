@@ -33,49 +33,49 @@ var (
 	validNetworkNameRegexp = regexp.MustCompile(validNetworkName)
 )
 
-// PhysicalNetworkPhase describes the lifecycle phase of a PhysicalNetwork.
-type PhysicalNetworkPhase string
+// PhysicalContainerNetworkPhase describes the lifecycle phase of a PhysicalContainerNetwork.
+type PhysicalContainerNetworkPhase string
 
 const (
-	// PhysicalNetworkPhasePending indicates that the network is waiting for prerequisites.
-	PhysicalNetworkPhasePending PhysicalNetworkPhase = "Pending"
+	// PhysicalContainerNetworkPhasePending indicates that the network is waiting for prerequisites.
+	PhysicalContainerNetworkPhasePending PhysicalContainerNetworkPhase = "Pending"
 
-	// PhysicalNetworkPhaseReady indicates that the runtime network is available.
-	PhysicalNetworkPhaseReady PhysicalNetworkPhase = "Ready"
+	// PhysicalContainerNetworkPhaseReady indicates that the runtime network is available.
+	PhysicalContainerNetworkPhaseReady PhysicalContainerNetworkPhase = "Ready"
 
-	// PhysicalNetworkPhaseMissing indicates that the referenced runtime network was not found.
-	PhysicalNetworkPhaseMissing PhysicalNetworkPhase = "Missing"
+	// PhysicalContainerNetworkPhaseMissing indicates that the referenced runtime network was not found.
+	PhysicalContainerNetworkPhaseMissing PhysicalContainerNetworkPhase = "Missing"
 
-	// PhysicalNetworkPhaseFailed indicates that creating or inspecting the runtime network failed.
-	PhysicalNetworkPhaseFailed PhysicalNetworkPhase = "Failed"
+	// PhysicalContainerNetworkPhaseFailed indicates that creating or inspecting the runtime network failed.
+	PhysicalContainerNetworkPhaseFailed PhysicalContainerNetworkPhase = "Failed"
 )
 
 const (
-	// PhysicalNetworkReasonPending indicates that the network is waiting for prerequisites.
-	PhysicalNetworkReasonPending string = "Pending"
+	// PhysicalContainerNetworkReasonPending indicates that the network is waiting for prerequisites.
+	PhysicalContainerNetworkReasonPending string = "Pending"
 
-	// PhysicalNetworkReasonCreating indicates that runtime network creation is in progress.
-	PhysicalNetworkReasonCreating string = "Creating"
+	// PhysicalContainerNetworkReasonCreating indicates that runtime network creation is in progress.
+	PhysicalContainerNetworkReasonCreating string = "Creating"
 
-	// PhysicalNetworkReasonCreated indicates that runtime network creation completed.
-	PhysicalNetworkReasonCreated string = "Created"
+	// PhysicalContainerNetworkReasonCreated indicates that runtime network creation completed.
+	PhysicalContainerNetworkReasonCreated string = "Created"
 
-	// PhysicalNetworkReasonCreateFailed indicates that runtime network creation failed.
-	PhysicalNetworkReasonCreateFailed string = "CreateFailed"
+	// PhysicalContainerNetworkReasonCreateFailed indicates that runtime network creation failed.
+	PhysicalContainerNetworkReasonCreateFailed string = "CreateFailed"
 
-	// PhysicalNetworkReasonNetworkReady indicates that the runtime network is available.
-	PhysicalNetworkReasonNetworkReady string = "NetworkReady"
+	// PhysicalContainerNetworkReasonNetworkReady indicates that the runtime network is available.
+	PhysicalContainerNetworkReasonNetworkReady string = "NetworkReady"
 
-	// PhysicalNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
-	PhysicalNetworkReasonRuntimeNetworkMissing string = "RuntimeNetworkMissing"
+	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
+	PhysicalContainerNetworkReasonRuntimeNetworkMissing string = "RuntimeNetworkMissing"
 
-	// PhysicalNetworkReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalNetworkReasonReconciliationFailed string = "ReconciliationFailed"
+	// PhysicalContainerNetworkReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
+	PhysicalContainerNetworkReasonReconciliationFailed string = "ReconciliationFailed"
 )
 
-// PhysicalNetworkSpec describes either an existing runtime network or how to create one.
+// PhysicalContainerNetworkSpec describes either an existing runtime network or how to create one.
 // +k8s:openapi-gen=true
-type PhysicalNetworkSpec struct {
+type PhysicalContainerNetworkSpec struct {
 	// NetworkID identifies an existing runtime network to track. When set, creation fields are forbidden.
 	NetworkID string `json:"networkID,omitempty"`
 
@@ -96,13 +96,13 @@ type PhysicalNetworkSpec struct {
 	Labels []commonapi.Label `json:"labels,omitempty"`
 }
 
-// PhysicalNetworkStatus describes the observed runtime network.
+// PhysicalContainerNetworkStatus describes the observed runtime network.
 // +k8s:openapi-gen=true
-type PhysicalNetworkStatus struct {
+type PhysicalContainerNetworkStatus struct {
 	// Phase summarizes whether the runtime network is available.
 	// +kubebuilder:validation:Enum=Pending;Ready;Missing;Failed
 	// +optional
-	Phase PhysicalNetworkPhase `json:"phase,omitempty"`
+	Phase PhysicalContainerNetworkPhase `json:"phase,omitempty"`
 
 	// NetworkID is the runtime network ID being tracked.
 	NetworkID string `json:"networkID,omitempty"`
@@ -134,64 +134,64 @@ type PhysicalNetworkStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-func (pns PhysicalNetworkStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
-	pns.DeepCopyInto(&dest.(*PhysicalNetwork).Status)
+func (pns PhysicalContainerNetworkStatus) CopyTo(dest apiserver_resource.ObjectWithStatusSubResource) {
+	pns.DeepCopyInto(&dest.(*PhysicalContainerNetwork).Status)
 }
 
-// PhysicalNetwork represents one runtime container network in a DCP V2 namespace.
+// PhysicalContainerNetwork represents one runtime container network in a DCP V2 namespace.
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +k8s:openapi-gen=true
-// +kubebuilder:resource:scope=Namespaced,path=physicalnetworks,shortName=pnet
-type PhysicalNetwork struct {
+// +kubebuilder:resource:scope=Namespaced,path=physicalcontainernetworks,shortName=pcn
+type PhysicalContainerNetwork struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   PhysicalNetworkSpec   `json:"spec,omitempty"`
-	Status PhysicalNetworkStatus `json:"status,omitempty"`
+	Spec   PhysicalContainerNetworkSpec   `json:"spec,omitempty"`
+	Status PhysicalContainerNetworkStatus `json:"status,omitempty"`
 }
 
-func (pn *PhysicalNetwork) GetGroupVersionResource() schema.GroupVersionResource {
+func (pn *PhysicalContainerNetwork) GetGroupVersionResource() schema.GroupVersionResource {
 	return schema.GroupVersionResource{
 		Group:    GroupVersion.Group,
 		Version:  GroupVersion.Version,
-		Resource: "physicalnetworks",
+		Resource: "physicalcontainernetworks",
 	}
 }
 
-func (pn *PhysicalNetwork) GetObjectMeta() *metav1.ObjectMeta {
+func (pn *PhysicalContainerNetwork) GetObjectMeta() *metav1.ObjectMeta {
 	return &pn.ObjectMeta
 }
 
-func (pn *PhysicalNetwork) GetStatus() apiserver_resource.StatusSubResource {
+func (pn *PhysicalContainerNetwork) GetStatus() apiserver_resource.StatusSubResource {
 	return pn.Status
 }
 
-func (pn *PhysicalNetwork) New() runtime.Object {
-	return &PhysicalNetwork{}
+func (pn *PhysicalContainerNetwork) New() runtime.Object {
+	return &PhysicalContainerNetwork{}
 }
 
-func (pn *PhysicalNetwork) NewList() runtime.Object {
-	return &PhysicalNetworkList{}
+func (pn *PhysicalContainerNetwork) NewList() runtime.Object {
+	return &PhysicalContainerNetworkList{}
 }
 
-func (pn *PhysicalNetwork) IsStorageVersion() bool {
+func (pn *PhysicalContainerNetwork) IsStorageVersion() bool {
 	return true
 }
 
-func (pn *PhysicalNetwork) NamespaceScoped() bool {
+func (pn *PhysicalContainerNetwork) NamespaceScoped() bool {
 	return true
 }
 
-func (pn *PhysicalNetwork) ShortNames() []string {
-	return []string{"pnet"}
+func (pn *PhysicalContainerNetwork) ShortNames() []string {
+	return []string{"pcn"}
 }
 
-func (pn *PhysicalNetwork) NamespacedName() types.NamespacedName {
+func (pn *PhysicalContainerNetwork) NamespacedName() types.NamespacedName {
 	return NamespacedName(pn)
 }
 
-func (pn *PhysicalNetwork) Validate(ctx context.Context) field.ErrorList {
+func (pn *PhysicalContainerNetwork) Validate(ctx context.Context) field.ErrorList {
 	errorList := ValidateNamespacedResourceMetadata(pn)
 	specPath := field.NewPath("spec")
 
@@ -217,24 +217,24 @@ func (pn *PhysicalNetwork) Validate(ctx context.Context) field.ErrorList {
 	return errorList
 }
 
-// ValidateUpdate freezes the spec of an existing PhysicalNetwork.
+// ValidateUpdate freezes the spec of an existing PhysicalContainerNetwork.
 //
 // This runs for status writes as well as user-initiated updates, so it must not re-run
 // creation-only checks. In particular the ResourceCreationProhibited gate in Validate is
 // deliberately absent: applying it here would block the controller from recording status
 // or removing its finalizer during shutdown.
-func (pn *PhysicalNetwork) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
+func (pn *PhysicalContainerNetwork) ValidateUpdate(ctx context.Context, old runtime.Object) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	oldPhysicalNetwork := old.(*PhysicalNetwork)
-	if !reflect.DeepEqual(oldPhysicalNetwork.Spec, pn.Spec) {
+	oldPhysicalContainerNetwork := old.(*PhysicalContainerNetwork)
+	if !reflect.DeepEqual(oldPhysicalContainerNetwork.Spec, pn.Spec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
 	}
 
 	return errorList
 }
 
-func (pn *PhysicalNetwork) validateExistingNetworkSpec(specPath *field.Path) field.ErrorList {
+func (pn *PhysicalContainerNetwork) validateExistingNetworkSpec(specPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
 	if pn.Spec.NetworkName != "" {
@@ -250,25 +250,25 @@ func (pn *PhysicalNetwork) validateExistingNetworkSpec(specPath *field.Path) fie
 	return errorList
 }
 
-// PhysicalNetworkList contains a list of PhysicalNetwork instances.
+// PhysicalContainerNetworkList contains a list of PhysicalContainerNetwork instances.
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
-type PhysicalNetworkList struct {
+type PhysicalContainerNetworkList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []PhysicalNetwork `json:"items"`
+	Items           []PhysicalContainerNetwork `json:"items"`
 }
 
-func (pnl *PhysicalNetworkList) GetListMeta() *metav1.ListMeta {
+func (pnl *PhysicalContainerNetworkList) GetListMeta() *metav1.ListMeta {
 	return &pnl.ListMeta
 }
 
-func (pnl *PhysicalNetworkList) ItemCount() uint32 {
+func (pnl *PhysicalContainerNetworkList) ItemCount() uint32 {
 	return uint32(len(pnl.Items))
 }
 
-func (pnl *PhysicalNetworkList) GetItems() []*PhysicalNetwork {
-	retval := make([]*PhysicalNetwork, len(pnl.Items))
+func (pnl *PhysicalContainerNetworkList) GetItems() []*PhysicalContainerNetwork {
+	retval := make([]*PhysicalContainerNetwork, len(pnl.Items))
 	for i := range pnl.Items {
 		retval[i] = &pnl.Items[i]
 	}
@@ -276,15 +276,15 @@ func (pnl *PhysicalNetworkList) GetItems() []*PhysicalNetwork {
 }
 
 func init() {
-	SchemeBuilder.Register(&PhysicalNetwork{}, &PhysicalNetworkList{})
+	SchemeBuilder.Register(&PhysicalContainerNetwork{}, &PhysicalContainerNetworkList{})
 }
 
 // Ensure types support interfaces expected by our API server.
-var _ apiserver_resource.Object = (*PhysicalNetwork)(nil)
-var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalNetwork)(nil)
-var _ apiserver_resource.StatusSubResource = (*PhysicalNetworkStatus)(nil)
-var _ apiserver_resource.ObjectList = (*PhysicalNetworkList)(nil)
-var _ commonapi.ListWithObjectItems[PhysicalNetwork, *PhysicalNetwork] = (*PhysicalNetworkList)(nil)
-var _ apiserver_resourcerest.ShortNamesProvider = (*PhysicalNetwork)(nil)
-var _ apiserver_resourcestrategy.Validater = (*PhysicalNetwork)(nil)
-var _ apiserver_resourcestrategy.ValidateUpdater = (*PhysicalNetwork)(nil)
+var _ apiserver_resource.Object = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resource.ObjectWithStatusSubResource = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resource.StatusSubResource = (*PhysicalContainerNetworkStatus)(nil)
+var _ apiserver_resource.ObjectList = (*PhysicalContainerNetworkList)(nil)
+var _ commonapi.ListWithObjectItems[PhysicalContainerNetwork, *PhysicalContainerNetwork] = (*PhysicalContainerNetworkList)(nil)
+var _ apiserver_resourcerest.ShortNamesProvider = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resourcestrategy.Validater = (*PhysicalContainerNetwork)(nil)
+var _ apiserver_resourcestrategy.ValidateUpdater = (*PhysicalContainerNetwork)(nil)
