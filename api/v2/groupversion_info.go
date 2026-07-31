@@ -34,7 +34,7 @@ var (
 		&Namespace{},
 		&PhysicalContainerImage{},
 		&PhysicalContainer{},
-		&PhysicalNetwork{},
+		&PhysicalContainerNetwork{},
 	}
 
 	// Types that must be recognizable by the API server, but are not persisted.

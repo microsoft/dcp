@@ -15,32 +15,32 @@ import (
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
 
-func TestPhysicalNetworkValidate(t *testing.T) {
+func TestPhysicalContainerNetworkValidate(t *testing.T) {
 	testCases := []struct {
 		name          string
-		network       PhysicalNetwork
+		network       PhysicalContainerNetwork
 		expectedError string
 	}{
 		{
 			name: "valid created network",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "test-runtime-network",
 				},
 			},
 		},
 		{
 			name: "valid created network with labels and IPv6",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "test-runtime-network",
 					IPv6:        true,
 					Labels: []commonapi.Label{
@@ -52,36 +52,36 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		{
 			// Podman allows a single-character network name, unlike the Docker container name pattern.
 			name: "valid single character network name",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "a",
 				},
 			},
 		},
 		{
 			name: "valid tracked network",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkID: "test-network-id",
 				},
 			},
 		},
 		{
 			name: "valid tracked network preserved on deletion",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkID:          "test-network-id",
 					PreserveOnDeletion: true,
 				},
@@ -89,11 +89,11 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "missing namespace",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-network",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "test-runtime-network",
 				},
 			},
@@ -101,7 +101,7 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "missing network name",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
@@ -111,12 +111,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "invalid network name",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "-invalid-network",
 				},
 			},
@@ -124,12 +124,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "network name with whitespace",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "invalid network",
 				},
 			},
@@ -137,12 +137,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "network name with tracked network",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkID:   "test-network-id",
 					NetworkName: "test-runtime-network",
 				},
@@ -151,12 +151,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "IPv6 with tracked network",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkID: "test-network-id",
 					IPv6:      true,
 				},
@@ -165,12 +165,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "labels with tracked network",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkID: "test-network-id",
 					Labels: []commonapi.Label{
 						{Key: "test-label", Value: "test-value"},
@@ -181,12 +181,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "missing label key",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "test-runtime-network",
 					Labels: []commonapi.Label{
 						{Value: "test-value"},
@@ -197,12 +197,12 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 		},
 		{
 			name: "missing label value",
-			network: PhysicalNetwork{
+			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalNetworkSpec{
+				Spec: PhysicalContainerNetworkSpec{
 					NetworkName: "test-runtime-network",
 					Labels: []commonapi.Label{
 						{Key: "test-label"},
@@ -226,16 +226,16 @@ func TestPhysicalNetworkValidate(t *testing.T) {
 	}
 }
 
-func TestPhysicalNetworkValidateRejectsCreationDuringShutdown(t *testing.T) {
+func TestPhysicalContainerNetworkValidateRejectsCreationDuringShutdown(t *testing.T) {
 	commonapi.ResourceCreationProhibited.Store(true)
 	defer commonapi.ResourceCreationProhibited.Store(false)
 
-	network := &PhysicalNetwork{
+	network := &PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-network",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalNetworkSpec{
+		Spec: PhysicalContainerNetworkSpec{
 			NetworkName: "test-runtime-network",
 		},
 	}
@@ -246,18 +246,18 @@ func TestPhysicalNetworkValidateRejectsCreationDuringShutdown(t *testing.T) {
 	require.Contains(t, validationErr.Error(), commonapi.ErrResourceCreationProhibited.Error())
 }
 
-func TestPhysicalNetworkValidateAllowsDeletionDuringShutdown(t *testing.T) {
+func TestPhysicalContainerNetworkValidateAllowsDeletionDuringShutdown(t *testing.T) {
 	commonapi.ResourceCreationProhibited.Store(true)
 	defer commonapi.ResourceCreationProhibited.Store(false)
 
 	deletionTimestamp := metav1.Now()
-	network := &PhysicalNetwork{
+	network := &PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "test-network",
 			Namespace:         "test-namespace",
 			DeletionTimestamp: &deletionTimestamp,
 		},
-		Spec: PhysicalNetworkSpec{
+		Spec: PhysicalContainerNetworkSpec{
 			NetworkName: "test-runtime-network",
 		},
 	}
@@ -265,13 +265,13 @@ func TestPhysicalNetworkValidateAllowsDeletionDuringShutdown(t *testing.T) {
 	require.Empty(t, network.Validate(context.Background()))
 }
 
-func TestPhysicalNetworkValidateUpdateRejectsSpecChanges(t *testing.T) {
-	oldNetwork := &PhysicalNetwork{
+func TestPhysicalContainerNetworkValidateUpdateRejectsSpecChanges(t *testing.T) {
+	oldNetwork := &PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-network",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalNetworkSpec{
+		Spec: PhysicalContainerNetworkSpec{
 			NetworkName: "test-runtime-network",
 		},
 	}
@@ -284,21 +284,21 @@ func TestPhysicalNetworkValidateUpdateRejectsSpecChanges(t *testing.T) {
 	require.Contains(t, errorList.ToAggregate().Error(), "spec")
 }
 
-func TestPhysicalNetworkValidateUpdateAllowsStatusUpdateDuringShutdown(t *testing.T) {
+func TestPhysicalContainerNetworkValidateUpdateAllowsStatusUpdateDuringShutdown(t *testing.T) {
 	commonapi.ResourceCreationProhibited.Store(true)
 	defer commonapi.ResourceCreationProhibited.Store(false)
 
-	oldNetwork := &PhysicalNetwork{
+	oldNetwork := &PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-network",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalNetworkSpec{
+		Spec: PhysicalContainerNetworkSpec{
 			NetworkName: "test-runtime-network",
 		},
 	}
 	newNetwork := oldNetwork.DeepCopy()
-	newNetwork.Status.Phase = PhysicalNetworkPhaseReady
+	newNetwork.Status.Phase = PhysicalContainerNetworkPhaseReady
 
 	validationErr := newNetwork.Validate(context.Background()).ToAggregate()
 	require.Error(t, validationErr)

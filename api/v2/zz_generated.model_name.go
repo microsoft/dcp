@@ -86,6 +86,26 @@ func (in PhysicalContainerList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetwork) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetwork"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerPortMapping) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerPortMapping"
 }
@@ -98,26 +118,6 @@ func (in PhysicalContainerSpec) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerStatus"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in PhysicalNetwork) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v2.PhysicalNetwork"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in PhysicalNetworkList) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v2.PhysicalNetworkList"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in PhysicalNetworkSpec) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v2.PhysicalNetworkSpec"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in PhysicalNetworkStatus) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v2.PhysicalNetworkStatus"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

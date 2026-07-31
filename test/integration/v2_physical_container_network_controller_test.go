@@ -25,21 +25,21 @@ import (
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
-func TestV2PhysicalNetworkControllerCreatesNetwork(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-create")
-	networkName := "v2-pnet-created-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-create")
+	networkName := "v2-pcn-created-runtime"
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "created-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: networkName,
 			Labels: []commonapi.Label{
 				{Key: "test-label", Value: "test-value"},
@@ -48,13 +48,13 @@ func TestV2PhysicalNetworkControllerCreatesNetwork(t *testing.T) {
 	}
 	require.NoError(t, client.Create(ctx, network))
 
-	updatedNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
-	require.Contains(t, updatedNetwork.Finalizers, apiv2.GroupName+"/physicalnetwork-reconciler")
+	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	require.Contains(t, updatedNetwork.Finalizers, apiv2.GroupName+"/physicalcontainernetwork-reconciler")
 	require.NotEmpty(t, updatedNetwork.Status.NetworkID)
 	require.Equal(t, networkName, updatedNetwork.Status.NetworkName)
 	require.Equal(t, "bridge", updatedNetwork.Status.Driver)
 	require.False(t, updatedNetwork.Status.CreatedAt.IsZero())
-	requireReadyCondition(t, updatedNetwork.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalNetworkReasonNetworkReady)
+	requireReadyCondition(t, updatedNetwork.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkReady)
 
 	inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
 		Networks: []string{updatedNetwork.Status.NetworkID},
@@ -71,30 +71,30 @@ func TestV2PhysicalNetworkControllerCreatesNetwork(t *testing.T) {
 	require.NotEmpty(t, labels[controllers.CreatorProcessStartTimeLabel])
 }
 
-func TestV2PhysicalNetworkControllerTracksExistingNetwork(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-track")
-	networkName := "v2-pnet-tracked-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-track")
+	networkName := "v2-pcn-tracked-runtime"
 	networkID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, createErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "tracked-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkID:          networkID,
 			PreserveOnDeletion: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
 
-	updatedNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	require.Equal(t, networkID, updatedNetwork.Status.NetworkID)
 	require.Equal(t, networkName, updatedNetwork.Status.NetworkName)
 
@@ -102,61 +102,61 @@ func TestV2PhysicalNetworkControllerTracksExistingNetwork(t *testing.T) {
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
-func TestV2PhysicalNetworkControllerRemovesCreatedNetworkOnDeletion(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-delete")
-	networkName := "v2-pnet-deleted-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-delete")
+	networkName := "v2-pcn-deleted-runtime"
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "deleted-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: networkName,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
 
-	updatedNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
 
 	require.NoError(t, client.Delete(ctx, network))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalNetwork](t, ctx, client, network)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
 }
 
-func TestV2PhysicalNetworkControllerPreservesCreatedNetworkOnDeletion(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-retain")
-	networkName := "v2-pnet-retained-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-retain")
+	networkName := "v2-pcn-retained-runtime"
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "retained-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName:        networkName,
 			PreserveOnDeletion: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
 
-	updatedNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
 	require.Equal(t, "true", runtimeNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
 
 	require.NoError(t, client.Delete(ctx, network))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalNetwork](t, ctx, client, network)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 
 	inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
 		Networks: []string{networkID},
@@ -166,96 +166,96 @@ func TestV2PhysicalNetworkControllerPreservesCreatedNetworkOnDeletion(t *testing
 }
 
 // A tracked network is removed on deletion unless preserveOnDeletion is set, matching PhysicalContainer.
-func TestV2PhysicalNetworkControllerRemovesTrackedNetworkOnDeletion(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-track-delete")
-	networkName := "v2-pnet-tracked-deleted-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-track-delete")
+	networkName := "v2-pcn-tracked-deleted-runtime"
 	networkID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, createErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "tracked-deleted-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkID: networkID,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
-	waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 
 	require.NoError(t, client.Delete(ctx, network))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalNetwork](t, ctx, client, network)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
 }
 
-func TestV2PhysicalNetworkControllerCleansUpOnNamespaceDeletion(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerCleansUpOnNamespaceDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
 	namespace := &apiv2.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "v2-pnet-ns-cleanup",
+			Name: "v2-pcn-ns-cleanup",
 		},
 	}
 	require.NoError(t, client.Create(ctx, namespace))
 	waitV2NamespaceActive(t, ctx, namespace.Name)
 
-	networkName := "v2-pnet-ns-cleanup-runtime"
+	networkName := "v2-pcn-ns-cleanup-runtime"
 	removeRuntimeNetworkOnCleanup(t, networkName)
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "namespace-cleanup-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: networkName,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
-	readyNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := readyNetwork.Status.NetworkID
 
 	require.NoError(t, client.Delete(ctx, namespace))
 
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalNetwork](t, ctx, client, network)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
 }
 
-func TestV2PhysicalNetworkControllerDoesNotDuplicateCreate(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerDoesNotDuplicateCreate(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-single-create")
-	networkName := "v2-pnet-single-create-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-single-create")
+	networkName := "v2-pcn-single-create-runtime"
 	removeRuntimeNetworkOnCleanup(t, networkName)
 	releaseCreate := containerOrchestrator.BlockCreateNetwork(networkName)
 	defer releaseCreate()
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "single-create-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: networkName,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
 
 	waitCreateNetworkCallCount(t, ctx, networkName, 1)
-	pendingNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(currentNetwork *apiv2.PhysicalNetwork) (bool, error) {
-		return currentNetwork.Status.Phase == apiv2.PhysicalNetworkPhasePending, nil
+	pendingNetwork := waitObjectAssumesState(t, ctx, network.NamespacedName(), func(currentNetwork *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhasePending, nil
 	})
-	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalNetworkReasonCreating)
+	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating)
 
 	// Reconciliations while the create is in flight must not start a second one.
 	require.Never(t, func() bool {
@@ -263,35 +263,35 @@ func TestV2PhysicalNetworkControllerDoesNotDuplicateCreate(t *testing.T) {
 	}, 3*time.Second, 250*time.Millisecond)
 
 	releaseCreate()
-	waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
 }
 
-func TestV2PhysicalNetworkControllerReportsTerminalCreateFailure(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-create-fail")
-	networkName := "v2-pnet-conflicting-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-create-fail")
+	networkName := "v2-pcn-conflicting-runtime"
 	_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, createErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "conflicting-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName:        networkName,
 			PreserveOnDeletion: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
 
-	failedNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseFailed)
-	requireReadyCondition(t, failedNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalNetworkReasonCreateFailed)
+	failedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+	requireReadyCondition(t, failedNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreateFailed)
 
 	// The spec is immutable, so a create failure is terminal and must not be retried.
 	require.Never(t, func() bool {
@@ -302,34 +302,34 @@ func TestV2PhysicalNetworkControllerReportsTerminalCreateFailure(t *testing.T) {
 // Steady-state polling must be paced by the monitoring delay and must not write an unchanged
 // status, because a status write feeds a watch event back into the controller and turns the slow
 // polling cadence into a tight re-inspect loop.
-func TestV2PhysicalNetworkControllerDoesNotChurnReadyStatus(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerDoesNotChurnReadyStatus(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
-	namespace := createActiveV2Namespace(t, ctx, "v2-pnet-steady")
-	networkName := "v2-pnet-steady-runtime"
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-steady")
+	networkName := "v2-pcn-steady-runtime"
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
-	network := &apiv2.PhysicalNetwork{
+	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "steady-network",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalNetworkSpec{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: networkName,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
 
-	readyNetwork := waitPhysicalNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalNetworkPhaseReady)
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	readyResourceVersion := readyNetwork.ResourceVersion
 	// The status write that announced Ready drives exactly one more reconciliation, which
 	// re-inspects and settles. Anything beyond that within the monitoring delay is churn.
 	settledInspectCount := containerOrchestrator.InspectNetworkCallCount(readyNetwork.Status.NetworkID) + 1
 
 	require.Never(t, func() bool {
-		currentNetwork := &apiv2.PhysicalNetwork{}
+		currentNetwork := &apiv2.PhysicalContainerNetwork{}
 		if getErr := client.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
 			return false
 		}
@@ -340,15 +340,15 @@ func TestV2PhysicalNetworkControllerDoesNotChurnReadyStatus(t *testing.T) {
 	}, 5*time.Second, 250*time.Millisecond)
 }
 
-func waitPhysicalNetworkPhase(
+func waitPhysicalContainerNetworkPhase(
 	t *testing.T,
 	ctx context.Context,
 	name types.NamespacedName,
-	phase apiv2.PhysicalNetworkPhase,
-) *apiv2.PhysicalNetwork {
+	phase apiv2.PhysicalContainerNetworkPhase,
+) *apiv2.PhysicalContainerNetwork {
 	t.Helper()
 
-	return waitObjectAssumesState(t, ctx, name, func(network *apiv2.PhysicalNetwork) (bool, error) {
+	return waitObjectAssumesState(t, ctx, name, func(network *apiv2.PhysicalContainerNetwork) (bool, error) {
 		return network.Status.Phase == phase, nil
 	})
 }
