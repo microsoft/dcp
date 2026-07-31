@@ -129,14 +129,15 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 // ensureNamespace reports whether a namespaced V2 resource may perform runtime work, applying
 // a Pending or Failed status change when it may not.
 //
-// This is the single gate for runtime side effects of namespaced V2 resources, and it is
-// deliberately enforced here in the controllers rather than at admission. The API server does
-// accept child resources whose namespace is missing or terminating, so such a child can exist
-// briefly as an API object; because every controller calls this before touching the container
-// runtime, that child never produces a container or image and simply sits in Pending until it
-// is cleaned up with the namespace. An admission-time equivalent was tried and reverted: it
-// required forking tilt's storage registration path to read the namespace outside the REST
-// layer, which is a large amount of borrowed machinery to prevent an inert API record.
+// This is the single gate for non-deletion runtime work by namespaced V2 resources; deletion
+// deliberately bypasses it so cleanup can finish after the namespace disappears. The API server
+// accepts child resources whose namespace is missing or terminating, but this gate prevents such
+// a child from creating a container or image. It normally sits in Pending until namespace cleanup
+// deletes it. If creation races the namespace controller's final empty-list snapshot, the inert
+// API record may instead remain until the in-memory API server exits. An admission-time equivalent
+// was tried and reverted: it required forking tilt's storage registration path to read the
+// namespace outside the REST layer, which is a large amount of borrowed machinery to prevent
+// an inert API record.
 func ensureNamespace(
 	ctx context.Context,
 	client ctrl_client.Client,

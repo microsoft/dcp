@@ -38,6 +38,10 @@ const goldenContainerLifecycleKey = "47db3cfd3c6710276a8b72550f90bf19"
 // Dockerfile that goldenContainerSpec points at.
 const goldenDockerfileContents = "FROM scratch\nRUN echo golden\n"
 
+// goldenEnvSecretSource is cleared explicitly by TestContainerSpecLifecycleKeyIsStable
+// so the golden key does not depend on the ambient environment.
+const goldenEnvSecretSource = "DCP_GOLDEN_TEST_SECRET_DO_NOT_SET"
+
 // goldenContainerSpec exercises every field group that contributes to the lifecycle key.
 //
 // dockerfilePath must be an absolute path to a readable file holding goldenDockerfileContents.
@@ -64,12 +68,7 @@ func goldenContainerSpec(dockerfilePath string) *ContainerSpec {
 				{Key: "com.example.a", Value: "one"},
 			},
 			Secrets: []ContainerBuildSecret{
-				// GetLifecycleKey hashes os.Getenv(Source) for env secrets, so Source must name a
-				// variable that is never set in a real environment. A commonly set name such as
-				// NPM_TOKEN makes the key depend on the ambient environment and fails this test on
-				// any machine that happens to have it. t.Setenv is not an alternative here because
-				// the test runs with t.Parallel, and t.Setenv panics when the test is parallel.
-				{Type: EnvSecret, ID: "npm_token", Source: "DCP_GOLDEN_TEST_SECRET_DO_NOT_SET"},
+				{Type: EnvSecret, ID: "npm_token", Source: goldenEnvSecretSource},
 				{Type: FileSecret, ID: "aws", Source: "/nonexistent/aws.json"},
 			},
 		},
@@ -117,7 +116,7 @@ func goldenContainerSpec(dockerfilePath string) *ContainerSpec {
 }
 
 func TestContainerSpecLifecycleKeyIsStable(t *testing.T) {
-	t.Parallel()
+	t.Setenv(goldenEnvSecretSource, "")
 
 	dockerfilePath := filepath.Join(t.TempDir(), "Dockerfile.golden")
 	require.NoError(t, os.WriteFile(dockerfilePath, []byte(goldenDockerfileContents), osutil.PermissionOnlyOwnerReadWrite))
