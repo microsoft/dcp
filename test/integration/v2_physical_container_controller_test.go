@@ -748,7 +748,9 @@ func removeRuntimeNetworkOnCleanup(t *testing.T, networkName string) {
 			Networks: []string{networkName},
 			Force:    true,
 		})
-		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+		// Removal reports a partial failure for a network that is already gone, which is the
+		// expected outcome for tests that exercise removal.
+		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) && !errors.Is(removeErr, containers.ErrIncomplete) {
 			require.NoError(t, removeErr)
 		}
 	})

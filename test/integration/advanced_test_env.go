@@ -225,6 +225,19 @@ func StartAdvancedTestEnvironmentWithFlags(
 		}
 	}
 
+	if inclCtrl&PhysicalNetworkController != 0 {
+		physicalNetworkR := controllers.NewPhysicalNetworkReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalNetworkReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalNetworkReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalNetwork reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ContainerExecController != 0 {
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,

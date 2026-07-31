@@ -85,6 +85,9 @@ type TestContainerOrchestrator struct {
 	pullImageErrors         map[string][]error
 	buildImageCalls         map[string]int
 	buildImageBlocks        map[string]chan struct{}
+	createNetworkCalls      map[string]int
+	createNetworkBlocks     map[string]chan struct{}
+	inspectNetworkCalls     map[string]int
 	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
 	attachHandler           ContainerAttachHandler
@@ -206,6 +209,9 @@ func NewTestContainerOrchestrator(
 		pullImageErrors:         map[string][]error{},
 		buildImageCalls:         map[string]int{},
 		buildImageBlocks:        map[string]chan struct{}{},
+		createNetworkCalls:      map[string]int{},
+		createNetworkBlocks:     map[string]chan struct{}{},
+		inspectNetworkCalls:     map[string]int{},
 		mutex:                   &sync.Mutex{},
 		lifetimeCtx:             lifetimeCtx,
 		log:                     log,
@@ -840,6 +846,10 @@ func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventM
 }
 
 func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
+	if err := to.recordCreateNetworkOperation(ctx, options.Name); err != nil {
+		return "", err
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -940,6 +950,8 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 }
 
 func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	to.recordInspectNetworksOperation(options.Networks)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -1213,6 +1225,17 @@ func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
 	return to.buildImageCalls[tag]
 }
 
+func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
+	return to.blockCreateNetworkOperation(name, make(chan struct{}))
+}
+
+func (to *TestContainerOrchestrator) CreateNetworkCallCount(name string) int {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	return to.createNetworkCalls[name]
+}
+
 func (to *TestContainerOrchestrator) blockCreateContainerOperation(name string, block chan struct{}) func() {
 	to.operationMutex.Lock()
 	to.createContainerBlocks[name] = block
@@ -1232,6 +1255,13 @@ func (to *TestContainerOrchestrator) blockBuildImageOperation(tag string, block 
 	to.buildImageBlocks[tag] = block
 	to.operationMutex.Unlock()
 	return releaseBlockedOperation(to.operationMutex, to.buildImageBlocks, tag, block)
+}
+
+func (to *TestContainerOrchestrator) blockCreateNetworkOperation(name string, block chan struct{}) func() {
+	to.operationMutex.Lock()
+	to.createNetworkBlocks[name] = block
+	to.operationMutex.Unlock()
+	return releaseBlockedOperation(to.operationMutex, to.createNetworkBlocks, name, block)
 }
 
 func releaseBlockedOperation(lock *sync.Mutex, blocks map[string]chan struct{}, key string, block chan struct{}) func() {
@@ -1265,6 +1295,32 @@ func (to *TestContainerOrchestrator) recordCreateContainerOperation(ctx context.
 	if createErr != nil {
 		return createErr
 	}
+	return waitForBlockedOperation(ctx, block)
+}
+
+// InspectNetworkCallCount reports how many times the network was inspected, by ID or by name.
+func (to *TestContainerOrchestrator) InspectNetworkCallCount(network string) int {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	return to.inspectNetworkCalls[network]
+}
+
+func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []string) {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	for _, network := range networks {
+		to.inspectNetworkCalls[network]++
+	}
+}
+
+func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Context, name string) error {
+	to.operationMutex.Lock()
+	to.createNetworkCalls[name]++
+	block := to.createNetworkBlocks[name]
+	to.operationMutex.Unlock()
+
 	return waitForBlockedOperation(ctx, block)
 }
 

@@ -39,6 +39,7 @@ type namespaceCleanupResourceHandler func(*NamespaceReconciler, context.Context,
 var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespaceCleanupResourceHandler{
 	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():      (*NamespaceReconciler).cleanupPhysicalContainers,
 	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerImages,
+	(&apiv2.PhysicalNetwork{}).GetGroupVersionResource():        (*NamespaceReconciler).cleanupPhysicalNetworks,
 }
 
 type NamespaceReconciler struct {
@@ -276,4 +277,27 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context
 	}
 
 	return len(physicalContainerImages.Items), nil
+}
+
+func (r *NamespaceReconciler) cleanupPhysicalNetworks(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	physicalNetworks := apiv2.PhysicalNetworkList{}
+	listErr := r.Client.List(ctx, &physicalNetworks, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list PhysicalNetworks in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	for i := range physicalNetworks.Items {
+		physicalNetwork := &physicalNetworks.Items[i]
+		if physicalNetwork.DeletionTimestamp != nil && !physicalNetwork.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		log.V(1).Info("Deleting PhysicalNetwork during namespace cleanup", "Namespace", namespace.Name, "PhysicalNetwork", physicalNetwork.Name)
+		deleteErr := r.Client.Delete(ctx, physicalNetwork)
+		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+			return 0, fmt.Errorf("failed to delete PhysicalNetwork %q in namespace %q: %w", physicalNetwork.Name, namespace.Name, deleteErr)
+		}
+	}
+
+	return len(physicalNetworks.Items), nil
 }
