@@ -846,6 +846,10 @@ func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventM
 }
 
 func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
+	if err := to.recordCreateNetworkOperation(ctx, options.Name); err != nil {
+		return "", err
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -946,6 +950,8 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 }
 
 func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	to.recordInspectNetworksOperation(options.Networks)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
