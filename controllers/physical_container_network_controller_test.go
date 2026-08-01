@@ -6,6 +6,8 @@
 package controllers
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,6 +19,123 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+func TestPhysicalContainerNetworkReconcileDelay(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		phase    apiv2.PhysicalContainerNetworkPhase
+		reason   string
+		expected AdditionalReconciliationDelay
+	}{
+		{
+			name:     "ready networks poll on the monitoring cadence",
+			phase:    apiv2.PhysicalContainerNetworkPhaseReady,
+			reason:   apiv2.PhysicalContainerNetworkReasonNetworkReady,
+			expected: MonitoringDelay,
+		},
+		{
+			name:     "missing networks keep observing on the monitoring cadence",
+			phase:    apiv2.PhysicalContainerNetworkPhaseMissing,
+			reason:   apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing,
+			expected: MonitoringDelay,
+		},
+		{
+			// An unhealthy runtime should be retried sooner than steady-state monitoring.
+			name:     "recoverable failures retry on the long cadence",
+			phase:    apiv2.PhysicalContainerNetworkPhaseFailed,
+			reason:   apiv2.PhysicalContainerNetworkReasonReconciliationFailed,
+			expected: LongDelay,
+		},
+		{
+			// LongDelay forces a requeue, so a terminal failure must not use it.
+			name:     "terminal create failures do not retry",
+			phase:    apiv2.PhysicalContainerNetworkPhaseFailed,
+			reason:   apiv2.PhysicalContainerNetworkReasonCreateFailed,
+			expected: StandardDelay,
+		},
+		{
+			name:     "pending networks use the standard cadence",
+			phase:    apiv2.PhysicalContainerNetworkPhasePending,
+			reason:   apiv2.PhysicalContainerNetworkReasonCreating,
+			expected: StandardDelay,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			network := &apiv2.PhysicalContainerNetwork{
+				Status: apiv2.PhysicalContainerNetworkStatus{
+					Phase: testCase.phase,
+					Conditions: []metav1.Condition{
+						{
+							Type:   apiv2.ConditionReady,
+							Status: metav1.ConditionFalse,
+							Reason: testCase.reason,
+						},
+					},
+				},
+			}
+
+			require.Equal(t, testCase.expected, physicalContainerNetworkReconcileDelay(network))
+		})
+	}
+}
+
+// A recoverable inspection failure must keep asking for reconciliation even when repeating the
+// failure produces no status change, otherwise the network never recovers once the runtime does.
+func TestApplyRuntimeNetworkStatusKeepsRetryingRecoverableFailures(t *testing.T) {
+	t.Parallel()
+
+	reconciler := &PhysicalContainerNetworkReconciler{orchestrator: &failingNetworkOrchestrator{}}
+	network := &apiv2.PhysicalContainerNetwork{
+		Status: apiv2.PhysicalContainerNetworkStatus{NetworkID: "test-network-id"},
+	}
+
+	firstChange := reconciler.applyRuntimeNetworkStatus(t.Context(), network, "test-network-id", logr.Discard())
+	require.NotZero(t, firstChange&statusChanged, "the first failure should record the failure in status")
+	require.NotZero(t, firstChange&additionalReconciliationNeeded)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseFailed, network.Status.Phase)
+
+	secondChange := reconciler.applyRuntimeNetworkStatus(t.Context(), network, "test-network-id", logr.Discard())
+	require.Zero(t, secondChange&statusChanged, "an unchanged failure should not produce a status write")
+	require.NotZero(t, secondChange&additionalReconciliationNeeded, "an unchanged failure must still be retried")
+}
+
+// A missing runtime network keeps being observed rather than settling permanently.
+func TestApplyRuntimeNetworkStatusKeepsObservingMissingNetworks(t *testing.T) {
+	t.Parallel()
+
+	reconciler := &PhysicalContainerNetworkReconciler{orchestrator: &missingNetworkOrchestrator{}}
+	network := &apiv2.PhysicalContainerNetwork{}
+
+	firstChange := reconciler.applyRuntimeNetworkStatus(t.Context(), network, "test-network-id", logr.Discard())
+	require.NotZero(t, firstChange&additionalReconciliationNeeded)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseMissing, network.Status.Phase)
+
+	secondChange := reconciler.applyRuntimeNetworkStatus(t.Context(), network, "test-network-id", logr.Discard())
+	require.Zero(t, secondChange&statusChanged, "an unchanged missing network should not produce a status write")
+	require.NotZero(t, secondChange&additionalReconciliationNeeded)
+}
+
+type failingNetworkOrchestrator struct {
+	containers.NetworkOrchestrator
+}
+
+func (o *failingNetworkOrchestrator) InspectNetworks(_ context.Context, _ containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	return nil, errors.New("container runtime is unhealthy")
+}
+
+type missingNetworkOrchestrator struct {
+	containers.NetworkOrchestrator
+}
+
+func (o *missingNetworkOrchestrator) InspectNetworks(_ context.Context, _ containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	return nil, containers.ErrNotFound
+}
 
 func TestPhysicalContainerNetworkCreateFailedTerminally(t *testing.T) {
 	t.Parallel()

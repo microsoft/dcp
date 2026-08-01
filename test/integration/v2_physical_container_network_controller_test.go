@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/controllers"
@@ -340,6 +341,79 @@ func TestV2PhysicalContainerNetworkControllerDoesNotChurnReadyStatus(t *testing.
 	}, 5*time.Second, 250*time.Millisecond)
 }
 
+func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+
+	// We are going to use a separate instance of the API server because we need to simulate the
+	// container runtime being unhealthy, and that would interfere with other tests if we used the
+	// shared container orchestrator.
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		// Wait for the API server cleanup to complete.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pcn-recovery"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, types.NamespacedName{Name: namespace.Name}, func(updated *apiv2.Namespace) (bool, error) {
+		return updated.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "recovering-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: "v2-pcn-recovery-runtime",
+		},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, network))
+
+	waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+
+	t.Logf("Setting container runtime to unhealthy...")
+	tco.SetRuntimeHealth(false)
+
+	// Annotating the network forces a prompt re-inspection instead of waiting out the monitoring
+	// delay. Only the spec is immutable, so annotating an existing network is allowed.
+	failedNetwork := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, serverInfo.Client.Get(ctx, network.NamespacedName(), failedNetwork))
+	failedNetwork.Annotations = map[string]string{"test-probe": "1"}
+	require.NoError(t, serverInfo.Client.Update(ctx, failedNetwork))
+
+	t.Logf("Ensure that the PhysicalContainerNetwork reports the runtime failure...")
+	failedNetwork = waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+	requireReadyCondition(t, failedNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonReconciliationFailed)
+
+	// Repeating an identical failure produces no status change, so nothing but a self-scheduled
+	// retry can wake the network. Waiting for further inspections proves the retry loop is alive;
+	// restoring the runtime before this point would let an already in-flight reconciliation
+	// recover the network whether or not the controller retries on its own.
+	t.Logf("Ensure that the PhysicalContainerNetwork keeps retrying while the runtime is unhealthy...")
+	networkID := failedNetwork.Status.NetworkID
+	waitInspectNetworkCallCount(t, ctx, tco, networkID, tco.InspectNetworkCallCount(networkID)+2)
+
+	t.Logf("Setting container runtime to healthy...")
+	tco.SetRuntimeHealth(true)
+
+	// Recovery must happen on its own. Nothing touches the network from here on, so the only way
+	// back to Ready is the controller retrying the inspection it previously failed.
+	t.Logf("Ensure that the PhysicalContainerNetwork recovers without further changes...")
+	recoveredNetwork := waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	requireReadyCondition(t, recoveredNetwork.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkReady)
+}
+
 func waitPhysicalContainerNetworkPhase(
 	t *testing.T,
 	ctx context.Context,
@@ -353,11 +427,40 @@ func waitPhysicalContainerNetworkPhase(
 	})
 }
 
+func waitPhysicalContainerNetworkPhaseEx(
+	t *testing.T,
+	ctx context.Context,
+	apiClient ctrl_client.Client,
+	name types.NamespacedName,
+	phase apiv2.PhysicalContainerNetworkPhase,
+) *apiv2.PhysicalContainerNetwork {
+	t.Helper()
+
+	return waitObjectAssumesStateEx(t, ctx, apiClient, name, func(network *apiv2.PhysicalContainerNetwork) (bool, error) {
+		return network.Status.Phase == phase, nil
+	})
+}
+
 func waitCreateNetworkCallCount(t *testing.T, ctx context.Context, networkName string, expected int) {
 	t.Helper()
 
 	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		return containerOrchestrator.CreateNetworkCallCount(networkName) >= expected, nil
+	})
+	require.NoError(t, waitErr)
+}
+
+func waitInspectNetworkCallCount(
+	t *testing.T,
+	ctx context.Context,
+	orchestrator *ctrl_testutil.TestContainerOrchestrator,
+	networkID string,
+	expected int,
+) {
+	t.Helper()
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		return orchestrator.InspectNetworkCallCount(networkID) >= expected, nil
 	})
 	require.NoError(t, waitErr)
 }
