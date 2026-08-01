@@ -116,14 +116,26 @@ func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req 
 		change = r.managePhysicalContainerNetwork(ctx, &network, log)
 	}
 
-	// A ready network is in a steady state. There is no runtime event subscription for networks,
-	// so reconcile it on a slow cadence to notice a network that was removed outside of DCP.
-	additionalReconcileDelay := StandardDelay
-	if network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady {
-		additionalReconcileDelay = MonitoringDelay
-	}
+	return r.SaveChangesWithDelay(ctx, &network, patch, change, physicalContainerNetworkReconcileDelay(&network), nil, log)
+}
 
-	return r.SaveChangesWithDelay(ctx, &network, patch, change, additionalReconcileDelay, nil, log)
+// Chooses the cadence for the next reconciliation. Networks have no runtime event subscription,
+// so every non-terminal phase keeps observing the runtime: an available network so that removal
+// outside of DCP is noticed, and a recoverable failure so that reconciliation resumes once the
+// runtime recovers. All delays carry jitter, so many networks do not poll the runtime in lockstep.
+func physicalContainerNetworkReconcileDelay(network *apiv2.PhysicalContainerNetwork) AdditionalReconciliationDelay {
+	switch network.Status.Phase {
+	case apiv2.PhysicalContainerNetworkPhaseReady, apiv2.PhysicalContainerNetworkPhaseMissing:
+		return MonitoringDelay
+	case apiv2.PhysicalContainerNetworkPhaseFailed:
+		if physicalContainerNetworkCreateFailedTerminally(network) {
+			return StandardDelay
+		}
+		// Retry sooner than steady-state monitoring, matching how V1 paces an unhealthy runtime.
+		return LongDelay
+	default:
+		return StandardDelay
+	}
 }
 
 func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(ctx context.Context, network *apiv2.PhysicalContainerNetwork, log logr.Logger) objectChange {
@@ -189,14 +201,18 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 		change := setValue(&network.Status.NetworkID, networkID)
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseMissing)
 		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing, "Runtime network was not found.")
-		return change
+		// Keep observing: a tracked network may not have been created yet, and a runtime that is
+		// only reporting the network as absent because it is unhealthy recovers on its own.
+		return change | additionalReconciliationNeeded
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect runtime network", "NetworkID", networkID)
 		change := setValue(&network.Status.NetworkID, networkID)
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
 		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonReconciliationFailed, fmt.Sprintf("Failed to inspect runtime network: %v", inspectErr))
-		return change
+		// Inspection failures are usually transient, and repeating an identical failure produces
+		// no status change, so retry explicitly rather than settling into a permanent failure.
+		return change | additionalReconciliationNeeded
 	}
 
 	return applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)

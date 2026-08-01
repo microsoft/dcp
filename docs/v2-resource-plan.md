@@ -55,6 +55,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - V2 status types must not define top-level `status.message` fields. Explanatory and diagnostic text belongs in the message of the condition reporting the corresponding state.
 - Controller status helpers should use shared target-first setters such as `setValue(&field, value)` and `setTimestamp(&field, value)`.
 - Callers that need a boolean from a status helper should use `trySetX` wrappers instead of comparing `setX(...) != noChange` at call sites.
+- Distinguish recoverable from terminal failures. Status setters return `noChange` when a failure repeats identically, and without a watch subscription or a periodic cache resync that leaves a resource wedged with no pending reconciliation. Recoverable failures should return `additionalReconciliationNeeded` and reconcile at `LongDelay`, matching how V1 paces an unhealthy runtime; terminal failures should not requeue at all. All delays carry jitter, so retrying resources do not poll the runtime in lockstep.
 
 ### Type ownership between V1, V2, and orchestrators
 
@@ -113,9 +114,13 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Use the same namespace, queued action, in-memory progress, phase, and condition patterns as the other physical resources.
    - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
 
-7. Reconcile network harvesting with `preserveOnDeletion`.
+7. Align network harvesting with `preserveOnDeletion`.
    - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalContainerNetwork` with `preserveOnDeletion: true` is therefore still removed after a DCP crash, unlike a preserved container.
    - This asymmetry is inherited from V1. Decide whether harvesting should honor the persistent label for networks, and change V1 and V2 together if it should.
+
+8. Retry recoverable failures in `PhysicalContainerImage`.
+   - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.
+   - `PhysicalContainerNetwork` already follows the recoverable/terminal failure pattern described in the status guidelines. Apply the same treatment to the image controller.
 
 ### Logical resource layer
 
