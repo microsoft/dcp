@@ -122,10 +122,6 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.
    - `PhysicalContainerNetwork` already follows the recoverable/terminal failure pattern described in the status guidelines. Apply the same treatment to the image controller.
 
-9. Make `Namespace` deletion resilient to a missed watch event.
-   - An `Active` namespace returns `noChange`, so nothing is requeued and the controller depends entirely on watch events from then on. There is no cache resync configured anywhere in DCP, so a reconcile that observes a cached copy predating the deletion consumes the delete notification and leaves the namespace `Active` with a `deletionTimestamp` and its finalizer forever.
-   - Observed as an intermittent macOS CI failure of `TestV2NamespaceControllerCleansUpPhysicalContainers`, where the namespace never left `Active`. Giving an `Active` namespace a `MonitoringDelay` fallback reconcile would bound the exposure the same way the physical resources do.
-
 ### Logical resource layer
 
 After the physical primitives are in place, add logical V2 resources that express user-facing policy on top of physical resources.
