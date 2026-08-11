@@ -98,16 +98,22 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		change = r.manageNamespace(&namespace)
 	}
 
-	return r.SaveChanges(ctx, &namespace, patch, change, nil, log)
+	return r.SaveChangesWithDelay(ctx, &namespace, patch, change, namespaceReconciliationDelay(&namespace), nil, log)
 }
 
 func (r *NamespaceReconciler) manageNamespace(namespace *apiv2.Namespace) objectChange {
-	if namespace.Status.Phase == apiv2.NamespacePhaseActive {
-		return noChange
+	change := setValue(&namespace.Status.Phase, apiv2.NamespacePhaseActive)
+	// Keep a slow safety-net reconciliation so deletion eventually proceeds if its watch event is
+	// missed or reconciliation observes cached state from before the deletion request.
+	return change | additionalReconciliationNeeded
+}
+
+func namespaceReconciliationDelay(namespace *apiv2.Namespace) AdditionalReconciliationDelay {
+	if namespace.DeletionTimestamp == nil && namespace.Status.Phase == apiv2.NamespacePhaseActive {
+		return MonitoringDelay
 	}
 
-	namespace.Status.Phase = apiv2.NamespacePhaseActive
-	return statusChanged
+	return StandardDelay
 }
 
 func (r *NamespaceReconciler) handleDeletionRequest(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) objectChange {

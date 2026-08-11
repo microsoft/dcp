@@ -29,6 +29,31 @@ func TestNamespaceCleanupResourcesHaveHandlers(t *testing.T) {
 	require.Len(t, namespaceCleanupResourceHandlers, len(namespaceResourceGVRs))
 }
 
+func TestManageNamespaceKeepsMonitoringActiveNamespace(t *testing.T) {
+	t.Parallel()
+
+	reconciler := &NamespaceReconciler{}
+	namespace := &apiv2.Namespace{}
+
+	require.Equal(t, statusChanged|additionalReconciliationNeeded, reconciler.manageNamespace(namespace))
+	require.Equal(t, apiv2.NamespacePhaseActive, namespace.Status.Phase)
+	require.Equal(t, MonitoringDelay, namespaceReconciliationDelay(namespace))
+
+	require.Equal(t, additionalReconciliationNeeded, reconciler.manageNamespace(namespace))
+}
+
+func TestTerminatingNamespaceUsesStandardReconciliationDelay(t *testing.T) {
+	t.Parallel()
+
+	now := metav1.Now()
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &now},
+		Status:     apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+
+	require.Equal(t, StandardDelay, namespaceReconciliationDelay(namespace))
+}
+
 func TestSetNamespaceCleanupInProgressNamesPendingResources(t *testing.T) {
 	t.Parallel()
 
