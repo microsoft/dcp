@@ -46,19 +46,10 @@ func ForkFromParent(cmd *exec.Cmd) {
 }
 
 func canBreakAwayFromJob() (bool, error) {
-	// Check if the process can break away from the job
-	jobObject, err := windows.CreateJobObject(nil, nil)
-	if err != nil {
-		return false, err
-	}
-	defer func() {
-		_ = windows.CloseHandle(jobObject)
-	}()
-
 	var jobInformation windows.JOBOBJECT_BASIC_LIMIT_INFORMATION
-	err = windows.QueryInformationJobObject(jobObject, windows.JobObjectBasicLimitInformation, uintptr(unsafe.Pointer(&jobInformation)), uint32(unsafe.Sizeof(jobInformation)), nil)
-	if err != nil {
-		return false, err
+	queryErr := windows.QueryInformationJobObject(0, windows.JobObjectBasicLimitInformation, uintptr(unsafe.Pointer(&jobInformation)), uint32(unsafe.Sizeof(jobInformation)), nil)
+	if queryErr != nil {
+		return false, queryErr
 	}
 
 	return jobInformation.LimitFlags&windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK != 0, nil
