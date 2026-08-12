@@ -6,6 +6,8 @@
 package controllers
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -17,6 +19,7 @@ type physicalContainerNetworkData struct {
 	conditionReason string
 	networkID       string
 	failureMessage  string
+	retryAfter      time.Time
 }
 
 func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData {
@@ -24,6 +27,7 @@ func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData 
 		conditionReason: data.conditionReason,
 		networkID:       data.networkID,
 		failureMessage:  data.failureMessage,
+		retryAfter:      data.retryAfter,
 	}
 }
 
@@ -45,6 +49,10 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 		data.failureMessage = other.failureMessage
 		updated = true
 	}
+	if !data.retryAfter.Equal(other.retryAfter) {
+		data.retryAfter = other.retryAfter
+		updated = true
+	}
 
 	return updated
 }
@@ -64,7 +72,8 @@ func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContain
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
 		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating, "Runtime network creation is in progress.")
 		return change
-	case apiv2.PhysicalContainerNetworkReasonCreateFailed:
+	case apiv2.PhysicalContainerNetworkReasonCreateFailed,
+		apiv2.PhysicalContainerNetworkReasonReconciliationFailed:
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
 		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 		return change

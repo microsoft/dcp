@@ -42,6 +42,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `applyTo` methods on data records should only project in-memory progress onto resource status.
 - Reconciliation scheduling, state cleanup, runtime inspection, and external side effects should remain in the reconciler.
 - Prefer dispatching progress handling through initializer maps keyed by condition reason when the controller has multiple progress gates.
+- Do not discard an in-memory operation result until its status projection is durable. Use `afterStatusUpdateIsDurable` with an atomic conditional state-map update so a failed status write retains the result and a delayed acknowledgement cannot remove newer state.
 
 ### Status and progress reporting
 

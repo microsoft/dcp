@@ -14,6 +14,8 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -27,6 +29,7 @@ func TestPhysicalContainerNetworkReconcileDelay(t *testing.T) {
 		name     string
 		phase    apiv2.PhysicalContainerNetworkPhase
 		reason   string
+		deleting bool
 		expected AdditionalReconciliationDelay
 	}{
 		{
@@ -61,6 +64,13 @@ func TestPhysicalContainerNetworkReconcileDelay(t *testing.T) {
 			reason:   apiv2.PhysicalContainerNetworkReasonCreating,
 			expected: StandardDelay,
 		},
+		{
+			name:     "deleting ready networks use the standard cadence",
+			phase:    apiv2.PhysicalContainerNetworkPhaseReady,
+			reason:   apiv2.PhysicalContainerNetworkReasonNetworkReady,
+			deleting: true,
+			expected: StandardDelay,
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -79,10 +89,256 @@ func TestPhysicalContainerNetworkReconcileDelay(t *testing.T) {
 					},
 				},
 			}
+			if testCase.deleting {
+				deletionTimestamp := metav1.Now()
+				network.DeletionTimestamp = &deletionTimestamp
+			}
 
 			require.Equal(t, testCase.expected, physicalContainerNetworkReconcileDelay(network))
 		})
 	}
+}
+
+func TestPhysicalContainerNetworkCreatedDataRemainsUntilStatusSave(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-network",
+			Namespace: "test-namespace",
+			UID:       "test-uid",
+		},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonCreated,
+		networkID:       "test-network-id",
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		orchestrator: &canonicalNetworkOrchestrator{},
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	stateKey := physicalContainerNetworkDataKey(network)
+	reconciler.networkData.Store(network.NamespacedName(), stateKey, data)
+
+	change := handlePhysicalContainerNetworkCreated(t.Context(), reconciler, network, "", data, logr.Discard())
+
+	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.NotNil(t, savedData, "the create result must survive until the status write succeeds")
+	require.Equal(t, "canonical-network-id", network.Status.NetworkID)
+
+	onSuccessfulSave := reconciler.physicalContainerNetworkDataSaveCallback(stateKey, data, change)
+	require.NotNil(t, onSuccessfulSave)
+	onSuccessfulSave()
+
+	_, savedData = reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.Nil(t, savedData)
+}
+
+func TestPhysicalContainerNetworkDataSaveCallbackAcknowledgesAlreadyDurableStatus(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-network",
+			Namespace: "test-namespace",
+			UID:       "test-uid",
+		},
+		Status: apiv2.PhysicalContainerNetworkStatus{NetworkID: "test-network-id"},
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonCreated,
+		networkID:       "test-network-id",
+	}
+	stateKey := physicalContainerNetworkDataKey(network)
+	reconciler.networkData.Store(network.NamespacedName(), stateKey, data)
+
+	require.Nil(t, reconciler.physicalContainerNetworkDataSaveCallback(stateKey, data, additionalReconciliationNeeded))
+	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.Nil(t, savedData)
+}
+
+func TestPhysicalContainerNetworkCreatedDataSurvivesNamespaceNotReady(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-network",
+			Namespace: "missing-namespace",
+			UID:       "test-uid",
+		},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonCreated,
+		networkID:       "test-network-id",
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		ReconcilerBase: &ReconcilerBase[apiv2.PhysicalContainerNetwork, *apiv2.PhysicalContainerNetwork]{
+			Client: apiClient,
+		},
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	reconciler.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
+
+	change, onSuccessfulSave := reconciler.managePhysicalContainerNetwork(t.Context(), network, logr.Discard())
+
+	require.NotZero(t, change&statusChanged)
+	require.NotZero(t, change&additionalReconciliationNeeded)
+	require.Nil(t, onSuccessfulSave, "a namespace status update must not acknowledge unprojected create data")
+	require.Empty(t, network.Status.NetworkID)
+	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.NotNil(t, savedData)
+	require.Equal(t, "test-network-id", savedData.networkID)
+}
+
+func TestPhysicalContainerNetworkRecoverableCreateFailureWaitsBeforeRetry(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "test-network"},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonReconciliationFailed,
+		retryAfter:      time.Now().Add(time.Hour),
+	}
+
+	change := handlePhysicalContainerNetworkRecoverableCreateFailed(
+		t.Context(),
+		&PhysicalContainerNetworkReconciler{},
+		network,
+		"",
+		data,
+		logr.Discard(),
+	)
+
+	require.Equal(t, additionalReconciliationNeeded, change)
+}
+
+func TestPhysicalContainerNetworkRecoverableCreateFailureAdoptsCreatedNetwork(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-network",
+			Namespace: "test-namespace",
+			UID:       "test-uid",
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "test-runtime-network"},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonReconciliationFailed,
+		failureMessage:  "create result was uncertain",
+		retryAfter:      time.Now().Add(-time.Second),
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		orchestrator: &canonicalNetworkOrchestrator{},
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	reconciler.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data.Clone())
+
+	change := data.applyTo(network)
+	change |= handlePhysicalContainerNetworkRecoverableCreateFailed(
+		t.Context(),
+		reconciler,
+		network,
+		"",
+		data,
+		logr.Discard(),
+	)
+
+	require.NotZero(t, change&statusChanged)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseReady, network.Status.Phase)
+	require.Equal(t, "canonical-network-id", network.Status.NetworkID)
+	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.NotNil(t, savedData)
+	require.Equal(t, apiv2.PhysicalContainerNetworkReasonCreated, savedData.conditionReason)
+	require.Equal(t, "canonical-network-id", savedData.networkID)
+}
+
+func TestPhysicalContainerNetworkAlreadyExistsRemainsRetryableWhenVerificationFails(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{UID: "test-uid"},
+		Spec:       apiv2.PhysicalContainerNetworkSpec{NetworkName: "test-runtime-network"},
+	}
+	data := &physicalContainerNetworkData{}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		orchestrator: &alreadyExistsWithFailedInspectionOrchestrator{},
+	}
+
+	reconciler.applyPhysicalContainerNetworkCreateResult(
+		t.Context(),
+		network,
+		data,
+		"",
+		containers.ErrAlreadyExists,
+		logr.Discard(),
+	)
+
+	require.Equal(t, apiv2.PhysicalContainerNetworkReasonReconciliationFailed, data.conditionReason)
+	require.Contains(t, data.failureMessage, "failed to verify whether creation succeeded")
+	require.False(t, data.retryAfter.IsZero())
+}
+
+func TestPhysicalContainerNetworkPreservedDeletionSkipsUncertainCreateInspection(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-network",
+			Namespace:  "test-namespace",
+			UID:        "test-uid",
+			Finalizers: []string{physicalContainerNetworkFinalizer},
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName:        "test-runtime-network",
+			PreserveOnDeletion: true,
+		},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonReconciliationFailed,
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		orchestrator: &failingNetworkOrchestrator{},
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	reconciler.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data)
+
+	change := reconciler.handleDeletionRequest(t.Context(), network, logr.Discard())
+
+	require.Equal(t, metadataChanged, change)
+	require.Empty(t, network.Finalizers)
 }
 
 // A recoverable inspection failure must keep asking for reconciliation even when repeating the
@@ -135,6 +391,28 @@ type missingNetworkOrchestrator struct {
 
 func (o *missingNetworkOrchestrator) InspectNetworks(_ context.Context, _ containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
 	return nil, containers.ErrNotFound
+}
+
+type canonicalNetworkOrchestrator struct {
+	containers.NetworkOrchestrator
+}
+
+func (o *canonicalNetworkOrchestrator) InspectNetworks(_ context.Context, _ containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	return []containers.InspectedNetwork{{
+		Id:     "canonical-network-id",
+		Labels: map[string]string{uidLabel: "test-uid"},
+	}}, nil
+}
+
+type alreadyExistsWithFailedInspectionOrchestrator struct {
+	containers.NetworkOrchestrator
+}
+
+func (o *alreadyExistsWithFailedInspectionOrchestrator) InspectNetworks(
+	_ context.Context,
+	_ containers.InspectNetworksOptions,
+) ([]containers.InspectedNetwork, error) {
+	return nil, errors.New("runtime inspection failed")
 }
 
 func TestPhysicalContainerNetworkCreateFailedTerminally(t *testing.T) {
@@ -212,6 +490,7 @@ func TestPhysicalContainerNetworkCreationLabels(t *testing.T) {
 	t.Parallel()
 
 	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{UID: "test-uid"},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: "test-runtime-network",
 			Labels: []commonapi.Label{
@@ -225,6 +504,7 @@ func TestPhysicalContainerNetworkCreationLabels(t *testing.T) {
 	require.Equal(t, "test-value", labels["test-label"])
 	// Creator labels let startup harvesting reclaim networks abandoned by a crashed DCP process.
 	require.Equal(t, "false", labels[PersistentLabel])
+	require.Equal(t, "test-uid", labels[uidLabel])
 	require.NotEmpty(t, labels[CreatorProcessIdLabel])
 	require.NotEmpty(t, labels[CreatorProcessStartTimeLabel])
 }
