@@ -73,6 +73,8 @@ const (
 	operationPullImage
 	operationInspectImage
 	operationBuildImage
+	operationCreateNetwork
+	operationInspectNetwork
 )
 
 type testContainerOperationKey struct {
@@ -96,6 +98,7 @@ type TestContainerOrchestrator struct {
 	operationBlocks          map[testContainerOperationKey]chan struct{}
 	operationErrors          map[testContainerOperationKey][]error
 	operationResultOmissions map[testContainerOperationKey]bool
+	createNetworkPostErrors  map[string][]error
 	containerEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher     *pubsub.SubscriptionSet[containers.EventMessage]
 	attachHandler            ContainerAttachHandler
@@ -212,6 +215,7 @@ func NewTestContainerOrchestrator(
 		operationBlocks:          map[testContainerOperationKey]chan struct{}{},
 		operationErrors:          map[testContainerOperationKey][]error{},
 		operationResultOmissions: map[testContainerOperationKey]bool{},
+		createNetworkPostErrors:  map[string][]error{},
 		mutex:                    &sync.Mutex{},
 		lifetimeCtx:              lifetimeCtx,
 		log:                      log,
@@ -889,6 +893,10 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
+	if postCreateErr := to.takeCreateNetworkPostError(options.Name); postCreateErr != nil {
+		return "", postCreateErr
+	}
+
 	return id.ID, nil
 }
 
@@ -996,7 +1004,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 					Gateways:   network.gateways,
 					Subnets:    network.subnets,
 					Containers: connectedContainers,
-					Labels:     map[string]string{},
+					Labels:     maps.Map[string, string, string](network.labels, func(_ string, value string) string { return value }),
 					CreatedAt:  network.created,
 				})
 			}
@@ -1282,6 +1290,62 @@ func (to *TestContainerOrchestrator) OmitBuildImageID(tag string) func() {
 
 func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
 	return to.operationCallCount(operationBuildImage, tag)
+}
+
+func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
+	return to.blockOperation(operationCreateNetwork, name)
+}
+
+// FailNextCreateNetworkAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated network create failure")
+	}
+
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	to.createNetworkPostErrors[name] = append(to.createNetworkPostErrors[name], createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateNetworkCallCount(name string) int {
+	return to.operationCallCount(operationCreateNetwork, name)
+}
+
+// InspectNetworkCallCount reports how many times the network was inspected, by ID or by name.
+func (to *TestContainerOrchestrator) InspectNetworkCallCount(network string) int {
+	return to.operationCallCount(operationInspectNetwork, network)
+}
+
+func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []string) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	for _, network := range networks {
+		key := testContainerOperationKey{operation: operationInspectNetwork, resourceID: network}
+		to.operationCallCounts[key]++
+	}
+}
+
+func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Context, name string) error {
+	return to.recordOperation(ctx, operationCreateNetwork, name)
+}
+
+func (to *TestContainerOrchestrator) takeCreateNetworkPostError(name string) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if len(to.createNetworkPostErrors[name]) == 0 {
+		return nil
+	}
+
+	createErr := to.createNetworkPostErrors[name][0]
+	to.createNetworkPostErrors[name] = to.createNetworkPostErrors[name][1:]
+	if len(to.createNetworkPostErrors[name]) == 0 {
+		delete(to.createNetworkPostErrors, name)
+	}
+
+	return createErr
 }
 
 func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
