@@ -45,6 +45,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - An `applyTo` method may project controller-owned in-memory state onto the resource's status. It must not modify spec or metadata, mutate controller-owned state, schedule work, or perform external side effects.
 - State transitions, work scheduling, cleanup, runtime inspection, and controller-owned state updates belong in reconciler or initializer functions.
 - When controller-owned state uses a `Ready` condition reason as its current reconciliation state, dispatch reason-specific behavior through an exhaustive initializer map keyed by that reason. Unrecognized reasons must produce explicit invalid-state handling.
+- Do not discard an in-memory operation result until its status projection is durable. Use `afterStatusUpdateIsDurable` with an atomic conditional state-map update so a failed status write retains the result and a delayed acknowledgement cannot remove newer state.
 
 ### Status and progress reporting
 

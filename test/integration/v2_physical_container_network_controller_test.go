@@ -414,6 +414,86 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testi
 	requireReadyCondition(t, recoveredNetwork.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkReady)
 }
 
+func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerNetworkController, t.Name(), NoSeparateWorkingDir)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pcn-create-recovery"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, types.NamespacedName{Name: namespace.Name}, func(updated *apiv2.Namespace) (bool, error) {
+		return updated.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	tco.SetRuntimeHealth(false)
+	networkName := "v2-pcn-create-recovery-runtime"
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "create-recovery-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: networkName,
+		},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, network))
+
+	failedNetwork := waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+	requireReadyCondition(t, failedNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonReconciliationFailed)
+
+	// A status update wakes the controller immediately. Waiting for repeated verification proves
+	// the jittered retry remains active after that watch event has been consumed.
+	waitInspectNetworkCallCount(t, ctx, tco, networkName, tco.InspectNetworkCallCount(networkName)+2)
+
+	tco.SetRuntimeHealth(true)
+	recoveredNetwork := waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	requireReadyCondition(t, recoveredNetwork.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkReady)
+}
+
+func TestV2PhysicalContainerNetworkControllerWaitsForNamespace(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	networkName := "v2-pcn-wait-namespace-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "wait-namespace-network",
+			Namespace: "v2-pcn-wait-namespace",
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: networkName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+
+	pendingNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhasePending)
+	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonPending)
+	require.Equal(t, 0, containerOrchestrator.CreateNetworkCallCount(networkName))
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: network.Namespace}}
+	require.NoError(t, client.Create(ctx, namespace))
+	waitV2NamespaceActive(t, ctx, namespace.Name)
+
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	require.NotEmpty(t, readyNetwork.Status.NetworkID)
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+}
+
 func waitPhysicalContainerNetworkPhase(
 	t *testing.T,
 	ctx context.Context,
