@@ -87,6 +87,7 @@ type TestContainerOrchestrator struct {
 	buildImageBlocks        map[string]chan struct{}
 	createNetworkCalls      map[string]int
 	createNetworkBlocks     map[string]chan struct{}
+	createNetworkPostErrors map[string][]error
 	inspectNetworkCalls     map[string]int
 	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
@@ -211,6 +212,7 @@ func NewTestContainerOrchestrator(
 		buildImageBlocks:        map[string]chan struct{}{},
 		createNetworkCalls:      map[string]int{},
 		createNetworkBlocks:     map[string]chan struct{}{},
+		createNetworkPostErrors: map[string][]error{},
 		inspectNetworkCalls:     map[string]int{},
 		mutex:                   &sync.Mutex{},
 		lifetimeCtx:             lifetimeCtx,
@@ -889,6 +891,10 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
+	if postCreateErr := to.takeCreateNetworkPostError(options.Name); postCreateErr != nil {
+		return "", postCreateErr
+	}
+
 	return id.ID, nil
 }
 
@@ -996,7 +1002,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 					Gateways:   network.gateways,
 					Subnets:    network.subnets,
 					Containers: connectedContainers,
-					Labels:     map[string]string{},
+					Labels:     maps.Map[string, string, string](network.labels, func(_ string, value string) string { return value }),
 					CreatedAt:  network.created,
 				})
 			}
@@ -1229,6 +1235,18 @@ func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
 	return to.blockCreateNetworkOperation(name, make(chan struct{}))
 }
 
+// FailNextCreateNetworkAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated network create failure")
+	}
+
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.createNetworkPostErrors[name] = append(to.createNetworkPostErrors[name], createErr)
+}
+
 func (to *TestContainerOrchestrator) CreateNetworkCallCount(name string) int {
 	to.operationMutex.Lock()
 	defer to.operationMutex.Unlock()
@@ -1322,6 +1340,23 @@ func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Co
 	to.operationMutex.Unlock()
 
 	return waitForBlockedOperation(ctx, block)
+}
+
+func (to *TestContainerOrchestrator) takeCreateNetworkPostError(name string) error {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	if len(to.createNetworkPostErrors[name]) == 0 {
+		return nil
+	}
+
+	createErr := to.createNetworkPostErrors[name][0]
+	to.createNetworkPostErrors[name] = to.createNetworkPostErrors[name][1:]
+	if len(to.createNetworkPostErrors[name]) == 0 {
+		delete(to.createNetworkPostErrors, name)
+	}
+
+	return createErr
 }
 
 func (to *TestContainerOrchestrator) recordPullImageOperation(ctx context.Context, image string) error {

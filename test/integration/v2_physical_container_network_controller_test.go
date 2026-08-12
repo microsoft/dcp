@@ -300,6 +300,33 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 	}, 3*time.Second, 250*time.Millisecond)
 }
 
+func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-create-uncertain")
+	networkName := "v2-pcn-create-uncertain-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	containerOrchestrator.FailNextCreateNetworkAfterCreation(networkName, errors.New("simulated lost create response"))
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "uncertain-create-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: networkName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	require.NotEmpty(t, readyNetwork.Status.NetworkID)
+	require.Equal(t, networkName, readyNetwork.Status.NetworkName)
+	require.Equal(t, 1, containerOrchestrator.CreateNetworkCallCount(networkName))
+}
+
 // Steady-state polling must be paced by the monitoring delay and must not write an unchanged
 // status, because a status write feeds a watch event back into the controller and turns the slow
 // polling cadence into a tight re-inspect loop.
@@ -339,6 +366,41 @@ func TestV2PhysicalContainerNetworkControllerDoesNotChurnReadyStatus(t *testing.
 		}
 		return containerOrchestrator.InspectNetworkCallCount(readyNetwork.Status.NetworkID) > settledInspectCount
 	}, 5*time.Second, 250*time.Millisecond)
+}
+
+func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-missing")
+	networkName := "v2-pcn-missing-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: networkName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	_, removeErr := containerOrchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
+		Networks: []string{readyNetwork.Status.NetworkID},
+		Force:    true,
+	})
+	require.NoError(t, removeErr)
+
+	// Force a prompt inspection rather than waiting for the steady-state monitoring delay.
+	readyNetwork.Annotations = map[string]string{"test-probe": "missing"}
+	require.NoError(t, client.Update(ctx, readyNetwork))
+
+	missingNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseMissing)
+	requireReadyCondition(t, missingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkMissing)
 }
 
 func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testing.T) {
