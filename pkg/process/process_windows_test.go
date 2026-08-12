@@ -8,18 +8,24 @@
 package process_test
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"os"
+	"os/exec"
 	"syscall"
-	"time"
-
-	wait "k8s.io/apimachinery/pkg/util/wait"
-
 	"testing"
+	"time"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+	wait "k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/slices"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 const (
@@ -28,7 +34,88 @@ const (
 
 	// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess
 	STILL_ACTIVE = 259
+
+	forkFromParentHelperEnvVar = "DCP_TEST_FORK_FROM_PARENT_IN_BREAKAWAY_JOB"
 )
+
+func TestForkFromParentBreaksAwayFromCurrentJob(t *testing.T) {
+	if os.Getenv(forkFromParentHelperEnvVar) == "1" {
+		waitForJobAssignment := make([]byte, 1)
+		_, readErr := io.ReadFull(os.Stdin, waitForJobAssignment)
+		require.NoError(t, readErr)
+
+		childCmd := exec.Command("unused")
+		process.ForkFromParent(childCmd)
+
+		require.NotNil(t, childCmd.SysProcAttr)
+		require.NotZero(t, childCmd.SysProcAttr.CreationFlags&windows.CREATE_BREAKAWAY_FROM_JOB)
+		return
+	}
+
+	testCtx, testCancel := testutil.GetTestContext(t, 30*time.Second)
+	defer testCancel()
+
+	jobObject, jobCreationErr := windows.CreateJobObject(nil, nil)
+	require.NoError(t, jobCreationErr)
+	defer func() {
+		_ = windows.CloseHandle(jobObject)
+	}()
+
+	jobInformation := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+			LimitFlags: windows.JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+		},
+	}
+	_, setJobInformationErr := windows.SetInformationJobObject(
+		jobObject,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&jobInformation)),
+		uint32(unsafe.Sizeof(jobInformation)),
+	)
+	require.NoError(t, setJobInformationErr)
+
+	var helperOutput bytes.Buffer
+	helperCmd := exec.CommandContext(testCtx, os.Args[0], "-test.run=^TestForkFromParentBreaksAwayFromCurrentJob$")
+	helperCmd.Env = append(os.Environ(), forkFromParentHelperEnvVar+"=1")
+	helperCmd.Stdout = &helperOutput
+	helperCmd.Stderr = &helperOutput
+
+	helperStdin, stdinPipeErr := helperCmd.StdinPipe()
+	require.NoError(t, stdinPipeErr)
+	defer func() {
+		_ = helperStdin.Close()
+	}()
+
+	helperStartErr := helperCmd.Start()
+	require.NoError(t, helperStartErr)
+
+	helperExited := false
+	defer func() {
+		if !helperExited {
+			_ = helperCmd.Process.Kill()
+			_ = helperCmd.Wait()
+		}
+	}()
+
+	helperProcessHandle, openProcessErr := windows.OpenProcess(windows.PROCESS_ALL_ACCESS, false, uint32(helperCmd.Process.Pid))
+	require.NoError(t, openProcessErr)
+	defer func() {
+		_ = windows.CloseHandle(helperProcessHandle)
+	}()
+
+	assignJobErr := windows.AssignProcessToJobObject(jobObject, helperProcessHandle)
+	require.NoError(t, assignJobErr)
+
+	_, signalHelperErr := helperStdin.Write([]byte{1})
+	require.NoError(t, signalHelperErr)
+
+	closeStdinErr := helperStdin.Close()
+	require.NoError(t, closeStdinErr)
+
+	helperWaitErr := helperCmd.Wait()
+	helperExited = true
+	require.NoErrorf(t, helperWaitErr, "helper process failed:\n%s", helperOutput.String())
+}
 
 func ensureAllStopped(t *testing.T, processes []process.ProcessHandle, timeout time.Duration) {
 	timeoutCtx, timeoutCtxCancelFn := context.WithTimeout(context.Background(), timeout)
