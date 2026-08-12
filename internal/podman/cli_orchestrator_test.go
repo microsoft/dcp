@@ -70,6 +70,27 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	}, ct.Networks)
 }
 
+func TestApplyListContainersOptions(t *testing.T) {
+	t.Parallel()
+
+	args := applyListContainersOptions(
+		[]string{"container", "ls", "--no-trunc"},
+		containers.ListContainersOptions{
+			All: true,
+			Filters: containers.ListContainersFilters{
+				LabelFilters:   []containers.LabelFilter{{Key: "owner", Value: "dcp"}},
+				NetworkFilters: []string{"network-id"},
+			},
+		},
+	)
+
+	require.Equal(t, []string{
+		"container", "ls", "--no-trunc", "--all",
+		"--filter", "label=owner=dcp",
+		"--filter", "network=network-id",
+	}, args)
+}
+
 func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 	t.Parallel()
 

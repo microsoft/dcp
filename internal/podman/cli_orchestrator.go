@@ -699,7 +699,22 @@ func (pco *PodmanCliOrchestrator) AttachContainer(ctx context.Context, options c
 }
 
 func (pco *PodmanCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
-	args := []string{"container", "ls", "--no-trunc"}
+	args := applyListContainersOptions([]string{"container", "ls", "--no-trunc"}, options)
+	args = append(args, "--format", "json")
+
+	cmd := makePodmanCommand(args...)
+	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if err != nil {
+		return nil, errors.Join(err, normalizeCliErrors(errBuf))
+	}
+
+	return asObjects(outBuf, unmarshalListedContainer)
+}
+
+func applyListContainersOptions(args []string, options containers.ListContainersOptions) []string {
+	if options.All {
+		args = append(args, "--all")
+	}
 
 	for _, label := range options.Filters.LabelFilters {
 		filter := fmt.Sprintf("label=%s", label.Key)
@@ -710,16 +725,11 @@ func (pco *PodmanCliOrchestrator) ListContainers(ctx context.Context, options co
 
 		args = append(args, "--filter", filter)
 	}
-
-	args = append(args, "--format", "json")
-
-	cmd := makePodmanCommand(args...)
-	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "ListContainers", cmd, nil, nil, ordinaryPodmanCommandTimeout)
-	if err != nil {
-		return nil, errors.Join(err, normalizeCliErrors(errBuf))
+	for _, network := range options.Filters.NetworkFilters {
+		args = append(args, "--filter", fmt.Sprintf("network=%s", network))
 	}
 
-	return asObjects(outBuf, unmarshalListedContainer)
+	return args
 }
 
 func (pco *PodmanCliOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
@@ -1618,10 +1628,10 @@ type podmanInspectedContainerState struct {
 
 type podmanInspectedContainerMount struct {
 	Type        containers.VolumeMountType `json:"Type,omitempty"`
-	Name        string                    `json:"Name,omitempty"`
-	Source      string                    `json:"Source,omitempty"`
-	Destination string                    `json:"Destination,omitempty"`
-	ReadWrite   bool                      `json:"RW,omitempty"`
+	Name        string                     `json:"Name,omitempty"`
+	Source      string                     `json:"Source,omitempty"`
+	Destination string                     `json:"Destination,omitempty"`
+	ReadWrite   bool                       `json:"RW,omitempty"`
 }
 
 type podmanInspectedContainerNetworkSettings struct {

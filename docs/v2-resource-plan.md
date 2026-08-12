@@ -78,7 +78,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup.
 - `PhysicalContainerImage` provides source image pull and build workflows.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
-- `PhysicalContainerNetwork` creates or tracks one runtime container network and reports its observed identity, driver, and address allocations.
+- `PhysicalContainerNetwork` creates or tracks one runtime container network and reports its observed identity, driver, and address allocations. Unless preserved, deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network.
 - The physical resources use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
 
 ## Follow-up roadmap

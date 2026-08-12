@@ -50,7 +50,7 @@ type physicalContainerNetworkDataInitializerFunc = stateInitializerFunc[
 type PhysicalContainerNetworkReconciler struct {
 	*ReconcilerBase[apiv2.PhysicalContainerNetwork, *apiv2.PhysicalContainerNetwork]
 
-	orchestrator   containers.NetworkOrchestrator
+	orchestrator   containers.NetworkAttachmentOrchestrator
 	networkData    *ObjectStateMap[physicalContainerNetworkDataStateKey, physicalContainerNetworkData, *physicalContainerNetworkData, *apiv2.PhysicalContainerNetwork]
 	operationQueue *resiliency.WorkQueue
 }
@@ -60,7 +60,7 @@ func NewPhysicalContainerNetworkReconciler(
 	client ctrl_client.Client,
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
-	orchestrator containers.NetworkOrchestrator,
+	orchestrator containers.NetworkAttachmentOrchestrator,
 ) *PhysicalContainerNetworkReconciler {
 	return &PhysicalContainerNetworkReconciler{
 		ReconcilerBase: NewReconcilerBase[apiv2.PhysicalContainerNetwork](client, noCacheClient, log, lifetimeCtx),
@@ -145,23 +145,36 @@ func physicalContainerNetworkReconcileDelay(network *apiv2.PhysicalContainerNetw
 	}
 }
 
-// Acknowledges a completed create record once its network identity is durable in status.
+// Acknowledges a completed create record once its result is durable in status.
 func (r *PhysicalContainerNetworkReconciler) physicalContainerNetworkDataSaveCallback(
 	stateKey physicalContainerNetworkDataStateKey,
 	data *physicalContainerNetworkData,
 	change objectChange,
 ) func() {
-	if data == nil ||
-		data.conditionReason != apiv2.PhysicalContainerNetworkReasonCreated ||
-		data.networkID == "" {
+	if data == nil {
 		return nil
 	}
 
-	createdNetworkID := data.networkID
+	switch data.conditionReason {
+	case apiv2.PhysicalContainerNetworkReasonCreated:
+		if data.networkID == "" {
+			return nil
+		}
+	case apiv2.PhysicalContainerNetworkReasonCreateFailed:
+	default:
+		return nil
+	}
+
+	expectedReason := data.conditionReason
+	expectedNetworkID := data.networkID
+	expectedFailureMessage := data.failureMessage
+	expectedRetryAfter := data.retryAfter
 	return afterStatusUpdateIsDurable(change, func() {
 		r.networkData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerNetworkData) bool {
-			return current.conditionReason == apiv2.PhysicalContainerNetworkReasonCreated &&
-				current.networkID == createdNetworkID
+			return current.conditionReason == expectedReason &&
+				current.networkID == expectedNetworkID &&
+				current.failureMessage == expectedFailureMessage &&
+				current.retryAfter.Equal(expectedRetryAfter)
 		})
 	})
 }
@@ -189,7 +202,8 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 		change |= data.applyTo(network)
 		initializer := getStateInitializer(physicalContainerNetworkDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, network, data.conditionReason, data, log)
-		if data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreated {
+		if data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreated ||
+			data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreateFailed {
 			return change, r.physicalContainerNetworkDataSaveCallback(stateKey, data, change)
 		}
 		return change, nil
@@ -381,7 +395,6 @@ func handlePhysicalContainerNetworkCreateFailed(
 	data *physicalContainerNetworkData,
 	log logr.Logger,
 ) objectChange {
-	reconciler.networkData.DeleteByNamespacedName(network.NamespacedName())
 	log.V(1).Info("Runtime network creation failed; saving network status", "Message", data.failureMessage)
 	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
 	return noChange
@@ -491,25 +504,72 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 	return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 }
 
-// Removes the runtime network, reporting whether it is gone.
+// Disconnects all attached containers and removes the runtime network, reporting whether it is gone.
 func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Context, networkID string, log logr.Logger) bool {
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return true
+	}
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect runtime network before removal", "NetworkID", networkID)
+		return false
+	}
+
+	listedContainers, listErr := r.orchestrator.ListContainers(ctx, containers.ListContainersOptions{
+		All: true,
+		Filters: containers.ListContainersFilters{
+			NetworkFilters: []string{inspectedNetwork.Id},
+		},
+	})
+	if listErr != nil {
+		_, confirmErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
+		if errors.Is(confirmErr, containers.ErrNotFound) {
+			return true
+		}
+		log.Error(errors.Join(listErr, confirmErr), "Failed to list containers attached to runtime network", "NetworkID", networkID)
+		return false
+	}
+
+	attachedContainerIDs := make(map[string]struct{}, len(inspectedNetwork.Containers)+len(listedContainers))
+	for _, attachedContainer := range inspectedNetwork.Containers {
+		attachedContainerIDs[attachedContainer.Id] = struct{}{}
+	}
+	for _, listedContainer := range listedContainers {
+		attachedContainerIDs[listedContainer.Id] = struct{}{}
+	}
+
+	var disconnectErrors error
+	for containerID := range attachedContainerIDs {
+		disconnectErr := r.orchestrator.DisconnectNetwork(ctx, containers.DisconnectNetworkOptions{
+			Network:   inspectedNetwork.Id,
+			Container: containerID,
+			Force:     true,
+		})
+		if disconnectErr != nil && !errors.Is(disconnectErr, containers.ErrNotFound) {
+			disconnectErrors = errors.Join(disconnectErrors, disconnectErr)
+		}
+	}
+	if disconnectErrors != nil {
+		log.Error(disconnectErrors, "Failed to disconnect all containers from runtime network", "NetworkID", networkID)
+		return false
+	}
+
 	_, removeErr := r.orchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
 		Networks: []string{networkID},
-		Force:    true,
 	})
 	if removeErr == nil {
 		return true
 	}
 
 	// Removal reports a partial failure both for a network that is already gone and for one that
-	// still has endpoints attached, so confirm the outcome by inspecting instead of interpreting
-	// the error. A network that still exists is retried; containers detach as they are deleted.
-	_, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
-	if errors.Is(inspectErr, containers.ErrNotFound) {
+	// acquired a new attachment, so confirm the outcome instead of interpreting the error.
+	// A network that still exists is retried from inspection and disconnection.
+	_, confirmErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
+	if errors.Is(confirmErr, containers.ErrNotFound) {
 		return true
 	}
 
-	log.Error(removeErr, "Failed to remove runtime network", "NetworkID", networkID)
+	log.Error(errors.Join(removeErr, confirmErr), "Failed to remove runtime network", "NetworkID", networkID)
 	return false
 }
 
