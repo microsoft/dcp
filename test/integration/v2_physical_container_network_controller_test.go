@@ -131,6 +131,56 @@ func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *
 	waitRuntimeNetworkMissing(t, ctx, networkID)
 }
 
+func TestV2PhysicalContainerNetworkControllerDisconnectsContainersBeforeDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-disconnect")
+	networkName := "v2-pcn-disconnect-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "disconnect-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: networkName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+
+	runningContainerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-disconnect-running",
+			Image:    "v2-pcn-disconnect-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkName}},
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, runningContainerID)
+
+	stoppedContainerID, stoppedRunErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-disconnect-stopped",
+			Image:    "v2-pcn-disconnect-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkName}},
+		},
+	})
+	require.NoError(t, stoppedRunErr)
+	removeRuntimeContainerOnCleanup(t, stoppedContainerID)
+	_, stopErr := containerOrchestrator.StopContainers(ctx, containers.StopContainersOptions{
+		Containers: []string{stoppedContainerID},
+	})
+	require.NoError(t, stopErr)
+
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
+	waitRuntimeNetworkMissing(t, ctx, readyNetwork.Status.NetworkID)
+	requireRuntimeContainersDisconnected(t, ctx, readyNetwork.Status.NetworkID, runningContainerID, stoppedContainerID)
+}
+
 func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -193,6 +243,55 @@ func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
+}
+
+func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuringNamespaceDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-ns-preserved-container")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "v2-pcn-ns-image", "v2-pcn-ns-source-image")
+
+	networkName := "v2-pcn-ns-preserved-container-runtime"
+	removeRuntimeNetworkOnCleanup(t, networkName)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "namespace-preserved-container-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: networkName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "namespace-preserved-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ImageRef:           image.Name,
+			ContainerName:      "v2-pcn-ns-preserved-container",
+			PreserveOnDeletion: true,
+			Networks: []apiv2.ContainerNetworkConnectionConfig{
+				{Name: networkName},
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+	readyContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, readyContainer.Status.ContainerID)
+
+	require.NoError(t, client.Delete(ctx, namespace))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
+	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
+
+	waitRuntimeNetworkMissing(t, ctx, readyNetwork.Status.NetworkID)
+	requireRuntimeContainersDisconnected(t, ctx, readyNetwork.Status.NetworkID, readyContainer.Status.ContainerID)
 }
 
 func TestV2PhysicalContainerNetworkControllerCleansUpOnNamespaceDeletion(t *testing.T) {
@@ -637,4 +736,19 @@ func runtimeNetworkLabels(t *testing.T, ctx context.Context, networkName string)
 	require.GreaterOrEqual(t, networkIndex, 0)
 
 	return listedNetworks[networkIndex].Labels
+}
+
+func requireRuntimeContainersDisconnected(t *testing.T, ctx context.Context, networkID string, containerIDs ...string) {
+	t.Helper()
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: containerIDs,
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, len(containerIDs))
+	for _, inspectedContainer := range inspectedContainers {
+		require.NotContains(t, slices.Map[string](inspectedContainer.Networks, func(network containers.InspectedContainerNetwork) string {
+			return network.Id
+		}), networkID)
+	}
 }

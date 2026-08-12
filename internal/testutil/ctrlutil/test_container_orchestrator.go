@@ -2314,6 +2314,24 @@ func (to *TestContainerOrchestrator) ListContainers(ctx context.Context, options
 	}
 
 	filteredContainers := slices.Select(maps.Values(to.containers), func(container *testContainer) bool {
+		if !options.All &&
+			container.Status != containers.ContainerStatusRunning &&
+			container.Status != containers.ContainerStatusPaused &&
+			container.Status != containers.ContainerStatusRestarting &&
+			container.Status != containers.ContainerStatusRemoving {
+			return false
+		}
+
+		if len(options.Filters.NetworkFilters) > 0 &&
+			!slices.Any(options.Filters.NetworkFilters, func(networkFilter string) bool {
+				return slices.Any(container.Networks, func(networkName string) bool {
+					network := to.networks[networkName]
+					return networkName == networkFilter || (network != nil && network.matches(networkFilter))
+				})
+			}) {
+			return false
+		}
+
 		// If there are no label filters, we should include all containers.
 		if len(options.Filters.LabelFilters) == 0 {
 			return true

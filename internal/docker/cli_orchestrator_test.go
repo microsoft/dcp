@@ -379,6 +379,27 @@ func TestGetStatusRejectsInvalidDockerVersionOutput(t *testing.T) {
 	require.Empty(t, executor.FindAll([]string{"docker", "network", "ls"}, "", nil))
 }
 
+func TestApplyListContainersOptions(t *testing.T) {
+	t.Parallel()
+
+	args := applyListContainersOptions(
+		[]string{"container", "ls", "--no-trunc"},
+		ct.ListContainersOptions{
+			All: true,
+			Filters: ct.ListContainersFilters{
+				LabelFilters:   []ct.LabelFilter{{Key: "owner", Value: "dcp"}},
+				NetworkFilters: []string{"network-id"},
+			},
+		},
+	)
+
+	require.Equal(t, []string{
+		"container", "ls", "--no-trunc", "--all",
+		"--filter", "label=owner=dcp",
+		"--filter", "network=network-id",
+	}, args)
+}
+
 func TestParseDockerCliVersion(t *testing.T) {
 	t.Parallel()
 

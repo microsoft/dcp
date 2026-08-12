@@ -830,18 +830,7 @@ func (dco *DockerCliOrchestrator) AttachContainer(ctx context.Context, options c
 }
 
 func (dco *DockerCliOrchestrator) ListContainers(ctx context.Context, options containers.ListContainersOptions) ([]containers.ListedContainer, error) {
-	args := []string{"container", "ls", "--no-trunc"}
-
-	for _, label := range options.Filters.LabelFilters {
-		filter := fmt.Sprintf("label=%s", label.Key)
-
-		if label.Value != "" {
-			filter += "=" + label.Value
-		}
-
-		args = append(args, "--filter", filter)
-	}
-
+	args := applyListContainersOptions([]string{"container", "ls", "--no-trunc"}, options)
 	args = append(args, "--format", "{{json .}}")
 
 	cmd := makeDockerCommand(args...)
@@ -852,6 +841,27 @@ func (dco *DockerCliOrchestrator) ListContainers(ctx context.Context, options co
 	}
 
 	return asObjects(outBuf, unmarshalListedContainer)
+}
+
+func applyListContainersOptions(args []string, options containers.ListContainersOptions) []string {
+	if options.All {
+		args = append(args, "--all")
+	}
+
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+
+		args = append(args, "--filter", filter)
+	}
+	for _, network := range options.Filters.NetworkFilters {
+		args = append(args, "--filter", fmt.Sprintf("network=%s", network))
+	}
+
+	return args
 }
 
 func (dco *DockerCliOrchestrator) InspectContainers(ctx context.Context, options containers.InspectContainersOptions) ([]containers.InspectedContainer, error) {
@@ -1720,10 +1730,10 @@ type dockerInspectedContainer struct {
 
 type dockerInspectedContainerMount struct {
 	Type        containers.VolumeMountType `json:"Type,omitempty"`
-	Name        string                    `json:"Name,omitempty"`
-	Source      string                    `json:"Source,omitempty"`
-	Destination string                    `json:"Destination,omitempty"`
-	ReadWrite   bool                      `json:"RW,omitempty"`
+	Name        string                     `json:"Name,omitempty"`
+	Source      string                     `json:"Source,omitempty"`
+	Destination string                     `json:"Destination,omitempty"`
+	ReadWrite   bool                       `json:"RW,omitempty"`
 }
 
 type dockerInspectedContainerConfig struct {

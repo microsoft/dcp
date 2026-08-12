@@ -102,10 +102,14 @@ type GetDiagnostics interface {
 
 type ListContainersFilters struct {
 	LabelFilters []LabelFilter
+	// NetworkFilters select containers connected to the named or identified networks.
+	NetworkFilters []string
 }
 
 type ListContainersOptions struct {
 	Filters ListContainersFilters
+	// All includes containers that are not currently running.
+	All bool
 }
 
 type ListedContainer struct {
@@ -130,6 +134,12 @@ type ListedContainer struct {
 
 type ListContainers interface {
 	ListContainers(ctx context.Context, options ListContainersOptions) ([]ListedContainer, error)
+}
+
+// NetworkAttachmentOrchestrator manages networks and enumerates all containers attached to them.
+type NetworkAttachmentOrchestrator interface {
+	NetworkOrchestrator
+	ListContainers
 }
 
 // InspectContainers command types
