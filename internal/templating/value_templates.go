@@ -155,6 +155,12 @@ func ExecuteTemplate(
 	substitutionContext string,
 	log logr.Logger,
 ) (string, error) {
+	// The most common case is a spec value that does not contain any template actions,
+	// so we can return it as-is without having to clone, parse, and execute the template.
+	if !strings.Contains(input, "{{") {
+		return input, nil
+	}
+
 	// We need to clone the template because if the input is empty, parsing is an no-op
 	// and we will end up with data from previous template run.
 	commonTmpl, err := tmpl.Clone()
