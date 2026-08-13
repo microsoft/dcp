@@ -36,7 +36,6 @@ func TestExecuteTemplateFastPath(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc // https://github.com/golang/go/wiki/CommonMistakes#using-goroutines-on-loop-iterator-variables
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -66,7 +65,6 @@ func TestExecuteTemplateSubstitution(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -90,7 +88,6 @@ func TestExecuteTemplateUnparsableInput(t *testing.T) {
 	}
 
 	for _, input := range unparsableInputs {
-		input := input
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
 
