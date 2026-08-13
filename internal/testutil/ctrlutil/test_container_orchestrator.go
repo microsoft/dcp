@@ -916,25 +916,30 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 	names := []string{}
 	ids := []string{}
 	for _, name := range options.Networks {
+		matched := false
 		for _, network := range to.networks {
-			if network.matches(name) {
-				if network.isDefault {
-					err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
-					continue
-				}
-
-				if len(network.containers) > 0 {
-					err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
-					continue
-				}
-
-				names = append(names, network.Name)
-				ids = append(ids, network.ID)
+			if !network.matches(name) {
+				continue
 			}
 
-			if !options.Force {
-				err = errors.Join(err, fmt.Errorf("network %s not found", name))
+			matched = true
+			if network.isDefault {
+				err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
+				break
 			}
+
+			if len(network.containers) > 0 {
+				err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
+				break
+			}
+
+			names = append(names, network.Name)
+			ids = append(ids, network.ID)
+			break
+		}
+
+		if !matched && !options.Force {
+			err = errors.Join(err, fmt.Errorf("network %s not found", name))
 		}
 	}
 
