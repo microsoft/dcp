@@ -64,7 +64,10 @@ const (
 )
 
 type TestContainerOrchestrator struct {
-	runtimeHealthy          bool
+	runtimeHealthy bool
+	// Number of times InspectNetworks() has been called; used by tests to verify that the
+	// reconciler stops issuing network inspections when the runtime is unhealthy.
+	networkInspectCount     int
 	volumes                 map[string]containerVolume
 	networks                map[string]*containerNetwork
 	images                  []*testImage
@@ -713,6 +716,13 @@ func (to *TestContainerOrchestrator) SetRuntimeHealth(healthy bool) {
 	to.runtimeHealthy = healthy
 }
 
+// NetworkInspectCount returns the number of times InspectNetworks() has been called.
+func (to *TestContainerOrchestrator) NetworkInspectCount() int {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+	return to.networkInspectCount
+}
+
 // GetDiagnostics returns an empty diagnostics object, as the test container orchestrator does not support diagnostics.
 func (to *TestContainerOrchestrator) GetDiagnostics(ctx context.Context) (containers.ContainerDiagnostics, error) {
 	return containers.ContainerDiagnostics{}, nil
@@ -920,6 +930,7 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+	to.networkInspectCount++
 
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

@@ -231,12 +231,10 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if !r.orchestratorHealthy.Load() {
-		status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
-		if status.IsHealthy() {
-			r.orchestratorHealthy.Store(true)
-		}
-	}
+	// Re-check the runtime health on each reconciliation so that the reconciler stops issuing
+	// network operations when the runtime becomes unhealthy, and resumes them once it recovers.
+	status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
+	r.orchestratorHealthy.Store(status.IsHealthy())
 
 	network := apiv1.ContainerNetwork{}
 	err := reader.Get(ctx, req.NamespacedName, &network)
