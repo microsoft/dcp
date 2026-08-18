@@ -32,10 +32,11 @@ var (
 	physicalContainerNetworkFinalizer string = fmt.Sprintf("%s/physicalcontainernetwork-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerNetworkDataInitializers = map[string]physicalContainerNetworkDataInitializerFunc{
-		apiv2.PhysicalContainerNetworkReasonCreating:             handlePhysicalContainerNetworkCreating,
-		apiv2.PhysicalContainerNetworkReasonCreated:              handlePhysicalContainerNetworkCreated,
-		apiv2.PhysicalContainerNetworkReasonCreateFailed:         handlePhysicalContainerNetworkCreateFailed,
-		apiv2.PhysicalContainerNetworkReasonReconciliationFailed: handlePhysicalContainerNetworkRecoverableCreateFailed,
+		apiv2.PhysicalContainerNetworkReasonCreating:                   handlePhysicalContainerNetworkCreating,
+		apiv2.PhysicalContainerNetworkReasonCreated:                    handlePhysicalContainerNetworkCreated,
+		apiv2.PhysicalContainerNetworkReasonCreateFailed:               handlePhysicalContainerNetworkCreateFailed,
+		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable: handlePhysicalContainerNetworkCreateFailed,
+		apiv2.PhysicalContainerNetworkReasonReconciliationFailed:       handlePhysicalContainerNetworkRecoverableCreateFailed,
 		"": handleUnknownPhysicalContainerNetworkDataReason,
 	}
 )
@@ -135,7 +136,7 @@ func physicalContainerNetworkReconcileDelay(network *apiv2.PhysicalContainerNetw
 	case apiv2.PhysicalContainerNetworkPhaseReady, apiv2.PhysicalContainerNetworkPhaseMissing:
 		return MonitoringDelay
 	case apiv2.PhysicalContainerNetworkPhaseFailed:
-		if physicalContainerNetworkCreateFailedTerminally(network) {
+		if physicalContainerNetworkFailedTerminally(network) {
 			return StandardDelay
 		}
 		// Retry sooner than steady-state monitoring, matching how V1 paces an unhealthy runtime.
@@ -161,6 +162,7 @@ func (r *PhysicalContainerNetworkReconciler) physicalContainerNetworkDataSaveCal
 			return nil
 		}
 	case apiv2.PhysicalContainerNetworkReasonCreateFailed:
+	case apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable:
 	default:
 		return nil
 	}
@@ -203,13 +205,14 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 		initializer := getStateInitializer(physicalContainerNetworkDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, network, data.conditionReason, data, log)
 		if data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreated ||
-			data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreateFailed {
+			data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreateFailed ||
+			data.conditionReason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable {
 			return change, r.physicalContainerNetworkDataSaveCallback(stateKey, data, change)
 		}
 		return change, nil
 	}
 
-	if physicalContainerNetworkCreateFailedTerminally(network) {
+	if physicalContainerNetworkFailedTerminally(network) {
 		return change, nil
 	}
 
@@ -224,9 +227,9 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 	return change | r.applyRuntimeNetworkStatus(ctx, network, networkID, log), nil
 }
 
-// Reports whether the network already recorded a terminal creation failure. The spec is immutable,
-// so re-entering the create path could never produce a different outcome.
-func physicalContainerNetworkCreateFailedTerminally(network *apiv2.PhysicalContainerNetwork) bool {
+// Reports whether the network recorded a terminal failure. The spec is immutable, so
+// reconciliation cannot produce a different outcome.
+func physicalContainerNetworkFailedTerminally(network *apiv2.PhysicalContainerNetwork) bool {
 	if network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseFailed {
 		return false
 	}
@@ -236,7 +239,8 @@ func physicalContainerNetworkCreateFailedTerminally(network *apiv2.PhysicalConta
 		return false
 	}
 
-	return readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonCreateFailed
+	return readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonCreateFailed ||
+		readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
 }
 
 // Inspects the runtime network and projects the result onto the resource status.
@@ -263,6 +267,20 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 		// Inspection failures are usually transient, and repeating an identical failure produces
 		// no status change, so retry explicitly rather than settling into a permanent failure.
 		return change | additionalReconciliationNeeded
+	}
+
+	if !network.Spec.PreserveOnDeletion && r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+		change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
+		change &^= additionalReconciliationNeeded
+		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
+		change |= setReadyCondition(
+			&network.Status.Conditions,
+			network.Generation,
+			metav1.ConditionFalse,
+			apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+			fmt.Sprintf("Runtime network %q is built in and cannot be removed; preserveOnDeletion must be true to track it.", inspectedNetwork.Name),
+		)
+		return change
 	}
 
 	return applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
@@ -317,7 +335,17 @@ func (r *PhysicalContainerNetworkReconciler) applyPhysicalContainerNetworkCreate
 		log.Error(createErr, "Failed to create runtime network", "NetworkName", network.Spec.NetworkName)
 		data.failureMessage = fmt.Sprintf("Failed to create runtime network: %v", createErr)
 		inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.NetworkName)
-		if inspectErr == nil && physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
+		if inspectErr == nil &&
+			!network.Spec.PreserveOnDeletion &&
+			r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+			data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
+			data.networkID = inspectedNetwork.Id
+			data.failureMessage = fmt.Sprintf(
+				"Runtime network %q is built in and cannot be removed; preserveOnDeletion must be true to track it.",
+				inspectedNetwork.Name,
+			)
+			data.retryAfter = time.Time{}
+		} else if inspectErr == nil && physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreated
 			data.networkID = inspectedNetwork.Id
 			data.failureMessage = ""
@@ -414,6 +442,22 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 
 	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, network.Spec.NetworkName)
 	if inspectErr == nil {
+		if !network.Spec.PreserveOnDeletion &&
+			reconciler.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+			data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
+			data.networkID = inspectedNetwork.Id
+			data.failureMessage = fmt.Sprintf(
+				"Runtime network %q is built in and cannot be removed; preserveOnDeletion must be true to track it.",
+				inspectedNetwork.Name,
+			)
+			data.retryAfter = time.Time{}
+			stateKey, _ := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+			if reconciler.networkData.Update(network.NamespacedName(), stateKey, data) {
+				return data.applyTo(network)
+			}
+			return additionalReconciliationNeeded
+		}
+
 		if !physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreateFailed
 			data.failureMessage = fmt.Sprintf("Runtime network name %q is already in use.", network.Spec.NetworkName)
@@ -513,6 +557,15 @@ func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Co
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect runtime network before removal", "NetworkID", networkID)
 		return false
+	}
+
+	if r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+		log.V(1).Info(
+			"Skipping removal of built-in runtime network",
+			"NetworkID", inspectedNetwork.Id,
+			"NetworkName", inspectedNetwork.Name,
+		)
+		return true
 	}
 
 	listedContainers, listErr := r.orchestrator.ListContainers(ctx, containers.ListContainersOptions{

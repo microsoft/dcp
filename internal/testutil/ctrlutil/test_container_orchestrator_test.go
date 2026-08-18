@@ -36,3 +36,13 @@ func TestRemoveNetworksWithoutForceReturnsSuccessfulResult(t *testing.T) {
 	require.NoError(t, removeErr)
 	require.Equal(t, []string{networkID}, removedNetworkIDs)
 }
+
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &TestContainerOrchestrator{}
+	require.True(t, orchestrator.IsBuiltInNetwork("bridge"))
+	require.True(t, orchestrator.IsBuiltInNetwork("host"))
+	require.True(t, orchestrator.IsBuiltInNetwork("none"))
+	require.False(t, orchestrator.IsBuiltInNetwork("application"))
+}

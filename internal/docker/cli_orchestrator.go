@@ -1220,6 +1220,10 @@ func (dco *DockerCliOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
+func (*DockerCliOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "bridge" || networkName == "host" || networkName == "none"
+}
+
 func (dco *DockerCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=container", "--format", "{{json .}}"}
 	cmd := makeDockerCommand(args...)

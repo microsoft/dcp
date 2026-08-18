@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -243,6 +244,117 @@ func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
 	waitRuntimeNetworkMissing(t, ctx, networkID)
+}
+
+func TestV2PhysicalContainerNetworkControllerRejectsAndPreservesBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-built-in")
+	builtInNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{"bridge"},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, builtInNetworks, 1)
+	builtInNetwork := builtInNetworks[0]
+
+	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-built-in-container",
+			Image:    "v2-pcn-built-in-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: builtInNetwork.Name}},
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "built-in-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkID: builtInNetwork.Id,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	failedNetwork := waitObjectAssumesState(
+		t,
+		ctx,
+		network.NamespacedName(),
+		func(currentNetwork *apiv2.PhysicalContainerNetwork) (bool, error) {
+			readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, apiv2.ConditionReady)
+			return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
+				readyCondition != nil &&
+				readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
+		},
+	)
+	require.Equal(t, builtInNetwork.Id, failedNetwork.Status.NetworkID)
+	require.Equal(t, builtInNetwork.Name, failedNetwork.Status.NetworkName)
+
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
+
+	inspectedNetworks, inspectAfterDeleteErr := containerOrchestrator.InspectNetworks(
+		ctx,
+		containers.InspectNetworksOptions{Networks: []string{builtInNetwork.Id}},
+	)
+	require.NoError(t, inspectAfterDeleteErr)
+	require.Len(t, inspectedNetworks, 1)
+	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
+}
+
+func TestV2PhysicalContainerNetworkControllerTracksAndPreservesBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-preserved-built-in")
+	builtInNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{"bridge"},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, builtInNetworks, 1)
+	builtInNetwork := builtInNetworks[0]
+
+	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-preserved-built-in-container",
+			Image:    "v2-pcn-preserved-built-in-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: builtInNetwork.Name}},
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "preserved-built-in-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkID:          builtInNetwork.Id,
+			PreserveOnDeletion: true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	require.Equal(t, builtInNetwork.Id, readyNetwork.Status.NetworkID)
+	require.Equal(t, builtInNetwork.Name, readyNetwork.Status.NetworkName)
+
+	require.NoError(t, client.Delete(ctx, network))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
+
+	inspectedNetworks, inspectAfterDeleteErr := containerOrchestrator.InspectNetworks(
+		ctx,
+		containers.InspectNetworksOptions{Networks: []string{builtInNetwork.Id}},
+	)
+	require.NoError(t, inspectAfterDeleteErr)
+	require.Len(t, inspectedNetworks, 1)
+	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
 }
 
 func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuringNamespaceDeletion(t *testing.T) {
@@ -748,6 +860,21 @@ func requireRuntimeContainersDisconnected(t *testing.T, ctx context.Context, net
 	require.Len(t, inspectedContainers, len(containerIDs))
 	for _, inspectedContainer := range inspectedContainers {
 		require.NotContains(t, slices.Map[string](inspectedContainer.Networks, func(network containers.InspectedContainerNetwork) string {
+			return network.Id
+		}), networkID)
+	}
+}
+
+func requireRuntimeContainersConnected(t *testing.T, ctx context.Context, networkID string, containerIDs ...string) {
+	t.Helper()
+
+	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
+		Containers: containerIDs,
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedContainers, len(containerIDs))
+	for _, inspectedContainer := range inspectedContainers {
+		require.Contains(t, slices.Map[string](inspectedContainer.Networks, func(network containers.InspectedContainerNetwork) string {
 			return network.Id
 		}), networkID)
 	}

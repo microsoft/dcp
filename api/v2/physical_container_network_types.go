@@ -46,7 +46,8 @@ const (
 	// PhysicalContainerNetworkPhaseMissing indicates that the referenced runtime network was not found.
 	PhysicalContainerNetworkPhaseMissing PhysicalContainerNetworkPhase = "Missing"
 
-	// PhysicalContainerNetworkPhaseFailed indicates that creating or inspecting the runtime network failed.
+	// PhysicalContainerNetworkPhaseFailed indicates that creating or inspecting the runtime network failed,
+	// or that its deletion policy is invalid for the observed runtime network.
 	PhysicalContainerNetworkPhaseFailed PhysicalContainerNetworkPhase = "Failed"
 )
 
@@ -69,6 +70,9 @@ const (
 	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
 	PhysicalContainerNetworkReasonRuntimeNetworkMissing string = "RuntimeNetworkMissing"
 
+	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that deletion policy conflicts with a built-in runtime network.
+	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable string = "BuiltInNetworkNotRemovable"
+
 	// PhysicalContainerNetworkReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
 	PhysicalContainerNetworkReasonReconciliationFailed string = "ReconciliationFailed"
 )
@@ -87,7 +91,7 @@ type PhysicalContainerNetworkSpec struct {
 
 	// PreserveOnDeletion keeps the runtime network in place when this resource is deleted.
 	// By default the runtime network is removed, including when this resource only tracks a
-	// network it did not create.
+	// network it did not create. Tracking a built-in runtime network requires preservation.
 	PreserveOnDeletion bool `json:"preserveOnDeletion,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime network.

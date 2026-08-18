@@ -59,6 +59,12 @@ func TestPhysicalContainerNetworkReconcileDelay(t *testing.T) {
 			expected: StandardDelay,
 		},
 		{
+			name:     "built-in network policy failures do not retry",
+			phase:    apiv2.PhysicalContainerNetworkPhaseFailed,
+			reason:   apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+			expected: StandardDelay,
+		},
+		{
 			name:     "pending networks use the standard cadence",
 			phase:    apiv2.PhysicalContainerNetworkPhasePending,
 			reason:   apiv2.PhysicalContainerNetworkReasonCreating,
@@ -167,6 +173,58 @@ func TestPhysicalContainerNetworkDataSaveCallbackAcknowledgesAlreadyDurableStatu
 
 	require.Nil(t, reconciler.physicalContainerNetworkDataSaveCallback(stateKey, data, additionalReconciliationNeeded))
 	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.Nil(t, savedData)
+}
+
+func TestPhysicalContainerNetworkBuiltInFailureDataRemainsUntilStatusSave(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-namespace",
+			Finalizers: []string{namespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	apiClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace).Build()
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-network",
+			Namespace: namespace.Name,
+			UID:       "test-uid",
+		},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+		networkID:       "test-network-id",
+		failureMessage:  "the runtime network is built in",
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		ReconcilerBase: &ReconcilerBase[apiv2.PhysicalContainerNetwork, *apiv2.PhysicalContainerNetwork]{
+			Client: apiClient,
+		},
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	stateKey := physicalContainerNetworkDataKey(network)
+	reconciler.networkData.Store(network.NamespacedName(), stateKey, data)
+
+	change, onSuccessfulSave := reconciler.managePhysicalContainerNetwork(t.Context(), network, logr.Discard())
+
+	require.NotZero(t, change&statusChanged)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseFailed, network.Status.Phase)
+	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.NotNil(t, savedData, "the terminal result must survive until the status write succeeds")
+	require.NotNil(t, onSuccessfulSave)
+
+	onSuccessfulSave()
+	_, savedData = reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
 	require.Nil(t, savedData)
 }
 
@@ -280,6 +338,57 @@ func TestPhysicalContainerNetworkRecoverableCreateFailureAdoptsCreatedNetwork(t 
 	require.Equal(t, "canonical-network-id", savedData.networkID)
 }
 
+func TestPhysicalContainerNetworkRecoverableCreateFailureRejectsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-network",
+			Namespace: "test-namespace",
+			UID:       "test-uid",
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "bridge"},
+	}
+	data := &physicalContainerNetworkData{
+		conditionReason: apiv2.PhysicalContainerNetworkReasonReconciliationFailed,
+		failureMessage:  "create result was uncertain",
+		retryAfter:      time.Now().Add(-time.Second),
+	}
+	reconciler := &PhysicalContainerNetworkReconciler{
+		orchestrator: &builtInNetworkOrchestrator{},
+		networkData: NewObjectStateMap[
+			physicalContainerNetworkDataStateKey,
+			physicalContainerNetworkData,
+			*physicalContainerNetworkData,
+			*apiv2.PhysicalContainerNetwork,
+		](),
+	}
+	reconciler.networkData.Store(network.NamespacedName(), physicalContainerNetworkDataKey(network), data.Clone())
+
+	change := data.applyTo(network)
+	change |= handlePhysicalContainerNetworkRecoverableCreateFailed(
+		t.Context(),
+		reconciler,
+		network,
+		"",
+		data,
+		logr.Discard(),
+	)
+
+	require.NotZero(t, change&statusChanged)
+	require.Zero(t, change&additionalReconciliationNeeded)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseFailed, network.Status.Phase)
+	require.Equal(t, "canonical-network-id", network.Status.NetworkID)
+	requireReadyConditionReason(
+		t,
+		network.Status.Conditions,
+		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+	)
+	_, savedData := reconciler.networkData.BorrowByNamespacedName(network.NamespacedName())
+	require.NotNil(t, savedData)
+	require.Equal(t, apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, savedData.conditionReason)
+}
+
 func TestPhysicalContainerNetworkAlreadyExistsRemainsRetryableWhenVerificationFails(t *testing.T) {
 	t.Parallel()
 
@@ -386,6 +495,10 @@ func (o *failingNetworkOrchestrator) InspectNetworks(_ context.Context, _ contai
 	return nil, errors.New("container runtime is unhealthy")
 }
 
+func (o *failingNetworkOrchestrator) IsBuiltInNetwork(string) bool {
+	return false
+}
+
 type missingNetworkOrchestrator struct {
 	containers.NetworkOrchestrator
 	noAttachedContainers
@@ -393,6 +506,10 @@ type missingNetworkOrchestrator struct {
 
 func (o *missingNetworkOrchestrator) InspectNetworks(_ context.Context, _ containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
 	return nil, containers.ErrNotFound
+}
+
+func (o *missingNetworkOrchestrator) IsBuiltInNetwork(string) bool {
+	return false
 }
 
 type canonicalNetworkOrchestrator struct {
@@ -407,6 +524,10 @@ func (o *canonicalNetworkOrchestrator) InspectNetworks(_ context.Context, _ cont
 	}}, nil
 }
 
+func (o *canonicalNetworkOrchestrator) IsBuiltInNetwork(string) bool {
+	return false
+}
+
 type alreadyExistsWithFailedInspectionOrchestrator struct {
 	containers.NetworkOrchestrator
 	noAttachedContainers
@@ -419,6 +540,10 @@ func (o *alreadyExistsWithFailedInspectionOrchestrator) InspectNetworks(
 	return nil, errors.New("runtime inspection failed")
 }
 
+func (o *alreadyExistsWithFailedInspectionOrchestrator) IsBuiltInNetwork(string) bool {
+	return false
+}
+
 type noAttachedContainers struct{}
 
 func (noAttachedContainers) ListContainers(
@@ -428,7 +553,7 @@ func (noAttachedContainers) ListContainers(
 	return nil, nil
 }
 
-func TestPhysicalContainerNetworkCreateFailedTerminally(t *testing.T) {
+func TestPhysicalContainerNetworkFailedTerminally(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
@@ -441,6 +566,12 @@ func TestPhysicalContainerNetworkCreateFailedTerminally(t *testing.T) {
 			name:     "create failure is terminal",
 			phase:    apiv2.PhysicalContainerNetworkPhaseFailed,
 			reason:   apiv2.PhysicalContainerNetworkReasonCreateFailed,
+			expected: true,
+		},
+		{
+			name:     "built-in network policy failure is terminal",
+			phase:    apiv2.PhysicalContainerNetworkPhaseFailed,
+			reason:   apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
 			expected: true,
 		},
 		{
@@ -482,12 +613,12 @@ func TestPhysicalContainerNetworkCreateFailedTerminally(t *testing.T) {
 				},
 			}
 
-			require.Equal(t, tc.expected, physicalContainerNetworkCreateFailedTerminally(network))
+			require.Equal(t, tc.expected, physicalContainerNetworkFailedTerminally(network))
 		})
 	}
 }
 
-func TestPhysicalContainerNetworkCreateFailedTerminallyWithoutReadyCondition(t *testing.T) {
+func TestPhysicalContainerNetworkFailedTerminallyWithoutReadyCondition(t *testing.T) {
 	t.Parallel()
 
 	network := &apiv2.PhysicalContainerNetwork{
@@ -496,7 +627,109 @@ func TestPhysicalContainerNetworkCreateFailedTerminallyWithoutReadyCondition(t *
 		},
 	}
 
-	require.False(t, physicalContainerNetworkCreateFailedTerminally(network))
+	require.False(t, physicalContainerNetworkFailedTerminally(network))
+}
+
+func TestApplyRuntimeNetworkStatusRejectsBuiltInNetworkByCanonicalName(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &builtInNetworkOrchestrator{}
+	reconciler := &PhysicalContainerNetworkReconciler{orchestrator: orchestrator}
+	network := &apiv2.PhysicalContainerNetwork{
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkID: "opaque-runtime-id",
+		},
+	}
+
+	change := reconciler.applyRuntimeNetworkStatus(t.Context(), network, network.Spec.NetworkID, logr.Discard())
+
+	require.NotZero(t, change&statusChanged)
+	require.Zero(t, change&additionalReconciliationNeeded)
+	require.Equal(t, apiv2.PhysicalContainerNetworkPhaseFailed, network.Status.Phase)
+	require.Equal(t, "canonical-network-id", network.Status.NetworkID)
+	require.Equal(t, "bridge", network.Status.NetworkName)
+	requireReadyConditionReason(
+		t,
+		network.Status.Conditions,
+		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
+	)
+	require.Equal(t, []string{"bridge"}, orchestrator.classifiedNames)
+}
+
+func TestRemoveRuntimeNetworkSkipsBuiltInNetworkAttachments(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &builtInNetworkOrchestrator{}
+	reconciler := &PhysicalContainerNetworkReconciler{orchestrator: orchestrator}
+
+	removed := reconciler.removeRuntimeNetwork(t.Context(), "opaque-runtime-id", logr.Discard())
+
+	require.True(t, removed)
+	require.Equal(t, []string{"bridge"}, orchestrator.classifiedNames)
+	require.Zero(t, orchestrator.listCalls)
+	require.Zero(t, orchestrator.disconnectCalls)
+	require.Zero(t, orchestrator.removeCalls)
+}
+
+func requireReadyConditionReason(t *testing.T, conditions []metav1.Condition, expectedReason string) {
+	t.Helper()
+
+	for _, condition := range conditions {
+		if condition.Type == apiv2.ConditionReady {
+			require.Equal(t, expectedReason, condition.Reason)
+			return
+		}
+	}
+	require.Fail(t, "Ready condition was not found")
+}
+
+type builtInNetworkOrchestrator struct {
+	containers.NetworkOrchestrator
+
+	classifiedNames []string
+	listCalls       int
+	disconnectCalls int
+	removeCalls     int
+}
+
+func (o *builtInNetworkOrchestrator) InspectNetworks(
+	_ context.Context,
+	_ containers.InspectNetworksOptions,
+) ([]containers.InspectedNetwork, error) {
+	return []containers.InspectedNetwork{{
+		Id:         "canonical-network-id",
+		Name:       "bridge",
+		Containers: []containers.InspectedNetworkContainer{{Id: "attached-container"}},
+	}}, nil
+}
+
+func (o *builtInNetworkOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	o.classifiedNames = append(o.classifiedNames, networkName)
+	return networkName == "bridge"
+}
+
+func (o *builtInNetworkOrchestrator) ListContainers(
+	_ context.Context,
+	_ containers.ListContainersOptions,
+) ([]containers.ListedContainer, error) {
+	o.listCalls++
+	return []containers.ListedContainer{{Id: "attached-container"}}, nil
+}
+
+func (o *builtInNetworkOrchestrator) DisconnectNetwork(
+	_ context.Context,
+	_ containers.DisconnectNetworkOptions,
+) error {
+	o.disconnectCalls++
+	return nil
+}
+
+func (o *builtInNetworkOrchestrator) RemoveNetworks(
+	_ context.Context,
+	_ containers.RemoveNetworksOptions,
+) ([]string, error) {
+	o.removeCalls++
+	return []string{"canonical-network-id"}, nil
 }
 
 func TestPhysicalContainerNetworkCreationLabels(t *testing.T) {
