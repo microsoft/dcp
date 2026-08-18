@@ -1183,6 +1183,10 @@ func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
+func (*TestContainerOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "bridge" || networkName == "host" || networkName == "none"
+}
+
 func (to *TestContainerOrchestrator) BlockCreateContainer(name string) func() {
 	return to.blockOperation(operationCreateContainer, name)
 }

@@ -410,6 +410,30 @@ func TestApplyListContainersOptions(t *testing.T) {
 	}, args)
 }
 
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		networkName string
+		expected    bool
+	}{
+		{name: "bridge", networkName: "bridge", expected: true},
+		{name: "host", networkName: "host", expected: true},
+		{name: "none", networkName: "none", expected: true},
+		{name: "nat", networkName: "nat", expected: false},
+		{name: "user-defined network", networkName: "application", expected: false},
+	}
+
+	orchestrator := &DockerCliOrchestrator{}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.expected, orchestrator.IsBuiltInNetwork(testCase.networkName))
+		})
+	}
+}
+
 func TestParseDockerCliVersion(t *testing.T) {
 	t.Parallel()
 

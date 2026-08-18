@@ -91,6 +91,17 @@ func TestApplyListContainersOptions(t *testing.T) {
 	}, args)
 }
 
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &PodmanCliOrchestrator{}
+	require.True(t, orchestrator.IsBuiltInNetwork("podman"))
+	require.False(t, orchestrator.IsBuiltInNetwork("bridge"))
+	require.False(t, orchestrator.IsBuiltInNetwork("host"))
+	require.False(t, orchestrator.IsBuiltInNetwork("none"))
+	require.False(t, orchestrator.IsBuiltInNetwork("application"))
+}
+
 func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 	t.Parallel()
 

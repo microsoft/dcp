@@ -73,6 +73,7 @@ func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContain
 		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating, "Runtime network creation is in progress.")
 		return change
 	case apiv2.PhysicalContainerNetworkReasonCreateFailed,
+		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
 		apiv2.PhysicalContainerNetworkReasonReconciliationFailed:
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
 		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)

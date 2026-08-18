@@ -1095,6 +1095,10 @@ func (pco *PodmanCliOrchestrator) DefaultNetworkName() string {
 	return "podman"
 }
 
+func (*PodmanCliOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "podman"
+}
+
 func (pco *PodmanCliOrchestrator) doWatchContainers(watcherCtx context.Context, ss *pubsub.SubscriptionSet[containers.EventMessage]) {
 	args := []string{"events", "--filter", "type=container", "--format", "json"}
 	cmd := makePodmanCommand(args...)
