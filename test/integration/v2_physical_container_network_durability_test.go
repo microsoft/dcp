@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -32,9 +33,10 @@ import (
 type failOncePhysicalContainerNetworkStatusClient struct {
 	ctrl_client.Client
 
-	lock      sync.Mutex
-	failure   error
-	triggered bool
+	lock       sync.Mutex
+	failure    error
+	shouldFail func(*apiv2.PhysicalContainerNetwork) bool
+	triggered  bool
 }
 
 func (client *failOncePhysicalContainerNetworkStatusClient) Status() ctrl_client.SubResourceWriter {
@@ -46,7 +48,7 @@ func (client *failOncePhysicalContainerNetworkStatusClient) Status() ctrl_client
 
 func (client *failOncePhysicalContainerNetworkStatusClient) failStatusPatch(obj ctrl_client.Object) error {
 	network, isNetwork := obj.(*apiv2.PhysicalContainerNetwork)
-	if !isNetwork || network.Status.Phase != apiv2.PhysicalContainerNetworkPhaseFailed {
+	if !isNetwork || !client.shouldFail(network) {
 		return nil
 	}
 
@@ -131,6 +133,9 @@ func TestV2PhysicalContainerNetworkControllerRetainsTerminalCreateFailureUntilSt
 			statusClient := &failOncePhysicalContainerNetworkStatusClient{
 				Client:  baseClient,
 				failure: makeFailure(network.Name),
+				shouldFail: func(network *apiv2.PhysicalContainerNetwork) bool {
+					return network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed
+				},
 			}
 
 			log := testutil.NewLogForTesting(t.Name())
@@ -189,4 +194,179 @@ func TestV2PhysicalContainerNetworkControllerRetainsTerminalCreateFailureUntilSt
 			require.Equal(t, 2, orchestrator.CreateNetworkCallCount(networkName))
 		})
 	}
+}
+
+func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsDurable(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "durable-built-in-failure",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "durable-built-in-failure",
+			Namespace:  namespace.Name,
+			UID:        types.UID("durable-built-in-failure"),
+			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "bridge"},
+	}
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerNetwork{}).
+		WithObjects(namespace, network).
+		Build()
+	statusClient := &failOncePhysicalContainerNetworkStatusClient{
+		Client:  baseClient,
+		failure: errors.New("simulated status save failure"),
+		shouldFail: func(network *apiv2.PhysicalContainerNetwork) bool {
+			return network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed
+		},
+	}
+
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(
+		ctx,
+		log,
+		ctrl_testutil.TcoOptionNone,
+	)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(
+		ctx,
+		statusClient,
+		baseClient,
+		log,
+		orchestrator,
+	)
+	request := ctrl.Request{NamespacedName: network.NamespacedName()}
+
+	_, reconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, reconcileErr)
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
+		if statusClient.failureTriggered() {
+			return true, nil
+		}
+		return false, currentReconcileErr
+	})
+	require.NoError(t, waitErr)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
+		if currentReconcileErr != nil {
+			return false, currentReconcileErr
+		}
+
+		currentNetwork := &apiv2.PhysicalContainerNetwork{}
+		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
+			return false, getErr
+		}
+		readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, apiv2.ConditionReady)
+		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
+			readyCondition != nil &&
+			readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
+	})
+	require.NoError(t, waitErr)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+}
+
+func TestV2PhysicalContainerNetworkControllerRetainsCreatedNetworkUntilStatusIsDurable(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "durable-created-network",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "durable-created-network",
+			Namespace:  namespace.Name,
+			UID:        types.UID("durable-created-network"),
+			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "durable-created-network-runtime"},
+	}
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerNetwork{}).
+		WithObjects(namespace, network).
+		Build()
+	statusClient := &failOncePhysicalContainerNetworkStatusClient{
+		Client:  baseClient,
+		failure: errors.New("simulated ready status save failure"),
+		shouldFail: func(network *apiv2.PhysicalContainerNetwork) bool {
+			return network.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady
+		},
+	}
+
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(
+		ctx,
+		log,
+		ctrl_testutil.TcoOptionNone,
+	)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(
+		ctx,
+		statusClient,
+		baseClient,
+		log,
+		orchestrator,
+	)
+	request := ctrl.Request{NamespacedName: network.NamespacedName()}
+
+	_, reconcileErr := reconciler.Reconcile(ctx, request)
+	require.NoError(t, reconcileErr)
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
+		if statusClient.failureTriggered() {
+			return true, nil
+		}
+		return false, currentReconcileErr
+	})
+	require.NoError(t, waitErr)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
+		if currentReconcileErr != nil {
+			return false, currentReconcileErr
+		}
+
+		currentNetwork := &apiv2.PhysicalContainerNetwork{}
+		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
+			return false, getErr
+		}
+		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
+	})
+	require.NoError(t, waitErr)
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
 }
