@@ -28,6 +28,7 @@ const (
 	PhysicalContainerImageController
 	PhysicalContainerController
 	PhysicalContainerNetworkController
+	PhysicalContainerVolumeController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )

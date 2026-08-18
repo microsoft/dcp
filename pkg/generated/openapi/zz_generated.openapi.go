@@ -109,6 +109,10 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalContainerPortMapping{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerPortMapping(ref),
 		v2.PhysicalContainerSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref),
 		v2.PhysicalContainerStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref),
+		v2.PhysicalContainerVolume{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref),
+		v2.PhysicalContainerVolumeList{}.OpenAPIModelName():       schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref),
+		v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName():       schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref),
+		v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName():     schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref),
 		v2.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_VolumeMount(ref),
 		commonapi.EnvVar{}.OpenAPIModelName():                     schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
 		commonapi.Label{}.OpenAPIModelName():                      schema_microsoft_dcp_pkg_commonapi_Label(ref),
@@ -5700,6 +5704,245 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref common.ReferenceCal
 		},
 		Dependencies: []string{
 			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerVolume(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerVolume represents one runtime container volume in a DCP V2 namespace.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerVolumeSpec{}.OpenAPIModelName(), v2.PhysicalContainerVolumeStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerVolumeList contains a list of PhysicalContainerVolume instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.PhysicalContainerVolume{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerVolume{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"volumeID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeID identifies an existing runtime volume to track. Container runtimes commonly use the volume name as its identifier. When set, creation fields are forbidden.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeName is the runtime name to use when creating a new volume. Required when volumeID is omitted.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"preserveOnDeletion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PreserveOnDeletion keeps the runtime volume in place when this resource is deleted. By default the runtime volume is removed, including when this resource only tracks a volume it did not create.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime volume.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerVolumeStatus describes the observed runtime volume.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes whether the runtime volume is available.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"volumeID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeID is the runtime identifier being tracked.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"volumeName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeName is the runtime volume name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"driver": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Driver is the runtime volume driver.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"mountPoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MountPoint is the host path where the runtime stores volume data, when exposed by the runtime.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"scope": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scope is the runtime volume scope.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"createdAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CreatedAt is the runtime volume creation timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 

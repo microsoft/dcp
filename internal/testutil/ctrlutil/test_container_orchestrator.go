@@ -80,6 +80,10 @@ type TestContainerOrchestrator struct {
 	createContainerCalls    map[string]int
 	createContainerBlocks   map[string]chan struct{}
 	createContainerErrors   map[string][]error
+	createVolumeCalls       map[string]int
+	createVolumeBlocks      map[string]chan struct{}
+	createVolumePostErrors  map[string][]error
+	inspectVolumeCalls      map[string]int
 	pullImageCalls          map[string]int
 	pullImageBlocks         map[string]chan struct{}
 	pullImageErrors         map[string][]error
@@ -205,6 +209,10 @@ func NewTestContainerOrchestrator(
 		createContainerCalls:    map[string]int{},
 		createContainerBlocks:   map[string]chan struct{}{},
 		createContainerErrors:   map[string][]error{},
+		createVolumeCalls:       map[string]int{},
+		createVolumeBlocks:      map[string]chan struct{}{},
+		createVolumePostErrors:  map[string][]error{},
+		inspectVolumeCalls:      map[string]int{},
 		pullImageCalls:          map[string]int{},
 		pullImageBlocks:         map[string]chan struct{}{},
 		pullImageErrors:         map[string][]error{},
@@ -658,6 +666,7 @@ func (obj withId) matches(name string) bool {
 type containerVolume struct {
 	name    string
 	created time.Time
+	labels  map[string]string
 }
 
 type containerNetwork struct {
@@ -687,6 +696,7 @@ type testContainer struct {
 	ExitCode       int32                                `json:"exitCode,omitempty"`
 	Ports          map[string][]TestContainerPortConfig `json:"ports,omitempty"`
 	Networks       []string                             `json:"networks,omitempty"`
+	Mounts         []containers.VolumeMount             `json:"mounts,omitempty"`
 	NetworkAliases map[string][]string                  `json:"networkAliases,omitempty"`
 	Args           []string                             `json:"args,omitempty"`
 	Env            map[string]string                    `json:"env,omitempty"`
@@ -749,8 +759,16 @@ func (to *TestContainerOrchestrator) GetDiagnostics(ctx context.Context) (contai
 }
 
 func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+	if operationErr := to.recordCreateVolumeOperation(ctx, options.Name); operationErr != nil {
+		return operationErr
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	if !to.runtimeHealthy {
 		return errRuntimeUnhealthy
@@ -760,9 +778,15 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options c
 		return containers.ErrAlreadyExists
 	}
 
-	to.volumes[options.Name] = containerVolume{name: options.Name, created: time.Now().UTC()}
+	to.volumes[options.Name] = containerVolume{
+		name:    options.Name,
+		created: time.Now().UTC(),
+		labels: maps.Map[string, string, string](options.Labels, func(_ string, value string) string {
+			return value
+		}),
+	}
 
-	return nil
+	return to.takeCreateVolumePostError(options.Name)
 }
 
 func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
@@ -786,6 +810,23 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 			continue
 		}
 
+		inUse := false
+		for _, container := range to.containers {
+			for _, mount := range container.Mounts {
+				if mount.Type == containers.NamedVolumeMount && mount.Source == name {
+					inUse = true
+					break
+				}
+			}
+			if inUse {
+				break
+			}
+		}
+		if inUse {
+			err = errors.Join(err, containers.ErrObjectInUse)
+			continue
+		}
+
 		removed = append(removed, name)
 	}
 
@@ -801,6 +842,8 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 }
 
 func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
+	to.recordInspectVolumesOperation(options.Volumes)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -827,8 +870,10 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 			Driver:     "local",
 			MountPoint: "",
 			Scope:      "local",
-			Labels:     map[string]string{},
-			CreatedAt:  volume.created,
+			Labels: maps.Map[string, string, string](volume.labels, func(_ string, value string) string {
+				return value
+			}),
+			CreatedAt: volume.created,
 		})
 	}
 
@@ -837,6 +882,30 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 	}
 
 	return result, err
+}
+
+func (to *TestContainerOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
+	result := []containers.ListedVolume{}
+	for _, volume := range to.volumes {
+		matches := slices.All(options.Filters.LabelFilters, func(label containers.LabelFilter) bool {
+			value, found := volume.labels[label.Key]
+			return found && (label.Value == "" || value == label.Value)
+		})
+		if matches {
+			result = append(result, containers.ListedVolume{Name: volume.name})
+		}
+	}
+	return result, nil
 }
 
 func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
@@ -1244,6 +1313,36 @@ func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
 	return to.blockCreateNetworkOperation(name, make(chan struct{}))
 }
 
+func (to *TestContainerOrchestrator) BlockCreateVolume(name string) func() {
+	return to.blockCreateVolumeOperation(name, make(chan struct{}))
+}
+
+// FailNextCreateVolumeAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateVolumeAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated volume create failure")
+	}
+
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.createVolumePostErrors[name] = append(to.createVolumePostErrors[name], createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateVolumeCallCount(name string) int {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	return to.createVolumeCalls[name]
+}
+
+func (to *TestContainerOrchestrator) InspectVolumeCallCount(volume string) int {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	return to.inspectVolumeCalls[volume]
+}
+
 // FailNextCreateNetworkAfterCreation simulates a runtime create whose result is uncertain to the caller.
 func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name string, createErr error) {
 	if createErr == nil {
@@ -1289,6 +1388,13 @@ func (to *TestContainerOrchestrator) blockCreateNetworkOperation(name string, bl
 	to.createNetworkBlocks[name] = block
 	to.operationMutex.Unlock()
 	return releaseBlockedOperation(to.operationMutex, to.createNetworkBlocks, name, block)
+}
+
+func (to *TestContainerOrchestrator) blockCreateVolumeOperation(name string, block chan struct{}) func() {
+	to.operationMutex.Lock()
+	to.createVolumeBlocks[name] = block
+	to.operationMutex.Unlock()
+	return releaseBlockedOperation(to.operationMutex, to.createVolumeBlocks, name, block)
 }
 
 func releaseBlockedOperation(lock *sync.Mutex, blocks map[string]chan struct{}, key string, block chan struct{}) func() {
@@ -1349,6 +1455,41 @@ func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Co
 	to.operationMutex.Unlock()
 
 	return waitForBlockedOperation(ctx, block)
+}
+
+func (to *TestContainerOrchestrator) recordCreateVolumeOperation(ctx context.Context, name string) error {
+	to.operationMutex.Lock()
+	to.createVolumeCalls[name]++
+	block := to.createVolumeBlocks[name]
+	to.operationMutex.Unlock()
+
+	return waitForBlockedOperation(ctx, block)
+}
+
+func (to *TestContainerOrchestrator) takeCreateVolumePostError(name string) error {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	if len(to.createVolumePostErrors[name]) == 0 {
+		return nil
+	}
+
+	createErr := to.createVolumePostErrors[name][0]
+	to.createVolumePostErrors[name] = to.createVolumePostErrors[name][1:]
+	if len(to.createVolumePostErrors[name]) == 0 {
+		delete(to.createVolumePostErrors, name)
+	}
+
+	return createErr
+}
+
+func (to *TestContainerOrchestrator) recordInspectVolumesOperation(volumes []string) {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	for _, volume := range volumes {
+		to.inspectVolumeCalls[volume]++
+	}
 }
 
 func (to *TestContainerOrchestrator) takeCreateNetworkPostError(name string) error {
@@ -1704,6 +1845,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		CreatedAt:      time.Now().UTC(),
 		Status:         containers.ContainerStatusCreated,
 		Networks:       []string{},
+		Mounts:         []containers.VolumeMount{},
 		NetworkAliases: map[string][]string{},
 		Ports:          map[string][]TestContainerPortConfig{},
 		Args:           options.Command,
@@ -1712,6 +1854,20 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		healthcheck:    options.Healthcheck,
 		stdoutLog:      testutil.NewBufferWriter(),
 		stderrLog:      testutil.NewBufferWriter(),
+	}
+
+	for _, mount := range options.VolumeMounts {
+		container.Mounts = append(container.Mounts, containers.VolumeMount{
+			Type:     mount.Type,
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+		if mount.Type == containers.NamedVolumeMount {
+			if _, found := to.volumes[mount.Source]; !found {
+				to.volumes[mount.Source] = containerVolume{name: mount.Source, created: time.Now().UTC()}
+			}
+		}
 	}
 
 	for ctr, healthcheck := range to.containersToHealthcheck {
@@ -2426,6 +2582,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 					Args:        container.Args,
 					Env:         container.Env,
 					Labels:      container.Labels,
+					Mounts:      append([]containers.VolumeMount{}, container.Mounts...),
 					Healthcheck: container.healthcheck.Command,
 					Health:      container.Health,
 				}

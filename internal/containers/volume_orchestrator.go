@@ -15,6 +15,9 @@ import (
 type CreateVolumeOptions struct {
 	// Name of the volume to create
 	Name string
+
+	// Labels to apply to the volume.
+	Labels map[string]string
 }
 
 type CreateVolume interface {
@@ -44,6 +47,24 @@ type InspectVolumes interface {
 	InspectVolumes(ctx context.Context, options InspectVolumesOptions) ([]InspectedVolume, error)
 }
 
+type ListVolumesFilters struct {
+	LabelFilters []LabelFilter
+}
+
+type ListVolumesOptions struct {
+	Filters ListVolumesFilters
+}
+
+type ListedVolume struct {
+	// Name of the volume.
+	Name string
+}
+
+type ListVolumes interface {
+	// Lists volumes matching the supplied filters.
+	ListVolumes(ctx context.Context, options ListVolumesOptions) ([]ListedVolume, error)
+}
+
 // RemoveVolumes command types
 
 type RemoveVolumesOptions struct {
@@ -65,6 +86,7 @@ type RemoveVolumes interface {
 type VolumeOrchestrator interface {
 	CreateVolume
 	InspectVolumes
+	ListVolumes
 	RemoveVolumes
 
 	RuntimeStatusChecker
