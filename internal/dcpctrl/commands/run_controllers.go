@@ -121,7 +121,7 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return fmt.Errorf("cannot set up connection to the API server without kubeconfig file: %w", err)
 		}
 
-		stateStore, stateStoreErr := statestore.Open(ctrlCtx, statestore.Options{})
+		stateStore, stateStoreErr := statestore.Open(ctrlCtx, statestore.Options{Log: log})
 		if stateStoreErr != nil {
 			return fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
 		}

@@ -104,12 +104,14 @@ func DcpRun(
 	})
 
 	hostedServices := []hosting.Service{}
+	builtInControllerServiceName := ""
 	if !serverOnly {
 		// Always run the built-in controllers
 		controllerService, controllerServiceErr := newRunControllersService(cwd, invocationFlags, log)
 		if controllerServiceErr != nil {
 			return fmt.Errorf("could not start built-in controllers: %w", controllerServiceErr)
 		}
+		builtInControllerServiceName = controllerService.Name()
 		hostedServices = append(hostedServices, controllerService)
 
 		// Also run any extension controllers
@@ -167,6 +169,9 @@ func DcpRun(
 	}
 
 	var err error
+	// controllerHostErr records a fatal failure of the built-in controller host so it can be
+	// reported after the regular shutdown sequence completes.
+	var controllerHostErr error
 	// Wait for the user to signal that they want to shut down.
 	for {
 		select {
@@ -186,20 +191,20 @@ func DcpRun(
 				err = shutdownHost()
 				if err != nil {
 					log.Error(err, "Failed to shut down hosted services")
-					return err
+					return errors.Join(controllerHostErr, err)
 				}
-				return nil
+				return controllerHostErr
 			}
 
 			err = appmgmt.CleanupAllResources(log)
 			err = errors.Join(err, shutdownHost())
 			if err != nil {
 				log.Error(err, "Failed to cleanup some resources. This may lead to resource leaks.")
-				return err
+				return errors.Join(controllerHostErr, err)
 			}
 
 			log.Info("Shutdown complete.")
-			return nil
+			return controllerHostErr
 
 		case <-apiServerShutdown:
 			err = fmt.Errorf("API server shut down unexpectedly. Graceful shutdown is not possible.")
@@ -214,7 +219,17 @@ func DcpRun(
 
 			if msg.Err != nil {
 				log.Error(msg.Err, fmt.Sprintf("Controller '%s' exited with an error. Application may not function correctly.", msg.ServiceName))
-				// Let the user decide whether to continue or not, do not break the loop yet.
+
+				// Nothing reconciles application resources without the built-in controllers, so keeping
+				// the API server alive would leave clients waiting indefinitely for resources that will
+				// never become ready. Shut down instead so the failure is visible. Resource cleanup also
+				// needs the controllers, so requesting it here (along with the cleanup notifications that
+				// go with it) would only delay the failure without releasing anything.
+				if msg.ServiceName == builtInControllerServiceName && controllerHostErr == nil {
+					controllerHostErr = fmt.Errorf("DCP cannot run without the built-in controllers: %w", msg.Err)
+					log.Error(controllerHostErr, "Terminating...")
+					runConfig.RequestShutdown(apiserver.ApiServerResourceCleanupNone)
+				}
 			}
 		}
 	}

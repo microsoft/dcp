@@ -17,8 +17,8 @@ required to debug changes to any libraries licensed under the GNU Lesser General
 
 ----------------------------------------------------------
 
-cel.dev/expr v0.25.1 - Apache-2.0
-https://github.com/cel-expr/cel-spec/blob/v0.25.1/LICENSE
+cel.dev/expr v0.25.2 - Apache-2.0
+https://github.com/cel-expr/cel-spec/blob/v0.25.2/LICENSE
 
 
                                  Apache License
@@ -5181,8 +5181,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ----------------------------------------------------------
 
-github.com/google/cel-go v0.28.0 - BSD-3-Clause
-https://github.com/google/cel-go/blob/v0.28.0/LICENSE
+github.com/google/cel-go v0.31.0 - BSD-3-Clause
+https://github.com/google/cel-go/blob/v0.31.0/LICENSE
 
 
                                  Apache License
@@ -13606,8 +13606,8 @@ https://github.com/googleapis/go-genproto/blob/3dc84a4a5aaa/googleapis/rpc/LICEN
 
 ----------------------------------------------------------
 
-google.golang.org/grpc v1.82.0 - Apache-2.0
-https://github.com/grpc/grpc-go/blob/v1.82.0/LICENSE
+google.golang.org/grpc v1.83.0 - Apache-2.0
+https://github.com/grpc/grpc-go/blob/v1.83.0/LICENSE
 
 
                                  Apache License

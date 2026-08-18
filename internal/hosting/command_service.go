@@ -89,8 +89,7 @@ func (s *CommandService) Run(ctx context.Context) error {
 	if (s.options & CommandServiceRunOptionDontTerminate) != 0 {
 		select {
 		case exitInfo := <-pic:
-			s.exitCode = exitInfo.ExitCode
-			return exitInfo.Err
+			return s.recordExit(ctx, exitInfo)
 		case <-ctx.Done():
 			return nil
 		}
@@ -98,9 +97,21 @@ func (s *CommandService) Run(ctx context.Context) error {
 		// Context cancel will force the process to exit, so we only need to wait for the latter
 		// (and capture the result).
 		exitInfo := <-pic
-		s.exitCode = exitInfo.ExitCode
+		return s.recordExit(ctx, exitInfo)
+	}
+}
+
+// recordExit captures the process exit code and reports an unexpected exit as a service failure.
+// An exit that follows cancellation of the service context is expected and is not an error.
+func (s *CommandService) recordExit(ctx context.Context, exitInfo process.ProcessExitInfo) error {
+	s.exitCode = exitInfo.ExitCode
+	if exitInfo.Err != nil {
 		return exitInfo.Err
 	}
+	if exitInfo.ExitCode != 0 && ctx.Err() == nil {
+		return fmt.Errorf("%s exited unexpectedly with exit code %d", s.name, exitInfo.ExitCode)
+	}
+	return nil
 }
 
 var _ Service = (*CommandService)(nil)

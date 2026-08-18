@@ -462,6 +462,82 @@ func TestNetworkPersistentFieldOverridesCleanupMode(t *testing.T) {
 	require.Len(t, inspected, 1, "expected to find a single network")
 }
 
+// Ensure that the NetworkReconciler defers network operations while the container runtime is
+// unhealthy, and resumes them once the runtime is healthy again.
+func TestNetworkRuntimeUnhealthy(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	const testName = "test-network-runtime-unhealthy"
+	// Give the reconciler ample time to attempt to process the deletion while the runtime is
+	// unhealthy; the longest delay between reconciliations is 7 seconds (5s with 2s jitter).
+	const unhealthyPeriod = 15 * time.Second
+
+	// We are going to use a separate instance of the API server because we need to simulate container runtime being unhealthy,
+	// and that might interfere with other tests if we used the shared container orchestrator.
+
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, NetworkController, t.Name(), NoSeparateWorkingDir)
+	require.NoError(t, startupErr, "Failed to start the API server")
+
+	defer func() {
+		cancel()
+
+		// Wait for the API server cleanup to complete.
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	tco, isTCO := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTCO, "Container orchestrator should be a TestContainerOrchestrator")
+
+	net := apiv1.ContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testName,
+			Namespace: metav1.NamespaceNone,
+		},
+	}
+
+	t.Logf("Creating ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err := serverInfo.Client.Create(ctx, &net)
+	require.NoError(t, err, "could not create a ContainerNetwork object")
+
+	updatedNet := ensureNetworkCreatedEx(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &net)
+
+	t.Logf("Setting container runtime to unhealthy...")
+	tco.SetRuntimeHealth(false)
+
+	t.Logf("Deleting ContainerNetwork object '%s'", net.ObjectMeta.Name)
+	err = retryOnConflictEx(ctx, serverInfo.Client, net.NamespacedName(), func(ctx context.Context, currentNet *apiv1.ContainerNetwork) error {
+		return serverInfo.Client.Delete(ctx, currentNet)
+	})
+	require.NoError(t, err, "could not delete a ContainerNetwork object")
+
+	// The reconciler must defer the network removal while the runtime is unhealthy, and retry
+	// quietly. Wait for the unhealthy period to elapse before restoring the runtime health.
+	select {
+	case <-time.After(unhealthyPeriod):
+	case <-ctx.Done():
+		require.FailNow(t, "test context expired while the container runtime was unhealthy")
+	}
+
+	t.Logf("Setting container runtime to healthy...")
+	tco.SetRuntimeHealth(true)
+
+	t.Logf("Ensure the reconciler resumes runtime operations and removes the network...")
+	err = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		inspectedNetworks, networkInspectionErr := serverInfo.ContainerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{updatedNet.Status.ID}})
+		if !errors.Is(networkInspectionErr, containers.ErrNotFound) || len(inspectedNetworks) != 0 {
+			return false, nil
+		}
+
+		return true, nil
+	})
+	require.NoError(t, err, "network was not removed after the runtime became healthy again")
+}
+
 func ensureNetworkCreated(t *testing.T, ctx context.Context, network *apiv1.ContainerNetwork) *apiv1.ContainerNetwork {
 	return ensureNetworkCreatedEx(t, ctx, client, containerOrchestrator, network)
 }

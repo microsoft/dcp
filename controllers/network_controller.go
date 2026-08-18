@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -128,9 +127,6 @@ type NetworkReconciler struct {
 	// Lock to protect the reconciler data that requires synchronized access
 	lock *sync.Mutex
 
-	// True if the container orchestrator is healthy, false otherwise
-	orchestratorHealthy *atomic.Bool
-
 	// The resource harvester used to clean up abandoned resources on startup
 	harvester *resourceHarvester
 
@@ -186,7 +182,6 @@ func NewNetworkReconcilerWithConfig(
 		networkEvtWorkerStop: nil,
 		watchingResources:    &syncmap.Map[types.UID, bool]{},
 		lock:                 &sync.Mutex{},
-		orchestratorHealthy:  &atomic.Bool{},
 		harvester:            harvester,
 		config:               config,
 	}
@@ -231,13 +226,6 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	if !r.orchestratorHealthy.Load() {
-		status := r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed)
-		if status.IsHealthy() {
-			r.orchestratorHealthy.Store(true)
-		}
-	}
-
 	network := apiv1.ContainerNetwork{}
 	err := reader.Get(ctx, req.NamespacedName, &network)
 
@@ -266,7 +254,9 @@ func (r *NetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		log = log.WithValues("NetworkID", GetShortId(network.Status.ID))
 	}
 
-	if !r.orchestratorHealthy.Load() {
+	// Re-check the runtime health on each reconciliation so that the reconciler stops issuing
+	// network operations when the runtime becomes unhealthy, and resumes them once it recovers.
+	if !r.orchestrator.CheckStatus(ctx, containers.CachedRuntimeStatusAllowed).IsHealthy() {
 		log.V(1).Info("Container runtime is not healthy, retrying reconciliation later...")
 		// Retry after five to ten seconds
 		return ctrl.Result{RequeueAfter: time.Duration(rand.Intn(5)+5) * time.Second}, nil

@@ -156,7 +156,7 @@ func cleanup(log logr.Logger) func(cmd *cobra.Command, args []string) error {
 			return workloadIDErr
 		}
 
-		stateStore, stateStoreErr := statestore.Open(cmd.Context(), statestore.Options{})
+		stateStore, stateStoreErr := statestore.Open(cmd.Context(), statestore.Options{Log: log})
 		if stateStoreErr != nil {
 			return fmt.Errorf("failed to initialize state store: %w", stateStoreErr)
 		}
