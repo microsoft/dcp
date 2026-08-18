@@ -253,7 +253,12 @@ func (pco *PodmanCliOrchestrator) GetDiagnostics(ctx context.Context) (container
 }
 
 func (pco *PodmanCliOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
-	cmd := makePodmanCommand("volume", "create", options.Name)
+	args := []string{"volume", "create"}
+	for key, value := range options.Labels {
+		args = append(args, "--label", fmt.Sprintf("%s=%s", key, value))
+	}
+	args = append(args, options.Name)
+	cmd := makePodmanCommand(args...)
 	outBuf, errBuf, err := pco.runBufferedPodmanCommand(ctx, "CreateVolume", cmd, nil, nil, ordinaryPodmanCommandTimeout)
 	if err != nil {
 		return errors.Join(err, normalizeCliErrors(errBuf, volumeAlreadyExistsErrorMatch.MaxObjects(1)))
@@ -285,6 +290,28 @@ func (pco *PodmanCliOrchestrator) InspectVolumes(ctx context.Context, options co
 	}
 
 	return inspectedVolumes, err
+}
+
+func (pco *PodmanCliOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	args := []string{"volume", "ls", "--quiet"}
+	for _, label := range options.Filters.LabelFilters {
+		filter := fmt.Sprintf("label=%s", label.Key)
+		if label.Value != "" {
+			filter += "=" + label.Value
+		}
+		args = append(args, "--filter", filter)
+	}
+
+	cmd := makePodmanCommand(args...)
+	outBuf, errBuf, listErr := pco.runBufferedPodmanCommand(ctx, "ListVolumes", cmd, nil, nil, ordinaryPodmanCommandTimeout)
+	if listErr != nil {
+		return nil, errors.Join(listErr, normalizeCliErrors(errBuf))
+	}
+
+	names := slices.NonEmpty[byte](bytes.Split(outBuf.Bytes(), osutil.LF()))
+	return slices.Map[containers.ListedVolume](names, func(name []byte) containers.ListedVolume {
+		return containers.ListedVolume{Name: string(name)}
+	}), nil
 }
 
 func (pco *PodmanCliOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {

@@ -35,6 +35,7 @@ var (
 		&PhysicalContainerImage{},
 		&PhysicalContainer{},
 		&PhysicalContainerNetwork{},
+		&PhysicalContainerVolume{},
 	}
 
 	// Types that must be recognizable by the API server, but are not persisted.

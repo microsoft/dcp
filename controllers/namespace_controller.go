@@ -43,6 +43,7 @@ var namespaceCleanupResourceHandlers = map[schema.GroupVersionResource]namespace
 	(&apiv2.PhysicalContainer{}).GetGroupVersionResource():        (*NamespaceReconciler).cleanupPhysicalContainers,
 	(&apiv2.PhysicalContainerImage{}).GetGroupVersionResource():   (*NamespaceReconciler).cleanupPhysicalContainerImages,
 	(&apiv2.PhysicalContainerNetwork{}).GetGroupVersionResource(): (*NamespaceReconciler).cleanupPhysicalContainerNetworks,
+	(&apiv2.PhysicalContainerVolume{}).GetGroupVersionResource():  (*NamespaceReconciler).cleanupPhysicalContainerVolumes,
 }
 
 type NamespaceReconciler struct {
@@ -304,4 +305,27 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerNetworks(ctx context.Conte
 	}
 
 	return len(physicalContainerNetworks.Items), nil
+}
+
+func (r *NamespaceReconciler) cleanupPhysicalContainerVolumes(ctx context.Context, namespace *apiv2.Namespace, log logr.Logger) (int, error) {
+	physicalContainerVolumes := apiv2.PhysicalContainerVolumeList{}
+	listErr := r.Client.List(ctx, &physicalContainerVolumes, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		return 0, fmt.Errorf("failed to list PhysicalContainerVolumes in namespace %q: %w", namespace.Name, listErr)
+	}
+
+	for i := range physicalContainerVolumes.Items {
+		physicalContainerVolume := &physicalContainerVolumes.Items[i]
+		if physicalContainerVolume.DeletionTimestamp != nil && !physicalContainerVolume.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		log.V(1).Info("Deleting PhysicalContainerVolume during namespace cleanup", "Namespace", namespace.Name, "PhysicalContainerVolume", physicalContainerVolume.Name)
+		deleteErr := r.Client.Delete(ctx, physicalContainerVolume)
+		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+			return 0, fmt.Errorf("failed to delete PhysicalContainerVolume %q in namespace %q: %w", physicalContainerVolume.Name, namespace.Name, deleteErr)
+		}
+	}
+
+	return len(physicalContainerVolumes.Items), nil
 }

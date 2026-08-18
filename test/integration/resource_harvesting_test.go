@@ -303,3 +303,81 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 		"none",
 	}, remainingNames, "unexpected networks remaining")
 }
+
+func TestUnusedVolumeHarvesting(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	missingProcess := nonExistentProcess(t)
+	thisProcess, thisProcessErr := process.This()
+	require.NoError(t, thisProcessErr)
+	labels := func(persistent bool, processHandle process.ProcessHandle) map[string]string {
+		return map[string]string{
+			controllers.PersistentLabel:              fmt.Sprintf("%t", persistent),
+			controllers.CreatorProcessIdLabel:        fmt.Sprintf("%d", processHandle.Pid),
+			controllers.CreatorProcessStartTimeLabel: processHandle.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
+		}
+	}
+
+	const prefix = "unused-volume-harvesting-"
+	const noLabels = prefix + "no-labels"
+	const persistent = prefix + "persistent"
+	const liveCreator = prefix + "live-creator"
+	const abandoned = prefix + "abandoned"
+	const abandonedInUse = prefix + "abandoned-in-use"
+	const abandonedWithAbandonedContainer = prefix + "abandoned-with-abandoned-container"
+
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: noLabels}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: persistent, Labels: labels(true, missingProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: liveCreator, Labels: labels(false, thisProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: abandoned, Labels: labels(false, missingProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: abandonedInUse, Labels: labels(false, missingProcess)}))
+	require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: abandonedWithAbandonedContainer, Labels: labels(false, missingProcess)}))
+
+	_, nonDCPContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name: "volume-harvesting-non-dcp-container",
+		VolumeMounts: []containers.CreateContainerVolumeMount{{
+			Type:   containers.NamedVolumeMount,
+			Source: abandonedInUse,
+			Target: "/data",
+		}},
+	})
+	require.NoError(t, nonDCPContainerErr)
+	_, abandonedContainerErr := orchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name: "volume-harvesting-abandoned-container",
+			VolumeMounts: []containers.CreateContainerVolumeMount{{
+				Type:   containers.NamedVolumeMount,
+				Source: abandonedWithAbandonedContainer,
+				Target: "/data",
+			}},
+			Labels: []containers.Label{
+				{Key: controllers.PersistentLabel, Value: "false"},
+				{Key: controllers.CreatorProcessIdLabel, Value: fmt.Sprintf("%d", missingProcess.Pid)},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: missingProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+			},
+		},
+	})
+	require.NoError(t, abandonedContainerErr)
+
+	controllers.NewResourceHarvester().Harvest(ctx, orchestrator, log)
+
+	remainingVolumes, listErr := orchestrator.ListVolumes(ctx, containers.ListVolumesOptions{})
+	require.NoError(t, listErr)
+	require.ElementsMatch(t, []string{
+		noLabels,
+		persistent,
+		liveCreator,
+		abandonedInUse,
+	}, slices.Map[string](remainingVolumes, func(volume containers.ListedVolume) string {
+		return volume.Name
+	}))
+}

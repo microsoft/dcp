@@ -119,6 +119,11 @@ func (rh *resourceHarvester) Harvest(
 	if harvestErr != nil {
 		log.Info("Could not harvest all abandoned container networks", "Error", harvestErr)
 	}
+
+	harvestErr = rh.harvestAbandonedVolumes(ctx, co, log)
+	if harvestErr != nil {
+		log.Info("Could not harvest all abandoned container volumes", "Error", harvestErr)
+	}
 }
 
 func (rh *resourceHarvester) IsDone() bool {
@@ -275,6 +280,52 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 
 	log.V(1).Info("Removed networks", "Networks", removed)
 
+	return removeErr
+}
+
+func (rh *resourceHarvester) harvestAbandonedVolumes(
+	ctx context.Context,
+	co containers.ContainerOrchestrator,
+	log logr.Logger,
+) error {
+	listedVolumes, listErr := co.ListVolumes(ctx, containers.ListVolumesOptions{
+		Filters: containers.ListVolumesFilters{
+			LabelFilters: []containers.LabelFilter{{Key: CreatorProcessIdLabel}},
+		},
+	})
+	if listErr != nil {
+		return listErr
+	}
+	if len(listedVolumes) == 0 {
+		return nil
+	}
+
+	volumeNames := usvc_slices.Map[string](listedVolumes, func(volume containers.ListedVolume) string {
+		return volume.Name
+	})
+	inspectedVolumes, inspectErr := co.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: volumeNames})
+	if inspectErr != nil && !errors.Is(inspectErr, containers.ErrIncomplete) {
+		return inspectErr
+	}
+	if errors.Is(inspectErr, containers.ErrIncomplete) {
+		log.Info("Could not inspect all running volumes", "Error", inspectErr)
+	}
+
+	volumesToRemove := usvc_slices.Accumulate[[]string](inspectedVolumes, func(names []string, volume containers.InspectedVolume) []string {
+		if !nonPersistentWithCreator(volume.Labels) || rh.creatorStillRunning(volume.Labels) {
+			return names
+		}
+		return append(names, volume.Name)
+	})
+	if len(volumesToRemove) == 0 {
+		return nil
+	}
+
+	removedVolumes, removeErr := co.RemoveVolumes(ctx, containers.RemoveVolumesOptions{
+		Volumes: volumesToRemove,
+		Force:   false,
+	})
+	log.V(1).Info("Removed volumes", "Volumes", removedVolumes)
 	return removeErr
 }
 
