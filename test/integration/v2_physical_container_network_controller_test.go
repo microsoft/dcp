@@ -43,6 +43,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
 			NetworkName: networkName,
+			IPv6:        true,
 			Labels: []commonapi.Label{
 				{Key: "test-label", Value: "test-value"},
 			},
@@ -55,6 +56,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	require.NotEmpty(t, updatedNetwork.Status.NetworkID)
 	require.Equal(t, networkName, updatedNetwork.Status.NetworkName)
 	require.Equal(t, "bridge", updatedNetwork.Status.Driver)
+	require.True(t, updatedNetwork.Status.IPv6)
 	require.False(t, updatedNetwork.Status.CreatedAt.IsZero())
 	requireReadyCondition(t, updatedNetwork.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerNetworkReasonNetworkReady)
 
@@ -69,6 +71,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	labels := runtimeNetworkLabels(t, ctx, networkName)
 	require.Equal(t, "test-value", labels["test-label"])
 	require.Equal(t, "false", labels[controllers.PersistentLabel])
+	require.Equal(t, string(updatedNetwork.UID), labels["com.microsoft.developer.usvc-dev.uid"])
 	require.NotEmpty(t, labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, labels[controllers.CreatorProcessStartTimeLabel])
 }
@@ -355,6 +358,51 @@ func TestV2PhysicalContainerNetworkControllerTracksAndPreservesBuiltInNetwork(t 
 	require.NoError(t, inspectAfterDeleteErr)
 	require.Len(t, inspectedNetworks, 1)
 	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
+}
+
+func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-built-in-name")
+	builtInNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{"bridge"},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, builtInNetworks, 1)
+	builtInNetwork := builtInNetworks[0]
+	initialCreateCount := containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name)
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "built-in-network-name",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName: builtInNetwork.Name,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	failedNetwork := waitObjectAssumesState(
+		t,
+		ctx,
+		network.NamespacedName(),
+		func(currentNetwork *apiv2.PhysicalContainerNetwork) (bool, error) {
+			readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, apiv2.ConditionReady)
+			return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
+				readyCondition != nil &&
+				readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
+		},
+	)
+
+	require.Equal(t, builtInNetwork.Id, failedNetwork.Status.NetworkID)
+	require.Equal(t, builtInNetwork.Name, failedNetwork.Status.NetworkName)
+	require.Equal(t, builtInNetwork.Driver, failedNetwork.Status.Driver)
+	require.Equal(t, initialCreateCount+1, containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name))
+	require.Never(t, func() bool {
+		return containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name) > initialCreateCount+1
+	}, 3*time.Second, 250*time.Millisecond)
 }
 
 func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuringNamespaceDeletion(t *testing.T) {

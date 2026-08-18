@@ -35,7 +35,7 @@ var (
 		apiv2.PhysicalContainerNetworkReasonCreating:                   handlePhysicalContainerNetworkCreating,
 		apiv2.PhysicalContainerNetworkReasonCreated:                    handlePhysicalContainerNetworkCreated,
 		apiv2.PhysicalContainerNetworkReasonCreateFailed:               handlePhysicalContainerNetworkCreateFailed,
-		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable: handlePhysicalContainerNetworkCreateFailed,
+		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable: handlePhysicalContainerNetworkBuiltInNetworkNotRemovable,
 		apiv2.PhysicalContainerNetworkReasonReconciliationFailed:       handlePhysicalContainerNetworkRecoverableCreateFailed,
 		"": handleUnknownPhysicalContainerNetworkDataReason,
 	}
@@ -426,6 +426,18 @@ func handlePhysicalContainerNetworkCreateFailed(
 	log.V(1).Info("Runtime network creation failed; saving network status", "Message", data.failureMessage)
 	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
 	return noChange
+}
+
+func handlePhysicalContainerNetworkBuiltInNetworkNotRemovable(
+	ctx context.Context,
+	reconciler *PhysicalContainerNetworkReconciler,
+	network *apiv2.PhysicalContainerNetwork,
+	_ string,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) objectChange {
+	log.V(1).Info("Built-in runtime network cannot be removed; saving network status", "NetworkID", data.networkID)
+	return reconciler.applyRuntimeNetworkStatus(ctx, network, data.networkID, log)
 }
 
 func handlePhysicalContainerNetworkRecoverableCreateFailed(
