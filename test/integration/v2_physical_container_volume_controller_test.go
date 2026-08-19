@@ -61,7 +61,7 @@ func TestV2PhysicalContainerVolumeControllerCreatesVolume(t *testing.T) {
 	require.NotEmpty(t, inspectedVolume.Labels[controllers.CreatorProcessStartTimeLabel])
 }
 
-func TestV2PhysicalContainerVolumeControllerTracksExistingVolume(t *testing.T) {
+func TestV2PhysicalContainerVolumeControllerRetainsReferencedVolume(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -73,19 +73,20 @@ func TestV2PhysicalContainerVolumeControllerTracksExistingVolume(t *testing.T) {
 
 	volume := &apiv2.PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "tracked-volume", Namespace: namespace.Name},
-		Spec: apiv2.PhysicalContainerVolumeSpec{
-			VolumeID:   volumeName,
-			Persistent: true,
-		},
+		Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeID: volumeName},
 	}
 	require.NoError(t, client.Create(ctx, volume))
 
 	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 	require.Equal(t, volumeName, readyVolume.Status.VolumeID)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
+
+	require.NoError(t, client.Delete(ctx, volume))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
+	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
 }
 
-func TestV2PhysicalContainerVolumeControllerDeletesPersistentVolumesSafely(t *testing.T) {
+func TestV2PhysicalContainerVolumeControllerDeletesCreatedVolumesUnlessPersistent(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -116,28 +117,6 @@ func TestV2PhysicalContainerVolumeControllerDeletesPersistentVolumesSafely(t *te
 			waitRuntimeVolumeMissing(t, ctx, volumeName)
 		}
 	}
-}
-
-func TestV2PhysicalContainerVolumeControllerRemovesTrackedVolumeByDefault(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-track-delete")
-	volumeName := "v2-pcv-tracked-delete-runtime"
-	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
-	removeRuntimeVolumeOnCleanup(t, volumeName)
-
-	volume := &apiv2.PhysicalContainerVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "tracked-delete-volume", Namespace: namespace.Name},
-		Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeID: volumeName},
-	}
-	require.NoError(t, client.Create(ctx, volume))
-	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
-
-	require.NoError(t, client.Delete(ctx, volume))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
-	waitRuntimeVolumeMissing(t, ctx, volumeName)
 }
 
 func TestV2PhysicalContainerVolumeControllerWaitsForInUseVolume(t *testing.T) {
@@ -263,6 +242,7 @@ func TestV2PhysicalContainerVolumeControllerReportsTerminalNameCollision(t *test
 	volumeName := "v2-pcv-collision-runtime"
 	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
 	removeRuntimeVolumeOnCleanup(t, volumeName)
+	initialRemoveCount := containerOrchestrator.RemoveVolumeCallCount(volumeName)
 
 	volume := &apiv2.PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "collision-volume", Namespace: namespace.Name},
@@ -275,6 +255,212 @@ func TestV2PhysicalContainerVolumeControllerReportsTerminalNameCollision(t *test
 	require.Never(t, func() bool {
 		return containerOrchestrator.CreateVolumeCallCount(volumeName) > 2
 	}, 3*time.Second, 250*time.Millisecond)
+	require.Equal(t, initialRemoveCount, containerOrchestrator.RemoveVolumeCallCount(volumeName))
+	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
+}
+
+func TestV2PhysicalContainerVolumeControllerReplacesAndPersistsExistingVolume(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-replace")
+	volumeName := "v2-pcv-replace-runtime"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "replacement-volume", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			VolumeName:      volumeName,
+			Persistent:      true,
+			ReplaceExisting: true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+
+	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	require.Equal(t, volumeName, readyVolume.Status.VolumeID)
+	require.Equal(t, 2, containerOrchestrator.CreateVolumeCallCount(volumeName))
+	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))
+	replacement := inspectRuntimeVolume(t, ctx, volumeName)
+	require.Equal(t, string(readyVolume.UID), replacement.Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.Equal(t, "true", replacement.Labels[controllers.PersistentLabel])
+
+	require.NoError(t, client.Delete(ctx, volume))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
+	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
+}
+
+func TestV2PhysicalContainerVolumeControllerRetriesInUseReplacementWithoutRemovingContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-replace-in-use")
+	volumeName := "v2-pcv-replace-in-use-runtime"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+	containerID, createContainerErr := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
+		Name:  "v2-pcv-replace-in-use-container",
+		Image: "v2-pcv-replace-in-use-image",
+		VolumeMounts: []containers.CreateContainerVolumeMount{{
+			Type:   containers.NamedVolumeMount,
+			Source: volumeName,
+			Target: "/data",
+		}},
+	})
+	require.NoError(t, createContainerErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "in-use-replacement-volume", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			VolumeName:      volumeName,
+			ReplaceExisting: true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	failedVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
+	require.Len(t, inspectRuntimeContainers(t, ctx, containerID), 1)
+	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
+
+	_, removeContainerErr := containerOrchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{containerID},
+		Force:      true,
+	})
+	require.NoError(t, removeContainerErr)
+	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	require.Equal(t, string(readyVolume.UID), inspectRuntimeVolume(t, ctx, volumeName).Labels["com.microsoft.developer.usvc-dev.uid"])
+}
+
+func TestV2PhysicalContainerVolumeControllerToleratesReplacementRemovalRace(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-replace-race")
+	volumeName := "v2-pcv-replace-race-runtime"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+	containerOrchestrator.FailNextRemoveVolumeAfterRemoval(
+		volumeName,
+		errors.Join(containers.ErrNotFound, containers.ErrIncomplete),
+	)
+
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "replacement-race-volume", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			VolumeName:      volumeName,
+			ReplaceExisting: true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	require.Equal(t, string(readyVolume.UID), inspectRuntimeVolume(t, ctx, volumeName).Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.Equal(t, 2, containerOrchestrator.CreateVolumeCallCount(volumeName))
+}
+
+func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementRemovalFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-replace-remove-retry")
+	volumeName := "v2-pcv-replace-remove-retry-runtime"
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+	containerOrchestrator.FailNextRemoveVolume(volumeName, errors.New("simulated transient removal failure"))
+
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "replacement-remove-retry-volume", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			VolumeName:      volumeName,
+			ReplaceExisting: true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	failedVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
+
+	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	require.Equal(t, string(readyVolume.UID), inspectRuntimeVolume(t, ctx, volumeName).Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.GreaterOrEqual(t, containerOrchestrator.RemoveVolumeCallCount(volumeName), 2)
+}
+
+func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementInspectionFailure(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	serverInfo, _, startupErr := StartTestEnvironment(ctx, NamespaceController|PhysicalContainerVolumeController, t.Name(), NoSeparateWorkingDir)
+	require.NoError(t, startupErr)
+	defer func() {
+		cancel()
+		select {
+		case <-serverInfo.ApiServerDisposalComplete.Wait():
+		case <-time.After(5 * time.Second):
+		}
+	}()
+
+	testOrchestrator, isTestOrchestrator := serverInfo.ContainerOrchestrator.(*ctrl_testutil.TestContainerOrchestrator)
+	require.True(t, isTestOrchestrator)
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "v2-pcv-replace-inspect-retry"}}
+	require.NoError(t, serverInfo.Client.Create(ctx, namespace))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, types.NamespacedName{Name: namespace.Name}, func(updated *apiv2.Namespace) (bool, error) {
+		return updated.Status.Phase == apiv2.NamespacePhaseActive, nil
+	})
+
+	volumeName := "v2-pcv-replace-inspect-retry-runtime"
+	require.NoError(t, testOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volumeName}))
+	testOrchestrator.SetRuntimeHealth(false)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "replacement-inspect-retry-volume", Namespace: namespace.Name},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			VolumeName:      volumeName,
+			ReplaceExisting: true,
+		},
+	}
+	require.NoError(t, serverInfo.Client.Create(ctx, volume))
+	failedVolume := waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+
+	testOrchestrator.SetRuntimeHealth(true)
+	readyVolume := waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	inspectedVolumes, inspectErr := testOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedVolumes, 1)
+	require.Equal(t, string(readyVolume.UID), inspectedVolumes[0].Labels["com.microsoft.developer.usvc-dev.uid"])
+}
+
+func TestV2PhysicalContainerVolumeControllerAdoptsSameResourceVolumeAfterStateLoss(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespaceName := "v2-pcv-adopt-state-loss"
+	volumeName := "v2-pcv-adopt-state-loss-runtime"
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "state-loss-volume", Namespace: namespaceName},
+		Spec:       apiv2.PhysicalContainerVolumeSpec{VolumeName: volumeName},
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	pendingVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhasePending)
+	require.NotEmpty(t, pendingVolume.UID)
+	require.NoError(t, containerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
+		Name: volumeName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid": string(pendingVolume.UID),
+		},
+	}))
+
+	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceName}}
+	require.NoError(t, client.Create(ctx, namespace))
+	waitV2NamespaceActive(t, ctx, namespaceName)
+	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
+	require.Equal(t, string(readyVolume.UID), inspectRuntimeVolume(t, ctx, volumeName).Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.Equal(t, 2, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }
 
 func TestV2PhysicalContainerVolumeControllerReportsExternalRemovalWithoutRecreating(t *testing.T) {

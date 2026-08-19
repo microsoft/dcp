@@ -83,6 +83,9 @@ type TestContainerOrchestrator struct {
 	createVolumeCalls       map[string]int
 	createVolumeBlocks      map[string]chan struct{}
 	createVolumePostErrors  map[string][]error
+	removeVolumeCalls       map[string]int
+	removeVolumeErrors      map[string][]error
+	removeVolumePostErrors  map[string][]error
 	inspectVolumeCalls      map[string]int
 	pullImageCalls          map[string]int
 	pullImageBlocks         map[string]chan struct{}
@@ -212,6 +215,9 @@ func NewTestContainerOrchestrator(
 		createVolumeCalls:       map[string]int{},
 		createVolumeBlocks:      map[string]chan struct{}{},
 		createVolumePostErrors:  map[string][]error{},
+		removeVolumeCalls:       map[string]int{},
+		removeVolumeErrors:      map[string][]error{},
+		removeVolumePostErrors:  map[string][]error{},
 		inspectVolumeCalls:      map[string]int{},
 		pullImageCalls:          map[string]int{},
 		pullImageBlocks:         map[string]chan struct{}{},
@@ -790,6 +796,11 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options c
 }
 
 func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	removeErr, postRemoveErr := to.recordRemoveVolumesOperation(options.Volumes)
+	if removeErr != nil {
+		return nil, removeErr
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -838,7 +849,7 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were removed, expected %d but got %d", len(options.Volumes), len(removed))))
 	}
 
-	return removed, err
+	return removed, errors.Join(err, postRemoveErr)
 }
 
 func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
@@ -1343,6 +1354,36 @@ func (to *TestContainerOrchestrator) InspectVolumeCallCount(volume string) int {
 	return to.inspectVolumeCalls[volume]
 }
 
+func (to *TestContainerOrchestrator) FailNextRemoveVolume(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated volume removal failure")
+	}
+
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.removeVolumeErrors[name] = append(to.removeVolumeErrors[name], removeErr)
+}
+
+// FailNextRemoveVolumeAfterRemoval simulates a runtime removal whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextRemoveVolumeAfterRemoval(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated lost volume removal response")
+	}
+
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.removeVolumePostErrors[name] = append(to.removeVolumePostErrors[name], removeErr)
+}
+
+func (to *TestContainerOrchestrator) RemoveVolumeCallCount(name string) int {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	return to.removeVolumeCalls[name]
+}
+
 // FailNextCreateNetworkAfterCreation simulates a runtime create whose result is uncertain to the caller.
 func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name string, createErr error) {
 	if createErr == nil {
@@ -1490,6 +1531,33 @@ func (to *TestContainerOrchestrator) recordInspectVolumesOperation(volumes []str
 	for _, volume := range volumes {
 		to.inspectVolumeCalls[volume]++
 	}
+}
+
+func (to *TestContainerOrchestrator) recordRemoveVolumesOperation(volumes []string) (error, error) {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	var removeErr error
+	var postRemoveErr error
+	for _, volume := range volumes {
+		to.removeVolumeCalls[volume]++
+		if len(to.removeVolumeErrors[volume]) > 0 {
+			removeErr = errors.Join(removeErr, to.removeVolumeErrors[volume][0])
+			to.removeVolumeErrors[volume] = to.removeVolumeErrors[volume][1:]
+			if len(to.removeVolumeErrors[volume]) == 0 {
+				delete(to.removeVolumeErrors, volume)
+			}
+		}
+		if len(to.removeVolumePostErrors[volume]) > 0 {
+			postRemoveErr = errors.Join(postRemoveErr, to.removeVolumePostErrors[volume][0])
+			to.removeVolumePostErrors[volume] = to.removeVolumePostErrors[volume][1:]
+			if len(to.removeVolumePostErrors[volume]) == 0 {
+				delete(to.removeVolumePostErrors, volume)
+			}
+		}
+	}
+
+	return removeErr, postRemoveErr
 }
 
 func (to *TestContainerOrchestrator) takeCreateNetworkPostError(name string) error {

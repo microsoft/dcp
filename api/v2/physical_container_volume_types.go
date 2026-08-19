@@ -73,10 +73,13 @@ type PhysicalContainerVolumeSpec struct {
 	// VolumeName is the runtime name to use when creating a new volume. Required when volumeID is omitted.
 	VolumeName string `json:"volumeName,omitempty"`
 
-	// Persistent keeps the runtime volume in place when this resource is deleted.
-	// By default the runtime volume is removed, including when this resource only tracks a
-	// volume it did not create.
+	// Persistent keeps a runtime volume created by this resource in place when the resource is deleted.
+	// Existing runtime volumes referenced by volumeID are always retained.
 	Persistent bool `json:"persistent,omitempty"`
+
+	// ReplaceExisting removes an existing runtime volume with volumeName before creating a new one.
+	// Replacement waits while the existing volume is in use and never removes attached containers.
+	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime volume.
 	// +listType=map
@@ -185,6 +188,9 @@ func (pv *PhysicalContainerVolume) Validate(ctx context.Context) field.ErrorList
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pv.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	if pv.Spec.VolumeID != "" {
+		if pv.Spec.Persistent {
+			errorList = append(errorList, field.Forbidden(specPath.Child("persistent"), "persistent cannot be set when volumeID is set"))
+		}
 		if strings.TrimSpace(pv.Spec.VolumeID) != pv.Spec.VolumeID {
 			errorList = append(errorList, field.Invalid(specPath.Child("volumeID"), pv.Spec.VolumeID, "volumeID must not have leading or trailing whitespace"))
 		}
@@ -193,6 +199,9 @@ func (pv *PhysicalContainerVolume) Validate(ctx context.Context) field.ErrorList
 		}
 		if len(pv.Spec.Labels) > 0 {
 			errorList = append(errorList, field.Forbidden(specPath.Child("labels"), "labels cannot be set when volumeID is set"))
+		}
+		if pv.Spec.ReplaceExisting {
+			errorList = append(errorList, field.Forbidden(specPath.Child("replaceExisting"), "replaceExisting cannot be set when volumeID is set"))
 		}
 		return errorList
 	}
