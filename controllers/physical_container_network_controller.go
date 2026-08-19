@@ -269,20 +269,6 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 		return change | additionalReconciliationNeeded
 	}
 
-	if !network.Spec.Persistent && r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
-		change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
-		change &^= additionalReconciliationNeeded
-		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
-		change |= setReadyCondition(
-			&network.Status.Conditions,
-			network.Generation,
-			metav1.ConditionFalse,
-			apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
-			fmt.Sprintf("Runtime network %q is built in and cannot be removed; persistent must be true to track it.", inspectedNetwork.Name),
-		)
-		return change
-	}
-
 	return applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
 }
 
@@ -314,6 +300,22 @@ func (r *PhysicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	data *physicalContainerNetworkData,
 	log logr.Logger,
 ) {
+	if network.Spec.ReplaceExisting {
+		replaced, replaceErr := r.replacePhysicalContainerNetwork(ctx, network, data, log)
+		if replaceErr != nil {
+			log.Error(replaceErr, "Failed to replace existing runtime network", "NetworkName", network.Spec.NetworkName)
+			data.conditionReason = apiv2.PhysicalContainerNetworkReasonReconciliationFailed
+			data.failureMessage = fmt.Sprintf("Failed to replace existing runtime network: %v", replaceErr)
+			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+			return
+		}
+		if !replaced {
+			r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+			return
+		}
+	}
+
 	networkID, createErr := r.orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
 		Name:   network.Spec.NetworkName,
 		IPv6:   network.Spec.IPv6,
@@ -321,6 +323,50 @@ func (r *PhysicalContainerNetworkReconciler) createPhysicalContainerNetwork(
 	})
 	r.applyPhysicalContainerNetworkCreateResult(ctx, network, data, networkID, createErr, log)
 	r.queuePhysicalContainerNetworkDataResult(network, stateKey, data)
+}
+
+func (r *PhysicalContainerNetworkReconciler) replacePhysicalContainerNetwork(
+	ctx context.Context,
+	network *apiv2.PhysicalContainerNetwork,
+	data *physicalContainerNetworkData,
+	log logr.Logger,
+) (bool, error) {
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.NetworkName)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return true, nil
+	}
+	if inspectErr != nil {
+		return false, fmt.Errorf("inspect runtime network %q: %w", network.Spec.NetworkName, inspectErr)
+	}
+	if inspectedNetwork.Id == "" {
+		return false, fmt.Errorf("inspect runtime network %q returned an empty ID", network.Spec.NetworkName)
+	}
+	if r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+		data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
+		data.networkID = inspectedNetwork.Id
+		data.failureMessage = fmt.Sprintf("Runtime network %q is built in and cannot be replaced.", inspectedNetwork.Name)
+		data.retryAfter = time.Time{}
+		return false, nil
+	}
+	if physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
+		data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreated
+		data.networkID = inspectedNetwork.Id
+		data.failureMessage = ""
+		data.retryAfter = time.Time{}
+		log.V(1).Info("Adopted runtime network created by an earlier attempt", "NetworkID", inspectedNetwork.Id)
+		return false, nil
+	}
+
+	if !r.removeRuntimeNetwork(ctx, inspectedNetwork.Id, log) {
+		return false, fmt.Errorf("remove runtime network %q", inspectedNetwork.Id)
+	}
+
+	log.V(1).Info(
+		"Removed existing runtime network before replacement",
+		"NetworkID", inspectedNetwork.Id,
+		"NetworkName", inspectedNetwork.Name,
+	)
+	return true, nil
 }
 
 func (r *PhysicalContainerNetworkReconciler) applyPhysicalContainerNetworkCreateResult(
@@ -336,12 +382,12 @@ func (r *PhysicalContainerNetworkReconciler) applyPhysicalContainerNetworkCreate
 		data.failureMessage = fmt.Sprintf("Failed to create runtime network: %v", createErr)
 		inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.NetworkName)
 		if inspectErr == nil &&
-			!network.Spec.Persistent &&
+			network.Spec.ReplaceExisting &&
 			r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
 			data.networkID = inspectedNetwork.Id
 			data.failureMessage = fmt.Sprintf(
-				"Runtime network %q is built in and cannot be removed; persistent must be true to track it.",
+				"Runtime network %q is built in and cannot be replaced.",
 				inspectedNetwork.Name,
 			)
 			data.retryAfter = time.Time{}
@@ -351,8 +397,13 @@ func (r *PhysicalContainerNetworkReconciler) applyPhysicalContainerNetworkCreate
 			data.failureMessage = ""
 			data.retryAfter = time.Time{}
 		} else if inspectErr == nil {
-			data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreateFailed
-			data.retryAfter = time.Time{}
+			if network.Spec.ReplaceExisting {
+				data.conditionReason = apiv2.PhysicalContainerNetworkReasonReconciliationFailed
+				data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			} else {
+				data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreateFailed
+				data.retryAfter = time.Time{}
+			}
 		} else {
 			if !errors.Is(inspectErr, containers.ErrNotFound) {
 				data.failureMessage = fmt.Sprintf(
@@ -437,7 +488,16 @@ func handlePhysicalContainerNetworkBuiltInNetworkNotRemovable(
 	log logr.Logger,
 ) objectChange {
 	log.V(1).Info("Built-in runtime network cannot be removed; saving network status", "NetworkID", data.networkID)
-	return reconciler.applyRuntimeNetworkStatus(ctx, network, data.networkID, log)
+	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, data.networkID)
+	if inspectErr != nil {
+		log.Error(inspectErr, "Failed to inspect built-in runtime network", "NetworkID", data.networkID)
+		return data.applyTo(network)
+	}
+
+	change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
+	change &^= additionalReconciliationNeeded
+	change |= data.applyTo(network)
+	return change
 }
 
 func handlePhysicalContainerNetworkRecoverableCreateFailed(
@@ -454,12 +514,12 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 
 	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, network.Spec.NetworkName)
 	if inspectErr == nil {
-		if !network.Spec.Persistent &&
+		if network.Spec.ReplaceExisting &&
 			reconciler.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
 			data.networkID = inspectedNetwork.Id
 			data.failureMessage = fmt.Sprintf(
-				"Runtime network %q is built in and cannot be removed; persistent must be true to track it.",
+				"Runtime network %q is built in and cannot be replaced.",
 				inspectedNetwork.Name,
 			)
 			data.retryAfter = time.Time{}
@@ -470,7 +530,8 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 			return additionalReconciliationNeeded
 		}
 
-		if !physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
+		belongsToResource := physicalContainerNetworkBelongsToResource(inspectedNetwork, network)
+		if !belongsToResource && !network.Spec.ReplaceExisting {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreateFailed
 			data.failureMessage = fmt.Sprintf("Runtime network name %q is already in use.", network.Spec.NetworkName)
 			data.retryAfter = time.Time{}
@@ -479,6 +540,10 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 				return data.applyTo(network)
 			}
 			return additionalReconciliationNeeded
+		}
+		if !belongsToResource {
+			log.V(1).Info("Retrying runtime network replacement", "NetworkID", inspectedNetwork.Id, "NetworkName", inspectedNetwork.Name)
+			return reconciler.schedulePhysicalContainerNetworkCreate(network, log)
 		}
 
 		data.conditionReason = apiv2.PhysicalContainerNetworkReasonCreated
@@ -538,7 +603,7 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 	if networkID == "" {
 		networkID = network.Spec.NetworkID
 	}
-	if !network.Spec.Persistent &&
+	if network.Spec.NetworkID == "" && !network.Spec.Persistent &&
 		networkID == "" && data != nil &&
 		data.conditionReason == apiv2.PhysicalContainerNetworkReasonReconciliationFailed {
 		inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.NetworkName)
@@ -550,7 +615,7 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 		}
 	}
 
-	if !network.Spec.Persistent && networkID != "" {
+	if network.Spec.NetworkID == "" && !network.Spec.Persistent && networkID != "" {
 		if !r.removeRuntimeNetwork(ctx, networkID, log) {
 			return additionalReconciliationNeeded
 		}

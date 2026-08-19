@@ -217,7 +217,10 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 			UID:        types.UID("durable-built-in-failure"),
 			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
 		},
-		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "bridge"},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName:     "bridge",
+			ReplaceExisting: true,
+		},
 	}
 
 	baseClient := fake.NewClientBuilder().
@@ -264,7 +267,7 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 		return false, currentReconcileErr
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.Equal(t, 0, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
 
 	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
@@ -280,6 +283,84 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
 			readyCondition != nil &&
 			readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
+	})
+	require.NoError(t, waitErr)
+	require.Equal(t, 0, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+}
+
+func TestV2PhysicalContainerNetworkControllerAdoptsOwnedNetworkBeforeReplacement(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "replace-adopts-owned-network",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "replace-adopts-owned-network",
+			Namespace:  namespace.Name,
+			UID:        types.UID("replace-adopts-owned-network"),
+			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName:     "replace-adopts-owned-network-runtime",
+			ReplaceExisting: true,
+		},
+	}
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerNetwork{}).
+		WithObjects(namespace, network).
+		Build()
+
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(
+		ctx,
+		log,
+		ctrl_testutil.TcoOptionNone,
+	)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	ownedNetworkID, createErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: network.Spec.NetworkName,
+		Labels: map[string]string{
+			"com.microsoft.developer.usvc-dev.uid": string(network.UID),
+		},
+	})
+	require.NoError(t, createErr)
+
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(
+		ctx,
+		baseClient,
+		baseClient,
+		log,
+		orchestrator,
+	)
+	request := ctrl.Request{NamespacedName: network.NamespacedName()}
+
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		currentNetwork := &apiv2.PhysicalContainerNetwork{}
+		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
+			return false, getErr
+		}
+		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady &&
+			currentNetwork.Status.NetworkID == ownedNetworkID, nil
 	})
 	require.NoError(t, waitErr)
 	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
