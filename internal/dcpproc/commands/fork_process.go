@@ -57,6 +57,10 @@ func forkProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error 
 		logger.WithSessionId(childCmd)
 		process.ForkFromParent(childCmd)
 
+		if wrapErr := useExecShim(childCmd); wrapErr != nil {
+			return wrapErr
+		}
+
 		monitorEnabled := cmd.Flags().Changed("monitor")
 		var monitorCtx context.Context
 		var monitorCtxCancel context.CancelFunc
@@ -162,4 +166,34 @@ func trimForkProcessArgSeparator(args []string) []string {
 	}
 
 	return args
+}
+
+// Redirects the child through the 'fork-process-exec' command on platforms where the child would
+// otherwise inherit the Go runtime's signal handler flags. The shim clears those flags and then
+// execs the original program, which keeps the process ID, session, standard streams, and exit
+// code that the caller of 'fork-process' expects.
+//
+// The reset cannot be done here: the Go runtime restores its own signal dispositions in the
+// forked child before it reaches execve, so it has to happen in the process that calls exec.
+func useExecShim(childCmd *exec.Cmd) error {
+	if !process.SignalDispositionsLeakToChildren() {
+		return nil
+	}
+
+	if childCmd.Err != nil {
+		// The program could not be located. Leave the command untouched so that starting it
+		// reports that original failure rather than one from the shim.
+		return nil
+	}
+
+	dcpPath, dcpPathErr := os.Executable()
+	if dcpPathErr != nil {
+		return fmt.Errorf("could not determine the path of the current executable: %w", dcpPathErr)
+	}
+
+	shimArgs := []string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, childCmd.Path, "--"}
+	childCmd.Args = append(shimArgs, childCmd.Args...)
+	childCmd.Path = dcpPath
+
+	return nil
 }
