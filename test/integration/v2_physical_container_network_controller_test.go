@@ -93,8 +93,8 @@ func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T)
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkID:          networkID,
-			PreserveOnDeletion: true,
+			NetworkID:  networkID,
+			Persistent: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -200,8 +200,8 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName:        networkName,
-			PreserveOnDeletion: true,
+			NetworkName: networkName,
+			Persistent:  true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -220,7 +220,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 	require.Len(t, inspectedNetworks, 1)
 }
 
-// A tracked network is removed on deletion unless preserveOnDeletion is set, matching PhysicalContainer.
+// A tracked network is removed on deletion unless persistent is set, matching PhysicalContainer.
 func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -339,8 +339,8 @@ func TestV2PhysicalContainerNetworkControllerTracksAndPreservesBuiltInNetwork(t 
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkID:          builtInNetwork.Id,
-			PreserveOnDeletion: true,
+			NetworkID:  builtInNetwork.Id,
+			Persistent: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -433,9 +433,9 @@ func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuring
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:           image.Name,
-			ContainerName:      "v2-pcn-ns-preserved-container",
-			PreserveOnDeletion: true,
+			ImageRef:      image.Name,
+			ContainerName: "v2-pcn-ns-preserved-container",
+			Persistent:    true,
 			Networks: []apiv2.ContainerNetworkConnectionConfig{
 				{Name: networkName},
 			},
@@ -544,8 +544,8 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName:        networkName,
-			PreserveOnDeletion: true,
+			NetworkName: networkName,
+			Persistent:  true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))

@@ -89,10 +89,10 @@ type PhysicalContainerNetworkSpec struct {
 	// IPv6 enables IPv6 on a newly created runtime network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// PreserveOnDeletion keeps the runtime network in place when this resource is deleted.
+	// Persistent keeps the runtime network in place when this resource is deleted.
 	// By default the runtime network is removed, including when this resource only tracks a
 	// network it did not create. Tracking a built-in runtime network requires preservation.
-	PreserveOnDeletion bool `json:"preserveOnDeletion,omitempty"`
+	Persistent bool `json:"persistent,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime network.
 	// +listType=map

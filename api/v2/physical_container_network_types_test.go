@@ -82,8 +82,8 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkID:          "test-network-id",
-					PreserveOnDeletion: true,
+					NetworkID:  "test-network-id",
+					Persistent: true,
 				},
 			},
 		},
