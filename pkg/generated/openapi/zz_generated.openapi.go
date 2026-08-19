@@ -5114,9 +5114,9 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
-					"preserveOnDeletion": {
+					"persistent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PreserveOnDeletion keeps the runtime container in place when this resource is deleted. By default the runtime container is removed.",
+							Description: "Persistent keeps the runtime container in place when this resource is deleted. By default the runtime container is removed.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

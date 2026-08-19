@@ -41,9 +41,9 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID:        "existing-container-id",
-					Stop:               true,
-					PreserveOnDeletion: true,
+					ContainerID: "existing-container-id",
+					Stop:        true,
+					Persistent:  true,
 				},
 			},
 		},

@@ -108,9 +108,9 @@ type PhysicalContainerSpec struct {
 	// Stop requests that the tracked runtime container be stopped.
 	Stop bool `json:"stop,omitempty"`
 
-	// PreserveOnDeletion keeps the runtime container in place when this resource is deleted.
+	// Persistent keeps the runtime container in place when this resource is deleted.
 	// By default the runtime container is removed.
-	PreserveOnDeletion bool `json:"preserveOnDeletion,omitempty"`
+	Persistent bool `json:"persistent,omitempty"`
 
 	// ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.
 	ImageRef string `json:"imageRef,omitempty"`

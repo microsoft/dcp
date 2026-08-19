@@ -676,7 +676,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		containerID = data.containerID
 	}
 
-	if !container.Spec.PreserveOnDeletion && containerID != "" {
+	if !container.Spec.Persistent && containerID != "" {
 		_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 			Containers: []string{containerID},
 			Force:      true,
@@ -784,7 +784,7 @@ func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log log
 	labels := append([]containers.Label{}, container.Spec.Labels...)
 	labels = append(labels, containers.Label{
 		Key:   PersistentLabel,
-		Value: fmt.Sprintf("%t", container.Spec.PreserveOnDeletion),
+		Value: fmt.Sprintf("%t", container.Spec.Persistent),
 	})
 
 	thisProcess, thisProcessErr := process.This()
