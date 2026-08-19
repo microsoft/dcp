@@ -70,7 +70,7 @@ const (
 	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
 	PhysicalContainerNetworkReasonRuntimeNetworkMissing string = "RuntimeNetworkMissing"
 
-	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that deletion policy conflicts with a built-in runtime network.
+	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in runtime network.
 	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable string = "BuiltInNetworkNotRemovable"
 
 	// PhysicalContainerNetworkReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
@@ -89,10 +89,13 @@ type PhysicalContainerNetworkSpec struct {
 	// IPv6 enables IPv6 on a newly created runtime network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Persistent keeps the runtime network in place when this resource is deleted.
-	// By default the runtime network is removed, including when this resource only tracks a
-	// network it did not create. Tracking a built-in runtime network requires preservation.
+	// Persistent keeps a runtime network created by this resource in place when the resource is deleted.
+	// Existing runtime networks referenced by networkID are always retained.
 	Persistent bool `json:"persistent,omitempty"`
+
+	// ReplaceExisting removes an existing runtime network with networkName before creating a new one.
+	// Attached containers are disconnected but are not removed.
+	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime network.
 	// +listType=map
@@ -215,6 +218,9 @@ func (pn *PhysicalContainerNetwork) Validate(ctx context.Context) field.ErrorLis
 	} else if !validNetworkNameRegexp.MatchString(pn.Spec.NetworkName) {
 		errorList = append(errorList, field.Invalid(specPath.Child("networkName"), pn.Spec.NetworkName, fmt.Sprintf("networkName must match regex '%s'", validNetworkName)))
 	}
+	if pn.Spec.ReplaceExisting && pn.Spec.NetworkName == "" {
+		errorList = append(errorList, field.Required(specPath.Child("networkName"), "networkName must be set when replaceExisting is true"))
+	}
 
 	errorList = append(errorList, validateLabels(pn.Spec.Labels, specPath.Child("labels"))...)
 
@@ -241,8 +247,14 @@ func (pn *PhysicalContainerNetwork) ValidateUpdate(ctx context.Context, old runt
 func (pn *PhysicalContainerNetwork) validateExistingNetworkSpec(specPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
+	if pn.Spec.Persistent {
+		errorList = append(errorList, field.Forbidden(specPath.Child("persistent"), "persistent cannot be set when networkID is set"))
+	}
 	if pn.Spec.NetworkName != "" {
 		errorList = append(errorList, field.Forbidden(specPath.Child("networkName"), "networkName cannot be set when networkID is set"))
+	}
+	if pn.Spec.ReplaceExisting {
+		errorList = append(errorList, field.Forbidden(specPath.Child("replaceExisting"), "replaceExisting cannot be set when networkID is set"))
 	}
 	if pn.Spec.IPv6 {
 		errorList = append(errorList, field.Forbidden(specPath.Child("ipv6"), "ipv6 cannot be set when networkID is set"))

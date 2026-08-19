@@ -75,15 +75,15 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 			},
 		},
 		{
-			name: "valid tracked network preserved on deletion",
+			name: "valid replacement network",
 			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkID:  "test-network-id",
-					Persistent: true,
+					NetworkName:     "test-runtime-network",
+					ReplaceExisting: true,
 				},
 			},
 		},
@@ -136,6 +136,20 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 			expectedError: "spec.networkName",
 		},
 		{
+			name: "persistent with tracked network",
+			network: PhysicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-network",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerNetworkSpec{
+					NetworkID:  "test-network-id",
+					Persistent: true,
+				},
+			},
+			expectedError: "spec.persistent",
+		},
+		{
 			name: "network name with tracked network",
 			network: PhysicalContainerNetwork{
 				ObjectMeta: metav1.ObjectMeta{
@@ -148,6 +162,20 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 				},
 			},
 			expectedError: "spec.networkName",
+		},
+		{
+			name: "replace existing with tracked network",
+			network: PhysicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-network",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerNetworkSpec{
+					NetworkID:       "test-network-id",
+					ReplaceExisting: true,
+				},
+			},
+			expectedError: "spec.replaceExisting",
 		},
 		{
 			name: "IPv6 with tracked network",

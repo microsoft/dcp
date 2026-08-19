@@ -5400,7 +5400,14 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkSpec(ref common.Referen
 					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Persistent keeps the runtime network in place when this resource is deleted. By default the runtime network is removed, including when this resource only tracks a network it did not create. Tracking a built-in runtime network requires preservation.",
+							Description: "Persistent keeps a runtime network created by this resource in place when the resource is deleted. Existing runtime networks referenced by networkID are always retained.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"replaceExisting": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReplaceExisting removes an existing runtime network with networkName before creating a new one. Attached containers are disconnected but are not removed.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

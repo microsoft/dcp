@@ -93,8 +93,7 @@ func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T)
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkID:  networkID,
-			Persistent: true,
+			NetworkID: networkID,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -220,8 +219,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 	require.Len(t, inspectedNetworks, 1)
 }
 
-// A tracked network is removed on deletion unless persistent is set, matching PhysicalContainer.
-func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerRetainsTrackedNetworkOnDeletion(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -231,6 +229,16 @@ func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *
 	networkID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, createErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
+	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-tracked-delete-container",
+			Image:    "v2-pcn-tracked-delete-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkName}},
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	requireRuntimeContainersConnected(t, ctx, networkID, containerID)
 
 	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -246,10 +254,16 @@ func TestV2PhysicalContainerNetworkControllerRemovesTrackedNetworkOnDeletion(t *
 
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
-	waitRuntimeNetworkMissing(t, ctx, networkID)
+
+	inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{networkID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedNetworks, 1)
+	requireRuntimeContainersConnected(t, ctx, networkID, containerID)
 }
 
-func TestV2PhysicalContainerNetworkControllerRejectsAndPreservesBuiltInNetwork(t *testing.T) {
+func TestV2PhysicalContainerNetworkControllerRetainsReferencedBuiltInNetwork(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
@@ -283,67 +297,6 @@ func TestV2PhysicalContainerNetworkControllerRejectsAndPreservesBuiltInNetwork(t
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
-	failedNetwork := waitObjectAssumesState(
-		t,
-		ctx,
-		network.NamespacedName(),
-		func(currentNetwork *apiv2.PhysicalContainerNetwork) (bool, error) {
-			readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, apiv2.ConditionReady)
-			return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
-				readyCondition != nil &&
-				readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
-		},
-	)
-	require.Equal(t, builtInNetwork.Id, failedNetwork.Status.NetworkID)
-	require.Equal(t, builtInNetwork.Name, failedNetwork.Status.NetworkName)
-
-	require.NoError(t, client.Delete(ctx, network))
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
-
-	inspectedNetworks, inspectAfterDeleteErr := containerOrchestrator.InspectNetworks(
-		ctx,
-		containers.InspectNetworksOptions{Networks: []string{builtInNetwork.Id}},
-	)
-	require.NoError(t, inspectAfterDeleteErr)
-	require.Len(t, inspectedNetworks, 1)
-	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
-}
-
-func TestV2PhysicalContainerNetworkControllerTracksAndPreservesBuiltInNetwork(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-preserved-built-in")
-	builtInNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
-		Networks: []string{"bridge"},
-	})
-	require.NoError(t, inspectErr)
-	require.Len(t, builtInNetworks, 1)
-	builtInNetwork := builtInNetworks[0]
-
-	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
-		CreateContainerOptions: containers.CreateContainerOptions{
-			Name:     "v2-pcn-preserved-built-in-container",
-			Image:    "v2-pcn-preserved-built-in-image",
-			Networks: []containers.CreateContainerNetworkOptions{{Name: builtInNetwork.Name}},
-		},
-	})
-	require.NoError(t, runErr)
-	removeRuntimeContainerOnCleanup(t, containerID)
-	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
-
-	network := &apiv2.PhysicalContainerNetwork{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "preserved-built-in-network",
-			Namespace: namespace.Name,
-		},
-		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkID:  builtInNetwork.Id,
-			Persistent: true,
-		},
-	}
-	require.NoError(t, client.Create(ctx, network))
 	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	require.Equal(t, builtInNetwork.Id, readyNetwork.Status.NetworkID)
 	require.Equal(t, builtInNetwork.Name, readyNetwork.Status.NetworkName)
@@ -360,6 +313,48 @@ func TestV2PhysicalContainerNetworkControllerTracksAndPreservesBuiltInNetwork(t 
 	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
 }
 
+func TestV2PhysicalContainerNetworkControllerReplacesExistingNetwork(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-replace")
+	networkName := "v2-pcn-replace-runtime"
+	existingNetworkID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
+		Name: networkName,
+	})
+	require.NoError(t, createErr)
+	removeRuntimeNetworkOnCleanup(t, networkName)
+
+	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-replace-container",
+			Image:    "v2-pcn-replace-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: networkName}},
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	requireRuntimeContainersConnected(t, ctx, existingNetworkID, containerID)
+
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "replacement-network",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			NetworkName:     networkName,
+			ReplaceExisting: true,
+		},
+	}
+	require.NoError(t, client.Create(ctx, network))
+	readyNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
+	require.NotEqual(t, existingNetworkID, readyNetwork.Status.NetworkID)
+	require.Equal(t, networkName, readyNetwork.Status.NetworkName)
+	waitRuntimeNetworkMissing(t, ctx, existingNetworkID)
+	requireRuntimeContainersDisconnected(t, ctx, existingNetworkID, containerID)
+}
+
 func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -373,6 +368,16 @@ func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t
 	require.Len(t, builtInNetworks, 1)
 	builtInNetwork := builtInNetworks[0]
 	initialCreateCount := containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name)
+	containerID, runErr := containerOrchestrator.RunContainer(ctx, containers.RunContainerOptions{
+		CreateContainerOptions: containers.CreateContainerOptions{
+			Name:     "v2-pcn-built-in-replace-container",
+			Image:    "v2-pcn-built-in-replace-image",
+			Networks: []containers.CreateContainerNetworkOptions{{Name: builtInNetwork.Name}},
+		},
+	})
+	require.NoError(t, runErr)
+	removeRuntimeContainerOnCleanup(t, containerID)
+	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
 
 	network := &apiv2.PhysicalContainerNetwork{
 		ObjectMeta: metav1.ObjectMeta{
@@ -380,7 +385,8 @@ func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: builtInNetwork.Name,
+			NetworkName:     builtInNetwork.Name,
+			ReplaceExisting: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -399,9 +405,10 @@ func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t
 	require.Equal(t, builtInNetwork.Id, failedNetwork.Status.NetworkID)
 	require.Equal(t, builtInNetwork.Name, failedNetwork.Status.NetworkName)
 	require.Equal(t, builtInNetwork.Driver, failedNetwork.Status.Driver)
-	require.Equal(t, initialCreateCount+1, containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name))
+	require.Equal(t, initialCreateCount, containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name))
+	requireRuntimeContainersConnected(t, ctx, builtInNetwork.Id, containerID)
 	require.Never(t, func() bool {
-		return containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name) > initialCreateCount+1
+		return containerOrchestrator.CreateNetworkCallCount(builtInNetwork.Name) > initialCreateCount
 	}, 3*time.Second, 250*time.Millisecond)
 }
 
@@ -534,7 +541,7 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pcn-create-fail")
 	networkName := "v2-pcn-conflicting-runtime"
-	_, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	existingNetworkID, createErr := containerOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
 	require.NoError(t, createErr)
 	removeRuntimeNetworkOnCleanup(t, networkName)
 
@@ -557,6 +564,11 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 	require.Never(t, func() bool {
 		return containerOrchestrator.CreateNetworkCallCount(networkName) > 2
 	}, 3*time.Second, 250*time.Millisecond)
+	inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{existingNetworkID},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedNetworks, 1)
 }
 
 func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFailure(t *testing.T) {
