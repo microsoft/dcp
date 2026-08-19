@@ -269,7 +269,7 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 		return change | additionalReconciliationNeeded
 	}
 
-	if !network.Spec.PreserveOnDeletion && r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
+	if !network.Spec.Persistent && r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
 		change := applyReadyPhysicalContainerNetworkStatus(network, inspectedNetwork)
 		change &^= additionalReconciliationNeeded
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
@@ -278,7 +278,7 @@ func (r *PhysicalContainerNetworkReconciler) applyRuntimeNetworkStatus(
 			network.Generation,
 			metav1.ConditionFalse,
 			apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
-			fmt.Sprintf("Runtime network %q is built in and cannot be removed; preserveOnDeletion must be true to track it.", inspectedNetwork.Name),
+			fmt.Sprintf("Runtime network %q is built in and cannot be removed; persistent must be true to track it.", inspectedNetwork.Name),
 		)
 		return change
 	}
@@ -336,12 +336,12 @@ func (r *PhysicalContainerNetworkReconciler) applyPhysicalContainerNetworkCreate
 		data.failureMessage = fmt.Sprintf("Failed to create runtime network: %v", createErr)
 		inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.NetworkName)
 		if inspectErr == nil &&
-			!network.Spec.PreserveOnDeletion &&
+			!network.Spec.Persistent &&
 			r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
 			data.networkID = inspectedNetwork.Id
 			data.failureMessage = fmt.Sprintf(
-				"Runtime network %q is built in and cannot be removed; preserveOnDeletion must be true to track it.",
+				"Runtime network %q is built in and cannot be removed; persistent must be true to track it.",
 				inspectedNetwork.Name,
 			)
 			data.retryAfter = time.Time{}
@@ -454,12 +454,12 @@ func handlePhysicalContainerNetworkRecoverableCreateFailed(
 
 	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, reconciler.orchestrator, network.Spec.NetworkName)
 	if inspectErr == nil {
-		if !network.Spec.PreserveOnDeletion &&
+		if !network.Spec.Persistent &&
 			reconciler.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
 			data.conditionReason = apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable
 			data.networkID = inspectedNetwork.Id
 			data.failureMessage = fmt.Sprintf(
-				"Runtime network %q is built in and cannot be removed; preserveOnDeletion must be true to track it.",
+				"Runtime network %q is built in and cannot be removed; persistent must be true to track it.",
 				inspectedNetwork.Name,
 			)
 			data.retryAfter = time.Time{}
@@ -538,7 +538,7 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 	if networkID == "" {
 		networkID = network.Spec.NetworkID
 	}
-	if !network.Spec.PreserveOnDeletion &&
+	if !network.Spec.Persistent &&
 		networkID == "" && data != nil &&
 		data.conditionReason == apiv2.PhysicalContainerNetworkReasonReconciliationFailed {
 		inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, network.Spec.NetworkName)
@@ -550,7 +550,7 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 		}
 	}
 
-	if !network.Spec.PreserveOnDeletion && networkID != "" {
+	if !network.Spec.Persistent && networkID != "" {
 		if !r.removeRuntimeNetwork(ctx, networkID, log) {
 			return additionalReconciliationNeeded
 		}
@@ -659,7 +659,7 @@ func physicalContainerNetworkCreationLabels(network *apiv2.PhysicalContainerNetw
 	for _, label := range network.Spec.Labels {
 		labels[label.Key] = label.Value
 	}
-	labels[PersistentLabel] = fmt.Sprintf("%t", network.Spec.PreserveOnDeletion)
+	labels[PersistentLabel] = fmt.Sprintf("%t", network.Spec.Persistent)
 	if network.UID != "" {
 		labels[uidLabel] = string(network.UID)
 	}
