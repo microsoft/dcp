@@ -115,7 +115,7 @@ func TestPhysicalContainerVolumeValidateUpdateRejectsSpecChanges(t *testing.T) {
 		Spec:       PhysicalContainerVolumeSpec{VolumeName: "test-runtime-volume"},
 	}
 	newVolume := oldVolume.DeepCopy()
-	newVolume.Spec.PreserveOnDeletion = true
+	newVolume.Spec.Persistent = true
 
 	errorList := newVolume.ValidateUpdate(context.Background(), oldVolume)
 

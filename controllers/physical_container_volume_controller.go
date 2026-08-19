@@ -444,7 +444,7 @@ func (r *PhysicalContainerVolumeReconciler) handleDeletionRequest(ctx context.Co
 	if volumeID == "" {
 		volumeID = volume.Spec.VolumeID
 	}
-	if !volume.Spec.PreserveOnDeletion &&
+	if !volume.Spec.Persistent &&
 		volumeID == "" && data != nil &&
 		data.conditionReason == apiv2.PhysicalContainerVolumeReasonReconciliationFailed {
 		inspectedVolume, inspectErr := inspectPhysicalContainerVolume(ctx, r.orchestrator, volume.Spec.VolumeName)
@@ -456,7 +456,7 @@ func (r *PhysicalContainerVolumeReconciler) handleDeletionRequest(ctx context.Co
 		}
 	}
 
-	if !volume.Spec.PreserveOnDeletion && volumeID != "" && !r.removeRuntimeVolume(ctx, volumeID, log) {
+	if !volume.Spec.Persistent && volumeID != "" && !r.removeRuntimeVolume(ctx, volumeID, log) {
 		return additionalReconciliationNeeded
 	}
 
@@ -518,7 +518,7 @@ func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume
 	for _, label := range volume.Spec.Labels {
 		labels[label.Key] = label.Value
 	}
-	labels[PersistentLabel] = fmt.Sprintf("%t", volume.Spec.PreserveOnDeletion)
+	labels[PersistentLabel] = fmt.Sprintf("%t", volume.Spec.Persistent)
 	if volume.UID != "" {
 		labels[uidLabel] = string(volume.UID)
 	}

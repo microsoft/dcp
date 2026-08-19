@@ -73,10 +73,10 @@ type PhysicalContainerVolumeSpec struct {
 	// VolumeName is the runtime name to use when creating a new volume. Required when volumeID is omitted.
 	VolumeName string `json:"volumeName,omitempty"`
 
-	// PreserveOnDeletion keeps the runtime volume in place when this resource is deleted.
+	// Persistent keeps the runtime volume in place when this resource is deleted.
 	// By default the runtime volume is removed, including when this resource only tracks a
 	// volume it did not create.
-	PreserveOnDeletion bool `json:"preserveOnDeletion,omitempty"`
+	Persistent bool `json:"persistent,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime volume.
 	// +listType=map

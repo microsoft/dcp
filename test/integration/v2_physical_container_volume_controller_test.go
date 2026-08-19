@@ -74,8 +74,8 @@ func TestV2PhysicalContainerVolumeControllerTracksExistingVolume(t *testing.T) {
 	volume := &apiv2.PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "tracked-volume", Namespace: namespace.Name},
 		Spec: apiv2.PhysicalContainerVolumeSpec{
-			VolumeID:           volumeName,
-			PreserveOnDeletion: true,
+			VolumeID:   volumeName,
+			Persistent: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, volume))
@@ -85,24 +85,24 @@ func TestV2PhysicalContainerVolumeControllerTracksExistingVolume(t *testing.T) {
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }
 
-func TestV2PhysicalContainerVolumeControllerDeletesAndPreservesVolumes(t *testing.T) {
+func TestV2PhysicalContainerVolumeControllerDeletesPersistentVolumesSafely(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
 	defer cancel()
 
 	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-delete")
-	for _, preserve := range []bool{false, true} {
+	for _, persistent := range []bool{false, true} {
 		name := "deleted"
-		if preserve {
-			name = "preserved"
+		if persistent {
+			name = "persistent"
 		}
 		volumeName := "v2-pcv-" + name + "-runtime"
 		removeRuntimeVolumeOnCleanup(t, volumeName)
 		volume := &apiv2.PhysicalContainerVolume{
 			ObjectMeta: metav1.ObjectMeta{Name: name + "-volume", Namespace: namespace.Name},
 			Spec: apiv2.PhysicalContainerVolumeSpec{
-				VolumeName:         volumeName,
-				PreserveOnDeletion: preserve,
+				VolumeName: volumeName,
+				Persistent: persistent,
 			},
 		}
 		require.NoError(t, client.Create(ctx, volume))
@@ -110,7 +110,7 @@ func TestV2PhysicalContainerVolumeControllerDeletesAndPreservesVolumes(t *testin
 
 		require.NoError(t, client.Delete(ctx, volume))
 		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
-		if preserve {
+		if persistent {
 			require.Equal(t, "true", inspectRuntimeVolume(t, ctx, volumeName).Labels[controllers.PersistentLabel])
 		} else {
 			waitRuntimeVolumeMissing(t, ctx, volumeName)
