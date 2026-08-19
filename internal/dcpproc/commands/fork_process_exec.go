@@ -6,6 +6,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -25,8 +26,13 @@ const (
 	// the arguments so that the child keeps the argv[0] the caller asked for.
 	execPathFlagName = "exec-path"
 
+	// The descriptor 'fork-process' passes as the only extra file, on which this command reports
+	// whether the exec succeeded. It is the first descriptor after the standard streams.
+	execStatusFd = 3
+
 	// Reported when the image cannot be executed, matching the shell convention for a command
-	// that could not be run.
+	// that could not be run. 'fork-process' reports the underlying errno itself, so this is only
+	// a fallback for anything that inspects the shim's own exit code.
 	execFailedExitCode = 127
 )
 
@@ -73,6 +79,12 @@ func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) er
 			"Args", args[1:],
 		)
 
+		// 'fork-process' waits for this descriptor to close, which is how a successful execve is
+		// reported, so it must not survive into the new program. It is always supplied, because
+		// this command is only ever started by 'fork-process'.
+		statusFile := os.NewFile(execStatusFd, "exec-status")
+		syscall.CloseOnExec(execStatusFd)
+
 		// From this point on the process must not rely on the Go runtime's signal handling,
 		// which the reset disables. The only remaining step is the exec.
 		process.ResetSignalDispositions()
@@ -80,7 +92,18 @@ func forkProcessExec(log logr.Logger) func(cmd *cobra.Command, args []string) er
 		// Exec only returns when it fails; on success this process becomes the requested program.
 		execErr := syscall.Exec(execPath, args, os.Environ())
 
+		var execErrno syscall.Errno
+		if !errors.As(execErr, &execErrno) {
+			// Report something the parent can still parse; the message below stays accurate.
+			execErrno = syscall.EINVAL
+		}
+
+		_, _ = fmt.Fprintf(statusFile, "%d", int(execErrno))
+		_ = statusFile.Close()
+
+		exitCode := execFailedExitCode
+
 		log.Error(execErr, "Could not execute the requested program")
-		return cmds.NewExitCodeError(fmt.Errorf("could not execute %q: %w", execPath, execErr), execFailedExitCode)
+		return cmds.NewExitCodeError(fmt.Errorf("could not execute %q: %w", execPath, execErr), exitCode)
 	}
 }
