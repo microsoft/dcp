@@ -5116,7 +5116,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Persistent keeps the runtime container in place when this resource is deleted. By default the runtime container is removed.",
+							Description: "Persistent keeps a runtime container created by this resource in place when the resource is deleted. Existing runtime containers referenced by containerID are always retained.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
@@ -5132,6 +5132,13 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 						SchemaProps: spec.SchemaProps{
 							Description: "ContainerName is the runtime name to use when creating a new container.",
 							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"replaceExisting": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReplaceExisting removes an existing runtime container with containerName before creating a new one.",
+							Type:        []string{"boolean"},
 							Format:      "",
 						},
 					},

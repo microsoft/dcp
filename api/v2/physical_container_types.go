@@ -108,8 +108,8 @@ type PhysicalContainerSpec struct {
 	// Stop requests that the tracked runtime container be stopped.
 	Stop bool `json:"stop,omitempty"`
 
-	// Persistent keeps the runtime container in place when this resource is deleted.
-	// By default the runtime container is removed.
+	// Persistent keeps a runtime container created by this resource in place when the resource is deleted.
+	// Existing runtime containers referenced by containerID are always retained.
 	Persistent bool `json:"persistent,omitempty"`
 
 	// ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.
@@ -117,6 +117,9 @@ type PhysicalContainerSpec struct {
 
 	// ContainerName is the runtime name to use when creating a new container.
 	ContainerName string `json:"containerName,omitempty"`
+
+	// ReplaceExisting removes an existing runtime container with containerName before creating a new one.
+	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Entrypoint is the container runtime entrypoint to run.
 	Entrypoint string `json:"entrypoint,omitempty"`
@@ -294,6 +297,9 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 	if pc.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(pc.Spec.ContainerName) {
 		errorList = append(errorList, field.Invalid(specPath.Child("containerName"), pc.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
+	if pc.Spec.ReplaceExisting && pc.Spec.ContainerName == "" {
+		errorList = append(errorList, field.Required(specPath.Child("containerName"), "containerName must be set when replaceExisting is true"))
+	}
 
 	networksPath := specPath.Child("networks")
 	for i, network := range pc.Spec.Networks {
@@ -352,11 +358,17 @@ func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Obj
 func (pc *PhysicalContainer) validateExistingContainerSpec(specPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
+	if pc.Spec.Persistent {
+		errorList = append(errorList, field.Forbidden(specPath.Child("persistent"), "persistent cannot be set when containerID is set"))
+	}
 	if pc.Spec.ImageRef != "" {
 		errorList = append(errorList, field.Forbidden(specPath.Child("imageRef"), "imageRef cannot be set when containerID is set"))
 	}
 	if pc.Spec.ContainerName != "" {
 		errorList = append(errorList, field.Forbidden(specPath.Child("containerName"), "containerName cannot be set when containerID is set"))
+	}
+	if pc.Spec.ReplaceExisting {
+		errorList = append(errorList, field.Forbidden(specPath.Child("replaceExisting"), "replaceExisting cannot be set when containerID is set"))
 	}
 	if pc.Spec.Entrypoint != "" {
 		errorList = append(errorList, field.Forbidden(specPath.Child("entrypoint"), "entrypoint cannot be set when containerID is set"))

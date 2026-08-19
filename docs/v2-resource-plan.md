@@ -25,7 +25,15 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - Long-running or blocking operations should run through bounded queued work, with reconciliation recording progress and returning quickly.
 - Queued action completion should enqueue a follow-up reconcile instead of directly mutating Kubernetes objects from worker code.
 - Non-idempotent side effects should be guarded by lightweight in-memory data so stale or competing reconciles do not duplicate runtime work.
-- DCP does not currently replay in-memory progress after controller crashes; queued side effects that create non-preserved runtime resources must stamp creator and persistence labels so startup harvesting can remove abandoned resources.
+- DCP does not currently replay in-memory progress after controller crashes; queued side effects that create non-persistent runtime resources must stamp creator and persistence labels so startup harvesting can remove abandoned resources.
+
+### Physical resource ownership
+
+- Physical resources either create a runtime object or reference an existing object by runtime ID; creation fields and existing-object references are mutually exclusive.
+- Runtime objects referenced by ID are never removed when the physical resource is deleted. `persistent` and `replaceExisting` apply only when creating a runtime object and are rejected for existing-object references.
+- A created runtime object is removed with its physical resource unless `persistent` is true.
+- Creation fails on a runtime name collision unless `replaceExisting` is true. Replacement removes the object that was resolved by name before creating and tracking the new object.
+- Higher-level `session`, `persistent`, and `existing` modes remain logical policy. Logical controllers translate those modes into physical creation or reference specifications rather than copying the mode enum onto physical resources.
 
 ### In-memory progress data
 

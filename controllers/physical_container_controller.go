@@ -423,6 +423,17 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	data *physicalContainerData,
 	log logr.Logger,
 ) {
+	if container.Spec.ReplaceExisting {
+		replaceErr := r.removePhysicalContainerForReplacement(ctx, container.Spec.ContainerName, log)
+		if replaceErr != nil {
+			log.Error(replaceErr, "Failed to replace existing physical container")
+			data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
+			data.failureMessage = fmt.Sprintf("Failed to replace existing physical container: %v", replaceErr)
+			r.queuePhysicalContainerDataResult(container, stateKey, data)
+			return
+		}
+	}
+
 	containerID, createErr := r.orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
 		Name:         container.Spec.ContainerName,
 		Image:        container.Status.Image,
@@ -451,6 +462,30 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)
+}
+
+func (r *PhysicalContainerReconciler) removePhysicalContainerForReplacement(ctx context.Context, containerName string, log logr.Logger) error {
+	inspectedContainer, inspectErr := r.inspectPhysicalContainer(ctx, containerName)
+	if errors.Is(inspectErr, containers.ErrNotFound) {
+		return nil
+	}
+	if inspectErr != nil {
+		return fmt.Errorf("inspect runtime container %q: %w", containerName, inspectErr)
+	}
+	if inspectedContainer.Id == "" {
+		return fmt.Errorf("inspect runtime container %q returned an empty ID", containerName)
+	}
+
+	_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{inspectedContainer.Id},
+		Force:      true,
+	})
+	if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+		return fmt.Errorf("remove runtime container %q: %w", inspectedContainer.Id, removeErr)
+	}
+
+	log.V(1).Info("Removed existing runtime container before replacement", "ContainerID", inspectedContainer.Id, "ContainerName", containerName)
+	return nil
 }
 
 func (r *PhysicalContainerReconciler) schedulePhysicalContainerCreateFiles(
@@ -676,7 +711,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		containerID = data.containerID
 	}
 
-	if !container.Spec.Persistent && containerID != "" {
+	if container.Spec.ContainerID == "" && !container.Spec.Persistent && containerID != "" {
 		_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 			Containers: []string{containerID},
 			Force:      true,

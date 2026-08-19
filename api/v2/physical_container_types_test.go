@@ -43,7 +43,6 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				Spec: PhysicalContainerSpec{
 					ContainerID: "existing-container-id",
 					Stop:        true,
-					Persistent:  true,
 				},
 			},
 		},
@@ -128,6 +127,48 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				},
 			},
 			expectedError: "spec.command",
+		},
+		{
+			name: "persistent conflicts with existing container ID",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ContainerID: "existing-container-id",
+					Persistent:  true,
+				},
+			},
+			expectedError: "spec.persistent",
+		},
+		{
+			name: "replaceExisting conflicts with existing container ID",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ContainerID:     "existing-container-id",
+					ReplaceExisting: true,
+				},
+			},
+			expectedError: "spec.replaceExisting",
+		},
+		{
+			name: "replaceExisting requires containerName",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerSpec{
+					ImageRef:        "test-image",
+					ReplaceExisting: true,
+				},
+			},
+			expectedError: "spec.containerName",
 		},
 		{
 			name: "invalid container port range end",
