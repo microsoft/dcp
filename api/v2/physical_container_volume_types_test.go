@@ -39,6 +39,16 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid replacement volume",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					VolumeName:      "test-runtime-volume",
+					ReplaceExisting: true,
+				},
+			},
+		},
+		{
 			name: "missing namespace",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume"},
@@ -62,6 +72,17 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 			expectedError: "spec.volumeName",
 		},
 		{
+			name: "persistent with tracked volume",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					VolumeID:   "test-runtime-volume",
+					Persistent: true,
+				},
+			},
+			expectedError: "spec.persistent",
+		},
+		{
 			name: "volume name with tracked volume",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
@@ -71,6 +92,17 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 				},
 			},
 			expectedError: "spec.volumeName",
+		},
+		{
+			name: "replace existing with tracked volume",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					VolumeID:        "test-runtime-volume",
+					ReplaceExisting: true,
+				},
+			},
+			expectedError: "spec.replaceExisting",
 		},
 		{
 			name: "labels with tracked volume",

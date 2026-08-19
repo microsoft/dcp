@@ -5899,7 +5899,14 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerVolumeSpec(ref common.Referenc
 					},
 					"persistent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Persistent keeps the runtime volume in place when this resource is deleted. By default the runtime volume is removed, including when this resource only tracks a volume it did not create.",
+							Description: "Persistent keeps a runtime volume created by this resource in place when the resource is deleted. Existing runtime volumes referenced by volumeID are always retained.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"replaceExisting": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReplaceExisting removes an existing runtime volume with volumeName before creating a new one. Replacement waits while the existing volume is in use and never removes attached containers.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},
