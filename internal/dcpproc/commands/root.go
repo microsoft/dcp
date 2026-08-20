@@ -68,6 +68,12 @@ func NewRootCmd(log *logger.Logger) (*cobra.Command, error) {
 		rootCmd.AddCommand(cmd)
 	}
 
+	if cmd, err = NewForkProcessExecCommand(log.Logger); err != nil {
+		return nil, fmt.Errorf("could not set up '%s' command: %w", ForkProcessExecCmdName, err)
+	} else {
+		rootCmd.AddCommand(cmd)
+	}
+
 	return rootCmd, nil
 }
 

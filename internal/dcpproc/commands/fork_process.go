@@ -8,8 +8,12 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
@@ -57,6 +61,14 @@ func forkProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error 
 		logger.WithSessionId(childCmd)
 		process.ForkFromParent(childCmd)
 
+		execShim, shimErr := useExecShim(childCmd)
+		if shimErr != nil {
+			return shimErr
+		}
+		if execShim != nil {
+			defer execShim.close()
+		}
+
 		monitorEnabled := cmd.Flags().Changed("monitor")
 		var monitorCtx context.Context
 		var monitorCtxCancel context.CancelFunc
@@ -71,7 +83,7 @@ func forkProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error 
 			}
 		}
 
-		pid, childExitInfoCh, disposeChildExecutor, startErr := startForkedProcess(cmd, childCmd, monitorEnabled, log)
+		pid, childExitInfoCh, disposeChildExecutor, startErr := startForkedProcess(cmd, childCmd, execShim, monitorEnabled, log)
 		if startErr != nil {
 			return startErr
 		}
@@ -115,6 +127,7 @@ func forkProcess(log logr.Logger) func(cmd *cobra.Command, args []string) error 
 func startForkedProcess(
 	cmd *cobra.Command,
 	childCmd *exec.Cmd,
+	execShim *execShimHandshake,
 	observeExit bool,
 	log logr.Logger,
 ) (process.Pid_t, <-chan process.ProcessExitInfo, func(), error) {
@@ -141,6 +154,18 @@ func startForkedProcess(
 		return process.UnknownPID, nil, nil, fmt.Errorf("could not start forked process: %w", startErr)
 	}
 
+	// Starting the shim only means dcp itself started. The PID must not be reported before the
+	// requested program is known to be running, so that a program which cannot be executed is
+	// still reported as a start failure.
+	if execShim != nil {
+		if execErr := execShim.wait(); execErr != nil {
+			// The logger already carries the command and arguments.
+			log.Error(execErr, "Failed to execute forked process")
+			executor.Dispose()
+			return process.UnknownPID, nil, nil, fmt.Errorf("could not start forked process: %w", execErr)
+		}
+	}
+
 	pid := handle.Pid
 	if _, writeErr := fmt.Fprintln(cmd.OutOrStdout(), pid); writeErr != nil {
 		log.Error(writeErr, "Failed to write forked process PID", "PID", pid)
@@ -162,4 +187,98 @@ func trimForkProcessArgSeparator(args []string) []string {
 	}
 
 	return args
+}
+
+// Redirects the child through the 'fork-process-exec' command on platforms where the child would
+// otherwise inherit the Go runtime's signal handler flags. The shim clears those flags and then
+// execs the original program, which keeps the process ID, session, standard streams, and exit
+// code that the caller of 'fork-process' expects.
+//
+// The reset cannot be done here: the Go runtime restores its own signal dispositions in the
+// forked child before it reaches execve, so it has to happen in the process that calls exec.
+//
+// Returns the handshake that reports whether the shim reached the requested program, or nil when
+// the child is started directly. The caller owns the returned handshake and must close it.
+func useExecShim(childCmd *exec.Cmd) (*execShimHandshake, error) {
+	if !process.SignalDispositionsLeakToChildren() {
+		return nil, nil
+	}
+
+	if childCmd.Err != nil {
+		// The program could not be located. Leave the command untouched so that starting it
+		// reports that original failure rather than one from the shim.
+		return nil, nil
+	}
+
+	dcpPath, dcpPathErr := os.Executable()
+	if dcpPathErr != nil {
+		return nil, fmt.Errorf("could not determine the path of the current executable: %w", dcpPathErr)
+	}
+
+	statusR, statusW, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		return nil, fmt.Errorf("could not create the exec status pipe: %w", pipeErr)
+	}
+
+	shimArgs := []string{dcpPath, ForkProcessExecCmdName, "--" + execPathFlagName, childCmd.Path, "--"}
+	childCmd.Args = append(shimArgs, childCmd.Args...)
+	childCmd.Path = dcpPath
+
+	// The shim reports the outcome of the exec on this descriptor. It is the only extra file, so
+	// the shim sees it as execStatusFd.
+	childCmd.ExtraFiles = append(childCmd.ExtraFiles, statusW)
+
+	return &execShimHandshake{statusR: statusR, statusW: statusW}, nil
+}
+
+// execShimHandshake reports whether the shim managed to exec the requested program. Starting the
+// shim only proves that dcp itself could be started, so without this the caller would be told
+// that a program which never ran had started successfully.
+//
+// The shim inherits the write end. A successful execve closes it and the read end reports EOF,
+// while a failure sends the errno before the shim exits.
+type execShimHandshake struct {
+	statusR *os.File
+	statusW *os.File
+}
+
+// wait blocks until the shim either replaces itself with the requested program or reports why it
+// could not. It returns the failure that a direct start would have reported.
+func (h *execShimHandshake) wait() error {
+	// The write end is now owned by the shim. The parent's copy has to go, because the read below
+	// only reports EOF once every writer is closed.
+	h.closeWriteEnd()
+
+	status, readErr := io.ReadAll(h.statusR)
+	if readErr != nil {
+		return fmt.Errorf("could not read the exec status: %w", readErr)
+	}
+
+	if len(status) == 0 {
+		// EOF with nothing written: the descriptor was closed by a successful execve.
+		return nil
+	}
+
+	errnoValue, parseErr := strconv.Atoi(strings.TrimSpace(string(status)))
+	if parseErr != nil {
+		return fmt.Errorf("the exec status %q could not be parsed: %w", status, parseErr)
+	}
+
+	return syscall.Errno(errnoValue)
+}
+
+func (h *execShimHandshake) closeWriteEnd() {
+	if h.statusW != nil {
+		_ = h.statusW.Close()
+		h.statusW = nil
+	}
+}
+
+func (h *execShimHandshake) close() {
+	h.closeWriteEnd()
+
+	if h.statusR != nil {
+		_ = h.statusR.Close()
+		h.statusR = nil
+	}
 }
