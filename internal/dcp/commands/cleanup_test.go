@@ -88,10 +88,8 @@ func TestCleanupWorkloadResourcesRemovesContainersAndNetworks(t *testing.T) {
 	require.NoError(t, orchestratorErr)
 
 	containerID, createContainerErr := orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name: "api",
-		ContainerSpec: apiv1.ContainerSpec{
-			Image: "test-image",
-		},
+		Name:  "api",
+		Image: "test-image",
 	})
 	require.NoError(t, createContainerErr)
 	networkID, createNetworkErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: "app-network"})

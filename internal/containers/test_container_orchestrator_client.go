@@ -18,7 +18,6 @@ import (
 
 	"github.com/go-logr/logr"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/randdata"
 	"github.com/microsoft/dcp/pkg/slices"
@@ -67,15 +66,15 @@ func (c *TestContainerOrchestratorClient) CaptureContainerLogs(
 
 	type job struct {
 		sink   io.WriteCloser
-		source apiv1.LogStreamSource
+		source LogStreamSource
 	}
 	var jobs []job
 
 	if stdout != nil {
-		jobs = append(jobs, job{stdout, apiv1.LogStreamSourceStdout})
+		jobs = append(jobs, job{stdout, LogStreamSourceStdout})
 	}
 	if stderr != nil {
-		jobs = append(jobs, job{stderr, apiv1.LogStreamSourceStderr})
+		jobs = append(jobs, job{stderr, LogStreamSourceStderr})
 	}
 
 	if options.Follow {
@@ -97,7 +96,7 @@ func (c *TestContainerOrchestratorClient) getLogStream(
 	container string,
 	options StreamContainerLogsOptions,
 	sink io.WriteCloser,
-	source apiv1.LogStreamSource,
+	source LogStreamSource,
 ) error {
 	defer sink.Close() // No matter what, we need to tell the sink when no more data is coming.
 

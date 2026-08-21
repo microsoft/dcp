@@ -139,13 +139,6 @@ type VolumeMount struct {
 	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
-type PortProtocol string
-
-const (
-	TCP PortProtocol = "TCP"
-	UDP PortProtocol = "UDP"
-)
-
 // +k8s:openapi-gen=true
 type ContainerPort struct {
 	// Optional: If specified, this must be a valid port number, 0 < x < 65536.
@@ -159,7 +152,7 @@ type ContainerPort struct {
 	ContainerPort int32 `json:"containerPort"`
 
 	// The port to be used, defaults to TCP
-	Protocol PortProtocol `json:"protocol,omitempty"`
+	Protocol commonapi.PortProtocol `json:"protocol,omitempty"`
 
 	// Optional: What host IP to bind the external port to.
 	HostIP string `json:"hostIP,omitempty"`
@@ -1477,7 +1470,7 @@ func (c *Container) Validate(ctx context.Context) field.ErrorList {
 	// Validate that annotations don't exceed the Kubernetes size limit.
 	// This provides a clearer error message than the generic Kubernetes API server error,
 	// especially when long arguments or environment variables are stored in annotations.
-	errorList = append(errorList, ValidateAnnotationsSize(c.Annotations, field.NewPath("metadata", "annotations"))...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(c.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	return errorList
 }

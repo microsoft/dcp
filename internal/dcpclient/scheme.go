@@ -11,11 +11,13 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 )
 
 func NewScheme() *apiruntime.Scheme {
 	scheme := apiruntime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(apiv1.AddToScheme(scheme))
+	utilruntime.Must(apiv2.AddToScheme(scheme))
 	return scheme
 }

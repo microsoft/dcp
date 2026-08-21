@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	int_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -428,10 +427,8 @@ func TestMonitorContainerTerminatesWatchedContainer(t *testing.T) {
 
 	const containerName = "test-monitor-terminates-watched-container"
 	containerID, createErr := tco.CreateContainer(testCtx, containers.CreateContainerOptions{
-		Name: containerName,
-		ContainerSpec: apiv1.ContainerSpec{
-			Image: containerName + "-image",
-		},
+		Name:  containerName,
+		Image: containerName + "-image",
 	})
 	require.NoError(t, createErr, "Test container could not be created")
 
@@ -530,10 +527,8 @@ func TestMonitorContainerStopsWatchedContainerWithoutRemoving(t *testing.T) {
 
 	const containerName = "test-monitor-stops-watched-container-without-removing"
 	containerID, createErr := tco.CreateContainer(testCtx, containers.CreateContainerOptions{
-		Name: containerName,
-		ContainerSpec: apiv1.ContainerSpec{
-			Image: containerName + "-image",
-		},
+		Name:  containerName,
+		Image: containerName + "-image",
 	})
 	require.NoError(t, createErr, "Test container could not be created")
 
@@ -634,10 +629,8 @@ func TestMonitorContainerExitWhenContainerRemoved(t *testing.T) {
 
 	const containerName = "test-monitor-exits-when-container-removed"
 	containerID, createErr := tco.CreateContainer(testCtx, containers.CreateContainerOptions{
-		Name: containerName,
-		ContainerSpec: apiv1.ContainerSpec{
-			Image: containerName + "-image",
-		},
+		Name:  containerName,
+		Image: containerName + "-image",
 	})
 	require.NoError(t, createErr, "Test container could not be created")
 
@@ -732,10 +725,8 @@ func TestMonitorContainerCleansUpWhenMonitoredProcessAlreadyExited(t *testing.T)
 
 	const containerName = "test-monitor-cleanup-when-already-exited"
 	containerID, createErr := tco.CreateContainer(testCtx, containers.CreateContainerOptions{
-		Name: containerName,
-		ContainerSpec: apiv1.ContainerSpec{
-			Image: containerName + "-image",
-		},
+		Name:  containerName,
+		Image: containerName + "-image",
 	})
 	require.NoError(t, createErr, "Test container could not be created")
 
@@ -822,10 +813,8 @@ func TestMonitorContainerCleansUpOnIdentityTimeMismatch(t *testing.T) {
 
 	const containerName = "test-monitor-cleanup-on-identity-mismatch"
 	containerID, createErr := tco.CreateContainer(testCtx, containers.CreateContainerOptions{
-		Name: containerName,
-		ContainerSpec: apiv1.ContainerSpec{
-			Image: containerName + "-image",
-		},
+		Name:  containerName,
+		Image: containerName + "-image",
 	})
 	require.NoError(t, createErr, "Test container could not be created")
 

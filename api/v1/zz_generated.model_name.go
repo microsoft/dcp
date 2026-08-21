@@ -16,11 +16,6 @@ func (in AmbientEnvironment) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
-func (in CleanupResource) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v1.CleanupResource"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in Container) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.Container"
 }
@@ -198,11 +193,6 @@ func (in EndpointSpec) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in EndpointStatus) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v1.EndpointStatus"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
-func (in EnvVar) OpenAPIModelName() string {
-	return "github.com/microsoft/dcp/api/v1.EnvVar"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

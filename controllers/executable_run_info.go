@@ -174,12 +174,12 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 		updated = true
 	}
 
-	updated = setTimestampIfAfterOrUnknown(other.StartupTimestamp, &ri.StartupTimestamp) || updated
+	updated = trySetTimestampIfAfterOrUnknown(&ri.StartupTimestamp, other.StartupTimestamp) || updated
 	if !other.ProcessIdentityTime.IsZero() && !ri.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
 		ri.ProcessIdentityTime = other.ProcessIdentityTime
 		updated = true
 	}
-	updated = setTimestampIfAfterOrUnknown(other.FinishTimestamp, &ri.FinishTimestamp) || updated
+	updated = trySetTimestampIfAfterOrUnknown(&ri.FinishTimestamp, other.FinishTimestamp) || updated
 
 	if other.StdOutFile != "" && ri.StdOutFile != other.StdOutFile {
 		ri.StdOutFile = other.StdOutFile
@@ -315,13 +315,8 @@ func (ri *ExecutableRunInfo) ApplyTo(exe *apiv1.Executable, log logr.Logger) obj
 	// The controller provides a default value for timestamps based on Executable state transitions,
 	// but a more accurate (earlier) timestamp may come (asynchronously) from Executable runner via run info.
 
-	if setTimestampIfAfterOrUnknown(ri.StartupTimestamp, &status.StartupTimestamp) {
-		changed = statusChanged
-	}
-
-	if setTimestampIfAfterOrUnknown(ri.FinishTimestamp, &status.FinishTimestamp) {
-		changed = statusChanged
-	}
+	changed |= setTimestampIfAfterOrUnknown(&status.StartupTimestamp, ri.StartupTimestamp)
+	changed |= setTimestampIfAfterOrUnknown(&status.FinishTimestamp, ri.FinishTimestamp)
 
 	if ri.StdOutFile != "" && status.StdOutFile != ri.StdOutFile {
 		status.StdOutFile = ri.StdOutFile

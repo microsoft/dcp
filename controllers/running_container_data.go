@@ -473,10 +473,10 @@ func (rcd *runningContainerData) applyTo(ctr *apiv1.Container, log logr.Logger) 
 		}
 	}
 
-	if setTimestampIfBeforeOrUnknown(rcd.finishTimestamp, &ctr.Status.FinishTimestamp) {
-		change |= statusChanged
-	} else if rcd.containerState == apiv1.ContainerStateFailedToStart && setTimestampIfBeforeOrUnknown(rcd.startAttemptFinishedAt, &ctr.Status.FinishTimestamp) {
-		change |= statusChanged
+	if finishTimestampChange := setTimestampIfBeforeOrUnknown(&ctr.Status.FinishTimestamp, rcd.finishTimestamp); finishTimestampChange != noChange {
+		change |= finishTimestampChange
+	} else if rcd.containerState == apiv1.ContainerStateFailedToStart {
+		change |= setTimestampIfBeforeOrUnknown(&ctr.Status.FinishTimestamp, rcd.startAttemptFinishedAt)
 	}
 
 	updatedHealthResults, healthResultsChanged := health.UpdateHealthProbeResults(ctr.Status.HealthProbeResults, rcd.healthProbeResults)

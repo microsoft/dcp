@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See LICENSE in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-package v1
+package commonapi
 
 import (
 	"strings"
@@ -43,21 +43,21 @@ func TestValidateAnnotationsSize(t *testing.T) {
 		{
 			name: "annotations at 90% of limit should pass",
 			annotations: map[string]string{
-				"large-value": strings.Repeat("a", (MaxAnnotationsTotalSize*90/100)-11), // 11 = len("large-value")
+				"large-value": strings.Repeat("a", (MaxAnnotationsTotalSize*90/100)-11),
 			},
 			expectError: false,
 		},
 		{
 			name: "annotations exactly at limit should pass",
 			annotations: map[string]string{
-				"large-value": strings.Repeat("a", MaxAnnotationsTotalSize-11), // 11 = len("large-value")
+				"large-value": strings.Repeat("a", MaxAnnotationsTotalSize-11),
 			},
 			expectError: false,
 		},
 		{
 			name: "annotations exceeding limit should fail",
 			annotations: map[string]string{
-				"large-value": strings.Repeat("a", MaxAnnotationsTotalSize), // This exceeds the limit
+				"large-value": strings.Repeat("a", MaxAnnotationsTotalSize),
 			},
 			expectError:   true,
 			errorContains: "Too long",
@@ -66,7 +66,7 @@ func TestValidateAnnotationsSize(t *testing.T) {
 			name: "multiple annotations exceeding limit should fail",
 			annotations: map[string]string{
 				"key1": strings.Repeat("a", MaxAnnotationsTotalSize/2),
-				"key2": strings.Repeat("b", MaxAnnotationsTotalSize/2+100), // Combined exceeds limit
+				"key2": strings.Repeat("b", MaxAnnotationsTotalSize/2+100),
 			},
 			expectError:   true,
 			errorContains: "Too long",
@@ -74,7 +74,6 @@ func TestValidateAnnotationsSize(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		tc := tc // capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -117,7 +116,7 @@ func TestCalculateAnnotationsSize(t *testing.T) {
 			annotations: map[string]string{
 				"key": "value",
 			},
-			expectedSize: 8, // len("key") + len("value") = 3 + 5 = 8
+			expectedSize: 8,
 		},
 		{
 			name: "multiple annotations",
@@ -125,19 +124,18 @@ func TestCalculateAnnotationsSize(t *testing.T) {
 				"key1": "value1",
 				"key2": "value2",
 			},
-			expectedSize: 20, // (4 + 6) + (4 + 6) = 20
+			expectedSize: 20,
 		},
 		{
 			name: "empty value",
 			annotations: map[string]string{
 				"key": "",
 			},
-			expectedSize: 3, // len("key") + len("") = 3 + 0 = 3
+			expectedSize: 3,
 		},
 	}
 
 	for _, tc := range testCases {
-		tc := tc // capture range variable
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -147,14 +145,14 @@ func TestCalculateAnnotationsSize(t *testing.T) {
 	}
 }
 
-func TestGetAnnotationsSizeInfo(t *testing.T) {
+func TestAnnotationsSizeInfo(t *testing.T) {
 	t.Parallel()
 
 	annotations := map[string]string{
 		"key": "value",
 	}
 
-	info := getAnnotationsSizeInfo(annotations)
+	info := annotationsSizeInfo(annotations)
 
 	require.Contains(t, info, "8 bytes", "should contain the calculated size")
 	require.Contains(t, info, "262144 bytes", "should contain the limit")
@@ -164,7 +162,6 @@ func TestGetAnnotationsSizeInfo(t *testing.T) {
 func TestMaxAnnotationsTotalSizeConstant(t *testing.T) {
 	t.Parallel()
 
-	// Verify the constant matches the Kubernetes limit
 	require.Equal(t, 262144, MaxAnnotationsTotalSize,
 		"MaxAnnotationsTotalSize should be 256 KB (262144 bytes)")
 }

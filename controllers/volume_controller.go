@@ -247,12 +247,7 @@ func handleReadyContainerVolume(
 }
 
 func setContainerVolumeState(vol *apiv1.ContainerVolume, state apiv1.ContainerVolumeState) objectChange {
-	change := noChange
-
-	if vol.Status.State != state {
-		vol.Status.State = state
-		change = statusChanged
-	}
+	change := setValue(&vol.Status.State, state)
 
 	if state == apiv1.ContainerVolumeStateRuntimeUnhealthy {
 		change |= additionalReconciliationNeeded

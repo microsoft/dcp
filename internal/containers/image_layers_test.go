@@ -24,8 +24,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	apiv1 "github.com/microsoft/dcp/api/v1"
 )
 
 // fakeCLICommandRunner implements CLICommandRunner for testing.
@@ -97,7 +95,7 @@ func TestApplyImageLayersImpl_DockerfileGeneration(t *testing.T) {
 			Id:   "sha256:baseimage123",
 			Tags: []string{"myrepo/myimage:v1"},
 		},
-		Layers: []apiv1.ImageLayer{
+		Layers: []ImageLayer{
 			{Digest: "layer-a", RawContents: rawContents},
 			{Digest: "layer-b", RawContents: rawContents},
 		},
@@ -139,7 +137,7 @@ func TestApplyImageLayersImpl_UsesImageIdWhenNoTags(t *testing.T) {
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:abc123"},
-		Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+		Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 		Tag:       "test:tag",
 	}
 
@@ -160,7 +158,7 @@ func TestApplyImageLayersImpl_ReturnsImageIdWhenNoTag(t *testing.T) {
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+		Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 		Tag:       "",
 	}
 
@@ -178,7 +176,7 @@ func TestApplyImageLayersImpl_EmptyLayersReturnsError(t *testing.T) {
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base"},
-		Layers:    []apiv1.ImageLayer{},
+		Layers:    []ImageLayer{},
 		Tag:       "test:tag",
 	}
 
@@ -198,7 +196,7 @@ func TestApplyImageLayersImpl_BuildErrorTakesPrecedenceOverTarError(t *testing.T
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+		Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 		Tag:       "test:tag",
 	}
 
@@ -228,7 +226,7 @@ func TestApplyImageLayersImpl_SourceLayerWithSHA256Prefix(t *testing.T) {
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers: []apiv1.ImageLayer{{
+		Layers: []ImageLayer{{
 			Digest: "d1",
 			Source: layerPath,
 			SHA256: "sha256:" + hashHex,
@@ -262,7 +260,7 @@ func TestApplyImageLayersImpl_SourceLayerWithUppercaseSHA256(t *testing.T) {
 	result := &fakeBuildResult{}
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers: []apiv1.ImageLayer{{
+		Layers: []ImageLayer{{
 			Digest: "d1",
 			Source: layerPath,
 			SHA256: hashHex,
@@ -289,7 +287,7 @@ func TestApplyImageLayersImpl_SourceLayerHashMismatch(t *testing.T) {
 
 	options := ApplyImageLayersOptions{
 		BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-		Layers: []apiv1.ImageLayer{{
+		Layers: []ImageLayer{{
 			Digest: "d1",
 			Source: layerPath,
 			SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
@@ -316,7 +314,7 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		result := &fakeBuildResult{}
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-			Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 			Tag:       "myimage:dcp-abc",
 		}
 
@@ -338,7 +336,7 @@ func TestApplyImageLayersImpl_BuildCommandArgs(t *testing.T) {
 		result := &fakeBuildResult{}
 		options := ApplyImageLayersOptions{
 			BaseImage: InspectedImage{Id: "sha256:base", Tags: []string{"img:v1"}},
-			Layers:    []apiv1.ImageLayer{{Digest: "d1", RawContents: rawContents}},
+			Layers:    []ImageLayer{{Digest: "d1", RawContents: rawContents}},
 			Tag:       "",
 		}
 

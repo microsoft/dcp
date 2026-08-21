@@ -16,14 +16,18 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	apivalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_slices "github.com/microsoft/dcp/pkg/slices"
 )
@@ -59,6 +63,9 @@ const (
 	NoDelay       AdditionalReconciliationDelay = 1
 	LongDelay     AdditionalReconciliationDelay = 2
 	TestDelay     AdditionalReconciliationDelay = 3
+	// MonitoringDelay paces periodic polling of resources that are in a steady state,
+	// where reconciliation only guards against runtime events that were missed or never delivered.
+	MonitoringDelay AdditionalReconciliationDelay = 4
 )
 
 type durationAndJitter struct {
@@ -69,10 +76,11 @@ type durationAndJitter struct {
 var (
 	// Maps additionalReconciliationDelay values to actual time.Duration values for delay and jitter.
 	delayDurations = map[AdditionalReconciliationDelay]durationAndJitter{
-		StandardDelay: {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
-		LongDelay:     {Duration: 5 * time.Second, Jitter: 2 * time.Second},
-		TestDelay:     {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
-		NoDelay:       {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
+		StandardDelay:   {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
+		LongDelay:       {Duration: 5 * time.Second, Jitter: 2 * time.Second},
+		MonitoringDelay: {Duration: 30 * time.Second, Jitter: 5 * time.Second},
+		TestDelay:       {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
+		NoDelay:         {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
 	}
 )
 
@@ -91,6 +99,21 @@ func delayDuration(delay AdditionalReconciliationDelay) time.Duration {
 	}
 	retval := dnj.Duration + time.Duration(mathrand.Int63n(int64(dnj.Jitter)))
 	return retval
+}
+
+// Returns a callback that acknowledges in-memory state after a status projection is durable.
+// If the projection made no status change, the equivalent status is already durable and the
+// acknowledgement runs immediately.
+func afterStatusUpdateIsDurable(change objectChange, acknowledge func()) func() {
+	if acknowledge == nil {
+		return nil
+	}
+	if change&statusChanged == 0 {
+		acknowledge()
+		return nil
+	}
+
+	return acknowledge
 }
 
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
@@ -116,6 +139,49 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	obj.SetFinalizers(finalizers)
 	log.V(1).Info("Removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
+}
+
+// ensureNamespace reports whether a namespaced V2 resource may perform runtime work, applying
+// a Pending or Failed status change when it may not.
+//
+// This is the single gate for non-deletion runtime work by namespaced V2 resources; deletion
+// deliberately bypasses it so cleanup can finish after the namespace disappears. The API server
+// accepts child resources whose namespace is missing or terminating, but this gate prevents such
+// a child from creating a container or image. It normally sits in Pending until namespace cleanup
+// deletes it. If creation races the namespace controller's final empty-list snapshot, the inert
+// API record may instead remain until the in-memory API server exits. An admission-time equivalent
+// was tried and reverted: it required forking tilt's storage registration path to read the
+// namespace outside the REST layer, which is a large amount of borrowed machinery to prevent
+// an inert API record.
+func ensureNamespace(
+	ctx context.Context,
+	client ctrl_client.Client,
+	namespaceName string,
+	applyPending func(string) objectChange,
+	applyFailed func(string) objectChange,
+	log logr.Logger,
+) (bool, objectChange) {
+	namespace := apiv2.Namespace{}
+	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
+	if apierrors.IsNotFound(getErr) {
+		return false, applyPending(fmt.Sprintf("Namespace %q does not exist.", namespaceName))
+	}
+	if getErr != nil {
+		log.Error(getErr, "Failed to get namespace", "Namespace", namespaceName)
+		return false, applyFailed(fmt.Sprintf("Failed to get namespace: %v", getErr))
+	}
+
+	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
+		return false, applyPending(fmt.Sprintf("Namespace %q is terminating.", namespaceName))
+	}
+	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
+		return false, applyPending(fmt.Sprintf("Namespace %q is not ready.", namespaceName))
+	}
+	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
+		return false, applyPending(fmt.Sprintf("Namespace %q is not active.", namespaceName))
+	}
+
+	return true, noChange
 }
 
 // Returns a name made probabilistically unique by appending a random postfix,
@@ -221,36 +287,92 @@ func getStateInitializer[
 // We consider a timestamp to be "different" from another one if it is off by more than 2 microseconds.
 const timestampEpsilon = 2 * time.Microsecond
 
-// Sets "target" timestamp to "source" timestamp if "target" is before "source"
-// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
-// Returns true if the target timestamp was updated.
-func setTimestampIfBeforeOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+// Sets "target" timestamp to "source" timestamp if "target" is before "source" by more than
+// 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+func setTimestampIfBeforeOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if source.IsZero() {
-		return false
+		return noChange
 	}
 
 	if target.IsZero() || target.Add(timestampEpsilon).Before(source.Time) {
 		*target = source
-		return true
-	} else {
-		return false
+		return statusChanged
 	}
+	return noChange
 }
 
-// Sets "target" timestamp to "source" timestamp if "target" is after "source"
-// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
-// Returns true if the target timestamp was updated.
-func setTimestampIfAfterOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+// Sets "target" timestamp to "source" timestamp if "target" is after "source" by more than
+// 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+func setTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if source.IsZero() {
-		return false
+		return noChange
 	}
 
 	if target.IsZero() || source.Add(timestampEpsilon).Before(target.Time) {
 		*target = source
-		return true
-	} else {
-		return false
+		return statusChanged
 	}
+	return noChange
+}
+
+func trySetTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) bool {
+	return setTimestampIfAfterOrUnknown(target, source) != noChange
+}
+
+// Sets "target" timestamp to "source" timestamp if it is different by more than 2 microseconds.
+func setTimestamp(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
+	if target.Add(timestampEpsilon).Before(source.Time) || source.Add(timestampEpsilon).Before(target.Time) {
+		*target = source
+		return statusChanged
+	}
+	return noChange
+}
+
+func setValue[T comparable](target *T, value T) objectChange {
+	if *target == value {
+		return noChange
+	}
+	*target = value
+	return statusChanged
+}
+
+func setReadyCondition(
+	conditions *[]metav1.Condition,
+	generation int64,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) objectChange {
+	return setCondition(conditions, apiv2.ConditionReady, generation, status, reason, message)
+}
+
+// Records the condition, reporting noChange when the condition already holds the same values
+// so that repeated reconciliation of an unchanged state does not produce status writes.
+func setCondition(
+	conditions *[]metav1.Condition,
+	conditionType string,
+	generation int64,
+	status metav1.ConditionStatus,
+	reason string,
+	message string,
+) objectChange {
+	condition := metav1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: generation,
+	}
+	if existingCondition := apimeta.FindStatusCondition(*conditions, condition.Type); existingCondition != nil &&
+		existingCondition.Status == condition.Status &&
+		existingCondition.Reason == condition.Reason &&
+		existingCondition.Message == condition.Message &&
+		existingCondition.ObservedGeneration == condition.ObservedGeneration {
+		return noChange
+	}
+
+	apimeta.SetStatusCondition(conditions, condition)
+	return statusChanged
 }
 
 // Computes a valid Kubernetes label value from an arbitrary string.

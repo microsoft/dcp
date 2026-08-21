@@ -83,7 +83,7 @@ type ideRunSessionRequestV1 struct {
 	LaunchConfigurations json.RawMessage `json:"launch_configurations"`
 
 	Env  []apiv1.EnvVar `json:"env,omitempty"`
-	Args []string       `json:"args,omitempty"`
+	Args []string           `json:"args,omitempty"`
 }
 
 type launchConfigurationBase struct {

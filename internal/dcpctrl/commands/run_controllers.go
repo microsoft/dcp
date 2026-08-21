@@ -183,6 +183,17 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 
 		const defaultControllerName = ""
 
+		namespaceCtrl := controllers.NewNamespaceReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("NamespaceReconciler"),
+		)
+		if err = namespaceCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up Namespace controller")
+			return err
+		}
+
 		serviceCtrl := controllers.NewServiceReconciler(
 			ctrlCtx,
 			mgr.GetClient(),
@@ -248,6 +259,30 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 		)
 		if err = containerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
 			log.Error(err, "Unable to set up Container controller")
+			return err
+		}
+
+		physicalContainerImageCtrl := controllers.NewPhysicalContainerImageReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerImageReconciler"),
+			containerOrchestrator,
+		)
+		if err = physicalContainerImageCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainerImage controller")
+			return err
+		}
+
+		physicalContainerCtrl := controllers.NewPhysicalContainerReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerReconciler"),
+			containerOrchestrator,
+		)
+		if err = physicalContainerCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainer controller")
 			return err
 		}
 
