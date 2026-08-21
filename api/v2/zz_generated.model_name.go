@@ -121,6 +121,26 @@ func (in PhysicalContainerStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerVolume) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerVolume"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerVolumeList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerVolumeList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerVolumeSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerVolumeSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerVolumeStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerVolumeStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in VolumeMount) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.VolumeMount"
 }
