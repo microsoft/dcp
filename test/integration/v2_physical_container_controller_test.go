@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -346,6 +347,8 @@ func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
 	}
 	require.NoError(t, client.Create(ctx, container))
 	waitCreateContainerCallCount(t, ctx, containerName, 1)
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed)
 	waitCreateContainerCallCount(t, ctx, containerName, 2)
 
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
@@ -563,6 +566,10 @@ func TestV2PhysicalContainerControllerRejectsExistingContainerWithoutReplacement
 
 	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
 	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Never(t, func() bool {
+		return containerOrchestrator.CreateContainerCallCount(containerName) > 1
+	}, 3*time.Second, 250*time.Millisecond)
 
 	inspectedContainers, inspectErr := containerOrchestrator.InspectContainers(ctx, containers.InspectContainersOptions{
 		Containers: []string{existingContainerID},

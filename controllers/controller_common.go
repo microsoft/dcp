@@ -101,6 +101,21 @@ func delayDuration(delay AdditionalReconciliationDelay) time.Duration {
 	return retval
 }
 
+// Returns a callback that acknowledges in-memory state after a status projection is durable.
+// If the projection made no status change, the equivalent status is already durable and the
+// acknowledgement runs immediately.
+func afterStatusUpdateIsDurable(change objectChange, acknowledge func()) func() {
+	if acknowledge == nil {
+		return nil
+	}
+	if change&statusChanged == 0 {
+		acknowledge()
+		return nil
+	}
+
+	return acknowledge
+}
+
 func ensureFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objectChange {
 	finalizers := obj.GetFinalizers()
 	if usvc_slices.Contains(finalizers, finalizer) {

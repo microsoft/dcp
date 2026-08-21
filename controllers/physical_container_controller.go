@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -43,16 +44,17 @@ var (
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerDataInitializers = map[string]physicalContainerDataInitializerFunc{
-		apiv2.PhysicalContainerReasonCreating:       handlePhysicalContainerCreating,
-		apiv2.PhysicalContainerReasonCreated:        handlePhysicalContainerCreated,
-		apiv2.PhysicalContainerReasonCopyingFiles:   handlePhysicalContainerOperationInProgress,
-		apiv2.PhysicalContainerReasonFilesCreated:   handlePhysicalContainerFilesCreated,
-		apiv2.PhysicalContainerReasonStarting:       handlePhysicalContainerOperationInProgress,
-		apiv2.PhysicalContainerReasonStarted:        handlePhysicalContainerStarted,
-		apiv2.PhysicalContainerReasonCreateFailed:   handlePhysicalContainerOperationFailed,
-		apiv2.PhysicalContainerReasonFileCopyFailed: handlePhysicalContainerOperationFailed,
-		apiv2.PhysicalContainerReasonStartFailed:    handlePhysicalContainerOperationFailed,
-		"":                                          handleUnknownPhysicalContainerDataReason,
+		apiv2.PhysicalContainerReasonCreating:             handlePhysicalContainerCreating,
+		apiv2.PhysicalContainerReasonCreated:              handlePhysicalContainerCreated,
+		apiv2.PhysicalContainerReasonCopyingFiles:         handlePhysicalContainerOperationInProgress,
+		apiv2.PhysicalContainerReasonFilesCreated:         handlePhysicalContainerFilesCreated,
+		apiv2.PhysicalContainerReasonStarting:             handlePhysicalContainerOperationInProgress,
+		apiv2.PhysicalContainerReasonStarted:              handlePhysicalContainerStarted,
+		apiv2.PhysicalContainerReasonCreateFailed:         handlePhysicalContainerOperationFailed,
+		apiv2.PhysicalContainerReasonFileCopyFailed:       handlePhysicalContainerOperationFailed,
+		apiv2.PhysicalContainerReasonStartFailed:          handlePhysicalContainerOperationFailed,
+		apiv2.PhysicalContainerReasonReconciliationFailed: handlePhysicalContainerRecoverableCreateFailed,
+		"": handleUnknownPhysicalContainerDataReason,
 	}
 )
 
@@ -158,6 +160,7 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	r.containerData.RunDeferredOps(req.NamespacedName, &container)
 
 	var change objectChange
+	var onSuccessfulSave func()
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
@@ -165,20 +168,52 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
 		// Make additional changes during the next reconciliation.
 	} else {
-		change = r.managePhysicalContainer(ctx, &container, log)
+		change, onSuccessfulSave = r.managePhysicalContainer(ctx, &container, log)
 	}
 
-	// A running container is in a steady state and relies on runtime events for status changes.
-	// Reconcile it on a slow cadence purely to recover from events that were missed or never delivered.
-	additionalReconcileDelay := StandardDelay
-	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning {
-		additionalReconcileDelay = MonitoringDelay
-	}
-
-	return r.SaveChangesWithDelay(ctx, &container, patch, change, additionalReconcileDelay, nil, log)
+	return r.SaveChangesWithDelay(ctx, &container, patch, change, physicalContainerReconcileDelay(&container), onSuccessfulSave, log)
 }
 
-func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Context, container *apiv2.PhysicalContainer, log logr.Logger) objectChange {
+func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) AdditionalReconciliationDelay {
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning {
+		return MonitoringDelay
+	}
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseFailed &&
+		!physicalContainerOperationFailedTerminally(container) {
+		return LongDelay
+	}
+	return StandardDelay
+}
+
+// Acknowledges a terminal create record once its failure projection is durable in status.
+func (r *PhysicalContainerReconciler) physicalContainerDataSaveCallback(
+	stateKey physicalContainerDataStateKey,
+	data *physicalContainerData,
+	change objectChange,
+) func() {
+	if data == nil ||
+		data.conditionReason != apiv2.PhysicalContainerReasonCreateFailed ||
+		data.containerID != "" {
+		return nil
+	}
+
+	expectedFailureMessage := data.failureMessage
+	expectedRetryAfter := data.retryAfter
+	return afterStatusUpdateIsDurable(change, func() {
+		r.containerData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerData) bool {
+			return current.conditionReason == apiv2.PhysicalContainerReasonCreateFailed &&
+				current.containerID == "" &&
+				current.failureMessage == expectedFailureMessage &&
+				current.retryAfter.Equal(expectedRetryAfter)
+		})
+	})
+}
+
+func (r *PhysicalContainerReconciler) managePhysicalContainer(
+	ctx context.Context,
+	container *apiv2.PhysicalContainer,
+	log logr.Logger,
+) (objectChange, func()) {
 	if namespaceReady, change := ensureNamespace(ctx, r.Client, container.Namespace, func(message string) objectChange {
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPending, message)
@@ -188,18 +223,22 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Contex
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, message)
 		return change
 	}, log); !namespaceReady {
-		return change
+		return change, nil
 	}
 
 	change := noChange
-	_, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+	stateKey, data := r.containerData.BorrowByNamespacedName(container.NamespacedName())
 	if data != nil {
 		change |= data.applyTo(container)
 		initializer := getStateInitializer(physicalContainerDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, container, data.conditionReason, data, log)
 		if data.conditionReason != apiv2.PhysicalContainerReasonStarted {
-			return change
+			return change, r.physicalContainerDataSaveCallback(stateKey, data, change)
 		}
+	}
+
+	if physicalContainerOperationFailedTerminally(container) {
+		return change, nil
 	}
 
 	containerID := container.Spec.ContainerID
@@ -214,12 +253,12 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Contex
 	if containerID == "" {
 		imageReady, imageChange := r.resolvePhysicalContainerImage(ctx, container, log)
 		if !imageReady {
-			return imageChange
+			return imageChange, nil
 		}
 		if imageChange != noChange {
-			return imageChange | r.schedulePhysicalContainerCreate(container, log)
+			return imageChange | r.schedulePhysicalContainerCreate(container, log), nil
 		}
-		return r.schedulePhysicalContainerCreate(container, log)
+		return r.schedulePhysicalContainerCreate(container, log), nil
 	}
 	if data == nil {
 		storeStartedPhysicalContainerData(r.containerData, container, containerID)
@@ -231,14 +270,14 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Contex
 		change |= setValue(&container.Status.ContainerID, containerID)
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseMissing)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing, "Runtime container was not found.")
-		return change
+		return change, nil
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect runtime container", "ContainerID", containerID)
 		change |= setValue(&container.Status.ContainerID, containerID)
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr))
-		return change
+		return change, nil
 	}
 
 	if container.Spec.Stop {
@@ -247,19 +286,35 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(ctx context.Contex
 			change |= setValue(&container.Status.ContainerID, containerID)
 			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseMissing)
 			change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing, "Runtime container was not found.")
-			return change
+			return change, nil
 		}
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop runtime container", "ContainerID", containerID)
 			change |= setValue(&container.Status.ContainerID, containerID)
 			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
 			change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, fmt.Sprintf("Failed to stop runtime container: %v", stopErr))
-			return change
+			return change, nil
 		}
 		inspectedContainer = stoppedContainer
 	}
 
-	return change | applyInspectedPhysicalContainerStatus(container, inspectedContainer, log)
+	return change | applyInspectedPhysicalContainerStatus(container, inspectedContainer, log), nil
+}
+
+// Reports whether the container recorded an operation failure that cannot change while its spec is immutable.
+func physicalContainerOperationFailedTerminally(container *apiv2.PhysicalContainer) bool {
+	if container.Status.Phase != apiv2.PhysicalContainerPhaseFailed {
+		return false
+	}
+
+	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, apiv2.ConditionReady)
+	if readyCondition == nil {
+		return false
+	}
+
+	return readyCondition.Reason == apiv2.PhysicalContainerReasonCreateFailed ||
+		readyCondition.Reason == apiv2.PhysicalContainerReasonFileCopyFailed ||
+		readyCondition.Reason == apiv2.PhysicalContainerReasonStartFailed
 }
 
 func handlePhysicalContainerCreating(
@@ -333,18 +388,49 @@ func handlePhysicalContainerStarted(
 
 func handlePhysicalContainerOperationFailed(
 	_ context.Context,
+	_ *PhysicalContainerReconciler,
+	_ *apiv2.PhysicalContainer,
+	_ string,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	log.V(1).Info("Physical container operation failed; saving container status", "Message", data.failureMessage)
+	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
+	return noChange
+}
+
+func handlePhysicalContainerRecoverableCreateFailed(
+	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
 	_ string,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
-	if data.containerID == "" {
-		reconciler.containerData.DeleteByNamespacedName(container.NamespacedName())
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
 	}
-	log.V(1).Info("Physical container operation failed; saving container status", "Message", data.failureMessage)
-	// The failure is terminal: spec is immutable, so no further reconciliation can make progress.
-	return noChange
+
+	if data.containerID != "" {
+		_, removeErr := reconciler.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+			Containers: []string{data.containerID},
+			Force:      true,
+		})
+		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+			log.Error(removeErr, "Failed to remove partially created runtime container", "ContainerID", data.containerID)
+			data.failureMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
+			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+			stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
+			if reconciler.containerData.Update(container.NamespacedName(), stateKey, data) {
+				return data.applyTo(container) | additionalReconciliationNeeded
+			}
+			return additionalReconciliationNeeded
+		}
+	}
+
+	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.ContainerName)
+	change := setValue(&container.Status.ContainerID, "")
+	return change | reconciler.schedulePhysicalContainerCreate(container, log)
 }
 
 func handleUnknownPhysicalContainerDataReason(
@@ -427,8 +513,9 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		replaceErr := r.removePhysicalContainerForReplacement(ctx, container.Spec.ContainerName, log)
 		if replaceErr != nil {
 			log.Error(replaceErr, "Failed to replace existing physical container")
-			data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
+			data.conditionReason = apiv2.PhysicalContainerReasonReconciliationFailed
 			data.failureMessage = fmt.Sprintf("Failed to replace existing physical container: %v", replaceErr)
+			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			r.queuePhysicalContainerDataResult(container, stateKey, data)
 			return
 		}
@@ -448,17 +535,26 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	if createErr != nil {
 		log.Error(createErr, "Failed to create physical container")
 		data.containerID = containerID
-		data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
 		data.failureMessage = fmt.Sprintf("Failed to create physical container: %v", createErr)
+		if (errors.Is(createErr, containers.ErrAlreadyExists) && !container.Spec.ReplaceExisting) ||
+			errors.Is(createErr, containers.ErrCouldNotAllocate) {
+			data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
+			data.retryAfter = time.Time{}
+		} else {
+			data.conditionReason = apiv2.PhysicalContainerReasonReconciliationFailed
+			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		}
 	} else if containerID == "" {
 		missingContainerIDErr := errors.New("physical container create succeeded without returning a runtime container ID")
 		log.Error(missingContainerIDErr, "Physical container create succeeded without returning a runtime container ID")
 		data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
 		data.failureMessage = "Physical container create succeeded without returning a runtime container ID."
+		data.retryAfter = time.Time{}
 	} else {
 		data.containerID = containerID
 		data.conditionReason = apiv2.PhysicalContainerReasonCreated
 		data.failureMessage = ""
+		data.retryAfter = time.Time{}
 	}
 
 	r.queuePhysicalContainerDataResult(container, stateKey, data)

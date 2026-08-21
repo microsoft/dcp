@@ -6,6 +6,8 @@
 package controllers
 
 import (
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
@@ -17,6 +19,7 @@ type physicalContainerData struct {
 	conditionReason string
 	containerID     string
 	failureMessage  string
+	retryAfter      time.Time
 }
 
 func newPhysicalContainerData() *physicalContainerData {
@@ -30,6 +33,7 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 		conditionReason: data.conditionReason,
 		containerID:     data.containerID,
 		failureMessage:  data.failureMessage,
+		retryAfter:      data.retryAfter,
 	}
 }
 
@@ -49,6 +53,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	}
 	if data.failureMessage != other.failureMessage {
 		data.failureMessage = other.failureMessage
+		updated = true
+	}
+	if !data.retryAfter.Equal(other.retryAfter) {
+		data.retryAfter = other.retryAfter
 		updated = true
 	}
 
@@ -80,7 +88,10 @@ func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) o
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStarting, "Physical container start is in progress.")
 		return change
-	case apiv2.PhysicalContainerReasonCreateFailed, apiv2.PhysicalContainerReasonFileCopyFailed, apiv2.PhysicalContainerReasonStartFailed:
+	case apiv2.PhysicalContainerReasonCreateFailed,
+		apiv2.PhysicalContainerReasonFileCopyFailed,
+		apiv2.PhysicalContainerReasonStartFailed,
+		apiv2.PhysicalContainerReasonReconciliationFailed:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
 		change |= setReadyCondition(&container.Status.Conditions, container.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 		return change

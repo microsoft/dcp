@@ -148,6 +148,22 @@ func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) DeleteByStateKey(stateKey Sta
 	m.deferredOps.DeleteBySecondKey(stateKey)
 }
 
+// DeleteByStateKeyIf deletes object state and queued deferred operations when the state currently
+// stored under stateKey satisfies predicate. The predicate must not call methods on this map.
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) DeleteByStateKeyIf(stateKey StateKeyT, predicate func(POS) bool) bool {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	_, state, found := m.inner.FindBySecondKey(stateKey)
+	if !found || !predicate(state.Clone()) {
+		return false
+	}
+
+	m.inner.DeleteBySecondKey(stateKey)
+	m.deferredOps.DeleteBySecondKey(stateKey)
+	return true
+}
+
 // QueueDeferredOp() queues a deferred operation to be run later (by calling RunDeferredOps()).
 // The operation fails (returning false) if the object state is not found using the given namespaced name.
 func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) QueueDeferredOp(namespaceName types.NamespacedName, op DeferredMapOperation[StateKeyT, PObj]) bool {

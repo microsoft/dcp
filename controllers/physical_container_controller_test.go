@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -109,4 +110,44 @@ func TestApplyInspectedPhysicalContainerStatusRequestsReconciliationOnlyWhenUsef
 			require.Equal(t, tc.expectReconciliationNeed, (change&additionalReconciliationNeeded) != 0)
 		})
 	}
+}
+
+func TestPhysicalContainerOperationFailedTerminally(t *testing.T) {
+	t.Parallel()
+
+	terminalReasons := []string{
+		apiv2.PhysicalContainerReasonCreateFailed,
+		apiv2.PhysicalContainerReasonFileCopyFailed,
+		apiv2.PhysicalContainerReasonStartFailed,
+	}
+	for _, reason := range terminalReasons {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+
+			container := &apiv2.PhysicalContainer{
+				Status: apiv2.PhysicalContainerStatus{
+					Phase: apiv2.PhysicalContainerPhaseFailed,
+					Conditions: []metav1.Condition{{
+						Type:   apiv2.ConditionReady,
+						Status: metav1.ConditionFalse,
+						Reason: reason,
+					}},
+				},
+			}
+
+			require.True(t, physicalContainerOperationFailedTerminally(container))
+		})
+	}
+
+	recoverableContainer := &apiv2.PhysicalContainer{
+		Status: apiv2.PhysicalContainerStatus{
+			Phase: apiv2.PhysicalContainerPhaseFailed,
+			Conditions: []metav1.Condition{{
+				Type:   apiv2.ConditionReady,
+				Status: metav1.ConditionFalse,
+				Reason: apiv2.PhysicalContainerReasonReconciliationFailed,
+			}},
+		},
+	}
+	require.False(t, physicalContainerOperationFailedTerminally(recoverableContainer))
 }

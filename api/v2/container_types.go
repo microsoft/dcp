@@ -221,42 +221,6 @@ type ContainerBuildContext struct {
 	Platform string `json:"platform,omitempty"`
 }
 
-func (cbc *ContainerBuildContext) Equal(other *ContainerBuildContext) bool {
-	if cbc == other {
-		return true
-	}
-
-	if cbc == nil || other == nil {
-		return false
-	}
-
-	if cbc.Context != other.Context {
-		return false
-	}
-
-	if cbc.Dockerfile != other.Dockerfile {
-		return false
-	}
-
-	if cbc.Stage != other.Stage {
-		return false
-	}
-
-	if cbc.Platform != other.Platform {
-		return false
-	}
-
-	if !slices.Equal(cbc.Args, other.Args) {
-		return false
-	}
-
-	if !slices.Equal(cbc.Secrets, other.Secrets) {
-		return false
-	}
-
-	return true
-}
-
 type ImagePullPolicy string
 
 const (

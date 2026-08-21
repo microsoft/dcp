@@ -54,6 +54,36 @@ func TestCallWithRetryAndVerificationPermanentError(t *testing.T) {
 	require.WithinRangef(t, time.Now(), start, start.Add(timeout/2), "the call should have stopped after the second attmept, much sooner than the timeout")
 }
 
+func TestAfterStatusUpdateIsDurable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("waits for successful status save", func(t *testing.T) {
+		t.Parallel()
+
+		acknowledged := false
+		onSuccessfulSave := afterStatusUpdateIsDurable(statusChanged, func() {
+			acknowledged = true
+		})
+
+		require.False(t, acknowledged)
+		require.NotNil(t, onSuccessfulSave)
+		onSuccessfulSave()
+		require.True(t, acknowledged)
+	})
+
+	t.Run("acknowledges status that is already durable", func(t *testing.T) {
+		t.Parallel()
+
+		acknowledged := false
+		onSuccessfulSave := afterStatusUpdateIsDurable(noChange, func() {
+			acknowledged = true
+		})
+
+		require.True(t, acknowledged)
+		require.Nil(t, onSuccessfulSave)
+	})
+}
+
 func TestEnsureNamespaceRequiresFinalizedActiveNamespace(t *testing.T) {
 	t.Parallel()
 

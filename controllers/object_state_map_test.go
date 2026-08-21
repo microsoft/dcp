@@ -195,6 +195,33 @@ func TestObjectStateMapDeleting(t *testing.T) {
 	m.DeleteByStateKey("one")
 }
 
+func TestObjectStateMapConditionalDelete(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+
+	require.False(t, m.DeleteByStateKeyIf("one", func(state *testObjectState) bool {
+		return state.tag == "dos"
+	}))
+	_, state := m.BorrowByNamespacedName(name)
+	require.NotNil(t, state)
+
+	require.True(t, m.DeleteByStateKeyIf("one", func(state *testObjectState) bool {
+		return state.tag == "uno" && state.count == 1
+	}))
+	_, state = m.BorrowByNamespacedName(name)
+	require.Nil(t, state)
+
+	predicateCalled := false
+	require.False(t, m.DeleteByStateKeyIf("missing", func(*testObjectState) bool {
+		predicateCalled = true
+		return true
+	}))
+	require.False(t, predicateCalled)
+}
+
 // Deferred operations should be executed if present.
 // If there are no deferred operations, the attempt to execute them should be a no-op.
 func TestObjectStateMapDeferredOps(t *testing.T) {
