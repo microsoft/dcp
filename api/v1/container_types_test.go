@@ -33,6 +33,15 @@ func TestContainerNetworkGetLeaseKey(t *testing.T) {
 	require.Equal(t, "containernetworks/app-network", network.GetLeaseKey())
 }
 
+func TestContainerVolumeGetLeaseKey(t *testing.T) {
+	t.Parallel()
+
+	volume := &ContainerVolume{}
+	volume.Spec.Name = " data "
+
+	require.Equal(t, "containervolumes/data", volume.GetLeaseKey())
+}
+
 func TestContainerSpecGetLifecycleKeyIncludesMonitorFields(t *testing.T) {
 	t.Parallel()
 

@@ -23,7 +23,9 @@ import (
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/apiserver"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/pointers"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
@@ -89,6 +91,65 @@ func TestContainerVolumeCreation(t *testing.T) {
 
 	t.Log("Ensure that a corresponding Docker volume was created...")
 	_ = ensureVolumeCreated(t, ctx, client, containerOrchestrator, &vol)
+}
+
+func TestPersistentVolumeRecordsWorkloadID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+
+	vol := apiv1.ContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "persistent-volume-workload-id",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerVolumeSpec{
+			Name: "persistent-volume-workload-id",
+		},
+	}
+	require.NoError(t, teInfo.StateStore.DeletePersistentVolume(ctx, vol.GetLeaseKey()))
+	require.NoError(t, serverInfo.Client.Create(ctx, &vol))
+
+	inspectedVolume := ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &vol)
+
+	record, getErr := teInfo.StateStore.GetPersistentVolume(ctx, vol.GetLeaseKey())
+	require.NoError(t, getErr)
+	require.Equal(t, commonapi.WorkloadID("workload-a"), record.WorkloadID)
+	require.Equal(t, inspectedVolume.Name, record.VolumeName)
+}
+
+func TestExistingPersistentVolumeIsNotRecordedForWorkloadCleanup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "ExistingPersistentVolumeWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+	})
+	require.NoError(t, envStartErr)
+
+	vol := apiv1.ContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-persistent-volume-workload-id",
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerVolumeSpec{
+			Name: "existing-persistent-volume-workload-id",
+		},
+	}
+	require.NoError(t, teInfo.StateStore.DeletePersistentVolume(ctx, vol.GetLeaseKey()))
+	require.NoError(t, serverInfo.ContainerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: vol.Spec.Name}))
+	require.NoError(t, serverInfo.Client.Create(ctx, &vol))
+
+	_ = ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, &vol)
+
+	_, getErr := teInfo.StateStore.GetPersistentVolume(ctx, vol.GetLeaseKey())
+	require.ErrorIs(t, getErr, statestore.ErrPersistentVolumeNotFound)
 }
 
 // If persistent volume is deleted, the corresponding Docker volume should not be deleted.

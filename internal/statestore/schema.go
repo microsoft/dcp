@@ -24,7 +24,7 @@ import (
 
 const (
 	currentSchemaMajorVersion        = 1
-	currentSchemaMinorVersion        = 1
+	currentSchemaMinorVersion        = 2
 	legacySchemaVersion2             = 2
 	legacySchemaVersion2MajorVersion = 1
 	legacySchemaVersion2MinorVersion = 1
@@ -37,8 +37,9 @@ const (
 	noSchemaVersion = -1
 
 	// Applied probes for individual migrations. Each query must return a single boolean column.
-	initialMigrationAppliedProbe     = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'persistent_processes')`
-	workloadIDsMigrationAppliedProbe = `SELECT EXISTS(SELECT 1 FROM pragma_table_info('persistent_processes') WHERE name = 'workload_id')`
+	initialMigrationAppliedProbe           = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'persistent_processes')`
+	workloadIDsMigrationAppliedProbe       = `SELECT EXISTS(SELECT 1 FROM pragma_table_info('persistent_processes') WHERE name = 'workload_id')`
+	persistentVolumesMigrationAppliedProbe = `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'persistent_volumes')`
 )
 
 // schemaMigrationProbe reports whether a single migration's schema changes are present in the database.
@@ -72,6 +73,7 @@ var (
 		latestMinorVersion: currentSchemaMinorVersion,
 		minorProbes: []schemaMigrationProbe{
 			{version: 1, appliedQuery: workloadIDsMigrationAppliedProbe},
+			{version: 2, appliedQuery: persistentVolumesMigrationAppliedProbe},
 		},
 	}
 	schemaMajorMigrations = []schemaMajorMigration{schemaMajorVersion1Migration}
