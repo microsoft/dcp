@@ -1561,7 +1561,7 @@ func unmarshalContainer(data []byte, ic *containers.InspectedContainer) error {
 	}
 
 	ic.Id = dci.Id
-	ic.Name = dci.Name
+	ic.Name = strings.TrimPrefix(dci.Name, "/")
 	ic.Image = dci.Config.Image
 	ic.CreatedAt = dci.Created
 	ic.StartedAt = dci.State.StartedAt
@@ -1720,10 +1720,10 @@ type dockerInspectedContainer struct {
 
 type dockerInspectedContainerMount struct {
 	Type        containers.VolumeMountType `json:"Type,omitempty"`
-	Name        string                    `json:"Name,omitempty"`
-	Source      string                    `json:"Source,omitempty"`
-	Destination string                    `json:"Destination,omitempty"`
-	ReadWrite   bool                      `json:"RW,omitempty"`
+	Name        string                     `json:"Name,omitempty"`
+	Source      string                     `json:"Source,omitempty"`
+	Destination string                     `json:"Destination,omitempty"`
+	ReadWrite   bool                       `json:"RW,omitempty"`
 }
 
 type dockerInspectedContainerConfig struct {

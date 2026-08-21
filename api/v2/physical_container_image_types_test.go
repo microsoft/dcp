@@ -140,6 +140,22 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 			expectedError: "spec.pullPolicy",
 		},
 		{
+			name: "never pull policy with build",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{
+					Build: &ContainerBuildContext{
+						Context: "test-context",
+					},
+					PullPolicy: PullPolicyNever,
+				},
+			},
+			expectedError: "spec.pullPolicy",
+		},
+		{
 			name: "missing build context",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{

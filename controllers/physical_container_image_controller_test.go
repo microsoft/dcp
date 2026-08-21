@@ -11,6 +11,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 )
@@ -187,4 +188,54 @@ func TestPhysicalContainerImageDataOperationInProgress(t *testing.T) {
 			require.Equal(t, tc.expected, data.operationInProgress())
 		})
 	}
+}
+
+func TestPhysicalContainerImageDataSaveCallbackWaitsForDurableStatus(t *testing.T) {
+	t.Parallel()
+
+	imageData := NewObjectStateMap[physicalContainerImageDataStateKey, physicalContainerImageData, *physicalContainerImageData, *apiv2.PhysicalContainerImage]()
+	reconciler := &PhysicalContainerImageReconciler{imageData: imageData}
+	name := types.NamespacedName{Namespace: "test-namespace", Name: "test-image"}
+	stateKey := physicalContainerImageDataStateKey("state-key")
+	data := &physicalContainerImageData{
+		conditionReason: apiv2.PhysicalContainerImageReasonBuilt,
+		imageID:         "image-id",
+	}
+	imageData.Store(name, stateKey, data)
+
+	onSuccessfulSave := reconciler.physicalContainerImageDataSaveCallback(stateKey, data, statusChanged)
+	require.NotNil(t, onSuccessfulSave)
+	_, storedData := imageData.BorrowByNamespacedName(name)
+	require.NotNil(t, storedData)
+
+	onSuccessfulSave()
+	_, storedData = imageData.BorrowByNamespacedName(name)
+	require.Nil(t, storedData)
+}
+
+func TestPhysicalContainerImageDataSaveCallbackDoesNotDeleteNewerState(t *testing.T) {
+	t.Parallel()
+
+	imageData := NewObjectStateMap[physicalContainerImageDataStateKey, physicalContainerImageData, *physicalContainerImageData, *apiv2.PhysicalContainerImage]()
+	reconciler := &PhysicalContainerImageReconciler{imageData: imageData}
+	name := types.NamespacedName{Namespace: "test-namespace", Name: "test-image"}
+	stateKey := physicalContainerImageDataStateKey("state-key")
+	completedData := &physicalContainerImageData{
+		conditionReason: apiv2.PhysicalContainerImageReasonBuilt,
+		imageID:         "image-id",
+	}
+	imageData.Store(name, stateKey, completedData)
+	onSuccessfulSave := reconciler.physicalContainerImageDataSaveCallback(stateKey, completedData, statusChanged)
+
+	newerData := &physicalContainerImageData{
+		conditionReason: apiv2.PhysicalContainerImageReasonBuildFailed,
+		failureMessage:  "newer failure",
+	}
+	require.True(t, imageData.Update(name, stateKey, newerData))
+
+	onSuccessfulSave()
+	_, storedData := imageData.BorrowByNamespacedName(name)
+	require.NotNil(t, storedData)
+	require.Equal(t, newerData.conditionReason, storedData.conditionReason)
+	require.Equal(t, newerData.failureMessage, storedData.failureMessage)
 }

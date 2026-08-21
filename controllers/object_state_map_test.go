@@ -72,6 +72,22 @@ func TestObjectStateMapBorrowing(t *testing.T) {
 	require.Nil(t, os)
 }
 
+func TestObjectStateMapStoreReplacesStateKey(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+	m.Store(name, "two", &testObjectState{tag: "dos", count: 2})
+
+	stateKey, state := m.BorrowByNamespacedName(name)
+	require.Equal(t, "two", stateKey)
+	require.Equal(t, &testObjectState{tag: "dos", count: 2}, state)
+
+	_, state = m.BorrowByStateKey("one")
+	require.Nil(t, state)
+}
+
 // Tests various update scenarios.
 func TestObjectStateMapUpdating(t *testing.T) {
 	t.Parallel()

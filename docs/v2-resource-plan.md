@@ -54,7 +54,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### Type ownership between V1, V2, and orchestrators
 
 - Each API version owns its own resource shapes. `api/v1` and `api/v2` deliberately declare separate copies of container fragments such as `ContainerPort`, `VolumeMount`, `ContainerBuildContext`, and `FileSystemEntry`, so V2 can evolve them without perturbing V1.
-- V1 lifecycle keys are gob-encoded from V1 API types, so V1 shapes are effectively frozen. Changing a V1 type name, its exported field list, or its registration order in `initializeLifecycleHashEncoder` invalidates every existing lifecycle key and orphans running containers. `api/v1/lifecycle_key_golden_test.go` guards all three.
+- V1 lifecycle keys are gob-encoded from V1 API types, so V1 shapes are effectively frozen. Changing a V1 type name, its exported field list, or its registration order in `initializeLifecycleHashEncoder` invalidates every existing lifecycle key and orphans running containers. `TestContainerSpecLifecycleKeyIsStable` in `api/v1/container_types_test.go` guards all three.
 - `pkg/commonapi` holds only trivially simple types that are genuinely cross-cutting and are not expected to change, currently `EnvVar`, `Label`, and `PortProtocol`. V1 exposes some of these through type aliases, which preserve gob identity because an alias keeps the underlying type name and fields.
 - Container orchestrators (`internal/containers`, `internal/docker`, `internal/podman`) own neutral types in `internal/containers` and must not import `api/v1` or `api/v2`. Conversion from versioned API types to orchestrator types happens at the controller boundary.
 

@@ -33,6 +33,13 @@ func NewDualKeyMap[K1 comparable, K2 comparable, V any]() *DualKeyMap[K1, K2, V]
 }
 
 func (m *DualKeyMap[K1, K2, V]) Store(k1 K1, k2 K2, val V) {
+	if oldEntry, found := m.firstMap[k1]; found {
+		delete(m.secondMap, oldEntry.k2)
+	}
+	if oldEntry, found := m.secondMap[k2]; found {
+		delete(m.firstMap, oldEntry.k1)
+	}
+
 	entry := dualKeyMapEntry[K1, K2, V]{k1, k2, val}
 	m.firstMap[k1] = &entry
 	m.secondMap[k2] = &entry

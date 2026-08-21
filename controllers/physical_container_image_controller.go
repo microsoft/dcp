@@ -148,6 +148,7 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	r.imageData.RunDeferredOps(req.NamespacedName, &image)
 
 	var change objectChange
+	var onSuccessfulSave func()
 	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
@@ -155,10 +156,10 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	} else if change = ensureFinalizer(&image, physicalContainerImageFinalizer, log); change != noChange {
 		// Make additional changes during the next reconciliation.
 	} else {
-		change = r.managePhysicalContainerImage(ctx, &image, log)
+		change, onSuccessfulSave = r.managePhysicalContainerImage(ctx, &image, log)
 	}
 
-	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, nil, log)
+	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, onSuccessfulSave, log)
 }
 
 // Removes in-memory state for the image, cancelling the pull or build operation if one may still be running.
@@ -184,7 +185,11 @@ func (r *PhysicalContainerImageReconciler) handleDeletionRequest(image *apiv2.Ph
 	return deleteFinalizer(image, physicalContainerImageFinalizer, log)
 }
 
-func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(ctx context.Context, image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
+func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
+	ctx context.Context,
+	image *apiv2.PhysicalContainerImage,
+	log logr.Logger,
+) (objectChange, func()) {
 	if namespaceReady, change := ensureNamespace(ctx, r.Client, image.Namespace, func(message string) objectChange {
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhasePending)
 		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPending, message)
@@ -194,26 +199,48 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(ctx cont
 		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, message)
 		return change
 	}, log); !namespaceReady {
-		return change
+		return change, nil
 	}
 
 	change := noChange
-	_, data := r.imageData.BorrowByNamespacedName(image.NamespacedName())
+	stateKey, data := r.imageData.BorrowByNamespacedName(image.NamespacedName())
 	if data != nil {
 		change |= data.applyTo(image)
 		initializer := getStateInitializer(physicalContainerImageDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, image, data.conditionReason, data, log)
-		return change
+		return change, r.physicalContainerImageDataSaveCallback(stateKey, data, change)
 	}
 
 	if physicalContainerImageOperationFailedTerminally(image) {
-		return change
+		return change, nil
 	}
 
 	if image.Spec.Build != nil {
-		return r.ensureBuiltImage(ctx, image, log)
+		return r.ensureBuiltImage(ctx, image, log), nil
 	}
-	return r.ensurePulledImage(ctx, image, log)
+	return r.ensurePulledImage(ctx, image, log), nil
+}
+
+// Acknowledges a terminal operation once its status projection is durable.
+func (r *PhysicalContainerImageReconciler) physicalContainerImageDataSaveCallback(
+	stateKey physicalContainerImageDataStateKey,
+	data *physicalContainerImageData,
+	change objectChange,
+) func() {
+	if data == nil || data.operationInProgress() {
+		return nil
+	}
+
+	expectedReason := data.conditionReason
+	expectedImageID := data.imageID
+	expectedFailureMessage := data.failureMessage
+	return afterStatusUpdateIsDurable(change, func() {
+		r.imageData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerImageData) bool {
+			return current.conditionReason == expectedReason &&
+				current.imageID == expectedImageID &&
+				current.failureMessage == expectedFailureMessage
+		})
+	})
 }
 
 // Reports whether the image already recorded a terminal pull or build failure.
@@ -512,7 +539,6 @@ func handlePhysicalContainerImageOperationCompleted(
 ) objectChange {
 	if data.imageID == "" {
 		log.V(1).Info("PhysicalContainerImage operation completed without an image ID")
-		reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 		failureChange := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
 		failureChange |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, "Image operation completed without an image ID.")
 		return failureChange
@@ -521,14 +547,11 @@ func handlePhysicalContainerImageOperationCompleted(
 	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, reconciler.orchestrator, data.imageID)
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect completed PhysicalContainerImage operation", "ImageID", data.imageID)
-		reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 		failureChange := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
 		failureChange |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 		return failureChange
 	}
-
 	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
-	reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 	return applyReadyPhysicalContainerImageStatus(image, physicalContainerImageOutputTag(image), inspectedImage) | additionalReconciliationNeeded
 }
 
@@ -540,7 +563,6 @@ func handlePhysicalContainerImageOperationFailed(
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
-	reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 	log.V(1).Info("PhysicalContainerImage operation failed; saving image status", "Message", data.failureMessage)
 	// The failure is terminal: pulls already retry with backoff before reporting failure,
 	// and spec is immutable, so no further reconciliation can make progress.
@@ -549,13 +571,12 @@ func handlePhysicalContainerImageOperationFailed(
 
 func handleUnknownPhysicalContainerImageDataReason(
 	_ context.Context,
-	reconciler *PhysicalContainerImageReconciler,
+	_ *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
 	conditionReason string,
 	_ *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
-	reconciler.imageData.DeleteByNamespacedName(image.NamespacedName())
 	message := fmt.Sprintf("PhysicalContainerImage operation reached unknown condition reason %q.", conditionReason)
 	log.Error(fmt.Errorf("unknown physical container image condition reason %q", conditionReason), "PhysicalContainerImage operation reached unknown condition reason")
 	change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)

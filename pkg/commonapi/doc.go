@@ -10,8 +10,7 @@
 // volume mounts, build contexts, and the like) are owned by their respective API packages,
 // so that evolving one API version cannot change the wire shape of another. This matters in
 // particular for api/v1, whose container lifecycle keys are derived from gob encodings of its
-// types; see TestContainerSpecLifecycleKeyIsStable.
-// types.go). Deepcopy generation is opt-in per type via +kubebuilder:object:generate=true,
+// types; see TestContainerSpecLifecycleKeyIsStable. Deepcopy generation is opt-in per type
 // because this package also declares generic interfaces that controller-gen cannot process.
 // +kubebuilder:object:generate=false
 // +k8s:openapi-model-package=github.com/microsoft/dcp/pkg/commonapi

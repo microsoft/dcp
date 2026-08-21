@@ -112,6 +112,29 @@ func TestApplyInspectedPhysicalContainerStatusRequestsReconciliationOnlyWhenUsef
 	}
 }
 
+func TestPhysicalContainerReconcileDelayUsesMonitoringDelayForStoppedContainer(t *testing.T) {
+	t.Parallel()
+
+	container := &apiv2.PhysicalContainer{
+		Spec: apiv2.PhysicalContainerSpec{
+			Stop: true,
+		},
+		Status: apiv2.PhysicalContainerStatus{
+			Phase: apiv2.PhysicalContainerPhasePending,
+			Conditions: []metav1.Condition{{
+				Type:   apiv2.ConditionReady,
+				Status: metav1.ConditionFalse,
+				Reason: apiv2.PhysicalContainerReasonRuntimeContainerPending,
+			}},
+		},
+	}
+
+	require.Equal(t, MonitoringDelay, physicalContainerReconcileDelay(container))
+
+	container.Spec.Stop = false
+	require.Equal(t, StandardDelay, physicalContainerReconcileDelay(container))
+}
+
 func TestPhysicalContainerOperationFailedTerminally(t *testing.T) {
 	t.Parallel()
 

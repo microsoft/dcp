@@ -76,6 +76,7 @@ type PhysicalContainerImageSpec struct {
 	Build *ContainerBuildContext `json:"build,omitempty"`
 
 	// PullPolicy controls source image pulling. If omitted, missing is used.
+	// Never is not supported for image builds.
 	PullPolicy ImagePullPolicy `json:"pullPolicy,omitempty"`
 
 	// PullRetryLimit is how many times a failed source image pull is retried, with exponential
@@ -203,6 +204,9 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 	}
 
 	if pci.Spec.Build != nil {
+		if pci.Spec.PullPolicy == PullPolicyNever {
+			errorList = append(errorList, field.Invalid(specPath.Child("pullPolicy"), pci.Spec.PullPolicy, "pullPolicy never is not supported for image builds"))
+		}
 		errorList = append(errorList, validatePhysicalContainerImageBuild(pci.Spec.Build, specPath.Child("build"))...)
 	}
 

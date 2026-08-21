@@ -178,6 +178,12 @@ func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) Additio
 	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning {
 		return MonitoringDelay
 	}
+	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, apiv2.ConditionReady)
+	if container.Spec.Stop &&
+		readyCondition != nil &&
+		readyCondition.Reason == apiv2.PhysicalContainerReasonRuntimeContainerPending {
+		return MonitoringDelay
+	}
 	if container.Status.Phase == apiv2.PhysicalContainerPhaseFailed &&
 		!physicalContainerOperationFailedTerminally(container) {
 		return LongDelay

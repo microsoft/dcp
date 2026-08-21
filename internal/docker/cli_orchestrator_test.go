@@ -105,6 +105,16 @@ func TestExpectStringsMultiline(t *testing.T) {
 	b.Reset()
 }
 
+func TestUnmarshalContainerNormalizesName(t *testing.T) {
+	t.Parallel()
+
+	inspected := ct.InspectedContainer{}
+	err := unmarshalContainer([]byte(`{"Id":"container-id","Name":"/container-name"}`), &inspected)
+
+	require.NoError(t, err)
+	require.Equal(t, "container-name", inspected.Name)
+}
+
 func TestInspectedContainerDeserialization(t *testing.T) {
 	b := bytes.Buffer{}
 
