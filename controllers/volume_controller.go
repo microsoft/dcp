@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	apimachinery_errors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,7 +19,10 @@ import (
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/internal/statestore"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/pointers"
+	"github.com/microsoft/dcp/pkg/process"
 )
 
 // Data about ContainerVolume objects that we keep in memory
@@ -69,10 +73,17 @@ var (
 type volumeName string
 type volumeDataMap = ObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume]
 
+type VolumeReconcilerConfig struct {
+	StateStore         *statestore.Store
+	ResourceLeaseOwner process.ProcessHandle
+	WorkloadID         commonapi.WorkloadID
+}
+
 type VolumeReconciler struct {
 	*ReconcilerBase[apiv1.ContainerVolume, *apiv1.ContainerVolume]
 	orchestrator containers.VolumeOrchestrator
 	volumeData   *volumeDataMap
+	config       VolumeReconcilerConfig
 }
 
 func NewVolumeReconciler(
@@ -81,6 +92,7 @@ func NewVolumeReconciler(
 	noCacheClient ctrl_client.Reader,
 	log logr.Logger,
 	orchestrator containers.VolumeOrchestrator,
+	config VolumeReconcilerConfig,
 ) *VolumeReconciler {
 	base := NewReconcilerBase[apiv1.ContainerVolume](client, noCacheClient, log, lifetimeCtx)
 
@@ -88,6 +100,7 @@ func NewVolumeReconciler(
 		ReconcilerBase: base,
 		orchestrator:   orchestrator,
 		volumeData:     NewObjectStateMap[volumeName, containerVolumeData, *containerVolumeData, *apiv1.ContainerVolume](),
+		config:         config,
 	}
 	return &r
 }
@@ -132,6 +145,31 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change = r.handleDeletionRequest(ctx, &vol, log)
 	} else if change = ensureFinalizer(&vol, volumeFinalizer, log); change != noChange {
 		// Make additional changes during next reconciliation
+	} else if pointers.TrueValue(vol.Spec.Persistent) {
+		if r.config.StateStore == nil {
+			stateStoreErr := fmt.Errorf("state store is not configured")
+			log.Error(stateStoreErr, "Could not acquire persistent volume lease")
+			change = additionalReconciliationNeeded
+		} else {
+			leaseErr := r.config.StateStore.WithResourceLease(
+				ctx,
+				&vol,
+				r.config.ResourceLeaseOwner,
+				resourceLeaseRevalidationInterval,
+				func(leaseCtx context.Context, lease *statestore.ResourceLease) error {
+					log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
+					change = r.manageVolume(leaseCtx, &vol, log)
+					return nil
+				},
+			)
+			if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+				logResourceLeaseHeld(log, leaseErr, vol.GetLeaseKey(), "Persistent volume is being updated by another DCP instance, retrying")
+				change = additionalReconciliationNeeded
+			} else if leaseErr != nil {
+				log.Error(leaseErr, "Could not acquire persistent volume lease")
+				change = additionalReconciliationNeeded
+			}
+		}
 	} else {
 		change = r.manageVolume(ctx, &vol, log)
 	}
@@ -141,8 +179,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		reconciliationDelay = LongDelay
 	}
 
-	result, saveErr := r.SaveChangesWithDelay(ctx, &vol, patch, change, reconciliationDelay, nil, log)
-	return result, saveErr
+	return r.SaveChangesWithDelay(ctx, &vol, patch, change, reconciliationDelay, nil, log)
 }
 
 func (r *VolumeReconciler) handleDeletionRequest(ctx context.Context, vol *apiv1.ContainerVolume, log logr.Logger) objectChange {
@@ -221,9 +258,15 @@ func handleNewContainerVolume(
 	}
 
 	// Need to create the volume
-	_, createErr := createVolume(ctx, r.orchestrator, vol.Spec.Name)
+	inspectedVolume, createErr := createVolume(ctx, r.orchestrator, vol.Spec.Name)
 	if createErr != nil {
 		log.Error(createErr, "Could not create a container volume")
+		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
+	}
+	if persistErr := r.upsertPersistentVolumeRecord(ctx, vol, inspectedVolume, log); persistErr != nil {
+		removeErr := removeVolume(context.WithoutCancel(ctx), r.orchestrator, vol.Spec.Name)
+		persistErr = errors.Join(persistErr, removeErr)
+		log.Error(persistErr, "Could not persist ContainerVolume workload record", "ResourceKey", vol.GetLeaseKey())
 		return setContainerVolumeState(vol, apiv1.ContainerVolumeStatePending) | additionalReconciliationNeeded
 	}
 
@@ -231,6 +274,35 @@ func handleNewContainerVolume(
 	volData.state = apiv1.ContainerVolumeStateReady
 	r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
 	return setContainerVolumeState(vol, apiv1.ContainerVolumeStateReady)
+}
+
+func (r *VolumeReconciler) upsertPersistentVolumeRecord(
+	ctx context.Context,
+	vol *apiv1.ContainerVolume,
+	inspectedVolume *containers.InspectedVolume,
+	log logr.Logger,
+) error {
+	if r.config.WorkloadID == "" || !pointers.TrueValue(vol.Spec.Persistent) {
+		return nil
+	}
+	if r.config.StateStore == nil {
+		return fmt.Errorf("state store is not configured")
+	}
+	if inspectedVolume == nil || strings.TrimSpace(inspectedVolume.Name) == "" {
+		return fmt.Errorf("cannot persist ContainerVolume record without a valid volume name")
+	}
+
+	record := statestore.PersistentVolumeRecord{
+		ResourceKey: vol.GetLeaseKey(),
+		VolumeName:  inspectedVolume.Name,
+		RuntimeName: r.orchestrator.Name(),
+		WorkloadID:  r.config.WorkloadID,
+	}
+	if persistErr := r.config.StateStore.UpsertPersistentVolume(ctx, record); persistErr != nil {
+		log.Error(persistErr, "Could not persist ContainerVolume workload record", "ResourceKey", record.ResourceKey)
+		return persistErr
+	}
+	return nil
 }
 
 func handleReadyContainerVolume(

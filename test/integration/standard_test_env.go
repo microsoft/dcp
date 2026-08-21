@@ -250,6 +250,11 @@ func StartTestEnvironmentWithOptions(
 			mgr.GetAPIReader(),
 			log.WithName("VolumeReconciler"),
 			serverInfo.ContainerOrchestrator,
+			controllers.VolumeReconcilerConfig{
+				StateStore:         stateStore,
+				ResourceLeaseOwner: leaseOwner,
+				WorkloadID:         options.WorkloadID,
+			},
 		)
 		if err = volumeR.SetupWithManager(mgr, instanceTag+"-VolumeReconciler"); err != nil {
 			return nil, nil, fmt.Errorf("failed to initialize ContainerVolume reconciler: %w", err)
