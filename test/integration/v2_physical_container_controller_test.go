@@ -748,8 +748,17 @@ func removeRuntimeNetworkOnCleanup(t *testing.T, networkName string) {
 			Networks: []string{networkName},
 			Force:    true,
 		})
-		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
-			require.NoError(t, removeErr)
+		if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
+			return
 		}
+		// Removal reports a partial failure both for a network that is already gone and for one
+		// that could not be removed, so confirm the network is actually absent before ignoring it.
+		inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(cleanupCtx, containers.InspectNetworksOptions{
+			Networks: []string{networkName},
+		})
+		if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedNetworks) == 0) {
+			return
+		}
+		require.NoError(t, removeErr)
 	})
 }

@@ -164,21 +164,21 @@ func ensureNamespace(
 	namespace := apiv2.Namespace{}
 	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
 	if apierrors.IsNotFound(getErr) {
-		return false, applyPending(fmt.Sprintf("Namespace %q does not exist.", namespaceName))
+		return false, applyPending(fmt.Sprintf("Namespace %q does not exist.", namespaceName)) | additionalReconciliationNeeded
 	}
 	if getErr != nil {
 		log.Error(getErr, "Failed to get namespace", "Namespace", namespaceName)
-		return false, applyFailed(fmt.Sprintf("Failed to get namespace: %v", getErr))
+		return false, applyFailed(fmt.Sprintf("Failed to get namespace: %v", getErr)) | additionalReconciliationNeeded
 	}
 
 	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
-		return false, applyPending(fmt.Sprintf("Namespace %q is terminating.", namespaceName))
+		return false, applyPending(fmt.Sprintf("Namespace %q is terminating.", namespaceName)) | additionalReconciliationNeeded
 	}
 	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
-		return false, applyPending(fmt.Sprintf("Namespace %q is not ready.", namespaceName))
+		return false, applyPending(fmt.Sprintf("Namespace %q is not ready.", namespaceName)) | additionalReconciliationNeeded
 	}
 	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
-		return false, applyPending(fmt.Sprintf("Namespace %q is not active.", namespaceName))
+		return false, applyPending(fmt.Sprintf("Namespace %q is not active.", namespaceName)) | additionalReconciliationNeeded
 	}
 
 	return true, noChange

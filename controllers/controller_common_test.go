@@ -111,7 +111,7 @@ func TestEnsureNamespaceRequiresFinalizedActiveNamespace(t *testing.T) {
 	}, logr.Discard())
 
 	require.False(t, ready)
-	require.Equal(t, statusChanged, change)
+	require.Equal(t, statusChanged|additionalReconciliationNeeded, change)
 	require.Equal(t, `Namespace "test-namespace" is not ready.`, pendingMessage)
 
 	namespace.Finalizers = []string{namespaceFinalizer}

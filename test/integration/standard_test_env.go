@@ -268,6 +268,19 @@ func StartTestEnvironmentWithOptions(
 		}
 	}
 
+	if inclCtrl&PhysicalContainerNetworkController != 0 {
+		physicalContainerNetworkR := controllers.NewPhysicalContainerNetworkReconciler(
+			ctx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerNetworkReconciler"),
+			serverInfo.ContainerOrchestrator,
+		)
+		if err = physicalContainerNetworkR.SetupWithManager(mgr, instanceTag+"-PhysicalContainerNetworkReconciler"); err != nil {
+			return nil, nil, fmt.Errorf("failed to initialize PhysicalContainerNetwork reconciler: %w", err)
+		}
+	}
+
 	if inclCtrl&ContainerExecController != 0 {
 		containerExecR := controllers.NewContainerExecReconciler(
 			ctx,

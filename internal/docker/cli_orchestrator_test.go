@@ -389,6 +389,51 @@ func TestGetStatusRejectsInvalidDockerVersionOutput(t *testing.T) {
 	require.Empty(t, executor.FindAll([]string{"docker", "network", "ls"}, "", nil))
 }
 
+func TestApplyListContainersOptions(t *testing.T) {
+	t.Parallel()
+
+	args := applyListContainersOptions(
+		[]string{"container", "ls", "--no-trunc"},
+		ct.ListContainersOptions{
+			All: true,
+			Filters: ct.ListContainersFilters{
+				LabelFilters:   []ct.LabelFilter{{Key: "owner", Value: "dcp"}},
+				NetworkFilters: []string{"network-id"},
+			},
+		},
+	)
+
+	require.Equal(t, []string{
+		"container", "ls", "--no-trunc", "--all",
+		"--filter", "label=owner=dcp",
+		"--filter", "network=network-id",
+	}, args)
+}
+
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		networkName string
+		expected    bool
+	}{
+		{name: "bridge", networkName: "bridge", expected: true},
+		{name: "host", networkName: "host", expected: true},
+		{name: "none", networkName: "none", expected: true},
+		{name: "nat", networkName: "nat", expected: false},
+		{name: "user-defined network", networkName: "application", expected: false},
+	}
+
+	orchestrator := &DockerCliOrchestrator{}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.expected, orchestrator.IsBuiltInNetwork(testCase.networkName))
+		})
+	}
+}
+
 func TestParseDockerCliVersion(t *testing.T) {
 	t.Parallel()
 

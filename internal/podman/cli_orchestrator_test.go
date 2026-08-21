@@ -70,6 +70,38 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	}, ct.Networks)
 }
 
+func TestApplyListContainersOptions(t *testing.T) {
+	t.Parallel()
+
+	args := applyListContainersOptions(
+		[]string{"container", "ls", "--no-trunc"},
+		containers.ListContainersOptions{
+			All: true,
+			Filters: containers.ListContainersFilters{
+				LabelFilters:   []containers.LabelFilter{{Key: "owner", Value: "dcp"}},
+				NetworkFilters: []string{"network-id"},
+			},
+		},
+	)
+
+	require.Equal(t, []string{
+		"container", "ls", "--no-trunc", "--all",
+		"--filter", "label=owner=dcp",
+		"--filter", "network=network-id",
+	}, args)
+}
+
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	orchestrator := &PodmanCliOrchestrator{}
+	require.True(t, orchestrator.IsBuiltInNetwork("podman"))
+	require.False(t, orchestrator.IsBuiltInNetwork("bridge"))
+	require.False(t, orchestrator.IsBuiltInNetwork("host"))
+	require.False(t, orchestrator.IsBuiltInNetwork("none"))
+	require.False(t, orchestrator.IsBuiltInNetwork("application"))
+}
+
 func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 	t.Parallel()
 

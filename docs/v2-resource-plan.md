@@ -1,6 +1,6 @@
 # V2 resource plan
 
-This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container/image primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
+This document tracks the intended direction for DCP V2 resources. The current V2 work establishes the namespace model and the first physical container, image, and network primitives; follow-up work should continue using the design guidelines below so future resources remain consistent.
 
 ## Design guidelines
 
@@ -42,6 +42,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `applyTo` methods on data records should only project in-memory progress onto resource status.
 - Reconciliation scheduling, state cleanup, runtime inspection, and external side effects should remain in the reconciler.
 - Prefer dispatching progress handling through initializer maps keyed by condition reason when the controller has multiple progress gates.
+- Do not discard an in-memory operation result until its status projection is durable. Use `afterStatusUpdateIsDurable` with an atomic conditional state-map update so a failed status write retains the result and a delayed acknowledgement cannot remove newer state.
 
 ### Status and progress reporting
 
@@ -50,6 +51,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - Avoid duplicating explanatory top-level `status.message` fields when condition messages can carry the information.
 - Controller status helpers should use shared target-first setters such as `setValue(&field, value)` and `setTimestamp(&field, value)`.
 - Callers that need a boolean from a status helper should use `trySetX` wrappers instead of comparing `setX(...) != noChange` at call sites.
+- Distinguish recoverable from terminal failures. Status setters return `noChange` when a failure repeats identically, and without a watch subscription or a periodic cache resync that leaves a resource wedged with no pending reconciliation. Recoverable failures should return `additionalReconciliationNeeded` and reconcile at `LongDelay`, matching how V1 paces an unhealthy runtime; terminal failures should not requeue at all. All delays carry jitter, so retrying resources do not poll the runtime in lockstep.
 
 ### Type ownership between V1, V2, and orchestrators
 
@@ -69,46 +71,50 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup.
 - `PhysicalContainerImage` provides source image pull and build workflows.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
-- `PhysicalContainer` and `PhysicalContainerImage` use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
+- `PhysicalContainerNetwork` creates or references one runtime container network and reports its observed identity, driver, and address allocations. Networks referenced by runtime ID are always retained. Created networks are retained when `persistent` is true; otherwise deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network. Name collisions are terminal unless `replaceExisting` is true, in which case the controller safely removes the specifically resolved network before creating its replacement. Runtime adapters classify their own built-in, non-removable networks, and replacement rejects them before disconnecting any attachments.
+- The physical resources use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
 
 ## Follow-up roadmap
 
 ### Physical resource layer
 
-1. Add V2 `PhysicalNetwork`.
-   - Represent concrete container runtime networks.
-   - Expose runtime network identity and observed network details.
-   - Preserve namespace-scoped cleanup semantics.
-
-2. Add V2 `PhysicalVolume`.
+1. Add V2 `PhysicalContainerVolume`.
    - Represent concrete container runtime volumes.
    - Expose runtime volume identity and observed volume details.
    - Preserve namespace-scoped cleanup semantics.
 
-3. Update `PhysicalContainer` to use physical network and volume resources.
-   - Replace direct runtime network names with references to same-namespace `PhysicalNetwork` resources where appropriate.
-   - Replace direct runtime volume names with references to same-namespace `PhysicalVolume` resources where appropriate.
+2. Update `PhysicalContainer` to use physical network and volume resources.
+   - Replace direct runtime network names with references to same-namespace `PhysicalContainerNetwork` resources where appropriate.
+   - Replace direct runtime volume names with references to same-namespace `PhysicalContainerVolume` resources where appropriate.
    - Watch referenced network and volume resources so containers reconcile when dependencies become ready.
 
-4. Decide how monitor processes should clean up physical resources after DCP crashes.
+3. Decide how monitor processes should clean up physical resources after DCP crashes.
    - Define how monitor processes are configured and launched for physical resources.
    - Decide which physical resources require crash cleanup monitoring.
    - Ensure cleanup behavior works when DCP exits unexpectedly and cannot rely on controller finalizers.
 
-5. Migrate V1 container-network tunnel proxy to V2 physical resources.
+4. Migrate V1 container-network tunnel proxy to V2 physical resources.
    - Keep tunnel-specific behavior in the V1 controller, including dcptun image handling, server proxy process management, TLS, tunnel gRPC calls, status, and endpoint projection.
    - Delegate common runtime container lifecycle to V2 physical resources instead of creating and managing the proxy container directly through the orchestrator.
 
-6. Migrate V1 container resource lifecycle to V2 physical resources.
+5. Migrate V1 container resource lifecycle to V2 physical resources.
    - Keep V1-specific policy in the V1 controller, including lifecycle keys, persistent and existing container lookup, leases, compatibility status, and V1 API semantics.
    - Delegate common image/container/network/volume runtime lifecycle to V2 physical resources.
    - Avoid keeping repeated container creation, start, inspect, watch, stop, and remove logic in multiple V1 controllers.
 
-7. Add V2 `PhysicalProcess`.
+6. Add V2 `PhysicalProcess`.
    - Launch a new process or track an existing process by PID.
    - Report observed status for the process lifetime.
    - Use the same namespace, queued action, in-memory progress, phase, and condition patterns as the other physical resources.
    - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
+
+7. Align network harvesting with `persistent`.
+   - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalContainerNetwork` with `persistent: true` is therefore still removed after a DCP crash, unlike a persistent container.
+   - This asymmetry is inherited from V1. Decide whether harvesting should honor the persistent label for networks, and change V1 and V2 together if it should.
+
+8. Retry recoverable failures in `PhysicalContainerImage`.
+   - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.
+   - `PhysicalContainerNetwork` already follows the recoverable/terminal failure pattern described in the status guidelines. Apply the same treatment to the image controller.
 
 ### Logical resource layer
 

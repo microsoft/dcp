@@ -185,5 +185,8 @@ type NetworkOrchestrator interface {
 	// Get default (bridge-type) network name
 	DefaultNetworkName() string
 
+	// Reports whether a runtime network name identifies a built-in network that cannot be removed.
+	IsBuiltInNetwork(networkName string) bool
+
 	RuntimeStatusChecker
 }
