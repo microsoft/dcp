@@ -30,8 +30,8 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### Physical resource ownership
 
 - Physical resources either create a runtime object or reference an existing object by runtime ID; creation fields and existing-object references are mutually exclusive.
-- Runtime objects referenced by ID are never removed when the physical resource is deleted. `persistent` and `replaceExisting` apply only when creating a runtime object and are rejected for existing-object references.
-- A created runtime object is removed with its physical resource unless `persistent` is true.
+- Runtime objects referenced by ID are never removed when the physical resource is deleted. `retainRuntimeContainer` and `replaceExisting` apply only when creating a runtime object and are rejected for existing-object references.
+- A created runtime object is removed with its physical resource unless `retainRuntimeContainer` is true.
 - Creation fails on a runtime name collision unless `replaceExisting` is true. Replacement removes the object that was resolved by name before creating and tracking the new object.
 - Higher-level `session`, `persistent`, and `existing` modes remain logical policy. Logical controllers translate those modes into physical creation or reference specifications rather than copying the mode enum onto physical resources.
 

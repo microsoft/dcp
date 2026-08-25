@@ -657,9 +657,9 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pctr-retain-created",
-			Persistent:    true,
+			ImageRef:               image.Name,
+			ContainerName:          "v2-pctr-retain-created",
+			RetainRuntimeContainer: true,
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))

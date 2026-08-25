@@ -127,37 +127,45 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 }
 
 // checkNamespaceReady reports whether a namespace permits a V2 resource to perform runtime work.
-// The returned change comes from applyPending when the namespace is not ready, or applyFailed when
-// its readiness cannot be determined. Deletion paths bypass this check so cleanup can still finish.
+// Deletion paths bypass this check so cleanup can still finish.
 func checkNamespaceReady(
 	ctx context.Context,
 	client ctrl_client.Client,
 	namespaceName string,
-	applyPending func(apiv2.ConditionReason, string) objectChange,
-	applyFailed func(apiv2.ConditionReason, string) objectChange,
-	log logr.Logger,
-) (bool, objectChange) {
+) (bool, apiv2.ConditionReason, error) {
 	namespace := apiv2.Namespace{}
 	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
 	if apierrors.IsNotFound(getErr) {
-		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceNotFound, fmt.Sprintf("Namespace %q does not exist.", namespaceName))
+		return false, apiv2.PhysicalResourceReasonNamespaceNotFound, nil
 	}
 	if getErr != nil {
-		log.Error(getErr, "Failed to get namespace", "Namespace", namespaceName)
-		return false, applyFailed(apiv2.PhysicalResourceReasonNamespaceLookupFailed, fmt.Sprintf("Failed to get namespace: %v", getErr))
+		return false, apiv2.PhysicalResourceReasonNamespaceLookupFailed, getErr
 	}
 
 	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
-		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceTerminating, fmt.Sprintf("Namespace %q is terminating.", namespaceName))
+		return false, apiv2.PhysicalResourceReasonNamespaceTerminating, nil
 	}
 	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
-		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceNotReady, fmt.Sprintf("Namespace %q is not ready.", namespaceName))
+		return false, apiv2.PhysicalResourceReasonNamespaceNotReady, nil
 	}
 	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
-		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceNotActive, fmt.Sprintf("Namespace %q is not active.", namespaceName))
+		return false, apiv2.PhysicalResourceReasonNamespaceNotActive, nil
 	}
 
-	return true, noChange
+	return true, "", nil
+}
+
+func namespaceReadinessMessage(namespaceName string, reason apiv2.ConditionReason) string {
+	switch reason {
+	case apiv2.PhysicalResourceReasonNamespaceNotFound:
+		return fmt.Sprintf("Namespace %q does not exist.", namespaceName)
+	case apiv2.PhysicalResourceReasonNamespaceTerminating:
+		return fmt.Sprintf("Namespace %q is terminating.", namespaceName)
+	case apiv2.PhysicalResourceReasonNamespaceNotActive:
+		return fmt.Sprintf("Namespace %q is not active.", namespaceName)
+	default:
+		return fmt.Sprintf("Namespace %q is not ready.", namespaceName)
+	}
 }
 
 // Returns a name made probabilistically unique by appending a random postfix,
@@ -215,9 +223,10 @@ type KubernetesObjectStateType interface {
 	~string
 }
 
-// stateInitializerFunc reconciles an object from controller-owned in-memory state. An initializer
-// may project that state onto the object, advance the in-memory state, or schedule runtime work.
-// Its return value must accurately describe object changes so unchanged objects are not continually saved.
+// stateInitializerFunc is invoked when reconciliation handles a particular controller state.
+// An initializer is responsible for projecting that state onto the API object, updating any
+// controller-owned in-memory data, and applying necessary changes to the represented runtime
+// resources. It must return noChange when it does not modify the API object.
 type stateInitializerFunc[
 	O commonapi.ObjectStruct, PO commonapi.PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],

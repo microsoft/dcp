@@ -129,18 +129,18 @@ func TestPhysicalContainerValidate(t *testing.T) {
 			expectedError: "spec.command",
 		},
 		{
-			name: "persistent conflicts with existing container ID",
+			name: "retain runtime container conflicts with existing container ID",
 			container: PhysicalContainer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID: "existing-container-id",
-					Persistent:  true,
+					ContainerID:            "existing-container-id",
+					RetainRuntimeContainer: true,
 				},
 			},
-			expectedError: "spec.persistent",
+			expectedError: "spec.retainRuntimeContainer",
 		},
 		{
 			name: "replaceExisting conflicts with existing container ID",

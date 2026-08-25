@@ -5102,7 +5102,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 				Properties: map[string]spec.Schema{
 					"containerID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ContainerID identifies an existing runtime container to track. When set, creation fields are forbidden.",
+							Description: "ContainerID identifies an existing runtime container to track. When set, retainRuntimeContainer, imageRef, containerName, replaceExisting, entrypoint, command, env, ports, volumeMounts, networks, createFiles, and labels must be omitted.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -5114,9 +5114,9 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
-					"persistent": {
+					"retainRuntimeContainer": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Persistent keeps a runtime container created by this resource in place when the resource is deleted. Existing runtime containers referenced by containerID are always retained.",
+							Description: "RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted. Existing runtime containers referenced by containerID are always retained.",
 							Type:        []string{"boolean"},
 							Format:      "",
 						},

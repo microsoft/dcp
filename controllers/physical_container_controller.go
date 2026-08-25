@@ -234,17 +234,20 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
 ) (objectChange, func()) {
-	namespaceReady, namespaceChange := checkNamespaceReady(ctx, r.Client, container.Namespace, func(reason apiv2.ConditionReason, message string) objectChange {
-		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, reason, message)
-		return change
-	}, func(reason apiv2.ConditionReason, message string) objectChange {
-		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, reason, message)
-		return change | additionalReconciliationNeeded
-	}, log)
+	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, r.Client, container.Namespace)
 	if !namespaceReady {
-		return namespaceChange, nil
+		namespacePhase := apiv2.PhysicalContainerPhasePending
+		namespaceMessage := namespaceReadinessMessage(container.Namespace, namespaceReason)
+		change := noChange
+		if namespaceErr != nil {
+			log.Error(namespaceErr, "Failed to get namespace", "Namespace", container.Namespace)
+			namespacePhase = apiv2.PhysicalContainerPhaseUnknown
+			namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+			change |= additionalReconciliationNeeded
+		}
+		change |= setValue(&container.Status.Phase, namespacePhase)
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+		return change, nil
 	}
 
 	change := noChange
@@ -902,7 +905,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		containerID = data.containerID
 	}
 
-	if container.Spec.ContainerID == "" && !container.Spec.Persistent && containerID != "" {
+	if container.Spec.ContainerID == "" && !container.Spec.RetainRuntimeContainer && containerID != "" {
 		_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 			Containers: []string{containerID},
 			Force:      true,
@@ -1014,7 +1017,7 @@ func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log log
 	labels := append([]containers.Label{}, container.Spec.Labels...)
 	labels = append(labels, containers.Label{
 		Key:   PersistentLabel,
-		Value: fmt.Sprintf("%t", container.Spec.Persistent),
+		Value: fmt.Sprintf("%t", container.Spec.RetainRuntimeContainer),
 	})
 
 	thisProcess, thisProcessErr := process.This()

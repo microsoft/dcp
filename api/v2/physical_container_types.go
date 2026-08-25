@@ -138,15 +138,17 @@ const (
 // PhysicalContainerSpec describes either an existing runtime container or how to create one.
 // +k8s:openapi-gen=true
 type PhysicalContainerSpec struct {
-	// ContainerID identifies an existing runtime container to track. When set, creation fields are forbidden.
+	// ContainerID identifies an existing runtime container to track. When set, retainRuntimeContainer,
+	// imageRef, containerName, replaceExisting, entrypoint, command, env, ports, volumeMounts, networks,
+	// createFiles, and labels must be omitted.
 	ContainerID string `json:"containerID,omitempty"`
 
 	// Stop requests that the tracked runtime container be stopped.
 	Stop bool `json:"stop,omitempty"`
 
-	// Persistent keeps a runtime container created by this resource in place when the resource is deleted.
+	// RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted.
 	// Existing runtime containers referenced by containerID are always retained.
-	Persistent bool `json:"persistent,omitempty"`
+	RetainRuntimeContainer bool `json:"retainRuntimeContainer,omitempty"`
 
 	// ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.
 	ImageRef string `json:"imageRef,omitempty"`
@@ -394,8 +396,8 @@ func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Obj
 func (pc *PhysicalContainer) validateExistingContainerSpec(specPath *field.Path) field.ErrorList {
 	errorList := field.ErrorList{}
 
-	if pc.Spec.Persistent {
-		errorList = append(errorList, field.Forbidden(specPath.Child("persistent"), "persistent cannot be set when containerID is set"))
+	if pc.Spec.RetainRuntimeContainer {
+		errorList = append(errorList, field.Forbidden(specPath.Child("retainRuntimeContainer"), "retainRuntimeContainer cannot be set when containerID is set"))
 	}
 	if pc.Spec.ImageRef != "" {
 		errorList = append(errorList, field.Forbidden(specPath.Child("imageRef"), "imageRef cannot be set when containerID is set"))

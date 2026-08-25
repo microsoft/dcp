@@ -191,17 +191,20 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 	image *apiv2.PhysicalContainerImage,
 	log logr.Logger,
 ) (objectChange, func()) {
-	namespaceReady, namespaceChange := checkNamespaceReady(ctx, r.Client, image.Namespace, func(reason apiv2.ConditionReason, message string) objectChange {
-		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhasePending)
-		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, reason, message)
-		return change
-	}, func(reason apiv2.ConditionReason, message string) objectChange {
-		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseUnknown)
-		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, reason, message)
-		return change | additionalReconciliationNeeded
-	}, log)
+	namespaceReady, namespaceReason, namespaceErr := checkNamespaceReady(ctx, r.Client, image.Namespace)
 	if !namespaceReady {
-		return namespaceChange, nil
+		namespacePhase := apiv2.PhysicalContainerImagePhasePending
+		namespaceMessage := namespaceReadinessMessage(image.Namespace, namespaceReason)
+		change := noChange
+		if namespaceErr != nil {
+			log.Error(namespaceErr, "Failed to get namespace", "Namespace", image.Namespace)
+			namespacePhase = apiv2.PhysicalContainerImagePhaseUnknown
+			namespaceMessage = fmt.Sprintf("Failed to get namespace: %v", namespaceErr)
+			change |= additionalReconciliationNeeded
+		}
+		change |= setValue(&image.Status.Phase, namespacePhase)
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, namespaceReason, namespaceMessage)
+		return change, nil
 	}
 
 	change := noChange
