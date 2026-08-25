@@ -219,7 +219,7 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	container *apiv2.PhysicalContainer,
 	log logr.Logger,
 ) (objectChange, func()) {
-	if namespaceReady, change := checkNamespaceReady(ctx, r.Client, container.Namespace, func(message string) objectChange {
+	namespaceReady, namespaceChange := checkNamespaceReady(ctx, r.Client, container.Namespace, func(message string) objectChange {
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPending, message)
 		return change
@@ -227,8 +227,9 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, message)
 		return change
-	}, log); !namespaceReady {
-		return change, nil
+	}, log)
+	if !namespaceReady {
+		return namespaceChange, nil
 	}
 
 	change := noChange
