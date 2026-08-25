@@ -133,28 +133,28 @@ func checkNamespaceReady(
 	ctx context.Context,
 	client ctrl_client.Client,
 	namespaceName string,
-	applyPending func(string) objectChange,
-	applyFailed func(string) objectChange,
+	applyPending func(apiv2.ConditionReason, string) objectChange,
+	applyFailed func(apiv2.ConditionReason, string) objectChange,
 	log logr.Logger,
 ) (bool, objectChange) {
 	namespace := apiv2.Namespace{}
 	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
 	if apierrors.IsNotFound(getErr) {
-		return false, applyPending(fmt.Sprintf("Namespace %q does not exist.", namespaceName))
+		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceNotFound, fmt.Sprintf("Namespace %q does not exist.", namespaceName))
 	}
 	if getErr != nil {
 		log.Error(getErr, "Failed to get namespace", "Namespace", namespaceName)
-		return false, applyFailed(fmt.Sprintf("Failed to get namespace: %v", getErr))
+		return false, applyFailed(apiv2.PhysicalResourceReasonNamespaceLookupFailed, fmt.Sprintf("Failed to get namespace: %v", getErr))
 	}
 
 	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
-		return false, applyPending(fmt.Sprintf("Namespace %q is terminating.", namespaceName))
+		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceTerminating, fmt.Sprintf("Namespace %q is terminating.", namespaceName))
 	}
 	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
-		return false, applyPending(fmt.Sprintf("Namespace %q is not ready.", namespaceName))
+		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceNotReady, fmt.Sprintf("Namespace %q is not ready.", namespaceName))
 	}
 	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
-		return false, applyPending(fmt.Sprintf("Namespace %q is not active.", namespaceName))
+		return false, applyPending(apiv2.PhysicalResourceReasonNamespaceNotActive, fmt.Sprintf("Namespace %q is not active.", namespaceName))
 	}
 
 	return true, noChange

@@ -38,7 +38,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### In-memory progress data
 
 - In-memory data should be a linear progress record, not an additional state machine hidden from the resource status.
-- Data records should capture only the side-effect guard/result needed for reconciliation to continue, such as a runtime ID, failure message, or current `Ready` condition reason.
+- Data records should capture only the side-effect guard/result needed for reconciliation to continue, such as a runtime ID, failure message, current `Ready` condition reason, or operation progress.
 - `applyTo` methods on data records should only project in-memory progress onto resource status.
 - Reconciliation scheduling, state cleanup, runtime inspection, and external side effects should remain in the reconciler.
 - Prefer dispatching progress handling through initializer maps keyed by condition reason when the controller has multiple progress gates.
@@ -46,7 +46,9 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### Status and progress reporting
 
 - V2 resources should report coarse lifecycle with `status.phase` when a resource has a meaningful lifecycle phase.
-- V2 resources should report detailed progress with standardized `Ready` conditions.
+- V2 resources should report detailed progress with standardized `Ready` conditions. A condition reason identifies the specific prerequisite, operation, observation, or failure responsible for the current phase.
+- Phase communicates broad lifecycle and recoverability; reason must not duplicate generic phase states such as pending or failed. The same specific reason may appear under different phases when the phase distinguishes recoverable from terminal outcomes.
+- Condition messages carry instance-specific diagnostics, but consumers should not need to parse a message to determine the cause category.
 - Avoid duplicating explanatory top-level `status.message` fields when condition messages can carry the information.
 - Controller status helpers should use shared target-first setters such as `setValue(&field, value)` and `setTimestamp(&field, value)`.
 - Callers that need a boolean from a status helper should use `trySetX` wrappers instead of comparing `setX(...) != noChange` at call sites.

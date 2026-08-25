@@ -56,8 +56,14 @@ const (
 )
 
 const (
-	// PhysicalContainerReasonPending indicates that the container is waiting for prerequisites.
-	PhysicalContainerReasonPending ConditionReason = "Pending"
+	// PhysicalContainerReasonImageNotFound indicates that the referenced PhysicalContainerImage does not exist.
+	PhysicalContainerReasonImageNotFound ConditionReason = "ImageNotFound"
+
+	// PhysicalContainerReasonImageNotReady indicates that the referenced PhysicalContainerImage is not ready.
+	PhysicalContainerReasonImageNotReady ConditionReason = "ImageNotReady"
+
+	// PhysicalContainerReasonImageLookupFailed indicates that the referenced PhysicalContainerImage could not be read.
+	PhysicalContainerReasonImageLookupFailed ConditionReason = "ImageLookupFailed"
 
 	// PhysicalContainerReasonCreating indicates that runtime container creation is in progress.
 	PhysicalContainerReasonCreating ConditionReason = "Creating"
@@ -80,26 +86,26 @@ const (
 	// PhysicalContainerReasonCreateFailed indicates that runtime container creation failed.
 	PhysicalContainerReasonCreateFailed ConditionReason = "CreateFailed"
 
+	// PhysicalContainerReasonExistingContainerReplacementFailed indicates that an existing runtime container could not be replaced.
+	PhysicalContainerReasonExistingContainerReplacementFailed ConditionReason = "ExistingContainerReplacementFailed"
+
 	// PhysicalContainerReasonFileCopyFailed indicates that pre-start file copy failed.
 	PhysicalContainerReasonFileCopyFailed ConditionReason = "FileCopyFailed"
 
 	// PhysicalContainerReasonStartFailed indicates that runtime container start failed.
 	PhysicalContainerReasonStartFailed ConditionReason = "StartFailed"
 
-	// PhysicalContainerReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
+	// PhysicalContainerReasonPartialContainerCleanupFailed indicates that a runtime container left by a failed create could not be removed.
+	PhysicalContainerReasonPartialContainerCleanupFailed ConditionReason = "PartialContainerCleanupFailed"
 
-	// PhysicalContainerReasonCreateRetryPending indicates that runtime container creation will be retried.
-	PhysicalContainerReasonCreateRetryPending ConditionReason = "CreateRetryPending"
+	// PhysicalContainerReasonRuntimeContainerInspectFailed indicates that the runtime container could not be inspected.
+	PhysicalContainerReasonRuntimeContainerInspectFailed ConditionReason = "RuntimeContainerInspectFailed"
 
-	// PhysicalContainerReasonInspectFailed indicates that the runtime container could not be inspected.
-	PhysicalContainerReasonInspectFailed ConditionReason = "InspectFailed"
+	// PhysicalContainerReasonRuntimeContainerStopFailed indicates that the runtime container could not be stopped.
+	PhysicalContainerReasonRuntimeContainerStopFailed ConditionReason = "RuntimeContainerStopFailed"
 
-	// PhysicalContainerReasonStopFailed indicates that the runtime container could not be stopped.
-	PhysicalContainerReasonStopFailed ConditionReason = "StopFailed"
-
-	// PhysicalContainerReasonPortMappingFailed indicates that runtime port mappings could not be resolved.
-	PhysicalContainerReasonPortMappingFailed ConditionReason = "PortMappingFailed"
+	// PhysicalContainerReasonPortMappingResolutionFailed indicates that runtime port mappings could not be resolved.
+	PhysicalContainerReasonPortMappingResolutionFailed ConditionReason = "PortMappingResolutionFailed"
 
 	// PhysicalContainerReasonRuntimeContainerMissing indicates that the runtime container was not found.
 	PhysicalContainerReasonRuntimeContainerMissing ConditionReason = "RuntimeContainerMissing"
@@ -110,14 +116,23 @@ const (
 	// PhysicalContainerReasonRuntimeContainerExited indicates that the runtime container has exited.
 	PhysicalContainerReasonRuntimeContainerExited ConditionReason = "RuntimeContainerExited"
 
+	// PhysicalContainerReasonRuntimeContainerDead indicates that the runtime reports the container as dead.
+	PhysicalContainerReasonRuntimeContainerDead ConditionReason = "RuntimeContainerDead"
+
 	// PhysicalContainerReasonRuntimeContainerPaused indicates that the runtime container is paused.
 	PhysicalContainerReasonRuntimeContainerPaused ConditionReason = "RuntimeContainerPaused"
 
 	// PhysicalContainerReasonRuntimeContainerRestarting indicates that the runtime container is restarting.
 	PhysicalContainerReasonRuntimeContainerRestarting ConditionReason = "RuntimeContainerRestarting"
 
-	// PhysicalContainerReasonRuntimeContainerPending indicates that the runtime container is not yet running.
-	PhysicalContainerReasonRuntimeContainerPending ConditionReason = "RuntimeContainerPending"
+	// PhysicalContainerReasonRuntimeContainerCreated indicates that the runtime container has been created but is not running.
+	PhysicalContainerReasonRuntimeContainerCreated ConditionReason = "RuntimeContainerCreated"
+
+	// PhysicalContainerReasonRuntimeContainerRemoving indicates that the runtime container is being removed.
+	PhysicalContainerReasonRuntimeContainerRemoving ConditionReason = "RuntimeContainerRemoving"
+
+	// PhysicalContainerReasonRuntimeContainerStatusUnknown indicates that the runtime returned an unrecognized container status.
+	PhysicalContainerReasonRuntimeContainerStatusUnknown ConditionReason = "RuntimeContainerStatusUnknown"
 )
 
 // PhysicalContainerSpec describes either an existing runtime container or how to create one.

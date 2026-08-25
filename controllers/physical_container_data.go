@@ -16,9 +16,19 @@ import (
 
 type physicalContainerDataStateKey string
 
+type physicalContainerOperationProgress string
+
+const (
+	physicalContainerOperationInProgress   physicalContainerOperationProgress = "InProgress"
+	physicalContainerOperationCompleted    physicalContainerOperationProgress = "Completed"
+	physicalContainerOperationRetryPending physicalContainerOperationProgress = "RetryPending"
+	physicalContainerOperationFailed       physicalContainerOperationProgress = "Failed"
+)
+
 type physicalContainerData struct {
 	resourceUID     types.UID
 	conditionReason apiv2.ConditionReason
+	progress        physicalContainerOperationProgress
 	containerID     string
 	failureMessage  string
 	cleanupMessage  string
@@ -28,6 +38,7 @@ type physicalContainerData struct {
 func newPhysicalContainerData(resourceUID types.UID) *physicalContainerData {
 	return &physicalContainerData{
 		conditionReason: apiv2.PhysicalContainerReasonCreating,
+		progress:        physicalContainerOperationInProgress,
 		resourceUID:     resourceUID,
 	}
 }
@@ -36,6 +47,7 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 	return &physicalContainerData{
 		resourceUID:     data.resourceUID,
 		conditionReason: data.conditionReason,
+		progress:        data.progress,
 		containerID:     data.containerID,
 		failureMessage:  data.failureMessage,
 		cleanupMessage:  data.cleanupMessage,
@@ -51,6 +63,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	updated := false
 	if data.conditionReason != other.conditionReason {
 		data.conditionReason = other.conditionReason
+		updated = true
+	}
+	if data.progress != other.progress {
+		data.progress = other.progress
 		updated = true
 	}
 	if data.containerID != other.containerID {
@@ -74,9 +90,7 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 }
 
 func (data *physicalContainerData) operationInProgress() bool {
-	return data.conditionReason == apiv2.PhysicalContainerReasonCreating ||
-		data.conditionReason == apiv2.PhysicalContainerReasonCopyingFiles ||
-		data.conditionReason == apiv2.PhysicalContainerReasonStarting
+	return data.progress == physicalContainerOperationInProgress
 }
 
 func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) objectChange {
@@ -99,17 +113,25 @@ func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) o
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStarting, "Physical container start is in progress.")
 		return change
 	case apiv2.PhysicalContainerReasonCreateFailed,
-		apiv2.PhysicalContainerReasonFileCopyFailed,
+		apiv2.PhysicalContainerReasonExistingContainerReplacementFailed:
+		if data.progress == physicalContainerOperationRetryPending {
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
+		} else {
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
+		}
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		return change
+	case apiv2.PhysicalContainerReasonPartialContainerCleanupFailed:
+		if data.progress == physicalContainerOperationRetryPending {
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
+		} else {
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
+		}
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, data.conditionReason, data.cleanupMessage)
+		return change
+	case apiv2.PhysicalContainerReasonFileCopyFailed,
 		apiv2.PhysicalContainerReasonStartFailed:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
-		message := data.failureMessage
-		if data.cleanupMessage != "" {
-			message = data.cleanupMessage
-		}
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, data.conditionReason, message)
-		return change
-	case apiv2.PhysicalContainerReasonCreateRetryPending:
-		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		message := data.failureMessage
 		if data.cleanupMessage != "" {
 			message = data.cleanupMessage
@@ -129,6 +151,7 @@ func storeStartedPhysicalContainerData(
 	startedData := &physicalContainerData{
 		resourceUID:     container.UID,
 		conditionReason: apiv2.PhysicalContainerReasonStarted,
+		progress:        physicalContainerOperationCompleted,
 		containerID:     containerID,
 	}
 	updated := containerData.UpdateChangingStateKey(

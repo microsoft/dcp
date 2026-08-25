@@ -86,9 +86,11 @@ type TestContainerOrchestrator struct {
 	pullImageCalls          map[string]int
 	pullImageBlocks         map[string]chan struct{}
 	pullImageErrors         map[string][]error
+	pullImageIDOmissions    map[string]bool
 	inspectImageErrors      map[string]error
 	buildImageCalls         map[string]int
 	buildImageBlocks        map[string]chan struct{}
+	buildImageIDOmissions   map[string]bool
 	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
 	attachHandler           ContainerAttachHandler
@@ -211,9 +213,11 @@ func NewTestContainerOrchestrator(
 		pullImageCalls:          map[string]int{},
 		pullImageBlocks:         map[string]chan struct{}{},
 		pullImageErrors:         map[string][]error{},
+		pullImageIDOmissions:    map[string]bool{},
 		inspectImageErrors:      map[string]error{},
 		buildImageCalls:         map[string]int{},
 		buildImageBlocks:        map[string]chan struct{}{},
+		buildImageIDOmissions:   map[string]bool{},
 		mutex:                   &sync.Mutex{},
 		lifetimeCtx:             lifetimeCtx,
 		log:                     log,
@@ -1289,6 +1293,13 @@ func (to *TestContainerOrchestrator) BlockPullImage(image string) func() {
 	return to.blockPullImageOperation(image, make(chan struct{}))
 }
 
+func (to *TestContainerOrchestrator) OmitPullImageID(image string) func() {
+	to.operationMutex.Lock()
+	to.pullImageIDOmissions[image] = true
+	to.operationMutex.Unlock()
+	return releaseBoolOperation(to.operationMutex, to.pullImageIDOmissions, image)
+}
+
 func (to *TestContainerOrchestrator) FailNextPullImage(image string, pullErr error) {
 	if pullErr == nil {
 		pullErr = errors.New("simulated image pull failure")
@@ -1309,6 +1320,13 @@ func (to *TestContainerOrchestrator) PullImageCallCount(image string) int {
 
 func (to *TestContainerOrchestrator) BlockBuildImage(tag string) func() {
 	return to.blockBuildImageOperation(tag, make(chan struct{}))
+}
+
+func (to *TestContainerOrchestrator) OmitBuildImageID(tag string) func() {
+	to.operationMutex.Lock()
+	to.buildImageIDOmissions[tag] = true
+	to.operationMutex.Unlock()
+	return releaseBoolOperation(to.operationMutex, to.buildImageIDOmissions, tag)
 }
 
 func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
@@ -1349,6 +1367,18 @@ func releaseBlockedOperation(lock *sync.Mutex, blocks map[string]chan struct{}, 
 			}
 			lock.Unlock()
 			close(block)
+		})
+	}
+}
+
+func releaseBoolOperation(lock *sync.Mutex, operations map[string]bool, key string) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			lock.Lock()
+			defer lock.Unlock()
+
+			delete(operations, key)
 		})
 	}
 }
@@ -1455,9 +1485,16 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	to.images = append(to.images, image)
 
 	if options.IidFile != "" {
-		err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
-		if err != nil {
-			return err
+		to.operationMutex.Lock()
+		omitImageID := slices.Any(options.Tags, func(tag string) bool {
+			return to.buildImageIDOmissions[tag]
+		})
+		to.operationMutex.Unlock()
+		if !omitImageID {
+			err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1529,6 +1566,12 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 
 	image, found := to.findImage(options.Image)
 	if found {
+		to.operationMutex.Lock()
+		omitImageID := to.pullImageIDOmissions[options.Image]
+		to.operationMutex.Unlock()
+		if omitImageID {
+			return "", nil
+		}
 		return image.id, nil
 	}
 
@@ -1548,6 +1591,12 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 
 	to.images = append(to.images, image)
 
+	to.operationMutex.Lock()
+	omitImageID := to.pullImageIDOmissions[options.Image]
+	to.operationMutex.Unlock()
+	if omitImageID {
+		return "", nil
+	}
 	return image.id, nil
 }
 

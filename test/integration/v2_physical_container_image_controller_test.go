@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
@@ -42,7 +43,7 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
 	require.Equal(t, "v2-pci-pulled-source", updatedImage.Status.Image)
 	require.NotEmpty(t, updatedImage.Status.ImageID)
-	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, "ImageReady")
+	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageAvailable)
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
 }
 
@@ -66,7 +67,7 @@ func TestV2PhysicalContainerImageControllerReportsUnknownWhenInspectionFails(t *
 	}))
 
 	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonInspectFailed)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
 	restoreInspection()
 	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
 }
@@ -95,7 +96,7 @@ func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) 
 	})
 
 	pendingImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhasePending)
-	requireReadyCondition(t, pendingImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPending)
+	requireReadyCondition(t, pendingImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalResourceReasonNamespaceNotFound)
 	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
@@ -162,6 +163,62 @@ func TestV2PhysicalContainerImageControllerRetriesPullAfterFailure(t *testing.T)
 	require.Equal(t, 2, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
+func TestV2PhysicalContainerImageControllerReportsMissingPullImageID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-pull-missing-id")
+	sourceImage := "v2-pci-pull-missing-id-source"
+	restoreImageID := containerOrchestrator.OmitPullImageID(sourceImage)
+	defer restoreImageID()
+
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-pull-image-id",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image:      sourceImage,
+			PullPolicy: apiv2.PullPolicyAlways,
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	pendingImage := waitObjectAssumesState(t, ctx, image.NamespacedName(), func(current *apiv2.PhysicalContainerImage) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerImagePhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerImageReasonPullResultMissingImageID, nil
+	})
+	requireReadyCondition(t, pendingImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPullResultMissingImageID)
+
+	restoreImageID()
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+}
+
+func TestV2PhysicalContainerImageControllerFailsWhenLocalImageIsMissing(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-local-image-missing")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-local-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image:      "v2-pci-missing-local-source",
+			PullPolicy: apiv2.PullPolicyNever,
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
+}
+
 func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -192,7 +249,7 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
 	require.Equal(t, "v2-pci-built-target-image", updatedImage.Status.Image)
 	require.NotEmpty(t, updatedImage.Status.ImageID)
-	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, "ImageReady")
+	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageAvailable)
 
 	inspectedImages, inspectErr := containerOrchestrator.InspectImages(ctx, containers.InspectImagesOptions{
 		Images: []string{updatedImage.Status.Image},
@@ -202,6 +259,35 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.Equal(t, "test-value", inspectedImages[0].Labels["test-label"])
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-image")
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
+}
+
+func TestV2PhysicalContainerImageControllerReportsMissingBuildImageID(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-build-missing-id")
+	targetImage := "v2-pci-build-missing-id-target"
+	restoreImageID := containerOrchestrator.OmitBuildImageID(targetImage)
+	defer restoreImageID()
+
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-build-image-id",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image: targetImage,
+			Build: &apiv2.ContainerBuildContext{
+				Context: "test-context",
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	failedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	requireReadyCondition(t, failedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuildResultMissingImageID)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
 func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithoutRebuilding(t *testing.T) {
@@ -230,7 +316,7 @@ func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithou
 	waitBuildImageCallCount(t, ctx, targetImage, 1)
 
 	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
-	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonInspectFailed)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed)
 	restoreInspection()
 
 	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)

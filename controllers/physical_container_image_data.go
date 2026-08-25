@@ -75,7 +75,9 @@ func (data *physicalContainerImageData) applyTo(image *apiv2.PhysicalContainerIm
 		change |= setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhasePending)
 		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuilding, "Image build is in progress.")
 		return change
-	case apiv2.PhysicalContainerImageReasonPullFailed, apiv2.PhysicalContainerImageReasonBuildFailed:
+	case apiv2.PhysicalContainerImageReasonPullFailed,
+		apiv2.PhysicalContainerImageReasonBuildFailed,
+		apiv2.PhysicalContainerImageReasonBuildResultMissingImageID:
 		change |= setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
 		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 		return change

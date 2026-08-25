@@ -41,9 +41,6 @@ const (
 )
 
 const (
-	// PhysicalContainerImageReasonPending indicates that the image is waiting for prerequisites.
-	PhysicalContainerImageReasonPending ConditionReason = "Pending"
-
 	// PhysicalContainerImageReasonPulling indicates that image pull is in progress.
 	PhysicalContainerImageReasonPulling ConditionReason = "Pulling"
 
@@ -62,20 +59,20 @@ const (
 	// PhysicalContainerImageReasonBuildFailed indicates that image build failed.
 	PhysicalContainerImageReasonBuildFailed ConditionReason = "BuildFailed"
 
-	// PhysicalContainerImageReasonImageReady indicates that the image is available to the container runtime.
-	PhysicalContainerImageReasonImageReady ConditionReason = "ImageReady"
+	// PhysicalContainerImageReasonImageAvailable indicates that the image is available to the container runtime.
+	PhysicalContainerImageReasonImageAvailable ConditionReason = "ImageAvailable"
 
-	// PhysicalContainerImageReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerImageReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
+	// PhysicalContainerImageReasonRuntimeImageInspectFailed indicates that the runtime image could not be inspected.
+	PhysicalContainerImageReasonRuntimeImageInspectFailed ConditionReason = "RuntimeImageInspectFailed"
 
-	// PhysicalContainerImageReasonInspectFailed indicates that the runtime image could not be inspected.
-	PhysicalContainerImageReasonInspectFailed ConditionReason = "InspectFailed"
+	// PhysicalContainerImageReasonLocalImageNotFound indicates that an image required to exist locally was not found.
+	PhysicalContainerImageReasonLocalImageNotFound ConditionReason = "LocalImageNotFound"
 
-	// PhysicalContainerImageReasonImageUnavailable indicates that an image required to exist locally is unavailable.
-	PhysicalContainerImageReasonImageUnavailable ConditionReason = "ImageUnavailable"
+	// PhysicalContainerImageReasonPullResultMissingImageID indicates that a completed pull returned no image ID.
+	PhysicalContainerImageReasonPullResultMissingImageID ConditionReason = "PullResultMissingImageID"
 
-	// PhysicalContainerImageReasonOperationRetryPending indicates that a completed image operation will be retried.
-	PhysicalContainerImageReasonOperationRetryPending ConditionReason = "OperationRetryPending"
+	// PhysicalContainerImageReasonBuildResultMissingImageID indicates that a completed build did not produce an image ID.
+	PhysicalContainerImageReasonBuildResultMissingImageID ConditionReason = "BuildResultMissingImageID"
 )
 
 // PhysicalContainerImageSpec describes a source image to pull or an image to build.

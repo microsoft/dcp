@@ -29,6 +29,26 @@ const (
 )
 
 const (
+	// PhysicalResourceReasonNamespaceNotFound indicates that the resource's namespace does not exist.
+	PhysicalResourceReasonNamespaceNotFound ConditionReason = "NamespaceNotFound"
+
+	// PhysicalResourceReasonNamespaceTerminating indicates that the resource's namespace is terminating.
+	PhysicalResourceReasonNamespaceTerminating ConditionReason = "NamespaceTerminating"
+
+	// PhysicalResourceReasonNamespaceNotReady indicates that the namespace controller has not initialized the resource's namespace.
+	PhysicalResourceReasonNamespaceNotReady ConditionReason = "NamespaceNotReady"
+
+	// PhysicalResourceReasonNamespaceNotActive indicates that the resource's namespace is not active.
+	PhysicalResourceReasonNamespaceNotActive ConditionReason = "NamespaceNotActive"
+
+	// PhysicalResourceReasonNamespaceLookupFailed indicates that the resource's namespace could not be read.
+	PhysicalResourceReasonNamespaceLookupFailed ConditionReason = "NamespaceLookupFailed"
+
+	// PhysicalResourceReasonOperationStateInvalid indicates that controller-owned operation state is invalid.
+	PhysicalResourceReasonOperationStateInvalid ConditionReason = "OperationStateInvalid"
+)
+
+const (
 	// PhysicalResourcePhasePending indicates that reconciliation is expected to make progress.
 	PhysicalResourcePhasePending PhysicalResourcePhase = "Pending"
 
