@@ -173,6 +173,8 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		change, onStatusDurable = r.managePhysicalContainer(ctx, &container, log)
 	}
 
+	// Reconciliation has projected the latest known state onto container, so delay selection
+	// does not need to consult the controller's in-memory data.
 	return r.SaveChangesWithDelay(ctx, &container, patch, change, physicalContainerReconcileDelay(&container), onStatusDurable, log)
 }
 
@@ -210,22 +212,14 @@ func (r *PhysicalContainerReconciler) onTerminalCreateFailureStatusDurable(
 	stateKey physicalContainerDataStateKey,
 	data *physicalContainerData,
 ) func() {
-	if data == nil ||
-		data.conditionReason != apiv2.PhysicalContainerReasonCreateFailed ||
+	if data.conditionReason != apiv2.PhysicalContainerReasonCreateFailed ||
 		data.progress != physicalContainerOperationFailed ||
 		data.containerID != "" {
 		return nil
 	}
 
-	// Only forget the failure projected by this reconciliation, not newer state stored under the same key.
-	expectedFailureMessage := data.failureMessage
 	return func() {
-		r.containerData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerData) bool {
-			return current.conditionReason == apiv2.PhysicalContainerReasonCreateFailed &&
-				current.progress == physicalContainerOperationFailed &&
-				current.containerID == "" &&
-				current.failureMessage == expectedFailureMessage
-		})
+		r.containerData.DeleteByStateKey(stateKey)
 	}
 }
 
