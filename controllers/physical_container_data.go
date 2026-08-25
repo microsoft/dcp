@@ -18,7 +18,7 @@ type physicalContainerDataStateKey string
 
 type physicalContainerData struct {
 	resourceUID     types.UID
-	conditionReason string
+	conditionReason apiv2.ConditionReason
 	containerID     string
 	failureMessage  string
 	retryAfter      time.Time

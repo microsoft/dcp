@@ -31,6 +31,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/networking"
@@ -172,13 +173,13 @@ func waitObjectAssumesStateEx[T commonapi.ObjectStruct, PT commonapi.PObjectStru
 	return updatedObject
 }
 
-func requireReadyCondition(t *testing.T, conditions []metav1.Condition, status metav1.ConditionStatus, reason string) {
+func requireReadyCondition(t *testing.T, conditions []metav1.Condition, status metav1.ConditionStatus, reason apiv2.ConditionReason) {
 	t.Helper()
 
-	readyCondition := apimeta.FindStatusCondition(conditions, "Ready")
+	readyCondition := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
 	require.NotNil(t, readyCondition)
 	require.Equal(t, status, readyCondition.Status)
-	require.Equal(t, reason, readyCondition.Reason)
+	require.Equal(t, string(reason), readyCondition.Reason)
 }
 
 func waitServiceReady(t *testing.T, ctx context.Context, svcName types.NamespacedName) *apiv1.Service {

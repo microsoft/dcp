@@ -37,7 +37,7 @@ import (
 var (
 	physicalContainerImageFinalizer string = fmt.Sprintf("%s/physicalcontainerimage-reconciler", apiv2.GroupVersion.Group)
 
-	physicalContainerImageDataInitializers = map[string]physicalContainerImageDataInitializerFunc{
+	physicalContainerImageDataInitializers = map[apiv2.ConditionReason]physicalContainerImageDataInitializerFunc{
 		apiv2.PhysicalContainerImageReasonPulling:     handlePhysicalContainerImageOperationInProgress,
 		apiv2.PhysicalContainerImageReasonBuilding:    handlePhysicalContainerImageOperationInProgress,
 		apiv2.PhysicalContainerImageReasonPulled:      handlePhysicalContainerImageOperationCompleted,
@@ -83,7 +83,7 @@ func imagePullBackoff(image *apiv2.PhysicalContainerImage) backoff.BackOff {
 type physicalContainerImageDataInitializerFunc = stateInitializerFunc[
 	apiv2.PhysicalContainerImage, *apiv2.PhysicalContainerImage,
 	PhysicalContainerImageReconciler, *PhysicalContainerImageReconciler,
-	string,
+	apiv2.ConditionReason,
 	physicalContainerImageData, *physicalContainerImageData,
 ]
 
@@ -148,7 +148,7 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	r.imageData.RunDeferredOps(req.NamespacedName, &image)
 
 	var change objectChange
-	var onSuccessfulSave func()
+	var onStatusDurable func()
 	patch := ctrl_client.MergeFromWithOptions(image.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if image.DeletionTimestamp != nil && !image.DeletionTimestamp.IsZero() {
@@ -156,10 +156,10 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 	} else if change = ensureFinalizer(&image, physicalContainerImageFinalizer, log); change != noChange {
 		// Make additional changes during the next reconciliation.
 	} else {
-		change, onSuccessfulSave = r.managePhysicalContainerImage(ctx, &image, log)
+		change, onStatusDurable = r.managePhysicalContainerImage(ctx, &image, log)
 	}
 
-	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, onSuccessfulSave, log)
+	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, onStatusDurable, log)
 }
 
 // Removes in-memory state for the image, cancelling the pull or build operation if one may still be running.
@@ -208,7 +208,7 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 		change |= data.applyTo(image)
 		initializer := getStateInitializer(physicalContainerImageDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, image, data.conditionReason, data, log)
-		return change, r.physicalContainerImageDataSaveCallback(stateKey, data, change)
+		return change, r.physicalContainerImageDataSaveCallback(stateKey, data)
 	}
 
 	if physicalContainerImageOperationFailedTerminally(image) {
@@ -225,7 +225,6 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 func (r *PhysicalContainerImageReconciler) physicalContainerImageDataSaveCallback(
 	stateKey physicalContainerImageDataStateKey,
 	data *physicalContainerImageData,
-	change objectChange,
 ) func() {
 	if data == nil || data.operationInProgress() {
 		return nil
@@ -234,13 +233,13 @@ func (r *PhysicalContainerImageReconciler) physicalContainerImageDataSaveCallbac
 	expectedReason := data.conditionReason
 	expectedImageID := data.imageID
 	expectedFailureMessage := data.failureMessage
-	return afterStatusUpdateIsDurable(change, func() {
+	return func() {
 		r.imageData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerImageData) bool {
 			return current.conditionReason == expectedReason &&
 				current.imageID == expectedImageID &&
 				current.failureMessage == expectedFailureMessage
 		})
-	})
+	}
 }
 
 // Reports whether the image already recorded a terminal pull or build failure.
@@ -251,13 +250,14 @@ func physicalContainerImageOperationFailedTerminally(image *apiv2.PhysicalContai
 		return false
 	}
 
-	readyCondition := apimeta.FindStatusCondition(image.Status.Conditions, apiv2.ConditionReady)
+	readyCondition := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady))
 	if readyCondition == nil {
 		return false
 	}
 
-	return readyCondition.Reason == apiv2.PhysicalContainerImageReasonPullFailed ||
-		readyCondition.Reason == apiv2.PhysicalContainerImageReasonBuildFailed
+	reason := apiv2.ConditionReason(readyCondition.Reason)
+	return reason == apiv2.PhysicalContainerImageReasonPullFailed ||
+		reason == apiv2.PhysicalContainerImageReasonBuildFailed
 }
 
 func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context, image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
@@ -521,7 +521,7 @@ func handlePhysicalContainerImageOperationInProgress(
 	_ context.Context,
 	_ *PhysicalContainerImageReconciler,
 	_ *apiv2.PhysicalContainerImage,
-	conditionReason string,
+	conditionReason apiv2.ConditionReason,
 	_ *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
@@ -533,7 +533,7 @@ func handlePhysicalContainerImageOperationCompleted(
 	ctx context.Context,
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
-	_ string,
+	_ apiv2.ConditionReason,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
@@ -559,7 +559,7 @@ func handlePhysicalContainerImageOperationFailed(
 	_ context.Context,
 	reconciler *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
-	_ string,
+	_ apiv2.ConditionReason,
 	data *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {
@@ -573,7 +573,7 @@ func handleUnknownPhysicalContainerImageDataReason(
 	_ context.Context,
 	_ *PhysicalContainerImageReconciler,
 	image *apiv2.PhysicalContainerImage,
-	conditionReason string,
+	conditionReason apiv2.ConditionReason,
 	_ *physicalContainerImageData,
 	log logr.Logger,
 ) objectChange {

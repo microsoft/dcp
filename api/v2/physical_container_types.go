@@ -54,49 +54,49 @@ const (
 
 const (
 	// PhysicalContainerReasonPending indicates that the container is waiting for prerequisites.
-	PhysicalContainerReasonPending string = "Pending"
+	PhysicalContainerReasonPending ConditionReason = "Pending"
 
 	// PhysicalContainerReasonCreating indicates that runtime container creation is in progress.
-	PhysicalContainerReasonCreating string = "Creating"
+	PhysicalContainerReasonCreating ConditionReason = "Creating"
 
 	// PhysicalContainerReasonCreated indicates that runtime container creation completed.
-	PhysicalContainerReasonCreated string = "Created"
+	PhysicalContainerReasonCreated ConditionReason = "Created"
 
 	// PhysicalContainerReasonCopyingFiles indicates that pre-start file copy is in progress.
-	PhysicalContainerReasonCopyingFiles string = "CopyingFiles"
+	PhysicalContainerReasonCopyingFiles ConditionReason = "CopyingFiles"
 
 	// PhysicalContainerReasonFilesCreated indicates that pre-start file copy completed.
-	PhysicalContainerReasonFilesCreated string = "FilesCreated"
+	PhysicalContainerReasonFilesCreated ConditionReason = "FilesCreated"
 
 	// PhysicalContainerReasonStarting indicates that runtime container start is in progress.
-	PhysicalContainerReasonStarting string = "Starting"
+	PhysicalContainerReasonStarting ConditionReason = "Starting"
 
 	// PhysicalContainerReasonStarted indicates that runtime container start completed.
-	PhysicalContainerReasonStarted string = "Started"
+	PhysicalContainerReasonStarted ConditionReason = "Started"
 
 	// PhysicalContainerReasonCreateFailed indicates that runtime container creation failed.
-	PhysicalContainerReasonCreateFailed string = "CreateFailed"
+	PhysicalContainerReasonCreateFailed ConditionReason = "CreateFailed"
 
 	// PhysicalContainerReasonFileCopyFailed indicates that pre-start file copy failed.
-	PhysicalContainerReasonFileCopyFailed string = "FileCopyFailed"
+	PhysicalContainerReasonFileCopyFailed ConditionReason = "FileCopyFailed"
 
 	// PhysicalContainerReasonStartFailed indicates that runtime container start failed.
-	PhysicalContainerReasonStartFailed string = "StartFailed"
+	PhysicalContainerReasonStartFailed ConditionReason = "StartFailed"
 
 	// PhysicalContainerReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerReasonReconciliationFailed string = "ReconciliationFailed"
+	PhysicalContainerReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
 
 	// PhysicalContainerReasonRuntimeContainerMissing indicates that the runtime container was not found.
-	PhysicalContainerReasonRuntimeContainerMissing string = "RuntimeContainerMissing"
+	PhysicalContainerReasonRuntimeContainerMissing ConditionReason = "RuntimeContainerMissing"
 
 	// PhysicalContainerReasonRuntimeContainerRunning indicates that the runtime container is running.
-	PhysicalContainerReasonRuntimeContainerRunning string = "RuntimeContainerRunning"
+	PhysicalContainerReasonRuntimeContainerRunning ConditionReason = "RuntimeContainerRunning"
 
 	// PhysicalContainerReasonRuntimeContainerExited indicates that the runtime container has exited.
-	PhysicalContainerReasonRuntimeContainerExited string = "RuntimeContainerExited"
+	PhysicalContainerReasonRuntimeContainerExited ConditionReason = "RuntimeContainerExited"
 
 	// PhysicalContainerReasonRuntimeContainerPending indicates that the runtime container is not yet running.
-	PhysicalContainerReasonRuntimeContainerPending string = "RuntimeContainerPending"
+	PhysicalContainerReasonRuntimeContainerPending ConditionReason = "RuntimeContainerPending"
 )
 
 // PhysicalContainerSpec describes either an existing runtime container or how to create one.

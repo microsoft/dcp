@@ -144,36 +144,40 @@ func (rb *ReconcilerBase[T, PT]) GetReconciliationEventSource() ctrl_source.Sour
 // Saves changes to the object and schedules additional reconciliation as appropriate.
 // Standard delay is used for additional reconciliation.
 // If conflicts occurred during previous save, additional delay will be exponentially increased up to maxConflictDelay.
+// onStatusDurable runs after a status update succeeds, or after save processing when no status update is needed.
 func (rb *ReconcilerBase[T, PT]) SaveChanges(
 	ctx context.Context,
 	obj PT,
 	patch ctrl_client.Patch,
 	change objectChange,
-	onSuccessfulSave func(),
+	onStatusDurable func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
-	return rb.SaveChangesWithDelay(ctx, obj, patch, change, StandardDelay, onSuccessfulSave, log)
+	return rb.SaveChangesWithDelay(ctx, obj, patch, change, StandardDelay, onStatusDurable, log)
 }
 
 // Saves changes to the object and schedules additional reconciliation as appropriate.
 // Standard or long delay will be used for additional reconciliation, depending on the flag passed.
 // If long delay is requested, it implies that additional reconciliation is needed.
 // If conflicts occurred during previous save, reconciliation delay will be exponentially increased up to maxConflictDelay.
+// onStatusDurable runs after a status update succeeds, or after save processing when no status update is needed.
 func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 	ctx context.Context,
 	obj PT,
 	patch ctrl_client.Patch,
 	change objectChange,
 	delay AdditionalReconciliationDelay,
-	onSuccessfulSave func(),
+	onStatusDurable func(),
 	log logr.Logger,
 ) (ctrl.Result, error) {
 	return telemetry.CallWithTelemetryOnErrorOnly(telemetry.GetTracer("controller-common"), "saveChanges", ctx, func(ctx context.Context) (ctrl.Result, error) {
 		var update PT
 		kind := obj.GetObjectKind().GroupVersionKind().Kind
-		afterGoodSave := func() {
-			if onSuccessfulSave != nil {
-				onSuccessfulSave()
+		acknowledgeStatus := func() {
+			if onStatusDurable != nil {
+				acknowledge := onStatusDurable
+				onStatusDurable = nil
+				acknowledge()
 			}
 		}
 
@@ -181,7 +185,12 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 			change |= additionalReconciliationNeeded
 		}
 
-		doUpdate := func(p Patcher, operation string, saveSuccesCounter metric.Int64Counter) (ctrl.Result, error) {
+		doUpdate := func(
+			p Patcher,
+			operation string,
+			saveSuccesCounter metric.Int64Counter,
+			acknowledgeDurableStatus bool,
+		) (ctrl.Result, error) {
 			update = obj.DeepCopy()
 			updateErr := p(ctx, update, patch)
 
@@ -202,7 +211,9 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 				return ctrl.Result{}, updateErr
 			} else {
 				log.V(1).Info(fmt.Sprintf("%s %s succeeded", kind, operation))
-				afterGoodSave()
+				if acknowledgeDurableStatus {
+					acknowledgeStatus()
+				}
 				saveSuccesCounter.Add(ctx, 1)
 				return ctrl.Result{}, nil
 			}
@@ -210,6 +221,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 
 		if change == noChange {
 			log.V(1).Info(fmt.Sprintf("No changes detected for %s object, continue monitoring...", kind))
+			acknowledgeStatus()
 			return ctrl.Result{}, nil
 		}
 
@@ -222,11 +234,15 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 		if (change & statusChanged) != 0 {
 			res, err = doUpdate(func(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch) error {
 				return rb.Client.Status().Patch(ctx, obj, patch)
-			}, "status update", statusSaveCounter)
+			}, "status update", statusSaveCounter, true)
 		} else if (change & (metadataChanged | specChanged)) != 0 {
 			res, err = doUpdate(func(ctx context.Context, obj ctrl_client.Object, patch ctrl_client.Patch) error {
 				return rb.Client.Patch(ctx, obj, patch)
-			}, "update", metadataOrSpecSaveCounter)
+			}, "update", metadataOrSpecSaveCounter, false)
+		}
+
+		if change&statusChanged == 0 {
+			acknowledgeStatus()
 		}
 
 		if res.RequeueAfter > 0 {

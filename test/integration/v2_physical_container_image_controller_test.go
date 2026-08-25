@@ -46,6 +46,34 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
 }
 
+func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespaceName := "v2-pci-wait-namespace"
+	sourceImage := "v2-pci-wait-namespace-source"
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "waiting-image",
+			Namespace: namespaceName,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image: sourceImage,
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), defaultIntegrationTestTimeout)
+		defer cleanupCancel()
+		_ = client.Delete(cleanupCtx, image)
+	})
+
+	pendingImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhasePending)
+	requireReadyCondition(t, pendingImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPending)
+	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(sourceImage))
+}
+
 func TestV2PhysicalContainerImageControllerDoesNotDuplicatePullWhileStatusPending(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

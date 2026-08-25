@@ -43,7 +43,7 @@ const physicalContainerImageRefField = ".spec.imageRef"
 var (
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
-	physicalContainerDataInitializers = map[string]physicalContainerDataInitializerFunc{
+	physicalContainerDataInitializers = map[apiv2.ConditionReason]physicalContainerDataInitializerFunc{
 		apiv2.PhysicalContainerReasonCreating:             handlePhysicalContainerCreating,
 		apiv2.PhysicalContainerReasonCreated:              handlePhysicalContainerCreated,
 		apiv2.PhysicalContainerReasonCopyingFiles:         handlePhysicalContainerOperationInProgress,
@@ -61,7 +61,7 @@ var (
 type physicalContainerDataInitializerFunc = stateInitializerFunc[
 	apiv2.PhysicalContainer, *apiv2.PhysicalContainer,
 	PhysicalContainerReconciler, *PhysicalContainerReconciler,
-	string,
+	apiv2.ConditionReason,
 	physicalContainerData, *physicalContainerData,
 ]
 
@@ -161,7 +161,7 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	r.containerData.RunDeferredOps(req.NamespacedName, &container)
 
 	var change objectChange
-	var onSuccessfulSave func()
+	var onStatusDurable func()
 	patch := ctrl_client.MergeFromWithOptions(container.DeepCopy(), ctrl_client.MergeFromWithOptimisticLock{})
 
 	if container.DeletionTimestamp != nil && !container.DeletionTimestamp.IsZero() {
@@ -169,20 +169,20 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	} else if change = ensureFinalizer(&container, physicalContainerFinalizer, log); change != noChange {
 		// Make additional changes during the next reconciliation.
 	} else {
-		change, onSuccessfulSave = r.managePhysicalContainer(ctx, &container, log)
+		change, onStatusDurable = r.managePhysicalContainer(ctx, &container, log)
 	}
 
-	return r.SaveChangesWithDelay(ctx, &container, patch, change, physicalContainerReconcileDelay(&container), onSuccessfulSave, log)
+	return r.SaveChangesWithDelay(ctx, &container, patch, change, physicalContainerReconcileDelay(&container), onStatusDurable, log)
 }
 
 func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) AdditionalReconciliationDelay {
 	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning {
 		return MonitoringDelay
 	}
-	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, apiv2.ConditionReady)
+	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
 	if container.Spec.Stop &&
 		readyCondition != nil &&
-		readyCondition.Reason == apiv2.PhysicalContainerReasonRuntimeContainerPending {
+		apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonRuntimeContainerPending {
 		return MonitoringDelay
 	}
 	if container.Status.Phase == apiv2.PhysicalContainerPhaseFailed &&
@@ -196,7 +196,6 @@ func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) Additio
 func (r *PhysicalContainerReconciler) physicalContainerDataSaveCallback(
 	stateKey physicalContainerDataStateKey,
 	data *physicalContainerData,
-	change objectChange,
 ) func() {
 	if data == nil ||
 		data.conditionReason != apiv2.PhysicalContainerReasonCreateFailed ||
@@ -206,14 +205,14 @@ func (r *PhysicalContainerReconciler) physicalContainerDataSaveCallback(
 
 	expectedFailureMessage := data.failureMessage
 	expectedRetryAfter := data.retryAfter
-	return afterStatusUpdateIsDurable(change, func() {
+	return func() {
 		r.containerData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerData) bool {
 			return current.conditionReason == apiv2.PhysicalContainerReasonCreateFailed &&
 				current.containerID == "" &&
 				current.failureMessage == expectedFailureMessage &&
 				current.retryAfter.Equal(expectedRetryAfter)
 		})
-	})
+	}
 }
 
 func (r *PhysicalContainerReconciler) managePhysicalContainer(
@@ -240,7 +239,7 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		initializer := getStateInitializer(physicalContainerDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, container, data.conditionReason, data, log)
 		if data.conditionReason != apiv2.PhysicalContainerReasonStarted {
-			return change, r.physicalContainerDataSaveCallback(stateKey, data, change)
+			return change, r.physicalContainerDataSaveCallback(stateKey, data)
 		}
 	}
 
@@ -314,21 +313,22 @@ func physicalContainerOperationFailedTerminally(container *apiv2.PhysicalContain
 		return false
 	}
 
-	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, apiv2.ConditionReady)
+	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
 	if readyCondition == nil {
 		return false
 	}
 
-	return readyCondition.Reason == apiv2.PhysicalContainerReasonCreateFailed ||
-		readyCondition.Reason == apiv2.PhysicalContainerReasonFileCopyFailed ||
-		readyCondition.Reason == apiv2.PhysicalContainerReasonStartFailed
+	reason := apiv2.ConditionReason(readyCondition.Reason)
+	return reason == apiv2.PhysicalContainerReasonCreateFailed ||
+		reason == apiv2.PhysicalContainerReasonFileCopyFailed ||
+		reason == apiv2.PhysicalContainerReasonStartFailed
 }
 
 func handlePhysicalContainerCreating(
 	_ context.Context,
 	_ *PhysicalContainerReconciler,
 	_ *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	_ *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
@@ -340,7 +340,7 @@ func handlePhysicalContainerCreated(
 	_ context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
@@ -359,7 +359,7 @@ func handlePhysicalContainerOperationInProgress(
 	_ context.Context,
 	_ *PhysicalContainerReconciler,
 	_ *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	_ *physicalContainerData,
 	_ logr.Logger,
 ) objectChange {
@@ -370,7 +370,7 @@ func handlePhysicalContainerFilesCreated(
 	_ context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
@@ -386,7 +386,7 @@ func handlePhysicalContainerStarted(
 	_ context.Context,
 	_ *PhysicalContainerReconciler,
 	_ *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	_ *physicalContainerData,
 	_ logr.Logger,
 ) objectChange {
@@ -397,7 +397,7 @@ func handlePhysicalContainerOperationFailed(
 	_ context.Context,
 	_ *PhysicalContainerReconciler,
 	_ *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
@@ -410,7 +410,7 @@ func handlePhysicalContainerRecoverableCreateFailed(
 	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
-	_ string,
+	_ apiv2.ConditionReason,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {
@@ -444,7 +444,7 @@ func handleUnknownPhysicalContainerDataReason(
 	_ context.Context,
 	reconciler *PhysicalContainerReconciler,
 	container *apiv2.PhysicalContainer,
-	conditionReason string,
+	conditionReason apiv2.ConditionReason,
 	data *physicalContainerData,
 	log logr.Logger,
 ) objectChange {

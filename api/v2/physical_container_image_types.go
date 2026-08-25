@@ -39,31 +39,31 @@ const (
 
 const (
 	// PhysicalContainerImageReasonPending indicates that the image is waiting for prerequisites.
-	PhysicalContainerImageReasonPending string = "Pending"
+	PhysicalContainerImageReasonPending ConditionReason = "Pending"
 
 	// PhysicalContainerImageReasonPulling indicates that image pull is in progress.
-	PhysicalContainerImageReasonPulling string = "Pulling"
+	PhysicalContainerImageReasonPulling ConditionReason = "Pulling"
 
 	// PhysicalContainerImageReasonPulled indicates that image pull completed.
-	PhysicalContainerImageReasonPulled string = "Pulled"
+	PhysicalContainerImageReasonPulled ConditionReason = "Pulled"
 
 	// PhysicalContainerImageReasonBuilding indicates that image build is in progress.
-	PhysicalContainerImageReasonBuilding string = "Building"
+	PhysicalContainerImageReasonBuilding ConditionReason = "Building"
 
 	// PhysicalContainerImageReasonBuilt indicates that image build completed.
-	PhysicalContainerImageReasonBuilt string = "Built"
+	PhysicalContainerImageReasonBuilt ConditionReason = "Built"
 
 	// PhysicalContainerImageReasonPullFailed indicates that image pull failed.
-	PhysicalContainerImageReasonPullFailed string = "PullFailed"
+	PhysicalContainerImageReasonPullFailed ConditionReason = "PullFailed"
 
 	// PhysicalContainerImageReasonBuildFailed indicates that image build failed.
-	PhysicalContainerImageReasonBuildFailed string = "BuildFailed"
+	PhysicalContainerImageReasonBuildFailed ConditionReason = "BuildFailed"
 
 	// PhysicalContainerImageReasonImageReady indicates that the image is available to the container runtime.
-	PhysicalContainerImageReasonImageReady string = "ImageReady"
+	PhysicalContainerImageReasonImageReady ConditionReason = "ImageReady"
 
 	// PhysicalContainerImageReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerImageReasonReconciliationFailed string = "ReconciliationFailed"
+	PhysicalContainerImageReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
 )
 
 // PhysicalContainerImageSpec describes a source image to pull or an image to build.

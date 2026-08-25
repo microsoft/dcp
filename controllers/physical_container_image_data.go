@@ -16,7 +16,7 @@ import (
 type physicalContainerImageDataStateKey string
 
 type physicalContainerImageData struct {
-	conditionReason string
+	conditionReason apiv2.ConditionReason
 	imageID         string
 	failureMessage  string
 

@@ -23,11 +23,11 @@ import (
 )
 
 const (
-	namespaceCleanupCompleteCondition = "CleanupComplete"
+	namespaceCleanupCompleteCondition apiv2.ConditionType = "CleanupComplete"
 
-	namespaceCleanupInProgressReason = "CleanupInProgress"
-	namespaceCleanupCompleteReason   = "CleanupComplete"
-	namespaceCleanupFailedReason     = "CleanupFailed"
+	namespaceCleanupInProgressReason apiv2.ConditionReason = "CleanupInProgress"
+	namespaceCleanupCompleteReason   apiv2.ConditionReason = "CleanupComplete"
+	namespaceCleanupFailedReason     apiv2.ConditionReason = "CleanupFailed"
 )
 
 var (

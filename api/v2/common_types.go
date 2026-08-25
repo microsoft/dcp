@@ -14,9 +14,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
+// ConditionType identifies a condition reported by a V2 resource.
+type ConditionType string
+
+// ConditionReason identifies the reason for a V2 condition's current status.
+type ConditionReason string
+
 const (
 	// ConditionReady indicates whether the resource has completed reconciliation and is ready for use.
-	ConditionReady string = "Ready"
+	ConditionReady ConditionType = "Ready"
 )
 
 // NamespacedName returns the standard Kubernetes identity for a V2 namespaced resource.
