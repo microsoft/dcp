@@ -19,10 +19,13 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/resourcecleanup"
+	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
 const (
+	namespaceCleanupMaxConcurrentDeletes = 6
+
 	namespaceCleanupCompleteCondition apiv2.ConditionType = "CleanupComplete"
 
 	namespaceCleanupInProgressReason apiv2.ConditionReason = "CleanupInProgress"
@@ -228,17 +231,20 @@ func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, nam
 		return 0, fmt.Errorf("failed to list PhysicalContainers in namespace %q: %w", namespace.Name, listErr)
 	}
 
-	for i := range physicalContainers.Items {
-		physicalContainer := &physicalContainers.Items[i]
+	deleteErr := concurrency.ForEachBounded(ctx, physicalContainers.Items, namespaceCleanupMaxConcurrentDeletes, func(ctx context.Context, physicalContainer apiv2.PhysicalContainer) error {
 		if physicalContainer.DeletionTimestamp != nil && !physicalContainer.DeletionTimestamp.IsZero() {
-			continue
+			return nil
 		}
 
 		log.V(1).Info("Deleting PhysicalContainer during namespace cleanup", "Namespace", namespace.Name, "PhysicalContainer", physicalContainer.Name)
-		deleteErr := r.Client.Delete(ctx, physicalContainer)
-		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			return 0, fmt.Errorf("failed to delete PhysicalContainer %q in namespace %q: %w", physicalContainer.Name, namespace.Name, deleteErr)
+		deletePhysicalContainerErr := r.Client.Delete(ctx, &physicalContainer)
+		if deletePhysicalContainerErr != nil && !apierrors.IsNotFound(deletePhysicalContainerErr) {
+			return fmt.Errorf("failed to delete PhysicalContainer %q in namespace %q: %w", physicalContainer.Name, namespace.Name, deletePhysicalContainerErr)
 		}
+		return nil
+	})
+	if deleteErr != nil {
+		return 0, deleteErr
 	}
 
 	return len(physicalContainers.Items), nil
@@ -251,17 +257,20 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context
 		return 0, fmt.Errorf("failed to list PhysicalContainerImages in namespace %q: %w", namespace.Name, listImagesErr)
 	}
 
-	for i := range physicalContainerImages.Items {
-		physicalContainerImage := &physicalContainerImages.Items[i]
+	deleteErr := concurrency.ForEachBounded(ctx, physicalContainerImages.Items, namespaceCleanupMaxConcurrentDeletes, func(ctx context.Context, physicalContainerImage apiv2.PhysicalContainerImage) error {
 		if physicalContainerImage.DeletionTimestamp != nil && !physicalContainerImage.DeletionTimestamp.IsZero() {
-			continue
+			return nil
 		}
 
 		log.V(1).Info("Deleting PhysicalContainerImage during namespace cleanup", "Namespace", namespace.Name, "PhysicalContainerImage", physicalContainerImage.Name)
-		deleteErr := r.Client.Delete(ctx, physicalContainerImage)
-		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			return 0, fmt.Errorf("failed to delete PhysicalContainerImage %q in namespace %q: %w", physicalContainerImage.Name, namespace.Name, deleteErr)
+		deletePhysicalContainerImageErr := r.Client.Delete(ctx, &physicalContainerImage)
+		if deletePhysicalContainerImageErr != nil && !apierrors.IsNotFound(deletePhysicalContainerImageErr) {
+			return fmt.Errorf("failed to delete PhysicalContainerImage %q in namespace %q: %w", physicalContainerImage.Name, namespace.Name, deletePhysicalContainerImageErr)
 		}
+		return nil
+	})
+	if deleteErr != nil {
+		return 0, deleteErr
 	}
 
 	return len(physicalContainerImages.Items), nil

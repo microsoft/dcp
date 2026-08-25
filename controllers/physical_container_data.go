@@ -21,6 +21,7 @@ type physicalContainerData struct {
 	conditionReason apiv2.ConditionReason
 	containerID     string
 	failureMessage  string
+	cleanupMessage  string
 	retryAfter      time.Time
 }
 
@@ -37,6 +38,7 @@ func (data *physicalContainerData) Clone() *physicalContainerData {
 		conditionReason: data.conditionReason,
 		containerID:     data.containerID,
 		failureMessage:  data.failureMessage,
+		cleanupMessage:  data.cleanupMessage,
 		retryAfter:      data.retryAfter,
 	}
 }
@@ -57,6 +59,10 @@ func (data *physicalContainerData) UpdateFrom(other *physicalContainerData) bool
 	}
 	if data.failureMessage != other.failureMessage {
 		data.failureMessage = other.failureMessage
+		updated = true
+	}
+	if data.cleanupMessage != other.cleanupMessage {
+		data.cleanupMessage = other.cleanupMessage
 		updated = true
 	}
 	if !data.retryAfter.Equal(other.retryAfter) {
@@ -97,7 +103,11 @@ func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) o
 		apiv2.PhysicalContainerReasonStartFailed,
 		apiv2.PhysicalContainerReasonReconciliationFailed:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		message := data.failureMessage
+		if data.cleanupMessage != "" {
+			message = data.cleanupMessage
+		}
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, data.conditionReason, message)
 		return change
 	default:
 		return change

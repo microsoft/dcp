@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -57,29 +58,37 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 	}
 	require.NoError(t, client.Create(ctx, namespace))
 	waitV2NamespaceActive(t, ctx, namespace.Name)
-	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "cleanup-image", "cleanup-image")
 
-	container := &apiv2.PhysicalContainer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "cleanup-container",
-			Namespace: namespace.Name,
-		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-ns-cleanup-container",
-		},
+	images := make([]*apiv2.PhysicalContainerImage, 2)
+	physicalContainers := make([]*apiv2.PhysicalContainer, 2)
+	containerIDs := make([]string, 2)
+	for i := range images {
+		imageName := fmt.Sprintf("cleanup-image-%d", i)
+		images[i] = createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, imageName, imageName)
+		physicalContainers[i] = &apiv2.PhysicalContainer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("cleanup-container-%d", i),
+				Namespace: namespace.Name,
+			},
+			Spec: apiv2.PhysicalContainerSpec{
+				ImageRef:      images[i].Name,
+				ContainerName: fmt.Sprintf("v2-ns-cleanup-container-%d", i),
+			},
+		}
+		require.NoError(t, client.Create(ctx, physicalContainers[i]))
+		updatedContainer := waitPhysicalContainerPhase(t, ctx, physicalContainers[i].NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+		require.NotEmpty(t, updatedContainer.Status.ContainerID)
+		containerIDs[i] = updatedContainer.Status.ContainerID
 	}
-	require.NoError(t, client.Create(ctx, container))
-	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
-	require.NotEmpty(t, updatedContainer.Status.ContainerID)
-	containerID := updatedContainer.Status.ContainerID
 
 	require.NoError(t, client.Delete(ctx, namespace))
 
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
-	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
+	for i := range physicalContainers {
+		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, physicalContainers[i])
+		ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, images[i])
+		waitContainerMissing(t, ctx, containerIDs[i])
+	}
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
-	waitContainerMissing(t, ctx, containerID)
 }
 
 func waitV2NamespaceActive(t *testing.T, ctx context.Context, name string) *apiv2.Namespace {

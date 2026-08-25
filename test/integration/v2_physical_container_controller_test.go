@@ -8,10 +8,12 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
@@ -354,6 +356,87 @@ func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
 	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerCleansUpPartialContainerAfterTerminalCreateFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-partial-create-failure")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "partial-create-failure-image", "partial-create-failure-image")
+	containerName := "v2-pctr-partial-create-failure-container"
+	containerOrchestrator.FailNextCreateContainerAfterCreation(
+		containerName,
+		errors.Join(containers.ErrCouldNotAllocate, errors.New("failed after creating runtime container")),
+	)
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "partial-create-failure-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Empty(t, failedContainer.Status.ContainerID)
+	waitContainerMissing(t, ctx, containerName)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Never(t, func() bool {
+		return containerOrchestrator.CreateContainerCallCount(containerName) > 1
+	}, 3*time.Second, 250*time.Millisecond)
+}
+
+func TestV2PhysicalContainerControllerRetriesPartialContainerCleanupAfterFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-partial-cleanup-retry")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "partial-cleanup-retry-image", "partial-cleanup-retry-image")
+	containerName := "v2-pctr-partial-cleanup-retry-container"
+	containerOrchestrator.FailNextCreateContainerAfterCreation(
+		containerName,
+		errors.Join(containers.ErrCouldNotAllocate, errors.New("failed after creating runtime container")),
+	)
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("remove failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "partial-cleanup-retry-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	failedCleanupContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			strings.Contains(readyCondition.Message, "Failed to remove partially created runtime container: remove failed once"), nil
+	})
+	require.NotEmpty(t, failedCleanupContainer.Status.ContainerID)
+	require.Equal(t, 1, containerOrchestrator.RemoveContainerCallCount(containerName))
+
+	waitContainerMissing(t, ctx, containerName)
+	failedContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			strings.Contains(readyCondition.Message, "Failed to create physical container:") &&
+			current.Status.ContainerID == "", nil
+	})
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 2, containerOrchestrator.RemoveContainerCallCount(containerName))
 }
 
 func TestV2PhysicalContainerControllerReappliesPostCreateFailureStatus(t *testing.T) {

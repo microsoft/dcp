@@ -80,6 +80,9 @@ type TestContainerOrchestrator struct {
 	createContainerCalls    map[string]int
 	createContainerBlocks   map[string]chan struct{}
 	createContainerErrors   map[string][]error
+	postCreateErrors        map[string][]error
+	removeContainerCalls    map[string]int
+	removeContainerErrors   map[string][]error
 	pullImageCalls          map[string]int
 	pullImageBlocks         map[string]chan struct{}
 	pullImageErrors         map[string][]error
@@ -201,6 +204,9 @@ func NewTestContainerOrchestrator(
 		createContainerCalls:    map[string]int{},
 		createContainerBlocks:   map[string]chan struct{}{},
 		createContainerErrors:   map[string][]error{},
+		postCreateErrors:        map[string][]error{},
+		removeContainerCalls:    map[string]int{},
+		removeContainerErrors:   map[string][]error{},
 		pullImageCalls:          map[string]int{},
 		pullImageBlocks:         map[string]chan struct{}{},
 		pullImageErrors:         map[string][]error{},
@@ -1173,11 +1179,73 @@ func (to *TestContainerOrchestrator) FailNextCreateContainer(name string, create
 	to.createContainerErrors[name] = append(to.createContainerErrors[name], createErr)
 }
 
+func (to *TestContainerOrchestrator) FailNextCreateContainerAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated post-create container failure")
+	}
+
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.postCreateErrors[name] = append(to.postCreateErrors[name], createErr)
+}
+
 func (to *TestContainerOrchestrator) CreateContainerCallCount(name string) int {
 	to.operationMutex.Lock()
 	defer to.operationMutex.Unlock()
 
 	return to.createContainerCalls[name]
+}
+
+func (to *TestContainerOrchestrator) FailNextRemoveContainer(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated container removal failure")
+	}
+
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.removeContainerErrors[name] = append(to.removeContainerErrors[name], removeErr)
+}
+
+func (to *TestContainerOrchestrator) RemoveContainerCallCount(name string) int {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	return to.removeContainerCalls[name]
+}
+
+func (to *TestContainerOrchestrator) recordRemoveContainerOperation(name string) error {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	to.removeContainerCalls[name]++
+	if len(to.removeContainerErrors[name]) == 0 {
+		return nil
+	}
+
+	removeErr := to.removeContainerErrors[name][0]
+	to.removeContainerErrors[name] = to.removeContainerErrors[name][1:]
+	if len(to.removeContainerErrors[name]) == 0 {
+		delete(to.removeContainerErrors, name)
+	}
+	return removeErr
+}
+
+func (to *TestContainerOrchestrator) nextPostCreateContainerError(name string) error {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	if len(to.postCreateErrors[name]) == 0 {
+		return nil
+	}
+
+	postCreateErr := to.postCreateErrors[name][0]
+	to.postCreateErrors[name] = to.postCreateErrors[name][1:]
+	if len(to.postCreateErrors[name]) == 0 {
+		delete(to.postCreateErrors, name)
+	}
+	return postCreateErr
 }
 
 func (to *TestContainerOrchestrator) BlockPullImage(image string) func() {
@@ -1521,6 +1589,9 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		return "", err
 	}
 	events = append(events, createEvent)
+	if postCreateErr := to.nextPostCreateContainerError(options.Name); postCreateErr != nil {
+		return container.ID, postCreateErr
+	}
 
 	for _, createNetwork := range createNetworks {
 		connectOpts := containers.ConnectNetworkOptions{
@@ -2131,6 +2202,10 @@ func (to *TestContainerOrchestrator) removeContainers(ctx context.Context, optio
 
 	for i := range containersToRemove {
 		container := containersToRemove[i]
+		if removeErr := to.recordRemoveContainerOperation(container.Name); removeErr != nil {
+			err = errors.Join(err, removeErr)
+			continue
+		}
 		if options.Force {
 			stopEvents, stopErr := to.doStopContainer(ctx, container, stopAndRemove)
 			if stopErr != nil {

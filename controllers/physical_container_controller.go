@@ -50,7 +50,7 @@ var (
 		apiv2.PhysicalContainerReasonFilesCreated:         handlePhysicalContainerFilesCreated,
 		apiv2.PhysicalContainerReasonStarting:             handlePhysicalContainerOperationInProgress,
 		apiv2.PhysicalContainerReasonStarted:              handlePhysicalContainerStarted,
-		apiv2.PhysicalContainerReasonCreateFailed:         handlePhysicalContainerOperationFailed,
+		apiv2.PhysicalContainerReasonCreateFailed:         handlePhysicalContainerCreateFailed,
 		apiv2.PhysicalContainerReasonFileCopyFailed:       handlePhysicalContainerOperationFailed,
 		apiv2.PhysicalContainerReasonStartFailed:          handlePhysicalContainerOperationFailed,
 		apiv2.PhysicalContainerReasonReconciliationFailed: handlePhysicalContainerRecoverableCreateFailed,
@@ -192,8 +192,8 @@ func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) Additio
 	return StandardDelay
 }
 
-// Acknowledges a terminal create record once its failure projection is durable in status.
-func (r *PhysicalContainerReconciler) physicalContainerDataSaveCallback(
+// Returns an acknowledgement that forgets terminal create-failure data after its status is durable.
+func (r *PhysicalContainerReconciler) onTerminalCreateFailureStatusDurable(
 	stateKey physicalContainerDataStateKey,
 	data *physicalContainerData,
 ) func() {
@@ -203,14 +203,13 @@ func (r *PhysicalContainerReconciler) physicalContainerDataSaveCallback(
 		return nil
 	}
 
+	// Only forget the failure projected by this reconciliation, not newer state stored under the same key.
 	expectedFailureMessage := data.failureMessage
-	expectedRetryAfter := data.retryAfter
 	return func() {
 		r.containerData.DeleteByStateKeyIf(stateKey, func(current *physicalContainerData) bool {
 			return current.conditionReason == apiv2.PhysicalContainerReasonCreateFailed &&
 				current.containerID == "" &&
-				current.failureMessage == expectedFailureMessage &&
-				current.retryAfter.Equal(expectedRetryAfter)
+				current.failureMessage == expectedFailureMessage
 		})
 	}
 }
@@ -239,7 +238,7 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		initializer := getStateInitializer(physicalContainerDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, container, data.conditionReason, data, log)
 		if data.conditionReason != apiv2.PhysicalContainerReasonStarted {
-			return change, r.physicalContainerDataSaveCallback(stateKey, data)
+			return change, r.onTerminalCreateFailureStatusDurable(stateKey, data)
 		}
 	}
 
@@ -406,6 +405,27 @@ func handlePhysicalContainerOperationFailed(
 	return noChange
 }
 
+func handlePhysicalContainerCreateFailed(
+	ctx context.Context,
+	reconciler *PhysicalContainerReconciler,
+	container *apiv2.PhysicalContainer,
+	_ apiv2.ConditionReason,
+	data *physicalContainerData,
+	log logr.Logger,
+) objectChange {
+	if time.Now().Before(data.retryAfter) {
+		return additionalReconciliationNeeded
+	}
+
+	cleanupChange, cleanupComplete := reconciler.removePartiallyCreatedPhysicalContainer(ctx, container, data, log)
+	if !cleanupComplete {
+		return cleanupChange
+	}
+
+	log.V(1).Info("Physical container creation failed; saving container status", "Message", data.failureMessage)
+	return cleanupChange
+}
+
 func handlePhysicalContainerRecoverableCreateFailed(
 	ctx context.Context,
 	reconciler *PhysicalContainerReconciler,
@@ -418,26 +438,62 @@ func handlePhysicalContainerRecoverableCreateFailed(
 		return additionalReconciliationNeeded
 	}
 
-	if data.containerID != "" {
-		_, removeErr := reconciler.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
-			Containers: []string{data.containerID},
-			Force:      true,
-		})
-		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
-			log.Error(removeErr, "Failed to remove partially created runtime container", "ContainerID", data.containerID)
-			data.failureMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
-			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
-			stateKey, _ := reconciler.containerData.BorrowByNamespacedName(container.NamespacedName())
-			if reconciler.containerData.Update(container.NamespacedName(), stateKey, data) {
-				return data.applyTo(container) | additionalReconciliationNeeded
-			}
-			return additionalReconciliationNeeded
-		}
+	cleanupChange, cleanupComplete := reconciler.removePartiallyCreatedPhysicalContainer(ctx, container, data, log)
+	if !cleanupComplete {
+		return cleanupChange
 	}
 
 	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.ContainerName)
-	change := setValue(&container.Status.ContainerID, "")
-	return change | reconciler.schedulePhysicalContainerCreate(container, log)
+	return cleanupChange | reconciler.schedulePhysicalContainerCreate(container, log)
+}
+
+func (r *PhysicalContainerReconciler) removePartiallyCreatedPhysicalContainer(
+	ctx context.Context,
+	container *apiv2.PhysicalContainer,
+	data *physicalContainerData,
+	log logr.Logger,
+) (objectChange, bool) {
+	if data.containerID == "" {
+		return noChange, true
+	}
+
+	partialContainerID := data.containerID
+	_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
+		Containers: []string{partialContainerID},
+		Force:      true,
+	})
+	if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
+		log.Error(removeErr, "Failed to remove partially created runtime container", "ContainerID", partialContainerID)
+		stateKey, currentData := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+		if currentData == nil || currentData.containerID != partialContainerID {
+			return additionalReconciliationNeeded, false
+		}
+
+		updatedData := currentData.Clone()
+		updatedData.cleanupMessage = fmt.Sprintf("Failed to remove partially created runtime container: %v", removeErr)
+		updatedData.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
+		if !r.containerData.Update(container.NamespacedName(), stateKey, updatedData) {
+			return additionalReconciliationNeeded, false
+		}
+		data.UpdateFrom(updatedData)
+		return updatedData.applyTo(container) | additionalReconciliationNeeded, false
+	}
+
+	stateKey, currentData := r.containerData.BorrowByNamespacedName(container.NamespacedName())
+	if currentData == nil || currentData.containerID != partialContainerID {
+		return additionalReconciliationNeeded, false
+	}
+	updatedData := currentData.Clone()
+	updatedData.containerID = ""
+	updatedData.cleanupMessage = ""
+	updatedData.retryAfter = time.Time{}
+	if !r.containerData.Update(container.NamespacedName(), stateKey, updatedData) {
+		return additionalReconciliationNeeded, false
+	}
+	data.UpdateFrom(updatedData)
+
+	log.V(1).Info("Removed partially created runtime container", "ContainerID", partialContainerID)
+	return updatedData.applyTo(container) | setValue(&container.Status.ContainerID, ""), true
 }
 
 func handleUnknownPhysicalContainerDataReason(
