@@ -7,13 +7,13 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### Namespace model
 
 - V2 resources always belong to a DCP V2 `Namespace`, except for the `Namespace` resource itself.
-- V2 resources use standard `metadata.namespace` and `types.NamespacedName` for references, cache keys, reconciler state, and watches.
+- V2 resources use standard `metadata.namespace`; controllers use `types.NamespacedName` for normalized references, cache keys, reconciler state, and watches.
 - V2 controllers must not perform external side effects when the namespace is missing, terminating, or not active.
 - V1 resources remain cluster-scoped and can continue to run without a namespace.
 
 ### API layering
 
-- V2 should separate physical resources from logical resources.
+- V2 separates physical runtime concerns from logical DCP policy when those concerns have distinct responsibilities or lifecycles. Not every resource requires a physical/logical counterpart.
 - Physical resources represent concrete runtime objects such as containers, images, networks, volumes, and processes.
 - Logical resources represent DCP policy and user-facing behavior such as persistence, reuse, endpoint shape, and higher-level application concepts.
 - Shared API fragments that are not specific to V1 or V2 should live in `pkg/commonapi`.
@@ -21,27 +21,29 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 ### Controller side effects
 
-- Reconciliation should stay fast whenever a side effect might block.
-- Long-running or blocking operations should run through bounded queued work, with reconciliation recording progress and returning quickly.
+- Long-running or potentially blocking side effects must run through bounded queued work so reconciliation can record the current state and return quickly.
 - Queued action completion should enqueue a follow-up reconcile instead of directly mutating Kubernetes objects from worker code.
+- Results from queued runtime work must be applied to controller-owned state as deferred operations during reconciliation, ensuring each reconciliation operates on consistent state.
 - Non-idempotent side effects should be guarded by lightweight in-memory data so stale or competing reconciles do not duplicate runtime work.
-- DCP does not currently replay in-memory progress after controller crashes; queued side effects that create non-persistent runtime resources must stamp creator and persistence labels so startup harvesting can remove abandoned resources.
+- DCP does not currently replay controller-owned state after controller crashes; queued side effects that create non-persistent runtime resources must stamp creator and persistence labels so startup harvesting can remove abandoned resources.
 
 ### Physical resource ownership
 
-- Physical resources either create a runtime object or reference an existing object by runtime ID; creation fields and existing-object references are mutually exclusive.
-- Runtime objects referenced by ID are never removed when the physical resource is deleted. `retainRuntimeContainer` and `replaceExisting` apply only when creating a runtime object and are rejected for existing-object references.
-- A created runtime object is removed with its physical resource unless `retainRuntimeContainer` is true.
+- A `PhysicalContainer` spec either supplies `containerID` to track an existing runtime container or omits it so the controller creates one. Creation-only fields are `retainRuntimeContainer`, `imageRef`, `containerName`, `replaceExisting`, `entrypoint`, `command`, `env`, `ports`, `volumeMounts`, `networks`, `createFiles`, and `labels`.
+- Both modes report the observed runtime container ID through `status.containerID`.
+- A runtime container supplied through `spec.containerID` is never removed when its `PhysicalContainer` is deleted.
+- A runtime container created by the resource is removed on deletion unless `retainRuntimeContainer` is true.
 - Creation fails on a runtime name collision unless `replaceExisting` is true. Replacement removes the object that was resolved by name before creating and tracking the new object.
 - Higher-level `session`, `persistent`, and `existing` modes remain logical policy. Logical controllers translate those modes into physical creation or reference specifications rather than copying the mode enum onto physical resources.
 
-### In-memory progress data
+### Controller-owned in-memory state
 
-- In-memory data should be a linear progress record, not an additional state machine hidden from the resource status.
-- Data records should capture only the side-effect guard/result needed for reconciliation to continue, such as a runtime ID, failure message, current `Ready` condition reason, or operation progress.
-- `applyTo` methods on data records should only project in-memory progress onto resource status.
-- Reconciliation scheduling, state cleanup, runtime inspection, and external side effects should remain in the reconciler.
-- Prefer dispatching progress handling through initializer maps keyed by condition reason when the controller has multiple progress gates.
+- Each resource has at most one controller-owned record representing the latest known state of runtime work that has not yet been fully consumed by reconciliation.
+- The record complements resource status and must not become a second, independently observable state machine.
+- Controller-owned records must remain minimal: store only values needed to prevent duplicate side effects, correlate runtime events, retain queued-operation results until reconciliation consumes them, or schedule retries. Do not mirror the complete resource spec or status.
+- An `applyTo` method may project controller-owned in-memory state onto the resource's status. It must not modify spec or metadata, mutate controller-owned state, schedule work, or perform external side effects.
+- State transitions, work scheduling, cleanup, runtime inspection, and controller-owned state updates belong in reconciler or initializer functions.
+- When controller-owned state uses a `Ready` condition reason as its current reconciliation state, dispatch reason-specific behavior through an exhaustive initializer map keyed by that reason. Unrecognized reasons must produce explicit invalid-state handling.
 
 ### Status and progress reporting
 
@@ -49,7 +51,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - V2 resources should report detailed progress with standardized `Ready` conditions. A condition reason identifies the specific prerequisite, operation, observation, or failure responsible for the current phase.
 - Phase communicates broad lifecycle and recoverability; reason must not duplicate generic phase states such as pending or failed. The same specific reason may appear under different phases when the phase distinguishes recoverable from terminal outcomes.
 - Condition messages carry instance-specific diagnostics, but consumers should not need to parse a message to determine the cause category.
-- Avoid duplicating explanatory top-level `status.message` fields when condition messages can carry the information.
+- V2 status types must not define top-level `status.message` fields. Explanatory and diagnostic text belongs in the message of the condition reporting the corresponding state.
 - Controller status helpers should use shared target-first setters such as `setValue(&field, value)` and `setTimestamp(&field, value)`.
 - Callers that need a boolean from a status helper should use `trySetX` wrappers instead of comparing `setX(...) != noChange` at call sites.
 
@@ -62,7 +64,9 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 ### References and watches
 
-- V2 references should be namespace-local by default unless a cross-namespace relationship is explicitly designed.
+- V2 API reference fields use string values formatted as `<name>` or `<namespace>/<name>`.
+- Controllers normalize references to `types.NamespacedName`.
+- Name-only references resolve within the referring resource's namespace. Explicit namespaces must match it unless cross-namespace references are supported.
 - Controllers should watch referenced resources and enqueue dependents when updates can unblock reconciliation.
 - Watches should use indexes for efficient reverse lookup, for example indexing `spec.imageRef` to find containers referencing an image.
 
@@ -71,7 +75,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup.
 - `PhysicalContainerImage` provides source image pull and build workflows.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
-- `PhysicalContainer` and `PhysicalContainerImage` use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
+- `PhysicalContainer` and `PhysicalContainerImage` use controller-owned in-memory state, standardized `Ready` conditions, and queued work where side effects can block.
 
 ## Follow-up roadmap
 
