@@ -6,16 +6,57 @@
 package controllers
 
 import (
+	"context"
+	"sync"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/commonapi"
 )
+
+func TestPhysicalContainerNotFoundDiscardsStateAndWatch(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	containerData := NewObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer]()
+	watcher := NewContainerWatcher[apiv2.PhysicalContainer](nil, &sync.Mutex{}, ctx)
+	reconciler := &PhysicalContainerReconciler{
+		ReconcilerBase:   NewReconcilerBase[apiv2.PhysicalContainer](client, client, logr.Discard(), ctx),
+		ContainerWatcher: watcher,
+		containerData:    containerData,
+	}
+
+	name := types.NamespacedName{Namespace: "test-namespace", Name: "test-container"}
+	resourceUID := types.UID("resource-uid")
+	containerData.Store(name, physicalContainerDataContainerIDKey("container-id"), &physicalContainerData{
+		resourceUID:     resourceUID,
+		conditionReason: apiv2.PhysicalContainerReasonStarted,
+		containerID:     "container-id",
+	})
+	watcher.watchingResources.Store(resourceUID, true)
+
+	result, reconcileErr := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: name})
+
+	require.NoError(t, reconcileErr)
+	require.Equal(t, ctrl.Result{}, result)
+	_, storedData := containerData.BorrowByNamespacedName(name)
+	require.Nil(t, storedData)
+	require.True(t, watcher.watchingResources.Empty())
+}
 
 func TestPhysicalContainerPortMappingsFromInspected(t *testing.T) {
 	t.Parallel()

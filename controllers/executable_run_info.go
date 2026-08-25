@@ -174,12 +174,12 @@ func (ri *ExecutableRunInfo) UpdateFrom(other *ExecutableRunInfo) bool {
 		updated = true
 	}
 
-	updated = trySetTimestampIfAfterOrUnknown(&ri.StartupTimestamp, other.StartupTimestamp) || updated
+	updated = setTimestampIfAfterOrUnknown(&ri.StartupTimestamp, other.StartupTimestamp) != noChange || updated
 	if !other.ProcessIdentityTime.IsZero() && !ri.ProcessIdentityTime.Equal(other.ProcessIdentityTime) {
 		ri.ProcessIdentityTime = other.ProcessIdentityTime
 		updated = true
 	}
-	updated = trySetTimestampIfAfterOrUnknown(&ri.FinishTimestamp, other.FinishTimestamp) || updated
+	updated = setTimestampIfAfterOrUnknown(&ri.FinishTimestamp, other.FinishTimestamp) != noChange || updated
 
 	if other.StdOutFile != "" && ri.StdOutFile != other.StdOutFile {
 		ri.StdOutFile = other.StdOutFile

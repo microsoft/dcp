@@ -141,19 +141,10 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	return metadataChanged
 }
 
-// ensureNamespace reports whether a namespaced V2 resource may perform runtime work, applying
-// a Pending or Failed status change when it may not.
-//
-// This is the single gate for non-deletion runtime work by namespaced V2 resources; deletion
-// deliberately bypasses it so cleanup can finish after the namespace disappears. The API server
-// accepts child resources whose namespace is missing or terminating, but this gate prevents such
-// a child from creating a container or image. It normally sits in Pending until namespace cleanup
-// deletes it. If creation races the namespace controller's final empty-list snapshot, the inert
-// API record may instead remain until the in-memory API server exits. An admission-time equivalent
-// was tried and reverted: it required forking tilt's storage registration path to read the
-// namespace outside the REST layer, which is a large amount of borrowed machinery to prevent
-// an inert API record.
-func ensureNamespace(
+// checkNamespaceReady reports whether a namespace permits a V2 resource to perform runtime work.
+// The returned change comes from applyPending when the namespace is not ready, or applyFailed when
+// its readiness cannot be determined. Deletion paths bypass this check so cleanup can still finish.
+func checkNamespaceReady(
 	ctx context.Context,
 	client ctrl_client.Client,
 	namespaceName string,
@@ -239,24 +230,21 @@ type KubernetesObjectStateType interface {
 	~string
 }
 
-// A function invoked from the reconciliation loop when an object reaches a particular state.
-// The responsibility of the state initializer is threefold:
-// 1. Set the object's to the desired state (usually by modifying its Status).
-// 2. Update the in-memory data structures that track the object's state (data owned by the reconciler).
-// 3. Make necessary changes to the real-world resources that the object represents.
-// NOTE: the initializer MUST return noChange if no changes were made to the object, in order to avoid infinite reconciliation loops
+// stateInitializerFunc reconciles an object from controller-owned in-memory state. An initializer
+// may project that state onto the object, advance the in-memory state, or schedule runtime work.
+// Its return value must accurately describe object changes so unchanged objects are not continually saved.
 type stateInitializerFunc[
 	O commonapi.ObjectStruct, PO commonapi.PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],
 	OS KubernetesObjectStateType,
 	IMOS any, PIMOS PInMemoryObjectState[IMOS],
 ] func(
-	context.Context, /* context for the reconciliation operation */
-	PR, /* reconciler instance */
-	PO, /* Kubernetes object to be reconciled */
-	OS, /* The desired state of the object. Useful if the same state initializer is used for multiple states */
-	PIMOS, /* The in-memory state of the object (additional data about the object stored in controller's ObjectStateMap). */
-	logr.Logger,
+	ctx context.Context,
+	reconciler PR,
+	obj PO,
+	state OS,
+	inMemoryState PIMOS,
+	log logr.Logger,
 ) objectChange
 
 func getStateInitializer[
@@ -315,10 +303,6 @@ func setTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroT
 	return noChange
 }
 
-func trySetTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) bool {
-	return setTimestampIfAfterOrUnknown(target, source) != noChange
-}
-
 // Sets "target" timestamp to "source" timestamp if it is different by more than 2 microseconds.
 func setTimestamp(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if target.Add(timestampEpsilon).Before(source.Time) || source.Add(timestampEpsilon).Before(target.Time) {
@@ -334,16 +318,6 @@ func setValue[T comparable](target *T, value T) objectChange {
 	}
 	*target = value
 	return statusChanged
-}
-
-func setReadyCondition(
-	conditions *[]metav1.Condition,
-	generation int64,
-	status metav1.ConditionStatus,
-	reason string,
-	message string,
-) objectChange {
-	return setCondition(conditions, apiv2.ConditionReady, generation, status, reason, message)
 }
 
 // Records the condition, reporting noChange when the condition already holds the same values

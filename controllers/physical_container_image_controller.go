@@ -190,13 +190,13 @@ func (r *PhysicalContainerImageReconciler) managePhysicalContainerImage(
 	image *apiv2.PhysicalContainerImage,
 	log logr.Logger,
 ) (objectChange, func()) {
-	if namespaceReady, change := ensureNamespace(ctx, r.Client, image.Namespace, func(message string) objectChange {
+	if namespaceReady, change := checkNamespaceReady(ctx, r.Client, image.Namespace, func(message string) objectChange {
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhasePending)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPending, message)
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPending, message)
 		return change
 	}, func(message string) objectChange {
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, message)
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, message)
 		return change
 	}, log); !namespaceReady {
 		return change, nil
@@ -270,7 +270,7 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context
 		if !errors.Is(inspectErr, containers.ErrNotFound) {
 			log.Error(inspectErr, "Failed to inspect ready PhysicalContainerImage source image", "Image", image.Status.Image)
 			change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-			change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
+			change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 			return change
 		}
 	}
@@ -286,12 +286,12 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
 		log.Error(inspectErr, "Failed to inspect PhysicalContainerImage source image", "Image", image.Spec.Image)
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 		return change
 	}
 	if image.Spec.PullPolicy == apiv2.PullPolicyNever {
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Image %q is not available locally.", image.Spec.Image))
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Image %q is not available locally.", image.Spec.Image))
 		return change
 	}
 
@@ -309,7 +309,7 @@ func (r *PhysicalContainerImageReconciler) ensureBuiltImage(ctx context.Context,
 		if !errors.Is(inspectErr, containers.ErrNotFound) {
 			log.Error(inspectErr, "Failed to inspect ready PhysicalContainerImage build output", "Image", image.Status.Image)
 			change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-			change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
+			change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 			return change
 		}
 	}
@@ -349,7 +349,7 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImagePull(
 		r.imageData.DeleteByNamespacedName(image.NamespacedName())
 		log.Error(enqueueErr, "Failed to queue PhysicalContainerImage pull", "Image", outputImage)
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPullFailed, fmt.Sprintf("Failed to queue image pull: %v", enqueueErr))
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPullFailed, fmt.Sprintf("Failed to queue image pull: %v", enqueueErr))
 		return change
 	}
 
@@ -384,7 +384,7 @@ func (r *PhysicalContainerImageReconciler) schedulePhysicalContainerImageBuild(
 		r.imageData.DeleteByNamespacedName(image.NamespacedName())
 		log.Error(enqueueErr, "Failed to queue PhysicalContainerImage build", "Image", outputImage)
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuildFailed, fmt.Sprintf("Failed to queue image build: %v", enqueueErr))
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuildFailed, fmt.Sprintf("Failed to queue image build: %v", enqueueErr))
 		return change
 	}
 
@@ -540,7 +540,7 @@ func handlePhysicalContainerImageOperationCompleted(
 	if data.imageID == "" {
 		log.V(1).Info("PhysicalContainerImage operation completed without an image ID")
 		failureChange := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		failureChange |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, "Image operation completed without an image ID.")
+		failureChange |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, "Image operation completed without an image ID.")
 		return failureChange
 	}
 
@@ -548,7 +548,7 @@ func handlePhysicalContainerImageOperationCompleted(
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect completed PhysicalContainerImage operation", "ImageID", data.imageID)
 		failureChange := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		failureChange |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
+		failureChange |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 		return failureChange
 	}
 	log.V(1).Info("PhysicalContainerImage operation completed; saving image status", "ImageID", data.imageID)
@@ -580,7 +580,7 @@ func handleUnknownPhysicalContainerImageDataReason(
 	message := fmt.Sprintf("PhysicalContainerImage operation reached unknown condition reason %q.", conditionReason)
 	log.Error(fmt.Errorf("unknown physical container image condition reason %q", conditionReason), "PhysicalContainerImage operation reached unknown condition reason")
 	change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-	change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, message)
+	change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonReconciliationFailed, message)
 	return change | additionalReconciliationNeeded
 }
 
@@ -637,7 +637,7 @@ func applyReadyPhysicalContainerImageStatus(image *apiv2.PhysicalContainerImage,
 	change |= setValue(&image.Status.ImageID, inspectedImage.Id)
 	change |= setValue(&image.Status.Digest, inspectedImage.Digest)
 	change |= setPhysicalContainerImageTags(image, inspectedImage.Tags)
-	change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageReady, "Image is available to the container runtime.")
+	change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageReady, "Image is available to the container runtime.")
 	return change
 }
 

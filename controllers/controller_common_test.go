@@ -84,7 +84,7 @@ func TestAfterStatusUpdateIsDurable(t *testing.T) {
 	})
 }
 
-func TestEnsureNamespaceRequiresFinalizedActiveNamespace(t *testing.T) {
+func TestCheckNamespaceReadyRequiresFinalizedActiveNamespace(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -102,7 +102,7 @@ func TestEnsureNamespaceRequiresFinalizedActiveNamespace(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace).Build()
 
 	var pendingMessage string
-	ready, change := ensureNamespace(ctx, client, namespace.Name, func(message string) objectChange {
+	ready, change := checkNamespaceReady(ctx, client, namespace.Name, func(message string) objectChange {
 		pendingMessage = message
 		return statusChanged
 	}, func(string) objectChange {
@@ -117,7 +117,7 @@ func TestEnsureNamespaceRequiresFinalizedActiveNamespace(t *testing.T) {
 	namespace.Finalizers = []string{namespaceFinalizer}
 	require.NoError(t, client.Update(ctx, namespace))
 
-	ready, change = ensureNamespace(ctx, client, namespace.Name, func(string) objectChange {
+	ready, change = checkNamespaceReady(ctx, client, namespace.Name, func(string) objectChange {
 		t.Fatal("unexpected pending status")
 		return noChange
 	}, func(string) objectChange {

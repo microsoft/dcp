@@ -192,7 +192,7 @@ func (r *NamespaceReconciler) cleanupNamespace(ctx context.Context, namespace *a
 				continue
 			}
 
-			remaining, cleanupErr := r.cleanupNamespaceResource(ctx, namespace, cleanupResource.GVR, log)
+			remaining, cleanupErr := r.cleanupNamespacedResources(ctx, namespace, cleanupResource.GVR, log)
 			if cleanupErr != nil {
 				return "", cleanupErr
 			}
@@ -218,7 +218,7 @@ func namespaceCleanupDependenciesComplete(cleanupResource *resourcecleanup.Clean
 	})
 }
 
-func (r *NamespaceReconciler) cleanupNamespaceResource(
+func (r *NamespaceReconciler) cleanupNamespacedResources(
 	ctx context.Context,
 	namespace *apiv2.Namespace,
 	gvr schema.GroupVersionResource,

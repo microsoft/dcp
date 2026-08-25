@@ -69,15 +69,15 @@ func (data *physicalContainerImageData) applyTo(image *apiv2.PhysicalContainerIm
 	switch data.conditionReason {
 	case apiv2.PhysicalContainerImageReasonPulling:
 		change |= setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhasePending)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPulling, "Image pull is in progress.")
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonPulling, "Image pull is in progress.")
 		return change
 	case apiv2.PhysicalContainerImageReasonBuilding:
 		change |= setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhasePending)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuilding, "Image build is in progress.")
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonBuilding, "Image build is in progress.")
 		return change
 	case apiv2.PhysicalContainerImageReasonPullFailed, apiv2.PhysicalContainerImageReasonBuildFailed:
 		change |= setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setReadyCondition(&image.Status.Conditions, image.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 		return change
 	default:
 		return change
