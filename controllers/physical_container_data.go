@@ -16,23 +16,36 @@ import (
 
 type physicalContainerDataStateKey string
 
-type physicalContainerOperationProgress string
+type physicalContainerOperationProgress int
 
 const (
-	physicalContainerOperationInProgress   physicalContainerOperationProgress = "InProgress"
-	physicalContainerOperationCompleted    physicalContainerOperationProgress = "Completed"
-	physicalContainerOperationRetryPending physicalContainerOperationProgress = "RetryPending"
-	physicalContainerOperationFailed       physicalContainerOperationProgress = "Failed"
+	physicalContainerOperationInProgress physicalContainerOperationProgress = iota + 1
+	physicalContainerOperationCompleted
+	physicalContainerOperationRetryPending
+	physicalContainerOperationFailed
 )
 
 type physicalContainerData struct {
-	resourceUID     types.UID
+	// UID of the PhysicalContainer that owns this data.
+	resourceUID types.UID
+
+	// Current condition reason used to dispatch reconciliation behavior.
 	conditionReason apiv2.ConditionReason
-	progress        physicalContainerOperationProgress
-	containerID     string
-	failureMessage  string
-	cleanupMessage  string
-	retryAfter      time.Time
+
+	// Progress of the current runtime operation.
+	progress physicalContainerOperationProgress
+
+	// ID of the associated runtime container, including a partially created container.
+	containerID string
+
+	// Diagnostic message from the current failed runtime operation.
+	failureMessage string
+
+	// Diagnostic message from the latest partial-container cleanup failure.
+	cleanupMessage string
+
+	// Earliest time at which a failed operation should be retried.
+	retryAfter time.Time
 }
 
 func newPhysicalContainerData(resourceUID types.UID) *physicalContainerData {

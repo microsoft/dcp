@@ -175,9 +175,7 @@ func (rb *ReconcilerBase[T, PT]) SaveChangesWithDelay(
 		kind := obj.GetObjectKind().GroupVersionKind().Kind
 		acknowledgeStatus := func() {
 			if onStatusDurable != nil {
-				acknowledge := onStatusDurable
-				onStatusDurable = nil
-				acknowledge()
+				onStatusDurable()
 			}
 		}
 
