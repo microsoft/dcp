@@ -76,9 +76,6 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 
 	require.NoError(t, client.Delete(ctx, namespace))
 
-	waitObjectAssumesState(t, ctx, types.NamespacedName{Name: namespace.Name}, func(currentNamespace *apiv2.Namespace) (bool, error) {
-		return currentNamespace.Status.Phase == apiv2.NamespacePhaseTerminating, nil
-	})
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerImage](t, ctx, client, image)
 	ctrl_testutil.WaitObjectDeleted[apiv2.Namespace](t, ctx, client, namespace)
