@@ -86,6 +86,7 @@ type TestContainerOrchestrator struct {
 	pullImageCalls          map[string]int
 	pullImageBlocks         map[string]chan struct{}
 	pullImageErrors         map[string][]error
+	inspectImageErrors      map[string]error
 	buildImageCalls         map[string]int
 	buildImageBlocks        map[string]chan struct{}
 	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
@@ -210,6 +211,7 @@ func NewTestContainerOrchestrator(
 		pullImageCalls:          map[string]int{},
 		pullImageBlocks:         map[string]chan struct{}{},
 		pullImageErrors:         map[string][]error{},
+		inspectImageErrors:      map[string]error{},
 		buildImageCalls:         map[string]int{},
 		buildImageBlocks:        map[string]chan struct{}{},
 		mutex:                   &sync.Mutex{},
@@ -1248,6 +1250,41 @@ func (to *TestContainerOrchestrator) nextPostCreateContainerError(name string) e
 	return postCreateErr
 }
 
+func (to *TestContainerOrchestrator) FailInspectImage(image string, inspectErr error) func() {
+	if inspectErr == nil {
+		inspectErr = errors.New("simulated image inspection failure")
+	}
+
+	to.operationMutex.Lock()
+	to.inspectImageErrors[image] = inspectErr
+	to.operationMutex.Unlock()
+
+	var clearOnce sync.Once
+	return func() {
+		clearOnce.Do(func() {
+			to.operationMutex.Lock()
+			defer to.operationMutex.Unlock()
+
+			delete(to.inspectImageErrors, image)
+		})
+	}
+}
+
+func (to *TestContainerOrchestrator) inspectImageError(imageID string, image *testImage) error {
+	to.operationMutex.Lock()
+	defer to.operationMutex.Unlock()
+
+	if inspectErr := to.inspectImageErrors[imageID]; inspectErr != nil {
+		return inspectErr
+	}
+	for _, tag := range image.tags {
+		if inspectErr := to.inspectImageErrors[tag]; inspectErr != nil {
+			return inspectErr
+		}
+	}
+	return nil
+}
+
 func (to *TestContainerOrchestrator) BlockPullImage(image string) func() {
 	return to.blockPullImageOperation(image, make(chan struct{}))
 }
@@ -1446,6 +1483,10 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 		image, found := to.findImage(imageId)
 		if !found {
 			err = errors.Join(err, containers.ErrNotFound)
+			continue
+		}
+		if inspectErr := to.inspectImageError(imageId, image); inspectErr != nil {
+			err = errors.Join(err, inspectErr)
 			continue
 		}
 
@@ -2597,6 +2638,38 @@ func (to *TestContainerOrchestrator) SimulateContainerExit(ctx context.Context, 
 
 			return nil
 		}
+	}
+
+	return containers.ErrNotFound
+}
+
+func (to *TestContainerOrchestrator) SimulateContainerStatus(ctx context.Context, name string, status containers.ContainerStatus) error {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return errRuntimeUnhealthy
+	}
+
+	for _, container := range to.containers {
+		if !container.matches(name) {
+			continue
+		}
+
+		container.Status = status
+		to.containers[container.ID] = container
+		to.containerEventsWatcher.Notify(containers.EventMessage{
+			Source: containers.EventSourceContainer,
+			Action: containers.EventActionUpdate,
+			Actor:  containers.EventActor{ID: container.ID},
+			Attributes: map[string]string{
+				ContainerNameAttribute: name,
+			},
+		})
+		return nil
 	}
 
 	return containers.ErrNotFound

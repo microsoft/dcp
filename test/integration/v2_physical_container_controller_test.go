@@ -349,8 +349,13 @@ func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
 	}
 	require.NoError(t, client.Create(ctx, container))
 	waitCreateContainerCallCount(t, ctx, containerName, 1)
-	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseFailed)
-	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed)
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateRetryPending, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateRetryPending)
 	waitCreateContainerCallCount(t, ctx, containerName, 2)
 
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
@@ -526,9 +531,45 @@ func TestV2PhysicalContainerControllerReportsMissingExistingContainer(t *testing
 	}
 	require.NoError(t, client.Create(ctx, container))
 
-	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseMissing)
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
 	require.Equal(t, "missing-v2-container-id", updatedContainer.Status.ContainerID)
-	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionFalse, "RuntimeContainerMissing")
+	requireReadyCondition(t, updatedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing)
+}
+
+func TestV2PhysicalContainerControllerReportsPausedAndRestartingPhases(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-runtime-phases")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "runtime-phases-image", "runtime-phases-image")
+	containerName := "v2-pctr-runtime-phases-container"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "runtime-phases-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, runningContainer.Status.ContainerID)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusPaused))
+	pausedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePaused)
+	requireReadyCondition(t, pausedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerPaused)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusRestarting))
+	restartingContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	requireReadyCondition(t, restartingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRestarting)
+
+	require.NoError(t, containerOrchestrator.SimulateContainerStatus(ctx, runningContainer.Status.ContainerID, containers.ContainerStatusRunning))
+	runningContainer = waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
 }
 
 func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {

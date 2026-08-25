@@ -100,9 +100,16 @@ func (data *physicalContainerData) applyTo(container *apiv2.PhysicalContainer) o
 		return change
 	case apiv2.PhysicalContainerReasonCreateFailed,
 		apiv2.PhysicalContainerReasonFileCopyFailed,
-		apiv2.PhysicalContainerReasonStartFailed,
-		apiv2.PhysicalContainerReasonReconciliationFailed:
+		apiv2.PhysicalContainerReasonStartFailed:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
+		message := data.failureMessage
+		if data.cleanupMessage != "" {
+			message = data.cleanupMessage
+		}
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, data.conditionReason, message)
+		return change
+	case apiv2.PhysicalContainerReasonCreateRetryPending:
+		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		message := data.failureMessage
 		if data.cleanupMessage != "" {
 			message = data.cleanupMessage

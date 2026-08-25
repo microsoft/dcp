@@ -33,23 +33,26 @@ var (
 )
 
 // PhysicalContainerPhase describes the lifecycle phase of a PhysicalContainer.
-type PhysicalContainerPhase string
+type PhysicalContainerPhase PhysicalResourcePhase
 
 const (
 	// PhysicalContainerPhasePending indicates that the container is waiting for prerequisites.
-	PhysicalContainerPhasePending PhysicalContainerPhase = "Pending"
+	PhysicalContainerPhasePending PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhasePending)
 
 	// PhysicalContainerPhaseRunning indicates that the runtime container is running.
-	PhysicalContainerPhaseRunning PhysicalContainerPhase = "Running"
+	PhysicalContainerPhaseRunning PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseRunning)
+
+	// PhysicalContainerPhasePaused indicates that the runtime container is paused.
+	PhysicalContainerPhasePaused PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhasePaused)
 
 	// PhysicalContainerPhaseExited indicates that the runtime container has exited.
-	PhysicalContainerPhaseExited PhysicalContainerPhase = "Exited"
+	PhysicalContainerPhaseExited PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseExited)
 
-	// PhysicalContainerPhaseMissing indicates that the referenced runtime container was not found.
-	PhysicalContainerPhaseMissing PhysicalContainerPhase = "Missing"
+	// PhysicalContainerPhaseUnknown indicates that the runtime container state is unavailable or indeterminate.
+	PhysicalContainerPhaseUnknown PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerPhaseFailed indicates that creating or inspecting the runtime container failed.
-	PhysicalContainerPhaseFailed PhysicalContainerPhase = "Failed"
+	// PhysicalContainerPhaseFailed indicates a terminal operation failure.
+	PhysicalContainerPhaseFailed PhysicalContainerPhase = PhysicalContainerPhase(PhysicalResourcePhaseFailed)
 )
 
 const (
@@ -86,6 +89,18 @@ const (
 	// PhysicalContainerReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
 	PhysicalContainerReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
 
+	// PhysicalContainerReasonCreateRetryPending indicates that runtime container creation will be retried.
+	PhysicalContainerReasonCreateRetryPending ConditionReason = "CreateRetryPending"
+
+	// PhysicalContainerReasonInspectFailed indicates that the runtime container could not be inspected.
+	PhysicalContainerReasonInspectFailed ConditionReason = "InspectFailed"
+
+	// PhysicalContainerReasonStopFailed indicates that the runtime container could not be stopped.
+	PhysicalContainerReasonStopFailed ConditionReason = "StopFailed"
+
+	// PhysicalContainerReasonPortMappingFailed indicates that runtime port mappings could not be resolved.
+	PhysicalContainerReasonPortMappingFailed ConditionReason = "PortMappingFailed"
+
 	// PhysicalContainerReasonRuntimeContainerMissing indicates that the runtime container was not found.
 	PhysicalContainerReasonRuntimeContainerMissing ConditionReason = "RuntimeContainerMissing"
 
@@ -94,6 +109,12 @@ const (
 
 	// PhysicalContainerReasonRuntimeContainerExited indicates that the runtime container has exited.
 	PhysicalContainerReasonRuntimeContainerExited ConditionReason = "RuntimeContainerExited"
+
+	// PhysicalContainerReasonRuntimeContainerPaused indicates that the runtime container is paused.
+	PhysicalContainerReasonRuntimeContainerPaused ConditionReason = "RuntimeContainerPaused"
+
+	// PhysicalContainerReasonRuntimeContainerRestarting indicates that the runtime container is restarting.
+	PhysicalContainerReasonRuntimeContainerRestarting ConditionReason = "RuntimeContainerRestarting"
 
 	// PhysicalContainerReasonRuntimeContainerPending indicates that the runtime container is not yet running.
 	PhysicalContainerReasonRuntimeContainerPending ConditionReason = "RuntimeContainerPending"
@@ -176,7 +197,7 @@ type PhysicalContainerPortMapping struct {
 // +k8s:openapi-gen=true
 type PhysicalContainerStatus struct {
 	// Phase summarizes the runtime container lifecycle.
-	// +kubebuilder:validation:Enum=Pending;Running;Exited;Missing;Failed
+	// +kubebuilder:validation:Enum=Pending;Running;Paused;Exited;Unknown;Failed
 	// +optional
 	Phase PhysicalContainerPhase `json:"phase,omitempty"`
 

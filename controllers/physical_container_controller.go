@@ -44,16 +44,16 @@ var (
 	physicalContainerFinalizer string = fmt.Sprintf("%s/physicalcontainer-reconciler", apiv2.GroupVersion.Group)
 
 	physicalContainerDataInitializers = map[apiv2.ConditionReason]physicalContainerDataInitializerFunc{
-		apiv2.PhysicalContainerReasonCreating:             handlePhysicalContainerCreating,
-		apiv2.PhysicalContainerReasonCreated:              handlePhysicalContainerCreated,
-		apiv2.PhysicalContainerReasonCopyingFiles:         handlePhysicalContainerOperationInProgress,
-		apiv2.PhysicalContainerReasonFilesCreated:         handlePhysicalContainerFilesCreated,
-		apiv2.PhysicalContainerReasonStarting:             handlePhysicalContainerOperationInProgress,
-		apiv2.PhysicalContainerReasonStarted:              handlePhysicalContainerStarted,
-		apiv2.PhysicalContainerReasonCreateFailed:         handlePhysicalContainerCreateFailed,
-		apiv2.PhysicalContainerReasonFileCopyFailed:       handlePhysicalContainerOperationFailed,
-		apiv2.PhysicalContainerReasonStartFailed:          handlePhysicalContainerOperationFailed,
-		apiv2.PhysicalContainerReasonReconciliationFailed: handlePhysicalContainerRecoverableCreateFailed,
+		apiv2.PhysicalContainerReasonCreating:           handlePhysicalContainerCreating,
+		apiv2.PhysicalContainerReasonCreated:            handlePhysicalContainerCreated,
+		apiv2.PhysicalContainerReasonCopyingFiles:       handlePhysicalContainerOperationInProgress,
+		apiv2.PhysicalContainerReasonFilesCreated:       handlePhysicalContainerFilesCreated,
+		apiv2.PhysicalContainerReasonStarting:           handlePhysicalContainerOperationInProgress,
+		apiv2.PhysicalContainerReasonStarted:            handlePhysicalContainerStarted,
+		apiv2.PhysicalContainerReasonCreateFailed:       handlePhysicalContainerCreateFailed,
+		apiv2.PhysicalContainerReasonFileCopyFailed:     handlePhysicalContainerOperationFailed,
+		apiv2.PhysicalContainerReasonStartFailed:        handlePhysicalContainerOperationFailed,
+		apiv2.PhysicalContainerReasonCreateRetryPending: handlePhysicalContainerRecoverableCreateFailed,
 		"": handleUnknownPhysicalContainerDataReason,
 	}
 )
@@ -176,18 +176,25 @@ func (r *PhysicalContainerReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) AdditionalReconciliationDelay {
-	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning {
+	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
+	if readyCondition != nil {
+		reason := apiv2.ConditionReason(readyCondition.Reason)
+		if reason == apiv2.PhysicalContainerReasonCreateRetryPending ||
+			reason == apiv2.PhysicalContainerReasonInspectFailed ||
+			reason == apiv2.PhysicalContainerReasonStopFailed ||
+			reason == apiv2.PhysicalContainerReasonPortMappingFailed ||
+			reason == apiv2.PhysicalContainerReasonReconciliationFailed {
+			return LongDelay
+		}
+	}
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseRunning ||
+		container.Status.Phase == apiv2.PhysicalContainerPhasePaused {
 		return MonitoringDelay
 	}
-	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
 	if container.Spec.Stop &&
 		readyCondition != nil &&
 		apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonRuntimeContainerPending {
 		return MonitoringDelay
-	}
-	if container.Status.Phase == apiv2.PhysicalContainerPhaseFailed &&
-		!physicalContainerOperationFailedTerminally(container) {
-		return LongDelay
 	}
 	return StandardDelay
 }
@@ -224,9 +231,9 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPending, message)
 		return change
 	}, func(message string) objectChange {
-		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
+		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, message)
-		return change
+		return change | additionalReconciliationNeeded
 	}, log)
 	if !namespaceReady {
 		return namespaceChange, nil
@@ -243,7 +250,7 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		}
 	}
 
-	if physicalContainerOperationFailedTerminally(container) {
+	if container.Status.Phase == apiv2.PhysicalContainerPhaseFailed {
 		return change, nil
 	}
 
@@ -274,54 +281,36 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 	inspectedContainer, inspectErr := r.inspectPhysicalContainer(ctx, containerID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
 		change |= setValue(&container.Status.ContainerID, containerID)
-		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseMissing)
+		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing, "Runtime container was not found.")
 		return change, nil
 	}
 	if inspectErr != nil {
 		log.Error(inspectErr, "Failed to inspect runtime container", "ContainerID", containerID)
 		change |= setValue(&container.Status.ContainerID, containerID)
-		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr))
-		return change, nil
+		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonInspectFailed, fmt.Sprintf("Failed to inspect runtime container: %v", inspectErr))
+		return change | additionalReconciliationNeeded, nil
 	}
 
 	if container.Spec.Stop {
 		stoppedContainer, stopErr := r.stopPhysicalContainerIfNecessary(ctx, containerID, inspectedContainer)
 		if errors.Is(stopErr, containers.ErrNotFound) {
 			change |= setValue(&container.Status.ContainerID, containerID)
-			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseMissing)
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
 			change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerMissing, "Runtime container was not found.")
 			return change, nil
 		}
 		if stopErr != nil {
 			log.Error(stopErr, "Failed to stop runtime container", "ContainerID", containerID)
-			change |= setValue(&container.Status.ContainerID, containerID)
-			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
-			change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, fmt.Sprintf("Failed to stop runtime container: %v", stopErr))
-			return change, nil
+			change |= applyInspectedPhysicalContainerStatus(container, inspectedContainer, log)
+			change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonStopFailed, fmt.Sprintf("Failed to stop runtime container: %v", stopErr))
+			return change | additionalReconciliationNeeded, nil
 		}
 		inspectedContainer = stoppedContainer
 	}
 
 	return change | applyInspectedPhysicalContainerStatus(container, inspectedContainer, log), nil
-}
-
-// Reports whether the container recorded an operation failure that cannot change while its spec is immutable.
-func physicalContainerOperationFailedTerminally(container *apiv2.PhysicalContainer) bool {
-	if container.Status.Phase != apiv2.PhysicalContainerPhaseFailed {
-		return false
-	}
-
-	readyCondition := apimeta.FindStatusCondition(container.Status.Conditions, string(apiv2.ConditionReady))
-	if readyCondition == nil {
-		return false
-	}
-
-	reason := apiv2.ConditionReason(readyCondition.Reason)
-	return reason == apiv2.PhysicalContainerReasonCreateFailed ||
-		reason == apiv2.PhysicalContainerReasonFileCopyFailed ||
-		reason == apiv2.PhysicalContainerReasonStartFailed
 }
 
 func handlePhysicalContainerCreating(
@@ -508,7 +497,7 @@ func handleUnknownPhysicalContainerDataReason(
 	reconciler.containerData.DeleteByNamespacedName(container.NamespacedName())
 	message := fmt.Sprintf("Physical container operation reached unknown condition reason %q.", conditionReason)
 	log.Error(fmt.Errorf("unknown physical container condition reason %q", conditionReason), "Physical container operation reached unknown condition reason")
-	change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
+	change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
 	change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, message)
 	return change | additionalReconciliationNeeded
 }
@@ -530,9 +519,9 @@ func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(ctx context.
 	}
 	if getErr != nil {
 		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", container.Spec.ImageRef)
-		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
+		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr))
-		return false, change
+		return false, change | additionalReconciliationNeeded
 	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.Image == "" {
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
@@ -577,7 +566,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 		replaceErr := r.removePhysicalContainerForReplacement(ctx, container.Spec.ContainerName, log)
 		if replaceErr != nil {
 			log.Error(replaceErr, "Failed to replace existing physical container")
-			data.conditionReason = apiv2.PhysicalContainerReasonReconciliationFailed
+			data.conditionReason = apiv2.PhysicalContainerReasonCreateRetryPending
 			data.failureMessage = fmt.Sprintf("Failed to replace existing physical container: %v", replaceErr)
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 			r.queuePhysicalContainerDataResult(container, stateKey, data)
@@ -605,7 +594,7 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 			data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
 			data.retryAfter = time.Time{}
 		} else {
-			data.conditionReason = apiv2.PhysicalContainerReasonReconciliationFailed
+			data.conditionReason = apiv2.PhysicalContainerReasonCreateRetryPending
 			data.retryAfter = time.Now().Add(delayDurations[LongDelay].Duration)
 		}
 	} else if containerID == "" {
@@ -1012,22 +1001,35 @@ func applyInspectedPhysicalContainerStatus(container *apiv2.PhysicalContainer, i
 	change |= setTimestamp(&container.Status.StartedAt, metav1.NewMicroTime(inspectedContainer.StartedAt))
 	change |= setTimestamp(&container.Status.FinishedAt, metav1.NewMicroTime(inspectedContainer.FinishedAt))
 	change |= setPhysicalContainerExitCode(container, inspectedContainer)
+	change |= applyInspectedPhysicalContainerLifecycleStatus(container, inspectedContainer)
 
 	portMappings, portMappingErr := physicalContainerPortMappingsFromInspected(inspectedContainer.Ports)
 	if portMappingErr != nil {
 		message := fmt.Sprintf("Failed to resolve physical container port mappings: %v", portMappingErr)
 		log.Error(portMappingErr, "Failed to resolve physical container port mappings", "ContainerID", inspectedContainer.Id)
-		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseFailed)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonReconciliationFailed, message)
-		return change
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonPortMappingFailed, message)
+		return change | additionalReconciliationNeeded
 	}
 	change |= setPhysicalContainerPortMappings(container, portMappings)
+	return change
+}
 
+func applyInspectedPhysicalContainerLifecycleStatus(container *apiv2.PhysicalContainer, inspectedContainer *containers.InspectedContainer) objectChange {
+	change := noChange
 	switch inspectedContainer.Status {
-	case containers.ContainerStatusRunning, containers.ContainerStatusRestarting, containers.ContainerStatusPaused:
+	case containers.ContainerStatusRunning:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseRunning)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning, "Runtime container is running.")
 		// Keep polling slowly so a missed runtime event cannot strand the container in a stale state.
+		change |= additionalReconciliationNeeded
+	case containers.ContainerStatusPaused:
+		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePaused)
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerPaused, "Runtime container is paused.")
+		// Keep polling slowly so a missed runtime event cannot strand the container in a stale state.
+		change |= additionalReconciliationNeeded
+	case containers.ContainerStatusRestarting:
+		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRestarting, "Runtime container is restarting.")
 		change |= additionalReconciliationNeeded
 	case containers.ContainerStatusExited, containers.ContainerStatusDead:
 		change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseExited)

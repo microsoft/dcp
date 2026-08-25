@@ -20,9 +20,35 @@ type ConditionType string
 // ConditionReason identifies the reason for a V2 condition's current status.
 type ConditionReason string
 
+// PhysicalResourcePhase summarizes the high-level state of a V2 physical resource.
+type PhysicalResourcePhase string
+
 const (
 	// ConditionReady indicates whether the resource has completed reconciliation and is ready for use.
 	ConditionReady ConditionType = "Ready"
+)
+
+const (
+	// PhysicalResourcePhasePending indicates that reconciliation is expected to make progress.
+	PhysicalResourcePhasePending PhysicalResourcePhase = "Pending"
+
+	// PhysicalResourcePhaseReady indicates that the resource is available for use.
+	PhysicalResourcePhaseReady PhysicalResourcePhase = "Ready"
+
+	// PhysicalResourcePhaseRunning indicates that the runtime resource is actively executing.
+	PhysicalResourcePhaseRunning PhysicalResourcePhase = "Running"
+
+	// PhysicalResourcePhasePaused indicates that the runtime resource is suspended.
+	PhysicalResourcePhasePaused PhysicalResourcePhase = "Paused"
+
+	// PhysicalResourcePhaseExited indicates that the runtime resource has stopped executing.
+	PhysicalResourcePhaseExited PhysicalResourcePhase = "Exited"
+
+	// PhysicalResourcePhaseUnknown indicates that the resource's actual state is unavailable or indeterminate.
+	PhysicalResourcePhaseUnknown PhysicalResourcePhase = "Unknown"
+
+	// PhysicalResourcePhaseFailed indicates a terminal failure that reconciliation cannot recover from.
+	PhysicalResourcePhaseFailed PhysicalResourcePhase = "Failed"
 )
 
 // NamespacedName returns the standard Kubernetes identity for a V2 namespaced resource.

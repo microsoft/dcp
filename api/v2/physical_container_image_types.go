@@ -24,17 +24,20 @@ import (
 )
 
 // PhysicalContainerImagePhase describes the lifecycle phase of a PhysicalContainerImage.
-type PhysicalContainerImagePhase string
+type PhysicalContainerImagePhase PhysicalResourcePhase
 
 const (
 	// PhysicalContainerImagePhasePending indicates that the image is waiting for prerequisites.
-	PhysicalContainerImagePhasePending PhysicalContainerImagePhase = "Pending"
+	PhysicalContainerImagePhasePending PhysicalContainerImagePhase = PhysicalContainerImagePhase(PhysicalResourcePhasePending)
 
 	// PhysicalContainerImagePhaseReady indicates that the image is available to the container runtime.
-	PhysicalContainerImagePhaseReady PhysicalContainerImagePhase = "Ready"
+	PhysicalContainerImagePhaseReady PhysicalContainerImagePhase = PhysicalContainerImagePhase(PhysicalResourcePhaseReady)
 
-	// PhysicalContainerImagePhaseFailed indicates that pulling, building, or inspecting the image failed.
-	PhysicalContainerImagePhaseFailed PhysicalContainerImagePhase = "Failed"
+	// PhysicalContainerImagePhaseUnknown indicates that image availability cannot be determined.
+	PhysicalContainerImagePhaseUnknown PhysicalContainerImagePhase = PhysicalContainerImagePhase(PhysicalResourcePhaseUnknown)
+
+	// PhysicalContainerImagePhaseFailed indicates a terminal pull or build failure.
+	PhysicalContainerImagePhaseFailed PhysicalContainerImagePhase = PhysicalContainerImagePhase(PhysicalResourcePhaseFailed)
 )
 
 const (
@@ -64,6 +67,15 @@ const (
 
 	// PhysicalContainerImageReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
 	PhysicalContainerImageReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
+
+	// PhysicalContainerImageReasonInspectFailed indicates that the runtime image could not be inspected.
+	PhysicalContainerImageReasonInspectFailed ConditionReason = "InspectFailed"
+
+	// PhysicalContainerImageReasonImageUnavailable indicates that an image required to exist locally is unavailable.
+	PhysicalContainerImageReasonImageUnavailable ConditionReason = "ImageUnavailable"
+
+	// PhysicalContainerImageReasonOperationRetryPending indicates that a completed image operation will be retried.
+	PhysicalContainerImageReasonOperationRetryPending ConditionReason = "OperationRetryPending"
 )
 
 // PhysicalContainerImageSpec describes a source image to pull or an image to build.
@@ -91,7 +103,7 @@ type PhysicalContainerImageSpec struct {
 // +k8s:openapi-gen=true
 type PhysicalContainerImageStatus struct {
 	// Phase summarizes whether the image is available.
-	// +kubebuilder:validation:Enum=Pending;Ready;Failed
+	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
 	// +optional
 	Phase PhysicalContainerImagePhase `json:"phase,omitempty"`
 

@@ -46,6 +46,31 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
 }
 
+func TestV2PhysicalContainerImageControllerReportsUnknownWhenInspectionFails(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-inspect-failure")
+	sourceImage := "v2-pci-inspect-failure-source"
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "inspect-failure-image", sourceImage)
+	restoreInspection := containerOrchestrator.FailInspectImage(sourceImage, errors.New("inspect failed"))
+	defer restoreInspection()
+
+	require.NoError(t, retryOnConflict[apiv2.PhysicalContainerImage](ctx, image.NamespacedName(), func(ctx context.Context, currentImage *apiv2.PhysicalContainerImage) error {
+		if currentImage.Annotations == nil {
+			currentImage.Annotations = map[string]string{}
+		}
+		currentImage.Annotations["test.dcp.microsoft.com/reconcile"] = "inspect"
+		return client.Update(ctx, currentImage)
+	}))
+
+	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonInspectFailed)
+	restoreInspection()
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+}
+
 func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -177,6 +202,39 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.Equal(t, "test-value", inspectedImages[0].Labels["test-label"])
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-image")
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
+}
+
+func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithoutRebuilding(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-build-inspect-retry")
+	targetImage := "v2-pci-build-inspect-retry-target"
+	restoreInspection := containerOrchestrator.FailInspectImage(targetImage, errors.New("inspect failed"))
+	defer restoreInspection()
+
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "build-inspect-retry-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{
+			Image: targetImage,
+			Build: &apiv2.ContainerBuildContext{
+				Context: "test-context",
+			},
+		},
+	}
+	require.NoError(t, client.Create(ctx, image))
+	waitBuildImageCallCount(t, ctx, targetImage, 1)
+
+	unknownImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseUnknown)
+	requireReadyCondition(t, unknownImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonInspectFailed)
+	restoreInspection()
+
+	waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, 1, containerOrchestrator.BuildImageCallCount(targetImage))
 }
 
 func TestV2PhysicalContainerImageControllerDoesNotDuplicateBuildWhileStatusPending(t *testing.T) {
