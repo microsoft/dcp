@@ -4406,9 +4406,9 @@ func schema_microsoft_dcp_api_v2_ContainerPort(ref common.ReferenceCallback) com
 							Format:      "int32",
 						},
 					},
-					"containerPortEnd": {
+					"rangeSize": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Optional inclusive end of a container port range starting at ContainerPort. When set, HostPort (if specified) is the start of a host port range of the same size.",
+							Description: "Number of consecutive ports to publish, starting at ContainerPort and HostPort (if specified). Defaults to 1.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},

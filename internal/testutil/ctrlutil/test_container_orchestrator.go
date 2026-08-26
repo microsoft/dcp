@@ -64,41 +64,46 @@ const (
 	MaxRandomHostPort int = 50000
 )
 
+type testContainerOperation uint8
+
+const (
+	operationCreateContainer testContainerOperation = iota
+	operationPostCreateContainer
+	operationRemoveContainer
+	operationPullImage
+	operationInspectImage
+	operationBuildImage
+)
+
+type testContainerOperationKey struct {
+	operation  testContainerOperation
+	resourceID string
+}
+
 type TestContainerOrchestrator struct {
-	runtimeHealthy          bool
-	volumes                 map[string]containerVolume
-	networks                map[string]*containerNetwork
-	images                  []*testImage
-	pullImageErr            error
-	containers              map[string]*testContainer
-	startupLogs             map[string]containerStartupLogs
-	containersToFail        map[string]containerExit
-	containersToHealthcheck map[string]containers.ContainerHealthcheck
-	execs                   map[string]*containerExec
-	createFiles             map[string][]*containerCreateFile
-	operationMutex          *sync.Mutex
-	createContainerCalls    map[string]int
-	createContainerBlocks   map[string]chan struct{}
-	createContainerErrors   map[string][]error
-	postCreateErrors        map[string][]error
-	removeContainerCalls    map[string]int
-	removeContainerErrors   map[string][]error
-	pullImageCalls          map[string]int
-	pullImageBlocks         map[string]chan struct{}
-	pullImageErrors         map[string][]error
-	pullImageIDOmissions    map[string]bool
-	inspectImageErrors      map[string]error
-	buildImageCalls         map[string]int
-	buildImageBlocks        map[string]chan struct{}
-	buildImageIDOmissions   map[string]bool
-	containerEventsWatcher  *pubsub.SubscriptionSet[containers.EventMessage]
-	networkEventsWatcher    *pubsub.SubscriptionSet[containers.EventMessage]
-	attachHandler           ContainerAttachHandler
-	socketServer            *http.Server
-	socketFilePath          string
-	mutex                   *sync.Mutex
-	lifetimeCtx             context.Context
-	log                     logr.Logger
+	runtimeHealthy           bool
+	volumes                  map[string]containerVolume
+	networks                 map[string]*containerNetwork
+	images                   []*testImage
+	pullImageErr             error
+	containers               map[string]*testContainer
+	startupLogs              map[string]containerStartupLogs
+	containersToFail         map[string]containerExit
+	containersToHealthcheck  map[string]containers.ContainerHealthcheck
+	execs                    map[string]*containerExec
+	createFiles              map[string][]*containerCreateFile
+	operationCallCounts      map[testContainerOperationKey]int
+	operationBlocks          map[testContainerOperationKey]chan struct{}
+	operationErrors          map[testContainerOperationKey][]error
+	operationResultOmissions map[testContainerOperationKey]bool
+	containerEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
+	networkEventsWatcher     *pubsub.SubscriptionSet[containers.EventMessage]
+	attachHandler            ContainerAttachHandler
+	socketServer             *http.Server
+	socketFilePath           string
+	mutex                    *sync.Mutex
+	lifetimeCtx              context.Context
+	log                      logr.Logger
 }
 
 // ContainerAttachHandler is the signature used by dispatchers/tests to provide
@@ -197,30 +202,19 @@ func NewTestContainerOrchestrator(
 				created:   now,
 			},
 		},
-		containers:              map[string]*testContainer{},
-		execs:                   map[string]*containerExec{},
-		startupLogs:             map[string]containerStartupLogs{},
-		containersToFail:        map[string]containerExit{},
-		containersToHealthcheck: map[string]containers.ContainerHealthcheck{},
-		createFiles:             map[string][]*containerCreateFile{},
-		operationMutex:          &sync.Mutex{},
-		createContainerCalls:    map[string]int{},
-		createContainerBlocks:   map[string]chan struct{}{},
-		createContainerErrors:   map[string][]error{},
-		postCreateErrors:        map[string][]error{},
-		removeContainerCalls:    map[string]int{},
-		removeContainerErrors:   map[string][]error{},
-		pullImageCalls:          map[string]int{},
-		pullImageBlocks:         map[string]chan struct{}{},
-		pullImageErrors:         map[string][]error{},
-		pullImageIDOmissions:    map[string]bool{},
-		inspectImageErrors:      map[string]error{},
-		buildImageCalls:         map[string]int{},
-		buildImageBlocks:        map[string]chan struct{}{},
-		buildImageIDOmissions:   map[string]bool{},
-		mutex:                   &sync.Mutex{},
-		lifetimeCtx:             lifetimeCtx,
-		log:                     log,
+		containers:               map[string]*testContainer{},
+		execs:                    map[string]*containerExec{},
+		startupLogs:              map[string]containerStartupLogs{},
+		containersToFail:         map[string]containerExit{},
+		containersToHealthcheck:  map[string]containers.ContainerHealthcheck{},
+		createFiles:              map[string][]*containerCreateFile{},
+		operationCallCounts:      map[testContainerOperationKey]int{},
+		operationBlocks:          map[testContainerOperationKey]chan struct{}{},
+		operationErrors:          map[testContainerOperationKey][]error{},
+		operationResultOmissions: map[testContainerOperationKey]bool{},
+		mutex:                    &sync.Mutex{},
+		lifetimeCtx:              lifetimeCtx,
+		log:                      log,
 	}
 
 	to.containerEventsWatcher = pubsub.NewSubscriptionSet(to.doWatchContainers, lifetimeCtx)
@@ -1171,7 +1165,7 @@ func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 }
 
 func (to *TestContainerOrchestrator) BlockCreateContainer(name string) func() {
-	return to.blockCreateContainerOperation(name, make(chan struct{}))
+	return to.blockOperation(operationCreateContainer, name)
 }
 
 func (to *TestContainerOrchestrator) FailNextCreateContainer(name string, createErr error) {
@@ -1179,10 +1173,7 @@ func (to *TestContainerOrchestrator) FailNextCreateContainer(name string, create
 		createErr = errors.New("simulated container create failure")
 	}
 
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	to.createContainerErrors[name] = append(to.createContainerErrors[name], createErr)
+	to.queueOperationError(operationCreateContainer, name, createErr)
 }
 
 func (to *TestContainerOrchestrator) FailNextCreateContainerAfterCreation(name string, createErr error) {
@@ -1190,17 +1181,11 @@ func (to *TestContainerOrchestrator) FailNextCreateContainerAfterCreation(name s
 		createErr = errors.New("simulated post-create container failure")
 	}
 
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	to.postCreateErrors[name] = append(to.postCreateErrors[name], createErr)
+	to.queueOperationError(operationPostCreateContainer, name, createErr)
 }
 
 func (to *TestContainerOrchestrator) CreateContainerCallCount(name string) int {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	return to.createContainerCalls[name]
+	return to.operationCallCount(operationCreateContainer, name)
 }
 
 func (to *TestContainerOrchestrator) FailNextRemoveContainer(name string, removeErr error) {
@@ -1208,50 +1193,22 @@ func (to *TestContainerOrchestrator) FailNextRemoveContainer(name string, remove
 		removeErr = errors.New("simulated container removal failure")
 	}
 
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	to.removeContainerErrors[name] = append(to.removeContainerErrors[name], removeErr)
+	to.queueOperationError(operationRemoveContainer, name, removeErr)
 }
 
 func (to *TestContainerOrchestrator) RemoveContainerCallCount(name string) int {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	return to.removeContainerCalls[name]
+	return to.operationCallCount(operationRemoveContainer, name)
 }
 
-func (to *TestContainerOrchestrator) recordRemoveContainerOperation(name string) error {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	to.removeContainerCalls[name]++
-	if len(to.removeContainerErrors[name]) == 0 {
-		return nil
-	}
-
-	removeErr := to.removeContainerErrors[name][0]
-	to.removeContainerErrors[name] = to.removeContainerErrors[name][1:]
-	if len(to.removeContainerErrors[name]) == 0 {
-		delete(to.removeContainerErrors, name)
-	}
-	return removeErr
+func (to *TestContainerOrchestrator) recordRemoveContainerOperationLocked(name string) error {
+	key := testContainerOperationKey{operation: operationRemoveContainer, resourceID: name}
+	to.operationCallCounts[key]++
+	return to.nextOperationErrorLocked(key)
 }
 
-func (to *TestContainerOrchestrator) nextPostCreateContainerError(name string) error {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	if len(to.postCreateErrors[name]) == 0 {
-		return nil
-	}
-
-	postCreateErr := to.postCreateErrors[name][0]
-	to.postCreateErrors[name] = to.postCreateErrors[name][1:]
-	if len(to.postCreateErrors[name]) == 0 {
-		delete(to.postCreateErrors, name)
-	}
-	return postCreateErr
+func (to *TestContainerOrchestrator) nextPostCreateContainerErrorLocked(name string) error {
+	key := testContainerOperationKey{operation: operationPostCreateContainer, resourceID: name}
+	return to.nextOperationErrorLocked(key)
 }
 
 func (to *TestContainerOrchestrator) FailInspectImage(image string, inspectErr error) func() {
@@ -1259,30 +1216,30 @@ func (to *TestContainerOrchestrator) FailInspectImage(image string, inspectErr e
 		inspectErr = errors.New("simulated image inspection failure")
 	}
 
-	to.operationMutex.Lock()
-	to.inspectImageErrors[image] = inspectErr
-	to.operationMutex.Unlock()
+	key := testContainerOperationKey{operation: operationInspectImage, resourceID: image}
+	to.mutex.Lock()
+	to.operationErrors[key] = []error{inspectErr}
+	to.mutex.Unlock()
 
 	var clearOnce sync.Once
 	return func() {
 		clearOnce.Do(func() {
-			to.operationMutex.Lock()
-			defer to.operationMutex.Unlock()
+			to.mutex.Lock()
+			defer to.mutex.Unlock()
 
-			delete(to.inspectImageErrors, image)
+			delete(to.operationErrors, key)
 		})
 	}
 }
 
-func (to *TestContainerOrchestrator) inspectImageError(imageID string, image *testImage) error {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	if inspectErr := to.inspectImageErrors[imageID]; inspectErr != nil {
+func (to *TestContainerOrchestrator) inspectImageErrorLocked(imageID string, image *testImage) error {
+	imageKey := testContainerOperationKey{operation: operationInspectImage, resourceID: imageID}
+	if inspectErr := to.firstOperationErrorLocked(imageKey); inspectErr != nil {
 		return inspectErr
 	}
 	for _, tag := range image.tags {
-		if inspectErr := to.inspectImageErrors[tag]; inspectErr != nil {
+		tagKey := testContainerOperationKey{operation: operationInspectImage, resourceID: tag}
+		if inspectErr := to.firstOperationErrorLocked(tagKey); inspectErr != nil {
 			return inspectErr
 		}
 	}
@@ -1290,14 +1247,11 @@ func (to *TestContainerOrchestrator) inspectImageError(imageID string, image *te
 }
 
 func (to *TestContainerOrchestrator) BlockPullImage(image string) func() {
-	return to.blockPullImageOperation(image, make(chan struct{}))
+	return to.blockOperation(operationPullImage, image)
 }
 
 func (to *TestContainerOrchestrator) OmitPullImageID(image string) func() {
-	to.operationMutex.Lock()
-	to.pullImageIDOmissions[image] = true
-	to.operationMutex.Unlock()
-	return releaseBoolOperation(to.operationMutex, to.pullImageIDOmissions, image)
+	return to.omitOperationResult(operationPullImage, image)
 }
 
 func (to *TestContainerOrchestrator) FailNextPullImage(image string, pullErr error) {
@@ -1305,134 +1259,124 @@ func (to *TestContainerOrchestrator) FailNextPullImage(image string, pullErr err
 		pullErr = errors.New("simulated image pull failure")
 	}
 
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	to.pullImageErrors[image] = append(to.pullImageErrors[image], pullErr)
+	to.queueOperationError(operationPullImage, image, pullErr)
 }
 
 func (to *TestContainerOrchestrator) PullImageCallCount(image string) int {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	return to.pullImageCalls[image]
+	return to.operationCallCount(operationPullImage, image)
 }
 
 func (to *TestContainerOrchestrator) BlockBuildImage(tag string) func() {
-	return to.blockBuildImageOperation(tag, make(chan struct{}))
+	return to.blockOperation(operationBuildImage, tag)
 }
 
 func (to *TestContainerOrchestrator) OmitBuildImageID(tag string) func() {
-	to.operationMutex.Lock()
-	to.buildImageIDOmissions[tag] = true
-	to.operationMutex.Unlock()
-	return releaseBoolOperation(to.operationMutex, to.buildImageIDOmissions, tag)
+	return to.omitOperationResult(operationBuildImage, tag)
 }
 
 func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
-	to.operationMutex.Lock()
-	defer to.operationMutex.Unlock()
-
-	return to.buildImageCalls[tag]
+	return to.operationCallCount(operationBuildImage, tag)
 }
 
-func (to *TestContainerOrchestrator) blockCreateContainerOperation(name string, block chan struct{}) func() {
-	to.operationMutex.Lock()
-	to.createContainerBlocks[name] = block
-	to.operationMutex.Unlock()
-	return releaseBlockedOperation(to.operationMutex, to.createContainerBlocks, name, block)
-}
+func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	block := make(chan struct{})
+	to.mutex.Lock()
+	to.operationBlocks[key] = block
+	to.mutex.Unlock()
 
-func (to *TestContainerOrchestrator) blockPullImageOperation(image string, block chan struct{}) func() {
-	to.operationMutex.Lock()
-	to.pullImageBlocks[image] = block
-	to.operationMutex.Unlock()
-	return releaseBlockedOperation(to.operationMutex, to.pullImageBlocks, image, block)
-}
-
-func (to *TestContainerOrchestrator) blockBuildImageOperation(tag string, block chan struct{}) func() {
-	to.operationMutex.Lock()
-	to.buildImageBlocks[tag] = block
-	to.operationMutex.Unlock()
-	return releaseBlockedOperation(to.operationMutex, to.buildImageBlocks, tag, block)
-}
-
-func releaseBlockedOperation(lock *sync.Mutex, blocks map[string]chan struct{}, key string, block chan struct{}) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			lock.Lock()
-			if blocks[key] == block {
-				delete(blocks, key)
+			to.mutex.Lock()
+			if to.operationBlocks[key] == block {
+				delete(to.operationBlocks, key)
 			}
-			lock.Unlock()
+			to.mutex.Unlock()
 			close(block)
 		})
 	}
 }
 
-func releaseBoolOperation(lock *sync.Mutex, operations map[string]bool, key string) func() {
+func (to *TestContainerOrchestrator) omitOperationResult(operation testContainerOperation, resourceID string) func() {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	to.operationResultOmissions[key] = true
+	to.mutex.Unlock()
+
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			lock.Lock()
-			defer lock.Unlock()
+			to.mutex.Lock()
+			defer to.mutex.Unlock()
 
-			delete(operations, key)
+			delete(to.operationResultOmissions, key)
 		})
 	}
 }
 
-func (to *TestContainerOrchestrator) recordCreateContainerOperation(ctx context.Context, name string) error {
-	to.operationMutex.Lock()
-	to.createContainerCalls[name]++
-	block := to.createContainerBlocks[name]
-	var createErr error
-	if len(to.createContainerErrors[name]) > 0 {
-		createErr = to.createContainerErrors[name][0]
-		to.createContainerErrors[name] = to.createContainerErrors[name][1:]
-		if len(to.createContainerErrors[name]) == 0 {
-			delete(to.createContainerErrors, name)
-		}
-	}
-	to.operationMutex.Unlock()
+func (to *TestContainerOrchestrator) queueOperationError(operation testContainerOperation, resourceID string, operationErr error) {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
 
-	if createErr != nil {
-		return createErr
-	}
-	return waitForBlockedOperation(ctx, block)
+	to.operationErrors[key] = append(to.operationErrors[key], operationErr)
 }
 
-func (to *TestContainerOrchestrator) recordPullImageOperation(ctx context.Context, image string) error {
-	to.operationMutex.Lock()
-	to.pullImageCalls[image]++
-	block := to.pullImageBlocks[image]
-	var pullErr error
-	if len(to.pullImageErrors[image]) > 0 {
-		pullErr = to.pullImageErrors[image][0]
-		to.pullImageErrors[image] = to.pullImageErrors[image][1:]
-		if len(to.pullImageErrors[image]) == 0 {
-			delete(to.pullImageErrors, image)
-		}
-	}
-	to.operationMutex.Unlock()
+func (to *TestContainerOrchestrator) operationCallCount(operation testContainerOperation, resourceID string) int {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
 
-	if pullErr != nil {
-		return pullErr
+	return to.operationCallCounts[key]
+}
+
+func (to *TestContainerOrchestrator) firstOperationErrorLocked(key testContainerOperationKey) error {
+	if len(to.operationErrors[key]) == 0 {
+		return nil
+	}
+
+	return to.operationErrors[key][0]
+}
+
+func (to *TestContainerOrchestrator) nextOperationErrorLocked(key testContainerOperationKey) error {
+	operationErr := to.firstOperationErrorLocked(key)
+	if operationErr == nil {
+		return nil
+	}
+
+	to.operationErrors[key] = to.operationErrors[key][1:]
+	if len(to.operationErrors[key]) == 0 {
+		delete(to.operationErrors, key)
+	}
+	return operationErr
+}
+
+func (to *TestContainerOrchestrator) recordOperation(ctx context.Context, operation testContainerOperation, resourceID string) error {
+	key := testContainerOperationKey{operation: operation, resourceID: resourceID}
+	to.mutex.Lock()
+	to.operationCallCounts[key]++
+	block := to.operationBlocks[key]
+	operationErr := to.nextOperationErrorLocked(key)
+	to.mutex.Unlock()
+
+	if operationErr != nil {
+		return operationErr
 	}
 	return waitForBlockedOperation(ctx, block)
 }
 
 func (to *TestContainerOrchestrator) recordBuildImageOperation(ctx context.Context, tags []string) error {
-	to.operationMutex.Lock()
+	to.mutex.Lock()
 	var block chan struct{}
 	for _, tag := range tags {
-		to.buildImageCalls[tag]++
+		key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
+		to.operationCallCounts[key]++
 		if block == nil {
-			block = to.buildImageBlocks[tag]
+			block = to.operationBlocks[key]
 		}
 	}
-	to.operationMutex.Unlock()
+	to.mutex.Unlock()
 
 	return waitForBlockedOperation(ctx, block)
 }
@@ -1485,11 +1429,10 @@ func (to *TestContainerOrchestrator) BuildImage(ctx context.Context, options con
 	to.images = append(to.images, image)
 
 	if options.IidFile != "" {
-		to.operationMutex.Lock()
 		omitImageID := slices.Any(options.Tags, func(tag string) bool {
-			return to.buildImageIDOmissions[tag]
+			key := testContainerOperationKey{operation: operationBuildImage, resourceID: tag}
+			return to.operationResultOmissions[key]
 		})
-		to.operationMutex.Unlock()
 		if !omitImageID {
 			err := usvc_io.WriteFile(options.IidFile, []byte(guid), osutil.PermissionOwnerReadWriteOthersRead)
 			if err != nil {
@@ -1522,7 +1465,7 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 			err = errors.Join(err, containers.ErrNotFound)
 			continue
 		}
-		if inspectErr := to.inspectImageError(imageId, image); inspectErr != nil {
+		if inspectErr := to.inspectImageErrorLocked(imageId, image); inspectErr != nil {
 			err = errors.Join(err, inspectErr)
 			continue
 		}
@@ -1545,7 +1488,7 @@ func (to *TestContainerOrchestrator) InspectImages(ctx context.Context, options 
 }
 
 func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options containers.PullImageOptions) (string, error) {
-	if err := to.recordPullImageOperation(ctx, options.Image); err != nil {
+	if err := to.recordOperation(ctx, operationPullImage, options.Image); err != nil {
 		return "", err
 	}
 
@@ -1566,9 +1509,8 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 
 	image, found := to.findImage(options.Image)
 	if found {
-		to.operationMutex.Lock()
-		omitImageID := to.pullImageIDOmissions[options.Image]
-		to.operationMutex.Unlock()
+		key := testContainerOperationKey{operation: operationPullImage, resourceID: options.Image}
+		omitImageID := to.operationResultOmissions[key]
 		if omitImageID {
 			return "", nil
 		}
@@ -1588,12 +1530,10 @@ func (to *TestContainerOrchestrator) PullImage(ctx context.Context, options cont
 	} else {
 		image.digest = toDigest(sha256.Sum256([]byte(guid)))
 	}
-
 	to.images = append(to.images, image)
 
-	to.operationMutex.Lock()
-	omitImageID := to.pullImageIDOmissions[options.Image]
-	to.operationMutex.Unlock()
+	key := testContainerOperationKey{operation: operationPullImage, resourceID: options.Image}
+	omitImageID := to.operationResultOmissions[key]
 	if omitImageID {
 		return "", nil
 	}
@@ -1650,7 +1590,7 @@ func (to *TestContainerOrchestrator) WatchContainers(sink chan<- containers.Even
 }
 
 func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, options containers.CreateContainerOptions) (string, error) {
-	if err := to.recordCreateContainerOperation(ctx, options.Name); err != nil {
+	if err := to.recordOperation(ctx, operationCreateContainer, options.Name); err != nil {
 		return "", err
 	}
 
@@ -1679,7 +1619,7 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		return "", err
 	}
 	events = append(events, createEvent)
-	if postCreateErr := to.nextPostCreateContainerError(options.Name); postCreateErr != nil {
+	if postCreateErr := to.nextPostCreateContainerErrorLocked(options.Name); postCreateErr != nil {
 		return container.ID, postCreateErr
 	}
 
@@ -2292,7 +2232,7 @@ func (to *TestContainerOrchestrator) removeContainers(ctx context.Context, optio
 
 	for i := range containersToRemove {
 		container := containersToRemove[i]
-		if removeErr := to.recordRemoveContainerOperation(container.Name); removeErr != nil {
+		if removeErr := to.recordRemoveContainerOperationLocked(container.Name); removeErr != nil {
 			err = errors.Join(err, removeErr)
 			continue
 		}

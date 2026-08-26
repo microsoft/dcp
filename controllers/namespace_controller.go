@@ -7,6 +7,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -19,7 +20,6 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/resourcecleanup"
-	"github.com/microsoft/dcp/pkg/concurrency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
 
@@ -231,7 +231,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, nam
 		return 0, fmt.Errorf("failed to list PhysicalContainers in namespace %q: %w", namespace.Name, listErr)
 	}
 
-	deleteErr := concurrency.ForEachBounded(ctx, physicalContainers.Items, namespaceCleanupMaxConcurrentDeletes, func(ctx context.Context, physicalContainer apiv2.PhysicalContainer) error {
+	deleteErrors := slices.MapConcurrent[error](physicalContainers.Items, func(physicalContainer apiv2.PhysicalContainer) error {
 		if physicalContainer.DeletionTimestamp != nil && !physicalContainer.DeletionTimestamp.IsZero() {
 			return nil
 		}
@@ -242,7 +242,8 @@ func (r *NamespaceReconciler) cleanupPhysicalContainers(ctx context.Context, nam
 			return fmt.Errorf("failed to delete PhysicalContainer %q in namespace %q: %w", physicalContainer.Name, namespace.Name, deletePhysicalContainerErr)
 		}
 		return nil
-	})
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
 	if deleteErr != nil {
 		return 0, deleteErr
 	}
@@ -257,7 +258,7 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context
 		return 0, fmt.Errorf("failed to list PhysicalContainerImages in namespace %q: %w", namespace.Name, listImagesErr)
 	}
 
-	deleteErr := concurrency.ForEachBounded(ctx, physicalContainerImages.Items, namespaceCleanupMaxConcurrentDeletes, func(ctx context.Context, physicalContainerImage apiv2.PhysicalContainerImage) error {
+	deleteErrors := slices.MapConcurrent[error](physicalContainerImages.Items, func(physicalContainerImage apiv2.PhysicalContainerImage) error {
 		if physicalContainerImage.DeletionTimestamp != nil && !physicalContainerImage.DeletionTimestamp.IsZero() {
 			return nil
 		}
@@ -268,7 +269,8 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerImages(ctx context.Context
 			return fmt.Errorf("failed to delete PhysicalContainerImage %q in namespace %q: %w", physicalContainerImage.Name, namespace.Name, deletePhysicalContainerImageErr)
 		}
 		return nil
-	})
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
 	if deleteErr != nil {
 		return 0, deleteErr
 	}

@@ -958,17 +958,16 @@ func (r *PhysicalContainerReconciler) discardPhysicalContainerData(name types.Na
 	}
 }
 
-// physicalPortsToCreateContainerPorts expands each V2 container port (which may describe an
-// inclusive range) into one orchestrator port per concrete container port.
+// physicalPortsToCreateContainerPorts expands each V2 container port range into one orchestrator
+// port per concrete container port.
 func physicalPortsToCreateContainerPorts(ports []apiv2.ContainerPort) []containers.CreateContainerPort {
 	retval := make([]containers.CreateContainerPort, 0, len(ports))
 	for _, port := range ports {
-		containerPortEnd := port.EffectiveContainerPortEnd()
-		for containerPortValue := int64(port.ContainerPort); containerPortValue <= int64(containerPortEnd); containerPortValue++ {
-			containerPort := int32(containerPortValue)
+		for portOffset := int32(0); portOffset < port.EffectiveRangeSize(); portOffset++ {
+			containerPort := port.ContainerPort + portOffset
 			hostPort := port.HostPort
 			if hostPort != 0 {
-				hostPort += containerPort - port.ContainerPort
+				hostPort += portOffset
 			}
 			retval = append(retval, containers.CreateContainerPort{
 				HostPort:      hostPort,

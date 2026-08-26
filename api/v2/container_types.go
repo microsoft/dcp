@@ -62,12 +62,13 @@ type ContainerPort struct {
 	// +kubebuilder:validation:Maximum=65535
 	ContainerPort int32 `json:"containerPort"`
 
-	// Optional inclusive end of a container port range starting at ContainerPort.
-	// When set, HostPort (if specified) is the start of a host port range of the same size.
-	// +kubebuilder:validation:Minimum=0
+	// Number of consecutive ports to publish, starting at ContainerPort and HostPort (if specified).
+	// Defaults to 1.
+	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
+	// +kubebuilder:default:=1
 	// +optional
-	ContainerPortEnd int32 `json:"containerPortEnd,omitempty"`
+	RangeSize int32 `json:"rangeSize,omitempty"`
 
 	// The protocol to be used, defaults to TCP.
 	// +optional
@@ -78,13 +79,13 @@ type ContainerPort struct {
 	HostIP string `json:"hostIP,omitempty"`
 }
 
-// EffectiveContainerPortEnd returns the inclusive end of the container port range.
-func (cp *ContainerPort) EffectiveContainerPortEnd() int32 {
-	if cp.ContainerPortEnd != 0 {
-		return cp.ContainerPortEnd
+// EffectiveRangeSize returns the number of consecutive ports to publish.
+func (cp *ContainerPort) EffectiveRangeSize() int32 {
+	if cp.RangeSize > 0 {
+		return cp.RangeSize
 	}
 
-	return cp.ContainerPort
+	return 1
 }
 
 func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.ErrorList {
@@ -97,13 +98,8 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 			errorList = append(errorList, field.Invalid(portPath.Child("containerPort"), port.ContainerPort, "containerPort must be between 1 and 65535"))
 		}
 
-		if port.ContainerPortEnd != 0 {
-			if port.ContainerPortEnd < port.ContainerPort {
-				errorList = append(errorList, field.Invalid(portPath.Child("containerPortEnd"), port.ContainerPortEnd, "containerPortEnd must be greater than or equal to containerPort"))
-			}
-			if port.ContainerPortEnd > 65535 {
-				errorList = append(errorList, field.Invalid(portPath.Child("containerPortEnd"), port.ContainerPortEnd, "containerPortEnd must be between 1 and 65535"))
-			}
+		if port.RangeSize < 0 || port.RangeSize > 65535 {
+			errorList = append(errorList, field.Invalid(portPath.Child("rangeSize"), port.RangeSize, "rangeSize must be between 1 and 65535 when specified"))
 		}
 
 		if port.HostPort < 0 || port.HostPort > 65535 {
@@ -114,10 +110,16 @@ func ValidateContainerPorts(ports []ContainerPort, portsPath *field.Path) field.
 			errorList = append(errorList, field.NotSupported(portPath.Child("protocol"), port.Protocol, []string{string(commonapi.PortProtocolTCP), string(commonapi.PortProtocolUDP)}))
 		}
 
-		if port.HostPort != 0 && port.ContainerPortEnd != 0 {
-			hostPortEnd := int64(port.HostPort) + int64(port.ContainerPortEnd-port.ContainerPort)
+		rangeSize := int64(port.EffectiveRangeSize())
+		containerPortEnd := int64(port.ContainerPort) + rangeSize - 1
+		if containerPortEnd > 65535 {
+			errorList = append(errorList, field.Invalid(portPath.Child("rangeSize"), port.RangeSize, "container port range must fit within 1 and 65535"))
+		}
+
+		if port.HostPort != 0 {
+			hostPortEnd := int64(port.HostPort) + rangeSize - 1
 			if hostPortEnd > 65535 {
-				errorList = append(errorList, field.Invalid(portPath.Child("hostPort"), port.HostPort, "host port range must fit within 1 and 65535"))
+				errorList = append(errorList, field.Invalid(portPath.Child("rangeSize"), port.RangeSize, "host port range must fit within 1 and 65535"))
 			}
 		}
 	}

@@ -57,9 +57,9 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
-							ContainerPort:    8080,
-							ContainerPortEnd: 8082,
-							HostPort:         18080,
+							ContainerPort: 8080,
+							RangeSize:     3,
+							HostPort:      18080,
 						},
 					},
 				},
@@ -171,7 +171,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 			expectedError: "spec.containerName",
 		},
 		{
-			name: "invalid container port range end",
+			name: "invalid container port range size",
 			container: PhysicalContainer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-container",
@@ -181,13 +181,13 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
-							ContainerPort:    8080,
-							ContainerPortEnd: 8079,
+							ContainerPort: 65535,
+							RangeSize:     2,
 						},
 					},
 				},
 			},
-			expectedError: "spec.ports[0].containerPortEnd",
+			expectedError: "spec.ports[0].rangeSize",
 		},
 		{
 			name: "invalid host port range end",
@@ -200,14 +200,14 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
-							ContainerPort:    8080,
-							ContainerPortEnd: 8082,
-							HostPort:         65534,
+							ContainerPort: 8080,
+							RangeSize:     3,
+							HostPort:      65534,
 						},
 					},
 				},
 			},
-			expectedError: "spec.ports[0].hostPort",
+			expectedError: "spec.ports[0].rangeSize",
 		},
 		{
 			name: "unsupported port protocol",
