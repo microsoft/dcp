@@ -88,6 +88,21 @@ func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) Store(namespaceName types.Nam
 	m.inner.Store(namespaceName, k2, pos)
 }
 
+// StoreIfStateKeyUnclaimed stores object state unless another object already owns the state key.
+// It returns the current owner and whether the state was stored.
+func (m *ObjectStateMap[StateKeyT, OS, POS, PObj]) StoreIfStateKeyUnclaimed(namespaceName types.NamespacedName, stateKey StateKeyT, pos POS) (types.NamespacedName, bool) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+
+	currentOwner, _, found := m.inner.FindBySecondKey(stateKey)
+	if found && currentOwner != namespaceName {
+		return currentOwner, false
+	}
+
+	m.inner.Store(namespaceName, stateKey, pos)
+	return namespaceName, true
+}
+
 // Updates the object state for the given namespaced name and state key.
 // The operation fails (returning false) if the object state is not found using either key,
 // or if no changes have been made to the object (UpdateFrom() returned false).

@@ -111,9 +111,28 @@ func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name st
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainer{}).
 		Watches(&apiv2.PhysicalContainerImage{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForImage), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
+}
+
+func (r *PhysicalContainerReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+	namespace := obj.(*apiv2.Namespace)
+	var containerList apiv2.PhysicalContainerList
+	listErr := r.List(ctx, &containerList, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		r.Log.Error(listErr, "Failed to list PhysicalContainers for namespace", "Namespace", namespace.Name)
+		return nil
+	}
+
+	requests := make([]reconcile.Request, len(containerList.Items))
+	for i := range containerList.Items {
+		requests[i] = reconcile.Request{NamespacedName: containerList.Items[i].NamespacedName()}
+	}
+
+	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainer reconciliation", "Namespace", namespace.Name, "Containers", len(requests))
+	return requests
 }
 
 func (r *PhysicalContainerReconciler) requestReconcileForImage(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
@@ -187,6 +206,8 @@ func physicalContainerReconcileDelay(container *apiv2.PhysicalContainer) Additio
 			reason == apiv2.PhysicalContainerReasonPartialContainerCleanupFailed ||
 			reason == apiv2.PhysicalContainerReasonRuntimeContainerInspectFailed ||
 			reason == apiv2.PhysicalContainerReasonRuntimeContainerStopFailed ||
+			reason == apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed ||
+			reason == apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked ||
 			reason == apiv2.PhysicalContainerReasonPortMappingResolutionFailed ||
 			reason == apiv2.PhysicalContainerReasonImageLookupFailed ||
 			reason == apiv2.PhysicalResourceReasonNamespaceLookupFailed ||
@@ -279,7 +300,20 @@ func (r *PhysicalContainerReconciler) managePhysicalContainer(
 		return r.schedulePhysicalContainerCreate(container, log), nil
 	}
 	if data == nil {
-		storeStartedPhysicalContainerData(r.containerData, container, containerID)
+		owner, stored := storeStartedPhysicalContainerData(r.containerData, container, containerID)
+		if !stored {
+			change |= setValue(&container.Status.ContainerID, containerID)
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
+			change |= setCondition(
+				&container.Status.Conditions,
+				apiv2.ConditionReady,
+				container.Generation,
+				metav1.ConditionFalse,
+				apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked,
+				fmt.Sprintf("Runtime container is already tracked by PhysicalContainer %q.", owner.String()),
+			)
+			return change | additionalReconciliationNeeded, nil
+		}
 	}
 	r.ensurePhysicalContainerWatch(container, log)
 
@@ -908,7 +942,10 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		})
 		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
 			log.Error(removeErr, "Failed to remove runtime container", "ContainerID", containerID)
-			return additionalReconciliationNeeded
+			change := setValue(&container.Status.ContainerID, containerID)
+			change |= setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
+			change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed, fmt.Sprintf("Failed to remove runtime container: %v", removeErr))
+			return change | additionalReconciliationNeeded
 		}
 	}
 

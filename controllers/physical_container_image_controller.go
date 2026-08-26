@@ -18,11 +18,16 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -115,9 +120,28 @@ func (r *PhysicalContainerImageReconciler) SetupWithManager(mgr ctrl.Manager, na
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainerImage{}).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
+}
+
+func (r *PhysicalContainerImageReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+	namespace := obj.(*apiv2.Namespace)
+	var imageList apiv2.PhysicalContainerImageList
+	listErr := r.List(ctx, &imageList, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		r.Log.Error(listErr, "Failed to list PhysicalContainerImages for namespace", "Namespace", namespace.Name)
+		return nil
+	}
+
+	requests := make([]reconcile.Request, len(imageList.Items))
+	for i := range imageList.Items {
+		requests[i] = reconcile.Request{NamespacedName: imageList.Items[i].NamespacedName()}
+	}
+
+	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainerImage reconciliation", "Namespace", namespace.Name, "Images", len(requests))
+	return requests
 }
 
 func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -160,7 +184,21 @@ func (r *PhysicalContainerImageReconciler) Reconcile(ctx context.Context, req ct
 		change, onStatusDurable = r.managePhysicalContainerImage(ctx, &image, log)
 	}
 
-	return r.SaveChangesWithDelay(ctx, &image, patch, change, StandardDelay, onStatusDurable, log)
+	return r.SaveChangesWithDelay(ctx, &image, patch, change, physicalContainerImageReconcileDelay(&image), onStatusDurable, log)
+}
+
+func physicalContainerImageReconcileDelay(image *apiv2.PhysicalContainerImage) AdditionalReconciliationDelay {
+	readyCondition := apimeta.FindStatusCondition(image.Status.Conditions, string(apiv2.ConditionReady))
+	if readyCondition != nil {
+		reason := apiv2.ConditionReason(readyCondition.Reason)
+		if reason == apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed ||
+			reason == apiv2.PhysicalContainerImageReasonPullResultMissingImageID ||
+			reason == apiv2.PhysicalResourceReasonNamespaceLookupFailed ||
+			reason == apiv2.PhysicalResourceReasonOperationStateInvalid {
+			return LongDelay
+		}
+	}
+	return StandardDelay
 }
 
 // Removes in-memory state for the image, cancelling the pull or build operation if one may still be running.
