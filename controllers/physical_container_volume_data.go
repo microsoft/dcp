@@ -16,7 +16,7 @@ import (
 type physicalContainerVolumeDataStateKey string
 
 type physicalContainerVolumeData struct {
-	conditionReason string
+	conditionReason apiv2.ConditionReason
 	volumeID        string
 	failureMessage  string
 	retryAfter      time.Time
@@ -70,11 +70,11 @@ func (data *physicalContainerVolumeData) applyTo(volume *apiv2.PhysicalContainer
 	switch data.conditionReason {
 	case apiv2.PhysicalContainerVolumeReasonCreating:
 		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
-		change |= setReadyCondition(&volume.Status.Conditions, volume.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonCreating, "Runtime volume creation is in progress.")
+		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonCreating, "Runtime volume creation is in progress.")
 	case apiv2.PhysicalContainerVolumeReasonCreateFailed,
 		apiv2.PhysicalContainerVolumeReasonReconciliationFailed:
 		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhaseFailed)
-		change |= setReadyCondition(&volume.Status.Conditions, volume.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 	}
 
 	return change

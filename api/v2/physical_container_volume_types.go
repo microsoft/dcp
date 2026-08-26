@@ -42,40 +42,46 @@ const (
 
 const (
 	// PhysicalContainerVolumeReasonPending indicates that the volume is waiting for prerequisites.
-	PhysicalContainerVolumeReasonPending string = "Pending"
+	PhysicalContainerVolumeReasonPending ConditionReason = "Pending"
 
 	// PhysicalContainerVolumeReasonCreating indicates that runtime volume creation is in progress.
-	PhysicalContainerVolumeReasonCreating string = "Creating"
+	PhysicalContainerVolumeReasonCreating ConditionReason = "Creating"
 
 	// PhysicalContainerVolumeReasonCreated indicates that runtime volume creation completed.
-	PhysicalContainerVolumeReasonCreated string = "Created"
+	PhysicalContainerVolumeReasonCreated ConditionReason = "Created"
 
 	// PhysicalContainerVolumeReasonCreateFailed indicates that runtime volume creation failed.
-	PhysicalContainerVolumeReasonCreateFailed string = "CreateFailed"
+	PhysicalContainerVolumeReasonCreateFailed ConditionReason = "CreateFailed"
 
 	// PhysicalContainerVolumeReasonVolumeReady indicates that the runtime volume is available.
-	PhysicalContainerVolumeReasonVolumeReady string = "VolumeReady"
+	PhysicalContainerVolumeReasonVolumeReady ConditionReason = "VolumeReady"
 
 	// PhysicalContainerVolumeReasonRuntimeVolumeMissing indicates that the runtime volume was not found.
-	PhysicalContainerVolumeReasonRuntimeVolumeMissing string = "RuntimeVolumeMissing"
+	PhysicalContainerVolumeReasonRuntimeVolumeMissing ConditionReason = "RuntimeVolumeMissing"
 
 	// PhysicalContainerVolumeReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerVolumeReasonReconciliationFailed string = "ReconciliationFailed"
+	PhysicalContainerVolumeReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
 )
 
 // PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.
 // +k8s:openapi-gen=true
 type PhysicalContainerVolumeSpec struct {
-	// VolumeID identifies an existing runtime volume to track. Container runtimes commonly use
-	// the volume name as its identifier. When set, creation fields are forbidden.
+	// VolumeID identifies an existing runtime volume to track. Exactly one of volumeID or volume must be set.
+	// Container runtimes commonly use the volume name as its identifier.
 	VolumeID string `json:"volumeID,omitempty"`
 
-	// VolumeName is the runtime name to use when creating a new volume. Required when volumeID is omitted.
+	// Volume describes a runtime volume to create. Exactly one of volumeID or volume must be set.
+	Volume *PhysicalContainerVolumeConfig `json:"volume,omitempty"`
+}
+
+// PhysicalContainerVolumeConfig describes a runtime volume to create.
+// +k8s:openapi-gen=true
+type PhysicalContainerVolumeConfig struct {
+	// VolumeName is the runtime name to use when creating a new volume.
 	VolumeName string `json:"volumeName,omitempty"`
 
-	// Persistent keeps a runtime volume created by this resource in place when the resource is deleted.
-	// Existing runtime volumes referenced by volumeID are always retained.
-	Persistent bool `json:"persistent,omitempty"`
+	// RetainRuntimeVolume keeps the created runtime volume in place when this resource is deleted.
+	RetainRuntimeVolume bool `json:"retainRuntimeVolume,omitempty"`
 
 	// ReplaceExisting removes an existing runtime volume with volumeName before creating a new one.
 	// Replacement waits while the existing volume is in use and never removes attached containers.
@@ -187,32 +193,27 @@ func (pv *PhysicalContainerVolume) Validate(ctx context.Context) field.ErrorList
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pv.Annotations, field.NewPath("metadata", "annotations"))...)
 
-	if pv.Spec.VolumeID != "" {
-		if pv.Spec.Persistent {
-			errorList = append(errorList, field.Forbidden(specPath.Child("persistent"), "persistent cannot be set when volumeID is set"))
-		}
-		if strings.TrimSpace(pv.Spec.VolumeID) != pv.Spec.VolumeID {
-			errorList = append(errorList, field.Invalid(specPath.Child("volumeID"), pv.Spec.VolumeID, "volumeID must not have leading or trailing whitespace"))
-		}
-		if pv.Spec.VolumeName != "" {
-			errorList = append(errorList, field.Forbidden(specPath.Child("volumeName"), "volumeName cannot be set when volumeID is set"))
-		}
-		if len(pv.Spec.Labels) > 0 {
-			errorList = append(errorList, field.Forbidden(specPath.Child("labels"), "labels cannot be set when volumeID is set"))
-		}
-		if pv.Spec.ReplaceExisting {
-			errorList = append(errorList, field.Forbidden(specPath.Child("replaceExisting"), "replaceExisting cannot be set when volumeID is set"))
-		}
+	if pv.Spec.VolumeID == "" && pv.Spec.Volume == nil {
+		errorList = append(errorList, field.Required(specPath, "exactly one of volumeID or volume must be set"))
+		return errorList
+	}
+	if pv.Spec.VolumeID != "" && pv.Spec.Volume != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("volume"), "volume cannot be set when volumeID is set"))
+		return errorList
+	}
+	if pv.Spec.Volume == nil {
 		return errorList
 	}
 
-	if strings.TrimSpace(pv.Spec.VolumeName) == "" {
-		errorList = append(errorList, field.Required(specPath.Child("volumeName"), "volumeName must be set when volumeID is omitted"))
-	} else if strings.TrimSpace(pv.Spec.VolumeName) != pv.Spec.VolumeName {
-		errorList = append(errorList, field.Invalid(specPath.Child("volumeName"), pv.Spec.VolumeName, "volumeName must not have leading or trailing whitespace"))
+	volume := pv.Spec.Volume
+	volumePath := specPath.Child("volume")
+	if strings.TrimSpace(volume.VolumeName) == "" {
+		errorList = append(errorList, field.Required(volumePath.Child("volumeName"), "volumeName must be set"))
+	} else if strings.TrimSpace(volume.VolumeName) != volume.VolumeName {
+		errorList = append(errorList, field.Invalid(volumePath.Child("volumeName"), volume.VolumeName, "volumeName must not have leading or trailing whitespace"))
 	}
 
-	errorList = append(errorList, validateLabels(pv.Spec.Labels, specPath.Child("labels"))...)
+	errorList = append(errorList, validateLabels(volume.Labels, volumePath.Child("labels"))...)
 	return errorList
 }
 

@@ -117,7 +117,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsCreatedVolumeUntilStatusIsDur
 		return false, currentReconcileErr
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 1, orchestrator.CreateVolumeCallCount(volume.Spec.VolumeName))
+	require.Equal(t, 1, orchestrator.CreateVolumeCallCount(volume.Spec.Volume.VolumeName))
 
 	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
@@ -131,7 +131,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsCreatedVolumeUntilStatusIsDur
 		return currentVolume.Status.Phase == apiv2.PhysicalContainerVolumePhaseReady, nil
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 1, orchestrator.CreateVolumeCallCount(volume.Spec.VolumeName))
+	require.Equal(t, 1, orchestrator.CreateVolumeCallCount(volume.Spec.Volume.VolumeName))
 }
 
 func TestV2PhysicalContainerVolumeControllerRetainsTerminalFailureUntilStatusIsDurable(t *testing.T) {
@@ -170,7 +170,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsTerminalFailureUntilStatusIsD
 				},
 			}
 			orchestrator := newDurabilityTestContainerOrchestrator(t, ctx)
-			require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volume.Spec.VolumeName}))
+			require.NoError(t, orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: volume.Spec.Volume.VolumeName}))
 			reconciler := controllers.NewPhysicalContainerVolumeReconciler(ctx, statusClient, baseClient, testutil.NewLogForTesting(t.Name()), orchestrator)
 			request := ctrl.Request{NamespacedName: volume.NamespacedName()}
 
@@ -184,7 +184,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsTerminalFailureUntilStatusIsD
 				return false, currentReconcileErr
 			})
 			require.NoError(t, waitErr)
-			require.Equal(t, 2, orchestrator.CreateVolumeCallCount(volume.Spec.VolumeName))
+			require.Equal(t, 2, orchestrator.CreateVolumeCallCount(volume.Spec.Volume.VolumeName))
 
 			waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 				_, currentReconcileErr := reconciler.Reconcile(ctx, request)
@@ -198,7 +198,7 @@ func TestV2PhysicalContainerVolumeControllerRetainsTerminalFailureUntilStatusIsD
 				return currentVolume.Status.Phase == apiv2.PhysicalContainerVolumePhaseFailed, nil
 			})
 			require.NoError(t, waitErr)
-			require.Equal(t, 2, orchestrator.CreateVolumeCallCount(volume.Spec.VolumeName))
+			require.Equal(t, 2, orchestrator.CreateVolumeCallCount(volume.Spec.Volume.VolumeName))
 		})
 	}
 }
@@ -221,7 +221,9 @@ func durablePhysicalContainerVolume(namespace, name, volumeName string) *apiv2.P
 			UID:        types.UID(name),
 			Finalizers: []string{apiv2.GroupName + "/physicalcontainervolume-reconciler"},
 		},
-		Spec: apiv2.PhysicalContainerVolumeSpec{VolumeName: volumeName},
+		Spec: apiv2.PhysicalContainerVolumeSpec{
+			Volume: &apiv2.PhysicalContainerVolumeConfig{VolumeName: volumeName},
+		},
 	}
 }
 

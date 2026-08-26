@@ -26,8 +26,10 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
 				Spec: PhysicalContainerVolumeSpec{
-					VolumeName: "test-runtime-volume",
-					Labels:     []commonapi.Label{{Key: "test-label", Value: "test-value"}},
+					Volume: &PhysicalContainerVolumeConfig{
+						VolumeName: "test-runtime-volume",
+						Labels:     []commonapi.Label{{Key: "test-label", Value: "test-value"}},
+					},
 				},
 			},
 		},
@@ -43,8 +45,10 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
 				Spec: PhysicalContainerVolumeSpec{
-					VolumeName:      "test-runtime-volume",
-					ReplaceExisting: true,
+					Volume: &PhysicalContainerVolumeConfig{
+						VolumeName:      "test-runtime-volume",
+						ReplaceExisting: true,
+					},
 				},
 			},
 		},
@@ -52,79 +56,62 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 			name: "missing namespace",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume"},
-				Spec:       PhysicalContainerVolumeSpec{VolumeName: "test-runtime-volume"},
+				Spec: PhysicalContainerVolumeSpec{
+					Volume: &PhysicalContainerVolumeConfig{VolumeName: "test-runtime-volume"},
+				},
 			},
 			expectedError: "metadata.namespace",
+		},
+		{
+			name: "missing volume source",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+			},
+			expectedError: "spec",
+		},
+		{
+			name: "volume ID and config",
+			volume: PhysicalContainerVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					VolumeID: "test-runtime-volume",
+					Volume:   &PhysicalContainerVolumeConfig{VolumeName: "another-runtime-volume"},
+				},
+			},
+			expectedError: "spec.volume",
 		},
 		{
 			name: "missing volume name",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
+				Spec: PhysicalContainerVolumeSpec{
+					Volume: &PhysicalContainerVolumeConfig{},
+				},
 			},
-			expectedError: "spec.volumeName",
+			expectedError: "spec.volume.volumeName",
 		},
 		{
 			name: "whitespace-only volume name",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
-				Spec:       PhysicalContainerVolumeSpec{VolumeName: " "},
-			},
-			expectedError: "spec.volumeName",
-		},
-		{
-			name: "persistent with tracked volume",
-			volume: PhysicalContainerVolume{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
 				Spec: PhysicalContainerVolumeSpec{
-					VolumeID:   "test-runtime-volume",
-					Persistent: true,
+					Volume: &PhysicalContainerVolumeConfig{VolumeName: " "},
 				},
 			},
-			expectedError: "spec.persistent",
-		},
-		{
-			name: "volume name with tracked volume",
-			volume: PhysicalContainerVolume{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
-				Spec: PhysicalContainerVolumeSpec{
-					VolumeID:   "test-runtime-volume",
-					VolumeName: "another-runtime-volume",
-				},
-			},
-			expectedError: "spec.volumeName",
-		},
-		{
-			name: "replace existing with tracked volume",
-			volume: PhysicalContainerVolume{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
-				Spec: PhysicalContainerVolumeSpec{
-					VolumeID:        "test-runtime-volume",
-					ReplaceExisting: true,
-				},
-			},
-			expectedError: "spec.replaceExisting",
-		},
-		{
-			name: "labels with tracked volume",
-			volume: PhysicalContainerVolume{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
-				Spec: PhysicalContainerVolumeSpec{
-					VolumeID: "test-runtime-volume",
-					Labels:   []commonapi.Label{{Key: "test-label", Value: "test-value"}},
-				},
-			},
-			expectedError: "spec.labels",
+			expectedError: "spec.volume.volumeName",
 		},
 		{
 			name: "missing label key",
 			volume: PhysicalContainerVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
 				Spec: PhysicalContainerVolumeSpec{
-					VolumeName: "test-runtime-volume",
-					Labels:     []commonapi.Label{{Value: "test-value"}},
+					Volume: &PhysicalContainerVolumeConfig{
+						VolumeName: "test-runtime-volume",
+						Labels:     []commonapi.Label{{Value: "test-value"}},
+					},
 				},
 			},
-			expectedError: "spec.labels[0].key",
+			expectedError: "spec.volume.labels[0].key",
 		},
 	}
 
@@ -144,10 +131,12 @@ func TestPhysicalContainerVolumeValidate(t *testing.T) {
 func TestPhysicalContainerVolumeValidateUpdateRejectsSpecChanges(t *testing.T) {
 	oldVolume := &PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
-		Spec:       PhysicalContainerVolumeSpec{VolumeName: "test-runtime-volume"},
+		Spec: PhysicalContainerVolumeSpec{
+			Volume: &PhysicalContainerVolumeConfig{VolumeName: "test-runtime-volume"},
+		},
 	}
 	newVolume := oldVolume.DeepCopy()
-	newVolume.Spec.Persistent = true
+	newVolume.Spec.Volume.RetainRuntimeVolume = true
 
 	errorList := newVolume.ValidateUpdate(context.Background(), oldVolume)
 
@@ -161,7 +150,9 @@ func TestPhysicalContainerVolumeValidateUpdateAllowsStatusUpdateDuringShutdown(t
 
 	oldVolume := &PhysicalContainerVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-volume", Namespace: "test-namespace"},
-		Spec:       PhysicalContainerVolumeSpec{VolumeName: "test-runtime-volume"},
+		Spec: PhysicalContainerVolumeSpec{
+			Volume: &PhysicalContainerVolumeConfig{VolumeName: "test-runtime-volume"},
+		},
 	}
 	newVolume := oldVolume.DeepCopy()
 	newVolume.Status.Phase = PhysicalContainerVolumePhaseReady

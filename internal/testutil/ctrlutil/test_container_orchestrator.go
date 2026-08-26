@@ -76,6 +76,11 @@ const (
 	operationCreateNetwork
 	operationPostCreateNetwork
 	operationInspectNetwork
+	operationCreateVolume
+	operationPostCreateVolume
+	operationRemoveVolume
+	operationPostRemoveVolume
+	operationInspectVolume
 )
 
 type testContainerOperationKey struct {
@@ -661,6 +666,7 @@ func (obj withId) matches(name string) bool {
 type containerVolume struct {
 	name    string
 	created time.Time
+	labels  map[string]string
 }
 
 type containerNetwork struct {
@@ -690,6 +696,7 @@ type testContainer struct {
 	ExitCode       int32                                `json:"exitCode,omitempty"`
 	Ports          map[string][]TestContainerPortConfig `json:"ports,omitempty"`
 	Networks       []string                             `json:"networks,omitempty"`
+	Mounts         []containers.VolumeMount             `json:"mounts,omitempty"`
 	NetworkAliases map[string][]string                  `json:"networkAliases,omitempty"`
 	Args           []string                             `json:"args,omitempty"`
 	Env            map[string]string                    `json:"env,omitempty"`
@@ -752,9 +759,16 @@ func (to *TestContainerOrchestrator) GetDiagnostics(ctx context.Context) (contai
 }
 
 func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+	if operationErr := to.recordOperation(ctx, operationCreateVolume, options.Name); operationErr != nil {
+		return operationErr
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if !to.runtimeHealthy {
 		return errRuntimeUnhealthy
 	}
@@ -763,12 +777,27 @@ func (to *TestContainerOrchestrator) CreateVolume(ctx context.Context, options c
 		return containers.ErrAlreadyExists
 	}
 
-	to.volumes[options.Name] = containerVolume{name: options.Name, created: time.Now().UTC()}
+	to.volumes[options.Name] = containerVolume{
+		name:    options.Name,
+		created: time.Now().UTC(),
+		labels: maps.Map[string, string, string](options.Labels, func(_ string, value string) string {
+			return value
+		}),
+	}
 
-	return nil
+	key := testContainerOperationKey{operation: operationPostCreateVolume, resourceID: options.Name}
+	return to.nextOperationErrorLocked(key)
 }
 
 func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options containers.RemoveVolumesOptions) ([]string, error) {
+	var operationErr error
+	for _, name := range options.Volumes {
+		operationErr = errors.Join(operationErr, to.recordOperation(ctx, operationRemoveVolume, name))
+	}
+	if operationErr != nil {
+		return nil, operationErr
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -789,6 +818,16 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 			continue
 		}
 
+		inUse := slices.Any(maps.Values(to.containers), func(container *testContainer) bool {
+			return slices.Any(container.Mounts, func(mount containers.VolumeMount) bool {
+				return mount.Type == containers.NamedVolumeMount && mount.Source == name
+			})
+		})
+		if inUse {
+			err = errors.Join(err, containers.ErrObjectInUse)
+			continue
+		}
+
 		removed = append(removed, name)
 	}
 
@@ -800,10 +839,16 @@ func (to *TestContainerOrchestrator) RemoveVolumes(ctx context.Context, options 
 		err = errors.Join(err, errors.Join(containers.ErrIncomplete, fmt.Errorf("not all volumes were removed, expected %d but got %d", len(options.Volumes), len(removed))))
 	}
 
+	for _, volume := range options.Volumes {
+		key := testContainerOperationKey{operation: operationPostRemoveVolume, resourceID: volume}
+		err = errors.Join(err, to.nextOperationErrorLocked(key))
+	}
 	return removed, err
 }
 
 func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options containers.InspectVolumesOptions) ([]containers.InspectedVolume, error) {
+	to.recordInspectVolumesOperation(options.Volumes)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -830,8 +875,10 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 			Driver:     "local",
 			MountPoint: "",
 			Scope:      "local",
-			Labels:     map[string]string{},
-			CreatedAt:  volume.created,
+			Labels: maps.Map[string, string, string](volume.labels, func(_ string, value string) string {
+				return value
+			}),
+			CreatedAt: volume.created,
 		})
 	}
 
@@ -840,6 +887,30 @@ func (to *TestContainerOrchestrator) InspectVolumes(ctx context.Context, options
 	}
 
 	return result, err
+}
+
+func (to *TestContainerOrchestrator) ListVolumes(ctx context.Context, options containers.ListVolumesOptions) ([]containers.ListedVolume, error) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if !to.runtimeHealthy {
+		return nil, errRuntimeUnhealthy
+	}
+
+	result := []containers.ListedVolume{}
+	for _, volume := range to.volumes {
+		matches := slices.All(options.Filters.LabelFilters, func(label containers.LabelFilter) bool {
+			value, found := volume.labels[label.Key]
+			return found && (label.Value == "" || value == label.Value)
+		})
+		if matches {
+			result = append(result, containers.ListedVolume{Name: volume.name})
+		}
+	}
+	return result, nil
 }
 
 func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventMessage) (*pubsub.Subscription[containers.EventMessage], error) {
@@ -1298,6 +1369,47 @@ func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
 	return to.operationCallCount(operationBuildImage, tag)
 }
 
+func (to *TestContainerOrchestrator) BlockCreateVolume(name string) func() {
+	return to.blockOperation(operationCreateVolume, name)
+}
+
+// FailNextCreateVolumeAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateVolumeAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated volume create failure")
+	}
+
+	to.queueOperationError(operationPostCreateVolume, name, createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateVolumeCallCount(name string) int {
+	return to.operationCallCount(operationCreateVolume, name)
+}
+
+func (to *TestContainerOrchestrator) InspectVolumeCallCount(volume string) int {
+	return to.operationCallCount(operationInspectVolume, volume)
+}
+
+func (to *TestContainerOrchestrator) FailNextRemoveVolume(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated volume removal failure")
+	}
+	to.queueOperationError(operationRemoveVolume, name, removeErr)
+}
+
+// FailNextRemoveVolumeAfterRemoval simulates a runtime removal whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextRemoveVolumeAfterRemoval(name string, removeErr error) {
+	if removeErr == nil {
+		removeErr = errors.New("simulated lost volume removal response")
+	}
+
+	to.queueOperationError(operationPostRemoveVolume, name, removeErr)
+}
+
+func (to *TestContainerOrchestrator) RemoveVolumeCallCount(name string) int {
+	return to.operationCallCount(operationRemoveVolume, name)
+}
+
 func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
 	return to.blockOperation(operationCreateNetwork, name)
 }
@@ -1326,6 +1438,16 @@ func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []s
 
 	for _, network := range networks {
 		key := testContainerOperationKey{operation: operationInspectNetwork, resourceID: network}
+		to.operationCallCounts[key]++
+	}
+}
+
+func (to *TestContainerOrchestrator) recordInspectVolumesOperation(volumes []string) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	for _, volume := range volumes {
+		key := testContainerOperationKey{operation: operationInspectVolume, resourceID: volume}
 		to.operationCallCounts[key]++
 	}
 }
@@ -1758,6 +1880,7 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		CreatedAt:      time.Now().UTC(),
 		Status:         containers.ContainerStatusCreated,
 		Networks:       []string{},
+		Mounts:         []containers.VolumeMount{},
 		NetworkAliases: map[string][]string{},
 		Ports:          map[string][]TestContainerPortConfig{},
 		Args:           options.Command,
@@ -1766,6 +1889,20 @@ func (to *TestContainerOrchestrator) doCreateContainer(ctx context.Context, opti
 		healthcheck:    options.Healthcheck,
 		stdoutLog:      testutil.NewBufferWriter(),
 		stderrLog:      testutil.NewBufferWriter(),
+	}
+
+	for _, mount := range options.VolumeMounts {
+		container.Mounts = append(container.Mounts, containers.VolumeMount{
+			Type:     mount.Type,
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		})
+		if mount.Type == containers.NamedVolumeMount {
+			if _, found := to.volumes[mount.Source]; !found {
+				to.volumes[mount.Source] = containerVolume{name: mount.Source, created: time.Now().UTC()}
+			}
+		}
 	}
 
 	for ctr, healthcheck := range to.containersToHealthcheck {
@@ -2484,6 +2621,7 @@ func (to *TestContainerOrchestrator) InspectContainers(ctx context.Context, opti
 					Args:        container.Args,
 					Env:         container.Env,
 					Labels:      container.Labels,
+					Mounts:      append([]containers.VolumeMount{}, container.Mounts...),
 					Healthcheck: container.healthcheck.Command,
 					Health:      container.Health,
 				}
