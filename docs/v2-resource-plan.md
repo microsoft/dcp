@@ -45,7 +45,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - An `applyTo` method may project controller-owned in-memory state onto the resource's status. It must not modify spec or metadata, mutate controller-owned state, schedule work, or perform external side effects.
 - State transitions, work scheduling, cleanup, runtime inspection, and controller-owned state updates belong in reconciler or initializer functions.
 - When controller-owned state uses a `Ready` condition reason as its current reconciliation state, dispatch reason-specific behavior through an exhaustive initializer map keyed by that reason. Unrecognized reasons must produce explicit invalid-state handling.
-- Do not discard an in-memory operation result until its status projection is durable. Use `afterStatusUpdateIsDurable` with an atomic conditional state-map update so a failed status write retains the result and a delayed acknowledgement cannot remove newer state.
+- Do not discard an in-memory operation result until its status projection is durable. Use the status-durable callback supplied to `SaveChanges` or `SaveChangesWithDelay` with an atomic conditional state-map update so a failed status write retains the result and a delayed acknowledgement cannot remove newer state.
 
 ### Status and progress reporting
 
@@ -55,7 +55,6 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - Condition messages carry instance-specific diagnostics, but consumers should not need to parse a message to determine the cause category.
 - V2 status types must not define top-level `status.message` fields. Explanatory and diagnostic text belongs in the message of the condition reporting the corresponding state.
 - Controller status helpers should use shared target-first setters such as `setValue(&field, value)` and `setTimestamp(&field, value)`.
-- Callers that need a boolean from a status helper should use `trySetX` wrappers instead of comparing `setX(...) != noChange` at call sites.
 - Distinguish recoverable from terminal failures. Status setters return `noChange` when a failure repeats identically, and without a watch subscription or a periodic cache resync that leaves a resource wedged with no pending reconciliation. Recoverable failures should return `additionalReconciliationNeeded` and reconcile at `LongDelay`, matching how V1 paces an unhealthy runtime; terminal failures should not requeue at all. All delays carry jitter, so retrying resources do not poll the runtime in lockstep.
 
 ### Type ownership between V1, V2, and orchestrators

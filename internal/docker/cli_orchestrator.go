@@ -1661,6 +1661,7 @@ func unmarshalNetwork(data []byte, net *containers.InspectedNetwork) error {
 	net.CreatedAt = dcn.Created
 	net.Driver = dcn.Driver
 	net.Scope = dcn.Scope
+	net.IPv6 = dcn.EnableIPv6
 	net.Labels = dcn.Labels
 	net.Attachable = dcn.Attachable
 	net.Internal = dcn.Internal

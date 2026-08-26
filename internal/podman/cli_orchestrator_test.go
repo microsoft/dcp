@@ -70,6 +70,21 @@ func TestInspectedContainerDeserialization(t *testing.T) {
 	}, ct.Networks)
 }
 
+func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
+	t.Parallel()
+
+	var network containers.InspectedNetwork
+	unmarshalErr := unmarshalNetwork(&podmanInspectedNetwork{
+		Id:         "network-id",
+		Name:       "ipv6-network",
+		Driver:     "bridge",
+		EnableIPv6: true,
+	}, &network)
+
+	require.NoError(t, unmarshalErr)
+	require.True(t, network.IPv6)
+}
+
 func TestApplyListContainersOptions(t *testing.T) {
 	t.Parallel()
 

@@ -1510,6 +1510,7 @@ func unmarshalNetwork(pcn *podmanInspectedNetwork, net *containers.InspectedNetw
 	net.CreatedAt = pcn.Created
 	net.Driver = pcn.Driver
 	net.Scope = "local"
+	net.IPv6 = pcn.EnableIPv6
 	net.Labels = pcn.Labels
 	net.Attachable = true
 	net.Internal = pcn.Internal

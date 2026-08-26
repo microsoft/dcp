@@ -329,6 +329,26 @@ func TestUnmarshalListedNetworks(t *testing.T) {
 	require.NoError(t, timestampErr)
 }
 
+func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
+	t.Parallel()
+
+	var network ct.InspectedNetwork
+	unmarshalErr := unmarshalNetwork([]byte(`{
+		"Id": "network-id",
+		"Name": "ipv6-network",
+		"Created": "2025-01-02T03:04:05Z",
+		"Scope": "local",
+		"Driver": "bridge",
+		"EnableIPv6": true,
+		"IPAM": {"Config": []},
+		"Labels": {},
+		"Containers": {}
+	}`), &network)
+
+	require.NoError(t, unmarshalErr)
+	require.True(t, network.IPv6)
+}
+
 func TestGetStatusChecksDockerVersionBeforeNetworks(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()

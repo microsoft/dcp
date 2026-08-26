@@ -286,17 +286,21 @@ func (r *NamespaceReconciler) cleanupPhysicalContainerNetworks(ctx context.Conte
 		return 0, fmt.Errorf("failed to list PhysicalContainerNetworks in namespace %q: %w", namespace.Name, listErr)
 	}
 
-	for i := range physicalContainerNetworks.Items {
-		physicalContainerNetwork := &physicalContainerNetworks.Items[i]
+	deleteErrors := slices.MapConcurrent[error](physicalContainerNetworks.Items, func(physicalContainerNetwork apiv2.PhysicalContainerNetwork) error {
 		if physicalContainerNetwork.DeletionTimestamp != nil && !physicalContainerNetwork.DeletionTimestamp.IsZero() {
-			continue
+			return nil
 		}
 
 		log.V(1).Info("Deleting PhysicalContainerNetwork during namespace cleanup", "Namespace", namespace.Name, "PhysicalContainerNetwork", physicalContainerNetwork.Name)
-		deleteErr := r.Client.Delete(ctx, physicalContainerNetwork)
-		if deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
-			return 0, fmt.Errorf("failed to delete PhysicalContainerNetwork %q in namespace %q: %w", physicalContainerNetwork.Name, namespace.Name, deleteErr)
+		deletePhysicalContainerNetworkErr := r.Client.Delete(ctx, &physicalContainerNetwork)
+		if deletePhysicalContainerNetworkErr != nil && !apierrors.IsNotFound(deletePhysicalContainerNetworkErr) {
+			return fmt.Errorf("failed to delete PhysicalContainerNetwork %q in namespace %q: %w", physicalContainerNetwork.Name, namespace.Name, deletePhysicalContainerNetworkErr)
 		}
+		return nil
+	}, namespaceCleanupMaxConcurrentDeletes)
+	deleteErr := errors.Join(deleteErrors...)
+	if deleteErr != nil {
+		return 0, deleteErr
 	}
 
 	return len(physicalContainerNetworks.Items), nil

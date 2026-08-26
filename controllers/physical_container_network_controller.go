@@ -18,8 +18,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/internal/containers"
@@ -75,9 +79,28 @@ func (r *PhysicalContainerNetworkReconciler) SetupWithManager(mgr ctrl.Manager, 
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(controller.Options{MaxConcurrentReconciles: MaxConcurrentReconciles}).
 		For(&apiv2.PhysicalContainerNetwork{}).
+		Watches(&apiv2.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.requestReconcileForNamespace), builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		WatchesRawSource(r.GetReconciliationEventSource()).
 		Named(name).
 		Complete(r)
+}
+
+func (r *PhysicalContainerNetworkReconciler) requestReconcileForNamespace(ctx context.Context, obj ctrl_client.Object) []reconcile.Request {
+	namespace := obj.(*apiv2.Namespace)
+	var networkList apiv2.PhysicalContainerNetworkList
+	listErr := r.List(ctx, &networkList, ctrl_client.InNamespace(namespace.Name))
+	if listErr != nil {
+		r.Log.Error(listErr, "Failed to list PhysicalContainerNetworks for namespace", "Namespace", namespace.Name)
+		return nil
+	}
+
+	requests := make([]reconcile.Request, len(networkList.Items))
+	for i := range networkList.Items {
+		requests[i] = reconcile.Request{NamespacedName: networkList.Items[i].NamespacedName()}
+	}
+
+	r.Log.V(1).Info("Namespace updated, requesting PhysicalContainerNetwork reconciliation", "Namespace", namespace.Name, "Networks", len(requests))
+	return requests
 }
 
 func (r *PhysicalContainerNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -363,8 +386,9 @@ func (r *PhysicalContainerNetworkReconciler) replacePhysicalContainerNetwork(
 		return false, nil
 	}
 
-	if !r.removeRuntimeNetwork(ctx, inspectedNetwork.Id, log) {
-		return false, fmt.Errorf("remove runtime network %q", inspectedNetwork.Id)
+	removeErr := r.removeRuntimeNetwork(ctx, inspectedNetwork.Id, log)
+	if removeErr != nil {
+		return false, fmt.Errorf("remove runtime network %q: %w", inspectedNetwork.Id, removeErr)
 	}
 
 	log.V(1).Info(
@@ -619,14 +643,15 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 		if inspectErr == nil && physicalContainerNetworkBelongsToResource(inspectedNetwork, network) {
 			networkID = inspectedNetwork.Id
 		} else if inspectErr != nil && !errors.Is(inspectErr, containers.ErrNotFound) {
-			log.Error(inspectErr, "Failed to verify whether runtime network creation succeeded during deletion", "NetworkName", networkConfig.NetworkName)
-			return additionalReconciliationNeeded
+			verificationErr := fmt.Errorf("verify whether runtime network creation succeeded: %w", inspectErr)
+			return applyPhysicalContainerNetworkRemovalFailure(network, verificationErr, log)
 		}
 	}
 
 	if networkConfig != nil && !networkConfig.RetainRuntimeNetwork && networkID != "" {
-		if !r.removeRuntimeNetwork(ctx, networkID, log) {
-			return additionalReconciliationNeeded
+		removeErr := r.removeRuntimeNetwork(ctx, networkID, log)
+		if removeErr != nil {
+			return applyPhysicalContainerNetworkRemovalFailure(network, removeErr, log)
 		}
 	}
 
@@ -634,15 +659,32 @@ func (r *PhysicalContainerNetworkReconciler) handleDeletionRequest(ctx context.C
 	return deleteFinalizer(network, physicalContainerNetworkFinalizer, log)
 }
 
-// Disconnects all attached containers and removes the runtime network, reporting whether it is gone.
-func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Context, networkID string, log logr.Logger) bool {
+func applyPhysicalContainerNetworkRemovalFailure(
+	network *apiv2.PhysicalContainerNetwork,
+	removeErr error,
+	log logr.Logger,
+) objectChange {
+	log.Error(removeErr, "Failed to remove runtime network", "NetworkID", network.Status.NetworkID)
+	change := setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
+	change |= setCondition(
+		&network.Status.Conditions,
+		apiv2.ConditionReady,
+		network.Generation,
+		metav1.ConditionFalse,
+		apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed,
+		fmt.Sprintf("Failed to remove runtime network: %v", removeErr),
+	)
+	return change | additionalReconciliationNeeded
+}
+
+// Disconnects all attached containers and removes the runtime network.
+func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Context, networkID string, log logr.Logger) error {
 	inspectedNetwork, inspectErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
 	if errors.Is(inspectErr, containers.ErrNotFound) {
-		return true
+		return nil
 	}
 	if inspectErr != nil {
-		log.Error(inspectErr, "Failed to inspect runtime network before removal", "NetworkID", networkID)
-		return false
+		return fmt.Errorf("inspect runtime network before removal: %w", inspectErr)
 	}
 
 	if r.orchestrator.IsBuiltInNetwork(inspectedNetwork.Name) {
@@ -651,7 +693,7 @@ func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Co
 			"NetworkID", inspectedNetwork.Id,
 			"NetworkName", inspectedNetwork.Name,
 		)
-		return true
+		return nil
 	}
 
 	listedContainers, listErr := r.orchestrator.ListContainers(ctx, containers.ListContainersOptions{
@@ -663,10 +705,9 @@ func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Co
 	if listErr != nil {
 		_, confirmErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
 		if errors.Is(confirmErr, containers.ErrNotFound) {
-			return true
+			return nil
 		}
-		log.Error(errors.Join(listErr, confirmErr), "Failed to list containers attached to runtime network", "NetworkID", networkID)
-		return false
+		return fmt.Errorf("list containers attached to runtime network: %w", errors.Join(listErr, confirmErr))
 	}
 
 	attachedContainerIDs := make(map[string]struct{}, len(inspectedNetwork.Containers)+len(listedContainers))
@@ -689,15 +730,14 @@ func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Co
 		}
 	}
 	if disconnectErrors != nil {
-		log.Error(disconnectErrors, "Failed to disconnect all containers from runtime network", "NetworkID", networkID)
-		return false
+		return fmt.Errorf("disconnect all containers from runtime network: %w", disconnectErrors)
 	}
 
 	_, removeErr := r.orchestrator.RemoveNetworks(ctx, containers.RemoveNetworksOptions{
 		Networks: []string{networkID},
 	})
 	if removeErr == nil {
-		return true
+		return nil
 	}
 
 	// Removal reports a partial failure both for a network that is already gone and for one that
@@ -705,11 +745,10 @@ func (r *PhysicalContainerNetworkReconciler) removeRuntimeNetwork(ctx context.Co
 	// A network that still exists is retried from inspection and disconnection.
 	_, confirmErr := inspectPhysicalContainerNetwork(ctx, r.orchestrator, networkID)
 	if errors.Is(confirmErr, containers.ErrNotFound) {
-		return true
+		return nil
 	}
 
-	log.Error(errors.Join(removeErr, confirmErr), "Failed to remove runtime network", "NetworkID", networkID)
-	return false
+	return fmt.Errorf("remove runtime network: %w", errors.Join(removeErr, confirmErr))
 }
 
 func inspectPhysicalContainerNetwork(ctx context.Context, orchestrator containers.NetworkOrchestrator, network string) (*containers.InspectedNetwork, error) {

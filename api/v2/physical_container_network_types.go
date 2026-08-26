@@ -46,8 +46,8 @@ const (
 	// PhysicalContainerNetworkPhaseMissing indicates that the referenced runtime network was not found.
 	PhysicalContainerNetworkPhaseMissing PhysicalContainerNetworkPhase = "Missing"
 
-	// PhysicalContainerNetworkPhaseFailed indicates that creating or inspecting the runtime network failed,
-	// or that its deletion policy is invalid for the observed runtime network.
+	// PhysicalContainerNetworkPhaseFailed indicates that creating, inspecting, or removing the runtime network
+	// failed, or that its deletion policy is invalid for the observed runtime network.
 	PhysicalContainerNetworkPhaseFailed PhysicalContainerNetworkPhase = "Failed"
 )
 
@@ -66,6 +66,9 @@ const (
 
 	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
 	PhysicalContainerNetworkReasonRuntimeNetworkMissing ConditionReason = "RuntimeNetworkMissing"
+
+	// PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed indicates that the runtime network could not be removed.
+	PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed ConditionReason = "RuntimeNetworkRemoveFailed"
 
 	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in runtime network.
 	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable ConditionReason = "BuiltInNetworkNotRemovable"
@@ -229,9 +232,6 @@ func (pn *PhysicalContainerNetwork) Validate(ctx context.Context) field.ErrorLis
 		errorList = append(errorList, field.Required(networkPath.Child("networkName"), "networkName must be set"))
 	} else if !validNetworkNameRegexp.MatchString(network.NetworkName) {
 		errorList = append(errorList, field.Invalid(networkPath.Child("networkName"), network.NetworkName, fmt.Sprintf("networkName must match regex '%s'", validNetworkName)))
-	}
-	if network.ReplaceExisting && network.NetworkName == "" {
-		errorList = append(errorList, field.Required(networkPath.Child("networkName"), "networkName must be set when replaceExisting is true"))
 	}
 
 	errorList = append(errorList, validateLabels(network.Labels, networkPath.Child("labels"))...)
