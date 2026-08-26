@@ -92,7 +92,7 @@ func (ers *ExecutableReplicaSet) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
-	errorList = append(errorList, ValidateAnnotationsSize(ers.Annotations, field.NewPath("metadata", "annotations"))...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(ers.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	return errorList
 }

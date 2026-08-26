@@ -8,11 +8,12 @@ package integration_test
 import (
 	"testing"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 // Ensure a ContainerExec record properly records completion when the command finishes.

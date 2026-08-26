@@ -18,7 +18,6 @@ import (
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/require"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	ct "github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	internal_testutil "github.com/microsoft/dcp/internal/testutil"
@@ -104,6 +103,16 @@ func TestExpectStringsMultiline(t *testing.T) {
 	b.WriteString("foo\nbar \n  baz")
 	require.NoError(t, ct.ExpectCliStrings(&b, []string{"foo", "bar"}))
 	b.Reset()
+}
+
+func TestUnmarshalContainerNormalizesName(t *testing.T) {
+	t.Parallel()
+
+	inspected := ct.InspectedContainer{}
+	err := unmarshalContainer([]byte(`{"Id":"container-id","Name":"/container-name"}`), &inspected)
+
+	require.NoError(t, err)
+	require.Equal(t, "container-name", inspected.Name)
 }
 
 func TestInspectedContainerDeserialization(t *testing.T) {
@@ -516,13 +525,13 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		mount    apiv1.VolumeMount
+		mount    ct.CreateContainerVolumeMount
 		wantArgs []string
 	}{
 		{
 			name: "named volume includes src",
-			mount: apiv1.VolumeMount{
-				Type:   apiv1.NamedVolumeMount,
+			mount: ct.CreateContainerVolumeMount{
+				Type:   ct.NamedVolumeMount,
 				Source: "myvolume",
 				Target: "/data",
 			},
@@ -530,8 +539,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "anonymous volume omits src",
-			mount: apiv1.VolumeMount{
-				Type:   apiv1.NamedVolumeMount,
+			mount: ct.CreateContainerVolumeMount{
+				Type:   ct.NamedVolumeMount,
 				Source: "",
 				Target: "/data",
 			},
@@ -539,8 +548,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "named volume readonly",
-			mount: apiv1.VolumeMount{
-				Type:     apiv1.NamedVolumeMount,
+			mount: ct.CreateContainerVolumeMount{
+				Type:     ct.NamedVolumeMount,
 				Source:   "myvolume",
 				Target:   "/data",
 				ReadOnly: true,
@@ -549,8 +558,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "anonymous volume readonly",
-			mount: apiv1.VolumeMount{
-				Type:     apiv1.NamedVolumeMount,
+			mount: ct.CreateContainerVolumeMount{
+				Type:     ct.NamedVolumeMount,
 				Source:   "",
 				Target:   "/data",
 				ReadOnly: true,
@@ -563,7 +572,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			options := ct.CreateContainerOptions{}
-			options.VolumeMounts = []apiv1.VolumeMount{tc.mount}
+			options.VolumeMounts = []ct.CreateContainerVolumeMount{tc.mount}
 			args := applyCreateContainerOptions([]string{}, options)
 			require.Equal(t, tc.wantArgs, args)
 		})

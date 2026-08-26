@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
-	"github.com/microsoft/dcp/internal/containers"
-	"github.com/microsoft/dcp/pkg/testutil"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
+
+	apiv1 "github.com/microsoft/dcp/api/v1"
+	"github.com/microsoft/dcp/internal/containers"
+	"github.com/microsoft/dcp/pkg/testutil"
 )
 
 func TestContainerNetworkConnectsToExisting(t *testing.T) {
@@ -260,7 +261,7 @@ func TestContainerNetworkKeepsUnmanagedConnections(t *testing.T) {
 			Networks: []containers.CreateContainerNetworkOptions{
 				{Name: updatedNetwork.Status.NetworkName},
 			},
-			ContainerSpec: apiv1.ContainerSpec{Image: testName + "-image"},
+			Image: testName + "-image",
 		},
 	})
 	require.NoError(t, err, "could not run unmanaged container")

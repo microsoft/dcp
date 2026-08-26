@@ -18,6 +18,38 @@ import (
 // MaxWorkloadIDLength is the maximum UTF-8 byte length for a workload ID.
 const MaxWorkloadIDLength = 1024
 
+// EnvVar represents an environment variable present in a resource.
+// +k8s:openapi-gen=true
+// +kubebuilder:object:generate=true
+type EnvVar struct {
+	// Name of the environment variable.
+	Name string `json:"name"`
+
+	// Value of the environment variable. Defaults to "" (empty string).
+	// +optional
+	Value string `json:"value"`
+	// CONSIDER allowing expansion of existing variable references e.g. using ${VAR_NAME} syntax and $$ to escape the $ sign
+}
+
+// Label represents a key/value label to apply to a resource managed outside the API server.
+// +k8s:openapi-gen=true
+// +kubebuilder:object:generate=true
+type Label struct {
+	// Key is the label key.
+	Key string `json:"key"`
+
+	// Value is the label value.
+	Value string `json:"value"`
+}
+
+// PortProtocol is the transport protocol used by a network port.
+type PortProtocol string
+
+const (
+	PortProtocolTCP PortProtocol = "TCP"
+	PortProtocolUDP PortProtocol = "UDP"
+)
+
 // WorkloadID identifies persistent resources that belong to a logical workload.
 type WorkloadID string
 

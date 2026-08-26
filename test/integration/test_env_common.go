@@ -24,6 +24,9 @@ const (
 	VolumeController
 	ServiceController
 	ContainerNetworkTunnelProxyController
+	NamespaceController
+	PhysicalContainerImageController
+	PhysicalContainerController
 	NoControllers  IncludedController = 0
 	AllControllers IncludedController = ^NoControllers
 )

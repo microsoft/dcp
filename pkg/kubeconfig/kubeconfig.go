@@ -22,9 +22,9 @@ import (
 	clientcmd "k8s.io/client-go/tools/clientcmd"
 	clientcmd_api "k8s.io/client-go/tools/clientcmd/api"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/dcppaths"
 	"github.com/microsoft/dcp/internal/networking"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/randdata"
@@ -188,7 +188,7 @@ func getKubeconfig(ctx context.Context, kubeconfigPath string, port int32, gener
 func createKubeconfig(ctx context.Context, port int32, generateEphemeral bool, generateToken bool, storeCertData *security.ServerCertificateData, serverAddress string, log logr.Logger) (*clientcmd_api.Config, *security.ServerCertificateData, error) {
 	if port == 0 {
 		newPort, newPortErr := traced(ctx, spanGetFreePort, func() (int32, error) {
-			return networking.GetFreePort(apiv1.TCP, serverAddress, log)
+			return networking.GetFreePort(commonapi.PortProtocolTCP, serverAddress, log)
 		})
 		if newPortErr != nil {
 			return nil, nil, newPortErr

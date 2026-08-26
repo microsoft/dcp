@@ -13,11 +13,17 @@ import (
 	"os/exec"
 	"time"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/pubsub"
 	"github.com/microsoft/dcp/internal/termpty"
+	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 )
+
+// EnvVar is a name/value environment variable pair.
+type EnvVar = commonapi.EnvVar
+
+// Label is a key/value label to apply to a container or image.
+type Label = commonapi.Label
 
 type ContainerStatus string
 
@@ -169,7 +175,7 @@ type InspectedContainer struct {
 	Args []string `json:"Args,omitempty"`
 
 	// Container volume/bind mounts
-	Mounts []apiv1.VolumeMount `json:"Mounts,omitempty"`
+	Mounts []VolumeMount `json:"Mounts,omitempty"`
 
 	// Container ports
 	Ports InspectedContainerPortMapping `json:"Ports,omitempty"`
@@ -276,15 +282,103 @@ type RemoveContainers interface {
 
 // CreateContainer command types
 
+type CreateContainerPort struct {
+	HostPort      int32
+	ContainerPort int32
+	Protocol      string
+	HostIP        string
+}
+
+type VolumeMountType string
+
+const (
+	BindMount        VolumeMountType = "bind"
+	NamedVolumeMount VolumeMountType = "volume"
+)
+
+// VolumeMount describes a file system to make available inside a container.
+type VolumeMount struct {
+	Type VolumeMountType `json:"type"`
+
+	// Bind mounts: the host directory to mount.
+	// Volume mounts: name of the volume to mount.
+	Source string `json:"source"`
+
+	// The path within the container that the mount will use.
+	Target string `json:"target"`
+
+	// True if the mounted file system is supposed to be read-only.
+	ReadOnly bool `json:"readOnly,omitempty"`
+}
+
+type ImagePullPolicy string
+
+const (
+	// Always pull the container image.
+	PullPolicyAlways ImagePullPolicy = "always"
+
+	// Pull the container image only if it is not present.
+	PullPolicyMissing ImagePullPolicy = "missing"
+
+	// Never pull the container image.
+	PullPolicyNever ImagePullPolicy = "never"
+)
+
+type ContainerRestartPolicy string
+
+const (
+	RestartPolicyNone          ContainerRestartPolicy = "no"
+	RestartPolicyOnFailure     ContainerRestartPolicy = "on-failure"
+	RestartPolicyUnlessStopped ContainerRestartPolicy = "unless-stopped"
+	RestartPolicyAlways        ContainerRestartPolicy = "always"
+)
+
+type CreateContainerVolumeMount struct {
+	Type     VolumeMountType
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
 type CreateContainerOptions struct {
 	// Name of the container. If empty, the container orchestrator will provide a default name for the new container.
-	//
-	// Note: There is also ContainerSpec.ContainerName, but we need to have the ability
-	//       to use specific container name even if ContainerSpec.ContainerName is not set,
-	//       so this is why this property exist.
-	//       Container orchestrator implementations should use only Name property at creation time
-	//       and not rely on ContainerSpec.ContainerName.
 	Name string
+
+	// Image is the image used to create the container.
+	Image string
+
+	// Entrypoint is the container runtime entrypoint to run.
+	Entrypoint string
+
+	// Command is the command arguments passed to the container entrypoint.
+	Command []string
+
+	// Env contains environment variables to set in the container.
+	Env []EnvVar
+
+	// EnvFiles contains files used to populate the container environment.
+	EnvFiles []string
+
+	// Ports describes ports to expose from the container.
+	Ports []CreateContainerPort
+
+	// VolumeMounts describes volume and bind mounts for the container.
+	VolumeMounts []CreateContainerVolumeMount
+
+	// Labels contains labels to apply to the container.
+	Labels []Label
+
+	// RestartPolicy is the container runtime restart policy.
+	RestartPolicy ContainerRestartPolicy
+
+	// PullPolicy controls how the runtime pulls the container image.
+	PullPolicy ImagePullPolicy
+
+	// RunArgs are raw additional runtime arguments passed before the image name.
+	RunArgs []string
+
+	// AttachTerminal allocates a TTY and keeps standard input open for later attach operations.
+	AttachTerminal bool
 
 	// Networks to connect to _at creation time_, with optional per-network aliases.
 	// If not set, the container will be connected to the default network.
@@ -296,8 +390,6 @@ type CreateContainerOptions struct {
 
 	StreamCommandOptions
 	TimeoutOption
-
-	apiv1.ContainerSpec
 }
 
 type CreateContainerNetworkOptions struct {
@@ -368,7 +460,7 @@ type ExecContainerOptions struct {
 	WorkingDirectory string
 
 	// The environment variables to set
-	Env []apiv1.EnvVar
+	Env []EnvVar
 
 	// Environment files to use to populate the environment for the command
 	EnvFiles []string
@@ -401,9 +493,8 @@ type AttachContainerOptions struct {
 }
 
 // AttachContainer attaches a pseudo-terminal to a running container's
-// stdin/stdout/stderr. The container must have been created with TTY support
-// (apiv1.ContainerSpec.Terminal set, which causes the orchestrator to pass -it
-// at creation time).
+// stdin/stdout/stderr. The container must have been created with AttachTerminal
+// set so the runtime allocates a TTY and keeps standard input open.
 //
 // Implementations typically spawn the runtime's "attach" subcommand
 // (docker attach / podman attach) on a freshly allocated PTY. The returned
@@ -415,6 +506,54 @@ type AttachContainer interface {
 }
 
 // CreateFiles command types
+
+type FileSystemEntryType string
+
+const (
+	FileSystemEntryTypeFile    FileSystemEntryType = "file"    // default
+	FileSystemEntryTypeOpenSSL FileSystemEntryType = "openssl" // special type for OpenSSL certificates
+	FileSystemEntryTypeDir     FileSystemEntryType = "directory"
+	// The public CreateFiles API validation doesn't allow specifying "symlink" as a FileSystemEntry
+	// type, but the internal ContainerOrchestrator.CreateFiles library does support it.
+	FileSystemEntryTypeSymlink FileSystemEntryType = "symlink"
+)
+
+// FileSystemEntry represents part of the file structure to be created in the container.
+type FileSystemEntry struct {
+	// The type of entry (file, symlink, or directory).
+	Type FileSystemEntryType `json:"type,omitempty"`
+
+	// The name of the entry (required).
+	Name string `json:"name"`
+
+	// The UID of the file owner. Defaults to 0 (root).
+	Owner *int32 `json:"owner,omitempty"`
+
+	// The ID of the file group. Defaults to 0 (root).
+	Group *int32 `json:"group,omitempty"`
+
+	// The unix mode permissions of this entry. If Mode is 0, the umask for the create file request will be applied.
+	Mode fs.FileMode `json:"mode,omitempty"`
+
+	// For file type entries, an optional path to a source file to copy. It is an error to set both Source and Contents.
+	Source string `json:"source,omitempty"`
+
+	// For symlink type entries, the target of the symlink. The target must be a valid path in the container
+	// (existing or created as part of this create files set), either absolute or relative to the new symlink.
+	Target string `json:"target,omitempty"`
+
+	// For file type entries, the string contents of the file. Optional.
+	Contents string `json:"contents,omitempty"`
+
+	// For file type entries, the Base64 encoded byte contents of the file. Optional.
+	RawContents string `json:"rawContents,omitempty"`
+
+	// For file type entries, if true, errors creating this file will be logged but will not fail the overall operation.
+	ContinueOnError bool `json:"continueOnError,omitempty"`
+
+	// For directory type entries, the child entries (files or directories). Optional.
+	Entries []FileSystemEntry `json:"entries,omitempty"`
+}
 
 type CreateFilesOptions struct {
 	// The container (name/id) to copy the file to
@@ -436,7 +575,7 @@ type CreateFilesOptions struct {
 	Umask fs.FileMode
 
 	// The specific entries to create in the container (must have at least one item)
-	Entries []apiv1.FileSystemEntry
+	Entries []FileSystemEntry
 }
 
 type CreateFiles interface {
@@ -451,13 +590,20 @@ type ApplyImageLayersOptions struct {
 	BaseImage InspectedImage
 
 	// The image layers to apply (tar files)
-	Layers []apiv1.ImageLayer
+	Layers []ImageLayer
 
 	// Tag to apply to the derived image
 	Tag string
 
 	TimeoutOption
 }
+
+type LogStreamSource string
+
+const (
+	LogStreamSourceStdout LogStreamSource = "stdout"
+	LogStreamSourceStderr LogStreamSource = "stderr"
+)
 
 type ApplyImageLayers interface {
 	// Builds a derived image by applying additional tar layers on top of a base image.

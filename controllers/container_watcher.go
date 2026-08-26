@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/go-logr/logr"
+
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/pubsub"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -23,7 +24,7 @@ import (
 )
 
 const (
-	containerEventChanBuffer = 20 // Container events tend to come in bursts, so we can help a bit with buffering
+	containerEventChanBuffer = 1024 // Container events tend to come in bursts, so we can help with buffering
 )
 
 // Provides data and common functionality for reconcilers that need to watch (Docker/Podman) containers

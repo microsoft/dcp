@@ -194,7 +194,7 @@ func (ce *ContainerExec) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Required(field.NewPath("spec", "containerName"), "containerName must be set to a non-empty value"))
 	}
 
-	errorList = append(errorList, ValidateAnnotationsSize(ce.Annotations, field.NewPath("metadata", "annotations"))...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(ce.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	return errorList
 }

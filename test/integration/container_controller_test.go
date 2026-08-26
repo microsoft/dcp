@@ -150,7 +150,7 @@ func TestContainerLifecycleKey(t *testing.T) {
 	t.Parallel()
 
 	spec := apiv1.ContainerSpec{
-		Env: []apiv1.EnvVar{
+		Env: []commonapi.EnvVar{
 			{
 				Name:  "A",
 				Value: "A",
@@ -169,7 +169,7 @@ func TestContainerLifecycleKey(t *testing.T) {
 
 	// Test with same env vars in different order
 	equivalentSpec := apiv1.ContainerSpec{
-		Env: []apiv1.EnvVar{
+		Env: []commonapi.EnvVar{
 			{
 				Name:  "Z",
 				Value: "Z",
@@ -187,7 +187,7 @@ func TestContainerLifecycleKey(t *testing.T) {
 	require.Equal(t, lifecycleKey, equivalentLifecycleKey, "expected lifecycle key to match")
 
 	differentSpec := apiv1.ContainerSpec{
-		Env: []apiv1.EnvVar{
+		Env: []commonapi.EnvVar{
 			{
 				Name:  "A",
 				Value: "A",
@@ -870,10 +870,9 @@ func TestExistingPersistentContainerStopWithoutStart(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -935,10 +934,9 @@ func TestExistingPersistentContainerStopWithStartAllowed(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -983,7 +981,7 @@ func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
 			Persistent:    true,
 			Start:         &shouldStart,
 			Stop:          true,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "MISSING_SERVICE_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
@@ -1007,10 +1005,9 @@ func TestExistingPersistentContainerStopWithUnresolvedTemplate(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1073,10 +1070,9 @@ func TestExitedPersistentContainerStopWithoutStart(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1143,10 +1139,9 @@ func TestExistingPersistentContainerDelayStart(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1479,7 +1474,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11760,
 			},
@@ -1490,7 +1485,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11761,
 			},
@@ -1531,7 +1526,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 				{HostPort: svcAHostPort, ContainerPort: svcAContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 				{ContainerPort: svcBContainerPort, HostIP: IPAddr, Protocol: "tcp"},
 			},
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_A_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-a"].ObjectMeta.Name),
@@ -1565,7 +1560,7 @@ func TestContainerMultipleServingPortsInjected(t *testing.T) {
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
 		return len(currentCtr.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected port information for service A. The effective environemtn is %v", ctr.ObjectMeta.Name, effectiveEnv)
@@ -1594,7 +1589,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  ServiceIPAddr,
 			Port:     26003,
 		},
@@ -1621,7 +1616,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 			Ports: []apiv1.ContainerPort{
 				{ContainerPort: ContainerPort},
 			},
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SERVICE_ADDRESS",
 					Value: fmt.Sprintf(`{{- addressFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -1652,7 +1647,7 @@ func TestContainerServingAddressInjected(t *testing.T) {
 	updatedCtr := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&ctr), func(currentCtr *apiv1.Container) (bool, error) {
 		return len(currentCtr.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedCtr.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, expectedEnvVar), "The Container '%s' effective environment does not contain expected address information for service '%s'. The effective environemtn is %v", ctr.ObjectMeta.Name, svc.ObjectMeta.Name, effectiveEnv)
@@ -1811,10 +1806,9 @@ func TestContainerExistingModeAdoptsContainerCreatedAfterNotFound(t *testing.T) 
 
 	seedSpec := ctr.Spec
 	seedSpec.Image = imageName
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: seedSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(seedSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1879,10 +1873,9 @@ func TestContainerExistingModeKeepsExistingContainerOnDelete(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1944,10 +1937,9 @@ func TestContainerExistingModeIgnoresLifecycleMismatch(t *testing.T) {
 			Value: "stale-lifecycle-key",
 		},
 	}
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: seedSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(seedSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -1983,10 +1975,9 @@ func TestContainerCleanupModeRemovesExistingContainerOnDelete(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2049,10 +2040,9 @@ func TestContainerCleanupModeDeletedBeforeAdoptionRemovesExistingContainer(t *te
 		},
 	}
 
-	id, err := serverInfo.ContainerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := serverInfo.ContainerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = serverInfo.ContainerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2156,10 +2146,9 @@ func TestPersistentContainerAlreadyExists(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2224,10 +2213,9 @@ func TestPersistentContainerAlreadyExistsSameLifecycleKey(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2292,10 +2280,9 @@ func TestPersistentContainerAlreadyExistsDifferentLifecycleKey(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: createSpec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(createSpec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2383,10 +2370,9 @@ func TestPersistentContainerWithBuildContextAlreadyExists(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -2440,10 +2426,9 @@ func TestPersistentContainerStartTime(t *testing.T) {
 		},
 	}
 
-	id, err := containerOrchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:          testName,
-		ContainerSpec: ctr.Spec,
-	})
+	createOptions := createContainerOptionsFromV1Spec(ctr.Spec)
+	createOptions.Name = testName
+	id, err := containerOrchestrator.CreateContainer(ctx, createOptions)
 	require.NoError(t, err, "could not create container resource")
 
 	_, err = containerOrchestrator.StartContainers(ctx, containers.StartContainersOptions{
@@ -4301,7 +4286,7 @@ func TestContainerHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

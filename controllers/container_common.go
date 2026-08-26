@@ -448,9 +448,9 @@ func createVolume(ctx context.Context, o containers.VolumeOrchestrator, volumeNa
 }
 
 // Returns the host address and port for the given service producer port.
-// The spec is checked for a matching apiv1.ContainerPort in the spec, first by matching on apiv1.ContainerPort.HostPort,
-// and if unsuccessful, by matching on apiv1.ContainerPort.ContainerPort.
-// If a matching ContainerPort is found in the spec, and that matching ContainerPort has a HostPort property set
+// The spec is checked for a matching port, first by matching on the host port, and if
+// unsuccessful, by matching on the container port.
+// If a matching port is found in the spec, and that matching port has a HostPort property set
 // (i.e. host port is not auto-assigned), the host address and port in the spec are returned.
 // Otherwise the function takes the inspected container and searches for port config that matches the service producer port
 // (on the container side). If found, corresponding host port and host IP are returned.
@@ -460,17 +460,26 @@ func getHostAddressAndPortForContainerPort(
 	inspected *containers.InspectedContainer,
 	log logr.Logger,
 ) (string, int32, error) {
-	var matchedPort apiv1.ContainerPort
+	return getHostAddressAndPortForPorts(v1PortsToCreateContainerPorts(ctrSpec.Ports), serviceProducerPort, inspected, log)
+}
+
+func getHostAddressAndPortForPorts(
+	ports []containers.CreateContainerPort,
+	serviceProducerPort int32,
+	inspected *containers.InspectedContainer,
+	log logr.Logger,
+) (string, int32, error) {
+	var matchedPort containers.CreateContainerPort
 	found := false
 
-	matchedByHost := slices.Select(ctrSpec.Ports, func(p apiv1.ContainerPort) bool {
+	matchedByHost := slices.Select(ports, func(p containers.CreateContainerPort) bool {
 		return p.HostPort == serviceProducerPort
 	})
 	if len(matchedByHost) > 0 {
 		matchedPort = matchedByHost[0]
 		found = true
 	} else {
-		matchedByContainer := slices.Select(ctrSpec.Ports, func(p apiv1.ContainerPort) bool {
+		matchedByContainer := slices.Select(ports, func(p containers.CreateContainerPort) bool {
 			return p.ContainerPort == serviceProducerPort
 		})
 		if len(matchedByContainer) > 0 {
@@ -538,10 +547,10 @@ func ensureBaseImageForLayers(
 	ctx context.Context,
 	o containers.ContainerOrchestrator,
 	image string,
-	pullPolicy apiv1.PullPolicy,
+	pullPolicy containers.ImagePullPolicy,
 	log logr.Logger,
 ) (*containers.InspectedImage, error) {
-	if pullPolicy == apiv1.PullPolicyAlways {
+	if pullPolicy == containers.PullPolicyAlways {
 		log.V(1).Info("Pulling base image (pull policy: always)", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {
@@ -559,12 +568,12 @@ func ensureBaseImageForLayers(
 		return nil, fmt.Errorf("inspecting base image %q: %w", image, inspectErr)
 	}
 
-	if pullPolicy == apiv1.PullPolicyNever {
+	if pullPolicy == containers.PullPolicyNever {
 		return nil, fmt.Errorf("base image %q not available locally (pull policy: never): %w", image, inspectErr)
 	}
 
 	// Default / "missing" behavior: image not found, so pull and retry inspect
-	if pullPolicy != apiv1.PullPolicyAlways {
+	if pullPolicy != containers.PullPolicyAlways {
 		log.V(1).Info("Base image not found locally, pulling", "Image", image)
 		_, pullErr := o.PullImage(ctx, containers.PullImageOptions{Image: image})
 		if pullErr != nil {

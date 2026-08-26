@@ -12,6 +12,8 @@ package openapi
 
 import (
 	v1 "github.com/microsoft/dcp/api/v1"
+	v2 "github.com/microsoft/dcp/api/v2"
+	commonapi "github.com/microsoft/dcp/pkg/commonapi"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	version "k8s.io/apimachinery/pkg/version"
@@ -56,7 +58,6 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.EndpointList{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_EndpointList(ref),
 		v1.EndpointSpec{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_EndpointSpec(ref),
 		v1.EndpointStatus{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_EndpointStatus(ref),
-		v1.EnvVar{}.OpenAPIModelName():                            schema_microsoft_dcp_api_v1_EnvVar(ref),
 		v1.Executable{}.OpenAPIModelName():                        schema_microsoft_dcp_api_v1_Executable(ref),
 		v1.ExecutableList{}.OpenAPIModelName():                    schema_microsoft_dcp_api_v1_ExecutableList(ref),
 		v1.ExecutablePemCertificates{}.OpenAPIModelName():         schema_microsoft_dcp_api_v1_ExecutablePemCertificates(ref),
@@ -86,6 +87,29 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1.TunnelConfiguration{}.OpenAPIModelName():               schema_microsoft_dcp_api_v1_TunnelConfiguration(ref),
 		v1.TunnelStatus{}.OpenAPIModelName():                      schema_microsoft_dcp_api_v1_TunnelStatus(ref),
 		v1.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v1_VolumeMount(ref),
+		v2.ContainerBuildContext{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_ContainerBuildContext(ref),
+		v2.ContainerBuildSecret{}.OpenAPIModelName():              schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref),
+		v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName():  schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref),
+		v2.ContainerPort{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_ContainerPort(ref),
+		v2.CreateFileSystem{}.OpenAPIModelName():                  schema_microsoft_dcp_api_v2_CreateFileSystem(ref),
+		v2.FileSystemEntry{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_FileSystemEntry(ref),
+		v2.Namespace{}.OpenAPIModelName():                         schema_microsoft_dcp_api_v2_Namespace(ref),
+		v2.NamespaceList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_NamespaceList(ref),
+		v2.NamespaceStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_NamespaceStatus(ref),
+		v2.PhysicalContainer{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainer(ref),
+		v2.PhysicalContainerConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref),
+		v2.PhysicalContainerImage{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref),
+		v2.PhysicalContainerImageConfig{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref),
+		v2.PhysicalContainerImageList{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_PhysicalContainerImageList(ref),
+		v2.PhysicalContainerImageSpec{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref),
+		v2.PhysicalContainerImageStatus{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref),
+		v2.PhysicalContainerList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerList(ref),
+		v2.PhysicalContainerPortMapping{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerPortMapping(ref),
+		v2.PhysicalContainerSpec{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref),
+		v2.PhysicalContainerStatus{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref),
+		v2.VolumeMount{}.OpenAPIModelName():                       schema_microsoft_dcp_api_v2_VolumeMount(ref),
+		commonapi.EnvVar{}.OpenAPIModelName():                     schema_microsoft_dcp_pkg_commonapi_EnvVar(ref),
+		commonapi.Label{}.OpenAPIModelName():                      schema_microsoft_dcp_pkg_commonapi_Label(ref),
 		metav1.APIGroup{}.OpenAPIModelName():                      schema_pkg_apis_meta_v1_APIGroup(ref),
 		metav1.APIGroupList{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_APIGroupList(ref),
 		metav1.APIResource{}.OpenAPIModelName():                   schema_pkg_apis_meta_v1_APIResource(ref),
@@ -263,7 +287,7 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -329,7 +353,7 @@ func schema_microsoft_dcp_api_v1_ContainerBuildContext(ref common.ReferenceCallb
 			},
 		},
 		Dependencies: []string{
-			v1.ContainerBuildSecret{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName()},
+			v1.ContainerBuildSecret{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName()},
 	}
 }
 
@@ -502,7 +526,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecSpec(ref common.ReferenceCallback)
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -568,7 +592,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecSpec(ref common.ReferenceCallback)
 			},
 		},
 		Dependencies: []string{
-			v1.EnvVar{}.OpenAPIModelName()},
+			commonapi.EnvVar{}.OpenAPIModelName()},
 	}
 }
 
@@ -635,7 +659,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecStatus(ref common.ReferenceCallbac
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -665,7 +689,7 @@ func schema_microsoft_dcp_api_v1_ContainerExecStatus(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			v1.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -1654,7 +1678,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -1903,7 +1927,7 @@ func schema_microsoft_dcp_api_v1_ContainerSpec(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			v1.ContainerBuildContext{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v1.ContainerPemCertificates{}.OpenAPIModelName(), v1.ContainerPort{}.OpenAPIModelName(), v1.CreateFileSystem{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.ImageLayer{}.OpenAPIModelName(), v1.TerminalSpec{}.OpenAPIModelName(), v1.VolumeMount{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.ContainerBuildContext{}.OpenAPIModelName(), v1.ContainerLabel{}.OpenAPIModelName(), v1.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v1.ContainerPemCertificates{}.OpenAPIModelName(), v1.ContainerPort{}.OpenAPIModelName(), v1.CreateFileSystem{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.ImageLayer{}.OpenAPIModelName(), v1.TerminalSpec{}.OpenAPIModelName(), v1.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -1998,7 +2022,7 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -2084,7 +2108,7 @@ func schema_microsoft_dcp_api_v1_ContainerStatus(ref common.ReferenceCallback) c
 			},
 		},
 		Dependencies: []string{
-			v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbeResult{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.HealthProbeResult{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -2443,36 +2467,6 @@ func schema_microsoft_dcp_api_v1_EndpointStatus(ref common.ReferenceCallback) co
 			SchemaProps: spec.SchemaProps{
 				Description: "EndpointStatus describes the status of a Endpoint",
 				Type:        []string{"object"},
-			},
-		},
-	}
-}
-
-func schema_microsoft_dcp_api_v1_EnvVar(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "EnvVar represents an environment variable present in a Container or Executable.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"name": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Name of the environment variable",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"value": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Value of the environment variable. Defaults to \"\" (empty string).",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-				},
-				Required: []string{"name"},
 			},
 		},
 	}
@@ -2891,7 +2885,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3035,7 +3029,7 @@ func schema_microsoft_dcp_api_v1_ExecutableSpec(ref common.ReferenceCallback) co
 			},
 		},
 		Dependencies: []string{
-			v1.AmbientEnvironment{}.OpenAPIModelName(), v1.EnvVar{}.OpenAPIModelName(), v1.ExecutablePemCertificates{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.TerminalSpec{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.AmbientEnvironment{}.OpenAPIModelName(), v1.ExecutablePemCertificates{}.OpenAPIModelName(), v1.HealthProbe{}.OpenAPIModelName(), v1.TerminalSpec{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -3125,7 +3119,7 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref(v1.EnvVar{}.OpenAPIModelName()),
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
 									},
 								},
 							},
@@ -3185,7 +3179,7 @@ func schema_microsoft_dcp_api_v1_ExecutableStatus(ref common.ReferenceCallback) 
 			},
 		},
 		Dependencies: []string{
-			v1.EnvVar{}.OpenAPIModelName(), v1.HealthProbeResult{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+			v1.HealthProbeResult{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
 	}
 }
 
@@ -4177,6 +4171,1398 @@ func schema_microsoft_dcp_api_v1_VolumeMount(ref common.ReferenceCallback) commo
 					},
 				},
 				Required: []string{"type", "source", "target"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerBuildContext describes how to build a container image from source.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"context": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path to the directory to be used as the root of the build context.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"dockerfile": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path to a Dockerfile to use for the build.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tags": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Additional tags to apply to the image.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"args": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Additional --build-arg values to pass to the build command.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"secrets": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Build time secrets to be passed in to the builder via --secret.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.ContainerBuildSecret{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"stage": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional: the name of the build stage to use for the build.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels to apply to the built image.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"platform": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional target platform for the build (e.g. \"linux/amd64\").",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"context"},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerBuildSecret{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ContainerBuildSecret(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerBuildSecret is a secret made available to the image builder.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The type of secret (defaults to file).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"id": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ID of the secret.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file secrets, the source filepath of the secret; for env secrets, the environment variable name. Required for file secrets, optional for env secrets (defaults to the ID).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Only used for env secrets. If set, this value is applied via the configured environment variable to the build command. If unset, the value comes from the ambient environment.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"id"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ContainerNetworkConnectionConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerNetworkConnectionConfig describes a network to attach to when creating a container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the network to connect to.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"aliases": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Aliases of the container on the network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_ContainerPort(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ContainerPort describes a port, or contiguous range of ports, to publish from a container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"hostPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional: If specified, this must be a valid port number, 0 < x < 65536.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"containerPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Required: This must be a valid port number, 0 < x < 65536.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"rangeSize": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Number of consecutive ports to publish, starting at ContainerPort and HostPort (if specified). Defaults to 1.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The protocol to be used, defaults to TCP.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"hostIP": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Optional: What host IP to bind the external port to.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"containerPort"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_CreateFileSystem(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "CreateFileSystem describes a set of files and directories to create inside a container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"destination": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The absolute path in the container that the entries are created relative to.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"defaultOwner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The default UID applied to entries that do not specify an owner.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"defaultGroup": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The default GID applied to entries that do not specify a group.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"umask": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The umask applied to entries that do not specify a mode.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"entries": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "The entries to create.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.FileSystemEntry{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"destination"},
+			},
+		},
+		Dependencies: []string{
+			v2.FileSystemEntry{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_FileSystemEntry(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "FileSystemEntry represents part of the file structure to be created in the container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The type of entry (file or directory).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The name of the entry (required).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"owner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The UID of the file owner. Defaults to 0 (root).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"group": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The ID of the file group. Defaults to 0 (root).",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"mode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The unix mode permissions of this entry. If Mode is 0, the umask for the create file request is applied.",
+							Type:        []string{"integer"},
+							Format:      "int64",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, an optional path to a source file to copy. It is an error to set both Source and Contents for a file.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"contents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, the string contents of the file. Optional.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"rawContents": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, the Base64 encoded byte contents of the file. Optional.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"continueOnError": {
+						SchemaProps: spec.SchemaProps{
+							Description: "For file type entries, if true, errors creating this file are logged but do not fail the operation.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"entries": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "For directory type entries, the child entries (files or directories). Optional.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.FileSystemEntry{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Dependencies: []string{
+			v2.FileSystemEntry{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_Namespace(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Namespace defines a DCP namespace for V2 resources.\n\nThis intentionally mirrors the standard Kubernetes core/v1 Namespace metadata/status shape while serving the resource from the DCP V2 API group. DCP uses metadata.finalizers for controller cleanup, so it does not expose the legacy spec.finalizers field from core/v1.Namespace. https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/namespace-v1/",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.NamespaceStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.NamespaceStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_NamespaceList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NamespaceList contains a list of Namespace instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.Namespace{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.Namespace{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_NamespaceStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "NamespaceStatus describes the status of a Namespace.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase is the current lifecycle phase of the namespace.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe namespace lifecycle and cleanup progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainer(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainer represents one physical container instance in a DCP V2 namespace.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalContainerSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalContainerStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerSpec{}.OpenAPIModelName(), v2.PhysicalContainerStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerConfig describes a runtime container to create.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"retainRuntimeContainer": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"imageRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerName is the runtime name to use when creating a new container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"replaceExisting": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReplaceExisting removes an existing runtime container with containerName before creating a new one.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"entrypoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Entrypoint is the container runtime entrypoint to run.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"command": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Command is the command arguments passed to the container entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"env": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Env contains environment variables to set in the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports describes ports to expose from the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.ContainerPort{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"volumeMounts": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeMounts describes volume and bind mounts for the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.VolumeMount{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"networks": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Networks describes runtime networks to attach the container to when it is created. If omitted, the container runtime chooses the default network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"createFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "CreateFiles describes files and folders to copy into the container before it starts.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.CreateFileSystem{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerImage represents a runtime image needed by V2 PhysicalContainers.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalContainerImageSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v2.PhysicalContainerImageStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerImageSpec{}.OpenAPIModelName(), v2.PhysicalContainerImageStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerImageConfig describes a runtime image to pull or build.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image is the source image reference to ensure locally, or the target tag for a built image.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"build": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Build describes how to build the image locally.",
+							Ref:         ref(v2.ContainerBuildContext{}.OpenAPIModelName()),
+						},
+					},
+					"pullPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PullPolicy controls source image pulling. If omitted, missing is used. Never is not supported for image builds.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pullRetryLimit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PullRetryLimit is how many times a failed source image pull is retried, with exponential backoff between attempts. Set to zero to fail on the first error. If omitted, a small default number of retries is used to absorb transient registry and network failures.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerBuildContext{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerImageList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerImageList contains a list of PhysicalContainerImage instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.PhysicalContainerImage{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerImage{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerImageSpec describes either an existing runtime image or how to create one.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"imageID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageID identifies an existing runtime image to track. Exactly one of imageID or image must be set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image describes a runtime image to pull or build. Exactly one of imageID or image must be set.",
+							Ref:         ref(v2.PhysicalContainerImageConfig{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerImageConfig{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerImageStatus describes the observed runtime image.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes whether the image is available.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image is the image reference that containers should use.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"imageID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageID is the runtime image ID.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"digest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Digest is the runtime image digest, when available.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"tags": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Tags are the tags observed on the runtime image.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			metav1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerList contains a list of PhysicalContainer instances.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(metav1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.PhysicalContainer{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainer{}.OpenAPIModelName(), metav1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerPortMapping(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerPortMapping describes the observed host binding for one runtime container port.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerPort is the port exposed by the runtime container.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"protocol": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Protocol is the port protocol.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"hostIP": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HostIP is the host address for the published port.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"hostPort": {
+						SchemaProps: spec.SchemaProps{
+							Description: "HostPort is the published host port.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+				Required: []string{"containerPort"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerSpec describes either an existing runtime container or how to create one.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID identifies an existing runtime container to track. Exactly one of containerID or container must be set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"container": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Container describes a runtime container to create. Exactly one of containerID or container must be set.",
+							Ref:         ref(v2.PhysicalContainerConfig{}.OpenAPIModelName()),
+						},
+					},
+					"stop": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Stop requests that the tracked runtime container be stopped.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerConfig{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerStatus describes the observed runtime container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Phase summarizes the runtime container lifecycle.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerID is the runtime container ID being tracked.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerName is the runtime container name.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"image": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Image is the resolved runtime image reference used to create the container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"runtimeStatus": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RuntimeStatus is the raw status reported by the container runtime.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"createdAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "CreatedAt is the runtime container creation timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"startedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "StartedAt is the runtime container start timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"finishedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "FinishedAt is the runtime container finish timestamp.",
+							Ref:         ref(metav1.MicroTime{}.OpenAPIModelName()),
+						},
+					},
+					"exitCode": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExitCode is the runtime container exit code, when available.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"portMappings": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "PortMappings are the observed host bindings for runtime container ports.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.PhysicalContainerPortMapping{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Conditions describe readiness and reconciliation progress.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(metav1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.PhysicalContainerPortMapping{}.OpenAPIModelName(), metav1.Condition{}.OpenAPIModelName(), metav1.MicroTime{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_VolumeMount(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "VolumeMount describes a file system to make available inside a container.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"type": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Bind mounts: the host directory to mount. Volume mounts: name of the volume to mount.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"target": {
+						SchemaProps: spec.SchemaProps{
+							Description: "The path within the container that the mount will use.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"readOnly": {
+						SchemaProps: spec.SchemaProps{
+							Description: "True if the mounted file system is supposed to be read-only.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"type", "source", "target"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_pkg_commonapi_EnvVar(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "EnvVar represents an environment variable present in a resource.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Name of the environment variable.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value of the environment variable. Defaults to \"\" (empty string).",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+	}
+}
+
+func schema_microsoft_dcp_pkg_commonapi_Label(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "Label represents a key/value label to apply to a resource managed outside the API server.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"key": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Key is the label key.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"value": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Value is the label value.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"key", "value"},
 			},
 		},
 	}

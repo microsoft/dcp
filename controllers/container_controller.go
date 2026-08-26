@@ -883,6 +883,106 @@ func (r *ContainerReconciler) stopContainerIfNecessary(
 	return inspected, nil
 }
 
+func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.CreateContainerOptions {
+	return containers.CreateContainerOptions{
+		Image:          spec.Image,
+		Entrypoint:     spec.Command,
+		Command:        spec.Args,
+		Env:            spec.Env,
+		EnvFiles:       spec.EnvFiles,
+		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
+		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
+		Labels:         v1LabelsToContainerLabels(spec.Labels),
+		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
+		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
+		RunArgs:        spec.RunArgs,
+		AttachTerminal: spec.Terminal != nil,
+	}
+}
+
+func v1LabelsToContainerLabels(labels []apiv1.ContainerLabel) []containers.Label {
+	return slices.Map[containers.Label](labels, func(label apiv1.ContainerLabel) containers.Label {
+		return containers.Label{Key: label.Key, Value: label.Value}
+	})
+}
+
+func v1PortsToCreateContainerPorts(ports []apiv1.ContainerPort) []containers.CreateContainerPort {
+	return slices.Map[containers.CreateContainerPort](ports, func(port apiv1.ContainerPort) containers.CreateContainerPort {
+		return containers.CreateContainerPort{
+			HostPort:      port.HostPort,
+			ContainerPort: port.ContainerPort,
+			Protocol:      string(port.Protocol),
+			HostIP:        port.HostIP,
+		}
+	})
+}
+
+func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []containers.CreateContainerVolumeMount {
+	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
+	for i, mount := range mounts {
+		retval[i] = containers.CreateContainerVolumeMount{
+			Type:     containers.VolumeMountType(mount.Type),
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		}
+	}
+	return retval
+}
+
+func v1BuildContextToContainerBuildContext(build *apiv1.ContainerBuildContext) *containers.ContainerBuildContext {
+	if build == nil {
+		return nil
+	}
+
+	return &containers.ContainerBuildContext{
+		Context:    build.Context,
+		Dockerfile: build.Dockerfile,
+		Tags:       build.Tags,
+		Args:       build.Args,
+		Secrets: slices.Map[containers.ContainerBuildSecret](build.Secrets, func(secret apiv1.ContainerBuildSecret) containers.ContainerBuildSecret {
+			return containers.ContainerBuildSecret{
+				Type:   containers.BuildSecretType(secret.Type),
+				ID:     secret.ID,
+				Source: secret.Source,
+				Value:  secret.Value,
+			}
+		}),
+		Stage:    build.Stage,
+		Labels:   v1LabelsToContainerLabels(build.Labels),
+		Platform: build.Platform,
+	}
+}
+
+func v1ImageLayersToContainerImageLayers(layers []apiv1.ImageLayer) []containers.ImageLayer {
+	return slices.Map[containers.ImageLayer](layers, func(layer apiv1.ImageLayer) containers.ImageLayer {
+		return containers.ImageLayer{
+			Digest:      layer.Digest,
+			Source:      layer.Source,
+			SHA256:      layer.SHA256,
+			RawContents: layer.RawContents,
+		}
+	})
+}
+
+func v1FileSystemEntriesToContainerFileSystemEntries(entries []apiv1.FileSystemEntry) []containers.FileSystemEntry {
+	return slices.Map[containers.FileSystemEntry](entries, func(entry apiv1.FileSystemEntry) containers.FileSystemEntry {
+		return containers.FileSystemEntry{
+			Type:            containers.FileSystemEntryType(entry.Type),
+			Name:            entry.Name,
+			Owner:           entry.Owner,
+			Group:           entry.Group,
+			Mode:            entry.Mode,
+			Source:          entry.Source,
+			Target:          entry.Target,
+			Contents:        entry.Contents,
+			RawContents:     entry.RawContents,
+			ContinueOnError: entry.ContinueOnError,
+			Entries:         v1FileSystemEntriesToContainerFileSystemEntries(entry.Entries),
+		}
+	})
+}
+
 func (r *ContainerReconciler) removeExistingContainer(
 	ctx context.Context,
 	containerID containerID,
@@ -1023,7 +1123,7 @@ func (r *ContainerReconciler) buildImageWithOrchestrator(container *apiv1.Contai
 
 			buildOptions := containers.BuildImageOptions{
 				Pull:                  container.Spec.PullPolicy == apiv1.PullPolicyAlways,
-				ContainerBuildContext: rcd.runSpec.Build,
+				ContainerBuildContext: v1BuildContextToContainerBuildContext(rcd.runSpec.Build),
 			}
 			startupStdoutWriter, startupStderrWriter := rcd.getStartupLogWriters()
 			buildOptions.StreamCommandOptions = getStartupCommandOptions(startupStdoutWriter, startupStderrWriter)
@@ -1072,8 +1172,13 @@ func calculatePersistentContainerChanges(rcd *runningContainerData, inspected *c
 	changedMounts := map[string]bool{}
 
 	// Calculate differences between mounts
-	missingSpecMounts := slices.DiffFunc(rcd.runSpec.VolumeMounts, inspected.Mounts, func(a, b apiv1.VolumeMount) bool {
-		return a.Type == b.Type && a.Source == b.Source && a.Target == b.Target && a.ReadOnly == b.ReadOnly
+	missingSpecMounts := slices.Select(rcd.runSpec.VolumeMounts, func(specMount apiv1.VolumeMount) bool {
+		return !slices.Any(inspected.Mounts, func(inspectedMount containers.VolumeMount) bool {
+			return string(specMount.Type) == string(inspectedMount.Type) &&
+				specMount.Source == inspectedMount.Source &&
+				specMount.Target == inspectedMount.Target &&
+				specMount.ReadOnly == inspectedMount.ReadOnly
+		})
 	})
 
 	for _, mount := range missingSpecMounts {
@@ -1287,12 +1392,10 @@ func (r *ContainerReconciler) startContainerWithOrchestrator(container *apiv1.Co
 
 			// Create the container using the active orchestrator.
 			// Persistent container reuse happens only in handleNewContainer before startup is scheduled.
-			creationOptions := containers.CreateContainerOptions{
-				ContainerSpec:        runSpecForCreation,
-				Name:                 containerName,
-				Networks:             createNetworks,
-				StreamCommandOptions: streamOptions,
-			}
+			creationOptions := createContainerOptionsFromV1Spec(runSpecForCreation)
+			creationOptions.Name = containerName
+			creationOptions.Networks = createNetworks
+			creationOptions.StreamCommandOptions = streamOptions
 			inspected, createErr := createContainer(startupCtx, r.orchestrator, creationOptions)
 
 			// Close the startup log writers to ensure all output is flushed and resources are released
@@ -1476,7 +1579,7 @@ func (r *ContainerReconciler) addContainerCreationLabels(container *apiv1.Contai
 	if len(rcd.runSpec.Env) > 0 {
 		rcd.runSpec.Labels = append(rcd.runSpec.Labels, apiv1.ContainerLabel{
 			Key: envLabel,
-			Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env apiv1.EnvVar) string {
+			Value: strings.Join(slices.Map[string](rcd.runSpec.Env, func(env commonapi.EnvVar) string {
 				return env.Name
 			}), "\n"),
 		})
@@ -1541,7 +1644,7 @@ func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd
 	// constructing the derived image. Normally docker create --pull handles
 	// pulling, but since we intercept before that, we must respect PullPolicy here.
 	baseImageInspected, ensureErr := ensureBaseImageForLayers(
-		ctx, r.orchestrator, rcd.runSpec.Image, rcd.runSpec.PullPolicy, log,
+		ctx, r.orchestrator, rcd.runSpec.Image, containers.ImagePullPolicy(rcd.runSpec.PullPolicy), log,
 	)
 	if ensureErr != nil {
 		log.Error(ensureErr, "Could not ensure base image is available for image layers")
@@ -1565,7 +1668,7 @@ func (r *ContainerReconciler) applyContainerImageLayers(ctx context.Context, rcd
 	derivedTag := fmt.Sprintf("%s:dcp-%s", baseRepo, sanitizedKey)
 	applyLayersOptions := containers.ApplyImageLayersOptions{
 		BaseImage: *baseImageInspected,
-		Layers:    rcd.runSpec.ImageLayers,
+		Layers:    v1ImageLayersToContainerImageLayers(rcd.runSpec.ImageLayers),
 		Tag:       derivedTag,
 	}
 	derivedImage, applyErr := r.orchestrator.ApplyImageLayers(ctx, applyLayersOptions)
@@ -1699,7 +1802,7 @@ func (r *ContainerReconciler) copyContainerCreateFiles(
 
 		createFilesOptions := containers.CreateFilesOptions{
 			Container:    inspected.Id,
-			Entries:      createFileRequest.Entries,
+			Entries:      v1FileSystemEntriesToContainerFileSystemEntries(createFileRequest.Entries),
 			Destination:  createFileRequest.Destination,
 			DefaultOwner: createFileRequest.DefaultOwner,
 			DefaultGroup: createFileRequest.DefaultGroup,
@@ -1732,7 +1835,7 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 	}
 
 	fingerprints := []string{}
-	certFiles := []apiv1.FileSystemEntry{}
+	certFiles := []containers.FileSystemEntry{}
 	bundle := []string{}
 	for _, cert := range rcd.runSpec.PemCertificates.Certificates {
 		fingerprint, fingerprintErr := cert.OpenSSLFingerprint()
@@ -1756,14 +1859,14 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 
 		certFiles = append(
 			certFiles,
-			apiv1.FileSystemEntry{
+			containers.FileSystemEntry{
 				Name:            fmt.Sprintf("%s.pem", cert.Thumbprint),
 				Contents:        cert.Contents,
 				ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
 			},
-			apiv1.FileSystemEntry{
+			containers.FileSystemEntry{
 				Name:            fmt.Sprintf("%s.%d", fingerprint, collisions),
-				Type:            apiv1.FileSystemEntryTypeSymlink,
+				Type:            containers.FileSystemEntryTypeSymlink,
 				Target:          fmt.Sprintf("./%s.pem", cert.Thumbprint),
 				ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
 			})
@@ -1774,14 +1877,14 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 	createFilesOptions := containers.CreateFilesOptions{
 		Container:   inspected.Id,
 		Destination: rcd.runSpec.PemCertificates.Destination,
-		Entries: []apiv1.FileSystemEntry{
+		Entries: []containers.FileSystemEntry{
 			{
 				Name:     "cert.pem",
 				Contents: strings.Join(bundle, "\n"),
 			},
 			{
 				Name:    "certs",
-				Type:    apiv1.FileSystemEntryTypeDir,
+				Type:    containers.FileSystemEntryTypeDir,
 				Entries: certFiles,
 			},
 		},
@@ -1803,8 +1906,8 @@ func (r *ContainerReconciler) copyContainerPemCertificates(
 		bundleCreateFilesOptions := containers.CreateFilesOptions{
 			Container:   inspected.Id,
 			Destination: bundleDir,
-			Entries: slices.Map[apiv1.FileSystemEntry](files, func(file string) apiv1.FileSystemEntry {
-				return apiv1.FileSystemEntry{
+			Entries: slices.Map[containers.FileSystemEntry](files, func(file string) containers.FileSystemEntry {
+				return containers.FileSystemEntry{
 					Name:            path.Base(file),
 					Contents:        strings.Join(bundle, "\n"),
 					ContinueOnError: rcd.runSpec.PemCertificates.ContinueOnError,
@@ -2644,7 +2747,7 @@ func (r *ContainerReconciler) computeEffectiveEnvironment(
 			return templateErr
 		}
 
-		acquiredRCD.runSpec.Env[i] = apiv1.EnvVar{Name: envVar.Name, Value: effectiveValue}
+		acquiredRCD.runSpec.Env[i] = commonapi.EnvVar{Name: envVar.Name, Value: effectiveValue}
 	}
 
 	return nil

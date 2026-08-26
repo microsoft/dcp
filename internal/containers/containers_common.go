@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	apiv1 "github.com/microsoft/dcp/api/v1"
+
 	"github.com/microsoft/dcp/internal/openssl"
 	usvc_io "github.com/microsoft/dcp/pkg/io"
 	"github.com/microsoft/dcp/pkg/osutil"
@@ -52,8 +52,8 @@ func (o StreamContainerLogsOptions) Apply(args []string) []string {
 	return args
 }
 
-func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, certificate apiv1.FileSystemEntry, modTime time.Time, hashes []string, log logr.Logger) (string, error) {
-	if certificate.Type != apiv1.FileSystemEntryTypeOpenSSL {
+func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, certificate FileSystemEntry, modTime time.Time, hashes []string, log logr.Logger) (string, error) {
+	if certificate.Type != FileSystemEntryTypeOpenSSL {
 		return "", fmt.Errorf("item is not a certificate")
 	}
 
@@ -142,8 +142,8 @@ func AddCertificateToTar(tarWriter *usvc_io.TarWriter, basePath string, owner in
 	return shortHash, tarWriter.WriteSymlink(path.Join(basePath, fmt.Sprintf("%s.%d", shortHash, hashCollisions)), "./"+certificate.Name, owner, group, modTime, modTime, modTime)
 }
 
-func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, file apiv1.FileSystemEntry, modTime time.Time, log logr.Logger) error {
-	if file.Type != "" && file.Type != apiv1.FileSystemEntryTypeFile {
+func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, file FileSystemEntry, modTime time.Time, log logr.Logger) error {
+	if file.Type != "" && file.Type != FileSystemEntryTypeFile {
 		return fmt.Errorf("item is not a file")
 	}
 
@@ -192,8 +192,8 @@ func AddFileToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, gr
 	}
 }
 
-func AddSymlinkToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, symlink apiv1.FileSystemEntry, modTime time.Time, log logr.Logger) error {
-	if symlink.Type != apiv1.FileSystemEntryTypeSymlink {
+func AddSymlinkToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, symlink FileSystemEntry, modTime time.Time, log logr.Logger) error {
+	if symlink.Type != FileSystemEntryTypeSymlink {
 		return fmt.Errorf("item is not a symlink")
 	}
 
@@ -210,8 +210,8 @@ func AddSymlinkToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32,
 	return tarWriter.WriteSymlink(basePath, symlink.Target, owner, group, modTime, modTime, modTime)
 }
 
-func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, directory apiv1.FileSystemEntry, modTime time.Time, log logr.Logger) error {
-	if directory.Type != apiv1.FileSystemEntryTypeDir {
+func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int32, group int32, umask fs.FileMode, directory FileSystemEntry, modTime time.Time, log logr.Logger) error {
+	if directory.Type != FileSystemEntryTypeDir {
 		return fmt.Errorf("item is not a directory")
 	}
 
@@ -240,11 +240,11 @@ func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int3
 
 	for _, item := range directory.Entries {
 		switch item.Type {
-		case apiv1.FileSystemEntryTypeDir:
+		case FileSystemEntryTypeDir:
 			if addDirectoryErr := AddDirectoryToTar(tarWriter, basePath, owner, group, umask, item, modTime, log); addDirectoryErr != nil {
 				return addDirectoryErr
 			}
-		case apiv1.FileSystemEntryTypeSymlink:
+		case FileSystemEntryTypeSymlink:
 			if addSymlinkErr := AddSymlinkToTar(tarWriter, basePath, owner, group, umask, item, modTime, log); addSymlinkErr != nil {
 				if item.ContinueOnError {
 					log.Error(addSymlinkErr, "Failed to add a symlink to the tar file, but continueOnError is set", "SymLink", item)
@@ -252,7 +252,7 @@ func AddDirectoryToTar(tarWriter *usvc_io.TarWriter, basePath string, owner int3
 					return addSymlinkErr
 				}
 			}
-		case apiv1.FileSystemEntryTypeOpenSSL:
+		case FileSystemEntryTypeOpenSSL:
 			hash, addCertErr := AddCertificateToTar(tarWriter, basePath, owner, group, umask, item, modTime, certificateHashes, log)
 			if addCertErr != nil {
 				if item.ContinueOnError {

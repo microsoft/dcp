@@ -20,6 +20,8 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -29,6 +31,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apiv1 "github.com/microsoft/dcp/api/v1"
+	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/internal/dcpclient"
 	"github.com/microsoft/dcp/internal/networking"
 	"github.com/microsoft/dcp/internal/statestore"
@@ -57,6 +61,55 @@ var (
 )
 
 const pollImmediately = true // Don't wait before polling for the first time
+
+func createContainerOptionsFromV1Spec(spec apiv1.ContainerSpec) containers.CreateContainerOptions {
+	return containers.CreateContainerOptions{
+		Image:          spec.Image,
+		Entrypoint:     spec.Command,
+		Command:        spec.Args,
+		Env:            spec.Env,
+		EnvFiles:       spec.EnvFiles,
+		Ports:          v1PortsToCreateContainerPorts(spec.Ports),
+		VolumeMounts:   v1VolumeMountsToCreateContainerVolumeMounts(spec.VolumeMounts),
+		Labels:         v1LabelsToContainerLabels(spec.Labels),
+		RestartPolicy:  containers.ContainerRestartPolicy(spec.RestartPolicy),
+		PullPolicy:     containers.ImagePullPolicy(spec.PullPolicy),
+		RunArgs:        spec.RunArgs,
+		AttachTerminal: spec.Terminal != nil,
+	}
+}
+
+func v1LabelsToContainerLabels(labels []apiv1.ContainerLabel) []containers.Label {
+	return slices.Map[containers.Label](labels, func(label apiv1.ContainerLabel) containers.Label {
+		return containers.Label{Key: label.Key, Value: label.Value}
+	})
+}
+
+func v1PortsToCreateContainerPorts(ports []apiv1.ContainerPort) []containers.CreateContainerPort {
+	retval := make([]containers.CreateContainerPort, len(ports))
+	for i, port := range ports {
+		retval[i] = containers.CreateContainerPort{
+			HostPort:      port.HostPort,
+			ContainerPort: port.ContainerPort,
+			Protocol:      string(port.Protocol),
+			HostIP:        port.HostIP,
+		}
+	}
+	return retval
+}
+
+func v1VolumeMountsToCreateContainerVolumeMounts(mounts []apiv1.VolumeMount) []containers.CreateContainerVolumeMount {
+	retval := make([]containers.CreateContainerVolumeMount, len(mounts))
+	for i, mount := range mounts {
+		retval[i] = containers.CreateContainerVolumeMount{
+			Type:     containers.VolumeMountType(mount.Type),
+			Source:   mount.Source,
+			Target:   mount.Target,
+			ReadOnly: mount.ReadOnly,
+		}
+	}
+	return retval
+}
 
 func TestMain(m *testing.M) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,6 +171,15 @@ func waitObjectAssumesStateEx[T commonapi.ObjectStruct, PT commonapi.PObjectStru
 		t.Fatal(err)
 	}
 	return updatedObject
+}
+
+func requireReadyCondition(t *testing.T, conditions []metav1.Condition, status metav1.ConditionStatus, reason apiv2.ConditionReason) {
+	t.Helper()
+
+	readyCondition := apimeta.FindStatusCondition(conditions, string(apiv2.ConditionReady))
+	require.NotNil(t, readyCondition)
+	require.Equal(t, status, readyCondition.Status)
+	require.Equal(t, string(reason), readyCondition.Reason)
 }
 
 func waitServiceReady(t *testing.T, ctx context.Context, svcName types.NamespacedName) *apiv1.Service {

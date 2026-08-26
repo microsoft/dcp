@@ -74,7 +74,7 @@ type ServiceSpec struct {
 	Port int32 `json:"port,omitempty"`
 
 	// The protocol, TCP or UDP
-	Protocol PortProtocol `json:"protocol,omitempty"`
+	Protocol commonapi.PortProtocol `json:"protocol,omitempty"`
 
 	// The mode for address allocation. If Address is set, this will be ignored.
 	AddressAllocationMode AddressAllocationMode `json:"addressAllocationMode,omitempty"`
@@ -228,7 +228,7 @@ func (svc *Service) Validate(ctx context.Context) field.ErrorList {
 		errorList = append(errorList, field.Forbidden(nil, errResourceCreationProhibited.Error()))
 	}
 
-	errorList = append(errorList, ValidateAnnotationsSize(svc.Annotations, field.NewPath("metadata", "annotations"))...)
+	errorList = append(errorList, commonapi.ValidateAnnotationsSize(svc.Annotations, field.NewPath("metadata", "annotations"))...)
 
 	return errorList
 }

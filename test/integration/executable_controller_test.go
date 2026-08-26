@@ -298,7 +298,7 @@ func TestStalePersistentExecutableStopWithUnresolvedTemplate(t *testing.T) {
 			Persistent:     true,
 			Start:          &shouldStart,
 			Stop:           true,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "MISSING_SERVICE_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, testName+"-missing-service"),
@@ -1296,7 +1296,7 @@ func TestExecutableStartupFallbackPreservesStartupParameters(t *testing.T) {
 			ExecutionType:          apiv1.ExecutionTypeIDE,
 			FallbackExecutionTypes: []apiv1.ExecutionType{apiv1.ExecutionTypeProcess},
 			Args:                   expectedArgs,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{Name: expectedEnvName, Value: expectedEnvValue},
 			},
 		},
@@ -1364,7 +1364,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.44",
 			Port:     7732,
 		},
@@ -1382,7 +1382,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-serving-port-injected-env-var",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -1408,7 +1408,7 @@ func TestExecutableServingPortInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "SVC_PORT=7733"), "The Executable '%s' effective environment does not contain expected port information. The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
@@ -1451,7 +1451,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  "127.22.33.45",
 					Port:     7740,
 				},
@@ -1471,7 +1471,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/" + exeName,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "SVC_PORT",
 							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -1527,7 +1527,7 @@ func TestExecutableServingPortAllocatedAndInjected(t *testing.T) {
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 				return fmt.Sprintf("%s=%s", v.Name, v.Value)
 			})
 			expectedEnvVar := fmt.Sprintf("SVC_PORT=%d", port)
@@ -1573,7 +1573,7 @@ func TestExecutableServingPortInjectedViaStartupParameter(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  "127.22.33.66",
 					Port:     7745,
 				},
@@ -1651,7 +1651,7 @@ func TestExecutableServingPortAllocatedInjectedViaStartupParameter(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.31.31",
 			Port:     7492,
 		},
@@ -1733,7 +1733,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11740,
 			},
@@ -1744,7 +1744,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11741,
 			},
@@ -1755,7 +1755,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11742,
 			},
@@ -1766,7 +1766,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 				Namespace: metav1.NamespaceNone,
 			},
 			Spec: apiv1.ServiceSpec{
-				Protocol: apiv1.TCP,
+				Protocol: commonapi.PortProtocolTCP,
 				Address:  IPAddr,
 				Port:     11743,
 			},
@@ -1809,7 +1809,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-multiple-serving-ports-injected",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_A_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, services["svc-a"].ObjectMeta.Name),
@@ -1844,7 +1844,7 @@ func TestExecutableMultipleServingPortsInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("SVC_A_PORT=%d", svcAExpectedPort)
@@ -1952,7 +1952,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.45",
 			Port:     expectedPort,
 		},
@@ -1969,7 +1969,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-client-executable-port-for-injected",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "UPSTREAM_SVC_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -1990,7 +1990,7 @@ func TestClientExecutablePortForInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("UPSTREAM_SVC_PORT=%d", expectedPort)
@@ -2016,7 +2016,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "PRODUCED_SVC_PORT",
 					Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, producedSvcName),
@@ -2044,7 +2044,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.45",
 		},
 	}
@@ -2055,7 +2055,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  "127.22.33.45",
 			Port:     26021,
 		},
@@ -2073,7 +2073,7 @@ func TestExecutablePortsInjectedAfterServiceCreated(t *testing.T) {
 	})
 
 	t.Logf("Ensure the Executable.Status.EffectiveEnv contains injected ports...")
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	require.True(t, slices.Contains(effectiveEnv, "PRODUCED_SVC_PORT=26020"), "The Executable '%s' effective environment does not contain expected port information (PRODUCED_SVC_PORT variable). The effective environment is %v", exe.ObjectMeta.Name, effectiveEnv)
@@ -2099,7 +2099,7 @@ func TestExecutableDeletionWhileStarting(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName,
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "SVC_PORT",
 					Value: fmt.Sprintf(`{{- portFor "%s" -}}`, nonExistentSvcName),
@@ -2160,7 +2160,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/" + exeName,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "EXE_NAME",
 							Value: `{{- .Name -}}`,
@@ -2210,7 +2210,7 @@ func TestExecutableTemplatedEnvVarsInjected(t *testing.T) {
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+			effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 				return fmt.Sprintf("%s=%s", v.Name, v.Value)
 			})
 			expectedEnvVar := fmt.Sprintf("EXE_NAME=%s", updatedExe.Name)
@@ -2274,7 +2274,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 					Namespace: metav1.NamespaceNone,
 				},
 				Spec: apiv1.ServiceSpec{
-					Protocol: apiv1.TCP,
+					Protocol: commonapi.PortProtocolTCP,
 					Address:  tc.address,
 				},
 			}
@@ -2298,7 +2298,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/test-executable-using-all-interface-address-exe-" + tc.name,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "LISTENING_PORT",
 							Value: fmt.Sprintf(`{{- portForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -2341,7 +2341,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 			updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			envVars := maps.SliceToMap(updatedExe.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) { return ev.Name, ev.Value })
+			envVars := maps.SliceToMap(updatedExe.Status.EffectiveEnv, func(ev commonapi.EnvVar) (string, string) { return ev.Name, ev.Value })
 			svcPort, svcPortErr := strconv.Atoi(envVars["LISTENING_PORT"])
 			require.NoError(t, svcPortErr, "The listening port used by the Executable '%s' (%s) is not a valid integer", exe.ObjectMeta.Name, envVars["LISTENING_PORT"])
 			require.True(t, networking.IsValidPort(svcPort), "The port used by the Executable '%s' (%s) is not valid", exe.ObjectMeta.Name, svcPort)
@@ -2357,7 +2357,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 				},
 				Spec: apiv1.ExecutableSpec{
 					ExecutablePath: "/path/to/test-executable-using-all-interface-address-client-" + tc.name,
-					Env: []apiv1.EnvVar{
+					Env: []commonapi.EnvVar{
 						{
 							Name:  "SVC_PORT",
 							Value: fmt.Sprintf(`{{- portFor "%s" -}}`, svc.ObjectMeta.Name),
@@ -2382,7 +2382,7 @@ func TestExecutableUsingAllInterfaceAddress(t *testing.T) {
 			updatedClientExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&clientExe), func(currentExe *apiv1.Executable) (bool, error) {
 				return len(currentExe.Status.EffectiveEnv) > 0, nil
 			})
-			clientEnvVars := maps.SliceToMap(updatedClientExe.Status.EffectiveEnv, func(ev apiv1.EnvVar) (string, string) { return ev.Name, ev.Value })
+			clientEnvVars := maps.SliceToMap(updatedClientExe.Status.EffectiveEnv, func(ev commonapi.EnvVar) (string, string) { return ev.Name, ev.Value })
 			svcPort, svcPortErr = strconv.Atoi(clientEnvVars["SVC_PORT"])
 			require.NoError(t, svcPortErr, "The listening port used by the client Executable '%s' (%s) is not a valid integer", clientExe.ObjectMeta.Name, clientEnvVars["SVC_PORT"])
 			require.Equal(t, updatedSvc.Status.EffectivePort, int32(svcPort), "The port used by the client Executable '%s' to cnnect to service %s is not the same as service effective port", clientExe.ObjectMeta.Name, svc.ObjectMeta.Name)
@@ -2408,7 +2408,7 @@ func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/test-executable-environment-variables-handling",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "AlphaVar",
 					Value: `alpha var pascal case`,
@@ -2436,11 +2436,11 @@ func TestExecutableEnvironmentVariablesHandling(t *testing.T) {
 
 	if osutil.IsWindows() {
 		// There should be just one "alpha var"
-		require.Equal(t, 1, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) bool {
+		require.Equal(t, 1, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) bool {
 			return v.Name == "AlphaVar" || v.Name == "alphavar"
 		}))
 	} else {
-		require.Equal(t, 2, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) bool {
+		require.Equal(t, 2, slices.LenIf(updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) bool {
 			return v.Name == "AlphaVar" || v.Name == "alphavar"
 		}))
 	}
@@ -2461,7 +2461,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  IPAddr,
 			Port:     26010,
 		},
@@ -2484,7 +2484,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 		},
 		Spec: apiv1.ExecutableSpec{
 			ExecutablePath: "/path/to/" + testName + "-server",
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "ADDRESS",
 					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -2505,7 +2505,7 @@ func TestExecutableServingAddressInjected(t *testing.T) {
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&server), func(currentExe *apiv1.Executable) (bool, error) {
 		return len(currentExe.Status.EffectiveEnv) > 0, nil
 	})
-	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v apiv1.EnvVar) string {
+	effectiveEnv := slices.Map[string](updatedExe.Status.EffectiveEnv, func(v commonapi.EnvVar) string {
 		return fmt.Sprintf("%s=%s", v.Name, v.Value)
 	})
 	expectedEnvVar := fmt.Sprintf("ADDRESS=%s", IPAddr)
@@ -4195,7 +4195,7 @@ func TestExecutableHttpHealthProbePortInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},
@@ -4276,7 +4276,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Port:     7227,
 		},
 	}
@@ -4313,7 +4313,7 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 					},
 				},
 			},
-			Env: []apiv1.EnvVar{
+			Env: []commonapi.EnvVar{
 				{
 					Name:  "ADDRESS",
 					Value: fmt.Sprintf(`{{- addressForServing "%s" -}}`, svc.ObjectMeta.Name),
@@ -4332,13 +4332,13 @@ func TestExecutableHttpHealthProbePortAllocatedAndInjected(t *testing.T) {
 
 	t.Logf("Read port and address  for serving the service from Executable's '%s' effective environment...", exe.ObjectMeta.Name)
 	updatedExe := waitObjectAssumesState(t, ctx, ctrl_client.ObjectKeyFromObject(&exe), func(currentExe *apiv1.Executable) (bool, error) {
-		hasAddress := slices.Any(currentExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "ADDRESS" })
-		hasPort := slices.Any(currentExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "PORT" })
+		hasAddress := slices.Any(currentExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "ADDRESS" })
+		hasPort := slices.Any(currentExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "PORT" })
 		return hasAddress && hasPort, nil
 	})
-	i := slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "ADDRESS" })
+	i := slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "ADDRESS" })
 	servingAddress := updatedExe.Status.EffectiveEnv[i].Value
-	i = slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env apiv1.EnvVar) bool { return env.Name == "PORT" })
+	i = slices.IndexFunc(updatedExe.Status.EffectiveEnv, func(env commonapi.EnvVar) bool { return env.Name == "PORT" })
 	servingPort, servingPortErr := strconv.Atoi(updatedExe.Status.EffectiveEnv[i].Value)
 	require.NoError(t, servingPortErr)
 
@@ -4451,7 +4451,7 @@ func TestExecutableHttpHealthProbePortsInjectedAfterServiceCreated(t *testing.T)
 			Namespace: metav1.NamespaceNone,
 		},
 		Spec: apiv1.ServiceSpec{
-			Protocol: apiv1.TCP,
+			Protocol: commonapi.PortProtocolTCP,
 			Address:  healthEndpointAddr,
 			Port:     healthEndpointPort,
 		},

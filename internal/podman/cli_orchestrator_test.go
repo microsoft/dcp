@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	apiv1 "github.com/microsoft/dcp/api/v1"
 	"github.com/microsoft/dcp/internal/containers"
 )
 
@@ -76,13 +75,13 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		mount    apiv1.VolumeMount
+		mount    containers.CreateContainerVolumeMount
 		wantArgs []string
 	}{
 		{
 			name: "named volume includes src",
-			mount: apiv1.VolumeMount{
-				Type:   apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:   containers.NamedVolumeMount,
 				Source: "myvolume",
 				Target: "/data",
 			},
@@ -90,8 +89,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "anonymous volume omits src",
-			mount: apiv1.VolumeMount{
-				Type:   apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:   containers.NamedVolumeMount,
 				Source: "",
 				Target: "/data",
 			},
@@ -99,8 +98,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "named volume readonly",
-			mount: apiv1.VolumeMount{
-				Type:     apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:     containers.NamedVolumeMount,
 				Source:   "myvolume",
 				Target:   "/data",
 				ReadOnly: true,
@@ -109,8 +108,8 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		},
 		{
 			name: "anonymous volume readonly",
-			mount: apiv1.VolumeMount{
-				Type:     apiv1.NamedVolumeMount,
+			mount: containers.CreateContainerVolumeMount{
+				Type:     containers.NamedVolumeMount,
 				Source:   "",
 				Target:   "/data",
 				ReadOnly: true,
@@ -123,7 +122,7 @@ func TestApplyCreateContainerOptionsVolumeMounts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			options := containers.CreateContainerOptions{}
-			options.VolumeMounts = []apiv1.VolumeMount{tc.mount}
+			options.VolumeMounts = []containers.CreateContainerVolumeMount{tc.mount}
 			args := applyCreateContainerOptions([]string{}, options)
 			require.Equal(t, tc.wantArgs, args)
 		})

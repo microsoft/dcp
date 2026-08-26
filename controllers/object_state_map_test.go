@@ -72,6 +72,44 @@ func TestObjectStateMapBorrowing(t *testing.T) {
 	require.Nil(t, os)
 }
 
+func TestObjectStateMapStoreReplacesStateKey(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+	m.Store(name, "two", &testObjectState{tag: "dos", count: 2})
+
+	stateKey, state := m.BorrowByNamespacedName(name)
+	require.Equal(t, "two", stateKey)
+	require.Equal(t, &testObjectState{tag: "dos", count: 2}, state)
+
+	_, state = m.BorrowByStateKey("one")
+	require.Nil(t, state)
+}
+
+func TestObjectStateMapStoreIfStateKeyUnclaimed(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	firstName := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	secondName := types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone}
+
+	owner, stored := m.StoreIfStateKeyUnclaimed(firstName, "one", &testObjectState{tag: "uno", count: 1})
+	require.True(t, stored)
+	require.Equal(t, firstName, owner)
+
+	owner, stored = m.StoreIfStateKeyUnclaimed(secondName, "one", &testObjectState{tag: "dos", count: 2})
+	require.False(t, stored)
+	require.Equal(t, firstName, owner)
+
+	stateKey, state := m.BorrowByNamespacedName(firstName)
+	require.Equal(t, "one", stateKey)
+	require.Equal(t, &testObjectState{tag: "uno", count: 1}, state)
+	_, state = m.BorrowByNamespacedName(secondName)
+	require.Nil(t, state)
+}
+
 // Tests various update scenarios.
 func TestObjectStateMapUpdating(t *testing.T) {
 	t.Parallel()
@@ -195,6 +233,33 @@ func TestObjectStateMapDeleting(t *testing.T) {
 	m.DeleteByStateKey("one")
 }
 
+func TestObjectStateMapConditionalDelete(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+
+	require.False(t, m.DeleteByStateKeyIf("one", func(state *testObjectState) bool {
+		return state.tag == "dos"
+	}))
+	_, state := m.BorrowByNamespacedName(name)
+	require.NotNil(t, state)
+
+	require.True(t, m.DeleteByStateKeyIf("one", func(state *testObjectState) bool {
+		return state.tag == "uno" && state.count == 1
+	}))
+	_, state = m.BorrowByNamespacedName(name)
+	require.Nil(t, state)
+
+	predicateCalled := false
+	require.False(t, m.DeleteByStateKeyIf("missing", func(*testObjectState) bool {
+		predicateCalled = true
+		return true
+	}))
+	require.False(t, predicateCalled)
+}
+
 // Deferred operations should be executed if present.
 // If there are no deferred operations, the attempt to execute them should be a no-op.
 func TestObjectStateMapDeferredOps(t *testing.T) {
@@ -243,4 +308,56 @@ func TestObjectStateMapDeferredOps(t *testing.T) {
 	require.Equal(t, "two", stateKey)
 	require.Equal(t, "dos", os.tag)
 	require.Equal(t, 1, os.count)
+}
+
+func TestObjectStateMapDeferredOpsRequireCurrentStateKey(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+	m.DeleteByNamespacedName(name)
+	m.Store(name, "two", &testObjectState{tag: "dos", count: 2})
+
+	queued := m.QueueDeferredOpForStateKey(name, "one", func(name types.NamespacedName, stateKey string, _ *apiv1.Executable) {
+		_, os := m.BorrowByNamespacedName(name)
+		require.NotNil(t, os)
+		os.tag = "stale-update"
+		m.Update(name, stateKey, os)
+	})
+	require.False(t, queued)
+
+	m.RunDeferredOps(name, nil)
+
+	stateKey, os := m.BorrowByNamespacedName(name)
+	require.NotNil(t, os)
+	require.Equal(t, "two", stateKey)
+	require.Equal(t, "dos", os.tag)
+	require.Equal(t, 2, os.count)
+}
+
+func TestObjectStateMapDeleteClearsDeferredOps(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	name := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+
+	m.Store(name, "one", &testObjectState{tag: "uno", count: 1})
+	queued := m.QueueDeferredOp(name, func(name types.NamespacedName, stateKey string, _ *apiv1.Executable) {
+		_, os := m.BorrowByNamespacedName(name)
+		require.NotNil(t, os)
+		os.tag = "stale-update"
+		m.Update(name, stateKey, os)
+	})
+	require.True(t, queued)
+
+	m.DeleteByNamespacedName(name)
+	m.Store(name, "one", &testObjectState{tag: "dos", count: 2})
+	m.RunDeferredOps(name, nil)
+
+	_, os := m.BorrowByNamespacedName(name)
+	require.NotNil(t, os)
+	require.Equal(t, "dos", os.tag)
+	require.Equal(t, 2, os.count)
 }

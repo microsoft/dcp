@@ -16,14 +16,18 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	apivalidation "k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl_config "sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	usvc_slices "github.com/microsoft/dcp/pkg/slices"
 )
@@ -59,6 +63,9 @@ const (
 	NoDelay       AdditionalReconciliationDelay = 1
 	LongDelay     AdditionalReconciliationDelay = 2
 	TestDelay     AdditionalReconciliationDelay = 3
+	// MonitoringDelay paces periodic polling of resources that are in a steady state,
+	// where reconciliation only guards against runtime events that were missed or never delivered.
+	MonitoringDelay AdditionalReconciliationDelay = 4
 )
 
 type durationAndJitter struct {
@@ -69,10 +76,11 @@ type durationAndJitter struct {
 var (
 	// Maps additionalReconciliationDelay values to actual time.Duration values for delay and jitter.
 	delayDurations = map[AdditionalReconciliationDelay]durationAndJitter{
-		StandardDelay: {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
-		LongDelay:     {Duration: 5 * time.Second, Jitter: 2 * time.Second},
-		TestDelay:     {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
-		NoDelay:       {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
+		StandardDelay:   {Duration: 2 * time.Second, Jitter: 500 * time.Millisecond},
+		LongDelay:       {Duration: 5 * time.Second, Jitter: 2 * time.Second},
+		MonitoringDelay: {Duration: 30 * time.Second, Jitter: 5 * time.Second},
+		TestDelay:       {Duration: 200 * time.Millisecond, Jitter: 1 * time.Millisecond},
+		NoDelay:         {Duration: 0 * time.Second, Jitter: 0 * time.Millisecond},
 	}
 )
 
@@ -116,6 +124,48 @@ func deleteFinalizer(obj metav1.Object, finalizer string, log logr.Logger) objec
 	obj.SetFinalizers(finalizers)
 	log.V(1).Info("Removed finalizer", "Finalizer", finalizer)
 	return metadataChanged
+}
+
+// checkNamespaceReady reports whether a namespace permits a V2 resource to perform runtime work.
+// Deletion paths bypass this check so cleanup can still finish.
+func checkNamespaceReady(
+	ctx context.Context,
+	client ctrl_client.Client,
+	namespaceName string,
+) (bool, apiv2.ConditionReason, error) {
+	namespace := apiv2.Namespace{}
+	getErr := client.Get(ctx, types.NamespacedName{Name: namespaceName}, &namespace)
+	if apierrors.IsNotFound(getErr) {
+		return false, apiv2.PhysicalResourceReasonNamespaceNotFound, nil
+	}
+	if getErr != nil {
+		return false, apiv2.PhysicalResourceReasonNamespaceLookupFailed, getErr
+	}
+
+	if namespace.DeletionTimestamp != nil && !namespace.DeletionTimestamp.IsZero() {
+		return false, apiv2.PhysicalResourceReasonNamespaceTerminating, nil
+	}
+	if !usvc_slices.Contains(namespace.Finalizers, namespaceFinalizer) {
+		return false, apiv2.PhysicalResourceReasonNamespaceNotReady, nil
+	}
+	if namespace.Status.Phase != apiv2.NamespacePhaseActive {
+		return false, apiv2.PhysicalResourceReasonNamespaceNotActive, nil
+	}
+
+	return true, "", nil
+}
+
+func namespaceReadinessMessage(namespaceName string, reason apiv2.ConditionReason) string {
+	switch reason {
+	case apiv2.PhysicalResourceReasonNamespaceNotFound:
+		return fmt.Sprintf("Namespace %q does not exist.", namespaceName)
+	case apiv2.PhysicalResourceReasonNamespaceTerminating:
+		return fmt.Sprintf("Namespace %q is terminating.", namespaceName)
+	case apiv2.PhysicalResourceReasonNamespaceNotActive:
+		return fmt.Sprintf("Namespace %q is not active.", namespaceName)
+	default:
+		return fmt.Sprintf("Namespace %q is not ready.", namespaceName)
+	}
 }
 
 // Returns a name made probabilistically unique by appending a random postfix,
@@ -173,24 +223,22 @@ type KubernetesObjectStateType interface {
 	~string
 }
 
-// A function invoked from the reconciliation loop when an object reaches a particular state.
-// The responsibility of the state initializer is threefold:
-// 1. Set the object's to the desired state (usually by modifying its Status).
-// 2. Update the in-memory data structures that track the object's state (data owned by the reconciler).
-// 3. Make necessary changes to the real-world resources that the object represents.
-// NOTE: the initializer MUST return noChange if no changes were made to the object, in order to avoid infinite reconciliation loops
+// stateInitializerFunc is invoked when reconciliation handles a particular controller state.
+// An initializer is responsible for projecting that state onto the API object, updating any
+// controller-owned in-memory data, and applying necessary changes to the represented runtime
+// resources. It must return noChange when it does not modify the API object.
 type stateInitializerFunc[
 	O commonapi.ObjectStruct, PO commonapi.PObjectWithStatusStruct[O],
 	R ReconcilerType, PR PReconcilerType[R],
 	OS KubernetesObjectStateType,
 	IMOS any, PIMOS PInMemoryObjectState[IMOS],
 ] func(
-	context.Context, /* context for the reconciliation operation */
-	PR, /* reconciler instance */
-	PO, /* Kubernetes object to be reconciled */
-	OS, /* The desired state of the object. Useful if the same state initializer is used for multiple states */
-	PIMOS, /* The in-memory state of the object (additional data about the object stored in controller's ObjectStateMap). */
-	logr.Logger,
+	ctx context.Context,
+	reconciler PR,
+	obj PO,
+	state OS,
+	inMemoryState PIMOS,
+	log logr.Logger,
 ) objectChange
 
 func getStateInitializer[
@@ -221,36 +269,78 @@ func getStateInitializer[
 // We consider a timestamp to be "different" from another one if it is off by more than 2 microseconds.
 const timestampEpsilon = 2 * time.Microsecond
 
-// Sets "target" timestamp to "source" timestamp if "target" is before "source"
-// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
-// Returns true if the target timestamp was updated.
-func setTimestampIfBeforeOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+// Sets "target" timestamp to "source" timestamp if "target" is before "source" by more than
+// 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+func setTimestampIfBeforeOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if source.IsZero() {
-		return false
+		return noChange
 	}
 
 	if target.IsZero() || target.Add(timestampEpsilon).Before(source.Time) {
 		*target = source
-		return true
-	} else {
-		return false
+		return statusChanged
 	}
+	return noChange
 }
 
-// Sets "target" timestamp to "source" timestamp if "target" is after "source"
-// by more than 2 microseconds, or if "target" is not known (zero value) and "source" is known.
-// Returns true if the target timestamp was updated.
-func setTimestampIfAfterOrUnknown(source metav1.MicroTime, target *metav1.MicroTime) bool {
+// Sets "target" timestamp to "source" timestamp if "target" is after "source" by more than
+// 2 microseconds, or if "target" is not known (zero value) and "source" is known.
+func setTimestampIfAfterOrUnknown(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
 	if source.IsZero() {
-		return false
+		return noChange
 	}
 
 	if target.IsZero() || source.Add(timestampEpsilon).Before(target.Time) {
 		*target = source
-		return true
-	} else {
-		return false
+		return statusChanged
 	}
+	return noChange
+}
+
+// Sets "target" timestamp to "source" timestamp if it is different by more than 2 microseconds.
+func setTimestamp(target *metav1.MicroTime, source metav1.MicroTime) objectChange {
+	if target.Add(timestampEpsilon).Before(source.Time) || source.Add(timestampEpsilon).Before(target.Time) {
+		*target = source
+		return statusChanged
+	}
+	return noChange
+}
+
+func setValue[T comparable](target *T, value T) objectChange {
+	if *target == value {
+		return noChange
+	}
+	*target = value
+	return statusChanged
+}
+
+// Records the condition, reporting noChange when the condition already holds the same values
+// so that repeated reconciliation of an unchanged state does not produce status writes.
+func setCondition(
+	conditions *[]metav1.Condition,
+	conditionType apiv2.ConditionType,
+	generation int64,
+	status metav1.ConditionStatus,
+	reason apiv2.ConditionReason,
+	message string,
+) objectChange {
+	condition := metav1.Condition{
+		Type:               string(conditionType),
+		Status:             status,
+		Reason:             string(reason),
+		Message:            message,
+		ObservedGeneration: generation,
+	}
+	if existingCondition := apimeta.FindStatusCondition(*conditions, condition.Type); existingCondition != nil &&
+		existingCondition.Status == condition.Status &&
+		existingCondition.Reason == condition.Reason &&
+		existingCondition.Message == condition.Message &&
+		existingCondition.ObservedGeneration == condition.ObservedGeneration {
+		return noChange
+	}
+
+	apimeta.SetStatusCondition(conditions, condition)
+	return statusChanged
 }
 
 // Computes a valid Kubernetes label value from an arbitrary string.
