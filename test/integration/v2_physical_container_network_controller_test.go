@@ -827,7 +827,7 @@ func TestV2PhysicalContainerNetworkControllerWaitsForNamespace(t *testing.T) {
 	require.NoError(t, client.Create(ctx, network))
 
 	pendingNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhasePending)
-	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonPending)
+	requireReadyCondition(t, pendingNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalResourceReasonNamespaceNotFound)
 	require.Equal(t, 0, containerOrchestrator.CreateNetworkCallCount(networkName))
 
 	namespace := &apiv2.Namespace{ObjectMeta: metav1.ObjectMeta{Name: network.Namespace}}

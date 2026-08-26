@@ -893,7 +893,7 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
-	if postCreateErr := to.takeCreateNetworkPostError(options.Name); postCreateErr != nil {
+	if postCreateErr := to.takeCreateNetworkPostErrorLocked(options.Name); postCreateErr != nil {
 		return "", postCreateErr
 	}
 
@@ -1340,10 +1340,7 @@ func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Co
 	return to.recordOperation(ctx, operationCreateNetwork, name)
 }
 
-func (to *TestContainerOrchestrator) takeCreateNetworkPostError(name string) error {
-	to.mutex.Lock()
-	defer to.mutex.Unlock()
-
+func (to *TestContainerOrchestrator) takeCreateNetworkPostErrorLocked(name string) error {
 	if len(to.createNetworkPostErrors[name]) == 0 {
 		return nil
 	}

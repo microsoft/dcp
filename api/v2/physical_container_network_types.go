@@ -52,9 +52,6 @@ const (
 )
 
 const (
-	// PhysicalContainerNetworkReasonPending indicates that the network is waiting for prerequisites.
-	PhysicalContainerNetworkReasonPending ConditionReason = "Pending"
-
 	// PhysicalContainerNetworkReasonCreating indicates that runtime network creation is in progress.
 	PhysicalContainerNetworkReasonCreating ConditionReason = "Creating"
 
