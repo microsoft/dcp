@@ -42,10 +42,12 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
-			IPv6:        true,
-			Labels: []commonapi.Label{
-				{Key: "test-label", Value: "test-value"},
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName: networkName,
+				IPv6:        true,
+				Labels: []commonapi.Label{
+					{Key: "test-label", Value: "test-value"},
+				},
 			},
 		},
 	}
@@ -121,7 +123,7 @@ func TestV2PhysicalContainerNetworkControllerRemovesCreatedNetworkOnDeletion(t *
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -148,7 +150,7 @@ func TestV2PhysicalContainerNetworkControllerDisconnectsContainersBeforeDeletion
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -199,8 +201,10 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
-			Persistent:  true,
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:          networkName,
+				RetainRuntimeNetwork: true,
+			},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -343,8 +347,10 @@ func TestV2PhysicalContainerNetworkControllerReplacesExistingNetwork(t *testing.
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName:     networkName,
-			ReplaceExisting: true,
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:     networkName,
+				ReplaceExisting: true,
+			},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -385,8 +391,10 @@ func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName:     builtInNetwork.Name,
-			ReplaceExisting: true,
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:     builtInNetwork.Name,
+				ReplaceExisting: true,
+			},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -395,10 +403,10 @@ func TestV2PhysicalContainerNetworkControllerRejectsBuiltInNetworkCreateByName(t
 		ctx,
 		network.NamespacedName(),
 		func(currentNetwork *apiv2.PhysicalContainerNetwork) (bool, error) {
-			readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, apiv2.ConditionReady)
+			readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, string(apiv2.ConditionReady))
 			return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
 				readyCondition != nil &&
-				readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
+				readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable), nil
 		},
 	)
 
@@ -428,7 +436,7 @@ func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuring
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -440,11 +448,13 @@ func TestV2PhysicalContainerNetworkControllerDisconnectsPreservedContainerDuring
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pcn-ns-preserved-container",
-			Persistent:    true,
-			Networks: []apiv2.ContainerNetworkConnectionConfig{
-				{Name: networkName},
+			Container: &apiv2.PhysicalContainerConfig{
+				ImageRef:               image.Name,
+				ContainerName:          "v2-pcn-ns-preserved-container",
+				RetainRuntimeContainer: true,
+				Networks: []apiv2.ContainerNetworkConnectionConfig{
+					{Name: networkName},
+				},
 			},
 		},
 	}
@@ -482,7 +492,7 @@ func TestV2PhysicalContainerNetworkControllerCleansUpOnNamespaceDeletion(t *test
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -513,7 +523,7 @@ func TestV2PhysicalContainerNetworkControllerDoesNotDuplicateCreate(t *testing.T
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -551,8 +561,10 @@ func TestV2PhysicalContainerNetworkControllerReportsTerminalCreateFailure(t *tes
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
-			Persistent:  true,
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:          networkName,
+				RetainRuntimeNetwork: true,
+			},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -587,7 +599,7 @@ func TestV2PhysicalContainerNetworkControllerAdoptsNetworkAfterUncertainCreateFa
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -616,7 +628,7 @@ func TestV2PhysicalContainerNetworkControllerDoesNotChurnReadyStatus(t *testing.
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -654,7 +666,7 @@ func TestV2PhysicalContainerNetworkControllerReportsMissingRuntimeNetwork(t *tes
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))
@@ -708,7 +720,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromRuntimeFailure(t *testi
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: "v2-pcn-recovery-runtime",
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: "v2-pcn-recovery-runtime"},
 		},
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, network))
@@ -779,7 +791,7 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testin
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, network))
@@ -809,7 +821,7 @@ func TestV2PhysicalContainerNetworkControllerWaitsForNamespace(t *testing.T) {
 			Namespace: "v2-pcn-wait-namespace",
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName: networkName,
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, network))

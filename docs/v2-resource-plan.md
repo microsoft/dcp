@@ -78,7 +78,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - `Namespace` defines the namespace boundary for V2 resources and provides namespace-scoped cleanup.
 - `PhysicalContainerImage` provides source image pull and build workflows.
 - `PhysicalContainer` creates or tracks one runtime container, reports runtime status and port mappings, and references a same-namespace `PhysicalContainerImage`.
-- `PhysicalContainerNetwork` creates or references one runtime container network and reports its observed identity, driver, and address allocations. Networks referenced by runtime ID are always retained. Created networks are retained when `persistent` is true; otherwise deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network. Name collisions are terminal unless `replaceExisting` is true, in which case the controller safely removes the specifically resolved network before creating its replacement. Runtime adapters classify their own built-in, non-removable networks, and replacement rejects them before disconnecting any attachments.
+- `PhysicalContainerNetwork` creates or references one runtime container network and reports its observed identity, driver, and address allocations. Its spec contains exactly one of top-level `networkID` or nested `network` creation config. Networks referenced by runtime ID are always retained. Created networks are retained when `network.retainRuntimeNetwork` is true; otherwise deletion enumerates running and stopped attachments, forcibly disconnects each container without removing it, and then removes the network. Name collisions are terminal unless `network.replaceExisting` is true, in which case the controller safely removes the specifically resolved network before creating its replacement. Runtime adapters classify their own built-in, non-removable networks, and replacement rejects them before disconnecting any attachments.
 - The physical resources use in-memory progress data, standardized `Ready` conditions, and queued work where side effects can block.
 
 ## Follow-up roadmap
@@ -115,8 +115,8 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Use the same namespace, queued action, in-memory progress, phase, and condition patterns as the other physical resources.
    - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
 
-7. Align network harvesting with `persistent`.
-   - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalContainerNetwork` with `persistent: true` is therefore still removed after a DCP crash, unlike a persistent container.
+7. Align network harvesting with `retainRuntimeNetwork`.
+   - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalContainerNetwork` with `network.retainRuntimeNetwork: true` is therefore still removed after a DCP crash, unlike a retained container.
    - This asymmetry is inherited from V1. Decide whether harvesting should honor the persistent label for networks, and change V1 and V2 together if it should.
 
 8. Retry recoverable failures in `PhysicalContainerImage`.

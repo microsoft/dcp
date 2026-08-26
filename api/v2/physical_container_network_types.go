@@ -53,45 +53,51 @@ const (
 
 const (
 	// PhysicalContainerNetworkReasonPending indicates that the network is waiting for prerequisites.
-	PhysicalContainerNetworkReasonPending string = "Pending"
+	PhysicalContainerNetworkReasonPending ConditionReason = "Pending"
 
 	// PhysicalContainerNetworkReasonCreating indicates that runtime network creation is in progress.
-	PhysicalContainerNetworkReasonCreating string = "Creating"
+	PhysicalContainerNetworkReasonCreating ConditionReason = "Creating"
 
 	// PhysicalContainerNetworkReasonCreated indicates that runtime network creation completed.
-	PhysicalContainerNetworkReasonCreated string = "Created"
+	PhysicalContainerNetworkReasonCreated ConditionReason = "Created"
 
 	// PhysicalContainerNetworkReasonCreateFailed indicates that runtime network creation failed.
-	PhysicalContainerNetworkReasonCreateFailed string = "CreateFailed"
+	PhysicalContainerNetworkReasonCreateFailed ConditionReason = "CreateFailed"
 
 	// PhysicalContainerNetworkReasonNetworkReady indicates that the runtime network is available.
-	PhysicalContainerNetworkReasonNetworkReady string = "NetworkReady"
+	PhysicalContainerNetworkReasonNetworkReady ConditionReason = "NetworkReady"
 
 	// PhysicalContainerNetworkReasonRuntimeNetworkMissing indicates that the runtime network was not found.
-	PhysicalContainerNetworkReasonRuntimeNetworkMissing string = "RuntimeNetworkMissing"
+	PhysicalContainerNetworkReasonRuntimeNetworkMissing ConditionReason = "RuntimeNetworkMissing"
 
 	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in runtime network.
-	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable string = "BuiltInNetworkNotRemovable"
+	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable ConditionReason = "BuiltInNetworkNotRemovable"
 
 	// PhysicalContainerNetworkReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerNetworkReasonReconciliationFailed string = "ReconciliationFailed"
+	PhysicalContainerNetworkReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
 )
 
 // PhysicalContainerNetworkSpec describes either an existing runtime network or how to create one.
 // +k8s:openapi-gen=true
 type PhysicalContainerNetworkSpec struct {
-	// NetworkID identifies an existing runtime network to track. When set, creation fields are forbidden.
+	// NetworkID identifies an existing runtime network to track. Exactly one of networkID or network must be set.
 	NetworkID string `json:"networkID,omitempty"`
 
-	// NetworkName is the runtime name to use when creating a new network. Required when networkID is omitted.
+	// Network describes a runtime network to create. Exactly one of networkID or network must be set.
+	Network *PhysicalContainerNetworkConfig `json:"network,omitempty"`
+}
+
+// PhysicalContainerNetworkConfig describes a runtime network to create.
+// +k8s:openapi-gen=true
+type PhysicalContainerNetworkConfig struct {
+	// NetworkName is the runtime name to use when creating a new network.
 	NetworkName string `json:"networkName,omitempty"`
 
 	// IPv6 enables IPv6 on a newly created runtime network.
 	IPv6 bool `json:"ipv6,omitempty"`
 
-	// Persistent keeps a runtime network created by this resource in place when the resource is deleted.
-	// Existing runtime networks referenced by networkID are always retained.
-	Persistent bool `json:"persistent,omitempty"`
+	// RetainRuntimeNetwork keeps the created runtime network in place when this resource is deleted.
+	RetainRuntimeNetwork bool `json:"retainRuntimeNetwork,omitempty"`
 
 	// ReplaceExisting removes an existing runtime network with networkName before creating a new one.
 	// Attached containers are disconnected but are not removed.
@@ -208,22 +214,30 @@ func (pn *PhysicalContainerNetwork) Validate(ctx context.Context) field.ErrorLis
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pn.Annotations, field.NewPath("metadata", "annotations"))...)
 
-	if pn.Spec.NetworkID != "" {
-		errorList = append(errorList, pn.validateExistingNetworkSpec(specPath)...)
+	if pn.Spec.NetworkID == "" && pn.Spec.Network == nil {
+		errorList = append(errorList, field.Required(specPath, "exactly one of networkID or network must be set"))
+		return errorList
+	}
+	if pn.Spec.NetworkID != "" && pn.Spec.Network != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("network"), "network cannot be set when networkID is set"))
+		return errorList
+	}
+	if pn.Spec.Network == nil {
 		return errorList
 	}
 
-	if pn.Spec.NetworkName == "" {
-		errorList = append(errorList, field.Required(specPath.Child("networkName"), "networkName must be set when networkID is omitted"))
-	} else if !validNetworkNameRegexp.MatchString(pn.Spec.NetworkName) {
-		errorList = append(errorList, field.Invalid(specPath.Child("networkName"), pn.Spec.NetworkName, fmt.Sprintf("networkName must match regex '%s'", validNetworkName)))
+	network := pn.Spec.Network
+	networkPath := specPath.Child("network")
+	if network.NetworkName == "" {
+		errorList = append(errorList, field.Required(networkPath.Child("networkName"), "networkName must be set"))
+	} else if !validNetworkNameRegexp.MatchString(network.NetworkName) {
+		errorList = append(errorList, field.Invalid(networkPath.Child("networkName"), network.NetworkName, fmt.Sprintf("networkName must match regex '%s'", validNetworkName)))
 	}
-	if pn.Spec.ReplaceExisting && pn.Spec.NetworkName == "" {
-		errorList = append(errorList, field.Required(specPath.Child("networkName"), "networkName must be set when replaceExisting is true"))
+	if network.ReplaceExisting && network.NetworkName == "" {
+		errorList = append(errorList, field.Required(networkPath.Child("networkName"), "networkName must be set when replaceExisting is true"))
 	}
 
-	errorList = append(errorList, validateLabels(pn.Spec.Labels, specPath.Child("labels"))...)
-
+	errorList = append(errorList, validateLabels(network.Labels, networkPath.Child("labels"))...)
 	return errorList
 }
 
@@ -239,28 +253,6 @@ func (pn *PhysicalContainerNetwork) ValidateUpdate(ctx context.Context, old runt
 	oldPhysicalContainerNetwork := old.(*PhysicalContainerNetwork)
 	if !reflect.DeepEqual(oldPhysicalContainerNetwork.Spec, pn.Spec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
-	}
-
-	return errorList
-}
-
-func (pn *PhysicalContainerNetwork) validateExistingNetworkSpec(specPath *field.Path) field.ErrorList {
-	errorList := field.ErrorList{}
-
-	if pn.Spec.Persistent {
-		errorList = append(errorList, field.Forbidden(specPath.Child("persistent"), "persistent cannot be set when networkID is set"))
-	}
-	if pn.Spec.NetworkName != "" {
-		errorList = append(errorList, field.Forbidden(specPath.Child("networkName"), "networkName cannot be set when networkID is set"))
-	}
-	if pn.Spec.ReplaceExisting {
-		errorList = append(errorList, field.Forbidden(specPath.Child("replaceExisting"), "replaceExisting cannot be set when networkID is set"))
-	}
-	if pn.Spec.IPv6 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("ipv6"), "ipv6 cannot be set when networkID is set"))
-	}
-	if len(pn.Spec.Labels) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("labels"), "labels cannot be set when networkID is set"))
 	}
 
 	return errorList

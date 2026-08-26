@@ -122,7 +122,9 @@ func TestV2PhysicalContainerNetworkControllerRetainsTerminalCreateFailureUntilSt
 					UID:        types.UID("durable-create-failure"),
 					Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
 				},
-				Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: networkName},
+				Spec: apiv2.PhysicalContainerNetworkSpec{
+					Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
+				},
 			}
 
 			baseClient := fake.NewClientBuilder().
@@ -218,8 +220,10 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName:     "bridge",
-			ReplaceExisting: true,
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:     "bridge",
+				ReplaceExisting: true,
+			},
 		},
 	}
 
@@ -267,7 +271,7 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 		return false, currentReconcileErr
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 0, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.Equal(t, 0, orchestrator.CreateNetworkCallCount(network.Spec.Network.NetworkName))
 
 	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
@@ -279,13 +283,13 @@ func TestV2PhysicalContainerNetworkControllerRetainsBuiltInFailureUntilStatusIsD
 		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
 			return false, getErr
 		}
-		readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, apiv2.ConditionReady)
+		readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, string(apiv2.ConditionReady))
 		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseFailed &&
 			readyCondition != nil &&
-			readyCondition.Reason == apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable, nil
+			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable), nil
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 0, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.Equal(t, 0, orchestrator.CreateNetworkCallCount(network.Spec.Network.NetworkName))
 }
 
 func TestV2PhysicalContainerNetworkControllerAdoptsOwnedNetworkBeforeReplacement(t *testing.T) {
@@ -310,8 +314,10 @@ func TestV2PhysicalContainerNetworkControllerAdoptsOwnedNetworkBeforeReplacement
 			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
 		},
 		Spec: apiv2.PhysicalContainerNetworkSpec{
-			NetworkName:     "replace-adopts-owned-network-runtime",
-			ReplaceExisting: true,
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:     "replace-adopts-owned-network-runtime",
+				ReplaceExisting: true,
+			},
 		},
 	}
 
@@ -333,7 +339,7 @@ func TestV2PhysicalContainerNetworkControllerAdoptsOwnedNetworkBeforeReplacement
 	}()
 
 	ownedNetworkID, createErr := orchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{
-		Name: network.Spec.NetworkName,
+		Name: network.Spec.Network.NetworkName,
 		Labels: map[string]string{
 			"com.microsoft.developer.usvc-dev.uid": string(network.UID),
 		},
@@ -363,7 +369,7 @@ func TestV2PhysicalContainerNetworkControllerAdoptsOwnedNetworkBeforeReplacement
 			currentNetwork.Status.NetworkID == ownedNetworkID, nil
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.Network.NetworkName))
 }
 
 func TestV2PhysicalContainerNetworkControllerRetainsCreatedNetworkUntilStatusIsDurable(t *testing.T) {
@@ -387,7 +393,9 @@ func TestV2PhysicalContainerNetworkControllerRetainsCreatedNetworkUntilStatusIsD
 			UID:        types.UID("durable-created-network"),
 			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
 		},
-		Spec: apiv2.PhysicalContainerNetworkSpec{NetworkName: "durable-created-network-runtime"},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: "durable-created-network-runtime"},
+		},
 	}
 
 	baseClient := fake.NewClientBuilder().
@@ -434,7 +442,7 @@ func TestV2PhysicalContainerNetworkControllerRetainsCreatedNetworkUntilStatusIsD
 		return false, currentReconcileErr
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.Network.NetworkName))
 
 	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
 		_, currentReconcileErr := reconciler.Reconcile(ctx, request)
@@ -449,5 +457,5 @@ func TestV2PhysicalContainerNetworkControllerRetainsCreatedNetworkUntilStatusIsD
 		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
 	})
 	require.NoError(t, waitErr)
-	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.NetworkName))
+	require.Equal(t, 1, orchestrator.CreateNetworkCallCount(network.Spec.Network.NetworkName))
 }

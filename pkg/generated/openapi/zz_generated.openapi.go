@@ -105,6 +105,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.PhysicalContainerImageStatus{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref),
 		v2.PhysicalContainerList{}.OpenAPIModelName():             schema_microsoft_dcp_api_v2_PhysicalContainerList(ref),
 		v2.PhysicalContainerNetwork{}.OpenAPIModelName():          schema_microsoft_dcp_api_v2_PhysicalContainerNetwork(ref),
+		v2.PhysicalContainerNetworkConfig{}.OpenAPIModelName():    schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref),
 		v2.PhysicalContainerNetworkList{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerNetworkList(ref),
 		v2.PhysicalContainerNetworkSpec{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerNetworkSpec(ref),
 		v2.PhysicalContainerNetworkStatus{}.OpenAPIModelName():    schema_microsoft_dcp_api_v2_PhysicalContainerNetworkStatus(ref),
@@ -5321,6 +5322,71 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetwork(ref common.ReferenceCa
 	}
 }
 
+func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerNetworkConfig describes a runtime network to create.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"networkName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "NetworkName is the runtime name to use when creating a new network.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ipv6": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IPv6 enables IPv6 on a newly created runtime network.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"retainRuntimeNetwork": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetainRuntimeNetwork keeps the created runtime network in place when this resource is deleted.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"replaceExisting": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReplaceExisting removes an existing runtime network with networkName before creating a new one. Attached containers are disconnected but are not removed.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -5379,66 +5445,22 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkSpec(ref common.Referen
 				Properties: map[string]spec.Schema{
 					"networkID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkID identifies an existing runtime network to track. When set, creation fields are forbidden.",
+							Description: "NetworkID identifies an existing runtime network to track. Exactly one of networkID or network must be set.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
 					},
-					"networkName": {
+					"network": {
 						SchemaProps: spec.SchemaProps{
-							Description: "NetworkName is the runtime name to use when creating a new network. Required when networkID is omitted.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"ipv6": {
-						SchemaProps: spec.SchemaProps{
-							Description: "IPv6 enables IPv6 on a newly created runtime network.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"persistent": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Persistent keeps a runtime network created by this resource in place when the resource is deleted. Existing runtime networks referenced by networkID are always retained.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"replaceExisting": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ReplaceExisting removes an existing runtime network with networkName before creating a new one. Attached containers are disconnected but are not removed.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"labels": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"key",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime network.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
-									},
-								},
-							},
+							Description: "Network describes a runtime network to create. Exactly one of networkID or network must be set.",
+							Ref:         ref(v2.PhysicalContainerNetworkConfig{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			commonapi.Label{}.OpenAPIModelName()},
+			v2.PhysicalContainerNetworkConfig{}.OpenAPIModelName()},
 	}
 }
 

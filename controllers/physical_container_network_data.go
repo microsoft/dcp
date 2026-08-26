@@ -16,7 +16,7 @@ import (
 type physicalContainerNetworkDataStateKey string
 
 type physicalContainerNetworkData struct {
-	conditionReason string
+	conditionReason apiv2.ConditionReason
 	networkID       string
 	failureMessage  string
 	retryAfter      time.Time
@@ -70,13 +70,13 @@ func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContain
 	switch data.conditionReason {
 	case apiv2.PhysicalContainerNetworkReasonCreating:
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
-		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating, "Runtime network creation is in progress.")
+		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating, "Runtime network creation is in progress.")
 		return change
 	case apiv2.PhysicalContainerNetworkReasonCreateFailed,
 		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
 		apiv2.PhysicalContainerNetworkReasonReconciliationFailed:
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
-		change |= setReadyCondition(&network.Status.Conditions, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
 		return change
 	default:
 		return change

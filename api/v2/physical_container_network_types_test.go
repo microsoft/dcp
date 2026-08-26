@@ -29,7 +29,9 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "test-runtime-network",
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "test-runtime-network",
+					},
 				},
 			},
 		},
@@ -41,10 +43,12 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "test-runtime-network",
-					IPv6:        true,
-					Labels: []commonapi.Label{
-						{Key: "test-label", Value: "test-value"},
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "test-runtime-network",
+						IPv6:        true,
+						Labels: []commonapi.Label{
+							{Key: "test-label", Value: "test-value"},
+						},
 					},
 				},
 			},
@@ -58,7 +62,9 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "a",
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "a",
+					},
 				},
 			},
 		},
@@ -82,8 +88,10 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName:     "test-runtime-network",
-					ReplaceExisting: true,
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName:     "test-runtime-network",
+						ReplaceExisting: true,
+					},
 				},
 			},
 		},
@@ -94,10 +102,22 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Name: "test-network",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "test-runtime-network",
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "test-runtime-network",
+					},
 				},
 			},
 			expectedError: "metadata.namespace",
+		},
+		{
+			name: "missing network ID and create definition",
+			network: PhysicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-network",
+					Namespace: "test-namespace",
+				},
+			},
+			expectedError: "spec",
 		},
 		{
 			name: "missing network name",
@@ -106,8 +126,11 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Name:      "test-network",
 					Namespace: "test-namespace",
 				},
+				Spec: PhysicalContainerNetworkSpec{
+					Network: &PhysicalContainerNetworkConfig{},
+				},
 			},
-			expectedError: "spec.networkName",
+			expectedError: "spec.network.networkName",
 		},
 		{
 			name: "invalid network name",
@@ -117,10 +140,12 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "-invalid-network",
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "-invalid-network",
+					},
 				},
 			},
-			expectedError: "spec.networkName",
+			expectedError: "spec.network.networkName",
 		},
 		{
 			name: "network name with whitespace",
@@ -130,82 +155,34 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "invalid network",
-				},
-			},
-			expectedError: "spec.networkName",
-		},
-		{
-			name: "persistent with tracked network",
-			network: PhysicalContainerNetwork{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-network",
-					Namespace: "test-namespace",
-				},
-				Spec: PhysicalContainerNetworkSpec{
-					NetworkID:  "test-network-id",
-					Persistent: true,
-				},
-			},
-			expectedError: "spec.persistent",
-		},
-		{
-			name: "network name with tracked network",
-			network: PhysicalContainerNetwork{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-network",
-					Namespace: "test-namespace",
-				},
-				Spec: PhysicalContainerNetworkSpec{
-					NetworkID:   "test-network-id",
-					NetworkName: "test-runtime-network",
-				},
-			},
-			expectedError: "spec.networkName",
-		},
-		{
-			name: "replace existing with tracked network",
-			network: PhysicalContainerNetwork{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-network",
-					Namespace: "test-namespace",
-				},
-				Spec: PhysicalContainerNetworkSpec{
-					NetworkID:       "test-network-id",
-					ReplaceExisting: true,
-				},
-			},
-			expectedError: "spec.replaceExisting",
-		},
-		{
-			name: "IPv6 with tracked network",
-			network: PhysicalContainerNetwork{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-network",
-					Namespace: "test-namespace",
-				},
-				Spec: PhysicalContainerNetworkSpec{
-					NetworkID: "test-network-id",
-					IPv6:      true,
-				},
-			},
-			expectedError: "spec.ipv6",
-		},
-		{
-			name: "labels with tracked network",
-			network: PhysicalContainerNetwork{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-network",
-					Namespace: "test-namespace",
-				},
-				Spec: PhysicalContainerNetworkSpec{
-					NetworkID: "test-network-id",
-					Labels: []commonapi.Label{
-						{Key: "test-label", Value: "test-value"},
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "invalid network",
 					},
 				},
 			},
-			expectedError: "spec.labels",
+			expectedError: "spec.network.networkName",
+		},
+		{
+			name: "create definition with tracked network",
+			network: PhysicalContainerNetwork{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-network",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerNetworkSpec{
+					NetworkID: "test-network-id",
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName:          "test-runtime-network",
+						RetainRuntimeNetwork: true,
+						ReplaceExisting:      true,
+						IPv6:                 true,
+						Labels: []commonapi.Label{
+							{Key: "test-label", Value: "test-value"},
+						},
+					},
+				},
+			},
+			expectedError: "spec.network",
 		},
 		{
 			name: "missing label key",
@@ -215,13 +192,15 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "test-runtime-network",
-					Labels: []commonapi.Label{
-						{Value: "test-value"},
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "test-runtime-network",
+						Labels: []commonapi.Label{
+							{Value: "test-value"},
+						},
 					},
 				},
 			},
-			expectedError: "spec.labels[0].key",
+			expectedError: "spec.network.labels[0].key",
 		},
 		{
 			name: "missing label value",
@@ -231,13 +210,15 @@ func TestPhysicalContainerNetworkValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerNetworkSpec{
-					NetworkName: "test-runtime-network",
-					Labels: []commonapi.Label{
-						{Key: "test-label"},
+					Network: &PhysicalContainerNetworkConfig{
+						NetworkName: "test-runtime-network",
+						Labels: []commonapi.Label{
+							{Key: "test-label"},
+						},
 					},
 				},
 			},
-			expectedError: "spec.labels[0].value",
+			expectedError: "spec.network.labels[0].value",
 		},
 	}
 
@@ -264,7 +245,9 @@ func TestPhysicalContainerNetworkValidateRejectsCreationDuringShutdown(t *testin
 			Namespace: "test-namespace",
 		},
 		Spec: PhysicalContainerNetworkSpec{
-			NetworkName: "test-runtime-network",
+			Network: &PhysicalContainerNetworkConfig{
+				NetworkName: "test-runtime-network",
+			},
 		},
 	}
 
@@ -286,7 +269,9 @@ func TestPhysicalContainerNetworkValidateAllowsDeletionDuringShutdown(t *testing
 			DeletionTimestamp: &deletionTimestamp,
 		},
 		Spec: PhysicalContainerNetworkSpec{
-			NetworkName: "test-runtime-network",
+			Network: &PhysicalContainerNetworkConfig{
+				NetworkName: "test-runtime-network",
+			},
 		},
 	}
 
@@ -300,11 +285,13 @@ func TestPhysicalContainerNetworkValidateUpdateRejectsSpecChanges(t *testing.T) 
 			Namespace: "test-namespace",
 		},
 		Spec: PhysicalContainerNetworkSpec{
-			NetworkName: "test-runtime-network",
+			Network: &PhysicalContainerNetworkConfig{
+				NetworkName: "test-runtime-network",
+			},
 		},
 	}
 	newNetwork := oldNetwork.DeepCopy()
-	newNetwork.Spec.NetworkName = "different-runtime-network"
+	newNetwork.Spec.Network.NetworkName = "different-runtime-network"
 
 	errorList := newNetwork.ValidateUpdate(context.Background(), oldNetwork)
 
@@ -322,7 +309,9 @@ func TestPhysicalContainerNetworkValidateUpdateAllowsStatusUpdateDuringShutdown(
 			Namespace: "test-namespace",
 		},
 		Spec: PhysicalContainerNetworkSpec{
-			NetworkName: "test-runtime-network",
+			Network: &PhysicalContainerNetworkConfig{
+				NetworkName: "test-runtime-network",
+			},
 		},
 	}
 	newNetwork := oldNetwork.DeepCopy()
