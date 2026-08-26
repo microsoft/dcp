@@ -37,13 +37,12 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 			Name:      "created-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName: "v2-pctr-created-container",
 			Command:       []string{"run"},
 			Env: []commonapi.EnvVar{
 				{Name: "TEST_ENV", Value: "test-value"},
-			},
+			}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -81,9 +80,8 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(
 			Name:      "watched-image-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      imageName,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: imageName,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -102,9 +100,7 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(
 			Name:      imageName,
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: sourceImage,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -140,15 +136,14 @@ func TestV2PhysicalContainerControllerCreatesContainerWithNetworks(t *testing.T)
 			Name:      "networked-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName: "v2-pctr-networked-container",
 			Networks: []apiv2.ContainerNetworkConnectionConfig{
 				{
 					Name:    networkName,
 					Aliases: []string{"api", "service"},
 				},
-			},
+			}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -178,8 +173,7 @@ func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
 			Name:      "ported-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName: "v2-pctr-ported-container",
 			Ports: []apiv2.ContainerPort{
 				{
@@ -197,7 +191,7 @@ func TestV2PhysicalContainerControllerReportsPortMappings(t *testing.T) {
 					HostIP:        "127.0.0.3",
 					HostPort:      19100,
 				},
-			},
+			}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -250,8 +244,7 @@ func TestV2PhysicalContainerControllerCopiesCreateFilesBeforeStart(t *testing.T)
 			Name:      "files-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName: "v2-pctr-files-container",
 			CreateFiles: []apiv2.CreateFileSystem{
 				{
@@ -263,7 +256,7 @@ func TestV2PhysicalContainerControllerCopiesCreateFilesBeforeStart(t *testing.T)
 						},
 					},
 				},
-			},
+			}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -293,9 +286,9 @@ func TestV2PhysicalContainerControllerCreatesStoppedContainerWithoutStarting(t *
 			Namespace: namespace.Name,
 		},
 		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pctr-stop-on-create-container",
-			Stop:          true,
+
+			Stop: true, Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+				ContainerName: "v2-pctr-stop-on-create-container"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -326,9 +319,8 @@ func TestV2PhysicalContainerControllerDoesNotDuplicateCreateWhileStatusPending(t
 			Name:      "gated-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -364,9 +356,8 @@ func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
 			Name:      "retry-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -411,9 +402,8 @@ func TestV2PhysicalContainerControllerCleansUpPartialContainerAfterTerminalCreat
 			Name:      "partial-create-failure-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -447,9 +437,8 @@ func TestV2PhysicalContainerControllerRetriesPartialContainerCleanupAfterFailure
 			Name:      "partial-cleanup-retry-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -491,9 +480,8 @@ func TestV2PhysicalContainerControllerReappliesPostCreateFailureStatus(t *testin
 			Name:      "post-create-failure-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -581,9 +569,8 @@ func TestV2PhysicalContainerControllerReportsRuntimePhases(t *testing.T) {
 			Name:      "runtime-phases-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -628,9 +615,8 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 			Name:      "deleted-created-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pctr-delete-created",
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-delete-created"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -656,10 +642,9 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 			Name:      "retained-created-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:               image.Name,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName:          "v2-pctr-retain-created",
-			RetainRuntimeContainer: true,
+			RetainRuntimeContainer: true},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -725,9 +710,8 @@ func TestV2PhysicalContainerControllerRejectsExistingContainerWithoutReplacement
 			Name:      "conflicting-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -762,10 +746,9 @@ func TestV2PhysicalContainerControllerReplacesExistingContainer(t *testing.T) {
 			Name:      "replacement-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:        image.Name,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
 			ContainerName:   containerName,
-			ReplaceExisting: true,
+			ReplaceExisting: true},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -799,9 +782,8 @@ func TestV2PhysicalContainerControllerStopsContainer(t *testing.T) {
 			Name:      "stopped-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pctr-stopped-container",
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-stopped-container"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -835,9 +817,8 @@ func TestV2PhysicalContainerControllerTracksRuntimeContainerEvents(t *testing.T)
 			Name:      "event-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: "v2-pctr-event-container",
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: "v2-pctr-event-container"},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))

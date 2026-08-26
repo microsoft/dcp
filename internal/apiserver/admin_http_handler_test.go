@@ -509,9 +509,7 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 			Name:      "test-v2-physical-container-image",
 			Namespace: ns.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: "test-image",
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "test-image"}},
 	}
 	createErr = serverInfo.Client.Create(ctx, &pci)
 	require.NoError(t, createErr, "Failed to create V2 PhysicalContainerImage")
@@ -521,9 +519,7 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 			Name:      "test-v2-physical-container",
 			Namespace: ns.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef: pci.Name,
-		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: pci.Name}},
 	}
 	createErr = serverInfo.Client.Create(ctx, &pc)
 	require.NoError(t, createErr, "Failed to create V2 PhysicalContainer")
@@ -533,7 +529,7 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 	require.NoError(t, getErr, "Failed to get V2 PhysicalContainer")
 	require.Equal(t, pc.Name, got.Name)
 	require.Equal(t, ns.Name, got.Namespace)
-	require.Equal(t, pci.Name, got.Spec.ImageRef)
+	require.Equal(t, pci.Name, got.Spec.Container.ImageRef)
 
 	var list apiv2.PhysicalContainerList
 	listErr := serverInfo.Client.List(ctx, &list, ctrl_client.InNamespace(ns.Name))

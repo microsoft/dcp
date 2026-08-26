@@ -28,9 +28,7 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
-				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 			},
 		},
 		{
@@ -53,15 +51,14 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
 							ContainerPort: 8080,
 							RangeSize:     3,
 							HostPort:      18080,
 						},
-					},
+					}},
 				},
 			},
 		},
@@ -71,11 +68,19 @@ func TestPhysicalContainerValidate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-container",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
-				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 			},
 			expectedError: "metadata.namespace",
+		},
+		{
+			name: "missing container source",
+			container: PhysicalContainer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-container",
+					Namespace: "test-namespace",
+				},
+			},
+			expectedError: "spec",
 		},
 		{
 			name: "missing imageRef for created container",
@@ -84,8 +89,9 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{}},
 			},
-			expectedError: "spec.imageRef",
+			expectedError: "spec.container.imageRef",
 		},
 		{
 			name: "invalid imageRef",
@@ -94,11 +100,9 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "/",
-				},
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "/"}},
 			},
-			expectedError: "spec.imageRef",
+			expectedError: "spec.container.imageRef",
 		},
 		{
 			name: "imageRef conflicts with existing container ID",
@@ -108,11 +112,10 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID: "existing-container-id",
-					ImageRef:    "test-image",
+					ContainerID: "existing-container-id", Container: &PhysicalContainerConfig{ImageRef: "test-image"},
 				},
 			},
-			expectedError: "spec.imageRef",
+			expectedError: "spec.container",
 		},
 		{
 			name: "creation fields conflict with existing container ID",
@@ -122,11 +125,10 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID: "existing-container-id",
-					Command:     []string{"run"},
+					ContainerID: "existing-container-id", Container: &PhysicalContainerConfig{Command: []string{"run"}},
 				},
 			},
-			expectedError: "spec.command",
+			expectedError: "spec.container",
 		},
 		{
 			name: "retain runtime container conflicts with existing container ID",
@@ -136,11 +138,10 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID:            "existing-container-id",
-					RetainRuntimeContainer: true,
+					ContainerID: "existing-container-id", Container: &PhysicalContainerConfig{RetainRuntimeContainer: true},
 				},
 			},
-			expectedError: "spec.retainRuntimeContainer",
+			expectedError: "spec.container",
 		},
 		{
 			name: "replaceExisting conflicts with existing container ID",
@@ -150,11 +151,10 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Namespace: "test-namespace",
 				},
 				Spec: PhysicalContainerSpec{
-					ContainerID:     "existing-container-id",
-					ReplaceExisting: true,
+					ContainerID: "existing-container-id", Container: &PhysicalContainerConfig{ReplaceExisting: true},
 				},
 			},
-			expectedError: "spec.replaceExisting",
+			expectedError: "spec.container",
 		},
 		{
 			name: "replaceExisting requires containerName",
@@ -163,12 +163,11 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef:        "test-image",
-					ReplaceExisting: true,
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
+					ReplaceExisting: true},
 				},
 			},
-			expectedError: "spec.containerName",
+			expectedError: "spec.container.containerName",
 		},
 		{
 			name: "invalid container port range size",
@@ -177,17 +176,16 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
 							ContainerPort: 65535,
 							RangeSize:     2,
 						},
-					},
+					}},
 				},
 			},
-			expectedError: "spec.ports[0].rangeSize",
+			expectedError: "spec.container.ports[0].rangeSize",
 		},
 		{
 			name: "invalid host port range end",
@@ -196,18 +194,17 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
 							ContainerPort: 8080,
 							RangeSize:     3,
 							HostPort:      65534,
 						},
-					},
+					}},
 				},
 			},
-			expectedError: "spec.ports[0].rangeSize",
+			expectedError: "spec.container.ports[0].rangeSize",
 		},
 		{
 			name: "unsupported port protocol",
@@ -216,17 +213,16 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
 					Ports: []ContainerPort{
 						{
 							ContainerPort: 8080,
 							Protocol:      commonapi.PortProtocol("SCTP"),
 						},
-					},
+					}},
 				},
 			},
-			expectedError: "spec.ports[0].protocol",
+			expectedError: "spec.container.ports[0].protocol",
 		},
 		{
 			name: "invalid container name",
@@ -235,12 +231,11 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef:      "test-image",
-					ContainerName: "-invalid-container",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
+					ContainerName: "-invalid-container"},
 				},
 			},
-			expectedError: "spec.containerName",
+			expectedError: "spec.container.containerName",
 		},
 		{
 			name: "missing label key",
@@ -249,14 +244,13 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
 					Labels: []commonapi.Label{
 						{Value: "test-value"},
-					},
+					}},
 				},
 			},
-			expectedError: "spec.labels[0].key",
+			expectedError: "spec.container.labels[0].key",
 		},
 		{
 			name: "missing label value",
@@ -265,14 +259,13 @@ func TestPhysicalContainerValidate(t *testing.T) {
 					Name:      "test-container",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerSpec{
-					ImageRef: "test-image",
+				Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image",
 					Labels: []commonapi.Label{
 						{Key: "test-label"},
-					},
+					}},
 				},
 			},
-			expectedError: "spec.labels[0].value",
+			expectedError: "spec.container.labels[0].value",
 		},
 	}
 
@@ -295,12 +288,10 @@ func TestPhysicalContainerValidateUpdateRejectsSpecChanges(t *testing.T) {
 			Name:      "test-container",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerSpec{
-			ImageRef: "test-image",
-		},
+		Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 	}
 	newContainer := oldContainer.DeepCopy()
-	newContainer.Spec.ImageRef = "different-image"
+	newContainer.Spec.Container.ImageRef = "different-image"
 
 	errorList := newContainer.ValidateUpdate(context.Background(), oldContainer)
 
@@ -314,9 +305,7 @@ func TestPhysicalContainerValidateUpdateAllowsStopRequest(t *testing.T) {
 			Name:      "test-container",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerSpec{
-			ImageRef: "test-image",
-		},
+		Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 	}
 	newContainer := oldContainer.DeepCopy()
 	newContainer.Spec.Stop = true
@@ -335,9 +324,7 @@ func TestPhysicalContainerValidateUpdateAllowsStatusUpdateDuringShutdown(t *test
 			Name:      "test-container",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerSpec{
-			ImageRef: "test-image",
-		},
+		Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 	}
 	newContainer := oldContainer.DeepCopy()
 	newContainer.Status.Phase = PhysicalContainerPhaseRunning
@@ -358,8 +345,8 @@ func TestPhysicalContainerValidateUpdateRejectsClearingStop(t *testing.T) {
 			Namespace: "test-namespace",
 		},
 		Spec: PhysicalContainerSpec{
-			ImageRef: "test-image",
-			Stop:     true,
+
+			Stop: true, Container: &PhysicalContainerConfig{ImageRef: "test-image"},
 		},
 	}
 	newContainer := oldContainer.DeepCopy()

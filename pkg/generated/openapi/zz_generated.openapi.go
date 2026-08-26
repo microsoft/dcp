@@ -97,7 +97,9 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v2.NamespaceList{}.OpenAPIModelName():                     schema_microsoft_dcp_api_v2_NamespaceList(ref),
 		v2.NamespaceStatus{}.OpenAPIModelName():                   schema_microsoft_dcp_api_v2_NamespaceStatus(ref),
 		v2.PhysicalContainer{}.OpenAPIModelName():                 schema_microsoft_dcp_api_v2_PhysicalContainer(ref),
+		v2.PhysicalContainerConfig{}.OpenAPIModelName():           schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref),
 		v2.PhysicalContainerImage{}.OpenAPIModelName():            schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref),
+		v2.PhysicalContainerImageConfig{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref),
 		v2.PhysicalContainerImageList{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_PhysicalContainerImageList(ref),
 		v2.PhysicalContainerImageSpec{}.OpenAPIModelName():        schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref),
 		v2.PhysicalContainerImageStatus{}.OpenAPIModelName():      schema_microsoft_dcp_api_v2_PhysicalContainerImageStatus(ref),
@@ -4778,6 +4780,196 @@ func schema_microsoft_dcp_api_v2_PhysicalContainer(ref common.ReferenceCallback)
 	}
 }
 
+func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerConfig describes a runtime container to create.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"retainRuntimeContainer": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"imageRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"containerName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ContainerName is the runtime name to use when creating a new container.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"replaceExisting": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReplaceExisting removes an existing runtime container with containerName before creating a new one.",
+							Type:        []string{"boolean"},
+							Format:      "",
+						},
+					},
+					"entrypoint": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Entrypoint is the container runtime entrypoint to run.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"command": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Command is the command arguments passed to the container entrypoint.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"env": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"name",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Env contains environment variables to set in the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"ports": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Ports describes ports to expose from the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.ContainerPort{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"volumeMounts": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "VolumeMounts describes volume and bind mounts for the container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.VolumeMount{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"networks": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Networks describes runtime networks to attach the container to when it is created. If omitted, the container runtime chooses the default network.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"createFiles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "CreateFiles describes files and folders to copy into the container before it starts.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v2.CreateFileSystem{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"labels": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"key",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "Labels contains labels to apply to a newly-created runtime container.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+	}
+}
+
 func schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -4822,6 +5014,48 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImage(ref common.ReferenceCall
 		},
 		Dependencies: []string{
 			v2.PhysicalContainerImageSpec{}.OpenAPIModelName(), v2.PhysicalContainerImageStatus{}.OpenAPIModelName(), metav1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PhysicalContainerImageConfig describes a runtime image to pull or build.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"base": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Base is the source image reference to ensure locally, or the target tag for a built image.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"build": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Build describes how to build the image locally.",
+							Ref:         ref(v2.ContainerBuildContext{}.OpenAPIModelName()),
+						},
+					},
+					"pullPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PullPolicy controls source image pulling. If omitted, missing is used. Never is not supported for image builds.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"pullRetryLimit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PullRetryLimit is how many times a failed source image pull is retried, with exponential backoff between attempts. Set to zero to fail on the first error. If omitted, a small default number of retries is used to absorb transient registry and network failures.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v2.ContainerBuildContext{}.OpenAPIModelName()},
 	}
 }
 
@@ -4878,41 +5112,27 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageSpec(ref common.Reference
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PhysicalContainerImageSpec describes a source image to pull or an image to build.",
+				Description: "PhysicalContainerImageSpec describes either an existing runtime image or how to create one.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
+					"imageID": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ImageID identifies an existing runtime image to track. Exactly one of imageID or image must be set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"image": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Image is the source image reference to ensure locally, or the target tag for a built image.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"build": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Build describes how to build the image locally.",
-							Ref:         ref(v2.ContainerBuildContext{}.OpenAPIModelName()),
-						},
-					},
-					"pullPolicy": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PullPolicy controls source image pulling. If omitted, missing is used. Never is not supported for image builds.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"pullRetryLimit": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PullRetryLimit is how many times a failed source image pull is retried, with exponential backoff between attempts. Set to zero to fail on the first error. If omitted, a small default number of retries is used to absorb transient registry and network failures.",
-							Type:        []string{"integer"},
-							Format:      "int32",
+							Description: "Image describes a runtime image to pull or build. Exactly one of imageID or image must be set.",
+							Ref:         ref(v2.PhysicalContainerImageConfig{}.OpenAPIModelName()),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerBuildContext{}.OpenAPIModelName()},
+			v2.PhysicalContainerImageConfig{}.OpenAPIModelName()},
 	}
 }
 
@@ -5102,9 +5322,15 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 				Properties: map[string]spec.Schema{
 					"containerID": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ContainerID identifies an existing runtime container to track. When set, retainRuntimeContainer, imageRef, containerName, replaceExisting, entrypoint, command, env, ports, volumeMounts, networks, createFiles, and labels must be omitted.",
+							Description: "ContainerID identifies an existing runtime container to track. Exactly one of containerID or container must be set.",
 							Type:        []string{"string"},
 							Format:      "",
+						},
+					},
+					"container": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Container describes a runtime container to create. Exactly one of containerID or container must be set.",
+							Ref:         ref(v2.PhysicalContainerConfig{}.OpenAPIModelName()),
 						},
 					},
 					"stop": {
@@ -5114,186 +5340,11 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerSpec(ref common.ReferenceCallb
 							Format:      "",
 						},
 					},
-					"retainRuntimeContainer": {
-						SchemaProps: spec.SchemaProps{
-							Description: "RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted. Existing runtime containers referenced by containerID are always retained.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"imageRef": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"containerName": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ContainerName is the runtime name to use when creating a new container.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"replaceExisting": {
-						SchemaProps: spec.SchemaProps{
-							Description: "ReplaceExisting removes an existing runtime container with containerName before creating a new one.",
-							Type:        []string{"boolean"},
-							Format:      "",
-						},
-					},
-					"entrypoint": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Entrypoint is the container runtime entrypoint to run.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"command": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Command is the command arguments passed to the container entrypoint.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
-						},
-					},
-					"env": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"name",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Env contains environment variables to set in the container.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(commonapi.EnvVar{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"ports": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Ports describes ports to expose from the container.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v2.ContainerPort{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"volumeMounts": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "VolumeMounts describes volume and bind mounts for the container.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v2.VolumeMount{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"networks": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Networks describes runtime networks to attach the container to when it is created. If omitted, the container runtime chooses the default network.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"createFiles": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "CreateFiles describes files and folders to copy into the container before it starts.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v2.CreateFileSystem{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-					"labels": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"key",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime container.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(commonapi.Label{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
 				},
 			},
 		},
 		Dependencies: []string{
-			v2.ContainerNetworkConnectionConfig{}.OpenAPIModelName(), v2.ContainerPort{}.OpenAPIModelName(), v2.CreateFileSystem{}.OpenAPIModelName(), v2.VolumeMount{}.OpenAPIModelName(), commonapi.EnvVar{}.OpenAPIModelName(), commonapi.Label{}.OpenAPIModelName()},
+			v2.PhysicalContainerConfig{}.OpenAPIModelName()},
 	}
 }
 

@@ -70,9 +70,8 @@ func TestV2NamespaceControllerCleansUpPhysicalContainers(t *testing.T) {
 				Name:      fmt.Sprintf("cleanup-container-%d", i),
 				Namespace: namespace.Name,
 			},
-			Spec: apiv2.PhysicalContainerSpec{
-				ImageRef:      images[i].Name,
-				ContainerName: fmt.Sprintf("v2-ns-cleanup-container-%d", i),
+			Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: images[i].Name,
+				ContainerName: fmt.Sprintf("v2-ns-cleanup-container-%d", i)},
 			},
 		}
 		require.NoError(t, client.Create(ctx, physicalContainers[i]))
@@ -126,9 +125,7 @@ func createReadyV2PhysicalContainerImage(
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: imageRef,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: imageRef}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -191,9 +188,8 @@ func TestV2NamespaceControllerReportsPendingCleanupResources(t *testing.T) {
 			Name:      "stalled-container",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerSpec{
-			ImageRef:      image.Name,
-			ContainerName: containerName,
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{ImageRef: image.Name,
+			ContainerName: containerName},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))

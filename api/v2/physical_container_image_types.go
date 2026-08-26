@@ -75,11 +75,21 @@ const (
 	PhysicalContainerImageReasonBuildResultMissingImageID ConditionReason = "BuildResultMissingImageID"
 )
 
-// PhysicalContainerImageSpec describes a source image to pull or an image to build.
+// PhysicalContainerImageSpec describes either an existing runtime image or how to create one.
 // +k8s:openapi-gen=true
 type PhysicalContainerImageSpec struct {
-	// Image is the source image reference to ensure locally, or the target tag for a built image.
-	Image string `json:"image,omitempty"`
+	// ImageID identifies an existing runtime image to track. Exactly one of imageID or image must be set.
+	ImageID string `json:"imageID,omitempty"`
+
+	// Image describes a runtime image to pull or build. Exactly one of imageID or image must be set.
+	Image *PhysicalContainerImageConfig `json:"image,omitempty"`
+}
+
+// PhysicalContainerImageConfig describes a runtime image to pull or build.
+// +k8s:openapi-gen=true
+type PhysicalContainerImageConfig struct {
+	// Base is the source image reference to ensure locally, or the target tag for a built image.
+	Base string `json:"base,omitempty"`
 
 	// Build describes how to build the image locally.
 	Build *ContainerBuildContext `json:"build,omitempty"`
@@ -191,32 +201,46 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pci.Annotations, field.NewPath("metadata", "annotations"))...)
 
-	if pci.Spec.Image == "" && pci.Spec.Build == nil {
-		errorList = append(errorList, field.Required(specPath.Child("image"), "image or build must be set"))
+	if pci.Spec.ImageID == "" && pci.Spec.Image == nil {
+		errorList = append(errorList, field.Required(specPath, "exactly one of imageID or image must be set"))
+		return errorList
 	}
-	if pci.Spec.Image != "" && strings.ContainsAny(pci.Spec.Image, "\r\n\t ") {
-		errorList = append(errorList, field.Invalid(specPath.Child("image"), pci.Spec.Image, "image must not contain whitespace or control characters"))
+	if pci.Spec.ImageID != "" && pci.Spec.Image != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("image"), "image cannot be set when imageID is set"))
+		return errorList
+	}
+	if pci.Spec.Image == nil {
+		return errorList
 	}
 
-	switch pci.Spec.PullPolicy {
+	image := pci.Spec.Image
+	imagePath := specPath.Child("image")
+	if image.Base == "" && image.Build == nil {
+		errorList = append(errorList, field.Required(imagePath.Child("base"), "base or build must be set"))
+	}
+	if image.Base != "" && strings.ContainsAny(image.Base, "\r\n\t ") {
+		errorList = append(errorList, field.Invalid(imagePath.Child("base"), image.Base, "base must not contain whitespace or control characters"))
+	}
+
+	switch image.PullPolicy {
 	case "", PullPolicyAlways, PullPolicyMissing, PullPolicyNever:
 	default:
-		errorList = append(errorList, field.NotSupported(specPath.Child("pullPolicy"), pci.Spec.PullPolicy, []string{
+		errorList = append(errorList, field.NotSupported(imagePath.Child("pullPolicy"), image.PullPolicy, []string{
 			string(PullPolicyAlways),
 			string(PullPolicyMissing),
 			string(PullPolicyNever),
 		}))
 	}
 
-	if pci.Spec.PullRetryLimit != nil && *pci.Spec.PullRetryLimit < 0 {
-		errorList = append(errorList, field.Invalid(specPath.Child("pullRetryLimit"), *pci.Spec.PullRetryLimit, "pullRetryLimit must not be negative"))
+	if image.PullRetryLimit != nil && *image.PullRetryLimit < 0 {
+		errorList = append(errorList, field.Invalid(imagePath.Child("pullRetryLimit"), *image.PullRetryLimit, "pullRetryLimit must not be negative"))
 	}
 
-	if pci.Spec.Build != nil {
-		if pci.Spec.PullPolicy == PullPolicyNever {
-			errorList = append(errorList, field.Invalid(specPath.Child("pullPolicy"), pci.Spec.PullPolicy, "pullPolicy never is not supported for image builds"))
+	if image.Build != nil {
+		if image.PullPolicy == PullPolicyNever {
+			errorList = append(errorList, field.Invalid(imagePath.Child("pullPolicy"), image.PullPolicy, "pullPolicy never is not supported for image builds"))
 		}
-		errorList = append(errorList, validatePhysicalContainerImageBuild(pci.Spec.Build, specPath.Child("build"))...)
+		errorList = append(errorList, validatePhysicalContainerImageBuild(image.Build, imagePath.Child("build"))...)
 	}
 
 	return errorList

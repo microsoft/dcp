@@ -61,8 +61,18 @@ func (in PhysicalContainer) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerImage) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerImage"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerImageConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerImageConfig"
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.

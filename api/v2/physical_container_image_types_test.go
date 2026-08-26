@@ -22,15 +22,23 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 		expectedError string
 	}{
 		{
+			name: "valid existing image",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{ImageID: "existing-image-id"},
+			},
+		},
+		{
 			name: "valid source image",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Image: "test-source-image",
-				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
 			},
 		},
 		{
@@ -40,10 +48,9 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-					},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+				}},
 				},
 			},
 		},
@@ -54,11 +61,9 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Image: "test-target-image",
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-					},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-target-image", Build: &ContainerBuildContext{
+					Context: "test-context",
+				}},
 				},
 			},
 		},
@@ -69,17 +74,16 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-						Secrets: []ContainerBuildSecret{
-							{
-								Type:   FileSecret,
-								ID:     "test-secret",
-								Source: "test-secret-file",
-							},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					Secrets: []ContainerBuildSecret{
+						{
+							Type:   FileSecret,
+							ID:     "test-secret",
+							Source: "test-secret-file",
 						},
 					},
+				}},
 				},
 			},
 		},
@@ -90,16 +94,15 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-						Secrets: []ContainerBuildSecret{
-							{
-								Type: EnvSecret,
-								ID:   "test-secret",
-							},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					Secrets: []ContainerBuildSecret{
+						{
+							Type: EnvSecret,
+							ID:   "test-secret",
 						},
 					},
+				}},
 				},
 			},
 		},
@@ -109,18 +112,41 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-image",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Image: "test-source-image",
-				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
 			},
 			expectedError: "metadata.namespace",
 		},
 		{
-			name: "missing source",
+			name: "missing image source",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image",
 					Namespace: "test-namespace",
+				},
+			},
+			expectedError: "spec",
+		},
+		{
+			name: "missing base and build",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{}},
+			},
+			expectedError: "spec.image.base",
+		},
+		{
+			name: "image definition conflicts with existing image ID",
+			image: PhysicalContainerImage{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-image",
+					Namespace: "test-namespace",
+				},
+				Spec: PhysicalContainerImageSpec{
+					ImageID: "existing-image-id",
+					Image:   &PhysicalContainerImageConfig{Base: "test-source-image"},
 				},
 			},
 			expectedError: "spec.image",
@@ -132,12 +158,9 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Image:      "test-source-image",
-					PullPolicy: "invalid",
-				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image", PullPolicy: "invalid"}},
 			},
-			expectedError: "spec.pullPolicy",
+			expectedError: "spec.image.pullPolicy",
 		},
 		{
 			name: "never pull policy with build",
@@ -146,14 +169,13 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-					},
-					PullPolicy: PullPolicyNever,
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+				},
+					PullPolicy: PullPolicyNever},
 				},
 			},
-			expectedError: "spec.pullPolicy",
+			expectedError: "spec.image.pullPolicy",
 		},
 		{
 			name: "missing build context",
@@ -162,11 +184,9 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{},
-				},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{}}},
 			},
-			expectedError: "spec.build.context",
+			expectedError: "spec.image.build.context",
 		},
 		{
 			name: "missing build file secret source",
@@ -175,19 +195,18 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-						Secrets: []ContainerBuildSecret{
-							{
-								Type: FileSecret,
-								ID:   "test-secret",
-							},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					Secrets: []ContainerBuildSecret{
+						{
+							Type: FileSecret,
+							ID:   "test-secret",
 						},
 					},
+				}},
 				},
 			},
-			expectedError: "spec.build.secrets[0].source",
+			expectedError: "spec.image.build.secrets[0].source",
 		},
 		{
 			name: "missing build default file secret source",
@@ -196,18 +215,17 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-						Secrets: []ContainerBuildSecret{
-							{
-								ID: "test-secret",
-							},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					Secrets: []ContainerBuildSecret{
+						{
+							ID: "test-secret",
 						},
 					},
+				}},
 				},
 			},
-			expectedError: "spec.build.secrets[0].source",
+			expectedError: "spec.image.build.secrets[0].source",
 		},
 		{
 			name: "missing build label key",
@@ -216,16 +234,15 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-						Labels: []commonapi.Label{
-							{Value: "test-value"},
-						},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					Labels: []commonapi.Label{
+						{Value: "test-value"},
 					},
+				}},
 				},
 			},
-			expectedError: "spec.build.labels[0].key",
+			expectedError: "spec.image.build.labels[0].key",
 		},
 		{
 			name: "missing build label value",
@@ -234,16 +251,15 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{
-					Build: &ContainerBuildContext{
-						Context: "test-context",
-						Labels: []commonapi.Label{
-							{Key: "test-label"},
-						},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Build: &ContainerBuildContext{
+					Context: "test-context",
+					Labels: []commonapi.Label{
+						{Key: "test-label"},
 					},
+				}},
 				},
 			},
-			expectedError: "spec.build.labels[0].value",
+			expectedError: "spec.image.build.labels[0].value",
 		},
 	}
 
@@ -266,12 +282,10 @@ func TestPhysicalContainerImageValidateUpdateRejectsSpecChanges(t *testing.T) {
 			Name:      "test-image",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerImageSpec{
-			Image: "test-source-image",
-		},
+		Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
 	}
 	newImage := oldImage.DeepCopy()
-	newImage.Spec.Image = "different-source-image"
+	newImage.Spec.Image.Base = "different-source-image"
 
 	errorList := newImage.ValidateUpdate(context.Background(), oldImage)
 
@@ -288,9 +302,7 @@ func TestPhysicalContainerImageValidateUpdateAllowsStatusUpdateDuringShutdown(t 
 			Name:      "test-image",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerImageSpec{
-			Image: "test-source-image",
-		},
+		Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
 	}
 	newImage := oldImage.DeepCopy()
 	newImage.Status.Phase = PhysicalContainerImagePhaseReady

@@ -34,9 +34,7 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 			Name:      "pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: "v2-pci-pulled-source",
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "v2-pci-pulled-source"}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -45,6 +43,50 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 	require.NotEmpty(t, updatedImage.Status.ImageID)
 	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageAvailable)
 	require.True(t, containerOrchestrator.HasImage(updatedImage.Status.Image))
+}
+
+func TestV2PhysicalContainerImageControllerTracksExistingImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-existing")
+	imageID, pullErr := containerOrchestrator.PullImage(ctx, containers.PullImageOptions{Image: "v2-pci-existing-source"})
+	require.NoError(t, pullErr)
+	require.NotEmpty(t, imageID)
+
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "existing-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{ImageID: imageID},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, imageID, updatedImage.Status.Image)
+	require.Equal(t, imageID, updatedImage.Status.ImageID)
+	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerImageReasonImageAvailable)
+}
+
+func TestV2PhysicalContainerImageControllerReportsMissingExistingImage(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pci-missing-existing")
+	image := &apiv2.PhysicalContainerImage{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "missing-existing-image",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerImageSpec{ImageID: "missing-image-id"},
+	}
+	require.NoError(t, client.Create(ctx, image))
+
+	updatedImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseFailed)
+	requireReadyCondition(t, updatedImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound)
 }
 
 func TestV2PhysicalContainerImageControllerReportsUnknownWhenInspectionFails(t *testing.T) {
@@ -84,9 +126,7 @@ func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) 
 			Name:      "waiting-image",
 			Namespace: namespaceName,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: sourceImage,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	t.Cleanup(func() {
@@ -115,10 +155,7 @@ func TestV2PhysicalContainerImageControllerDoesNotDuplicatePullWhileStatusPendin
 			Name:      "gated-pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image:      sourceImage,
-			PullPolicy: apiv2.PullPolicyAlways,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
@@ -150,10 +187,7 @@ func TestV2PhysicalContainerImageControllerRetriesPullAfterFailure(t *testing.T)
 			Name:      "retried-pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image:      sourceImage,
-			PullPolicy: apiv2.PullPolicyAlways,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
@@ -178,10 +212,7 @@ func TestV2PhysicalContainerImageControllerReportsMissingPullImageID(t *testing.
 			Name:      "missing-pull-image-id",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image:      sourceImage,
-			PullPolicy: apiv2.PullPolicyAlways,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -208,10 +239,7 @@ func TestV2PhysicalContainerImageControllerFailsWhenLocalImageIsMissing(t *testi
 			Name:      "missing-local-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image:      "v2-pci-missing-local-source",
-			PullPolicy: apiv2.PullPolicyNever,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "v2-pci-missing-local-source", PullPolicy: apiv2.PullPolicyNever}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -230,18 +258,16 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 			Name:      "built-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: "v2-pci-built-target-image",
-			Build: &apiv2.ContainerBuildContext{
-				Context: "test-context",
-				Tags:    []string{"v2-pci-built-image"},
-				Args: []commonapi.EnvVar{
-					{Name: "TEST_ARG", Value: "test-value"},
-				},
-				Labels: []commonapi.Label{
-					{Key: "test-label", Value: "test-value"},
-				},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "v2-pci-built-target-image", Build: &apiv2.ContainerBuildContext{
+			Context: "test-context",
+			Tags:    []string{"v2-pci-built-image"},
+			Args: []commonapi.EnvVar{
+				{Name: "TEST_ARG", Value: "test-value"},
 			},
+			Labels: []commonapi.Label{
+				{Key: "test-label", Value: "test-value"},
+			},
+		}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -276,11 +302,9 @@ func TestV2PhysicalContainerImageControllerReportsMissingBuildImageID(t *testing
 			Name:      "missing-build-image-id",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: targetImage,
-			Build: &apiv2.ContainerBuildContext{
-				Context: "test-context",
-			},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: targetImage, Build: &apiv2.ContainerBuildContext{
+			Context: "test-context",
+		}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -305,11 +329,9 @@ func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithou
 			Name:      "build-inspect-retry-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: targetImage,
-			Build: &apiv2.ContainerBuildContext{
-				Context: "test-context",
-			},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: targetImage, Build: &apiv2.ContainerBuildContext{
+			Context: "test-context",
+		}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -338,11 +360,9 @@ func TestV2PhysicalContainerImageControllerDoesNotDuplicateBuildWhileStatusPendi
 			Name:      "gated-built-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image: targetImage,
-			Build: &apiv2.ContainerBuildContext{
-				Context: "test-context",
-			},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: targetImage, Build: &apiv2.ContainerBuildContext{
+			Context: "test-context",
+		}},
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -394,10 +414,8 @@ func TestV2PhysicalContainerImageControllerHonorsDisabledPullRetries(t *testing.
 			Name:      "no-retry-pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image:          sourceImage,
-			PullPolicy:     apiv2.PullPolicyAlways,
-			PullRetryLimit: &noRetries,
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways,
+			PullRetryLimit: &noRetries},
 		},
 	}
 	require.NoError(t, client.Create(ctx, image))
@@ -427,10 +445,7 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 			Name:      "deleted-pulling-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{
-			Image:      sourceImage,
-			PullPolicy: apiv2.PullPolicyAlways,
-		},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	waitPullImageCallCount(t, ctx, sourceImage, 1)

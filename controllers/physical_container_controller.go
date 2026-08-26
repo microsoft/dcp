@@ -97,11 +97,11 @@ func NewPhysicalContainerReconciler(
 func (r *PhysicalContainerReconciler) SetupWithManager(mgr ctrl.Manager, name string) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &apiv2.PhysicalContainer{}, physicalContainerImageRefField, func(rawObj ctrl_client.Object) []string {
 		container := rawObj.(*apiv2.PhysicalContainer)
-		if container.Spec.ImageRef == "" {
+		if container.Spec.Container == nil || container.Spec.Container.ImageRef == "" {
 			return nil
 		}
 
-		return []string{container.Spec.ImageRef}
+		return []string{container.Spec.Container.ImageRef}
 	}); err != nil {
 		r.Log.Error(err, "Failed to create imageRef index for PhysicalContainer", "IndexField", physicalContainerImageRefField)
 		return err
@@ -340,7 +340,7 @@ func handlePhysicalContainerCreated(
 ) objectChange {
 	reconciler.ensurePhysicalContainerWatch(container, log)
 	stateKey := physicalContainerDataCurrentStateKey(container, data)
-	if len(container.Spec.CreateFiles) > 0 {
+	if len(container.Spec.Container.CreateFiles) > 0 {
 		return reconciler.schedulePhysicalContainerCreateFiles(container, stateKey, data, log)
 	}
 	if container.Spec.Stop {
@@ -456,7 +456,7 @@ func handlePhysicalContainerRecoverableCreateFailed(
 		return cleanupChange
 	}
 
-	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.ContainerName)
+	log.V(1).Info("Retrying physical container creation", "ContainerName", container.Spec.Container.ContainerName)
 	return cleanupChange | reconciler.schedulePhysicalContainerCreate(container, log)
 }
 
@@ -536,21 +536,22 @@ func physicalContainerDataCurrentStateKey(container *apiv2.PhysicalContainer, da
 
 func (r *PhysicalContainerReconciler) resolvePhysicalContainerImage(ctx context.Context, container *apiv2.PhysicalContainer, log logr.Logger) (bool, objectChange) {
 	image := apiv2.PhysicalContainerImage{}
-	getErr := r.Client.Get(ctx, types.NamespacedName{Namespace: container.Namespace, Name: container.Spec.ImageRef}, &image)
+	imageRef := container.Spec.Container.ImageRef
+	getErr := r.Client.Get(ctx, types.NamespacedName{Namespace: container.Namespace, Name: imageRef}, &image)
 	if apierrors.IsNotFound(getErr) {
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageNotFound, fmt.Sprintf("PhysicalContainerImage %q does not exist.", container.Spec.ImageRef))
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageNotFound, fmt.Sprintf("PhysicalContainerImage %q does not exist.", imageRef))
 		return false, change
 	}
 	if getErr != nil {
-		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", container.Spec.ImageRef)
+		log.Error(getErr, "Failed to get PhysicalContainerImage", "ImageRef", imageRef)
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhaseUnknown)
 		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageLookupFailed, fmt.Sprintf("Failed to get PhysicalContainerImage: %v", getErr))
 		return false, change | additionalReconciliationNeeded
 	}
 	if image.Status.Phase != apiv2.PhysicalContainerImagePhaseReady || image.Status.Image == "" {
 		change := setValue(&container.Status.Phase, apiv2.PhysicalContainerPhasePending)
-		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageNotReady, fmt.Sprintf("PhysicalContainerImage %q is not ready.", container.Spec.ImageRef))
+		change |= setCondition(&container.Status.Conditions, apiv2.ConditionReady, container.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerReasonImageNotReady, fmt.Sprintf("PhysicalContainerImage %q is not ready.", imageRef))
 		return false, change
 	}
 
@@ -587,8 +588,9 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	data *physicalContainerData,
 	log logr.Logger,
 ) {
-	if container.Spec.ReplaceExisting {
-		replaceErr := r.removePhysicalContainerForReplacement(ctx, container.Spec.ContainerName, log)
+	containerConfig := container.Spec.Container
+	if containerConfig.ReplaceExisting {
+		replaceErr := r.removePhysicalContainerForReplacement(ctx, containerConfig.ContainerName, log)
 		if replaceErr != nil {
 			log.Error(replaceErr, "Failed to replace existing physical container")
 			data.conditionReason = apiv2.PhysicalContainerReasonExistingContainerReplacementFailed
@@ -601,21 +603,21 @@ func (r *PhysicalContainerReconciler) createPhysicalContainer(
 	}
 
 	containerID, createErr := r.orchestrator.CreateContainer(ctx, containers.CreateContainerOptions{
-		Name:         container.Spec.ContainerName,
+		Name:         containerConfig.ContainerName,
 		Image:        container.Status.Image,
-		Entrypoint:   container.Spec.Entrypoint,
-		Command:      container.Spec.Command,
-		VolumeMounts: physicalVolumeMountsToCreateContainerVolumeMounts(container.Spec.VolumeMounts),
-		Ports:        physicalPortsToCreateContainerPorts(container.Spec.Ports),
-		Networks:     physicalNetworksToCreateContainerNetworks(container.Spec.Networks),
-		Env:          container.Spec.Env,
+		Entrypoint:   containerConfig.Entrypoint,
+		Command:      containerConfig.Command,
+		VolumeMounts: physicalVolumeMountsToCreateContainerVolumeMounts(containerConfig.VolumeMounts),
+		Ports:        physicalPortsToCreateContainerPorts(containerConfig.Ports),
+		Networks:     physicalNetworksToCreateContainerNetworks(containerConfig.Networks),
+		Env:          containerConfig.Env,
 		Labels:       physicalContainerCreationLabels(container, log),
 	})
 	if createErr != nil {
 		log.Error(createErr, "Failed to create physical container")
 		data.containerID = containerID
 		data.failureMessage = fmt.Sprintf("Failed to create physical container: %v", createErr)
-		if (errors.Is(createErr, containers.ErrAlreadyExists) && !container.Spec.ReplaceExisting) ||
+		if (errors.Is(createErr, containers.ErrAlreadyExists) && !containerConfig.ReplaceExisting) ||
 			errors.Is(createErr, containers.ErrCouldNotAllocate) {
 			data.conditionReason = apiv2.PhysicalContainerReasonCreateFailed
 			data.progress = physicalContainerOperationFailed
@@ -712,7 +714,7 @@ func (r *PhysicalContainerReconciler) copyPhysicalContainerCreateFiles(
 	fileModTime time.Time,
 	log logr.Logger,
 ) {
-	for _, createFileRequest := range container.Spec.CreateFiles {
+	for _, createFileRequest := range container.Spec.Container.CreateFiles {
 		umask := osutil.DefaultUmaskBitmask
 		if createFileRequest.Umask != nil {
 			umask = *createFileRequest.Umask
@@ -899,7 +901,7 @@ func (r *PhysicalContainerReconciler) handleDeletionRequest(ctx context.Context,
 		containerID = data.containerID
 	}
 
-	if container.Spec.ContainerID == "" && !container.Spec.RetainRuntimeContainer && containerID != "" {
+	if container.Spec.Container != nil && !container.Spec.Container.RetainRuntimeContainer && containerID != "" {
 		_, removeErr := r.orchestrator.RemoveContainers(ctx, containers.RemoveContainersOptions{
 			Containers: []string{containerID},
 			Force:      true,
@@ -1007,10 +1009,10 @@ func physicalNetworksToCreateContainerNetworks(networks []apiv2.ContainerNetwork
 }
 
 func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log logr.Logger) []containers.Label {
-	labels := append([]containers.Label{}, container.Spec.Labels...)
+	labels := append([]containers.Label{}, container.Spec.Container.Labels...)
 	labels = append(labels, containers.Label{
 		Key:   PersistentLabel,
-		Value: fmt.Sprintf("%t", container.Spec.RetainRuntimeContainer),
+		Value: fmt.Sprintf("%t", container.Spec.Container.RetainRuntimeContainer),
 	})
 
 	thisProcess, thisProcessErr := process.This()

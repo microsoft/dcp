@@ -93,9 +93,7 @@ func TestResourceCreationProhibited(t *testing.T) {
 						Name:      "test-image",
 						Namespace: "test-namespace",
 					},
-					Spec: PhysicalContainerImageSpec{
-						Image: "test-image",
-					},
+					Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-image"}},
 				}
 				return image.Validate(context.Background()).ToAggregate()
 			},
@@ -108,9 +106,7 @@ func TestResourceCreationProhibited(t *testing.T) {
 						Name:      "test-container",
 						Namespace: "test-namespace",
 					},
-					Spec: PhysicalContainerSpec{
-						ImageRef: "test-image",
-					},
+					Spec: PhysicalContainerSpec{Container: &PhysicalContainerConfig{ImageRef: "test-image"}},
 				}
 				return container.Validate(context.Background()).ToAggregate()
 			},

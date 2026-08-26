@@ -138,16 +138,20 @@ const (
 // PhysicalContainerSpec describes either an existing runtime container or how to create one.
 // +k8s:openapi-gen=true
 type PhysicalContainerSpec struct {
-	// ContainerID identifies an existing runtime container to track. When set, retainRuntimeContainer,
-	// imageRef, containerName, replaceExisting, entrypoint, command, env, ports, volumeMounts, networks,
-	// createFiles, and labels must be omitted.
+	// ContainerID identifies an existing runtime container to track. Exactly one of containerID or container must be set.
 	ContainerID string `json:"containerID,omitempty"`
+
+	// Container describes a runtime container to create. Exactly one of containerID or container must be set.
+	Container *PhysicalContainerConfig `json:"container,omitempty"`
 
 	// Stop requests that the tracked runtime container be stopped.
 	Stop bool `json:"stop,omitempty"`
+}
 
+// PhysicalContainerConfig describes a runtime container to create.
+// +k8s:openapi-gen=true
+type PhysicalContainerConfig struct {
 	// RetainRuntimeContainer keeps a runtime container created by this resource in place when the resource is deleted.
-	// Existing runtime containers referenced by containerID are always retained.
 	RetainRuntimeContainer bool `json:"retainRuntimeContainer,omitempty"`
 
 	// ImageRef is the name of a PhysicalContainerImage in the same namespace to use when creating a new runtime container.
@@ -320,36 +324,45 @@ func (pc *PhysicalContainer) Validate(ctx context.Context) field.ErrorList {
 
 	errorList = append(errorList, commonapi.ValidateAnnotationsSize(pc.Annotations, field.NewPath("metadata", "annotations"))...)
 
-	if pc.Spec.ContainerID != "" {
-		errorList = append(errorList, pc.validateExistingContainerSpec(specPath)...)
+	if pc.Spec.ContainerID == "" && pc.Spec.Container == nil {
+		errorList = append(errorList, field.Required(specPath, "exactly one of containerID or container must be set"))
+		return errorList
+	}
+	if pc.Spec.ContainerID != "" && pc.Spec.Container != nil {
+		errorList = append(errorList, field.Forbidden(specPath.Child("container"), "container cannot be set when containerID is set"))
+		return errorList
+	}
+	if pc.Spec.Container == nil {
 		return errorList
 	}
 
-	if pc.Spec.ImageRef == "" {
-		errorList = append(errorList, field.Required(specPath.Child("imageRef"), "imageRef must be set when containerID is omitted"))
+	container := pc.Spec.Container
+	containerPath := specPath.Child("container")
+	if container.ImageRef == "" {
+		errorList = append(errorList, field.Required(containerPath.Child("imageRef"), "imageRef must be set"))
 	} else {
-		for _, validationMessage := range validation.IsDNS1123Subdomain(pc.Spec.ImageRef) {
-			errorList = append(errorList, field.Invalid(specPath.Child("imageRef"), pc.Spec.ImageRef, validationMessage))
+		for _, validationMessage := range validation.IsDNS1123Subdomain(container.ImageRef) {
+			errorList = append(errorList, field.Invalid(containerPath.Child("imageRef"), container.ImageRef, validationMessage))
 		}
 	}
-	if pc.Spec.ContainerName != "" && !validContainerNameRegexp.MatchString(pc.Spec.ContainerName) {
-		errorList = append(errorList, field.Invalid(specPath.Child("containerName"), pc.Spec.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
+	if container.ContainerName != "" && !validContainerNameRegexp.MatchString(container.ContainerName) {
+		errorList = append(errorList, field.Invalid(containerPath.Child("containerName"), container.ContainerName, fmt.Sprintf("containerName must match regex '%s'", validContainerName)))
 	}
-	if pc.Spec.ReplaceExisting && pc.Spec.ContainerName == "" {
-		errorList = append(errorList, field.Required(specPath.Child("containerName"), "containerName must be set when replaceExisting is true"))
+	if container.ReplaceExisting && container.ContainerName == "" {
+		errorList = append(errorList, field.Required(containerPath.Child("containerName"), "containerName must be set when replaceExisting is true"))
 	}
 
-	networksPath := specPath.Child("networks")
-	for i, network := range pc.Spec.Networks {
+	networksPath := containerPath.Child("networks")
+	for i, network := range container.Networks {
 		if network.Name == "" {
 			errorList = append(errorList, field.Required(networksPath.Index(i).Child("name"), "name must be set to a non-empty value"))
 		}
 	}
-	errorList = append(errorList, ValidateContainerPorts(pc.Spec.Ports, specPath.Child("ports"))...)
-	errorList = append(errorList, validateLabels(pc.Spec.Labels, specPath.Child("labels"))...)
+	errorList = append(errorList, ValidateContainerPorts(container.Ports, containerPath.Child("ports"))...)
+	errorList = append(errorList, validateLabels(container.Labels, containerPath.Child("labels"))...)
 
-	createFilesPath := specPath.Child("createFiles")
-	for i, createFile := range pc.Spec.CreateFiles {
+	createFilesPath := containerPath.Child("createFiles")
+	for i, createFile := range container.CreateFiles {
 		createFilePath := createFilesPath.Index(i)
 		if createFile.Destination != "" && !path.IsAbs(createFile.Destination) {
 			errorList = append(errorList, field.Invalid(createFilePath.Child("destination"), createFile.Destination, "destination must be absolute"))
@@ -388,49 +401,6 @@ func (pc *PhysicalContainer) ValidateUpdate(ctx context.Context, old runtime.Obj
 	newSpec.Stop = false
 	if !reflect.DeepEqual(oldSpec, newSpec) {
 		errorList = append(errorList, field.Forbidden(field.NewPath("spec"), "spec is immutable"))
-	}
-
-	return errorList
-}
-
-func (pc *PhysicalContainer) validateExistingContainerSpec(specPath *field.Path) field.ErrorList {
-	errorList := field.ErrorList{}
-
-	if pc.Spec.RetainRuntimeContainer {
-		errorList = append(errorList, field.Forbidden(specPath.Child("retainRuntimeContainer"), "retainRuntimeContainer cannot be set when containerID is set"))
-	}
-	if pc.Spec.ImageRef != "" {
-		errorList = append(errorList, field.Forbidden(specPath.Child("imageRef"), "imageRef cannot be set when containerID is set"))
-	}
-	if pc.Spec.ContainerName != "" {
-		errorList = append(errorList, field.Forbidden(specPath.Child("containerName"), "containerName cannot be set when containerID is set"))
-	}
-	if pc.Spec.ReplaceExisting {
-		errorList = append(errorList, field.Forbidden(specPath.Child("replaceExisting"), "replaceExisting cannot be set when containerID is set"))
-	}
-	if pc.Spec.Entrypoint != "" {
-		errorList = append(errorList, field.Forbidden(specPath.Child("entrypoint"), "entrypoint cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.Command) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("command"), "command cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.Env) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("env"), "env cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.Ports) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("ports"), "ports cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.VolumeMounts) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("volumeMounts"), "volumeMounts cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.Networks) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("networks"), "networks cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.CreateFiles) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("createFiles"), "createFiles cannot be set when containerID is set"))
-	}
-	if len(pc.Spec.Labels) > 0 {
-		errorList = append(errorList, field.Forbidden(specPath.Child("labels"), "labels cannot be set when containerID is set"))
 	}
 
 	return errorList
