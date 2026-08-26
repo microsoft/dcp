@@ -30,7 +30,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### Physical resource ownership
 
 - A `PhysicalContainer` spec sets exactly one of `containerID`, which tracks an existing runtime container, or `container`, which contains the fields used to create one. The mutable `stop` request remains top-level.
-- A `PhysicalContainerImage` spec follows the same shape: it sets exactly one of `imageID`, which tracks an existing runtime image, or `image`, which contains `base`, build, pull-policy, and retry settings.
+- A `PhysicalContainerImage` spec follows the same shape: it sets exactly one of `imageID`, which tracks an existing runtime image, or `image`, which contains the source or target `image`, build, pull-policy, and retry settings.
 - Both modes report the observed runtime container ID through `status.containerID`.
 - A runtime container supplied through `spec.containerID` is never removed when its `PhysicalContainer` is deleted.
 - A runtime container created by the resource is removed on deletion unless `retainRuntimeContainer` is true.

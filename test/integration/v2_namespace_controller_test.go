@@ -125,7 +125,7 @@ func createReadyV2PhysicalContainerImage(
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: imageRef}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: imageRef}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 

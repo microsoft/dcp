@@ -509,7 +509,7 @@ func TestCanCreateV2PhysicalContainer(t *testing.T) {
 			Name:      "test-v2-physical-container-image",
 			Namespace: ns.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "test-image"}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "test-image"}},
 	}
 	createErr = serverInfo.Client.Create(ctx, &pci)
 	require.NoError(t, createErr, "Failed to create V2 PhysicalContainerImage")

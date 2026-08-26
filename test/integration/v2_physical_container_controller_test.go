@@ -100,7 +100,7 @@ func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(
 			Name:      imageName,
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 

@@ -88,8 +88,8 @@ type PhysicalContainerImageSpec struct {
 // PhysicalContainerImageConfig describes a runtime image to pull or build.
 // +k8s:openapi-gen=true
 type PhysicalContainerImageConfig struct {
-	// Base is the source image reference to ensure locally, or the target tag for a built image.
-	Base string `json:"base,omitempty"`
+	// Image is the source image reference to ensure locally, or the target tag for a built image.
+	Image string `json:"image,omitempty"`
 
 	// Build describes how to build the image locally.
 	Build *ContainerBuildContext `json:"build,omitempty"`
@@ -215,11 +215,11 @@ func (pci *PhysicalContainerImage) Validate(ctx context.Context) field.ErrorList
 
 	image := pci.Spec.Image
 	imagePath := specPath.Child("image")
-	if image.Base == "" && image.Build == nil {
-		errorList = append(errorList, field.Required(imagePath.Child("base"), "base or build must be set"))
+	if image.Image == "" && image.Build == nil {
+		errorList = append(errorList, field.Required(imagePath.Child("image"), "image or build must be set"))
 	}
-	if image.Base != "" && strings.ContainsAny(image.Base, "\r\n\t ") {
-		errorList = append(errorList, field.Invalid(imagePath.Child("base"), image.Base, "base must not contain whitespace or control characters"))
+	if image.Image != "" && strings.ContainsAny(image.Image, "\r\n\t ") {
+		errorList = append(errorList, field.Invalid(imagePath.Child("image"), image.Image, "image must not contain whitespace or control characters"))
 	}
 
 	switch image.PullPolicy {

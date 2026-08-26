@@ -38,7 +38,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Image: "test-source-image"}},
 			},
 		},
 		{
@@ -61,7 +61,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-target-image", Build: &ContainerBuildContext{
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Image: "test-target-image", Build: &ContainerBuildContext{
 					Context: "test-context",
 				}},
 				},
@@ -112,7 +112,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test-image",
 				},
-				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Image: "test-source-image"}},
 			},
 			expectedError: "metadata.namespace",
 		},
@@ -127,7 +127,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 			expectedError: "spec",
 		},
 		{
-			name: "missing base and build",
+			name: "missing image and build",
 			image: PhysicalContainerImage{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-image",
@@ -135,7 +135,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{}},
 			},
-			expectedError: "spec.image.base",
+			expectedError: "spec.image.image",
 		},
 		{
 			name: "image definition conflicts with existing image ID",
@@ -146,7 +146,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 				},
 				Spec: PhysicalContainerImageSpec{
 					ImageID: "existing-image-id",
-					Image:   &PhysicalContainerImageConfig{Base: "test-source-image"},
+					Image:   &PhysicalContainerImageConfig{Image: "test-source-image"},
 				},
 			},
 			expectedError: "spec.image",
@@ -158,7 +158,7 @@ func TestPhysicalContainerImageValidate(t *testing.T) {
 					Name:      "test-image",
 					Namespace: "test-namespace",
 				},
-				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image", PullPolicy: "invalid"}},
+				Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Image: "test-source-image", PullPolicy: "invalid"}},
 			},
 			expectedError: "spec.image.pullPolicy",
 		},
@@ -282,10 +282,10 @@ func TestPhysicalContainerImageValidateUpdateRejectsSpecChanges(t *testing.T) {
 			Name:      "test-image",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
+		Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Image: "test-source-image"}},
 	}
 	newImage := oldImage.DeepCopy()
-	newImage.Spec.Image.Base = "different-source-image"
+	newImage.Spec.Image.Image = "different-source-image"
 
 	errorList := newImage.ValidateUpdate(context.Background(), oldImage)
 
@@ -302,7 +302,7 @@ func TestPhysicalContainerImageValidateUpdateAllowsStatusUpdateDuringShutdown(t 
 			Name:      "test-image",
 			Namespace: "test-namespace",
 		},
-		Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Base: "test-source-image"}},
+		Spec: PhysicalContainerImageSpec{Image: &PhysicalContainerImageConfig{Image: "test-source-image"}},
 	}
 	newImage := oldImage.DeepCopy()
 	newImage.Status.Phase = PhysicalContainerImagePhaseReady

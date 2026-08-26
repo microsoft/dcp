@@ -34,7 +34,7 @@ func TestV2PhysicalContainerImageControllerPullsSourceImage(t *testing.T) {
 			Name:      "pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "v2-pci-pulled-source"}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-pulled-source"}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -126,7 +126,7 @@ func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) 
 			Name:      "waiting-image",
 			Namespace: namespaceName,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	t.Cleanup(func() {
@@ -155,7 +155,7 @@ func TestV2PhysicalContainerImageControllerDoesNotDuplicatePullWhileStatusPendin
 			Name:      "gated-pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
@@ -187,7 +187,7 @@ func TestV2PhysicalContainerImageControllerRetriesPullAfterFailure(t *testing.T)
 			Name:      "retried-pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	waitPullImageCallCount(t, ctx, sourceImage, 1)
@@ -212,7 +212,7 @@ func TestV2PhysicalContainerImageControllerReportsMissingPullImageID(t *testing.
 			Name:      "missing-pull-image-id",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -239,7 +239,7 @@ func TestV2PhysicalContainerImageControllerFailsWhenLocalImageIsMissing(t *testi
 			Name:      "missing-local-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "v2-pci-missing-local-source", PullPolicy: apiv2.PullPolicyNever}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-missing-local-source", PullPolicy: apiv2.PullPolicyNever}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 
@@ -258,7 +258,7 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 			Name:      "built-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: "v2-pci-built-target-image", Build: &apiv2.ContainerBuildContext{
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: "v2-pci-built-target-image", Build: &apiv2.ContainerBuildContext{
 			Context: "test-context",
 			Tags:    []string{"v2-pci-built-image"},
 			Args: []commonapi.EnvVar{
@@ -302,7 +302,7 @@ func TestV2PhysicalContainerImageControllerReportsMissingBuildImageID(t *testing
 			Name:      "missing-build-image-id",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: targetImage, Build: &apiv2.ContainerBuildContext{
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: targetImage, Build: &apiv2.ContainerBuildContext{
 			Context: "test-context",
 		}},
 		},
@@ -329,7 +329,7 @@ func TestV2PhysicalContainerImageControllerRetriesCompletedBuildInspectionWithou
 			Name:      "build-inspect-retry-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: targetImage, Build: &apiv2.ContainerBuildContext{
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: targetImage, Build: &apiv2.ContainerBuildContext{
 			Context: "test-context",
 		}},
 		},
@@ -360,7 +360,7 @@ func TestV2PhysicalContainerImageControllerDoesNotDuplicateBuildWhileStatusPendi
 			Name:      "gated-built-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: targetImage, Build: &apiv2.ContainerBuildContext{
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: targetImage, Build: &apiv2.ContainerBuildContext{
 			Context: "test-context",
 		}},
 		},
@@ -414,7 +414,7 @@ func TestV2PhysicalContainerImageControllerHonorsDisabledPullRetries(t *testing.
 			Name:      "no-retry-pulled-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways,
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways,
 			PullRetryLimit: &noRetries},
 		},
 	}
@@ -445,7 +445,7 @@ func TestV2PhysicalContainerImageControllerCancelsPullOnDeletion(t *testing.T) {
 			Name:      "deleted-pulling-image",
 			Namespace: namespace.Name,
 		},
-		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Base: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
+		Spec: apiv2.PhysicalContainerImageSpec{Image: &apiv2.PhysicalContainerImageConfig{Image: sourceImage, PullPolicy: apiv2.PullPolicyAlways}},
 	}
 	require.NoError(t, client.Create(ctx, image))
 	waitPullImageCallCount(t, ctx, sourceImage, 1)

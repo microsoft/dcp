@@ -5024,9 +5024,9 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerImageConfig(ref common.Referen
 				Description: "PhysicalContainerImageConfig describes a runtime image to pull or build.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"base": {
+					"image": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Base is the source image reference to ensure locally, or the target tag for a built image.",
+							Description: "Image is the source image reference to ensure locally, or the target tag for a built image.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

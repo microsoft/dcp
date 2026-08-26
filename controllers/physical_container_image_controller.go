@@ -270,26 +270,26 @@ func (r *PhysicalContainerImageReconciler) ensurePulledImage(ctx context.Context
 	}
 
 	if imageConfig.PullPolicy == apiv2.PullPolicyAlways {
-		return r.schedulePhysicalContainerImagePull(image, imageConfig.Base, log)
+		return r.schedulePhysicalContainerImagePull(image, imageConfig.Image, log)
 	}
 
-	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, imageConfig.Base)
+	inspectedImage, inspectErr := inspectPhysicalContainerImage(ctx, r.orchestrator, imageConfig.Image)
 	if inspectErr == nil {
-		return applyReadyPhysicalContainerImageStatus(image, imageConfig.Base, inspectedImage)
+		return applyReadyPhysicalContainerImageStatus(image, imageConfig.Image, inspectedImage)
 	}
 	if !errors.Is(inspectErr, containers.ErrNotFound) {
-		log.Error(inspectErr, "Failed to inspect PhysicalContainerImage source image", "Image", imageConfig.Base)
+		log.Error(inspectErr, "Failed to inspect PhysicalContainerImage source image", "Image", imageConfig.Image)
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseUnknown)
 		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonRuntimeImageInspectFailed, fmt.Sprintf("Failed to inspect image: %v", inspectErr))
 		return change | additionalReconciliationNeeded
 	}
 	if imageConfig.PullPolicy == apiv2.PullPolicyNever {
 		change := setValue(&image.Status.Phase, apiv2.PhysicalContainerImagePhaseFailed)
-		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound, fmt.Sprintf("Image %q is not available locally.", imageConfig.Base))
+		change |= setCondition(&image.Status.Conditions, apiv2.ConditionReady, image.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerImageReasonLocalImageNotFound, fmt.Sprintf("Image %q is not available locally.", imageConfig.Image))
 		return change
 	}
 
-	return r.schedulePhysicalContainerImagePull(image, imageConfig.Base, log)
+	return r.schedulePhysicalContainerImagePull(image, imageConfig.Image, log)
 }
 
 func (r *PhysicalContainerImageReconciler) ensureBuiltImage(ctx context.Context, image *apiv2.PhysicalContainerImage, log logr.Logger) objectChange {
@@ -618,8 +618,8 @@ func inspectPhysicalContainerImage(ctx context.Context, orchestrator containers.
 }
 
 func physicalContainerImageOutputTag(image *apiv2.PhysicalContainerImage) string {
-	if image.Spec.Image.Base != "" {
-		return image.Spec.Image.Base
+	if image.Spec.Image.Image != "" {
+		return image.Spec.Image.Image
 	}
 	if image.Spec.Image.Build != nil && len(image.Spec.Image.Build.Tags) > 0 {
 		return image.Spec.Image.Build.Tags[0]
