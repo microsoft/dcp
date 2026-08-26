@@ -54,7 +54,6 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - Condition messages carry instance-specific diagnostics, but consumers should not need to parse a message to determine the cause category.
 - V2 status types must not define top-level `status.message` fields. Explanatory and diagnostic text belongs in the message of the condition reporting the corresponding state.
 - Controller status helpers should use shared target-first setters such as `setValue(&field, value)` and `setTimestamp(&field, value)`.
-- Callers that need a boolean from a status helper should use `trySetX` wrappers instead of comparing `setX(...) != noChange` at call sites.
 
 ### Type ownership between V1, V2, and orchestrators
 
@@ -65,9 +64,8 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 
 ### References and watches
 
-- V2 API reference fields use string values formatted as `<name>` or `<namespace>/<name>`.
-- Controllers normalize references to `types.NamespacedName`.
-- Name-only references resolve within the referring resource's namespace. Explicit namespaces must match it unless cross-namespace references are supported.
+- V2 API reference fields use resource names and resolve within the referring resource's namespace.
+- Controllers combine references with the referring resource's namespace as `types.NamespacedName`.
 - Controllers should watch referenced resources and enqueue dependents when updates can unblock reconciliation.
 - Watches should use indexes for efficient reverse lookup, for example indexing `spec.imageRef` to find containers referencing an image.
 

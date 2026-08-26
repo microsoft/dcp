@@ -138,6 +138,11 @@ func TestV2PhysicalContainerImageControllerBlocksWithoutNamespace(t *testing.T) 
 	pendingImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhasePending)
 	requireReadyCondition(t, pendingImage.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalResourceReasonNamespaceNotFound)
 	require.Equal(t, 0, containerOrchestrator.PullImageCallCount(sourceImage))
+
+	createActiveV2Namespace(t, ctx, namespaceName)
+	readyImage := waitPhysicalContainerImagePhase(t, ctx, image.NamespacedName(), apiv2.PhysicalContainerImagePhaseReady)
+	require.Equal(t, sourceImage, readyImage.Status.Image)
+	require.Equal(t, 1, containerOrchestrator.PullImageCallCount(sourceImage))
 }
 
 func TestV2PhysicalContainerImageControllerDoesNotDuplicatePullWhileStatusPending(t *testing.T) {

@@ -104,11 +104,17 @@ const (
 	// PhysicalContainerReasonRuntimeContainerStopFailed indicates that the runtime container could not be stopped.
 	PhysicalContainerReasonRuntimeContainerStopFailed ConditionReason = "RuntimeContainerStopFailed"
 
+	// PhysicalContainerReasonRuntimeContainerRemoveFailed indicates that the runtime container could not be removed.
+	PhysicalContainerReasonRuntimeContainerRemoveFailed ConditionReason = "RuntimeContainerRemoveFailed"
+
 	// PhysicalContainerReasonPortMappingResolutionFailed indicates that runtime port mappings could not be resolved.
 	PhysicalContainerReasonPortMappingResolutionFailed ConditionReason = "PortMappingResolutionFailed"
 
 	// PhysicalContainerReasonRuntimeContainerMissing indicates that the runtime container was not found.
 	PhysicalContainerReasonRuntimeContainerMissing ConditionReason = "RuntimeContainerMissing"
+
+	// PhysicalContainerReasonRuntimeContainerAlreadyTracked indicates that another PhysicalContainer tracks the runtime container.
+	PhysicalContainerReasonRuntimeContainerAlreadyTracked ConditionReason = "RuntimeContainerAlreadyTracked"
 
 	// PhysicalContainerReasonRuntimeContainerRunning indicates that the runtime container is running.
 	PhysicalContainerReasonRuntimeContainerRunning ConditionReason = "RuntimeContainerRunning"

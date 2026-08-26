@@ -160,7 +160,7 @@ func storeStartedPhysicalContainerData(
 	containerData *ObjectStateMap[physicalContainerDataStateKey, physicalContainerData, *physicalContainerData, *apiv2.PhysicalContainer],
 	container *apiv2.PhysicalContainer,
 	containerID string,
-) {
+) (types.NamespacedName, bool) {
 	startedData := &physicalContainerData{
 		resourceUID:     container.UID,
 		conditionReason: apiv2.PhysicalContainerReasonStarted,
@@ -173,9 +173,11 @@ func storeStartedPhysicalContainerData(
 		physicalContainerDataContainerIDKey(containerID),
 		startedData,
 	)
-	if !updated {
-		containerData.Store(container.NamespacedName(), physicalContainerDataContainerIDKey(containerID), startedData)
+	if updated {
+		return container.NamespacedName(), true
 	}
+
+	return containerData.StoreIfStateKeyUnclaimed(container.NamespacedName(), physicalContainerDataContainerIDKey(containerID), startedData)
 }
 
 func physicalContainerDataKey(container *apiv2.PhysicalContainer) physicalContainerDataStateKey {

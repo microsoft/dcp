@@ -88,6 +88,28 @@ func TestObjectStateMapStoreReplacesStateKey(t *testing.T) {
 	require.Nil(t, state)
 }
 
+func TestObjectStateMapStoreIfStateKeyUnclaimed(t *testing.T) {
+	t.Parallel()
+
+	m := NewObjectStateMap[string, testObjectState, *testObjectState, *apiv1.Executable]()
+	firstName := types.NamespacedName{Name: "eins", Namespace: metav1.NamespaceNone}
+	secondName := types.NamespacedName{Name: "zwei", Namespace: metav1.NamespaceNone}
+
+	owner, stored := m.StoreIfStateKeyUnclaimed(firstName, "one", &testObjectState{tag: "uno", count: 1})
+	require.True(t, stored)
+	require.Equal(t, firstName, owner)
+
+	owner, stored = m.StoreIfStateKeyUnclaimed(secondName, "one", &testObjectState{tag: "dos", count: 2})
+	require.False(t, stored)
+	require.Equal(t, firstName, owner)
+
+	stateKey, state := m.BorrowByNamespacedName(firstName)
+	require.Equal(t, "one", stateKey)
+	require.Equal(t, &testObjectState{tag: "uno", count: 1}, state)
+	_, state = m.BorrowByNamespacedName(secondName)
+	require.Nil(t, state)
+}
+
 // Tests various update scenarios.
 func TestObjectStateMapUpdating(t *testing.T) {
 	t.Parallel()

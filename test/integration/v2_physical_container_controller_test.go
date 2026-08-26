@@ -67,6 +67,32 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 }
 
+func TestV2PhysicalContainerControllerReconcilesWhenNamespaceBecomesActive(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespaceName := "v2-pctr-wait-namespace"
+	existingContainerID := runExistingTestContainer(t, ctx, "v2-pctr-wait-namespace-runtime", "existing-image")
+	removeRuntimeContainerOnCleanup(t, existingContainerID)
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "waiting-container",
+			Namespace: namespaceName,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: existingContainerID},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	pendingContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalResourceReasonNamespaceNotFound)
+
+	createActiveV2Namespace(t, ctx, namespaceName)
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, existingContainerID, runningContainer.Status.ContainerID)
+	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+}
+
 func TestV2PhysicalContainerControllerReconcilesWhenReferencedImageBecomesReady(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -534,6 +560,45 @@ func TestV2PhysicalContainerControllerTracksExistingContainer(t *testing.T) {
 	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessIdLabel)
 }
 
+func TestV2PhysicalContainerControllerRejectsDuplicateRuntimeContainerOwnership(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-duplicate-owner")
+	existingContainerID := runExistingTestContainer(t, ctx, "v2-pctr-duplicate-owner-runtime", "existing-image")
+	removeRuntimeContainerOnCleanup(t, existingContainerID)
+	firstContainer := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "first-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: existingContainerID},
+	}
+	require.NoError(t, client.Create(ctx, firstContainer))
+	waitPhysicalContainerPhase(t, ctx, firstContainer.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+
+	secondContainer := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "second-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{ContainerID: existingContainerID},
+	}
+	require.NoError(t, client.Create(ctx, secondContainer))
+
+	pendingContainer := waitPhysicalContainerPhase(t, ctx, secondContainer.NamespacedName(), apiv2.PhysicalContainerPhasePending)
+	require.Equal(t, existingContainerID, pendingContainer.Status.ContainerID)
+	requireReadyCondition(t, pendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerAlreadyTracked)
+
+	require.NoError(t, client.Delete(ctx, firstContainer))
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, firstContainer)
+
+	runningContainer := waitPhysicalContainerPhase(t, ctx, secondContainer.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	require.Equal(t, existingContainerID, runningContainer.Status.ContainerID)
+	requireReadyCondition(t, runningContainer.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerReasonRuntimeContainerRunning)
+}
+
 func TestV2PhysicalContainerControllerReportsMissingExistingContainer(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
@@ -628,6 +693,41 @@ func TestV2PhysicalContainerControllerDeletesCreatedContainer(t *testing.T) {
 	require.NoError(t, client.Delete(ctx, updatedContainer))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
 	waitContainerMissing(t, ctx, containerID)
+}
+
+func TestV2PhysicalContainerControllerReportsDeletionFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-delete-failure")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "delete-failure-image", "delete-failure-image")
+	containerName := "v2-pctr-delete-failure-runtime"
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "delete-failure-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	runningContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("remove failed"))
+	containerOrchestrator.FailNextRemoveContainer(containerName, errors.New("remove failed"))
+	require.NoError(t, client.Delete(ctx, runningContainer))
+
+	failedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseUnknown)
+	requireReadyCondition(t, failedContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonRuntimeContainerRemoveFailed)
+	require.NotEmpty(t, failedContainer.Finalizers)
+	require.Equal(t, 2, containerOrchestrator.RemoveContainerCallCount(containerName))
+
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainer](t, ctx, client, container)
+	waitContainerMissing(t, ctx, runningContainer.Status.ContainerID)
+	require.Equal(t, 3, containerOrchestrator.RemoveContainerCallCount(containerName))
 }
 
 func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *testing.T) {
