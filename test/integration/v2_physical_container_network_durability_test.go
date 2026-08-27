@@ -8,7 +8,6 @@ package integration_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 
@@ -28,8 +27,6 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
-	"github.com/microsoft/dcp/pkg/commonapi"
-	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -126,77 +123,6 @@ func (orchestrator *blockingNetworkInspectionOrchestrator) release() {
 	orchestrator.releaseOnce.Do(func() {
 		close(orchestrator.releaseInspection)
 	})
-}
-
-func TestV2PhysicalContainerNetworkControllerPersistentNetworkSurvivesHarvesting(t *testing.T) {
-	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
-	defer cancel()
-
-	scheme := runtime.NewScheme()
-	require.NoError(t, apiv2.AddToScheme(scheme))
-
-	namespace := &apiv2.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "persistent-network-harvesting",
-			Finalizers: []string{apiv2.NamespaceFinalizer},
-		},
-		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
-	}
-	nonexistentProcess := nonExistentProcess(t)
-	network := &apiv2.PhysicalContainerNetwork{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "persistent-network-harvesting",
-			Namespace:  namespace.Name,
-			UID:        types.UID("persistent-network-harvesting"),
-			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
-		},
-		Spec: apiv2.PhysicalContainerNetworkSpec{
-			Network: &apiv2.PhysicalContainerNetworkConfig{
-				NetworkName:          "persistent-network-harvesting-runtime",
-				RetainRuntimeNetwork: true,
-				Labels: []commonapi.Label{
-					{Key: controllers.PersistentLabel, Value: "true"},
-					{Key: controllers.CreatorProcessIdLabel, Value: fmt.Sprintf("%d", nonexistentProcess.Pid)},
-					{Key: controllers.CreatorProcessStartTimeLabel, Value: nonexistentProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
-				},
-			},
-		},
-	}
-
-	baseClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerNetwork{}).
-		WithObjects(namespace, network).
-		Build()
-	log := testutil.NewLogForTesting(t.Name())
-	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
-	require.NoError(t, orchestratorErr)
-	defer func() {
-		require.NoError(t, orchestrator.Close())
-	}()
-
-	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator)
-	request := ctrl.Request{NamespacedName: network.NamespacedName()}
-	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
-		_, reconcileErr := reconciler.Reconcile(ctx, request)
-		if reconcileErr != nil {
-			return false, reconcileErr
-		}
-
-		currentNetwork := &apiv2.PhysicalContainerNetwork{}
-		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
-			return false, getErr
-		}
-		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
-	})
-	require.NoError(t, waitErr)
-
-	controllers.NewResourceHarvester().Harvest(ctx, orchestrator, log)
-	inspectedNetworks, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
-		Networks: []string{network.Spec.Network.NetworkName},
-	})
-	require.NoError(t, inspectErr)
-	require.Len(t, inspectedNetworks, 1)
 }
 
 func TestV2PhysicalContainerNetworkControllerQueuesDeletionBeforeRemovingFinalizer(t *testing.T) {

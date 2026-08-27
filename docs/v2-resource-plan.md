@@ -117,7 +117,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 7. Add logical resource controllers.
    - Physical resource creation definitions expose runtime labels, but physical controllers do not infer logical lifecycle, persistence, or creator-process labels. They reserve only an internal resource UID label needed to recognize runtime objects created by an uncertain prior attempt.
    - Build-created images receive the internal UID label through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
-   - Logical controllers determine those labels when creating physical resources. Startup harvesting honors `PersistentLabel` consistently for containers and networks.
+   - Logical controllers determine those labels when creating physical resources. Physical resource retention fields govern API-driven deletion only; logical controllers provide any labels consumed by startup harvesting.
 
 8. Retry recoverable failures in `PhysicalContainerImage`.
    - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.
