@@ -249,9 +249,10 @@ func TestRemovePersistentVolumeDoesNotForceRemoval(t *testing.T) {
 		},
 	}))
 
-	removeErr := removePersistentVolume(ctx, wrappedOrchestrator, volumeName, ownershipToken)
+	removed, removeErr := removePersistentVolume(ctx, wrappedOrchestrator, volumeName, ownershipToken)
 
 	require.NoError(t, removeErr)
+	require.True(t, removed)
 	require.False(t, wrappedOrchestrator.options.Force)
 }
 
@@ -297,7 +298,7 @@ func TestCleanupWorkloadResourcesPreservesReplacementVolume(t *testing.T) {
 	)
 
 	require.NoError(t, cleanupErr)
-	require.Equal(t, cleanupStoppedCounts{Volumes: 1}, report.Stopped)
+	require.Equal(t, cleanupStoppedCounts{}, report.Stopped)
 	_, inspectErr := orchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volumeName}})
 	require.NoError(t, inspectErr)
 	_, getRecordErr := stateStore.GetPersistentVolume(ctx, "containervolumes/"+volumeName)
@@ -450,6 +451,13 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 		RuntimeName: cleanupTestRuntimeName,
 		WorkloadID:  "workload-a",
 	}))
+	require.NoError(t, stateStore.UpsertPersistentVolume(ctx, statestore.PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/missing",
+		VolumeName:     "missing-volume",
+		RuntimeName:    cleanupTestRuntimeName,
+		WorkloadID:     "workload-a",
+		OwnershipToken: "missing-token",
+	}))
 
 	report, cleanupErr := cleanupWorkloadResources(
 		ctx,
@@ -461,13 +469,15 @@ func TestCleanupWorkloadResourcesTreatsMissingRuntimeResourcesAsSuccess(t *testi
 			return orchestrator, nil
 		},
 		processExecutor,
-		cleanupWorkloadOptions{},
+		cleanupWorkloadOptions{Volumes: true},
 		logr.Discard(),
 	)
 
 	require.NoError(t, cleanupErr)
 	require.Equal(t, cleanupStoppedCounts{Containers: 1, Networks: 1}, report.Stopped)
 	require.Empty(t, report.Failures)
+	_, getVolumeErr := stateStore.GetPersistentVolume(ctx, "containervolumes/missing")
+	require.ErrorIs(t, getVolumeErr, statestore.ErrPersistentVolumeNotFound)
 }
 
 func TestCleanupWorkloadResourcesRunsIndependentRecordsInParallel(t *testing.T) {

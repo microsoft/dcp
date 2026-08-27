@@ -227,6 +227,27 @@ func TestPersistentVolumePersistenceFailurePreventsRuntimeCreation(t *testing.T)
 	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
 }
 
+func TestPersistentVolumeWithoutWorkloadIDDoesNotUseStateStore(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeWithoutWorkloadID", t.TempDir(), TestEnvironmentOptions{
+		DecorateContainerOrchestrator: func(
+			orchestrator containers.ContainerOrchestrator,
+			stateStore *statestore.Store,
+		) containers.ContainerOrchestrator {
+			require.NoError(t, stateStore.Close())
+			return orchestrator
+		},
+	})
+	require.NoError(t, envStartErr)
+
+	volume := persistentVolumeForTest("persistent-volume-without-workload-id")
+	require.NoError(t, serverInfo.Client.Create(ctx, volume))
+	_ = ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, volume)
+}
+
 func TestPersistentVolumeCreateRaceAdoptsUnlabeledVolume(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)

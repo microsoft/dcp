@@ -193,10 +193,11 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 	}
 
 	change := noChange
-	if pointers.TrueValue(vol.Spec.Persistent) {
+	if pointers.TrueValue(vol.Spec.Persistent) && r.config.WorkloadID != "" {
 		if r.config.StateStore == nil {
 			stateStoreErr := fmt.Errorf("state store is not configured")
 			log.Error(stateStoreErr, "Could not acquire persistent volume lease")
+			// ContainerVolume has no terminal failure state, so retry rather than creating an untracked volume.
 			return additionalReconciliationNeeded
 		}
 
@@ -217,6 +218,7 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 		}
 		if leaseErr != nil {
 			log.Error(leaseErr, "Could not manage persistent volume under resource lease")
+			// ContainerVolume has no terminal failure state, so retry until bookkeeping is available again.
 			change |= additionalReconciliationNeeded
 		}
 	} else {
@@ -287,11 +289,12 @@ func handleNewContainerVolume(
 	var createErr error
 	inspectedVolume, createErr = createVolume(ctx, r.orchestrator, createOptions)
 	if errors.Is(createErr, containers.ErrAlreadyExists) {
-		inspectedVolume, inspectErr = inspectContainerVolume(ctx, r.orchestrator, vol.Spec.Name)
-		if inspectErr == nil {
+		var postCreateInspectErr error
+		inspectedVolume, postCreateInspectErr = inspectContainerVolume(ctx, r.orchestrator, vol.Spec.Name)
+		if postCreateInspectErr == nil {
 			createErr = nil
 		} else {
-			createErr = errors.Join(createErr, inspectErr)
+			createErr = errors.Join(createErr, postCreateInspectErr)
 		}
 	}
 	if createErr != nil {
@@ -364,7 +367,14 @@ func (r *VolumeReconciler) discardPendingPersistentVolumeRecord(
 	if ownershipToken == "" {
 		return nil
 	}
-	return r.config.StateStore.DeletePersistentVolume(ctx, vol.GetLeaseKey())
+	deleted, deleteErr := r.config.StateStore.DeletePersistentVolumeIfOwnershipTokenMatches(ctx, vol.GetLeaseKey(), ownershipToken)
+	if deleteErr != nil {
+		return deleteErr
+	}
+	if !deleted {
+		return fmt.Errorf("persistent volume ownership record changed before it could be discarded")
+	}
+	return nil
 }
 
 func (r *VolumeReconciler) reconcileExistingPersistentVolumeRecord(

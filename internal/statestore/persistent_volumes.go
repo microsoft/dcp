@@ -183,6 +183,41 @@ func (s *Store) DeletePersistentVolume(ctx context.Context, resourceKey string) 
 	})
 }
 
+func (s *Store) DeletePersistentVolumeIfOwnershipTokenMatches(
+	ctx context.Context,
+	resourceKey string,
+	ownershipToken string,
+) (bool, error) {
+	resourceKey = strings.TrimSpace(resourceKey)
+	if resourceKey == "" {
+		return false, fmt.Errorf("%w: persistent volume resource key cannot be empty", ErrInvalidArgument)
+	}
+	ownershipToken = strings.TrimSpace(ownershipToken)
+	if ownershipToken == "" {
+		return false, fmt.Errorf("%w: persistent volume ownership token cannot be empty", ErrInvalidArgument)
+	}
+
+	deleted := false
+	deleteErr := s.withImmediateTx(ctx, func(conn *sql.Conn) error {
+		result, execErr := conn.ExecContext(
+			ctx,
+			`DELETE FROM persistent_volumes WHERE resource_key = ? AND ownership_token = ?`,
+			resourceKey,
+			ownershipToken,
+		)
+		if execErr != nil {
+			return fmt.Errorf("could not conditionally delete persistent volume record '%s': %w", resourceKey, execErr)
+		}
+		rowsAffected, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("could not confirm conditional persistent volume record deletion for '%s': %w", resourceKey, rowsErr)
+		}
+		deleted = rowsAffected > 0
+		return nil
+	})
+	return deleted, deleteErr
+}
+
 type persistentVolumeScanner interface {
 	Scan(dest ...any) error
 }

@@ -1372,7 +1372,7 @@ func (to *TestContainerOrchestrator) resolveCreateContainerNetworks(options cont
 	for _, requestedNetwork := range requestedNetworks {
 		requestedNetworkName := requestedNetwork.Name
 		if len(requestedNetwork.Aliases) > 0 {
-			// Docker CLI lowercases the full name=...,alias=... field when parsing long --network syntax, we mimic this behavior here
+            // Docker CLI lowercases the full name=...,alias=... field when parsing long --network syntax, we mimic this behavior here
 			requestedNetworkName = strings.ToLower(requestedNetworkName)
 		}
 

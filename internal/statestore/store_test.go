@@ -1389,7 +1389,6 @@ func TestPersistentNetworkRecordRoundTripByWorkloadID(t *testing.T) {
 		RuntimeName: "docker",
 		WorkloadID:  "workload-a",
 	}
-
 	require.NoError(t, store.UpsertPersistentNetwork(ctx, record))
 
 	actual, getErr := store.GetPersistentNetwork(ctx, record.ResourceKey)
@@ -1465,6 +1464,36 @@ func TestPersistentVolumeRecordRoundTripByWorkloadID(t *testing.T) {
 	records, listErr = store.ListPersistentVolumesByWorkloadID(ctx, record.WorkloadID)
 	require.NoError(t, listErr)
 	require.Empty(t, records)
+}
+
+func TestDeletePersistentVolumeIfOwnershipTokenMatches(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := testutil.GetTestContext(t, stateStoreTestTimeout)
+	defer cancel()
+	storePath := filepath.Join(t.TempDir(), "state.sqlite3")
+	store := openTestStore(t, ctx, storePath)
+
+	record := PersistentVolumeRecord{
+		ResourceKey:    "containervolumes/data",
+		VolumeName:     "data",
+		RuntimeName:    "docker",
+		WorkloadID:     "workload-a",
+		OwnershipToken: "ownership-token",
+	}
+	require.NoError(t, store.UpsertPersistentVolume(ctx, record))
+
+	deleted, mismatchedDeleteErr := store.DeletePersistentVolumeIfOwnershipTokenMatches(ctx, record.ResourceKey, "replacement-token")
+	require.NoError(t, mismatchedDeleteErr)
+	require.False(t, deleted)
+	_, getErr := store.GetPersistentVolume(ctx, record.ResourceKey)
+	require.NoError(t, getErr)
+
+	deleted, matchingDeleteErr := store.DeletePersistentVolumeIfOwnershipTokenMatches(ctx, record.ResourceKey, record.OwnershipToken)
+	require.NoError(t, matchingDeleteErr)
+	require.True(t, deleted)
+	_, getErr = store.GetPersistentVolume(ctx, record.ResourceKey)
+	require.ErrorIs(t, getErr, ErrPersistentVolumeNotFound)
 }
 
 // migrationVersionsInDir returns the migration versions declared by the up migration files
