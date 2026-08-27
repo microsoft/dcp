@@ -42,7 +42,15 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 			Command:       []string{"run"},
 			Env: []commonapi.EnvVar{
 				{Name: "TEST_ENV", Value: "test-value"},
-			}},
+			},
+			Labels: []commonapi.Label{
+				{Key: "logical-label", Value: "logical-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
+				{Key: controllers.PersistentLabel, Value: "caller-value"},
+				{Key: controllers.CreatorProcessIdLabel, Value: "caller-value"},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-value"},
+			},
+		},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -62,9 +70,13 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.Equal(t, "created-image", inspectedContainers[0].Image)
 	require.Equal(t, []string{"run"}, inspectedContainers[0].Args)
 	require.Equal(t, "test-value", inspectedContainers[0].Env["TEST_ENV"])
+	require.Equal(t, "logical-value", inspectedContainers[0].Labels["logical-label"])
+	require.Equal(t, string(updatedContainer.UID), inspectedContainers[0].Labels["com.microsoft.developer.usvc-dev.uid"])
 	require.Equal(t, "false", inspectedContainers[0].Labels[controllers.PersistentLabel])
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
 	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotEqual(t, "caller-value", inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
 }
 
 func TestV2PhysicalContainerControllerReconcilesWhenNamespaceBecomesActive(t *testing.T) {
@@ -364,6 +376,42 @@ func TestV2PhysicalContainerControllerDoesNotDuplicateCreateWhileStatusPending(t
 	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
 	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
+}
+
+func TestV2PhysicalContainerControllerRetriesCreateWithoutPartialContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create-retry-without-partial")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retry-without-partial-image", "retry-without-partial-image")
+	containerName := "v2-pctr-create-retry-without-partial-container"
+	containerOrchestrator.FailNextCreateContainer(containerName, errors.New("create failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "retry-without-partial-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateFailed, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 0, containerOrchestrator.RemoveContainerCallCount(containerName))
 }
 
 func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
@@ -1006,8 +1054,17 @@ func removeRuntimeNetworkOnCleanup(t *testing.T, networkName string) {
 			Networks: []string{networkName},
 			Force:    true,
 		})
-		if removeErr != nil && !errors.Is(removeErr, containers.ErrNotFound) {
-			require.NoError(t, removeErr)
+		if removeErr == nil || errors.Is(removeErr, containers.ErrNotFound) {
+			return
 		}
+		// Removal reports a partial failure both for a network that is already gone and for one
+		// that could not be removed, so confirm the network is actually absent before ignoring it.
+		inspectedNetworks, inspectErr := containerOrchestrator.InspectNetworks(cleanupCtx, containers.InspectNetworksOptions{
+			Networks: []string{networkName},
+		})
+		if errors.Is(inspectErr, containers.ErrNotFound) || (inspectErr == nil && len(inspectedNetworks) == 0) {
+			return
+		}
+		require.NoError(t, removeErr)
 	})
 }

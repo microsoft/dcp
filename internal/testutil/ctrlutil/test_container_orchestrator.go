@@ -73,6 +73,9 @@ const (
 	operationPullImage
 	operationInspectImage
 	operationBuildImage
+	operationCreateNetwork
+	operationPostCreateNetwork
+	operationInspectNetwork
 )
 
 type testContainerOperationKey struct {
@@ -80,6 +83,8 @@ type testContainerOperationKey struct {
 	resourceID string
 }
 
+// TestContainerOrchestrator simulates container runtime operations for tests.
+// Tests sharing an orchestrator must use unique runtime identifiers when configuring operation behavior.
 type TestContainerOrchestrator struct {
 	runtimeHealthy           bool
 	volumes                  map[string]containerVolume
@@ -846,6 +851,10 @@ func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventM
 }
 
 func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
+	if err := to.recordOperation(ctx, operationCreateNetwork, options.Name); err != nil {
+		return "", err
+	}
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -885,6 +894,11 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
+	postCreateKey := testContainerOperationKey{operation: operationPostCreateNetwork, resourceID: options.Name}
+	if postCreateErr := to.nextOperationErrorLocked(postCreateKey); postCreateErr != nil {
+		return "", postCreateErr
+	}
+
 	return id.ID, nil
 }
 
@@ -904,25 +918,30 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 	names := []string{}
 	ids := []string{}
 	for _, name := range options.Networks {
+		matched := false
 		for _, network := range to.networks {
-			if network.matches(name) {
-				if network.isDefault {
-					err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
-					continue
-				}
-
-				if len(network.containers) > 0 {
-					err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
-					continue
-				}
-
-				names = append(names, network.Name)
-				ids = append(ids, network.ID)
+			if !network.matches(name) {
+				continue
 			}
 
-			if !options.Force {
-				err = errors.Join(err, fmt.Errorf("network %s not found", name))
+			matched = true
+			if network.isDefault {
+				err = errors.Join(err, fmt.Errorf("cannot remove default network: %s", name))
+				break
 			}
+
+			if len(network.containers) > 0 {
+				err = errors.Join(err, fmt.Errorf("cannot remove network with containers"))
+				break
+			}
+
+			names = append(names, network.Name)
+			ids = append(ids, network.ID)
+			break
+		}
+
+		if !matched && !options.Force {
+			err = errors.Join(err, fmt.Errorf("network %s not found", name))
 		}
 	}
 
@@ -946,6 +965,8 @@ func (to *TestContainerOrchestrator) RemoveNetworks(ctx context.Context, options
 }
 
 func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, options containers.InspectNetworksOptions) ([]containers.InspectedNetwork, error) {
+	to.recordInspectNetworksOperation(options.Networks)
+
 	to.mutex.Lock()
 	defer to.mutex.Unlock()
 
@@ -990,7 +1011,7 @@ func (to *TestContainerOrchestrator) InspectNetworks(ctx context.Context, option
 					Gateways:   network.gateways,
 					Subnets:    network.subnets,
 					Containers: connectedContainers,
-					Labels:     map[string]string{},
+					Labels:     maps.Map[string, string, string](network.labels, func(_ string, value string) string { return value }),
 					CreatedAt:  network.created,
 				})
 			}
@@ -1164,6 +1185,10 @@ func (to *TestContainerOrchestrator) DefaultNetworkName() string {
 	return "bridge"
 }
 
+func (*TestContainerOrchestrator) IsBuiltInNetwork(networkName string) bool {
+	return networkName == "bridge" || networkName == "host" || networkName == "none"
+}
+
 func (to *TestContainerOrchestrator) BlockCreateContainer(name string) func() {
 	return to.blockOperation(operationCreateContainer, name)
 }
@@ -1203,11 +1228,6 @@ func (to *TestContainerOrchestrator) RemoveContainerCallCount(name string) int {
 func (to *TestContainerOrchestrator) recordRemoveContainerOperationLocked(name string) error {
 	key := testContainerOperationKey{operation: operationRemoveContainer, resourceID: name}
 	to.operationCallCounts[key]++
-	return to.nextOperationErrorLocked(key)
-}
-
-func (to *TestContainerOrchestrator) nextPostCreateContainerErrorLocked(name string) error {
-	key := testContainerOperationKey{operation: operationPostCreateContainer, resourceID: name}
 	return to.nextOperationErrorLocked(key)
 }
 
@@ -1276,6 +1296,38 @@ func (to *TestContainerOrchestrator) OmitBuildImageID(tag string) func() {
 
 func (to *TestContainerOrchestrator) BuildImageCallCount(tag string) int {
 	return to.operationCallCount(operationBuildImage, tag)
+}
+
+func (to *TestContainerOrchestrator) BlockCreateNetwork(name string) func() {
+	return to.blockOperation(operationCreateNetwork, name)
+}
+
+// FailNextCreateNetworkAfterCreation simulates a runtime create whose result is uncertain to the caller.
+func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name string, createErr error) {
+	if createErr == nil {
+		createErr = errors.New("simulated network create failure")
+	}
+
+	to.queueOperationError(operationPostCreateNetwork, name, createErr)
+}
+
+func (to *TestContainerOrchestrator) CreateNetworkCallCount(name string) int {
+	return to.operationCallCount(operationCreateNetwork, name)
+}
+
+// InspectNetworkCallCount reports how many times the network was inspected, by ID or by name.
+func (to *TestContainerOrchestrator) InspectNetworkCallCount(network string) int {
+	return to.operationCallCount(operationInspectNetwork, network)
+}
+
+func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []string) {
+	to.mutex.Lock()
+	defer to.mutex.Unlock()
+
+	for _, network := range networks {
+		key := testContainerOperationKey{operation: operationInspectNetwork, resourceID: network}
+		to.operationCallCounts[key]++
+	}
 }
 
 func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
@@ -1619,7 +1671,8 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		return "", err
 	}
 	events = append(events, createEvent)
-	if postCreateErr := to.nextPostCreateContainerErrorLocked(options.Name); postCreateErr != nil {
+	postCreateKey := testContainerOperationKey{operation: operationPostCreateContainer, resourceID: options.Name}
+	if postCreateErr := to.nextOperationErrorLocked(postCreateKey); postCreateErr != nil {
 		return container.ID, postCreateErr
 	}
 
@@ -2328,6 +2381,24 @@ func (to *TestContainerOrchestrator) ListContainers(ctx context.Context, options
 	}
 
 	filteredContainers := slices.Select(maps.Values(to.containers), func(container *testContainer) bool {
+		if !options.All &&
+			container.Status != containers.ContainerStatusRunning &&
+			container.Status != containers.ContainerStatusPaused &&
+			container.Status != containers.ContainerStatusRestarting &&
+			container.Status != containers.ContainerStatusRemoving {
+			return false
+		}
+
+		if len(options.Filters.NetworkFilters) > 0 &&
+			!slices.Any(options.Filters.NetworkFilters, func(networkFilter string) bool {
+				return slices.Any(container.Networks, func(networkName string) bool {
+					network := to.networks[networkName]
+					return networkName == networkFilter || (network != nil && network.matches(networkFilter))
+				})
+			}) {
+			return false
+		}
+
 		// If there are no label filters, we should include all containers.
 		if len(options.Filters.LabelFilters) == 0 {
 			return true

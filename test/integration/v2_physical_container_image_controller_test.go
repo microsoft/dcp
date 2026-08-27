@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
+	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
 	"github.com/microsoft/dcp/pkg/commonapi"
@@ -271,6 +272,10 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 			},
 			Labels: []commonapi.Label{
 				{Key: "test-label", Value: "test-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
+				{Key: controllers.PersistentLabel, Value: "caller-value"},
+				{Key: controllers.CreatorProcessIdLabel, Value: "caller-value"},
+				{Key: controllers.CreatorProcessStartTimeLabel, Value: "caller-value"},
 			},
 		}},
 		},
@@ -288,6 +293,12 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedImages, 1)
 	require.Equal(t, "test-value", inspectedImages[0].Labels["test-label"])
+	require.Equal(t, string(updatedImage.UID), inspectedImages[0].Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.Equal(t, "true", inspectedImages[0].Labels[controllers.PersistentLabel])
+	require.NotEmpty(t, inspectedImages[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEqual(t, "caller-value", inspectedImages[0].Labels[controllers.CreatorProcessIdLabel])
+	require.NotEmpty(t, inspectedImages[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotEqual(t, "caller-value", inspectedImages[0].Labels[controllers.CreatorProcessStartTimeLabel])
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-image")
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
 }

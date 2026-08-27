@@ -33,7 +33,6 @@ import (
 	"github.com/microsoft/dcp/internal/containers"
 	"github.com/microsoft/dcp/pkg/commonapi"
 	"github.com/microsoft/dcp/pkg/osutil"
-	"github.com/microsoft/dcp/pkg/process"
 	"github.com/microsoft/dcp/pkg/resiliency"
 	"github.com/microsoft/dcp/pkg/slices"
 )
@@ -1046,27 +1045,12 @@ func physicalNetworksToCreateContainerNetworks(networks []apiv2.ContainerNetwork
 }
 
 func physicalContainerCreationLabels(container *apiv2.PhysicalContainer, log logr.Logger) []containers.Label {
-	labels := append([]containers.Label{}, container.Spec.Container.Labels...)
-	labels = append(labels, containers.Label{
-		Key:   PersistentLabel,
-		Value: fmt.Sprintf("%t", container.Spec.Container.RetainRuntimeContainer),
-	})
-
-	thisProcess, thisProcessErr := process.This()
-	if thisProcessErr != nil {
-		log.Error(thisProcessErr, "Could not get the current process information; physical container will not have creator process information")
-		return labels
-	}
-
-	labels = append(labels, containers.Label{
-		Key:   CreatorProcessIdLabel,
-		Value: fmt.Sprintf("%d", thisProcess.Pid),
-	})
-	labels = append(labels, containers.Label{
-		Key:   CreatorProcessStartTimeLabel,
-		Value: thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat),
-	})
-	return labels
+	return physicalResourceCreationLabels(
+		container.Spec.Container.Labels,
+		container.Spec.Container.RetainRuntimeContainer,
+		container.UID,
+		log,
+	)
 }
 
 func applyInspectedPhysicalContainerStatus(container *apiv2.PhysicalContainer, inspectedContainer *containers.InspectedContainer, log logr.Logger) objectChange {

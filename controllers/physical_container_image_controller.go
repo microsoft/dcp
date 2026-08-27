@@ -351,7 +351,7 @@ func (r *PhysicalContainerImageReconciler) ensureBuiltImage(ctx context.Context,
 	buildContext.Tags = append([]string{}, buildContext.Tags...)
 	buildContext.Args = append([]commonapi.EnvVar{}, buildContext.Args...)
 	buildContext.Secrets = append([]apiv2.ContainerBuildSecret{}, buildContext.Secrets...)
-	buildContext.Labels = append([]commonapi.Label{}, buildContext.Labels...)
+	buildContext.Labels = physicalResourceCreationLabels(buildContext.Labels, true, image.UID, log)
 	buildContext.Tags = physicalContainerImageBuildTags(buildContext.Tags, outputImage)
 
 	return r.schedulePhysicalContainerImageBuild(image, outputImage, &buildContext, log)

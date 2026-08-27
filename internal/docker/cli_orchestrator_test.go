@@ -329,6 +329,26 @@ func TestUnmarshalListedNetworks(t *testing.T) {
 	require.NoError(t, timestampErr)
 }
 
+func TestUnmarshalInspectedNetworkReportsIPv6(t *testing.T) {
+	t.Parallel()
+
+	var network ct.InspectedNetwork
+	unmarshalErr := unmarshalNetwork([]byte(`{
+		"Id": "network-id",
+		"Name": "ipv6-network",
+		"Created": "2025-01-02T03:04:05Z",
+		"Scope": "local",
+		"Driver": "bridge",
+		"EnableIPv6": true,
+		"IPAM": {"Config": []},
+		"Labels": {},
+		"Containers": {}
+	}`), &network)
+
+	require.NoError(t, unmarshalErr)
+	require.True(t, network.IPv6)
+}
+
 func TestGetStatusChecksDockerVersionBeforeNetworks(t *testing.T) {
 	ctx, cancel := testutil.GetTestContext(t, 20*time.Second)
 	defer cancel()
@@ -387,6 +407,51 @@ func TestGetStatusRejectsInvalidDockerVersionOutput(t *testing.T) {
 	require.Contains(t, status.Error, "may not be a valid Docker installation")
 	require.Len(t, executor.FindAll([]string{"docker", "--version"}, "", nil), 1)
 	require.Empty(t, executor.FindAll([]string{"docker", "network", "ls"}, "", nil))
+}
+
+func TestApplyListContainersOptions(t *testing.T) {
+	t.Parallel()
+
+	args := applyListContainersOptions(
+		[]string{"container", "ls", "--no-trunc"},
+		ct.ListContainersOptions{
+			All: true,
+			Filters: ct.ListContainersFilters{
+				LabelFilters:   []ct.LabelFilter{{Key: "owner", Value: "dcp"}},
+				NetworkFilters: []string{"network-id"},
+			},
+		},
+	)
+
+	require.Equal(t, []string{
+		"container", "ls", "--no-trunc", "--all",
+		"--filter", "label=owner=dcp",
+		"--filter", "network=network-id",
+	}, args)
+}
+
+func TestIsBuiltInNetwork(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		networkName string
+		expected    bool
+	}{
+		{name: "bridge", networkName: "bridge", expected: true},
+		{name: "host", networkName: "host", expected: true},
+		{name: "none", networkName: "none", expected: true},
+		{name: "nat", networkName: "nat", expected: false},
+		{name: "user-defined network", networkName: "application", expected: false},
+	}
+
+	orchestrator := &DockerCliOrchestrator{}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, testCase.expected, orchestrator.IsBuiltInNetwork(testCase.networkName))
+		})
+	}
 }
 
 func TestParseDockerCliVersion(t *testing.T) {

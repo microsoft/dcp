@@ -29,6 +29,8 @@ import (
 
 	apiv2 "github.com/microsoft/dcp/api/v2"
 	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
+	"github.com/microsoft/dcp/pkg/process"
 	usvc_slices "github.com/microsoft/dcp/pkg/slices"
 )
 
@@ -55,6 +57,39 @@ const (
 
 	numPostfixBytes = 6
 )
+
+func setRuntimeLabel(labels []commonapi.Label, key string, value string) []commonapi.Label {
+	for i := range labels {
+		if labels[i].Key == key {
+			labels[i].Value = value
+			return labels
+		}
+	}
+	return append(labels, commonapi.Label{Key: key, Value: value})
+}
+
+func physicalResourceCreationLabels(
+	labels []commonapi.Label,
+	persistent bool,
+	resourceUID types.UID,
+	log logr.Logger,
+) []commonapi.Label {
+	result := append([]commonapi.Label{}, labels...)
+	result = setRuntimeLabel(result, PersistentLabel, fmt.Sprintf("%t", persistent))
+	if resourceUID != "" {
+		result = setRuntimeLabel(result, uidLabel, string(resourceUID))
+	}
+
+	thisProcess, thisProcessErr := process.This()
+	if thisProcessErr != nil {
+		log.Error(thisProcessErr, "Could not get current process information; physical resource will not have creator process information")
+		return result
+	}
+
+	result = setRuntimeLabel(result, CreatorProcessIdLabel, fmt.Sprintf("%d", thisProcess.Pid))
+	result = setRuntimeLabel(result, CreatorProcessStartTimeLabel, thisProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat))
+	return result
+}
 
 type AdditionalReconciliationDelay int
 

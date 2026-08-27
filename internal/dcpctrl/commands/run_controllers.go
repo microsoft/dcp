@@ -286,6 +286,18 @@ func runControllers(log logr.Logger) func(cmd *cobra.Command, _ []string) error 
 			return err
 		}
 
+		physicalContainerNetworkCtrl := controllers.NewPhysicalContainerNetworkReconciler(
+			ctrlCtx,
+			mgr.GetClient(),
+			mgr.GetAPIReader(),
+			log.WithName("PhysicalContainerNetworkReconciler"),
+			containerOrchestrator,
+		)
+		if err = physicalContainerNetworkCtrl.SetupWithManager(mgr, defaultControllerName); err != nil {
+			log.Error(err, "Unable to set up PhysicalContainerNetwork controller")
+			return err
+		}
+
 		containerExecCtrl := controllers.NewContainerExecReconciler(
 			ctrlCtx,
 			mgr.GetClient(),

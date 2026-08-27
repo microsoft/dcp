@@ -96,6 +96,31 @@ func (in PhysicalContainerList) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetwork) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetwork"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkConfig) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkConfig"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkList) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkSpec) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PhysicalContainerNetworkStatus) OpenAPIModelName() string {
+	return "github.com/microsoft/dcp/api/v2.PhysicalContainerNetworkStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PhysicalContainerPortMapping) OpenAPIModelName() string {
 	return "github.com/microsoft/dcp/api/v2.PhysicalContainerPortMapping"
 }
