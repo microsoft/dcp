@@ -67,6 +67,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 ### References and watches
 
 - V2 API reference fields use string values formatted as `<name>` or `<namespace>/<name>`.
+- Every reference field's doc comment must state explicitly whether cross-namespace references are allowed.
 - Controllers normalize references to `types.NamespacedName`.
 - Name-only references resolve within the referring resource's namespace. Explicit namespaces must match it unless cross-namespace references are supported.
 - Controllers should watch referenced resources and enqueue dependents when updates can unblock reconciliation.
