@@ -83,6 +83,8 @@ type testContainerOperationKey struct {
 	resourceID string
 }
 
+// TestContainerOrchestrator simulates container runtime operations for tests.
+// Tests sharing an orchestrator must use unique runtime identifiers when configuring operation behavior.
 type TestContainerOrchestrator struct {
 	runtimeHealthy           bool
 	volumes                  map[string]containerVolume
@@ -849,7 +851,7 @@ func (to *TestContainerOrchestrator) WatchNetworks(sink chan<- containers.EventM
 }
 
 func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options containers.CreateNetworkOptions) (string, error) {
-	if err := to.recordCreateNetworkOperation(ctx, options.Name); err != nil {
+	if err := to.recordOperation(ctx, operationCreateNetwork, options.Name); err != nil {
 		return "", err
 	}
 
@@ -1229,11 +1231,6 @@ func (to *TestContainerOrchestrator) recordRemoveContainerOperationLocked(name s
 	return to.nextOperationErrorLocked(key)
 }
 
-func (to *TestContainerOrchestrator) nextPostCreateContainerErrorLocked(name string) error {
-	key := testContainerOperationKey{operation: operationPostCreateContainer, resourceID: name}
-	return to.nextOperationErrorLocked(key)
-}
-
 func (to *TestContainerOrchestrator) FailInspectImage(image string, inspectErr error) func() {
 	if inspectErr == nil {
 		inspectErr = errors.New("simulated image inspection failure")
@@ -1331,10 +1328,6 @@ func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []s
 		key := testContainerOperationKey{operation: operationInspectNetwork, resourceID: network}
 		to.operationCallCounts[key]++
 	}
-}
-
-func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Context, name string) error {
-	return to.recordOperation(ctx, operationCreateNetwork, name)
 }
 
 func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
@@ -1678,7 +1671,8 @@ func (to *TestContainerOrchestrator) CreateContainer(ctx context.Context, option
 		return "", err
 	}
 	events = append(events, createEvent)
-	if postCreateErr := to.nextPostCreateContainerErrorLocked(options.Name); postCreateErr != nil {
+	postCreateKey := testContainerOperationKey{operation: operationPostCreateContainer, resourceID: options.Name}
+	if postCreateErr := to.nextOperationErrorLocked(postCreateKey); postCreateErr != nil {
 		return container.ID, postCreateErr
 	}
 

@@ -378,6 +378,42 @@ func TestV2PhysicalContainerControllerDoesNotDuplicateCreateWhileStatusPending(t
 	require.Equal(t, 1, containerOrchestrator.CreateContainerCallCount(containerName))
 }
 
+func TestV2PhysicalContainerControllerRetriesCreateWithoutPartialContainer(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pctr-create-retry-without-partial")
+	image := createReadyV2PhysicalContainerImage(t, ctx, namespace.Name, "retry-without-partial-image", "retry-without-partial-image")
+	containerName := "v2-pctr-create-retry-without-partial-container"
+	containerOrchestrator.FailNextCreateContainer(containerName, errors.New("create failed once"))
+
+	container := &apiv2.PhysicalContainer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "retry-without-partial-container",
+			Namespace: namespace.Name,
+		},
+		Spec: apiv2.PhysicalContainerSpec{Container: &apiv2.PhysicalContainerConfig{
+			ImageRef:      image.Name,
+			ContainerName: containerName,
+		}},
+	}
+	require.NoError(t, client.Create(ctx, container))
+
+	retryPendingContainer := waitObjectAssumesState(t, ctx, container.NamespacedName(), func(current *apiv2.PhysicalContainer) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(current.Status.Conditions, string(apiv2.ConditionReady))
+		return current.Status.Phase == apiv2.PhysicalContainerPhasePending &&
+			readyCondition != nil &&
+			apiv2.ConditionReason(readyCondition.Reason) == apiv2.PhysicalContainerReasonCreateFailed, nil
+	})
+	requireReadyCondition(t, retryPendingContainer.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerReasonCreateFailed)
+
+	updatedContainer := waitPhysicalContainerPhase(t, ctx, container.NamespacedName(), apiv2.PhysicalContainerPhaseRunning)
+	removeRuntimeContainerOnCleanup(t, updatedContainer.Status.ContainerID)
+	require.Equal(t, 2, containerOrchestrator.CreateContainerCallCount(containerName))
+	require.Equal(t, 0, containerOrchestrator.RemoveContainerCallCount(containerName))
+}
+
 func TestV2PhysicalContainerControllerRetriesCreateAfterFailure(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
