@@ -97,7 +97,7 @@ type PhysicalContainerVolumeConfig struct {
 	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime volume.
-	// The physical resource UID label is reserved and set by the controller.
+	// DCP harvesting and physical resource UID labels are reserved and set by the controller.
 	// +listType=map
 	// +listMapKey=key
 	Labels []commonapi.Label `json:"labels,omitempty"`

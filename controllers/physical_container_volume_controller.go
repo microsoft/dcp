@@ -315,7 +315,7 @@ func (r *PhysicalContainerVolumeReconciler) createPhysicalContainerVolume(
 
 	createErr := r.orchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{
 		Name:   volumeConfig.VolumeName,
-		Labels: physicalContainerVolumeCreationLabels(volume),
+		Labels: physicalContainerVolumeCreationLabels(volume, log),
 	})
 	r.applyPhysicalContainerVolumeCreateResult(ctx, volume, data, createErr, log)
 	r.queuePhysicalContainerVolumeDataResult(volume, stateKey, data)
@@ -857,13 +857,17 @@ func inspectPhysicalContainerVolume(
 	return nil, containers.ErrNotFound
 }
 
-func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume) map[string]string {
-	labels := map[string]string{}
-	for _, label := range volume.Spec.Volume.Labels {
+func physicalContainerVolumeCreationLabels(volume *apiv2.PhysicalContainerVolume, log logr.Logger) map[string]string {
+	volumeConfig := volume.Spec.Volume
+	creationLabels := physicalResourceCreationLabels(
+		volumeConfig.Labels,
+		volumeConfig.RetainRuntimeVolume,
+		volume.UID,
+		log,
+	)
+	labels := make(map[string]string, len(creationLabels))
+	for _, label := range creationLabels {
 		labels[label.Key] = label.Value
-	}
-	if volume.UID != "" {
-		labels[uidLabel] = string(volume.UID)
 	}
 	return labels
 }
