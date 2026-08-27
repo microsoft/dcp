@@ -45,7 +45,7 @@ This document tracks the intended direction for DCP V2 resources. The current V2
 - An `applyTo` method may project controller-owned in-memory state onto the resource's status. It must not modify spec or metadata, mutate controller-owned state, schedule work, or perform external side effects.
 - State transitions, work scheduling, cleanup, runtime inspection, and controller-owned state updates belong in reconciler or initializer functions.
 - When controller-owned state uses a `Ready` condition reason as its current reconciliation state, dispatch reason-specific behavior through an exhaustive initializer map keyed by that reason. Unrecognized reasons must produce explicit invalid-state handling.
-- Do not discard an in-memory operation result until its status projection is durable. Use the status-durable callback supplied to `SaveChanges` or `SaveChangesWithDelay` with an atomic conditional state-map update so a failed status write retains the result and a delayed acknowledgement cannot remove newer state.
+- Do not discard an in-memory operation result until its status projection is durable. Use the status-durable callback supplied to `SaveChanges` or `SaveChangesWithDelay` so a failed status write retains the result. If newer state can replace the record before the callback runs, acknowledge the result with an atomic conditional state-map update so a delayed acknowledgement cannot remove that newer state.
 
 ### Status and progress reporting
 
@@ -120,10 +120,6 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Containers and networks derive their persistence label from their physical retention field. Network harvesting intentionally ignores that label and removes orphaned networks after their creator exits so persistent networks cannot exhaust the runtime's finite default network allocations.
    - Build-created images receive persistent, creator-process, and internal UID labels through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
    - Logical controllers determine additional labels and physical retention intent when creating physical resources.
-
-8. Retry recoverable failures in `PhysicalContainerImage`.
-   - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.
-   - `PhysicalContainerNetwork` already follows the recoverable/terminal failure pattern described in the status guidelines. Apply the same treatment to the image controller.
 
 ### Logical resource layer
 

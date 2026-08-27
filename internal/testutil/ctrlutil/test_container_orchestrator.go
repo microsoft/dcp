@@ -74,6 +74,7 @@ const (
 	operationInspectImage
 	operationBuildImage
 	operationCreateNetwork
+	operationPostCreateNetwork
 	operationInspectNetwork
 )
 
@@ -98,7 +99,6 @@ type TestContainerOrchestrator struct {
 	operationBlocks          map[testContainerOperationKey]chan struct{}
 	operationErrors          map[testContainerOperationKey][]error
 	operationResultOmissions map[testContainerOperationKey]bool
-	createNetworkPostErrors  map[string][]error
 	containerEventsWatcher   *pubsub.SubscriptionSet[containers.EventMessage]
 	networkEventsWatcher     *pubsub.SubscriptionSet[containers.EventMessage]
 	attachHandler            ContainerAttachHandler
@@ -215,7 +215,6 @@ func NewTestContainerOrchestrator(
 		operationBlocks:          map[testContainerOperationKey]chan struct{}{},
 		operationErrors:          map[testContainerOperationKey][]error{},
 		operationResultOmissions: map[testContainerOperationKey]bool{},
-		createNetworkPostErrors:  map[string][]error{},
 		mutex:                    &sync.Mutex{},
 		lifetimeCtx:              lifetimeCtx,
 		log:                      log,
@@ -893,7 +892,7 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
-	if postCreateErr := to.takeCreateNetworkPostErrorLocked(options.Name); postCreateErr != nil {
+	if postCreateErr := to.nextPostCreateNetworkErrorLocked(options.Name); postCreateErr != nil {
 		return "", postCreateErr
 	}
 
@@ -1311,10 +1310,7 @@ func (to *TestContainerOrchestrator) FailNextCreateNetworkAfterCreation(name str
 		createErr = errors.New("simulated network create failure")
 	}
 
-	to.mutex.Lock()
-	defer to.mutex.Unlock()
-
-	to.createNetworkPostErrors[name] = append(to.createNetworkPostErrors[name], createErr)
+	to.queueOperationError(operationPostCreateNetwork, name, createErr)
 }
 
 func (to *TestContainerOrchestrator) CreateNetworkCallCount(name string) int {
@@ -1340,18 +1336,9 @@ func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Co
 	return to.recordOperation(ctx, operationCreateNetwork, name)
 }
 
-func (to *TestContainerOrchestrator) takeCreateNetworkPostErrorLocked(name string) error {
-	if len(to.createNetworkPostErrors[name]) == 0 {
-		return nil
-	}
-
-	createErr := to.createNetworkPostErrors[name][0]
-	to.createNetworkPostErrors[name] = to.createNetworkPostErrors[name][1:]
-	if len(to.createNetworkPostErrors[name]) == 0 {
-		delete(to.createNetworkPostErrors, name)
-	}
-
-	return createErr
+func (to *TestContainerOrchestrator) nextPostCreateNetworkErrorLocked(name string) error {
+	key := testContainerOperationKey{operation: operationPostCreateNetwork, resourceID: name}
+	return to.nextOperationErrorLocked(key)
 }
 
 func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
