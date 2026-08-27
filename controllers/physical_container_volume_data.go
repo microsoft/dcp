@@ -15,19 +15,32 @@ import (
 
 type physicalContainerVolumeDataStateKey string
 
+type physicalContainerVolumeOperationProgress int
+
+const (
+	physicalContainerVolumeOperationInProgress physicalContainerVolumeOperationProgress = iota + 1
+	physicalContainerVolumeOperationCompleted
+	physicalContainerVolumeOperationRetryPending
+	physicalContainerVolumeOperationFailed
+)
+
 type physicalContainerVolumeData struct {
 	conditionReason apiv2.ConditionReason
+	progress        physicalContainerVolumeOperationProgress
 	volumeID        string
 	failureMessage  string
 	retryAfter      time.Time
+	resolveByName   bool
 }
 
 func (data *physicalContainerVolumeData) Clone() *physicalContainerVolumeData {
 	return &physicalContainerVolumeData{
 		conditionReason: data.conditionReason,
+		progress:        data.progress,
 		volumeID:        data.volumeID,
 		failureMessage:  data.failureMessage,
 		retryAfter:      data.retryAfter,
+		resolveByName:   data.resolveByName,
 	}
 }
 
@@ -39,6 +52,10 @@ func (data *physicalContainerVolumeData) UpdateFrom(other *physicalContainerVolu
 	updated := false
 	if data.conditionReason != other.conditionReason {
 		data.conditionReason = other.conditionReason
+		updated = true
+	}
+	if data.progress != other.progress {
+		data.progress = other.progress
 		updated = true
 	}
 	if data.volumeID != other.volumeID {
@@ -53,12 +70,12 @@ func (data *physicalContainerVolumeData) UpdateFrom(other *physicalContainerVolu
 		data.retryAfter = other.retryAfter
 		updated = true
 	}
+	if data.resolveByName != other.resolveByName {
+		data.resolveByName = other.resolveByName
+		updated = true
+	}
 
 	return updated
-}
-
-func (data *physicalContainerVolumeData) operationInProgress() bool {
-	return data.conditionReason == apiv2.PhysicalContainerVolumeReasonCreating
 }
 
 func (data *physicalContainerVolumeData) applyTo(volume *apiv2.PhysicalContainerVolume) objectChange {
@@ -71,10 +88,23 @@ func (data *physicalContainerVolumeData) applyTo(volume *apiv2.PhysicalContainer
 	case apiv2.PhysicalContainerVolumeReasonCreating:
 		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
 		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonCreating, "Runtime volume creation is in progress.")
+	case apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoving:
+		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
+		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoving, "Runtime volume removal is in progress.")
 	case apiv2.PhysicalContainerVolumeReasonCreateFailed,
-		apiv2.PhysicalContainerVolumeReasonReconciliationFailed:
-		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhaseFailed)
+		apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed:
+		if data.progress == physicalContainerVolumeOperationRetryPending {
+			change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
+		} else {
+			change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhaseFailed)
+		}
 		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+	case apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed:
+		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
+		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+	case apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoved:
+		change |= setValue(&volume.Status.Phase, apiv2.PhysicalContainerVolumePhasePending)
+		change |= setCondition(&volume.Status.Conditions, apiv2.ConditionReady, volume.Generation, metav1.ConditionFalse, data.conditionReason, "Runtime volume removal completed.")
 	}
 
 	return change

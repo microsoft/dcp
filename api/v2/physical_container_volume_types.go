@@ -24,26 +24,23 @@ import (
 )
 
 // PhysicalContainerVolumePhase describes the lifecycle phase of a PhysicalContainerVolume.
-type PhysicalContainerVolumePhase string
+type PhysicalContainerVolumePhase PhysicalResourcePhase
 
 const (
 	// PhysicalContainerVolumePhasePending indicates that the volume is waiting for prerequisites.
-	PhysicalContainerVolumePhasePending PhysicalContainerVolumePhase = "Pending"
+	PhysicalContainerVolumePhasePending PhysicalContainerVolumePhase = PhysicalContainerVolumePhase(PhysicalResourcePhasePending)
 
 	// PhysicalContainerVolumePhaseReady indicates that the runtime volume is available.
-	PhysicalContainerVolumePhaseReady PhysicalContainerVolumePhase = "Ready"
+	PhysicalContainerVolumePhaseReady PhysicalContainerVolumePhase = PhysicalContainerVolumePhase(PhysicalResourcePhaseReady)
 
-	// PhysicalContainerVolumePhaseMissing indicates that the referenced runtime volume was not found.
-	PhysicalContainerVolumePhaseMissing PhysicalContainerVolumePhase = "Missing"
+	// PhysicalContainerVolumePhaseUnknown indicates that volume availability cannot be determined.
+	PhysicalContainerVolumePhaseUnknown PhysicalContainerVolumePhase = PhysicalContainerVolumePhase(PhysicalResourcePhaseUnknown)
 
-	// PhysicalContainerVolumePhaseFailed indicates that creating or inspecting the runtime volume failed.
-	PhysicalContainerVolumePhaseFailed PhysicalContainerVolumePhase = "Failed"
+	// PhysicalContainerVolumePhaseFailed indicates a terminal creation failure.
+	PhysicalContainerVolumePhaseFailed PhysicalContainerVolumePhase = PhysicalContainerVolumePhase(PhysicalResourcePhaseFailed)
 )
 
 const (
-	// PhysicalContainerVolumeReasonPending indicates that the volume is waiting for prerequisites.
-	PhysicalContainerVolumeReasonPending ConditionReason = "Pending"
-
 	// PhysicalContainerVolumeReasonCreating indicates that runtime volume creation is in progress.
 	PhysicalContainerVolumeReasonCreating ConditionReason = "Creating"
 
@@ -53,14 +50,26 @@ const (
 	// PhysicalContainerVolumeReasonCreateFailed indicates that runtime volume creation failed.
 	PhysicalContainerVolumeReasonCreateFailed ConditionReason = "CreateFailed"
 
-	// PhysicalContainerVolumeReasonVolumeReady indicates that the runtime volume is available.
-	PhysicalContainerVolumeReasonVolumeReady ConditionReason = "VolumeReady"
+	// PhysicalContainerVolumeReasonExistingVolumeReplacementFailed indicates that an existing runtime volume could not be replaced.
+	PhysicalContainerVolumeReasonExistingVolumeReplacementFailed ConditionReason = "ExistingVolumeReplacementFailed"
+
+	// PhysicalContainerVolumeReasonVolumeAvailable indicates that the runtime volume is available.
+	PhysicalContainerVolumeReasonVolumeAvailable ConditionReason = "VolumeAvailable"
 
 	// PhysicalContainerVolumeReasonRuntimeVolumeMissing indicates that the runtime volume was not found.
 	PhysicalContainerVolumeReasonRuntimeVolumeMissing ConditionReason = "RuntimeVolumeMissing"
 
-	// PhysicalContainerVolumeReasonReconciliationFailed indicates that reconciliation failed outside a specific progress gate.
-	PhysicalContainerVolumeReasonReconciliationFailed ConditionReason = "ReconciliationFailed"
+	// PhysicalContainerVolumeReasonRuntimeVolumeInspectFailed indicates that the runtime volume could not be inspected.
+	PhysicalContainerVolumeReasonRuntimeVolumeInspectFailed ConditionReason = "RuntimeVolumeInspectFailed"
+
+	// PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed indicates that the runtime volume could not be removed.
+	PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed ConditionReason = "RuntimeVolumeRemoveFailed"
+
+	// PhysicalContainerVolumeReasonRuntimeVolumeRemoving indicates that the runtime volume is being removed.
+	PhysicalContainerVolumeReasonRuntimeVolumeRemoving ConditionReason = "RuntimeVolumeRemoving"
+
+	// PhysicalContainerVolumeReasonRuntimeVolumeRemoved indicates that the runtime volume was removed.
+	PhysicalContainerVolumeReasonRuntimeVolumeRemoved ConditionReason = "RuntimeVolumeRemoved"
 )
 
 // PhysicalContainerVolumeSpec describes either an existing runtime volume or how to create one.
@@ -98,7 +107,7 @@ type PhysicalContainerVolumeConfig struct {
 // +k8s:openapi-gen=true
 type PhysicalContainerVolumeStatus struct {
 	// Phase summarizes whether the runtime volume is available.
-	// +kubebuilder:validation:Enum=Pending;Ready;Missing;Failed
+	// +kubebuilder:validation:Enum=Pending;Ready;Unknown;Failed
 	// +optional
 	Phase PhysicalContainerVolumePhase `json:"phase,omitempty"`
 

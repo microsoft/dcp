@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -56,7 +57,7 @@ func TestV2PhysicalContainerVolumeControllerCreatesVolume(t *testing.T) {
 	require.Equal(t, "local", readyVolume.Status.Driver)
 	require.Equal(t, "local", readyVolume.Status.Scope)
 	require.False(t, readyVolume.Status.CreatedAt.IsZero())
-	requireReadyCondition(t, readyVolume.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerVolumeReasonVolumeReady)
+	requireReadyCondition(t, readyVolume.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerVolumeReasonVolumeAvailable)
 
 	inspectedVolume := inspectRuntimeVolume(t, ctx, volumeName)
 	require.Equal(t, "test-value", inspectedVolume.Labels["test-label"])
@@ -154,9 +155,13 @@ func TestV2PhysicalContainerVolumeControllerWaitsForInUseVolume(t *testing.T) {
 	removeRuntimeContainerOnCleanup(t, containerID)
 
 	require.NoError(t, client.Delete(ctx, volume))
-	terminatingVolume := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
-		return current.DeletionTimestamp != nil && !current.DeletionTimestamp.IsZero(), nil
-	})
+	terminatingVolume := waitPhysicalContainerVolumeReason(
+		t,
+		ctx,
+		volume.NamespacedName(),
+		apiv2.PhysicalContainerVolumeReasonRuntimeVolumeRemoveFailed,
+	)
+	require.Equal(t, apiv2.PhysicalContainerVolumePhasePending, terminatingVolume.Status.Phase)
 	require.Contains(t, terminatingVolume.Finalizers, apiv2.GroupName+"/physicalcontainervolume-reconciler")
 	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
 	require.Len(t, inspectRuntimeContainers(t, ctx, containerID), 1)
@@ -218,6 +223,39 @@ func TestV2PhysicalContainerVolumeControllerDoesNotDuplicateCreate(t *testing.T)
 	releaseCreate()
 	waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
+}
+
+func TestV2PhysicalContainerVolumeControllerWaitsForCreateBeforeDeletion(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	namespace := createActiveV2Namespace(t, ctx, "v2-pcv-delete-during-create")
+	volumeName := "v2-pcv-delete-during-create-runtime"
+	removeRuntimeVolumeOnCleanup(t, volumeName)
+	releaseCreate := containerOrchestrator.BlockCreateVolume(volumeName)
+	defer releaseCreate()
+
+	volume := &apiv2.PhysicalContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "delete-during-create-volume", Namespace: namespace.Name},
+		Spec:       newPhysicalContainerVolumeSpec(volumeName),
+	}
+	require.NoError(t, client.Create(ctx, volume))
+	waitCreateVolumeCallCount(t, ctx, volumeName, 1)
+	require.NoError(t, client.Delete(ctx, volume))
+
+	terminatingVolume := waitObjectAssumesState(t, ctx, volume.NamespacedName(), func(current *apiv2.PhysicalContainerVolume) (bool, error) {
+		return current.DeletionTimestamp != nil && !current.DeletionTimestamp.IsZero(), nil
+	})
+	require.Contains(t, terminatingVolume.Finalizers, apiv2.GroupName+"/physicalcontainervolume-reconciler")
+	requireReadyCondition(t, terminatingVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonCreating)
+	require.Equal(t, 0, containerOrchestrator.RemoveVolumeCallCount(volumeName))
+
+	releaseCreate()
+	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerVolume](t, ctx, client, volume)
+	waitRuntimeVolumeMissing(t, ctx, volumeName)
+	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
+	require.Equal(t, 1, containerOrchestrator.RemoveVolumeCallCount(volumeName))
 }
 
 func TestV2PhysicalContainerVolumeControllerAdoptsVolumeAfterUncertainCreateFailure(t *testing.T) {
@@ -332,8 +370,9 @@ func TestV2PhysicalContainerVolumeControllerRetriesInUseReplacementWithoutRemovi
 		},
 	}
 	require.NoError(t, client.Create(ctx, volume))
-	failedVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
-	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+	failedVolume := waitPhysicalContainerVolumeReason(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed)
+	require.Equal(t, apiv2.PhysicalContainerVolumePhasePending, failedVolume.Status.Phase)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed)
 	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
 	require.Len(t, inspectRuntimeContainers(t, ctx, containerID), 1)
 	require.Equal(t, 1, containerOrchestrator.CreateVolumeCallCount(volumeName))
@@ -397,8 +436,9 @@ func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementRemovalFa
 		},
 	}
 	require.NoError(t, client.Create(ctx, volume))
-	failedVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
-	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+	failedVolume := waitPhysicalContainerVolumeReason(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed)
+	require.Equal(t, apiv2.PhysicalContainerVolumePhasePending, failedVolume.Status.Phase)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed)
 	require.NotNil(t, inspectRuntimeVolume(t, ctx, volumeName))
 
 	readyVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
@@ -439,8 +479,9 @@ func TestV2PhysicalContainerVolumeControllerRetriesTransientReplacementInspectio
 		},
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, volume))
-	failedVolume := waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
-	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+	failedVolume := waitPhysicalContainerVolumeReasonEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed)
+	require.Equal(t, apiv2.PhysicalContainerVolumePhasePending, failedVolume.Status.Phase)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonExistingVolumeReplacementFailed)
 
 	testOrchestrator.SetRuntimeHealth(true)
 	readyVolume := waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
@@ -501,7 +542,7 @@ func TestV2PhysicalContainerVolumeControllerReportsExternalRemovalWithoutRecreat
 	readyVolume.Annotations = map[string]string{"test-probe": "missing"}
 	require.NoError(t, client.Update(ctx, readyVolume))
 
-	missingVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseMissing)
+	missingVolume := waitPhysicalContainerVolumePhase(t, ctx, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseUnknown)
 	requireReadyCondition(t, missingVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonRuntimeVolumeMissing)
 	require.Equal(t, createCount, containerOrchestrator.CreateVolumeCallCount(volumeName))
 }
@@ -560,18 +601,20 @@ func TestV2PhysicalContainerVolumeControllerRecoversFromRuntimeAndCreateFailures
 		Spec:       newPhysicalContainerVolumeSpec(volumeName),
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, volume))
-	failedVolume := waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
-	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonReconciliationFailed)
+	failedVolume := waitPhysicalContainerVolumeReasonEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumeReasonCreateFailed)
+	require.Equal(t, apiv2.PhysicalContainerVolumePhasePending, failedVolume.Status.Phase)
+	requireReadyCondition(t, failedVolume.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerVolumeReasonCreateFailed)
 
 	waitInspectVolumeCallCount(t, ctx, testOrchestrator, volumeName, testOrchestrator.InspectVolumeCallCount(volumeName)+2)
 	testOrchestrator.SetRuntimeHealth(true)
 	recoveredVolume := waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
-	requireReadyCondition(t, recoveredVolume.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerVolumeReasonVolumeReady)
+	requireReadyCondition(t, recoveredVolume.Status.Conditions, metav1.ConditionTrue, apiv2.PhysicalContainerVolumeReasonVolumeAvailable)
 
 	testOrchestrator.SetRuntimeHealth(false)
 	recoveredVolume.Annotations = map[string]string{"test-probe": "runtime-failure"}
 	require.NoError(t, serverInfo.Client.Update(ctx, recoveredVolume))
-	waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseFailed)
+	failedVolume = waitPhysicalContainerVolumeReasonEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumeReasonRuntimeVolumeInspectFailed)
+	require.Equal(t, apiv2.PhysicalContainerVolumePhaseUnknown, failedVolume.Status.Phase)
 	testOrchestrator.SetRuntimeHealth(true)
 	waitPhysicalContainerVolumePhaseEx(t, ctx, serverInfo.Client, volume.NamespacedName(), apiv2.PhysicalContainerVolumePhaseReady)
 }
@@ -607,6 +650,30 @@ func waitPhysicalContainerVolumePhase(
 	t.Helper()
 	return waitObjectAssumesState(t, ctx, name, func(volume *apiv2.PhysicalContainerVolume) (bool, error) {
 		return volume.Status.Phase == phase, nil
+	})
+}
+
+func waitPhysicalContainerVolumeReason(
+	t *testing.T,
+	ctx context.Context,
+	name types.NamespacedName,
+	reason apiv2.ConditionReason,
+) *apiv2.PhysicalContainerVolume {
+	t.Helper()
+	return waitPhysicalContainerVolumeReasonEx(t, ctx, client, name, reason)
+}
+
+func waitPhysicalContainerVolumeReasonEx(
+	t *testing.T,
+	ctx context.Context,
+	testClient ctrl_client.Client,
+	name types.NamespacedName,
+	reason apiv2.ConditionReason,
+) *apiv2.PhysicalContainerVolume {
+	t.Helper()
+	return waitObjectAssumesStateEx(t, ctx, testClient, name, func(volume *apiv2.PhysicalContainerVolume) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(volume.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil && readyCondition.Reason == string(reason), nil
 	})
 }
 
