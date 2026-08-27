@@ -8,6 +8,7 @@ package integration_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -27,6 +28,8 @@ import (
 	"github.com/microsoft/dcp/controllers"
 	"github.com/microsoft/dcp/internal/containers"
 	ctrl_testutil "github.com/microsoft/dcp/internal/testutil/ctrlutil"
+	"github.com/microsoft/dcp/pkg/commonapi"
+	"github.com/microsoft/dcp/pkg/osutil"
 	"github.com/microsoft/dcp/pkg/testutil"
 )
 
@@ -71,6 +74,329 @@ func (client *failOncePhysicalContainerNetworkStatusClient) failureTriggered() b
 type failOncePhysicalContainerNetworkStatusWriter struct {
 	ctrl_client.SubResourceWriter
 	client *failOncePhysicalContainerNetworkStatusClient
+}
+
+type blockingNetworkInspectionOrchestrator struct {
+	containers.NetworkAttachmentOrchestrator
+
+	inspectionStarted chan struct{}
+	releaseInspection chan struct{}
+	startOnce         sync.Once
+	releaseOnce       sync.Once
+}
+
+type failingNetworkInspectionOrchestrator struct {
+	containers.NetworkAttachmentOrchestrator
+
+	lock             sync.Mutex
+	inspectionErrors []error
+}
+
+func (orchestrator *failingNetworkInspectionOrchestrator) InspectNetworks(
+	ctx context.Context,
+	options containers.InspectNetworksOptions,
+) ([]containers.InspectedNetwork, error) {
+	orchestrator.lock.Lock()
+	if len(orchestrator.inspectionErrors) > 0 {
+		inspectErr := orchestrator.inspectionErrors[0]
+		orchestrator.inspectionErrors = orchestrator.inspectionErrors[1:]
+		orchestrator.lock.Unlock()
+		return nil, inspectErr
+	}
+	orchestrator.lock.Unlock()
+	return orchestrator.NetworkAttachmentOrchestrator.InspectNetworks(ctx, options)
+}
+
+func (orchestrator *blockingNetworkInspectionOrchestrator) InspectNetworks(
+	ctx context.Context,
+	options containers.InspectNetworksOptions,
+) ([]containers.InspectedNetwork, error) {
+	orchestrator.startOnce.Do(func() {
+		close(orchestrator.inspectionStarted)
+	})
+	select {
+	case <-orchestrator.releaseInspection:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return orchestrator.NetworkAttachmentOrchestrator.InspectNetworks(ctx, options)
+}
+
+func (orchestrator *blockingNetworkInspectionOrchestrator) release() {
+	orchestrator.releaseOnce.Do(func() {
+		close(orchestrator.releaseInspection)
+	})
+}
+
+func TestV2PhysicalContainerNetworkControllerPersistentNetworkSurvivesHarvesting(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "persistent-network-harvesting",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	nonexistentProcess := nonExistentProcess(t)
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "persistent-network-harvesting",
+			Namespace:  namespace.Name,
+			UID:        types.UID("persistent-network-harvesting"),
+			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{
+				NetworkName:          "persistent-network-harvesting-runtime",
+				RetainRuntimeNetwork: true,
+				Labels: []commonapi.Label{
+					{Key: controllers.PersistentLabel, Value: "true"},
+					{Key: controllers.CreatorProcessIdLabel, Value: fmt.Sprintf("%d", nonexistentProcess.Pid)},
+					{Key: controllers.CreatorProcessStartTimeLabel, Value: nonexistentProcess.IdentityTime.Format(osutil.RFC3339MiliTimestampFormat)},
+				},
+			},
+		},
+	}
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerNetwork{}).
+		WithObjects(namespace, network).
+		Build()
+	log := testutil.NewLogForTesting(t.Name())
+	orchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, orchestrator.Close())
+	}()
+
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator)
+	request := ctrl.Request{NamespacedName: network.NamespacedName()}
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		currentNetwork := &apiv2.PhysicalContainerNetwork{}
+		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
+			return false, getErr
+		}
+		return currentNetwork.Status.Phase == apiv2.PhysicalContainerNetworkPhaseReady, nil
+	})
+	require.NoError(t, waitErr)
+
+	controllers.NewResourceHarvester().Harvest(ctx, orchestrator, log)
+	inspectedNetworks, inspectErr := orchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{
+		Networks: []string{network.Spec.Network.NetworkName},
+	})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedNetworks, 1)
+}
+
+func TestV2PhysicalContainerNetworkControllerQueuesDeletionBeforeRemovingFinalizer(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	log := testutil.NewLogForTesting(t.Name())
+	baseOrchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, baseOrchestrator.Close())
+	}()
+	networkName := "queued-network-deletion-runtime"
+	networkID, createErr := baseOrchestrator.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: networkName})
+	require.NoError(t, createErr)
+
+	orchestrator := &blockingNetworkInspectionOrchestrator{
+		NetworkAttachmentOrchestrator: baseOrchestrator,
+		inspectionStarted:             make(chan struct{}),
+		releaseInspection:             make(chan struct{}),
+	}
+	defer orchestrator.release()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	now := metav1.Now()
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "queued-network-deletion",
+			Namespace:         "queued-network-deletion",
+			UID:               types.UID("queued-network-deletion"),
+			Finalizers:        []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
+			DeletionTimestamp: &now,
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
+		},
+		Status: apiv2.PhysicalContainerNetworkStatus{
+			NetworkID: networkID,
+			Phase:     apiv2.PhysicalContainerNetworkPhaseReady,
+		},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.PhysicalContainerNetwork{}).
+		WithObjects(network).
+		Build()
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator)
+	request := ctrl.Request{NamespacedName: network.NamespacedName()}
+
+	reconcileDone := make(chan error, 1)
+	go func() {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		reconcileDone <- reconcileErr
+	}()
+
+	select {
+	case <-orchestrator.inspectionStarted:
+	case <-ctx.Done():
+		require.FailNow(t, "runtime network deletion did not start")
+	}
+	select {
+	case reconcileErr := <-reconcileDone:
+		require.NoError(t, reconcileErr)
+	case <-ctx.Done():
+		require.FailNow(t, "reconciliation blocked on runtime network deletion")
+	}
+
+	currentNetwork := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, baseClient.Get(ctx, network.NamespacedName(), currentNetwork))
+	require.NotEmpty(t, currentNetwork.Finalizers)
+
+	orchestrator.release()
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork)
+		if apierrors.IsNotFound(getErr) {
+			return true, nil
+		}
+		if getErr != nil {
+			return false, getErr
+		}
+		return len(currentNetwork.Finalizers) == 0, nil
+	})
+	require.NoError(t, waitErr)
+
+	_, inspectErr := baseOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkID}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+}
+
+func TestV2PhysicalContainerNetworkControllerRetriesUncertainCreateCleanup(t *testing.T) {
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiv2.AddToScheme(scheme))
+	namespace := &apiv2.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "uncertain-create-cleanup",
+			Finalizers: []string{apiv2.NamespaceFinalizer},
+		},
+		Status: apiv2.NamespaceStatus{Phase: apiv2.NamespacePhaseActive},
+	}
+	networkName := "uncertain-create-cleanup-runtime"
+	network := &apiv2.PhysicalContainerNetwork{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "uncertain-create-cleanup",
+			Namespace:  namespace.Name,
+			UID:        types.UID("uncertain-create-cleanup"),
+			Finalizers: []string{apiv2.GroupName + "/physicalcontainernetwork-reconciler"},
+		},
+		Spec: apiv2.PhysicalContainerNetworkSpec{
+			Network: &apiv2.PhysicalContainerNetworkConfig{NetworkName: networkName},
+		},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&apiv2.Namespace{}, &apiv2.PhysicalContainerNetwork{}).
+		WithObjects(namespace, network).
+		Build()
+	log := testutil.NewLogForTesting(t.Name())
+	baseOrchestrator, orchestratorErr := ctrl_testutil.NewTestContainerOrchestrator(ctx, log, ctrl_testutil.TcoOptionNone)
+	require.NoError(t, orchestratorErr)
+	defer func() {
+		require.NoError(t, baseOrchestrator.Close())
+	}()
+	baseOrchestrator.FailNextCreateNetworkAfterCreation(networkName, errors.New("create result lost"))
+	orchestrator := &failingNetworkInspectionOrchestrator{
+		NetworkAttachmentOrchestrator: baseOrchestrator,
+		inspectionErrors: []error{
+			errors.New("create verification unavailable"),
+			errors.New("deletion verification unavailable"),
+		},
+	}
+
+	reconciler := controllers.NewPhysicalContainerNetworkReconciler(ctx, baseClient, baseClient, log, orchestrator)
+	request := ctrl.Request{NamespacedName: network.NamespacedName()}
+	waitErr := wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		currentNetwork := &apiv2.PhysicalContainerNetwork{}
+		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
+			return false, getErr
+		}
+		readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonReconciliationFailed), nil
+	})
+	require.NoError(t, waitErr)
+
+	currentNetwork := &apiv2.PhysicalContainerNetwork{}
+	require.NoError(t, baseClient.Get(ctx, network.NamespacedName(), currentNetwork))
+	require.NoError(t, baseClient.Delete(ctx, currentNetwork))
+
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		if getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork); getErr != nil {
+			return false, getErr
+		}
+		readyCondition := apimeta.FindStatusCondition(currentNetwork.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed), nil
+	})
+	require.NoError(t, waitErr)
+	require.NotEmpty(t, currentNetwork.Finalizers)
+
+	inspectedNetworks, inspectErr := baseOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkName}})
+	require.NoError(t, inspectErr)
+	require.Len(t, inspectedNetworks, 1)
+
+	waitErr = wait.PollUntilContextCancel(ctx, waitPollInterval, pollImmediately, func(ctx context.Context) (bool, error) {
+		_, reconcileErr := reconciler.Reconcile(ctx, request)
+		if reconcileErr != nil {
+			return false, reconcileErr
+		}
+
+		getErr := baseClient.Get(ctx, network.NamespacedName(), currentNetwork)
+		if apierrors.IsNotFound(getErr) {
+			return true, nil
+		}
+		if getErr != nil {
+			return false, getErr
+		}
+		return len(currentNetwork.Finalizers) == 0, nil
+	})
+	require.NoError(t, waitErr)
+
+	_, inspectErr = baseOrchestrator.InspectNetworks(ctx, containers.InspectNetworksOptions{Networks: []string{networkName}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
 }
 
 func (writer *failOncePhysicalContainerNetworkStatusWriter) Patch(

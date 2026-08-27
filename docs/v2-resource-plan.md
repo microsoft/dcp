@@ -114,9 +114,10 @@ This document tracks the intended direction for DCP V2 resources. The current V2
    - Use the same namespace, queued action, in-memory progress, phase, and condition patterns as the other physical resources.
    - Do not assume the V1 `Executable` type will migrate to `PhysicalProcess`; IDE protocol integration may make that migration too complicated or undesirable.
 
-7. Align network harvesting with `retainRuntimeNetwork`.
-   - `harvestAbandonedNetworks` filters on `withCreator` rather than `nonPersistentWithCreator`, so it ignores `PersistentLabel` and reaps any empty DCP-created network whose creator process is gone. A `PhysicalContainerNetwork` with `network.retainRuntimeNetwork: true` is therefore still removed after a DCP crash, unlike a retained container.
-   - This asymmetry is inherited from V1. Decide whether harvesting should honor the persistent label for networks, and change V1 and V2 together if it should.
+7. Add logical resource controllers.
+   - Physical resource creation definitions expose runtime labels, but physical controllers do not infer logical lifecycle, persistence, or creator-process labels. They reserve only an internal resource UID label needed to recognize runtime objects created by an uncertain prior attempt.
+   - Build-created images receive the internal UID label through `build.labels`. Pulling resolves an expected named image and is not a runtime-object creation operation.
+   - Logical controllers determine those labels when creating physical resources. Startup harvesting honors `PersistentLabel` consistently for containers and networks.
 
 8. Retry recoverable failures in `PhysicalContainerImage`.
    - `ensurePulledImage` and `ensureBuiltImage` record an inspection failure without requesting another reconciliation, so a repeated identical failure produces no status change and leaves the image with nothing scheduled to retry it.

@@ -206,8 +206,8 @@ func (rh *resourceHarvester) harvestAbandonedNetworks(
 	// Reduce the list of running networks to the ones that are empty and don't have an
 	// active creator process.
 	networksWithoutCreators := usvc_slices.Accumulate[[]string](runningNetworks, func(ids []string, n containers.ListedNetwork) []string {
-		if !withCreator(n.Labels) {
-			// This network is missing the required creator labels, so skip it.
+		if !nonPersistentWithCreator(n.Labels) {
+			// This network is persistent or is missing the required creator labels, so skip it.
 			return ids
 		}
 

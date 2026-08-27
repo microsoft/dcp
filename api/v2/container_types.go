@@ -212,7 +212,8 @@ type ContainerBuildContext struct {
 	// +optional
 	Stage string `json:"stage,omitempty"`
 
-	// Labels to apply to the built image.
+	// Labels to apply to the built image. When used by PhysicalContainerImage,
+	// the physical resource UID label is reserved and set by the controller.
 	// +listType=map
 	// +listMapKey=key
 	// +optional

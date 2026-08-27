@@ -41,7 +41,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	_, netCreateErr := co.CreateNetwork(ctx, containers.CreateNetworkOptions{Name: netNoLabels})
 	require.NoError(t, netCreateErr)
 
-	// Persistent DCP network with no containers (should not be preserved)
+	// Persistent DCP network with no containers (should be preserved)
 	const netPersistent = prefix + "persistent"
 	_, netCreateErr = co.CreateNetwork(ctx, containers.CreateNetworkOptions{
 		Name: netPersistent,
@@ -292,6 +292,7 @@ func TestUnusedNetworkHarvesting(t *testing.T) {
 	})
 	require.ElementsMatch(t, []string{
 		netNoLabels,
+		netPersistent,
 		netPersistentWithContainer,
 		netUsedByExistingProcess,
 		netWithNonDcpContainers,

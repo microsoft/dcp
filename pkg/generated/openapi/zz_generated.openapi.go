@@ -4278,7 +4278,7 @@ func schema_microsoft_dcp_api_v2_ContainerBuildContext(ref common.ReferenceCallb
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Labels to apply to the built image.",
+							Description: "Labels to apply to the built image. When used by PhysicalContainerImage, the physical resource UID label is reserved and set by the controller.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -4955,7 +4955,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerConfig(ref common.ReferenceCal
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime container.",
+							Description: "Labels contains labels to apply to a newly-created runtime container. The physical resource UID label is reserved and set by the controller.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -5367,7 +5367,7 @@ func schema_microsoft_dcp_api_v2_PhysicalContainerNetworkConfig(ref common.Refer
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Labels contains labels to apply to a newly-created runtime network.",
+							Description: "Labels contains labels to apply to a newly-created runtime network. The physical resource UID label is reserved and set by the controller.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

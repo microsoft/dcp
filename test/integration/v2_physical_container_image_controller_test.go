@@ -271,6 +271,7 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 			},
 			Labels: []commonapi.Label{
 				{Key: "test-label", Value: "test-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
 			},
 		}},
 		},
@@ -288,6 +289,7 @@ func TestV2PhysicalContainerImageControllerBuildsImage(t *testing.T) {
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedImages, 1)
 	require.Equal(t, "test-value", inspectedImages[0].Labels["test-label"])
+	require.Equal(t, string(updatedImage.UID), inspectedImages[0].Labels["com.microsoft.developer.usvc-dev.uid"])
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-image")
 	require.Contains(t, inspectedImages[0].Tags, "v2-pci-built-target-image")
 }

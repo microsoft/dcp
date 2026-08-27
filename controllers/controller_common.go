@@ -56,6 +56,16 @@ const (
 	numPostfixBytes = 6
 )
 
+func setRuntimeLabel(labels []commonapi.Label, key string, value string) []commonapi.Label {
+	for i := range labels {
+		if labels[i].Key == key {
+			labels[i].Value = value
+			return labels
+		}
+	}
+	return append(labels, commonapi.Label{Key: key, Value: value})
+}
+
 type AdditionalReconciliationDelay int
 
 const (

@@ -42,7 +42,12 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 			Command:       []string{"run"},
 			Env: []commonapi.EnvVar{
 				{Name: "TEST_ENV", Value: "test-value"},
-			}},
+			},
+			Labels: []commonapi.Label{
+				{Key: "logical-label", Value: "logical-value"},
+				{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
+			},
+		},
 		},
 	}
 	require.NoError(t, client.Create(ctx, container))
@@ -62,9 +67,11 @@ func TestV2PhysicalContainerControllerCreatesContainer(t *testing.T) {
 	require.Equal(t, "created-image", inspectedContainers[0].Image)
 	require.Equal(t, []string{"run"}, inspectedContainers[0].Args)
 	require.Equal(t, "test-value", inspectedContainers[0].Env["TEST_ENV"])
-	require.Equal(t, "false", inspectedContainers[0].Labels[controllers.PersistentLabel])
-	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessIdLabel])
-	require.NotEmpty(t, inspectedContainers[0].Labels[controllers.CreatorProcessStartTimeLabel])
+	require.Equal(t, "logical-value", inspectedContainers[0].Labels["logical-label"])
+	require.Equal(t, string(updatedContainer.UID), inspectedContainers[0].Labels["com.microsoft.developer.usvc-dev.uid"])
+	require.NotContains(t, inspectedContainers[0].Labels, controllers.PersistentLabel)
+	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessIdLabel)
+	require.NotContains(t, inspectedContainers[0].Labels, controllers.CreatorProcessStartTimeLabel)
 }
 
 func TestV2PhysicalContainerControllerReconcilesWhenNamespaceBecomesActive(t *testing.T) {
@@ -762,7 +769,7 @@ func TestV2PhysicalContainerControllerPreservesCreatedContainerOnDeletion(t *tes
 	})
 	require.NoError(t, inspectErr)
 	require.Len(t, inspectedContainers, 1)
-	require.Equal(t, "true", inspectedContainers[0].Labels[controllers.PersistentLabel])
+	require.NotContains(t, inspectedContainers[0].Labels, controllers.PersistentLabel)
 }
 
 func TestV2PhysicalContainerControllerPreservesExistingContainerOnDeletion(t *testing.T) {

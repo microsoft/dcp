@@ -15,19 +15,32 @@ import (
 
 type physicalContainerNetworkDataStateKey string
 
+type physicalContainerNetworkOperationProgress int
+
+const (
+	physicalContainerNetworkOperationInProgress physicalContainerNetworkOperationProgress = iota + 1
+	physicalContainerNetworkOperationCompleted
+	physicalContainerNetworkOperationRetryPending
+	physicalContainerNetworkOperationFailed
+)
+
 type physicalContainerNetworkData struct {
 	conditionReason apiv2.ConditionReason
+	progress        physicalContainerNetworkOperationProgress
 	networkID       string
 	failureMessage  string
 	retryAfter      time.Time
+	resolveByName   bool
 }
 
 func (data *physicalContainerNetworkData) Clone() *physicalContainerNetworkData {
 	return &physicalContainerNetworkData{
 		conditionReason: data.conditionReason,
+		progress:        data.progress,
 		networkID:       data.networkID,
 		failureMessage:  data.failureMessage,
 		retryAfter:      data.retryAfter,
+		resolveByName:   data.resolveByName,
 	}
 }
 
@@ -39,6 +52,10 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 	updated := false
 	if data.conditionReason != other.conditionReason {
 		data.conditionReason = other.conditionReason
+		updated = true
+	}
+	if data.progress != other.progress {
+		data.progress = other.progress
 		updated = true
 	}
 	if data.networkID != other.networkID {
@@ -53,12 +70,12 @@ func (data *physicalContainerNetworkData) UpdateFrom(other *physicalContainerNet
 		data.retryAfter = other.retryAfter
 		updated = true
 	}
+	if data.resolveByName != other.resolveByName {
+		data.resolveByName = other.resolveByName
+		updated = true
+	}
 
 	return updated
-}
-
-func (data *physicalContainerNetworkData) operationInProgress() bool {
-	return data.conditionReason == apiv2.PhysicalContainerNetworkReasonCreating
 }
 
 func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContainerNetwork) objectChange {
@@ -72,11 +89,34 @@ func (data *physicalContainerNetworkData) applyTo(network *apiv2.PhysicalContain
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
 		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonCreating, "Runtime network creation is in progress.")
 		return change
+	case apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoving:
+		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
+		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoving, "Runtime network removal is in progress.")
+		return change
 	case apiv2.PhysicalContainerNetworkReasonCreateFailed,
-		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable,
-		apiv2.PhysicalContainerNetworkReasonReconciliationFailed:
+		apiv2.PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable:
 		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
 		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		return change
+	case apiv2.PhysicalContainerNetworkReasonReconciliationFailed:
+		if data.progress == physicalContainerNetworkOperationRetryPending {
+			change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
+		} else {
+			change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
+		}
+		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		return change
+	case apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed:
+		if data.progress == physicalContainerNetworkOperationRetryPending {
+			change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhasePending)
+		} else {
+			change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseFailed)
+		}
+		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, data.failureMessage)
+		return change
+	case apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoved:
+		change |= setValue(&network.Status.Phase, apiv2.PhysicalContainerNetworkPhaseMissing)
+		change |= setCondition(&network.Status.Conditions, apiv2.ConditionReady, network.Generation, metav1.ConditionFalse, data.conditionReason, "Runtime network removal completed.")
 		return change
 	default:
 		return change

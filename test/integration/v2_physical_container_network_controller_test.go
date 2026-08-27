@@ -47,6 +47,7 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 				IPv6:        true,
 				Labels: []commonapi.Label{
 					{Key: "test-label", Value: "test-value"},
+					{Key: "com.microsoft.developer.usvc-dev.uid", Value: "caller-value"},
 				},
 			},
 		},
@@ -69,13 +70,12 @@ func TestV2PhysicalContainerNetworkControllerCreatesNetwork(t *testing.T) {
 	require.Len(t, inspectedNetworks, 1)
 	require.Equal(t, networkName, inspectedNetworks[0].Name)
 
-	// Creator labels let startup harvesting reclaim networks abandoned by a crashed DCP process.
 	labels := runtimeNetworkLabels(t, ctx, networkName)
 	require.Equal(t, "test-value", labels["test-label"])
-	require.Equal(t, "false", labels[controllers.PersistentLabel])
 	require.Equal(t, string(updatedNetwork.UID), labels["com.microsoft.developer.usvc-dev.uid"])
-	require.NotEmpty(t, labels[controllers.CreatorProcessIdLabel])
-	require.NotEmpty(t, labels[controllers.CreatorProcessStartTimeLabel])
+	require.NotContains(t, labels, controllers.PersistentLabel)
+	require.NotContains(t, labels, controllers.CreatorProcessIdLabel)
+	require.NotContains(t, labels, controllers.CreatorProcessStartTimeLabel)
 }
 
 func TestV2PhysicalContainerNetworkControllerTracksExistingNetwork(t *testing.T) {
@@ -176,7 +176,11 @@ func TestV2PhysicalContainerNetworkControllerReportsDeletionFailure(t *testing.T
 	tco.SetRuntimeHealth(false)
 	require.NoError(t, serverInfo.Client.Delete(ctx, readyNetwork))
 
-	failedNetwork := waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+	failedNetwork := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(updated *apiv2.PhysicalContainerNetwork) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(updated.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed), nil
+	})
 	requireReadyCondition(t, failedNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed)
 	require.NotEmpty(t, failedNetwork.Finalizers)
 
@@ -259,7 +263,7 @@ func TestV2PhysicalContainerNetworkControllerPreservesCreatedNetworkOnDeletion(t
 
 	updatedNetwork := waitPhysicalContainerNetworkPhase(t, ctx, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseReady)
 	networkID := updatedNetwork.Status.NetworkID
-	require.Equal(t, "true", runtimeNetworkLabels(t, ctx, networkName)[controllers.PersistentLabel])
+	require.NotContains(t, runtimeNetworkLabels(t, ctx, networkName), controllers.PersistentLabel)
 
 	require.NoError(t, client.Delete(ctx, network))
 	ctrl_testutil.WaitObjectDeleted[apiv2.PhysicalContainerNetwork](t, ctx, client, network)
@@ -844,7 +848,11 @@ func TestV2PhysicalContainerNetworkControllerRecoversFromCreateFailure(t *testin
 	}
 	require.NoError(t, serverInfo.Client.Create(ctx, network))
 
-	failedNetwork := waitPhysicalContainerNetworkPhaseEx(t, ctx, serverInfo.Client, network.NamespacedName(), apiv2.PhysicalContainerNetworkPhaseFailed)
+	failedNetwork := waitObjectAssumesStateEx(t, ctx, serverInfo.Client, network.NamespacedName(), func(updated *apiv2.PhysicalContainerNetwork) (bool, error) {
+		readyCondition := apimeta.FindStatusCondition(updated.Status.Conditions, string(apiv2.ConditionReady))
+		return readyCondition != nil &&
+			readyCondition.Reason == string(apiv2.PhysicalContainerNetworkReasonReconciliationFailed), nil
+	})
 	requireReadyCondition(t, failedNetwork.Status.Conditions, metav1.ConditionFalse, apiv2.PhysicalContainerNetworkReasonReconciliationFailed)
 
 	// A status update wakes the controller immediately. Waiting for repeated verification proves

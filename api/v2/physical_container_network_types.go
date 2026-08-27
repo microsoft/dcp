@@ -70,6 +70,12 @@ const (
 	// PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed indicates that the runtime network could not be removed.
 	PhysicalContainerNetworkReasonRuntimeNetworkRemoveFailed ConditionReason = "RuntimeNetworkRemoveFailed"
 
+	// PhysicalContainerNetworkReasonRuntimeNetworkRemoving indicates that the runtime network is being removed.
+	PhysicalContainerNetworkReasonRuntimeNetworkRemoving ConditionReason = "RuntimeNetworkRemoving"
+
+	// PhysicalContainerNetworkReasonRuntimeNetworkRemoved indicates that the runtime network was removed.
+	PhysicalContainerNetworkReasonRuntimeNetworkRemoved ConditionReason = "RuntimeNetworkRemoved"
+
 	// PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable indicates that replacement targeted a built-in runtime network.
 	PhysicalContainerNetworkReasonBuiltInNetworkNotRemovable ConditionReason = "BuiltInNetworkNotRemovable"
 
@@ -104,6 +110,7 @@ type PhysicalContainerNetworkConfig struct {
 	ReplaceExisting bool `json:"replaceExisting,omitempty"`
 
 	// Labels contains labels to apply to a newly-created runtime network.
+	// The physical resource UID label is reserved and set by the controller.
 	// +listType=map
 	// +listMapKey=key
 	Labels []commonapi.Label `json:"labels,omitempty"`
