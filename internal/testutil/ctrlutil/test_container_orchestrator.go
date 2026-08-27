@@ -892,7 +892,8 @@ func (to *TestContainerOrchestrator) CreateNetwork(ctx context.Context, options 
 		Actor:  containers.EventActor{ID: id.ID},
 	})
 
-	if postCreateErr := to.nextPostCreateNetworkErrorLocked(options.Name); postCreateErr != nil {
+	postCreateKey := testContainerOperationKey{operation: operationPostCreateNetwork, resourceID: options.Name}
+	if postCreateErr := to.nextOperationErrorLocked(postCreateKey); postCreateErr != nil {
 		return "", postCreateErr
 	}
 
@@ -1334,11 +1335,6 @@ func (to *TestContainerOrchestrator) recordInspectNetworksOperation(networks []s
 
 func (to *TestContainerOrchestrator) recordCreateNetworkOperation(ctx context.Context, name string) error {
 	return to.recordOperation(ctx, operationCreateNetwork, name)
-}
-
-func (to *TestContainerOrchestrator) nextPostCreateNetworkErrorLocked(name string) error {
-	key := testContainerOperationKey{operation: operationPostCreateNetwork, resourceID: name}
-	return to.nextOperationErrorLocked(key)
 }
 
 func (to *TestContainerOrchestrator) blockOperation(operation testContainerOperation, resourceID string) func() {
