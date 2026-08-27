@@ -11,9 +11,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/cenkalti/backoff/v4"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl_client "sigs.k8s.io/controller-runtime/pkg/client"
@@ -152,6 +155,225 @@ func TestExistingPersistentVolumeIsNotRecordedForWorkloadCleanup(t *testing.T) {
 
 	_, getErr := teInfo.StateStore.GetPersistentVolume(ctx, vol.GetLeaseKey())
 	require.ErrorIs(t, getErr, statestore.ErrPersistentVolumeNotFound)
+}
+
+func TestPersistentVolumeRecordPrecedesRuntimeCreation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	var recordingOrchestrator *recordingVolumeCreateOrchestrator
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeRecordBeforeCreate", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+		DecorateContainerOrchestrator: func(
+			orchestrator containers.ContainerOrchestrator,
+			stateStore *statestore.Store,
+		) containers.ContainerOrchestrator {
+			recordingOrchestrator = &recordingVolumeCreateOrchestrator{
+				ContainerOrchestrator: orchestrator,
+				stateStore:            stateStore,
+			}
+			return recordingOrchestrator
+		},
+	})
+	require.NoError(t, envStartErr)
+
+	volume := persistentVolumeForTest("persistent-volume-record-before-create")
+	require.NoError(t, serverInfo.Client.Create(ctx, volume))
+
+	inspectedVolume := ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, volume)
+	require.True(t, recordingOrchestrator.recordMatchedCreate.Load())
+	record, getRecordErr := teInfo.StateStore.GetPersistentVolume(ctx, volume.GetLeaseKey())
+	require.NoError(t, getRecordErr)
+	require.Equal(t, record.OwnershipToken, inspectedVolume.Labels[containers.VolumeOwnershipTokenLabel])
+}
+
+func TestPersistentVolumePersistenceFailurePreventsRuntimeCreation(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	var failingOrchestrator *volumePersistenceFailureOrchestrator
+	serverInfo, _, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumePersistenceFailure", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+		DecorateContainerOrchestrator: func(
+			orchestrator containers.ContainerOrchestrator,
+			stateStore *statestore.Store,
+		) containers.ContainerOrchestrator {
+			failingOrchestrator = &volumePersistenceFailureOrchestrator{
+				ContainerOrchestrator: orchestrator,
+				stateStore:            stateStore,
+				persistenceFailed:     make(chan struct{}),
+			}
+			return failingOrchestrator
+		},
+	})
+	require.NoError(t, envStartErr)
+
+	volume := persistentVolumeForTest("persistent-volume-persistence-failure")
+	require.NoError(t, serverInfo.Client.Create(ctx, volume))
+	waitObjectAssumesStateEx(t, ctx, serverInfo.Client, ctrl_client.ObjectKeyFromObject(volume), func(updatedVolume *apiv1.ContainerVolume) (bool, error) {
+		return updatedVolume.Status.State == apiv1.ContainerVolumeStatePending, nil
+	})
+
+	select {
+	case <-failingOrchestrator.persistenceFailed:
+	case <-ctx.Done():
+		require.FailNow(t, "state store persistence failure was not injected", ctx.Err())
+	}
+	require.NoError(t, failingOrchestrator.closeErr)
+	require.False(t, failingOrchestrator.createCalled.Load())
+	_, inspectErr := serverInfo.ContainerOrchestrator.InspectVolumes(ctx, containers.InspectVolumesOptions{Volumes: []string{volume.Spec.Name}})
+	require.ErrorIs(t, inspectErr, containers.ErrNotFound)
+}
+
+func TestPersistentVolumeCreateRaceAdoptsUnlabeledVolume(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeCreateRace", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+		DecorateContainerOrchestrator: func(
+			orchestrator containers.ContainerOrchestrator,
+			_ *statestore.Store,
+		) containers.ContainerOrchestrator {
+			return &idempotentVolumeCreateRaceOrchestrator{ContainerOrchestrator: orchestrator}
+		},
+	})
+	require.NoError(t, envStartErr)
+
+	volume := persistentVolumeForTest("persistent-volume-create-race")
+	require.NoError(t, serverInfo.Client.Create(ctx, volume))
+
+	inspectedVolume := ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, volume)
+	require.Empty(t, inspectedVolume.Labels)
+	_, getRecordErr := teInfo.StateStore.GetPersistentVolume(ctx, volume.GetLeaseKey())
+	require.ErrorIs(t, getRecordErr, statestore.ErrPersistentVolumeNotFound)
+}
+
+func TestPersistentVolumeAmbiguousCreateFailureRetainsOwnershipRecord(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := testutil.GetTestContext(t, defaultIntegrationTestTimeout)
+	defer cancel()
+
+	serverInfo, teInfo, envStartErr := StartTestEnvironmentWithOptions(ctx, VolumeController, "PersistentVolumeAmbiguousCreate", t.TempDir(), TestEnvironmentOptions{
+		WorkloadID: "workload-a",
+		DecorateContainerOrchestrator: func(
+			orchestrator containers.ContainerOrchestrator,
+			_ *statestore.Store,
+		) containers.ContainerOrchestrator {
+			return &ambiguousVolumeCreateOrchestrator{ContainerOrchestrator: orchestrator}
+		},
+	})
+	require.NoError(t, envStartErr)
+
+	volume := persistentVolumeForTest("persistent-volume-ambiguous-create")
+	require.NoError(t, serverInfo.Client.Create(ctx, volume))
+
+	inspectedVolume := ensureVolumeCreated(t, ctx, serverInfo.Client, serverInfo.ContainerOrchestrator, volume)
+	record, getRecordErr := teInfo.StateStore.GetPersistentVolume(ctx, volume.GetLeaseKey())
+	require.NoError(t, getRecordErr)
+	require.Equal(t, record.OwnershipToken, inspectedVolume.Labels[containers.VolumeOwnershipTokenLabel])
+}
+
+func persistentVolumeForTest(name string) *apiv1.ContainerVolume {
+	return &apiv1.ContainerVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: metav1.NamespaceNone,
+		},
+		Spec: apiv1.ContainerVolumeSpec{Name: name},
+	}
+}
+
+type recordingVolumeCreateOrchestrator struct {
+	containers.ContainerOrchestrator
+	stateStore          *statestore.Store
+	recordMatchedCreate atomic.Bool
+}
+
+func (o *recordingVolumeCreateOrchestrator) CreateVolume(ctx context.Context, options containers.CreateVolumeOptions) error {
+	record, getRecordErr := o.stateStore.GetPersistentVolume(ctx, "containervolumes/"+options.Name)
+	if getRecordErr == nil &&
+		record.OwnershipToken != "" &&
+		record.OwnershipToken == options.Labels[containers.VolumeOwnershipTokenLabel] {
+		o.recordMatchedCreate.Store(true)
+	}
+	return o.ContainerOrchestrator.CreateVolume(ctx, options)
+}
+
+type volumePersistenceFailureOrchestrator struct {
+	containers.ContainerOrchestrator
+	stateStore        *statestore.Store
+	closeOnce         sync.Once
+	closeErr          error
+	persistenceFailed chan struct{}
+	createCalled      atomic.Bool
+}
+
+func (o *volumePersistenceFailureOrchestrator) CheckStatus(
+	ctx context.Context,
+	usage containers.CachedRuntimeStatusUsage,
+) containers.ContainerRuntimeStatus {
+	o.closeOnce.Do(func() {
+		o.closeErr = o.stateStore.Close()
+		close(o.persistenceFailed)
+	})
+	return o.ContainerOrchestrator.CheckStatus(ctx, usage)
+}
+
+func (o *volumePersistenceFailureOrchestrator) CreateVolume(
+	ctx context.Context,
+	options containers.CreateVolumeOptions,
+) error {
+	o.createCalled.Store(true)
+	return o.ContainerOrchestrator.CreateVolume(ctx, options)
+}
+
+type idempotentVolumeCreateRaceOrchestrator struct {
+	containers.ContainerOrchestrator
+	initialInspect atomic.Bool
+}
+
+func (o *idempotentVolumeCreateRaceOrchestrator) InspectVolumes(
+	ctx context.Context,
+	options containers.InspectVolumesOptions,
+) ([]containers.InspectedVolume, error) {
+	if o.initialInspect.CompareAndSwap(false, true) {
+		return nil, containers.ErrNotFound
+	}
+	return o.ContainerOrchestrator.InspectVolumes(ctx, options)
+}
+
+func (o *idempotentVolumeCreateRaceOrchestrator) CreateVolume(
+	ctx context.Context,
+	options containers.CreateVolumeOptions,
+) error {
+	externalCreateErr := o.ContainerOrchestrator.CreateVolume(ctx, containers.CreateVolumeOptions{Name: options.Name})
+	if externalCreateErr != nil && !errors.Is(externalCreateErr, containers.ErrAlreadyExists) {
+		return externalCreateErr
+	}
+	return nil
+}
+
+type ambiguousVolumeCreateOrchestrator struct {
+	containers.ContainerOrchestrator
+	failureInjected atomic.Bool
+}
+
+func (o *ambiguousVolumeCreateOrchestrator) CreateVolume(
+	ctx context.Context,
+	options containers.CreateVolumeOptions,
+) error {
+	if !o.failureInjected.CompareAndSwap(false, true) {
+		return o.ContainerOrchestrator.CreateVolume(ctx, options)
+	}
+	createErr := o.ContainerOrchestrator.CreateVolume(ctx, options)
+	if createErr != nil {
+		return createErr
+	}
+	return backoff.Permanent(errors.New("volume create result unavailable"))
 }
 
 // If persistent volume is deleted, the corresponding Docker volume should not be deleted.

@@ -147,31 +147,6 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		change = r.handleDeletionRequest(ctx, &vol, log)
 	} else if change = ensureFinalizer(&vol, volumeFinalizer, log); change != noChange {
 		// Make additional changes during next reconciliation
-	} else if pointers.TrueValue(vol.Spec.Persistent) {
-		if r.config.StateStore == nil {
-			stateStoreErr := fmt.Errorf("state store is not configured")
-			log.Error(stateStoreErr, "Could not acquire persistent volume lease")
-			change = additionalReconciliationNeeded
-		} else {
-			leaseErr := r.config.StateStore.WithResourceLease(
-				ctx,
-				&vol,
-				r.config.ResourceLeaseOwner,
-				resourceLeaseRevalidationInterval,
-				func(leaseCtx context.Context, lease *statestore.ResourceLease) error {
-					log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
-					change = r.manageVolume(leaseCtx, &vol, log)
-					return nil
-				},
-			)
-			if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
-				logResourceLeaseHeld(log, leaseErr, vol.GetLeaseKey(), "Persistent volume is being updated by another DCP instance, retrying")
-				change = additionalReconciliationNeeded
-			} else if leaseErr != nil {
-				log.Error(leaseErr, "Could not acquire persistent volume lease")
-				change = additionalReconciliationNeeded
-			}
-		}
 	} else {
 		change = r.manageVolume(ctx, &vol, log)
 	}
@@ -212,8 +187,41 @@ func (r *VolumeReconciler) manageVolume(ctx context.Context, vol *apiv1.Containe
 		targetState = volData.state
 	}
 
-	initializer := getStateInitializer(volumeStateInitializers, targetState, log)
-	change := initializer(ctx, r, vol, targetState, volData, log)
+	runInitializer := func(ctx context.Context) objectChange {
+		initializer := getStateInitializer(volumeStateInitializers, targetState, log)
+		return initializer(ctx, r, vol, targetState, volData, log)
+	}
+
+	change := noChange
+	if pointers.TrueValue(vol.Spec.Persistent) {
+		if r.config.StateStore == nil {
+			stateStoreErr := fmt.Errorf("state store is not configured")
+			log.Error(stateStoreErr, "Could not acquire persistent volume lease")
+			return additionalReconciliationNeeded
+		}
+
+		leaseErr := r.config.StateStore.WithResourceLease(
+			ctx,
+			vol,
+			r.config.ResourceLeaseOwner,
+			resourceLeaseRevalidationInterval,
+			func(leaseCtx context.Context, lease *statestore.ResourceLease) error {
+				log.V(1).Info("Acquired resource lease", "ResourceKey", lease.ResourceKey)
+				change = runInitializer(leaseCtx)
+				return nil
+			},
+		)
+		if errors.Is(leaseErr, statestore.ErrResourceLeaseHeld) {
+			logResourceLeaseHeld(log, leaseErr, vol.GetLeaseKey(), "Persistent volume is being updated by another DCP instance, retrying")
+			return additionalReconciliationNeeded
+		}
+		if leaseErr != nil {
+			log.Error(leaseErr, "Could not manage persistent volume under resource lease")
+			change |= additionalReconciliationNeeded
+		}
+	} else {
+		change = runInitializer(ctx)
+	}
 
 	if volData != nil {
 		r.volumeData.Update(vol.NamespacedName(), volumeName(vol.Spec.Name), volData)
