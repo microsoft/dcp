@@ -184,8 +184,8 @@ func physicalContainerNetworkReconcileDelay(network *apiv2.PhysicalContainerNetw
 	}
 }
 
-// Returns an acknowledgement that forgets a completed create result after its status is durable.
-func (r *PhysicalContainerNetworkReconciler) onPhysicalContainerNetworkCreateResultStatusDurable(
+// Returns an acknowledgement that forgets a terminal create result after its status is durable.
+func (r *PhysicalContainerNetworkReconciler) onTerminalCreateResultStatusDurable(
 	stateKey physicalContainerNetworkDataStateKey,
 	data *physicalContainerNetworkData,
 ) func() {
@@ -228,7 +228,7 @@ func (r *PhysicalContainerNetworkReconciler) managePhysicalContainerNetwork(
 		change |= data.applyTo(network)
 		initializer := getStateInitializer(physicalContainerNetworkDataInitializers, data.conditionReason, log)
 		change |= initializer(ctx, r, network, data.conditionReason, data, log)
-		return change, r.onPhysicalContainerNetworkCreateResultStatusDurable(stateKey, data)
+		return change, r.onTerminalCreateResultStatusDurable(stateKey, data)
 	}
 
 	if physicalContainerNetworkFailedTerminally(network) {
